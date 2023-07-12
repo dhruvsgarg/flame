@@ -133,10 +133,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
-                logger.debug(f"No data from {end}; skipping it")
+                logger.info(f"No data from {end}; skipping it")
                 continue
 
-            logger.debug(f"received data from {end}")
+            logger.info(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
             if MessageType.WEIGHTS in msg:

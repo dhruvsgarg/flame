@@ -1,6 +1,6 @@
 {
     "taskid": "49d06b7526964db86cf37c70e8e0cdb6bd7aa743",
-    "backend": "p2p",
+    "backend": "mqtt",
     "brokers": [
         {
             "host": "localhost",

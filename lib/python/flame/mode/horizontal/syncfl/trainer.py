@@ -166,6 +166,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._send_weights(tag)
 
     def _send_weights(self, tag: str) -> None:
+        print("### SEND WEIGHTS PRINT BY DG ###")
         logger.debug("calling _send_weights")
         channel = self.cm.get_by_tag(tag)
         if not channel:
