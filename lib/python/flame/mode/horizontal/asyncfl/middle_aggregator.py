@@ -192,7 +192,7 @@ class MiddleAggregator(SyncMidAgg):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
 
-        logger.debug(f"{end}'s parameters trained with {count} samples")
+        logger.info(f"{end}'s parameters trained with {count} samples")
 
         if weights is not None and count > 0:
             tres = TrainResult(weights, count, version)

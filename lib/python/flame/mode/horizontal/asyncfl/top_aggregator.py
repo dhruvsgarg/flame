@@ -85,7 +85,7 @@ class TopAggregator(SyncTopAgg):
             tres = TrainResult(weights, count, version)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
-            logger.debug(f"received {len(self.cache)} trainer updates in cache")
+            logger.info(f"received {len(self.cache)} trainer updates in cache")
 
             self._agg_goal_weights = self.optimizer.do(
                 self._agg_goal_weights, self.cache, total=count, version=self._round
@@ -95,8 +95,8 @@ class TopAggregator(SyncTopAgg):
 
         if self._agg_goal_cnt < self._agg_goal:
             # didn't reach the aggregation goal; return
-            logger.debug("didn't reach agg goal")
-            logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
+            logger.info("didn't reach agg goal")
+            logger.info(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
             return
 
         if self._agg_goal_weights is None:
