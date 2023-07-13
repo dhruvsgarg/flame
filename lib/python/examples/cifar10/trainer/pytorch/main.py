@@ -97,10 +97,7 @@ class PyTorchCifar10Trainer(Trainer):
                                  download=True,
                                  transform=transform)
 
-        # indices = torch.arange(20000)
-
         # create indices into a list and convert to tensor
-        # list_indices = list(range(0, 20000))
         indices = torch.tensor(self.trainer_indices_list)
 
         print("indices: ", indices)
@@ -112,7 +109,6 @@ class PyTorchCifar10Trainer(Trainer):
 
     def train(self) -> None:
         """Train a model."""
-        # self.optimizer = optim.Adadelta(self.model.parameters())
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
 
@@ -121,21 +117,6 @@ class PyTorchCifar10Trainer(Trainer):
 
         # save dataset size so that the info can be shared with aggregator
         self.dataset_size = len(self.train_loader.dataset)
-
-    # CODE FROM PYTORCH EXAMPLE - similar code is in _train_epoch
-    # for epoch in range(2):  # loop over the dataset multiple times
-    #     running_loss = 0.0
-    #     for i, data in enumerate(trainloader, 0):
-    #         # get the inputs; data is a list of [inputs, labels]
-    #         inputs, labels = data
-    #         # zero the parameter gradients
-    #         optimizer.zero_grad()
-    #         # forward + backward + optimize
-    #         outputs = net(inputs)
-    #         loss = criterion(outputs, labels)
-    #         loss.backward()
-    #         optimizer.step()
-    # CODE FROM PYTORCH EXAMPLE - similar code is in _train_epoch
 
     def _train_epoch(self, epoch):
         self.model.train()

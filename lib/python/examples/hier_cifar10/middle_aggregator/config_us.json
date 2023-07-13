@@ -46,7 +46,10 @@
                 "type": "tag",
                 "value": [
                     "uk",
-                    "us"
+                    "us",
+                    "southAfrica",
+                    "india",
+                    "australia"
                 ]
             },
             "name": "param-channel",
