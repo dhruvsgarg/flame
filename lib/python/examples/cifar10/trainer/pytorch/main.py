@@ -76,6 +76,8 @@ class PyTorchCifar10Trainer(Trainer):
         self.epochs = self.config.hyperparameters.epochs
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
+        self.criterion = None
+
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device(
@@ -94,7 +96,7 @@ class PyTorchCifar10Trainer(Trainer):
                                  download=True,
                                  transform=transform)
 
-        indices = torch.arange(20000)
+        indices = torch.arange(50000)
         dataset = data_utils.Subset(dataset, indices)
         train_kwargs = {'batch_size': self.batch_size}
 
@@ -103,7 +105,9 @@ class PyTorchCifar10Trainer(Trainer):
 
     def train(self) -> None:
         """Train a model."""
-        self.optimizer = optim.Adadelta(self.model.parameters())
+        # self.optimizer = optim.Adadelta(self.model.parameters())
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
 
         for epoch in range(1, self.epochs + 1):
             self._train_epoch(epoch)
@@ -133,7 +137,7 @@ class PyTorchCifar10Trainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            loss = F.nll_loss(output, target)
+            loss = self.criterion(output, target)
             loss.backward()
             self.optimizer.step()
             if batch_idx % 10 == 0:
