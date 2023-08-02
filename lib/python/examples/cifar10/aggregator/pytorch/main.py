@@ -108,7 +108,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
                 output = self.model(data)
                 test_loss += F.nll_loss(
                     output, target,
-                    reduction='sum').item()  # sum up batch loss
+                    reduction='sum').item()  # sum up batch loss                
                 pred = output.argmax(
                     dim=1,
                     keepdim=True)  # get the index of the max log-probability
