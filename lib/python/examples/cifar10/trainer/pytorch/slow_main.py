@@ -22,7 +22,7 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 import logging
 
 from flame.config import Config
-from flame.mode.horizontal.trainer import Trainer
+from flame.mode.horizontal.slow_trainer import SlowTrainer
 
 import torch
 import torch.nn as nn
@@ -61,7 +61,7 @@ class Net(nn.Module):
         return x
 
 
-class PyTorchCifar10Trainer(Trainer):
+class PyTorchCifar10Trainer(SlowTrainer):
     """PyTorch CIFAR-10 Trainer."""
 
     def __init__(self, config: Config) -> None:
