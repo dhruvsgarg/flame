@@ -1,0 +1,110 @@
+## Quickstart
+
+### Prerequisites
+
+* Install [anaconda](www.anaconda.com/download/) or [miniconda](https://docs.conda.io/en/latest/miniconda.html) in order to create the environment.
+* Install [homebrew] (https://docs.brew.sh/Installation) 
+* Clone repo (you could use `git clone https://github.com/cisco-open/flame.git`).
+
+### Local MQTT Broker
+
+Since the flame system uses an MQTT broker to exchange messages during federated learning, to run the python library locally, you may install a local MQTT broker as shown below.
+
+```bash
+brew install mosquitto
+brew services info mosquitto
+```
+
+The last command should display something similar to this:
+
+```bash
+mosquitto (homebrew.mxcl.mosquitto)
+Running: ✔
+Loaded: ✔
+Schedulable: ✘
+...
+```
+
+That confirms that the mosquitto service is active.
+
+You can use the following commands to stop and start the mosquitto service:
+
+```bash
+# start mosquitto
+brew services start mosquitto
+# stop mosquitto
+brew services stop mosquitto
+# restart mosquitto
+brew services restart mosquitto
+```
+
+Go ahead and change the two config files `flame/lib/python/examples/mnist/trainer/config.json` and `flame/lib/python/examples/mnist/aggregator/config.json` to set `backend` to `mqtt`.
+
+```json
+    "backend": "mqtt",
+    "brokers": [
+        {
+            "host": "localhost",
+            "sort": "mqtt"
+        },
+	{
+	    "host": "localhost:10104",
+	    "sort": "p2p"
+	}
+    ]
+```
+
+Note that if you also want to use the local `mqtt` broker for other examples you should make sure that the `mqtt` broker has `host` set to `localhost`.
+
+### Environment Setup
+
+We recommend setting up your environment with `conda`. Within the cloned flame directory, run the following to activate and setup the flame environment:
+
+```bash
+# Run within the cloned flame directory
+cd lib/python/flame
+conda create -n flame python=3.9
+conda activate flame
+
+pip install google
+pip install tensorflow
+pip install torch
+pip install torchvision
+
+cd ..
+make install
+```
+
+To install flame in editable development mode, run the following instead of the `make install` command:
+```bash
+python -m pip install -e .
+```
+
+### Running an Example
+
+We will run the MNIST example with one aggregator and one trainer.
+
+Open two terminal windows.
+
+In the first terminal, once you are in `flame/lib/python/examples/mnist/trainer`, run:
+
+```bash
+conda activate flame
+
+python keras/main.py config.json
+```
+
+Open another terminal in `flame/lib/python/examples/mnist/aggregator` and run:
+
+```bash
+conda activate flame
+
+python keras/main.py config.json
+```
+
+In this example, we have one aggregator and one trainer that runs with the same job ID and different task IDs.
+After running, you will see the aggregator (second terminal) sending a global model to the trainer (first terminal), and the trainer sending the updated local model back to the aggregator.
+
+This completes one round of communication between the aggregator and trainer.
+
+The current example is set to 20 rounds (see the `hyperparameters` section of the `flame/lib/python/examples/mnist/aggregator/config.json` file), meaning the communication protocol described earlier will repeat 20 times.

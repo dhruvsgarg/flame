@@ -1,12 +1,16 @@
 # Flame SDK
 
-## Environment Setup
-We recommend setting up your environment with `conda`. This example is based on Ubuntu 22.04. Run the following inside of the `lib/python/flame` directory.
+### Prerequisites
+
+* Install [anaconda](www.anaconda.com/download/) or [miniconda](https://docs.conda.io/en/latest/miniconda.html) in order to create the environment.
+* Clone repo (you could use `git clone https://github.com/cisco-open/flame.git`).
+
+### Environment Setup
+
+We recommend setting up your environment with `conda`. Run the following inside of the `flame/lib/python/flame` directory: `conda create -n flame python=3.9`. This creates the environment that we will activate and setup with the lines below.
 
 ```bash
-conda create -n flame python=3.9
 conda activate flame
-
 
 pip install google
 pip install tensorflow
@@ -16,8 +20,6 @@ pip install torchvision
 cd ..
 make install
 ```
-
-## Quickstart
 
 ### Configuring Brokers
 
@@ -38,9 +40,11 @@ This means setting `backend` and the `mqtt` broker in the config file as follows
 However, this may lead to job ID collisions since it is a public broker.
 Thus, for local testing, we recommend using either of the two options below.
 
-#### Local MQTT Broker
+#### Backend Option 1: Local MQTT Broker
 
-Since the flame system uses MQTT brokers to exchange messages during federated learning, to run the python library locally, you may install a local MQTT broker as shown below.
+Since the flame system uses an MQTT broker to exchange messages during federated learning, to run the python library locally, you may install a local MQTT broker as shown below.
+
+**Ubuntu**
 
 ```bash
 sudo apt update
@@ -64,7 +68,50 @@ mosquitto.service - Mosquitto MQTT v3.1/v3.1.1 Broker
 ```
 
 That confirms that the mosquitto service is active.
-From now on, you may use `sudo systemctl stop mosquitto` to stop the mosquitto service, `sudo systemctl start mosquitto` to start the service, and `sudo systemctl restart mosquitto` to restart the service.
+You can use the following commands to stop and start the mosquitto service:
+
+```bash
+# start mosquitto
+sudo systemctl start mosquitto
+# stop mosquitto
+sudo systemctl stop mosquitto
+# restart mosquitto
+sudo systemctl restart mosquitto
+```
+
+**Mac OS**
+
+Install `brew`, which is a package management tool in macOS. To install `brew`, refer to [here](https://docs.brew.sh/Installation).
+
+```bash
+brew install mosquitto
+brew services info mosquitto
+```
+
+The last command should display something similar to this:
+
+```bash
+mosquitto (homebrew.mxcl.mosquitto)
+Running: ✔
+Loaded: ✔
+Schedulable: ✘
+...
+```
+
+That confirms that the mosquitto service is active.
+
+You can use the following commands to stop and start the mosquitto service:
+
+```bash
+# start mosquitto
+brew services start mosquitto
+# stop mosquitto
+brew services stop mosquitto
+# restart mosquitto
+brew services restart mosquitto
+```
+
+**After MQTT installation**
 
 Go ahead and change the two config files in `mnist/trainer` and `mnist/aggregator` to make sure `backend` is `mqtt`.
 
@@ -84,9 +131,11 @@ Go ahead and change the two config files in `mnist/trainer` and `mnist/aggregato
 
 Note that if you also want to use the local `mqtt` broker for other examples you should make sure that the `mqtt` broker has `host` set to `localhost`.
 
-#### P2P
+#### Backend Option 2: P2P
 
-To start a `p2p` broker, go to the top `/flame` directory and run:
+* Requirement: install Go as covered in [Prerequisite](../prerequisites.md).
+
+To start a p2p broker, go to the top `/flame` directory and run:
 
 ```bash
 make install
@@ -123,7 +172,7 @@ python keras/main.py config.json
 ### Selector
 Users are able to implement new selectors in `lib/python/flame/selector/` which should return a dictionary with keys corresponding to the active trainer IDs (i.e., agent IDs). After implementation, the new selector needs to be registered into both `lib/python/flame/selectors.py` and `lib/python/flame/config.py`.
 
-#### Currently Implemented Selectors
+#### Selectors
 1. Naive (i.e., select all)
 ```json
 "selector": {
@@ -140,14 +189,31 @@ Users are able to implement new selectors in `lib/python/flame/selector/` which 
     }
 }
 ```
+3. Oort ([OSDI'21](https://arxiv.org/pdf/2010.06081.pdf))
+```json
+"selector": {
+    "sort": "oort",
+    "kwargs": {
+        "aggr_num": 5
+    }
+}
+```
+4. FedBuff (for Asynchronous FL, [AISTATS'22](https://arxiv.org/pdf/2106.06639.pdf ))
+```json
+"selector": {
+    "sort": "fedbuff",
+    "kwargs": {
+        "c": 5
+    }
+}
+```
 
 ### Optimizer (i.e., aggregator of FL)
 Users can implement new server optimizer, when the client optimizer is defined in the actual ML code, in `lib/python/flame/optimizer` which can take in hyperparameters if any and should return the aggregated weights in either PyTorch of Tensorflow format. After implementation, the new optimizer needs to be registered into both `lib/python/flame/optimizer.py` and `lib/python/flame/config.py`.
 
-#### Currently Implemented Optimizers
+#### Optimizers
 1. FedAvg (i.e., weighted average in terms of dataset size)
 ```json
-# e.g.
 "optimizer": {
     "sort": "fedavg",
     "kwargs": {}
@@ -185,6 +251,24 @@ Users can implement new server optimizer, when the client optimizer is defined i
         "beta_2": 0.99,
         "eta": 0.01,
         "tau": 0.001
+    }
+}
+```
+5. FedProx
+```json
+"optimizer": {
+    "sort": "fedprox",
+    "kwargs": {
+        "mu": 0.01
+    }
+}
+```
+6. FedDyn
+```json
+"optimizer": {
+    "sort": "feddyn",
+    "kwargs": {
+        "alpha": 0.01
     }
 }
 ```
