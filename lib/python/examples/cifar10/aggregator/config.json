@@ -45,9 +45,9 @@
         "numpy >= 1.2.0"
     ],
     "hyperparameters": {
-        "batchSize": 32,
-        "learningRate": 0.001,
-        "rounds": 600
+        "batchSize": 4,
+        "learningRate": 0.01,
+        "rounds": 400
     },
     "baseModel": {
         "name": "",

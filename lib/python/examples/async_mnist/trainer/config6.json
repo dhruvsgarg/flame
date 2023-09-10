@@ -1,6 +1,6 @@
 {
-    "taskid": "49d06b7526964db86cf37c70e8e0cdb6bd7aa742",
-    "backend": "p2p",
+    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580375",
+    "backend": "mqtt",
     "brokers": [
         {
             "host": "localhost",
@@ -45,19 +45,19 @@
         "numpy >= 1.2.0"
     ],
     "hyperparameters": {
-        "batchSize": 4,
+        "batchSize": 32,
         "learningRate": 0.01,
-        "rounds": 400,
-        "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 4
+        "rounds": 5,
+        "//": "aggGoal is irrelevant since it's a trainer",
+        "aggGoal": 2
     },
     "baseModel": {
         "name": "",
-        "version": 2
+        "version": 1
     },
     "job": {
         "id": "622a358619ab59012eabeefb",
-        "name": "cifar-10"
+        "name": "mnist"
     },
     "registry": {
         "sort": "dummy",
@@ -66,8 +66,8 @@
     "selector": {
         "sort": "fedbuff",
         "kwargs": {
-            "//": "c: concurrency level",
-            "c": 10
+            "//": "c: concurrency (this irrelevant since it's traner)",
+            "c": 4
         }
     },
     "optimizer": {
@@ -75,6 +75,6 @@
         "kwargs": {}
     },
     "maxRunTime": 300,
-    "realm": "default",
-    "role": "aggregator"
+    "realm": "default/australia",
+    "role": "trainer"
 }

@@ -45,7 +45,7 @@
         "numpy >= 1.2.0"
     ],
     "hyperparameters": {
-        "batchSize": 32,
+        "batchSize": 4,
         "learningRate": 0.01,
         "rounds": 5,
         "trainer_indices_list": [

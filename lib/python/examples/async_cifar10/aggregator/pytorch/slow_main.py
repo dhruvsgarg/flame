@@ -13,7 +13,7 @@
 # limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""CIFAR-10 horizontal Async-FL aggregator for PyTorch.
+"""CIFAR-10 horizontal FL aggregator for PyTorch.
 
 The example below is implemented based on the following example from pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
@@ -26,7 +26,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from flame.config import Config
 from flame.dataset import Dataset
-from flame.mode.horizontal.asyncfl.slow_top_aggregator import SlowTopAggregator
+from flame.mode.horizontal.slow_top_aggregator import SlowTopAggregator
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
@@ -58,7 +58,7 @@ class Net(nn.Module):
 
 
 class PyTorchCifar10Aggregator(SlowTopAggregator):
-    """PyTorch CIFAR-10 Slow Async Aggregator."""
+    """PyTorch CIFAR-10 Aggregator."""
 
     def __init__(self, config: Config) -> None:
         """Initialize a class instance."""

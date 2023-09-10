@@ -24,11 +24,34 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
+
 from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.top_aggregator import TopAggregator
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
+
+# wandb setup
+import wandb
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="ft-distr-ml",
+
+    # track hyperparameters and run metadata
+    config={
+    "learning_rate": 0.01,
+    "architecture": "CNN",
+    "dataset": "CIFAR-10",
+    "rounds": 400,
+    "config": 15,
+    "alpha": 10,
+    "failures": "c1, c2, c4, c9 failure, entire duration",
+    "client-participation": 100,
+    "comments": "custom normalization vals, new transform"
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,22 +62,24 @@ class Net(nn.Module):
     def __init__(self):
         """Initialize."""
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.conv1 = nn.Conv2d(3,   64,  3)
+        self.conv2 = nn.Conv2d(64,  128, 3)
+        self.conv3 = nn.Conv2d(128, 256, 3)
         self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+        self.fc1 = nn.Linear(64 * 4 * 4, 128)
+        self.fc2 = nn.Linear(128, 256)
+        self.fc3 = nn.Linear(256, 10)
 
     def forward(self, x):
         """Forward."""
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
+        x = self.pool(F.relu(self.conv3(x)))
+        x = x.view(-1, 64 * 4 * 4)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
-        return x
+        return F.log_softmax(x, dim=1)
 
 
 class PyTorchCifar10Aggregator(TopAggregator):
@@ -69,6 +94,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.device = None
         self.test_loader = None
 
+        self.batch_size = self.config.hyperparameters.batch_size or 16
+
     def initialize(self):
         """Initialize role."""
         self.device = torch.device(
@@ -78,16 +105,19 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
     def load_data(self) -> None:
         """Load a test dataset."""
-        transform = transforms.Compose(
-            [transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
 
         dataset = CIFAR10('./data',
                                  train=False,
                                  download=True,
-                                 transform=transform)
+                                 transform=transform_test)
+        
+        test_kwargs = {'batch_size': self.batch_size, 'shuffle': False, 'num_workers': 2}
 
-        self.test_loader = torch.utils.data.DataLoader(dataset)
+        self.test_loader = torch.utils.data.DataLoader(dataset, **test_kwargs)
 
         # store data into dataset for analysis (e.g., bias)
         self.dataset = Dataset(dataloader=self.test_loader)
@@ -116,16 +146,22 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         total = len(self.test_loader.dataset)
         test_loss /= total
-        test_accuray = correct / total
+        test_accuracy = correct / total
 
         logger.info(f"Test loss: {test_loss}")
-        logger.info(f"Test accuracy: {correct}/{total} ({test_accuray})")
+        logger.info(f"Test accuracy: {correct}/{total} ({test_accuracy})")
 
         # update metrics after each evaluation so that the metrics can be
         # logged in a model registry.
         self.update_metrics({
             'test-loss': test_loss,
-            'test-accuracy': test_accuray
+            'test-accuracy': test_accuracy
+        })
+
+        # add metrics to wandb log
+        wandb.log({
+        'test_acc': test_accuracy, 
+        'test_loss': test_loss
         })
 
 

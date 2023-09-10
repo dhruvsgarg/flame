@@ -113,23 +113,26 @@ class Trainer(Role, metaclass=ABCMeta):
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
+        print("### FETCH WEIGHTS start for tag: ", tag)
         logger.debug("calling _fetch_weights")
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.debug(f"channel not found with tag {tag}")
+            logger.info(f"channel not found with tag {tag}")
             # we don't want to keep calling this too fast
             # so let's sleep 1 second
             time.sleep(1)
             return
 
         # this call waits for at least one peer joins this channel
+        print("_fetch_weights: waiting for someone to join channel: ", str(channel))
         channel.await_join()
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
         msg, _ = channel.recv(end)
+        print("extracting weights from message")
 
         if not msg:
             logger.debug("no message received")
@@ -160,13 +163,15 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = True
         logger.debug(f"work_done: {self._work_done}, round: {self._round}")
 
+        print("### FETCH WEIGHTS complete ###")
+
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
 
     def _send_weights(self, tag: str) -> None:
-        print("### SEND WEIGHTS PRINT BY DG ###")
+        print("### SEND WEIGHTS for tag: ", tag)
         logger.debug("calling _send_weights")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -174,6 +179,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
+        print("_send_weights: waiting for someone to join channel: ", str(channel))
         channel.await_join()
 
         # one aggregator is sufficient
