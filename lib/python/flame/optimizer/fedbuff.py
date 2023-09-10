@@ -27,8 +27,7 @@ import math
 from diskcache import Cache
 
 from ..common.typing import ModelWeights
-from ..common.util import (MLFramework, get_ml_framework_in_use,
-                           valid_frameworks)
+from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .regularizer.default import Regularizer
 
@@ -52,7 +51,8 @@ class FedBuff(AbstractOptimizer):
         else:
             raise NotImplementedError(
                 "supported ml framework not found; "
-                f"supported frameworks are: {valid_frameworks}")
+                f"supported frameworks are: {valid_frameworks}"
+            )
 
         self.regularizer = Regularizer()
 
@@ -92,6 +92,7 @@ class FedBuff(AbstractOptimizer):
             tres = cache.pop(k)
 
             logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
+            print(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
             rate = 1 / math.sqrt(1 + version - tres.version)
             self.aggregate_fn(tres, rate)

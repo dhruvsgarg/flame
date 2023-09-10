@@ -75,6 +75,6 @@
         "kwargs": {}
     },
     "maxRunTime": 300,
-    "realm": "default/us/west",
+    "realm": "default/uk",
     "role": "trainer"
 }
