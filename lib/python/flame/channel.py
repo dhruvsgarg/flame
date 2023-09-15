@@ -377,6 +377,13 @@ class Channel(object):
                 (end_id, payload) = result
                 logger.debug(f"1) end id: {end_id}, cnt: {self.count}")
 
+                if end_id not in self._ends:
+                    logger.debug(f"{end_id} not in _ends; discard message")
+                    continue
+
+                await self._rx_queue.put(result)
+                self._active_recv_fifo_tasks.remove(end_id)
+                """
                 self.count += 1
                 logger.debug(f"2) end id: {end_id}, cnt: {self.count}")
                 if self.count <= self.first_k:
@@ -410,6 +417,7 @@ class Channel(object):
 
                     logger.debug(f"active task removed for {end_id}")
                     logger.debug(f"{str(self._active_recv_fifo_tasks)}")
+                """
 
     def peek(self, end_id):
         """Peek rxq of end_id and return data if queue is not empty."""
