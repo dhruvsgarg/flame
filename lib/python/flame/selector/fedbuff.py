@@ -59,6 +59,7 @@ class FedBuffSelector(AbstractSelector):
         some message already to that end. For such an end, we exclude it from
         send and include it for recv in return.
         """
+        # TODO (DG): The recv state should also only select from ends IF an update doesnt already exist in the cache
         logger.debug("calling fedbuff select")
         logger.debug(f"len(ends): {len(ends)}, c: {self.c}")
 
@@ -89,7 +90,7 @@ class FedBuffSelector(AbstractSelector):
         logger.debug(
             f"requester: {self.requester}, selected ends: {self.selected_ends}"
         )
-        logger.debug(f"results: {results}")
+        logger.info(f"results: {results}")
 
         return results
 
@@ -122,7 +123,12 @@ class FedBuffSelector(AbstractSelector):
         selected_ends = self.selected_ends[self.requester]
 
         extra = max(0, concurrency - len(selected_ends))
-        logger.debug(f"c: {concurrency}, ends: {ends.keys()}")
+        logger.info(f"c: {concurrency}, ends: {ends.keys()}")
+
+        # TODO (DG): Send back updates to all nodes that participated
+        # extra = max(0, concurrency - len(selected_ends))
+        # logger.debug(f"c: {concurrency}, ends: {ends.keys()}")
+
         candidates = []
         idx = 0
         # reservoir sampling
@@ -140,13 +146,13 @@ class FedBuffSelector(AbstractSelector):
             if i < extra:
                 candidates[i] = end_id
 
-        logger.debug(f"candidates: {candidates}")
-
         # add candidates to selected ends
         selected_ends = selected_ends.union(candidates)
         self.selected_ends[self.requester] = selected_ends
 
         self.all_selected = self.all_selected.union(candidates)
+
+        logger.debug(f"candidates: {candidates}, all_selected: {self.all_selected}")
 
         return {end_id: None for end_id in candidates}
 
