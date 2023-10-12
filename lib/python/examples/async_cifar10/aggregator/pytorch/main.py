@@ -44,13 +44,13 @@ wandb.init(
         "architecture": "CNN",
         "dataset": "CIFAR-10",
         "fl-type": "async, fedbuff",
-        "rounds": 400,
-        "config": 15,
-        "alpha": 0.1,
+        "rounds": 300,
+        "config": 10,
+        "alpha": 100,
         "failures": "no failure",
         "client-concurrency K": 10,
         "client agg goal": 4,
-        "comments": "NA",
+        "comments": "Agg goal of 4 but send update to all",
     },
 )
 

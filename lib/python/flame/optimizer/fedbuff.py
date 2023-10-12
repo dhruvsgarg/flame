@@ -123,6 +123,8 @@ class FedBuff(AbstractOptimizer):
     def _scale_add_agg_weights_pytorch(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
     ) -> ModelWeights:
+        logger.info(f"base_weights.keys(): {base_weights.keys()}")
+
         for k in base_weights.keys():
             base_weights[k] += agg_goal_weights[k] / agg_goal
         return base_weights
