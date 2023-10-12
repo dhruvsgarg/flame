@@ -90,7 +90,8 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
 
             # DG-FIX: check trainer version, discard if stale
-            if (tres.version == (self._round - 1)) or ((tres.version == self._round)):
+            # if (tres.version == (self._round - 1)) or ((tres.version == self._round)):
+            if tres.version == self._round:
                 logger.debug("proceeding to agg weights")
                 self._agg_goal_weights = self.optimizer.do(
                     self._agg_goal_weights, self.cache, total=count, version=self._round
