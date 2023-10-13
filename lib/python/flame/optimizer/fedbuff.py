@@ -94,7 +94,10 @@ class FedBuff(AbstractOptimizer):
             logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
             print(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
-            rate = 1 / math.sqrt(1 + version - tres.version)
+            # TODO (DG): parameterize the currently hardcoded alpha ideally from (0,1)
+            # Decrease alpha to mitigate the effect of staleness
+            alpha = 0.5
+            rate = alpha * (1 / (1 + version - tres.version))
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
