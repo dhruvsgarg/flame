@@ -50,7 +50,7 @@ wandb.init(
         "failures": "no failure",
         "client-concurrency K": 10,
         "client agg goal": 4,
-        "comments": "Agg goal of 4, equal round num at trainer and top-agg, new rate function",
+        "comments": "Agg goal of 4, equal round num at trainer and top-agg, new rate function w/ 0.3, uses 1-alpha for aggregation",
     },
 )
 
