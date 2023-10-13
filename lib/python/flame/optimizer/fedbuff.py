@@ -96,7 +96,7 @@ class FedBuff(AbstractOptimizer):
             # rate determined based on the staleness of local model
             # TODO (DG): parameterize the currently hardcoded alpha ideally from (0,1)
             # Decrease alpha to mitigate the effect of staleness
-            alpha = 0.5
+            alpha = 0.3
             rate = alpha * (1 / (1 + version - tres.version))
             self.aggregate_fn(tres, rate)
 
@@ -160,7 +160,7 @@ class FedBuff(AbstractOptimizer):
             if self.is_agg_weights_none:
                 self.agg_goal_weights[k] = tmp
             else:
-                self.agg_goal_weights[k] += tmp
+                self.agg_goal_weights[k] = ((1 - rate) * self.agg_goal_weights[k]) + tmp
 
     def _aggregate_tensorflow(self, tres, rate):
         logger.debug("calling _aggregate_tensorflow")
