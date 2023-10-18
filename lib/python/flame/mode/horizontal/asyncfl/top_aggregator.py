@@ -89,12 +89,20 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
 
+            staleness_alpha = 0.3
+            staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
+
             # DG-FIX: check trainer version, discard if stale
             # if (tres.version == (self._round - 1)) or ((tres.version == self._round)):
+
             if tres.version == self._round:
                 logger.debug("proceeding to agg weights")
                 self._agg_goal_weights = self.optimizer.do(
-                    self._agg_goal_weights, self.cache, total=count, version=self._round
+                    self._agg_goal_weights,
+                    self.cache,
+                    total=count,
+                    version=self._round,
+                    staleness_factor=staleness_factor,
                 )
                 # increment agg goal count
                 self._agg_goal_cnt += 1
@@ -119,7 +127,7 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
         self.weights = self.optimizer.scale_add_agg_weights(
-            self.weights, self._agg_goal_weights, self._agg_goal
+            self.weights, self._agg_goal_weights, self._agg_goal, staleness_factor
         )
 
         # update model with global weights
