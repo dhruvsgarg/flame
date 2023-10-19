@@ -33,6 +33,8 @@ from torch import Tensor
 import torch.optim as optim
 import torch.utils.data as data_utils
 from torchvision.datasets import CIFAR10
+import time
+import calendar
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,46 @@ class PyTorchCifar10Trainer(Trainer):
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
         self.criterion = None
+
+        # Setting the indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
+        # Loading the failure durations for trainers
+        self.trainer_start_ts = time.time()
+        self.failure_durations_s = self.config.hyperparameters.failure_durations_s
+        self.timestamp_next_sleep_s = calendar.timegm(
+            time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
+        )
+        if len(self.failure_durations_s) > 0:
+            self.timestamp_next_sleep_s = (
+                self.trainer_start_ts + self.failure_durations_s[0][0]
+            )
+
+    def check_and_sleep(self):
+        curr_time = time.time()
+        if (curr_time >= self.timestamp_next_sleep_s) and (
+            len(self.timestamp_next_sleep_s) > 0
+        ):
+            # pop leftmost element
+            sleep_config_tuple = self.failure_durations_s.pop(0)
+
+            # get the duration of sleep and set the params for next sleep
+            sleep_duration_s = sleep_config_tuple[1]
+            print("Sleeping for time: ", sleep_duration_s, " at timestamp: ", curr_time)
+            time.sleep(sleep_duration_s)
+            print("Woke up at timestamp: ", curr_time)
+
+            # check if failure_list is now empty, if yes, reset ts_next_sleep_s
+            # if not empty, set it to the next value
+            if len(self.failure_durations_s) > 0:
+                self.timestamp_next_sleep_s = curr_time + self.failure_durations_s[0][0]
+            else:
+                self.timestamp_next_sleep_s = calendar.timegm(
+                    time.strptime(
+                        "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
+                    )
+                )
+
+        return
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -119,6 +160,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
     def train(self) -> None:
+        self.check_and_sleep()
         """Train a model."""
         print("~~ inside train, calling train_epoch")
         self.criterion = torch.nn.CrossEntropyLoss()
@@ -133,6 +175,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.dataset_size = len(self.train_loader.dataset)
 
     def _train_epoch(self, epoch):
+        self.check_and_sleep()
         print("==== started _train_epoch train()")
         self.model.train()
 
