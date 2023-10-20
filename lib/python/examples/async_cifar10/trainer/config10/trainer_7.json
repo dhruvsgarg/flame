@@ -4995,7 +4995,10 @@
             31218,
             31474,
             29491
-        ]
+        ],
+        "failure_durations_s": "[(10,2),(30,5)]",
+        " //": "aggGoal is irrelevant since it's a trainer",
+        "aggGoal": 2
     },
     "baseModel": {
         "name": "",
