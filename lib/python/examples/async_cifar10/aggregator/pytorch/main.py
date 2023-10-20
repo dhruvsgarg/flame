@@ -44,13 +44,13 @@ wandb.init(
         "architecture": "CNN",
         "dataset": "CIFAR-10",
         "fl-type": "async, fedbuff",
-        "rounds": 300,
-        "config": 10,
-        "alpha": 100,
+        "rounds": 400,
+        "config": 15,
+        "alpha": 0.1,
         "failures": "no failure",
         "client-concurrency K": 10,
         "client agg goal": 4,
-        "comments": "Agg goal of 4, equal round num at trainer and top-agg, updated agg using staleness_factor",
+        "comments": "Agg goal 4, updated fedbuff, no failures",
     },
 )
 

@@ -3582,7 +3582,8 @@
             20205,
             7805,
             16398
-        ]
+        ],
+        "failure_durations_s": "[]"
     },
     "baseModel": {
         "name": "",

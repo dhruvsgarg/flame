@@ -4950,7 +4950,8 @@
             1930,
             47418,
             6022
-        ]
+        ],
+        "failure_durations_s": "[]"
     },
     "baseModel": {
         "name": "",

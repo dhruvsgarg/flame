@@ -4661,7 +4661,8 @@
             41778,
             2422,
             24968
-        ]
+        ],
+        "failure_durations_s": "[]"
     },
     "baseModel": {
         "name": "",

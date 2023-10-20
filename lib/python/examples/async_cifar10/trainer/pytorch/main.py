@@ -83,6 +83,7 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.criterion = None
 
+        # TODO: Remove requirement for config to include trainer_indices_list and failure_durations_s
         # Setting the indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers

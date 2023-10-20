@@ -6127,7 +6127,8 @@
             6660,
             1153,
             36867
-        ]
+        ],
+        "failure_durations_s": "[]"
     },
     "baseModel": {
         "name": "",
