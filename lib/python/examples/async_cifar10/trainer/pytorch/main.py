@@ -101,7 +101,7 @@ class PyTorchCifar10Trainer(Trainer):
     def check_and_sleep(self):
         curr_time = time.time()
         if (curr_time >= self.timestamp_next_sleep_s) and (
-            len(self.timestamp_next_sleep_s) > 0
+            len(self.failure_durations_s) > 0
         ):
             # pop leftmost element
             sleep_config_tuple = self.failure_durations_s.pop(0)
