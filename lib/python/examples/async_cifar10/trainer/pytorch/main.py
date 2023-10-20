@@ -35,6 +35,7 @@ import torch.utils.data as data_utils
 from torchvision.datasets import CIFAR10
 import time
 import calendar
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,9 @@ class PyTorchCifar10Trainer(Trainer):
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers
         self.trainer_start_ts = time.time()
-        self.failure_durations_s = self.config.hyperparameters.failure_durations_s
+        self.failure_durations_s = ast.literal_eval(
+            self.config.hyperparameters.failure_durations_s
+        )
         self.timestamp_next_sleep_s = calendar.timegm(
             time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
         )
