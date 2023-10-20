@@ -110,7 +110,7 @@ class PyTorchCifar10Trainer(Trainer):
             sleep_duration_s = sleep_config_tuple[1]
             print("Sleeping for time: ", sleep_duration_s, " at timestamp: ", curr_time)
             time.sleep(sleep_duration_s)
-            print("Woke up at timestamp: ", curr_time)
+            print("Woke up at timestamp: ", time.time())
 
             # check if failure_list is now empty, if yes, reset ts_next_sleep_s
             # if not empty, set it to the next value
