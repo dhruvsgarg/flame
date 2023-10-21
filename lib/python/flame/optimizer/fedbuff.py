@@ -95,7 +95,8 @@ class FedBuff(AbstractOptimizer):
             logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
             print(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
-            self.aggregate_fn(tres, staleness_factor)
+            rate = 1 / math.sqrt(1 + version - tres.version)
+            self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
 
@@ -133,8 +134,8 @@ class FedBuff(AbstractOptimizer):
         logger.info(f"base_weights.keys(): {base_weights.keys()}")
 
         for k in base_weights.keys():
-            base_weights[k] = ((1 - staleness_factor) * base_weights[k]) + (
-                staleness_factor * agg_goal_weights[k]
+            base_weights[k] = base_weights[k] - (
+                0.01 * (agg_goal_weights[k] / agg_goal)
             )
         return base_weights
 
