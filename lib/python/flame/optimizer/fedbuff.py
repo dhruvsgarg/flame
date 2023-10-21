@@ -133,8 +133,8 @@ class FedBuff(AbstractOptimizer):
         logger.info(f"base_weights.keys(): {base_weights.keys()}")
 
         for k in base_weights.keys():
-            base_weights[k] = base_weights[k] + (
-                (1 - staleness_factor) * agg_goal_weights[k]
+            base_weights[k] = ((1 - staleness_factor) * base_weights[k]) + (
+                staleness_factor * agg_goal_weights[k]
             )
         return base_weights
 
