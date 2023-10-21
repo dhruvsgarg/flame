@@ -89,26 +89,37 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
 
-            staleness_alpha = 0.3
-            staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
+            # staleness_alpha = 0.3
+            # staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
 
             # DG-FIX: check trainer version, discard if stale
             # if (tres.version == (self._round - 1)) or ((tres.version == self._round)):
 
-            if tres.version == self._round:
-                logger.debug("proceeding to agg weights")
-                self._agg_goal_weights = self.optimizer.do(
-                    self._agg_goal_weights,
-                    self.cache,
-                    total=count,
-                    version=self._round,
-                    staleness_factor=staleness_factor,
-                )
-                # increment agg goal count
-                self._agg_goal_cnt += 1
-            else:
-                logger.debug("stale update from worker, discarding")
-                return
+            # if tres.version == self._round:
+            #     logger.debug("proceeding to agg weights")
+            #     self._agg_goal_weights = self.optimizer.do(
+            #         self._agg_goal_weights,
+            #         self.cache,
+            #         total=count,
+            #         version=self._round,
+            #         staleness_factor=staleness_factor,
+            #     )
+            #     # increment agg goal count
+            #     self._agg_goal_cnt += 1
+            # else:
+            #     logger.debug("stale update from worker, discarding")
+            #     return
+
+            logger.debug("proceeding to agg weights")
+            self._agg_goal_weights = self.optimizer.do(
+                self._agg_goal_weights,
+                self.cache,
+                total=count,
+                version=self._round,
+                staleness_factor=0.0,
+            )
+            # increment agg goal count
+            self._agg_goal_cnt += 1
 
         if self._agg_goal_cnt < self._agg_goal:
             # didn't reach the aggregation goal; return
@@ -127,14 +138,16 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
         self.weights = self.optimizer.scale_add_agg_weights(
-            self.weights, self._agg_goal_weights, self._agg_goal, staleness_factor
+            self.weights, self._agg_goal_weights, self._agg_goal, 0.0
         )
 
         # update model with global weights
         self._update_model()
 
         logger.debug(f"aggregation finished for round {self._round}")
-        logger.info(f"====== aggregation finished for round {self._round}")
+        logger.info(
+            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._agg_goal_weights: {self._agg_goal_weights}"
+        )
 
     def _distribute_weights(self, tag: str) -> None:
         """Distributed a global model in asynchronous FL fashion.
