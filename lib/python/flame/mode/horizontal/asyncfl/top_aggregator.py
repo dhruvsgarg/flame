@@ -18,6 +18,7 @@
 import logging
 import time
 from copy import deepcopy
+import math
 
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
@@ -44,12 +45,15 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
     def _reset_agg_goal_variables(self):
-        logger.debug("reset agg goal variables")
+        logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
 
         # reset agg goal weights
         self._agg_goal_weights = None
+        logger.debug(
+            f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights:{self._agg_goal_weights}"
+        )
 
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
@@ -137,8 +141,12 @@ class TopAggregator(SyncTopAgg):
             logger.debug("reached agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
+        # Computing rate
+        rate = 1 / math.sqrt(1 + self._round - tres.version)
+        logger.debug(f" rate at top_agg: {rate}")
+
         self.weights = self.optimizer.scale_add_agg_weights(
-            self.weights, self._agg_goal_weights, self._agg_goal, 0.0
+            self.weights, self._agg_goal_weights, self._agg_goal, rate
         )
 
         # update model with global weights
