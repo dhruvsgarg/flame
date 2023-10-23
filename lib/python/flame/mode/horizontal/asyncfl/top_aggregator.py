@@ -44,6 +44,10 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
+        self._updates_recevied = {}
+        self._trainer_participation_in_round = {}
+        self._per_round_update_list = []
+
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
@@ -74,6 +78,14 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"received data from {end}")
         logger.info(f"*** received data from {end}")
+
+        # capture telemetry on trainer participation in rounds
+        self._per_round_update_list.append(end)
+
+        if end not in self._updates_recevied.keys():
+            self._updates_recevied[end] = 1
+        else:
+            self._updates_recevied[end] += 1
 
         if MessageType.WEIGHTS in msg:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -141,6 +153,14 @@ class TopAggregator(SyncTopAgg):
             logger.debug("reached agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
+            # update per-trainer participation in round agg
+            for trainer_update in self._per_round_update_list:
+                if trainer_update not in self._trainer_participation_in_round.keys():
+                    self._trainer_participation_in_round[trainer_update] = 1
+                else:
+                    self._trainer_participation_in_round[trainer_update] += 1
+            self._per_round_update_list = []
+
         # Computing rate
         rate = 1 / math.sqrt(1 + self._round - tres.version)
         logger.debug(f" rate at top_agg: {rate}")
@@ -154,7 +174,7 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"aggregation finished for round {self._round}")
         logger.info(
-            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._agg_goal_weights: {self._agg_goal_weights}"
+            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round: {self._trainer_participation_in_round}"
         )
 
     def _distribute_weights(self, tag: str) -> None:
