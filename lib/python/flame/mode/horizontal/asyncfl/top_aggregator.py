@@ -109,15 +109,26 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
             update_staleness_val = self._round - tres.version
+            logger.debug(f"update_staleness_val: {update_staleness_val}")
             self._per_round_staleness_list.append(update_staleness_val)
 
             # capture per trainer staleness
             if end in self._per_trainer_staleness_track.keys():
-                self._per_trainer_staleness_track[
-                    end
-                ] = self._per_trainer_staleness_track[end].append(update_staleness_val)
+                logger.debug(f"found {end} in dict")
+                self._per_trainer_staleness_track[end].append(update_staleness_val)
+                logger.debug(
+                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
             else:
-                self._per_trainer_staleness_track[end] = [update_staleness_val]
+                logger.debug(f"NEW Entry {end} in dict")
+                self._per_trainer_staleness_track[end] = []
+                logger.debug(
+                    f"created new list entry in dict _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
+                self._per_trainer_staleness_track[end].append(update_staleness_val)
+                logger.debug(
+                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
 
             # staleness_alpha = 0.3
             # staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
