@@ -50,7 +50,7 @@ wandb.init(
         "failures": "no failure",
         "client-concurrency K": 10,
         "client agg goal": 4,
-        "comments": "[Fixed fedbuff] Agg goal 4, fixed fedbuff scaling, no failures",
+        "comments": "No failures, checking trainer round skew",
     },
 )
 
