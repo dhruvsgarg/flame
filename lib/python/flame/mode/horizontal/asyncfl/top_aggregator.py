@@ -19,6 +19,7 @@ import logging
 import time
 from copy import deepcopy
 import math
+import numpy as np
 
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
@@ -47,6 +48,9 @@ class TopAggregator(SyncTopAgg):
         self._updates_recevied = {}
         self._trainer_participation_in_round = {}
         self._per_round_update_list = []
+        self._per_round_staleness_list = []
+        self._aggregator_staleness_track_rounds = []
+        self._per_trainer_staleness_track = {}
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -104,6 +108,16 @@ class TopAggregator(SyncTopAgg):
             self.cache[end] = tres
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
+            update_staleness_val = self._round - tres.version
+            self._per_round_staleness_list.append(update_staleness_val)
+
+            # capture per trainer staleness
+            if end in self._per_trainer_staleness_track.keys():
+                self._per_trainer_staleness_track[
+                    end
+                ] = self._per_trainer_staleness_track[end].append(update_staleness_val)
+            else:
+                self._per_trainer_staleness_track[end] = [update_staleness_val]
 
             # staleness_alpha = 0.3
             # staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
@@ -159,7 +173,14 @@ class TopAggregator(SyncTopAgg):
                     self._trainer_participation_in_round[trainer_update] = 1
                 else:
                     self._trainer_participation_in_round[trainer_update] += 1
+
+            # update staleness list for aggregator
+            self._aggregator_staleness_track_rounds.append(
+                self._per_round_staleness_list
+            )
+
             self._per_round_update_list = []
+            self._per_round_staleness_list = []
 
         # Computing rate
         rate = 1 / math.sqrt(1 + self._round - tres.version)
@@ -176,6 +197,19 @@ class TopAggregator(SyncTopAgg):
         logger.info(
             f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round: {self._trainer_participation_in_round}"
         )
+
+        # print out data on staleness
+        # for aggregator, per round
+        # unroll the list of lists into a numpy array, get the avg
+        agg_staleness_arr = np.hstack(self._aggregator_staleness_track_rounds)
+        logger.info(f"==== aggregator avg staleness: {np.mean(agg_staleness_arr)}")
+
+        # per trainer analytics
+        for k, v in self._per_trainer_staleness_track.items():
+            trainer_staleness_arr = np.array(v)
+            logger.info(
+                f"===== trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, Max {np.max(trainer_staleness_arr)}, Avg {np.mean(trainer_staleness_arr)}, P50 {np.median(trainer_staleness_arr)}, P90 {np.percentile(trainer_staleness_arr, 90)}, P99 {np.percentile(trainer_staleness_arr, 99)}"
+            )
 
     def _distribute_weights(self, tag: str) -> None:
         """Distributed a global model in asynchronous FL fashion.
