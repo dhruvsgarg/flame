@@ -46,10 +46,12 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
         self._updates_recevied = {}
+        self._trainer_participation_in_round_count = {}
         self._trainer_participation_in_round = {}
         self._per_round_update_list = []
         self._per_round_staleness_list = []
         self._aggregator_staleness_track_rounds = []
+        self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
 
     def _reset_agg_goal_variables(self):
@@ -180,14 +182,30 @@ class TopAggregator(SyncTopAgg):
 
             # update per-trainer participation in round agg
             for trainer_update in self._per_round_update_list:
-                if trainer_update not in self._trainer_participation_in_round.keys():
-                    self._trainer_participation_in_round[trainer_update] = 1
+                if (
+                    trainer_update
+                    not in self._trainer_participation_in_round_count.keys()
+                ):
+                    self._trainer_participation_in_round_count[trainer_update] = 1
+                    self._trainer_participation_in_round[trainer_update] = [
+                        0
+                    ] * 500  # assuming max 500 rounds
+                    self._trainer_participation_in_round[trainer_update][
+                        self._round - 1
+                    ] = 1
                 else:
-                    self._trainer_participation_in_round[trainer_update] += 1
+                    self._trainer_participation_in_round_count[trainer_update] += 1
+                    self._trainer_participation_in_round[trainer_update][
+                        self._round - 1
+                    ] = 1
 
             # update staleness list for aggregator
             self._aggregator_staleness_track_rounds.append(
                 self._per_round_staleness_list
+            )
+
+            self._aggregator_round_avg_staleness.append(
+                np.mean(np.array(self._per_round_staleness_list))
             )
 
             self._per_round_update_list = []
@@ -206,8 +224,15 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"aggregation finished for round {self._round}")
         logger.info(
-            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round: {self._trainer_participation_in_round}"
+            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round_count: {self._trainer_participation_in_round_count}"
         )
+        if self._round % 100 == 0:
+            logger.debug(
+                f"top agg staleness list after round {self._round} is {self._aggregator_round_avg_staleness}"
+            )
+            logger.debug(
+                f"top agg trainer participation in rounds, after round {self._round} is {self._trainer_participation_in_round}"
+            )
 
         # print out data on staleness
         # for aggregator, per round
