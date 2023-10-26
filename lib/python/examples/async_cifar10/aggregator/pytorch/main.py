@@ -97,6 +97,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
+        self.loss_list = []
+
     def initialize(self):
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -164,6 +166,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         # add metrics to wandb log
         wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+        self.loss_list.append(test_loss)
+
+        # print to save to file
+        logger.debug(f"loss list at cifar agg: {self.loss_list}")
 
 
 if __name__ == "__main__":
