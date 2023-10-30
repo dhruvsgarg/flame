@@ -18,6 +18,8 @@
 import logging
 import time
 from copy import deepcopy
+import math
+import numpy as np
 
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
@@ -43,13 +45,25 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
+        self._updates_recevied = {}
+        self._trainer_participation_in_round_count = {}
+        self._trainer_participation_in_round = {}
+        self._per_round_update_list = []
+        self._per_round_staleness_list = []
+        self._aggregator_staleness_track_rounds = []
+        self._aggregator_round_avg_staleness = []
+        self._per_trainer_staleness_track = {}
+
     def _reset_agg_goal_variables(self):
-        logger.debug("reset agg goal variables")
+        logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
 
         # reset agg goal weights
         self._agg_goal_weights = None
+        logger.debug(
+            f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights:{self._agg_goal_weights}"
+        )
 
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
@@ -71,6 +85,14 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"received data from {end}")
         logger.info(f"*** received data from {end}")
 
+        # capture telemetry on trainer participation in rounds
+        self._per_round_update_list.append(end)
+
+        if end not in self._updates_recevied.keys():
+            self._updates_recevied[end] = 1
+        else:
+            self._updates_recevied[end] += 1
+
         if MessageType.WEIGHTS in msg:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
@@ -88,27 +110,59 @@ class TopAggregator(SyncTopAgg):
             self.cache[end] = tres
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             logger.debug(f"agg_version: {self._round}, trainer version: {tres.version}")
+            update_staleness_val = self._round - tres.version
+            logger.debug(f"update_staleness_val: {update_staleness_val}")
+            self._per_round_staleness_list.append(update_staleness_val)
 
-            staleness_alpha = 0.3
-            staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
+            # capture per trainer staleness
+            if end in self._per_trainer_staleness_track.keys():
+                logger.debug(f"found {end} in dict")
+                self._per_trainer_staleness_track[end].append(update_staleness_val)
+                logger.debug(
+                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
+            else:
+                logger.debug(f"NEW Entry {end} in dict")
+                self._per_trainer_staleness_track[end] = []
+                logger.debug(
+                    f"created new list entry in dict _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
+                self._per_trainer_staleness_track[end].append(update_staleness_val)
+                logger.debug(
+                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                )
+
+            # staleness_alpha = 0.3
+            # staleness_factor = staleness_alpha * (1 / (self._round - tres.version + 1))
 
             # DG-FIX: check trainer version, discard if stale
             # if (tres.version == (self._round - 1)) or ((tres.version == self._round)):
 
-            if tres.version == self._round:
-                logger.debug("proceeding to agg weights")
-                self._agg_goal_weights = self.optimizer.do(
-                    self._agg_goal_weights,
-                    self.cache,
-                    total=count,
-                    version=self._round,
-                    staleness_factor=staleness_factor,
-                )
-                # increment agg goal count
-                self._agg_goal_cnt += 1
-            else:
-                logger.debug("stale update from worker, discarding")
-                return
+            # if tres.version == self._round:
+            #     logger.debug("proceeding to agg weights")
+            #     self._agg_goal_weights = self.optimizer.do(
+            #         self._agg_goal_weights,
+            #         self.cache,
+            #         total=count,
+            #         version=self._round,
+            #         staleness_factor=staleness_factor,
+            #     )
+            #     # increment agg goal count
+            #     self._agg_goal_cnt += 1
+            # else:
+            #     logger.debug("stale update from worker, discarding")
+            #     return
+
+            logger.debug("proceeding to agg weights")
+            self._agg_goal_weights = self.optimizer.do(
+                self._agg_goal_weights,
+                self.cache,
+                total=count,
+                version=self._round,
+                staleness_factor=0.0,
+            )
+            # increment agg goal count
+            self._agg_goal_cnt += 1
 
         if self._agg_goal_cnt < self._agg_goal:
             # didn't reach the aggregation goal; return
@@ -126,15 +180,72 @@ class TopAggregator(SyncTopAgg):
             logger.debug("reached agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
+            # update per-trainer participation in round agg
+            for trainer_update in self._per_round_update_list:
+                if (
+                    trainer_update
+                    not in self._trainer_participation_in_round_count.keys()
+                ):
+                    self._trainer_participation_in_round_count[trainer_update] = 1
+                    self._trainer_participation_in_round[trainer_update] = [
+                        0
+                    ] * 500  # assuming max 500 rounds
+                    self._trainer_participation_in_round[trainer_update][
+                        self._round - 1
+                    ] = 1
+                else:
+                    self._trainer_participation_in_round_count[trainer_update] += 1
+                    self._trainer_participation_in_round[trainer_update][
+                        self._round - 1
+                    ] = 1
+
+            # update staleness list for aggregator
+            self._aggregator_staleness_track_rounds.append(
+                self._per_round_staleness_list
+            )
+
+            self._aggregator_round_avg_staleness.append(
+                np.mean(np.array(self._per_round_staleness_list))
+            )
+
+            self._per_round_update_list = []
+            self._per_round_staleness_list = []
+
+        # Computing rate
+        rate = 1 / math.sqrt(1 + self._round - tres.version)
+        logger.debug(f" rate at top_agg: {rate}")
+
         self.weights = self.optimizer.scale_add_agg_weights(
-            self.weights, self._agg_goal_weights, self._agg_goal, staleness_factor
+            self.weights, self._agg_goal_weights, self._agg_goal, rate
         )
 
         # update model with global weights
         self._update_model()
 
         logger.debug(f"aggregation finished for round {self._round}")
-        logger.info(f"====== aggregation finished for round {self._round}")
+        logger.info(
+            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round_count: {self._trainer_participation_in_round_count}"
+        )
+        if self._round % 100 == 0:
+            logger.debug(
+                f"top agg staleness list after round {self._round} is {self._aggregator_round_avg_staleness}"
+            )
+            logger.debug(
+                f"top agg trainer participation in rounds, after round {self._round} is {self._trainer_participation_in_round}"
+            )
+
+        # print out data on staleness
+        # for aggregator, per round
+        # unroll the list of lists into a numpy array, get the avg
+        agg_staleness_arr = np.hstack(self._aggregator_staleness_track_rounds)
+        logger.info(f"==== aggregator avg staleness: {np.mean(agg_staleness_arr)}")
+
+        # per trainer analytics
+        for k, v in self._per_trainer_staleness_track.items():
+            trainer_staleness_arr = np.array(v)
+            logger.info(
+                f"===== trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, Max {np.max(trainer_staleness_arr)}, Avg {np.mean(trainer_staleness_arr)}, P50 {np.median(trainer_staleness_arr)}, P90 {np.percentile(trainer_staleness_arr, 90)}, P99 {np.percentile(trainer_staleness_arr, 99)}"
+            )
 
     def _distribute_weights(self, tag: str) -> None:
         """Distributed a global model in asynchronous FL fashion.

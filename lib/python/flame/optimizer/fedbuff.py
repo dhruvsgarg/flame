@@ -95,7 +95,8 @@ class FedBuff(AbstractOptimizer):
             logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
             print(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
-            self.aggregate_fn(tres, staleness_factor)
+            rate = 1 / math.sqrt(1 + version - tres.version)
+            self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
 
@@ -104,7 +105,7 @@ class FedBuff(AbstractOptimizer):
         base_weights: ModelWeights,
         agg_goal_weights: ModelWeights,
         agg_goal: int,
-        staleness_factor: float,
+        rate: float,
     ) -> ModelWeights:
         """Scale aggregated weights and add it to the original weights,
         when aggregation goal is achieved.
@@ -119,23 +120,20 @@ class FedBuff(AbstractOptimizer):
         -------
         updated weights
         """
-        return self.scale_add_fn(
-            base_weights, agg_goal_weights, agg_goal, staleness_factor
-        )
+        return self.scale_add_fn(base_weights, agg_goal_weights, agg_goal, rate)
 
     def _scale_add_agg_weights_pytorch(
         self,
         base_weights: ModelWeights,
         agg_goal_weights: ModelWeights,
         agg_goal: int,
-        staleness_factor: float,
+        rate: float,
     ) -> ModelWeights:
         logger.info(f"base_weights.keys(): {base_weights.keys()}")
 
         for k in base_weights.keys():
-            base_weights[k] = ((1 - staleness_factor) * base_weights[k]) + (
-                staleness_factor * agg_goal_weights[k]
-            )
+            # agg_goal_weights are already adjusted with rate
+            base_weights[k] = (base_weights[k]) + ((agg_goal_weights[k] / agg_goal))
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(
