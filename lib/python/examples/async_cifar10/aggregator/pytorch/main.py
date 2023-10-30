@@ -50,7 +50,7 @@ wandb.init(
         "failures": "no failure",
         "client-concurrency K": 10,
         "client agg goal": 4,
-        "comments": "[Relaxing round gap criteria, 0.1] Agg goal 4, fixed fedbuff scaling, no failures",
+        "comments": "No failures, checking trainer round skew",
     },
 )
 
@@ -96,6 +96,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.test_loader = None
 
         self.batch_size = self.config.hyperparameters.batch_size or 16
+
+        self.loss_list = []
 
     def initialize(self):
         """Initialize role."""
@@ -164,6 +166,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         # add metrics to wandb log
         wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+        self.loss_list.append(test_loss)
+
+        # print to save to file
+        logger.debug(f"loss list at cifar agg: {self.loss_list}")
 
 
 if __name__ == "__main__":
