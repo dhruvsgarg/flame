@@ -3949,7 +3949,7 @@
             6726,
             39796
         ],
-        "failure_durations_s": "[(300, 300)]"
+        "failure_durations_s": "[(600, 600), (1800, 300), (2700, 300)]"
     },
     "baseModel": {
         "name": "",

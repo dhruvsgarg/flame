@@ -5209,7 +5209,7 @@
             41088,
             30913
         ],
-        "failure_durations_s": "[(300, 300), (1200, 600), (2100, 600)]",
+        "failure_durations_s": "[(300, 300), (2100, 300), (2700, 300), (4200, 300)]",
         " //": "aggGoal is irrelevant since it's a trainer",
         "aggGoal": 2
     },

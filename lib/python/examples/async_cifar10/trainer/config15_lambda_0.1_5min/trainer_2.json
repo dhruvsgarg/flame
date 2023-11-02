@@ -5979,7 +5979,7 @@
             35499,
             11188
         ],
-        "failure_durations_s": "[(3600, 300)]"
+        "failure_durations_s": "[(2400, 300), (3300, 300)]"
     },
     "baseModel": {
         "name": "",

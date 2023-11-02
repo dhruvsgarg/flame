@@ -2172,7 +2172,7 @@
             42544,
             36843
         ],
-        "failure_durations_s": "[(3600, 1200)]"
+        "failure_durations_s": "[(600, 600), (3000, 600)]"
     },
     "baseModel": {
         "name": "",
