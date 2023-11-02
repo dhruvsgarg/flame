@@ -44,14 +44,14 @@ wandb.init(
         "architecture": "CNN",
         "dataset": "CIFAR-10",
         "fl-type": "async, fedbuff",
-        "rounds": 1000,
+        "rounds": 750,
         "config": 10,
-        "alpha": 0.1,
-        "failures": "no failure",
+        "alpha": 100,
+        "failures": "Lambda 0.3, 10 min failures",
         "total clients N": 10,
         "client-concurrency C": 5,
         "client agg goal K": 3,
-        "comments": "No failures, verifying old run",
+        "comments": "Lambda 0.3, 10 min failures",
     },
 )
 
