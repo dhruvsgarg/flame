@@ -47,9 +47,9 @@
     "hyperparameters": {
         "batchSize": 4,
         "learningRate": 0.01,
-        "rounds": 400,
+        "rounds": 1000,
         "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 4
+        "aggGoal": 3
     },
     "baseModel": {
         "name": "",
@@ -67,7 +67,7 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 10
+            "c": 5
         }
     },
     "optimizer": {
