@@ -189,7 +189,7 @@ class TopAggregator(SyncTopAgg):
                     self._trainer_participation_in_round_count[trainer_update] = 1
                     self._trainer_participation_in_round[trainer_update] = [
                         0
-                    ] * 500  # assuming max 500 rounds
+                    ] * 1000  # assuming max 1000 rounds
                     self._trainer_participation_in_round[trainer_update][
                         self._round - 1
                     ] = 1
