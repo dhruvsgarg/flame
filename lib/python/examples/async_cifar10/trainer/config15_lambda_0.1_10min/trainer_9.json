@@ -7657,7 +7657,7 @@
             8016,
             46885
         ],
-        "failure_durations_s": "[(0, 1200)]"
+        "failure_durations_s": "[(10, 1200)]"
     },
     "baseModel": {
         "name": "",
