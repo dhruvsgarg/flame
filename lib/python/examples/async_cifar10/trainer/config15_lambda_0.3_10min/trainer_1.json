@@ -8970,7 +8970,7 @@
             24083,
             23272
         ],
-        "failure_durations_s": "[(600, 1200), (2400, 600), (3600, 600)]"
+        "failure_durations_s": "[(600, 600)]"
     },
     "baseModel": {
         "name": "",

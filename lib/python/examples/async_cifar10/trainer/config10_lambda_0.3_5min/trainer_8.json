@@ -5189,7 +5189,7 @@
             14862,
             18633
         ],
-        "failure_durations_s": "[(0, 300), (900, 300), (1500, 300), (4200, 300)]",
+        "failure_durations_s": "[(0, 300), (1500, 300), (3300, 300), (4500, 300)]",
         " //": "aggGoal is irrelevant since it's a trainer",
         "aggGoal": 2
     },

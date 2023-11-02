@@ -4853,7 +4853,7 @@
             26736,
             28008
         ],
-        "failure_durations_s": "[(2400, 600)]",
+        "failure_durations_s": "[(3600, 600)]",
         " //": "aggGoal is irrelevant since it's a trainer",
         "aggGoal": 2
     },
