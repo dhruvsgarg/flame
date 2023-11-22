@@ -52,3 +52,8 @@ class MessageType(Enum):
     RES_COORDINATED_ENDS = 17  # get ends coordinated by a coordinator
 
     HYBRID_METADATA = 18  # metadata for hybrid aggregation
+
+    BIAS = 19  # bias matrix used in FedGFT
+
+    CONTROL_WEIGHTS = 20  # control variate weights used in SCAFFOLD
+    CLIENT_WEIGHT = 21  # client-side control variate weight used in SCAFFOLD
