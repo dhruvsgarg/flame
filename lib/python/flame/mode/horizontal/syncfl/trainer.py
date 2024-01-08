@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
-
+TAG_SLEEP = "sleep"
+TAG_WAKE = "wake"
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -119,7 +120,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info(f"channel not found with tag {tag}")
+            logger.info(f"[_fetch_weights] channel not found with tag {tag}")
             # we don't want to keep calling this too fast
             # so let's sleep 1 second
             time.sleep(1)
@@ -199,6 +200,31 @@ class Trainer(Role, metaclass=ABCMeta):
         }
         channel.send(end, msg)
         logger.debug("sending weights done")
+
+    def sleep(self, tag: str) -> None:
+        """Remove trainer from ends."""
+        if tag == TAG_SLEEP:
+            self._sleep_trainer(tag)
+    
+    def _sleep_trainer(self, tag: str) -> None:
+        logger.debug("calling _sleep_trainer")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_sleep_trainer] channel not found with {tag}")
+            return
+
+        print("_sleep_trainer: waiting for someone to join channel: ", str(channel))
+        channel.await_join()
+
+        
+        
+    ### TODO: DS
+    
+    def wake(self, tag: str) -> None:
+        """Add trainer to ends."""
+        if tag == TAG_WAKE:
+            self._add_trainer(tag)
+    ### TODO: DS
 
     def save_metrics(self):
         """Save metrics in a model registry."""

@@ -33,27 +33,27 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
 # wandb setup
-import wandb
+# import wandb
 
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="ft-distr-ml",
-    # track hyperparameters and run metadata
-    config={
-        "learning_rate": 0.01,
-        "architecture": "CNN",
-        "dataset": "CIFAR-10",
-        "fl-type": "async, fedbuff",
-        "rounds": 750,
-        "config": 10,
-        "alpha": 100,
-        "failures": "Lambda 0.3, 10 min failures",
-        "total clients N": 10,
-        "client-concurrency C": 5,
-        "client agg goal K": 3,
-        "comments": "Lambda 0.3, 10 min failures",
-    },
-)
+# wandb.init(
+#     # set the wandb project where this run will be logged
+#     project="ft-distr-ml",
+#     # track hyperparameters and run metadata
+#     config={
+#         "learning_rate": 0.01,
+#         "architecture": "CNN",
+#         "dataset": "CIFAR-10",
+#         "fl-type": "async, fedbuff",
+#         "rounds": 750,
+#         "config": 10,
+#         "alpha": 100,
+#         "failures": "Lambda 0.3, 10 min failures",
+#         "total clients N": 10,
+#         "client-concurrency C": 5,
+#         "client agg goal K": 3,
+#         "comments": "Lambda 0.3, 10 min failures",
+#     },
+# )
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
 
         # add metrics to wandb log
-        wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+        # wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
         self.loss_list.append(test_loss)
 
         # print to save to file
