@@ -216,7 +216,14 @@ class Trainer(Role, metaclass=ABCMeta):
         print("_sleep_trainer: waiting for someone to join channel: ", str(channel))
         channel.await_join()
 
-        
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.SLEEP_AWAKE: self.id,
+            # channel.ends()
+        }
+        channel.send(end, msg)
+        logger.debug("sending sleep done")
         
     ### TODO: DS
     

@@ -57,3 +57,5 @@ class MessageType(Enum):
 
     CONTROL_WEIGHTS = 20  # control variate weights used in SCAFFOLD
     CLIENT_WEIGHT = 21  # client-side control variate weight used in SCAFFOLD
+
+    SLEEP_AWAKE = 22
