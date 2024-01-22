@@ -201,6 +201,10 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.send(end, msg)
         logger.debug("sending weights done")
 
+    def get_id(self) -> str:
+        """Return trainer id."""
+        return self.id
+    
     def sleep(self, tag: str) -> None:
         """Remove trainer from ends."""
         if tag == TAG_SLEEP:
@@ -218,6 +222,9 @@ class Trainer(Role, metaclass=ABCMeta):
 
         end = channel.one_end(VAL_CH_STATE_SEND)
 
+        # retrieve the trainer id
+        self.id = channel.get_id()
+
         msg = {
             MessageType.SLEEP_AWAKE: self.id,
             # channel.ends()
@@ -232,6 +239,25 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_WAKE:
             self._add_trainer(tag)
     ### TODO: DS
+
+    def _add_trainer(self, tag: str) -> None:
+        logger.debug("calling _add_trainer")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_add_trainer] channel not found with {tag}")
+            return
+
+        print("_add_trainer: waiting for someone to join channel: ", str(channel))
+        channel.await_join()
+
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.SLEEP_AWAKE: self.id,
+            # channel.ends()
+        }
+        channel.send(end, msg)
+        logger.debug("sending wake done")
 
     def save_metrics(self):
         """Save metrics in a model registry."""

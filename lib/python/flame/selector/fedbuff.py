@@ -20,6 +20,7 @@ import random
 
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
+    KEY_CH_SLEEP_SELECT_REQUESTER,
     KEY_CH_STATE,
     VAL_CH_STATE_RECV,
     VAL_CH_STATE_SEND,
@@ -72,6 +73,7 @@ class FedBuffSelector(AbstractSelector):
             raise KeyError("channel property doesn't have {KEY_CH_STATE}")
 
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
+        self.sleep_requester = channel_props[KEY_CH_SLEEP_SELECT_REQUESTER] # check this
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
 
@@ -156,6 +158,30 @@ class FedBuffSelector(AbstractSelector):
 
         return {end_id: None for end_id in candidates}
 
+    def _handle_recv_sleep_state(
+        self, ends: dict[str, End], concurrency: int
+    ) -> SelectorReturnType:
+        selected_ends = self.selected_ends[self.sleep_requester]
+
+        if len(selected_ends) == 0:
+            logger.debug(f"let's select {concurrency} ends")
+
+            candidates = dict()
+            for end_id, end in ends.items():
+                if end_id not in self.all_selected:
+                    candidates[end_id] = end
+
+            cc = min(len(candidates), concurrency)
+            selected_ends = set(random.sample(list(candidates), cc))
+
+            self.selected_ends[self.requester] = selected_ends
+
+            self.all_selected = self.all_selected.union(selected_ends)
+
+        logger.debug(f"requester: {self.requester}, selected: {selected_ends}")
+
+        return {key: None for key in selected_ends}
+    
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:

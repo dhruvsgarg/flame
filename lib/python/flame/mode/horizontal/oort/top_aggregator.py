@@ -31,7 +31,7 @@ from flame.selector.oort import (
     PROP_STAT_UTILITY,
     PROP_LAST_SELECTED_ROUND,
 )
-from ..top_aggregator import TopAggregator as BaseTopAggregator
+from flame.mode.horizontal.top_aggregator import TopAggregator as BaseTopAggregator
 
 logger = logging.getLogger(__name__)
 

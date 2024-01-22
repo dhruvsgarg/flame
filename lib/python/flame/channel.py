@@ -37,7 +37,7 @@ VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
-
+KEY_CH_SLEEP_SELECT_REQUESTER = "sleep_requester"
 
 class Channel(object):
     """Channel class."""
@@ -85,6 +85,11 @@ class Channel(object):
 
         _, _ = run_async(_setup(), self._backend.loop())
 
+    def delete_end(self, end_id):
+        """Delete an end from the channel."""
+        if self.has(end_id):
+            del self._ends[end_id]
+    
     def job_id(self) -> str:
         """Return job id."""
         return self._job_id
