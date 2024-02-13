@@ -78,12 +78,14 @@ class PyTorchCifar10Trainer(Trainer):
         self.device = None
         self.train_loader = None
 
+        self.learning_rate = self.config.hyperparameters.learning_rate
         self.epochs = self.config.hyperparameters.epochs
         self.batch_size = self.config.hyperparameters.batch_size or 16
+        self.trainer_id = self.config.task_id
 
         self.criterion = None
 
-        # TODO: Remove requirement for config to include trainer_indices_list and failure_durations_s
+        # TODO: Remove the hard requirement for config to include trainer_indices_list and failure_durations_s
         # Setting the indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers
@@ -98,9 +100,13 @@ class PyTorchCifar10Trainer(Trainer):
             self.timestamp_next_sleep_s = (
                 self.trainer_start_ts + self.failure_durations_s[0][0]
             )
+        
+        self.sleep_check_complete = False
 
     def check_and_sleep(self):
+        self.sleep_check_complete = False
         curr_time = time.time()
+        
         if (curr_time >= self.timestamp_next_sleep_s) and (
             len(self.failure_durations_s) > 0
         ):
@@ -108,29 +114,49 @@ class PyTorchCifar10Trainer(Trainer):
             sleep_config_tuple = self.failure_durations_s.pop(0)
 
             # get the duration of sleep and set the params for next sleep
+            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
             sleep_duration_s = sleep_config_tuple[1]
-            print("Sleeping for time: ", sleep_duration_s, " at timestamp: ", curr_time)
-            time.sleep(sleep_duration_s)
-            print("Woke up at timestamp: ", time.time())
+
+            # remaining sleep = trainer_start_ts + actual_sleep_start + actual_sleep_duration - current_ts 
+            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            
+            if(remaining_sleep_duration_s <= 0):
+                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
+                # Need to pop out failure intervals that occur in the past
+                time_elapsed_from_start = curr_time - self.trainer_start_ts
+                while time_elapsed_from_start > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1]):
+                    self.failure_durations_s.pop(0)
+                    if len(self.failure_durations_s) == 0:
+                        break
+            else: 
+                logger.info(f"Task_id: {self.trainer_id} going to sleep up at timestamp: {time.time()}")
+                time.sleep(remaining_sleep_duration_s)
+                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
 
             # check if failure_list is now empty, if yes, reset ts_next_sleep_s
             # if not empty, set it to the next value
             if len(self.failure_durations_s) > 0:
-                self.timestamp_next_sleep_s = curr_time + self.failure_durations_s[0][0]
+                self.timestamp_next_sleep_s = self.trainer_start_ts + self.failure_durations_s[0][0]
+                if(self.timestamp_next_sleep_s < time.time()):
+                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time")
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
                         "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
                     )
                 )
+                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        return
+        self.sleep_check_complete = True
+        logger.info(f"Task_id: {self.trainer_id} check_and_sleep completed at timestamp: {time.time()}")
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
+        logger.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}")
 
     def load_data(self) -> None:
         """Load data."""
@@ -152,7 +178,6 @@ class PyTorchCifar10Trainer(Trainer):
         # create indices into a list and convert to tensor
         indices = torch.tensor(self.trainer_indices_list)
 
-        print("indices: ", indices)
         dataset = data_utils.Subset(dataset, indices)
         train_kwargs = {
             "batch_size": self.batch_size,
@@ -163,13 +188,13 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
+        logger.info(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
+
     def train(self) -> None:
-        self.check_and_sleep()
         """Train a model."""
-        print("~~ inside train, calling train_epoch")
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(
-            self.model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
+            self.model.parameters(), lr=self.learning_rate
         )
 
         for epoch in range(1, self.epochs + 1):
@@ -179,8 +204,6 @@ class PyTorchCifar10Trainer(Trainer):
         self.dataset_size = len(self.train_loader.dataset)
 
     def _train_epoch(self, epoch):
-        self.check_and_sleep()
-        print("==== started _train_epoch train()")
         self.model.train()
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
@@ -198,7 +221,6 @@ class PyTorchCifar10Trainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
-        print("==== completed _train_epoch train()")
 
     def evaluate(self) -> None:
         """Evaluate a model."""

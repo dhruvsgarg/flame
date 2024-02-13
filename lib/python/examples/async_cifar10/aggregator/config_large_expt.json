@@ -45,8 +45,8 @@
         "numpy >= 1.2.0"
     ],
     "hyperparameters": {
-        "batchSize": 4,
-        "learningRate": 0.01,
+        "batchSize": 32,
+        "learningRate": 40.9,
         "rounds": 750,
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 10
@@ -67,14 +67,14 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 40
+            "c": 50
         }
     },
     "optimizer": {
         "sort": "fedbuff",
         "kwargs": {}
     },
-    "maxRunTime": 300,
+    "maxRunTime": 600,
     "realm": "default",
     "role": "aggregator"
 }

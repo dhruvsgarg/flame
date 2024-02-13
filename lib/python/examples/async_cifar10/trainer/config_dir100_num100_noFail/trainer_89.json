@@ -46,7 +46,7 @@
     ],
     "hyperparameters": {
         "batchSize": 32,
-        "learningRate": 0.01,
+        "learningRate": 0.000195,
         "rounds": 5,
         "trainer_indices_list": [
             26826,
