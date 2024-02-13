@@ -55,13 +55,13 @@ class TopAggregator(SyncTopAgg):
         self._per_trainer_staleness_track = {}
 
     def _reset_agg_goal_variables(self):
-        logger.debug("##### reset agg goal variables")
+        logger.info("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
 
         # reset agg goal weights
         self._agg_goal_weights = None
-        logger.debug(
+        logger.info(
             f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights:{self._agg_goal_weights}"
         )
 
@@ -189,7 +189,7 @@ class TopAggregator(SyncTopAgg):
                     self._trainer_participation_in_round_count[trainer_update] = 1
                     self._trainer_participation_in_round[trainer_update] = [
                         0
-                    ] * 1000  # assuming max 1000 rounds
+                    ] * 20000  # assuming max 20K rounds
                     self._trainer_participation_in_round[trainer_update][
                         self._round - 1
                     ] = 1
@@ -266,18 +266,30 @@ class TopAggregator(SyncTopAgg):
 
         # send out global model parameters to trainers
         for end in channel.ends(VAL_CH_STATE_SEND):
-            logger.debug(f"sending weights to {end}")
-            # we use _round to indicate a model version
-            channel.send(
-                end,
-                {
-                    MessageType.WEIGHTS: weights_to_device(
-                        self.weights, DeviceType.CPU
-                    ),
-                    MessageType.ROUND: self._round,
-                    MessageType.MODEL_VERSION: self._round,
-                },
-            )
+            if end not in self._trainers_used_in_curr_round:
+                logger.info(f"sending weights to {end}")
+                # we use _round to indicate a model version
+                channel.send(
+                    end,
+                    {
+                        MessageType.WEIGHTS: weights_to_device(
+                            self.weights, DeviceType.CPU
+                        ),
+                        MessageType.ROUND: self._round,
+                        MessageType.MODEL_VERSION: self._round,
+                    },
+                )
+                # add trainer to list of trainers used in the current round
+                self._trainers_used_in_curr_round.append(end)
+            else:
+                logger.info(f"Tried to send weights again to trainer {end} in round {self._round}, not allowed")
+                # remove the end from self.all_selected in fedbuff's select since it would have been added in it in 
+                # _select_send_state and this will prevent the aggregator for sending the weights to the trainer once
+                # the round increments, and the trainer is again eligible.
+                channel._selector.all_selected.remove(end)
+                channel._selector.selected_ends[channel._selector.requester].remove(end)
+                logger.info(f"Removed {end} from channel._selector.all_selected {channel._selector.all_selected} and channel._selector.selected_ends[channel._selector.requester]: {channel._selector.selected_ends[channel._selector.requester]}")
+                
 
     def compose(self) -> None:
         """Compose role with tasklets."""

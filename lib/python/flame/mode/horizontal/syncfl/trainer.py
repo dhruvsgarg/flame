@@ -107,35 +107,35 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.fetch_success = False
 
+        self.trainer_id = self.config.task_id
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        print("### FETCH WEIGHTS start for tag: ", tag)
-        logger.debug("calling _fetch_weights")
+        logger.info(f"### FETCH WEIGHTS start for tag: {tag} and trainer_id {self.trainer_id}")
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info(f"channel not found with tag {tag}")
+            logger.info(f"fetch weights, channel not found with tag {tag} for trainer_id {self.trainer_id}")
             # we don't want to keep calling this too fast
             # so let's sleep 1 second
             time.sleep(1)
             return
 
         # this call waits for at least one peer joins this channel
-        print("_fetch_weights: waiting for someone to join channel: ", str(channel))
+        logger.info(f"_fetch_weights: waiting for someone to join channel: {channel} for trainer_id {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
         msg, _ = channel.recv(end)
-        print("extracting weights from message")
 
         if not msg:
-            logger.debug("no message received")
+            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition
                 # (i.e., we set fetch_success to True)
@@ -144,6 +144,9 @@ class Trainer(Role, metaclass=ABCMeta):
             # so let's sleep 1 second
             time.sleep(1)
             return
+
+        logger.info(f"New message received for trainer_id {self.trainer_id}")
+
 
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -161,9 +164,8 @@ class Trainer(Role, metaclass=ABCMeta):
             )
 
         self.fetch_success = True
-        logger.debug(f"work_done: {self._work_done}, round: {self._round}")
 
-        print("### FETCH WEIGHTS complete ###")
+        logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, round: {self._round} and work_done: {self._work_done} ###")
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
@@ -171,15 +173,14 @@ class Trainer(Role, metaclass=ABCMeta):
             self._send_weights(tag)
 
     def _send_weights(self, tag: str) -> None:
-        print("### SEND WEIGHTS for tag: ", tag)
-        logger.debug("calling _send_weights")
+        logger.info(f"### SEND WEIGHTS for tag: {tag} and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_weights] channel not found with {tag}")
             return
 
         # this call waits for at least one peer to join this channel
-        print("_send_weights: waiting for someone to join channel: ", str(channel))
+        logger.info(f"_send_weights: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -198,7 +199,7 @@ class Trainer(Role, metaclass=ABCMeta):
             MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
         }
         channel.send(end, msg)
-        logger.debug("sending weights done")
+        logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
@@ -243,6 +244,16 @@ class Trainer(Role, metaclass=ABCMeta):
             task_get = Tasklet("fetch", self.get, TAG_FETCH)
             task_get.set_continue_fn(cont_fn=lambda: not self.fetch_success)
 
+            task_sleep_after_get = Tasklet("sleep_after_get", self.check_and_sleep)
+
+            task_sleep_after_train = Tasklet("sleep_after_train", self.check_and_sleep)
+
+            task_sleep_after_eval = Tasklet("sleep_after_eval", self.check_and_sleep)
+
+            task_sleep_after_put = Tasklet("sleep_after_put", self.check_and_sleep)
+
+            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics", self.check_and_sleep)
+
             task_train = Tasklet("train", self.train)
 
             task_eval = Tasklet("evaluate", self.evaluate)
@@ -258,7 +269,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_train >> task_eval >> task_put >> task_save_metrics
+                    task_get >> task_sleep_after_get >> task_train >> task_sleep_after_train >> task_eval >> task_sleep_after_eval >> task_put >> task_sleep_after_put >> task_save_metrics >> task_sleep_after_save_metrics
                 )
             )
 

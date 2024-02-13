@@ -103,6 +103,7 @@ class Composer(object):
         visited.add(root)
         while not q.empty():
             tasklet = q.get()
+            # logger.info(f"Running tasklet: {tasklet}")
 
             # execute tasklet
             tasklet.do()

@@ -28,7 +28,8 @@ import torchvision
 
 from flame.config import Config
 from flame.dataset import Dataset
-from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
+# from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
+from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
@@ -40,18 +41,30 @@ wandb.init(
     project="ft-distr-ml",
     # track hyperparameters and run metadata
     config={
-        "learning_rate": 0.01,
+        # fedbuff
+        # "server_learning_rate": 40.9,
+        # "client_learning_rate": 0.000195,
+        
+        # oort
+        "client_learning_rate": 0.04,
+
         "architecture": "CNN",
         "dataset": "CIFAR-10",
-        "fl-type": "async, fedbuff",
-        "rounds": 750,
-        "config": 10,
+        "fl-type": "sync, oort",
+        "agg_rounds": 750,
+        "trainer_epochs": 1,
+        "config": "hetero",
         "alpha": 100,
-        "failures": "Lambda 0.3, 10 min failures",
-        "total clients N": 10,
-        "client-concurrency C": 5,
-        "client agg goal K": 3,
-        "comments": "Lambda 0.3, 10 min failures",
+        "failures": "No failure",
+        "total clients N": 100,
+
+        # fedbuff
+        # "client-concurrency C": 20,
+
+        "client agg goal K": 10,
+        "server_batch_size": 32,
+        "client_batch_size": 32,
+        "comments": "First oort no failure run",
     },
 )
 
@@ -96,6 +109,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.device = None
         self.test_loader = None
 
+        self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
         self.loss_list = []
@@ -171,6 +185,11 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         # print to save to file
         logger.debug(f"loss list at cifar agg: {self.loss_list}")
+
+    def check_and_sleep(self) -> None:
+        """Induce transient failures"""
+        # Implement this if transient failures need to be emulated in aggregator
+        pass
 
 
 if __name__ == "__main__":

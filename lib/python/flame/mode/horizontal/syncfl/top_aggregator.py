@@ -116,6 +116,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 "supported ml framework not found; "
                 f"supported frameworks are: {valid_frameworks}"
             )
+        
+        self._trainers_used_in_curr_round = []
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -255,7 +257,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def increment_round(self):
         """Increment the round counter."""
-        logger.debug(f"Incrementing current round: {self._round}")
+        self._trainers_used_in_curr_round = []
+        logger.debug(f"Incrementing current round: {self._round} and cleared self._trainers_used_in_curr_round {self._trainers_used_in_curr_round}")
         logger.debug(f"Total rounds: {self._rounds}")
         self._round += 1
         self._work_done = self._round > self._rounds

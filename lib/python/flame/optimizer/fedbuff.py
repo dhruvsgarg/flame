@@ -92,8 +92,7 @@ class FedBuff(AbstractOptimizer):
             # hence, explicit cache cleanup is not needed
             tres = cache.pop(k)
 
-            logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
-            print(f"agg ver: {version}, trainer ver: {tres.version}")
+            logger.info(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
             rate = 1 / math.sqrt(1 + version - tres.version)
             self.aggregate_fn(tres, rate)
@@ -133,7 +132,9 @@ class FedBuff(AbstractOptimizer):
 
         for k in base_weights.keys():
             # agg_goal_weights are already adjusted with rate
-            base_weights[k] = (base_weights[k]) + ((agg_goal_weights[k] / agg_goal))
+            # Using hardcoded learning_rate for now, will pass as an argument later
+            learning_rate = 40.9 
+            base_weights[k] = (base_weights[k]) + (learning_rate*((agg_goal_weights[k] / agg_goal)))
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(

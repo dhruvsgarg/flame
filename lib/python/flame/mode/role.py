@@ -72,3 +72,7 @@ class Role(ABC):
     @abstractmethod
     def evaluate(self) -> None:
         """Abstract method to evaluate a model."""
+    
+    @abstractmethod
+    def check_and_sleep(self) -> None:
+        """Abstract method to induce transient failures."""

@@ -1,3 +1,4 @@
 build
 dist
 flame.egg-info
+*.txt

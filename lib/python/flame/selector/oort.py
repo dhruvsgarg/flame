@@ -307,13 +307,15 @@ class OortSelector(AbstractSelector):
         Calculate round preferred duration based on round_threshold and
         end_round_duration of trainers. round_threshold is controlled by pacer.
         """
-
+        logger.info(f"calculate_round_pref_duration ends.keys(): {ends.keys()}")
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+                logger.info(f"end_id: {end_id}, end_round_duration: {end_round_duration}")
                 if end_round_duration != None:
                     sorted_round_duration.append(end_round_duration)
+            logger.info(f"after for loop, sorted_round_duration: {sorted_round_duration}")
             round_preferred_duration = sorted_round_duration[
                 min(
                     int(len(sorted_round_duration) * self.round_threshold / 100.0),

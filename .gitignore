@@ -5,6 +5,9 @@
 # VS code files
 .vscode
 
+# log files
+.txt
+
 # Binaries for programs and plugins
 *.exe
 *.exe~

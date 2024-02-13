@@ -61,9 +61,10 @@ class FedBuffSelector(AbstractSelector):
         """
         # TODO (DG): The recv state should also only select from ends IF an update doesnt already exist in the cache
         logger.debug("calling fedbuff select")
-        logger.debug(f"len(ends): {len(ends)}, c: {self.c}")
 
         concurrency = min(len(ends), self.c)
+        logger.debug(f"len(ends): {len(ends)}, c: {self.c}, concurrency: {concurrency}")
+
         if concurrency == 0:
             logger.debug("ends is empty")
             return {}
@@ -90,32 +91,32 @@ class FedBuffSelector(AbstractSelector):
         logger.debug(
             f"requester: {self.requester}, selected ends: {self.selected_ends}"
         )
-        logger.info(f"results: {results}")
+        logger.debug(f"channel state: {channel_props[KEY_CH_STATE]}, results: {results}")
 
         return results
 
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Clean up ends whose a message was received, from selected ends."""
-        logger.debug("clean up recvd ends")
-        logger.debug(f"ends: {ends.keys()}")
-        logger.debug(f"selected ends: {self.selected_ends}")
+        logger.debug(f"In clean up recvd ends, ends.keys(): {ends.keys()} and self.selected_ends: {self.selected_ends}")
 
         selected_ends = self.selected_ends[self.requester]
+        logger.debug(f"self.requester: {self.requester} and selected_ends: {selected_ends} before processing")
         for end_id in list(selected_ends):
             if end_id not in ends:
                 # something happened to end of end_id
                 # (e.g., connection loss)
                 # let's remove it from selected_ends
-                logger.debug(f"no end id {end_id} in ends")
                 selected_ends.remove(end_id)
                 self.all_selected.remove(end_id)
+                logger.debug(f"No end id {end_id} in ends, removed from selected_ends: {selected_ends} and self.all_selected: {self.all_selected}")
             else:
                 state = ends[end_id].get_property(KEY_END_STATE)
-                logger.debug(f"end id {end_id} state: {state}")
+                logger.debug(f"End_id {end_id} found in selected_ends in state: {state}, selected_ends: {selected_ends} and self.all_selected: {self.all_selected}")
                 if state == VAL_END_STATE_RECVD:
                     ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
                     selected_ends.remove(end_id)
                     self.all_selected.remove(end_id)
+                    logger.debug(f"FOUND end id {end_id} in state: {state}.. removed from selected_ends: {selected_ends} and self.all_selected: {self.all_selected}")
 
     def _handle_send_state(
         self, ends: dict[str, End], concurrency: int
@@ -123,7 +124,7 @@ class FedBuffSelector(AbstractSelector):
         selected_ends = self.selected_ends[self.requester]
 
         extra = max(0, concurrency - len(selected_ends))
-        logger.info(f"c: {concurrency}, ends: {ends.keys()}")
+        logger.debug(f"concurrency: {concurrency}, ends: {ends.keys()}, selected_ends: {selected_ends}, extra: {extra}, self.all_selected: {self.all_selected}")
 
         # TODO (DG): Send back updates to all nodes that participated
         # extra = max(0, concurrency - len(selected_ends))
@@ -135,11 +136,13 @@ class FedBuffSelector(AbstractSelector):
         for end_id in ends.keys():
             if end_id in self.all_selected:
                 # skip if an end is already selected
+                logger.debug(f"end_id: {end_id} already in self.all_selected: {self.all_selected}, skipping")
                 continue
 
             idx += 1
             if len(candidates) < extra:
                 candidates.append(end_id)
+                logger.debug(f"Added end_id: {end_id} to candidates: {candidates}")
                 continue
 
             i = random.randrange(idx)
@@ -149,10 +152,12 @@ class FedBuffSelector(AbstractSelector):
         # add candidates to selected ends
         selected_ends = selected_ends.union(candidates)
         self.selected_ends[self.requester] = selected_ends
+        logger.debug(f"candidates after shuffle: {candidates}, selected_ends: {selected_ends}, self.selected_ends[req]: {self.selected_ends[self.requester]}")
 
         self.all_selected = self.all_selected.union(candidates)
 
-        logger.debug(f"candidates: {candidates}, all_selected: {self.all_selected}")
+        logger.debug(f"self.all_selected after union with candidates: {self.all_selected}")
+        logger.debug(f"handle_send_state returning candidates: {candidates}")
 
         return {end_id: None for end_id in candidates}
 
@@ -160,9 +165,10 @@ class FedBuffSelector(AbstractSelector):
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
+        logger.debug(f"selected_ends: {selected_ends}")
 
         if len(selected_ends) == 0:
-            logger.debug(f"let's select {concurrency} ends")
+            logger.debug(f"len(selected_ends)=0, let's select {concurrency} ends")
 
             candidates = dict()
             for end_id, end in ends.items():
@@ -170,13 +176,17 @@ class FedBuffSelector(AbstractSelector):
                     candidates[end_id] = end
 
             cc = min(len(candidates), concurrency)
+            logger.debug(f"Will pick cc: {cc} as min(candidates,concurrency) from candidates: {candidates}")
             selected_ends = set(random.sample(list(candidates), cc))
 
             self.selected_ends[self.requester] = selected_ends
+            logger.debug(f"self.selected_ends[req]: {self.selected_ends[self.requester]}")
 
             self.all_selected = self.all_selected.union(selected_ends)
+            logger.debug(f"self.all_selected after uninon with selected_ends: {self.all_selected}")
 
-        logger.debug(f"requester: {self.requester}, selected: {selected_ends}")
+
+        logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
         return {key: None for key in selected_ends}
 
