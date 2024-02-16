@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 
+TAG_SLEEP = "sleep"
+TAG_WAKE = "wake"
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -200,6 +202,58 @@ class Trainer(Role, metaclass=ABCMeta):
         }
         channel.send(end, msg)
         logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
+    
+    def sleep(self, tag: str) -> None:
+        """send sleep msg to agg."""
+        # print(f"!!!! before sleep tag check")
+        if tag == TAG_SLEEP:
+            # print(f"!!!! sleep tag has been found")
+            self._sleep_trainer(tag)
+
+    def _sleep_trainer(self, tag: str) -> None:
+        logger.info(f"### SEND SLEEP MSG for tag: {tag} and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_sleep_trainer] channel not found with {tag}")
+            return
+
+        logger.info(f"_sleep_trainer: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.SLEEP: self.trainer_id,
+        }
+        channel.send(end, msg)
+        logger.info(f"sending sleep msg done for trainer_id: {self.trainer_id}")
+
+    def wake(self, tag: str) -> None:
+        """send wake msg to agg."""
+        # print(f"!!!! before wake tag check")
+        if tag == TAG_WAKE:
+            # print(f"!!!! wake tag has been found")
+            self._wake_trainer(tag)
+
+    def _wake_trainer(self, tag: str) -> None:
+        logger.info(f"### SEND WAKE MSG for tag: {tag} and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_wake_trainer] channel not found with {tag}")
+            return
+
+        logger.info(f"_wake_trainer: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.WAKE: self.trainer_id,
+        }
+        channel.send(end, msg)
+        logger.info(f"sending wake msg done for trainer_id: {self.trainer_id}")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
@@ -259,6 +313,10 @@ class Trainer(Role, metaclass=ABCMeta):
             task_eval = Tasklet("evaluate", self.evaluate)
 
             task_put = Tasklet("upload", self.put, TAG_UPLOAD)
+            
+            # task_sleep_msg = Tasklet("sleep", self.sleep, TAG_SLEEP)
+            
+            # task_wake_msg = Tasklet("wake", self.wake, TAG_WAKE)
 
             task_save_metrics = Tasklet("save_metrics", self.save_metrics)
 

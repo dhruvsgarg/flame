@@ -163,6 +163,7 @@ class ChannelManager(object):
 
     def get_by_tag(self, tag: str) -> Optional[Channel]:
         """Return a channel object that matches a given function tag."""
+        print(f"####func_tag_map: {self._config.func_tag_map}")
         if tag not in self._config.func_tag_map:
             return None
 

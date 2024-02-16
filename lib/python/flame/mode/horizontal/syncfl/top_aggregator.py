@@ -48,6 +48,8 @@ TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_END_TIME = "round_end_time"
+TAG_SLEEP = "sleep"
+TAG_WAKE = "wake"
 
 
 class TopAggregator(Role, metaclass=ABCMeta):
@@ -182,6 +184,54 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # update model with global weights
         self._update_model()
 
+    def get_sleep(self, tag: str) -> None:
+        """get sleep msg from trainer."""
+        if tag == TAG_SLEEP:
+            logger.info(f"### GET_SLEEP FUNCTION from {tag}")
+            self._exclude_trainer(tag)
+            
+    def _exclude_trainer(self, tag: str) -> None:
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+        
+        # receive sleep msg from trainers
+        for msg, metadata in channel.recv_fifo(channel.ends()):
+            end, timestamp = metadata
+            if not msg:
+                logger.info(f"No data from {end}; skipping it")
+                continue
+                        
+            logger.info(f"### received sleep msg from {end} for tag: {tag}")
+            
+            if MessageType.SLEEP in msg:
+                logger.info(f"### received sleep msg from {msg[MessageType.SLEEP]} for tag: {tag}")
+                # exclude trainer_id from self.ends
+ 
+    def get_wake(self, tag: str) -> None:
+        """get wake msg from trainer."""
+        if tag == TAG_WAKE:
+            logger.info(f"### GET_WAKE FUNCTION from {tag}")
+            self._include_trainer(tag)
+    
+    def _include_trainer(self, tag: str) -> None:
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+        
+        # receive wake msg from trainers
+        for msg, metadata in channel.recv_fifo(channel.ends()):
+            end, timestamp = metadata
+            if not msg:
+                logger.info(f"No data from {end}; skipping it")
+                continue
+                        
+            logger.info(f"### received wake msg from {end} for tag: {tag}")
+            
+            if MessageType.SLEEP in msg:
+                logger.info(f"### received wake msg from {msg[MessageType.SLEEP]} for tag: {tag}")
+                # include trainer_id from self.ends
+    
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         if tag == TAG_DISTRIBUTE:
@@ -313,6 +363,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
             task_get = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+            
+            task_get_sleep = Tasklet("get_sleep", self.get_sleep, TAG_SLEEP)
+            
+            task_get_wake = Tasklet("get_wake", self.get_wake, TAG_WAKE)
 
             task_train = Tasklet("train", self.train)
 
@@ -338,7 +392,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             task_internal_init
             >> task_load_data
             >> task_init
-            >> loop(
+            >> loop( 
                 task_put
                 >> task_get
                 >> task_train
@@ -346,6 +400,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 >> task_analysis
                 >> task_save_metrics
                 >> task_increment_round
+                >> task_get_sleep
+                >> task_get_wake
             )
             >> task_end_of_training
             >> task_save_params

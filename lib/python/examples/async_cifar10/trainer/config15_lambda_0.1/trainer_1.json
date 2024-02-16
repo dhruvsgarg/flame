@@ -31,11 +31,15 @@
             "funcTags": {
                 "aggregator": [
                     "distribute",
-                    "aggregate"
+                    "aggregate",
+                    "sleep",
+                    "wake"
                 ],
                 "trainer": [
                     "fetch",
-                    "upload"
+                    "upload",
+                    "sleep",
+                    "wake"
                 ]
             }
         }

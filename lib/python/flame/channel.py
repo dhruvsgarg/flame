@@ -153,6 +153,9 @@ class Channel(object):
         """Return a list of end ids."""
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
+        # ***DS to fix the error when state is None; need to check this
+        else:
+            self.properties[KEY_CH_STATE] = VAL_CH_STATE_RECV
 
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
