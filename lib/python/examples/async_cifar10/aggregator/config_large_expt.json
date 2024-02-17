@@ -49,7 +49,7 @@
         "learningRate": 40.9,
         "rounds": 750,
         "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 10
+        "aggGoal": 4
     },
     "baseModel": {
         "name": "",
@@ -67,7 +67,7 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 50
+            "c": 10
         }
     },
     "optimizer": {

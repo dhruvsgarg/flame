@@ -28,45 +28,44 @@ import torchvision
 
 from flame.config import Config
 from flame.dataset import Dataset
-# from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
-from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
+from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
 # wandb setup
-import wandb
+# import wandb
 
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="ft-distr-ml",
-    # track hyperparameters and run metadata
-    config={
-        # fedbuff
-        # "server_learning_rate": 40.9,
-        # "client_learning_rate": 0.000195,
+# wandb.init(
+#     # set the wandb project where this run will be logged
+#     project="ft-distr-ml",
+#     # track hyperparameters and run metadata
+#     config={
+#         # fedbuff
+#         "server_learning_rate": 40.9,
+#         "client_learning_rate": 0.000195,
         
-        # oort
-        "client_learning_rate": 0.04,
+#         # oort
+#         # "client_learning_rate": 0.04,
 
-        "architecture": "CNN",
-        "dataset": "CIFAR-10",
-        "fl-type": "sync, oort",
-        "agg_rounds": 750,
-        "trainer_epochs": 1,
-        "config": "hetero",
-        "alpha": 100,
-        "failures": "No failure",
-        "total clients N": 100,
+#         "architecture": "CNN",
+#         "dataset": "CIFAR-10",
+#         "fl-type": "async, fedbuff",
+#         "agg_rounds": 750,
+#         "trainer_epochs": 1,
+#         "config": "hetero",
+#         "alpha": 100,
+#         "failures": "No failure",
+#         "total clients N": 100,
 
-        # fedbuff
-        # "client-concurrency C": 20,
-
-        "client agg goal K": 10,
-        "server_batch_size": 32,
-        "client_batch_size": 32,
-        "comments": "First oort no failure run",
-    },
-)
+#         # fedbuff
+#         "client-concurrency C": 10,
+        
+#         "client agg goal K": 4,
+#         "server_batch_size": 32,
+#         "client_batch_size": 32,
+#         "comments": "First oort no failure run",
+#     },
+# )
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +179,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
 
         # add metrics to wandb log
-        wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+        # wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
         self.loss_list.append(test_loss)
 
         # print to save to file

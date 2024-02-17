@@ -2,3 +2,6 @@ build
 dist
 flame.egg-info
 *.txt
+
+*/data/*
+*wandb
