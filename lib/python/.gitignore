@@ -3,5 +3,6 @@ dist
 flame.egg-info
 *.txt
 
+# ignore dataset and wandb generated files
 */data/*
 *wandb
