@@ -57,3 +57,7 @@ requirements.lock
 
 # React dependencies
 node_modules
+
+# ignore dataset and wandb generated files
+*/data/*
+*wandb
