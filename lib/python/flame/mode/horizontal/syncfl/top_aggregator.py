@@ -48,7 +48,8 @@ TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_END_TIME = "round_end_time"
-
+TAG_SLEEP = "sleep"
+TAG_WAKE = "wake"
 
 class TopAggregator(Role, metaclass=ABCMeta):
     """Top level Aggregator implements an ML aggregation role."""
@@ -313,6 +314,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
             task_get = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+            
+            task_get_sleep = Tasklet("get_sleep", self.get_sleep, TAG_SLEEP)
+
+            task_get_wake = Tasklet("get_wake", self.get_wake, TAG_WAKE)
 
             task_train = Tasklet("train", self.train)
 
@@ -346,6 +351,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 >> task_analysis
                 >> task_save_metrics
                 >> task_increment_round
+                >> task_get_sleep
+                >> task_get_wake
             )
             >> task_end_of_training
             >> task_save_params

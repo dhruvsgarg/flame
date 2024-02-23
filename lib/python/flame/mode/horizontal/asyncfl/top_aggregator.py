@@ -20,12 +20,14 @@ import time
 from copy import deepcopy
 import math
 import numpy as np
+from collections import deque
 
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
 from flame.mode.horizontal.syncfl.top_aggregator import TAG_AGGREGATE, TAG_DISTRIBUTE
+from flame.mode.horizontal.syncfl.top_aggregator import TAG_SLEEP, TAG_WAKE
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
@@ -76,6 +78,7 @@ class TopAggregator(SyncTopAgg):
             return
 
         # receive local model parameters from a trainer who arrives first
+        # REVISIT- blocking call next() on an async iterator recv_fifo 
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
         end, _ = metadata
         if not msg:
@@ -94,12 +97,15 @@ class TopAggregator(SyncTopAgg):
             self._updates_recevied[end] += 1
 
         if MessageType.WEIGHTS in msg:
+            logger.info("in agg_weights, recieved MessageType.WEIGHTS")
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
         if MessageType.DATASET_SIZE in msg:
+            logger.info("in agg_weights, recieved MessageType.DATASET_SIZE")
             count = msg[MessageType.DATASET_SIZE]
 
         if MessageType.MODEL_VERSION in msg:
+            logger.info("in agg_weights, recieved MessageType.MODEL_VERSION")
             version = msg[MessageType.MODEL_VERSION]
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
@@ -289,6 +295,81 @@ class TopAggregator(SyncTopAgg):
                 channel._selector.all_selected.remove(end)
                 channel._selector.selected_ends[channel._selector.requester].remove(end)
                 logger.info(f"Removed {end} from channel._selector.all_selected {channel._selector.all_selected} and channel._selector.selected_ends[channel._selector.requester]: {channel._selector.selected_ends[channel._selector.requester]}")
+
+    # Added to check availability aware sampling
+    # Will be used by syncfl.top_agg and inherited into asyncfl.top_agg
+    def get_sleep(self, tag: str) -> None:
+        """get sleep msg from trainer."""
+        logger.info(f"### begin agg get_sleep")
+        if tag == TAG_SLEEP:
+            logger.info(f"### in get_sleep for {tag}")
+            self._exclude_trainer(tag)
+
+    # Added to check availability aware sampling
+    # Will be used by syncfl.top_agg and inherited into asyncfl.top_agg
+    def _exclude_trainer(self, tag: str) -> None:
+        logger.info(f"### begin agg _exclude_trainer()")
+
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+        
+        logger.info(f"channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1): {channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1)}")
+        # receive sleep msg from trainers
+        # msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+        
+        # check to see if there is a message
+        gen_deque = deque(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+
+        if not gen_deque:
+            return
+        else: 
+            logger.info("checking for next sleep message")
+            msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+            end, _ = metadata
+            logger.info(f"channel metadata: {metadata}")
+            
+            if not msg:
+                logger.debug(f"No sleep msg from {end}; continue")
+                return
+
+            logger.debug(f"received sleep msg from {end}")
+            logger.info(f"### received sleep msg from {end}")
+
+            if MessageType.SLEEP in msg:
+                logger.info(f"### received sleep msg from {msg[MessageType.SLEEP]} for tag: {tag}")
+                # exclude trainer_id from self.ends
+
+    # Added to check availability aware sampling
+    # Will be used by syncfl.top_agg and inherited into asyncfl.top_agg
+    def get_wake(self, tag: str) -> None:
+        """get wake msg from trainer."""
+        if tag == TAG_WAKE:
+            logger.info(f"### in get_wake for {tag}")
+            self._include_trainer(tag)
+
+    # Added to check availability aware sampling
+    # Will be used by syncfl.top_agg and inherited into asyncfl.top_agg
+    def _include_trainer(self, tag: str) -> None:
+        logger.info(f"### begin agg _include_trainer()")
+        pass
+        
+        # channel = self.cm.get_by_tag(tag)
+        # if not channel:
+        #     return
+
+        # # receive wake msg from trainers
+        # for msg, metadata in channel.recv_fifo(channel.ends()):
+        #     end, timestamp = metadata
+        #     if not msg:
+        #         logger.info(f"No data from {end}; skipping it")
+        #         continue
+
+        #     logger.info(f"### received wake msg from {end} for tag: {tag}")
+
+        #     if MessageType.WAKE in msg:
+        #         logger.info(f"### received wake msg from {msg[MessageType.SLEEP]} for tag: {tag}")
+        #         # include trainer_id from self.ends
                 
 
     def compose(self) -> None:
@@ -305,6 +386,10 @@ class TopAggregator(SyncTopAgg):
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
             task_get = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+
+            task_get_sleep = Tasklet("get_sleep", self.get_sleep, TAG_SLEEP)
+
+            task_get_wake = Tasklet("get_wake", self.get_wake, TAG_WAKE)
 
         c = self.composer
         # unlink tasklets that are chained from the parent class
@@ -329,7 +414,7 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("initialize")
             >> loop(
                 task_reset_agg_goal_vars
-                >> asyncfl_loop(task_put >> task_get)
+                >> asyncfl_loop(task_put >> task_get >> task_get_sleep >> task_get_wake)
                 >> c.tasklet("train")
                 >> c.tasklet("evaluate")
                 >> c.tasklet("analysis")

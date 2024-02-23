@@ -20,7 +20,7 @@
 # meaning that users can simply inherit classes in the same mode.
 
 # pylint: disable=unused-import
-from flame.mode.horizontal.syncfl.trainer import TAG_FETCH, TAG_UPLOAD, Trainer
+from flame.mode.horizontal.syncfl.trainer import TAG_FETCH, TAG_UPLOAD, TAG_SLEEP, TAG_WAKE, Trainer
 
 # Redirect `flame.mode.horizontal.trainer.Trainer` to
 # `flame.mode.horizontal.syncfl.trainer.Trainer

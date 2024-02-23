@@ -129,10 +129,14 @@ class PyTorchCifar10Trainer(Trainer):
                     self.failure_durations_s.pop(0)
                     if len(self.failure_durations_s) == 0:
                         break
-            else: 
+            else:
+                logger.info("#### Sending trainer sleep msg")
+                self.sleep("sleep") 
                 logger.info(f"Task_id: {self.trainer_id} going to sleep up at timestamp: {time.time()}")
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
+                logger.info("#### Sending trainer wake msg")
+                self.wake("wake")
 
             # check if failure_list is now empty, if yes, reset ts_next_sleep_s
             # if not empty, set it to the next value
