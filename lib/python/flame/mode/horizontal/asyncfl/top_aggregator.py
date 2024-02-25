@@ -53,6 +53,7 @@ class TopAggregator(SyncTopAgg):
         self._aggregator_staleness_track_rounds = []
         self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
+        self.agg_start_time_ts = time.time()
 
     def _reset_agg_goal_variables(self):
         logger.info("##### reset agg goal variables")
@@ -266,7 +267,41 @@ class TopAggregator(SyncTopAgg):
 
         # send out global model parameters to trainers
         for end in channel.ends(VAL_CH_STATE_SEND):
-            if end not in self._trainers_used_in_curr_round:
+            # verify that end isn't being used for the second time in the same round
+            # if trainer availability is being tracked, verify that the trainer is available
+            picked_trainer_is_available = True
+            if self.trainer_unavail_durations != None:
+                logger.info(f"### Will check if trainer {end} is available")
+                if end in self.trainer_unavail_durations.keys():
+                    # get aggregator seconds from start
+                    agg_time_since_start_s = time.time() - self.agg_start_time_ts
+                    
+                    curr_trainer_unavail_list = self.trainer_unavail_durations[end]
+
+                    # iterate through unavailability list
+                    # First, check if the current time is within any failure window
+
+                    for start_time, duration in curr_trainer_unavail_list:
+                        if start_time <= agg_time_since_start_s < start_time + duration:
+                            print("### Trainer ", end, " attempted to be picked in failed state.")
+                            picked_trainer_is_available = False
+                            break
+                    else:
+                        print("### Trainer " , end, " is available.")
+                        picked_trainer_is_available = True
+
+                    # Remove entries that occurred in the past
+                    updated_trainer_unavail_list = [(start_time, duration) for start_time, duration in curr_trainer_unavail_list if (start_time + duration) >= agg_time_since_start_s]
+
+                    # Remove end from trainer_unavail_durations if list is empty
+                    # TODO: Check if deletion is happening properly
+                    if len(updated_trainer_unavail_list) == 0:
+                        print("### Trainer ", end, " will no longer fail, removing from trainer_unavail_durations")
+                        del self.trainer_unavail_durations[end]
+                    else:
+                        self.trainer_unavail_durations[end] = updated_trainer_unavail_list
+
+            if (end not in self._trainers_used_in_curr_round) and picked_trainer_is_available:
                 logger.info(f"sending weights to {end}")
                 # we use _round to indicate a model version
                 channel.send(
@@ -282,7 +317,10 @@ class TopAggregator(SyncTopAgg):
                 # add trainer to list of trainers used in the current round
                 self._trainers_used_in_curr_round.append(end)
             else:
-                logger.info(f"Tried to send weights again to trainer {end} in round {self._round}, not allowed")
+                if not picked_trainer_is_available:
+                    logger.info(f"Tried to send weights to trainer {end} in round {self._round}, unavailable")
+                else:
+                    logger.info(f"Tried to send weights again to trainer {end} in round {self._round}, not allowed")
                 # remove the end from self.all_selected in fedbuff's select since it would have been added in it in 
                 # _select_send_state and this will prevent the aggregator for sending the weights to the trainer once
                 # the round increments, and the trainer is again eligible.

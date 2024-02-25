@@ -20,6 +20,9 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
 import logging
+import os
+import json
+import ast
 
 import torch
 import torch.nn as nn
@@ -33,39 +36,39 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
 # wandb setup
-# import wandb
+import wandb
 
-# wandb.init(
-#     # set the wandb project where this run will be logged
-#     project="ft-distr-ml",
-#     # track hyperparameters and run metadata
-#     config={
-#         # fedbuff
-#         "server_learning_rate": 40.9,
-#         "client_learning_rate": 0.000195,
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="ft-distr-ml",
+    # track hyperparameters and run metadata
+    config={
+        # fedbuff
+        "server_learning_rate": 40.9,
+        "client_learning_rate": 0.000195,
         
-#         # oort
-#         # "client_learning_rate": 0.04,
+        # oort
+        # "client_learning_rate": 0.04,
 
-#         "architecture": "CNN",
-#         "dataset": "CIFAR-10",
-#         "fl-type": "async, fedbuff",
-#         "agg_rounds": 750,
-#         "trainer_epochs": 1,
-#         "config": "hetero",
-#         "alpha": 100,
-#         "failures": "No failure",
-#         "total clients N": 100,
+        "architecture": "CNN",
+        "dataset": "CIFAR-10",
+        "fl-type": "async, fedbuff",
+        "agg_rounds": 750,
+        "trainer_epochs": 1,
+        "config": "hetero",
+        "alpha": 100,
+        "failures": "No failure",
+        "total clients N": 100,
 
-#         # fedbuff
-#         "client-concurrency C": 10,
+        # fedbuff
+        "client-concurrency C": 20,
         
-#         "client agg goal K": 4,
-#         "server_batch_size": 32,
-#         "client_batch_size": 32,
-#         "comments": "First oort no failure run",
-#     },
-# )
+        "client agg goal K": 10,
+        "server_batch_size": 32,
+        "client_batch_size": 32,
+        "comments": "First oort no failure run",
+    },
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,12 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
+        self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or False
+        self.trainer_unavail_durations = None
+        if(self.track_trainer_avail):
+            self.trainer_unavail_durations = self.read_trainer_unavailability()
+            print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
+
         self.loss_list = []
 
     def initialize(self):
@@ -118,6 +127,32 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
+
+    def read_trainer_unavailability(self) -> None:
+        print("Came to read_trainer_unavailability")
+        # maintain <trainer_id: [(unavail_start1, duration1), (start2, duration2).. etc]>
+        trainer_unavail_dict = {}
+
+        # set path to read json files from
+        # TODO: Remove hardcoding later
+        files_path = "../../trainer/config_dir100_num100_traceFailure_1.5h"
+
+        # set range of trainer ids to read from
+        trainer_start_num = 1
+        trainer_end_num = 100
+        for i in range(trainer_start_num, trainer_end_num + 1):
+            dirname = os.path.dirname(__file__)
+            with open(os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")) as f:
+                trainer_json = json.load(f)
+                curr_trainer_id = trainer_json["taskid"]
+                curr_trainer_unavail_time = ast.literal_eval(trainer_json["hyperparameters"]["failure_durations_s"])
+                trainer_unavail_dict[curr_trainer_id] = curr_trainer_unavail_time
+                print("Completed file read for ", os.path.join(files_path, "trainer_" + str(i) + ".json"))
+
+        # selector - do a linear search in the selector based on availability
+        # selector - delete those tuples whose sleep time has passed
+        print("Completed reading all trainer unavailability from files")
+        return trainer_unavail_dict
 
     def load_data(self) -> None:
         """Load a test dataset."""
@@ -179,7 +214,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
 
         # add metrics to wandb log
-        # wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+        # TODO (Dhruv): Enable this through a flag
+        wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
         self.loss_list.append(test_loss)
 
         # print to save to file
