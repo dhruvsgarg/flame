@@ -16,11 +16,10 @@
 """Asynchronous horizontal FL top level aggregator."""
 
 import logging
-import time
-from copy import deepcopy
 import math
-import numpy as np
+import time
 
+import numpy as np
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
@@ -53,7 +52,6 @@ class TopAggregator(SyncTopAgg):
         self._aggregator_staleness_track_rounds = []
         self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
-        self.agg_start_time_ts = time.time()
 
     def _reset_agg_goal_variables(self):
         logger.info("##### reset agg goal variables")
@@ -63,7 +61,8 @@ class TopAggregator(SyncTopAgg):
         # reset agg goal weights
         self._agg_goal_weights = None
         logger.info(
-            f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights:{self._agg_goal_weights}"
+            f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights: "
+            f"{self._agg_goal_weights}"
         )
 
     def _aggregate_weights(self, tag: str) -> None:
@@ -120,17 +119,20 @@ class TopAggregator(SyncTopAgg):
                 logger.debug(f"found {end} in dict")
                 self._per_trainer_staleness_track[end].append(update_staleness_val)
                 logger.debug(
-                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                    f"updated _per_trainer_staleness_track "
+                    f"{self._per_trainer_staleness_track}"
                 )
             else:
                 logger.debug(f"NEW Entry {end} in dict")
                 self._per_trainer_staleness_track[end] = []
                 logger.debug(
-                    f"created new list entry in dict _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                    f"created new list entry in dict _per_trainer_staleness_track "
+                    f"{self._per_trainer_staleness_track}"
                 )
                 self._per_trainer_staleness_track[end].append(update_staleness_val)
                 logger.debug(
-                    f"updated _per_trainer_staleness_track {self._per_trainer_staleness_track}"
+                    f"updated _per_trainer_staleness_track "
+                    f"{self._per_trainer_staleness_track}"
                 )
 
             # staleness_alpha = 0.3
@@ -225,14 +227,19 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"aggregation finished for round {self._round}")
         logger.info(
-            f"====== aggregation finished for round {self._round}, self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: {self._updates_recevied}, self._trainer_participation_in_round_count: {self._trainer_participation_in_round_count}"
+            f"====== aggregation finished for round {self._round}, "
+            f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
+            f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
+            f"{self._trainer_participation_in_round_count}"
         )
         if self._round % 100 == 0:
             logger.debug(
-                f"top agg staleness list after round {self._round} is {self._aggregator_round_avg_staleness}"
+                f"top agg staleness list after round {self._round} is "
+                f"{self._aggregator_round_avg_staleness}"
             )
             logger.debug(
-                f"top agg trainer participation in rounds, after round {self._round} is {self._trainer_participation_in_round}"
+                f"top agg trainer participation in rounds, after round "
+                f"{self._round} is {self._trainer_participation_in_round}"
             )
 
         # print out data on staleness
@@ -245,7 +252,12 @@ class TopAggregator(SyncTopAgg):
         for k, v in self._per_trainer_staleness_track.items():
             trainer_staleness_arr = np.array(v)
             logger.info(
-                f"===== trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, Max {np.max(trainer_staleness_arr)}, Avg {np.mean(trainer_staleness_arr)}, P50 {np.median(trainer_staleness_arr)}, P90 {np.percentile(trainer_staleness_arr, 90)}, P99 {np.percentile(trainer_staleness_arr, 99)}"
+                f"Trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, "
+                f"Max {np.max(trainer_staleness_arr)}, "
+                f"Avg {np.mean(trainer_staleness_arr)}, "
+                f"P50 {np.median(trainer_staleness_arr)}, "
+                f"P90 {np.percentile(trainer_staleness_arr, 90)}, "
+                f"P99 {np.percentile(trainer_staleness_arr, 99)}"
             )
 
     def _distribute_weights(self, tag: str) -> None:
@@ -268,14 +280,14 @@ class TopAggregator(SyncTopAgg):
         # send out global model parameters to trainers
         for end in channel.ends(VAL_CH_STATE_SEND):
             # verify that end isn't being used for the second time in the same round
-            # if trainer availability is being tracked, verify that the trainer is available
+            # if trainer avail is tracked, verify that it is available
             picked_trainer_is_available = True
             if self.trainer_unavail_durations != None:
                 logger.info(f"### Will check if trainer {end} is available")
                 if end in self.trainer_unavail_durations.keys():
                     # get aggregator seconds from start
                     agg_time_since_start_s = time.time() - self.agg_start_time_ts
-                    
+
                     curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
                     # iterate through unavailability list
@@ -283,26 +295,45 @@ class TopAggregator(SyncTopAgg):
 
                     for start_time, duration in curr_trainer_unavail_list:
                         if start_time <= agg_time_since_start_s < start_time + duration:
-                            print("### Trainer ", end, " attempted to be picked in failed state.")
+                            print(
+                                "### Trainer ",
+                                end,
+                                " attempted to be picked in failed state.",
+                            )
                             picked_trainer_is_available = False
                             break
                     else:
-                        print("### Trainer " , end, " is available.")
+                        print("### Trainer ", end, " is available.")
                         picked_trainer_is_available = True
 
                     # Remove entries that occurred in the past
-                    updated_trainer_unavail_list = [(start_time, duration) for start_time, duration in curr_trainer_unavail_list if (start_time + duration) >= agg_time_since_start_s]
+                    updated_trainer_unavail_list = [
+                        (start_time, duration)
+                        for start_time, duration in curr_trainer_unavail_list
+                        if (start_time + duration) >= agg_time_since_start_s
+                    ]
 
                     # Remove end from trainer_unavail_durations if list is empty
                     # TODO: Check if deletion is happening properly
                     if len(updated_trainer_unavail_list) == 0:
-                        print("### Trainer ", end, " will no longer fail, removing from trainer_unavail_durations")
+                        print(
+                            "### Trainer ",
+                            end,
+                            " will no longer fail, removing from "
+                            " trainer_unavail_durations",
+                        )
                         del self.trainer_unavail_durations[end]
                     else:
-                        self.trainer_unavail_durations[end] = updated_trainer_unavail_list
+                        self.trainer_unavail_durations[end] = (
+                            updated_trainer_unavail_list
+                        )
 
-            if (end not in self._trainers_used_in_curr_round) and picked_trainer_is_available:
-                logger.info(f"sending weights to {end}")
+            if (
+                end not in self._trainers_used_in_curr_round
+            ) and picked_trainer_is_available:
+                logger.info(
+                    f"sending weights with aggregator version {self._round} to {end}"
+                )
                 # we use _round to indicate a model version
                 channel.send(
                     end,
@@ -318,16 +349,28 @@ class TopAggregator(SyncTopAgg):
                 self._trainers_used_in_curr_round.append(end)
             else:
                 if not picked_trainer_is_available:
-                    logger.info(f"Tried to send weights to trainer {end} in round {self._round}, unavailable")
+                    logger.info(
+                        f"Tried to send weights to trainer {end} in round "
+                        f"{self._round}, unavailable"
+                    )
                 else:
-                    logger.info(f"Tried to send weights again to trainer {end} in round {self._round}, not allowed")
-                # remove the end from self.all_selected in fedbuff's select since it would have been added in it in 
-                # _select_send_state and this will prevent the aggregator for sending the weights to the trainer once
+                    logger.info(
+                        f"Tried to send weights again to trainer {end} in "
+                        f"round {self._round}, not allowed"
+                    )
+                # remove the end from self.all_selected in fedbuff's select since it
+                # would have been added in it in
+                # _select_send_state and this will prevent the aggregator for sending
+                # the weights to the trainer once
                 # the round increments, and the trainer is again eligible.
                 channel._selector.all_selected.remove(end)
                 channel._selector.selected_ends[channel._selector.requester].remove(end)
-                logger.info(f"Removed {end} from channel._selector.all_selected {channel._selector.all_selected} and channel._selector.selected_ends[channel._selector.requester]: {channel._selector.selected_ends[channel._selector.requester]}")
-                
+                logger.info(
+                    f"Removed {end} from channel._selector.all_selected "
+                    f"{channel._selector.all_selected} and "
+                    f"channel._selector.selected_ends[channel._selector.requester]: "
+                    f"{channel._selector.selected_ends[channel._selector.requester]}"
+                )
 
     def compose(self) -> None:
         """Compose role with tasklets."""
