@@ -133,8 +133,10 @@ class FedBuff(AbstractOptimizer):
         for k in base_weights.keys():
             # agg_goal_weights are already adjusted with rate
             # Using hardcoded learning_rate for now, will pass as an argument later
-            learning_rate = 40.9 
-            base_weights[k] = (base_weights[k]) + (learning_rate*((agg_goal_weights[k] / agg_goal)))
+            learning_rate = 40.9
+            base_weights[k] = (base_weights[k]) + (
+                learning_rate * ((agg_goal_weights[k] / agg_goal))
+            )
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(

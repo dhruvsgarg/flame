@@ -333,5 +333,5 @@ class MiddleAggregator(SyncMidAgg):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the middle level aggregator role."""
+        """Return a list of function tags defined in the middle aggregator role."""
         return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_FETCH, TAG_UPLOAD]

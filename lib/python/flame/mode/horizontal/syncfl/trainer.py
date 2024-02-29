@@ -33,12 +33,12 @@ from flame.common.util import (
 )
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
-from flame.privacies import privacy_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
+from flame.privacies import privacy_provider
 from flame.registries import registry_provider
 
 logger = logging.getLogger(__name__)
@@ -115,19 +115,22 @@ class Trainer(Role, metaclass=ABCMeta):
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        logger.info(f"### FETCH WEIGHTS start for tag: {tag} and trainer_id {self.trainer_id}")
+        logger.info(f"### FETCH WEIGHTS start for tag: {tag} "
+                    f"and trainer_id {self.trainer_id}")
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info(f"fetch weights, channel not found with tag {tag} for trainer_id {self.trainer_id}")
+            logger.info(f"fetch weights, channel not found with tag {tag} "
+                        f"for trainer_id {self.trainer_id}")
             # we don't want to keep calling this too fast
             # so let's sleep 1 second
             time.sleep(1)
             return
 
         # this call waits for at least one peer joins this channel
-        logger.info(f"_fetch_weights: waiting for someone to join channel: {channel} for trainer_id {self.trainer_id}")
+        logger.info(f"_fetch_weights: waiting for someone to join channel: {channel} "
+                    f"for trainer_id {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -147,7 +150,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"New message received for trainer_id {self.trainer_id}")
 
-
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()
@@ -165,7 +167,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.fetch_success = True
 
-        logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, round: {self._round} and work_done: {self._work_done} ###")
+        logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
+                    f"round: {self._round} and work_done: {self._work_done} ###")
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
@@ -173,14 +176,16 @@ class Trainer(Role, metaclass=ABCMeta):
             self._send_weights(tag)
 
     def _send_weights(self, tag: str) -> None:
-        logger.info(f"### SEND WEIGHTS for tag: {tag} and trainer_id: {self.trainer_id}")
+        logger.info(f"### SEND WEIGHTS for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_weights] channel not found with {tag}")
             return
 
         # this call waits for at least one peer to join this channel
-        logger.info(f"_send_weights: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
+        logger.info(f"_send_weights: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -252,7 +257,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
             task_sleep_after_put = Tasklet("sleep_after_put", self.check_and_sleep)
 
-            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics", self.check_and_sleep)
+            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics",
+                                                    self.check_and_sleep)
 
             task_train = Tasklet("train", self.train)
 
@@ -269,7 +275,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_sleep_after_get >> task_train >> task_sleep_after_train >> task_eval >> task_sleep_after_eval >> task_put >> task_sleep_after_put >> task_save_metrics >> task_sleep_after_save_metrics
+                    task_get >> task_sleep_after_get >> task_train >>
+                    task_sleep_after_train >> task_eval >> task_sleep_after_eval >>
+                    task_put >> task_sleep_after_put >> task_save_metrics >>
+                    task_sleep_after_save_metrics
                 )
             )
 
