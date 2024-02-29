@@ -16,12 +16,12 @@
 """OortSelector class."""
 
 import logging
-import random
 import math
-import numpy as np
+import random
 
-from flame.common.util import MLFramework, get_ml_framework_in_use
+import numpy as np
 from flame.common.typing import Scalar
+from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
 
@@ -78,7 +78,10 @@ class OortSelector(AbstractSelector):
         self.alpha = 2
 
     def select(
-        self, ends: dict[str, End], channel_props: dict[str, Scalar]
+        self,
+        ends: dict[str, End],
+        channel_props: dict[str, Scalar],
+        trainer_unavail_list: list,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
         logger.debug("calling oort select")
@@ -101,11 +104,21 @@ class OortSelector(AbstractSelector):
         # Make a filter of blocklist ends
         blocklist_end_ids = self.find_blocklists(ends)
 
+        # Make a filter of unavailable ends
+        if trainer_unavail_list != []:
+            logger.info(
+                "### Oort select got non-empty trainer_unavail_list, will "
+                "remove unavail trainers from round"
+            )
+
+        # get the list of unavailable_ends and pass to fetch_statistical_utility
+        # treat unavailable_ends like blocklist_ends inside fetch_statistical_utility
+
         # Make a list of tuple (end_id, end_utility) as an utility_list
         # As unexplored ends that are not selected before do not have
         # utility value, collect them separately with unexplored_end_ids list
         utility_list, unexplored_end_ids = self.fetch_statistical_utility(
-            ends, blocklist_end_ids
+            ends, blocklist_end_ids, trainer_unavail_list
         )
 
         # This indicates the first round, where no end's utility has been measured;
@@ -235,10 +248,10 @@ class OortSelector(AbstractSelector):
             and self.round % self.pacer_step == 0
         ):
             last_pacer_step_util = sum(
-                self.exploitation_util_history[-2 * self.pacer_step : -self.pacer_step]
+                self.exploitation_util_history[-2 * self.pacer_step: -self.pacer_step]
             )
             curr_pacer_step_util = sum(
-                self.exploitation_util_history[-self.pacer_step :]
+                self.exploitation_util_history[-self.pacer_step:]
             )
 
             # increases round threshold when recently exploited
@@ -279,7 +292,10 @@ class OortSelector(AbstractSelector):
         return exploration_len, exploitation_len
 
     def fetch_statistical_utility(
-        self, ends: dict[str, End], blocklist_end_ids: list[str]
+        self,
+        ends: dict[str, End],
+        blocklist_end_ids: list[str],
+        trainer_unavail_list: list[str],
     ) -> tuple[list[tuple[str, float]], list[str]]:
         """
         Make a list of tuple (end_id, end_utility) as an utility_list
@@ -291,9 +307,11 @@ class OortSelector(AbstractSelector):
         unexplored_end_ids = []
 
         for end_id in ends.keys():
-            if end_id not in blocklist_end_ids:
+            if (end_id not in blocklist_end_ids) and (
+                end_id not in trainer_unavail_list
+            ):
                 end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
-                if end_utility != None:
+                if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
                     )
@@ -312,10 +330,14 @@ class OortSelector(AbstractSelector):
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
-                logger.info(f"end_id: {end_id}, end_round_duration: {end_round_duration}")
-                if end_round_duration != None:
+                logger.info(
+                    f"end_id: {end_id}, end_round_duration: {end_round_duration}"
+                )
+                if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
-            logger.info(f"after for loop, sorted_round_duration: {sorted_round_duration}")
+            logger.info(
+                f"after for loop, sorted_round_duration: {sorted_round_duration}"
+            )
             round_preferred_duration = sorted_round_duration[
                 min(
                     int(len(sorted_round_duration) * self.round_threshold / 100.0),

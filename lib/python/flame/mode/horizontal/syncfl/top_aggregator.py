@@ -32,6 +32,7 @@ from flame.common.util import (
     weights_to_model_device,
 )
 from flame.config import Config
+from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.role import Role
@@ -40,7 +41,6 @@ from flame.optimizer.train_result import TrainResult
 from flame.optimizers import optimizer_provider
 from flame.plugin import PluginManager, PluginType
 from flame.registries import registry_provider
-from flame.datasamplers import datasampler_provider
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             )
         
         self._trainers_used_in_curr_round = []
+        self.agg_start_time_ts = time.time()
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -258,7 +259,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
     def increment_round(self):
         """Increment the round counter."""
         self._trainers_used_in_curr_round = []
-        logger.debug(f"Incrementing current round: {self._round} and cleared self._trainers_used_in_curr_round {self._trainers_used_in_curr_round}")
+        logger.debug(
+            f"Incrementing current round: {self._round} and "
+            f"cleared self._trainers_used_in_curr_round "
+            f"{self._trainers_used_in_curr_round}"
+            )
         logger.debug(f"Total rounds: {self._rounds}")
         self._round += 1
         self._work_done = self._round > self._rounds
@@ -298,6 +303,50 @@ class TopAggregator(Role, metaclass=ABCMeta):
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
+
+    def get_curr_unavail_trainers(self) -> list:
+        curr_unavail_trainer_list = []
+
+        # get list of unavailable trainers based on timestamp
+        if self.trainer_unavail_durations is not None:
+            # get aggregator seconds from start
+            agg_time_since_start_s = time.time() - self.agg_start_time_ts
+            for end in self.trainer_unavail_durations.keys():
+                logger.info(f"### Will check if trainer {end} is available")
+                curr_trainer_unavail_list = self.trainer_unavail_durations[end]
+
+                # iterate through unavailability list
+                # First, check if the current time is within any failure window
+
+                for start_time, duration in curr_trainer_unavail_list:
+                    if start_time <= agg_time_since_start_s < start_time + duration:
+                        logger.info(f"### Trainer {end} attempted to be picked in "
+                                    f"failed state.")
+                        curr_unavail_trainer_list.append(end)
+                        break
+                else:
+                    print("### Trainer " , end, " is available.")
+                
+                # Remove entries that occurred in the past
+                updated_trainer_unavail_list = [
+                    (start_time, duration) for
+                    start_time, duration in curr_trainer_unavail_list
+                    if (start_time + duration) >= agg_time_since_start_s
+                    ]
+
+                # Remove end from trainer_unavail_durations if list is empty
+                # TODO: Check if deletion is happening properly
+                if len(updated_trainer_unavail_list) == 0:
+                    logger.info(f"### Trainer {end} will no longer fail, removing "
+                                f"from trainer_unavail_durations")
+                    del self.trainer_unavail_durations[end]
+                else:
+                    self.trainer_unavail_durations[end] = updated_trainer_unavail_list
+
+        # return the list
+        logger.info(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list}")
+
+        return curr_unavail_trainer_list
 
     def compose(self) -> None:
         """Compose role with tasklets."""

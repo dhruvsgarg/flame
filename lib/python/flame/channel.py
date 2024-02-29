@@ -22,7 +22,6 @@ from typing import Any, Union
 
 import cloudpickle
 from aiostream import stream
-
 from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
@@ -63,6 +62,8 @@ class Channel(object):
         self.properties = dict()
         self.await_join_event = None
         self.mc = Role.mc
+
+        self.trainer_unavail_list = None
 
         # access _ends with caution.
         # in many cases, _ends must be accessed within a backend's loop
@@ -157,7 +158,11 @@ class Channel(object):
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
         async def inner():
-            selected = self._selector.select(self._ends, self.properties)
+            if self.trainer_unavail_list is not None:
+                selected = self._selector.select(self._ends, self.properties,
+                                                 self.trainer_unavail_list)
+            else:
+                selected = self._selector.select(self._ends, self.properties)
 
             id_list = list()
             for end_id, kv in selected.items():
@@ -516,3 +521,6 @@ class Channel(object):
     def get_backend_id(self) -> str:
         """Return backend id."""
         return self._backend.uid()
+    
+    def set_curr_unavailable_trainers(self, trainer_unavail_list: list):
+        self.trainer_unavail_list = trainer_unavail_list
