@@ -48,7 +48,8 @@
         "batchSize": 32,
         "learningRate": 0.001,
         "rounds": 750,
-        "epochs": 4
+        "epochs": 4,
+        "trackTrainerAvail": "True"
     },
     "baseModel": {
         "name": "",
