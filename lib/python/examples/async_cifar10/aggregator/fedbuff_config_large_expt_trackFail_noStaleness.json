@@ -45,12 +45,13 @@
         "numpy >= 1.2.0"
     ],
     "hyperparameters": {
-        "batchSize": 4,
-        "learningRate": 0.01,
-        "rounds": 750,
+        "batchSize": 32,
+        "learningRate": 40.9,
+        "rounds": 5000,
         "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 3,
-        "trackTrainerAvail": "True"
+        "aggGoal": 10,
+        "trackTrainerAvail": "True",
+        "rejectStaleUpdates": "True"
     },
     "baseModel": {
         "name": "",
@@ -68,14 +69,14 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 3
+            "c": 20
         }
     },
     "optimizer": {
         "sort": "fedbuff",
         "kwargs": {}
     },
-    "maxRunTime": 300,
+    "maxRunTime": 600,
     "realm": "default",
     "role": "aggregator"
 }
