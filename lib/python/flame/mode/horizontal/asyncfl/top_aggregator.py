@@ -44,6 +44,7 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
+        self._updates_in_queue = 0
         self._updates_recevied = {}
         self._trainer_participation_in_round_count = {}
         self._trainer_participation_in_round = {}
@@ -52,6 +53,7 @@ class TopAggregator(SyncTopAgg):
         self._aggregator_staleness_track_rounds = []
         self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
+        self._trainer_training_duration_s = {}
 
     def _reset_agg_goal_variables(self):
         logger.info("##### reset agg goal variables")
@@ -84,6 +86,43 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"received data from {end}")
         logger.info(f"*** received data from {end}")
+        if self.reject_stale_updates:
+            logger.info("Check trainer model version, disallow stale updates")
+            if MessageType.MODEL_VERSION in msg:
+                version = msg[MessageType.MODEL_VERSION]
+
+            if version != self._round:
+                logger.info(f"Rejecting trainer update of version {version}, "
+                            f"agg self._round: {self._round}")
+                return
+
+        self._updates_in_queue += 1
+
+        # update _trainer_training_duration_s to capture training time
+        if end not in self._trainer_training_duration_s.keys():
+            logger.error(f"{end} not in _trainer_training_duration_s at recv!")
+        else:
+            last_recv_wts_ts = time.time()
+            self._trainer_training_duration_s[
+                end]["last_recv_wts_ts"] = last_recv_wts_ts
+            # recv_wts_ts should be strictly > send_wts_ts
+            last_send_wts_ts = self._trainer_training_duration_s[
+                end]["last_send_wts_ts"]
+            if last_send_wts_ts > last_recv_wts_ts:
+                logger.error(f"{end} last_recv_ts before last_send_ts!")
+            else:
+                curr_cumulative_training_s = self._trainer_training_duration_s[
+                    end
+                ]["total_training_time_s"]
+                curr_round_time_s = last_recv_wts_ts - last_send_wts_ts
+                new_cumulative_training_s = (
+                    curr_cumulative_training_s + curr_round_time_s
+                )
+                self._trainer_training_duration_s[
+                    end
+                ]["total_training_time_s"] = new_cumulative_training_s
+                logger.info(f"Updated training time record for {end}, details: "
+                            f"{self._trainer_training_duration_s[end]}")
 
         # capture telemetry on trainer participation in rounds
         self._per_round_update_list.append(end)
@@ -182,6 +221,10 @@ class TopAggregator(SyncTopAgg):
         if self._agg_goal_cnt == self._agg_goal:
             logger.debug("reached agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
+            logger.info(f"Reached agg_goal {self._agg_goal}, "
+                        f"current _updates_in_queue: {self._updates_in_queue}, "
+                        f"current round before agg: {self._round}"
+                        )
 
             # update per-trainer participation in round agg
             for trainer_update in self._per_round_update_list:
@@ -225,6 +268,9 @@ class TopAggregator(SyncTopAgg):
         # update model with global weights
         self._update_model()
 
+        # decrement counter since updates consumed from queue
+        self._updates_in_queue -= self._agg_goal
+
         logger.debug(f"aggregation finished for round {self._round}")
         logger.info(
             f"====== aggregation finished for round {self._round}, "
@@ -232,6 +278,11 @@ class TopAggregator(SyncTopAgg):
             f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
             f"{self._trainer_participation_in_round_count}"
         )
+        logger.info(
+            f"After round: {self._round}, remaining _updates_in_queue: "
+            f"{self._updates_in_queue}"
+        )
+        
         if self._round % 100 == 0:
             logger.debug(
                 f"top agg staleness list after round {self._round} is "
@@ -260,6 +311,55 @@ class TopAggregator(SyncTopAgg):
                 f"P99 {np.percentile(trainer_staleness_arr, 99)}"
             )
 
+    def check_trainer_availability(self, end: str) -> bool:
+        picked_trainer_is_available = True
+        
+        if end in self.trainer_unavail_durations.keys():
+            # get aggregator seconds from start
+            agg_time_since_start_s = time.time() - self.agg_start_time_ts
+
+            curr_trainer_unavail_list = self.trainer_unavail_durations[end]
+
+            # iterate through unavailability list
+            # First, check if the current time is within any failure window
+
+            for start_time, duration in curr_trainer_unavail_list:
+                if start_time <= agg_time_since_start_s < start_time + duration:
+                    print(
+                        "### Trainer ",
+                        end,
+                        " attempted to be picked in failed state.",
+                    )
+                    picked_trainer_is_available = False
+                    return picked_trainer_is_available
+            else:
+                print("### Trainer ", end, " is available.")
+                picked_trainer_is_available = True
+
+            # Remove entries that occurred in the past
+            updated_trainer_unavail_list = [
+                (start_time, duration)
+                for start_time, duration in curr_trainer_unavail_list
+                if (start_time + duration) >= agg_time_since_start_s
+            ]
+
+            # Remove end from trainer_unavail_durations if list is empty
+            # TODO: Check if deletion is happening properly
+            if len(updated_trainer_unavail_list) == 0:
+                print(
+                    "### Trainer ",
+                    end,
+                    " will no longer fail, removing from "
+                    " trainer_unavail_durations",
+                )
+                del self.trainer_unavail_durations[end]
+            else:
+                self.trainer_unavail_durations[end] = (
+                    updated_trainer_unavail_list
+                )
+
+        return picked_trainer_is_available
+
     def _distribute_weights(self, tag: str) -> None:
         """Distributed a global model in asynchronous FL fashion.
 
@@ -281,52 +381,15 @@ class TopAggregator(SyncTopAgg):
         for end in channel.ends(VAL_CH_STATE_SEND):
             # verify that end isn't being used for the second time in the same round
             # if trainer avail is tracked, verify that it is available
-            picked_trainer_is_available = True
-            if self.trainer_unavail_durations != None:
+
+            # TODO (DG): Separately maintain state of trainer availability
+            # Should be easy to query the function to get the count of availability
+            if self.trainer_unavail_durations is not None:
                 logger.info(f"### Will check if trainer {end} is available")
-                if end in self.trainer_unavail_durations.keys():
-                    # get aggregator seconds from start
-                    agg_time_since_start_s = time.time() - self.agg_start_time_ts
-
-                    curr_trainer_unavail_list = self.trainer_unavail_durations[end]
-
-                    # iterate through unavailability list
-                    # First, check if the current time is within any failure window
-
-                    for start_time, duration in curr_trainer_unavail_list:
-                        if start_time <= agg_time_since_start_s < start_time + duration:
-                            print(
-                                "### Trainer ",
-                                end,
-                                " attempted to be picked in failed state.",
-                            )
-                            picked_trainer_is_available = False
-                            break
-                    else:
-                        print("### Trainer ", end, " is available.")
-                        picked_trainer_is_available = True
-
-                    # Remove entries that occurred in the past
-                    updated_trainer_unavail_list = [
-                        (start_time, duration)
-                        for start_time, duration in curr_trainer_unavail_list
-                        if (start_time + duration) >= agg_time_since_start_s
-                    ]
-
-                    # Remove end from trainer_unavail_durations if list is empty
-                    # TODO: Check if deletion is happening properly
-                    if len(updated_trainer_unavail_list) == 0:
-                        print(
-                            "### Trainer ",
-                            end,
-                            " will no longer fail, removing from "
-                            " trainer_unavail_durations",
-                        )
-                        del self.trainer_unavail_durations[end]
-                    else:
-                        self.trainer_unavail_durations[end] = (
-                            updated_trainer_unavail_list
-                        )
+                picked_trainer_is_available = self.check_trainer_availability(end)
+            else:
+                # set trainer availability to True if not checking for failures
+                picked_trainer_is_available = True
 
             if (
                 end not in self._trainers_used_in_curr_round
@@ -347,6 +410,24 @@ class TopAggregator(SyncTopAgg):
                 )
                 # add trainer to list of trainers used in the current round
                 self._trainers_used_in_curr_round.append(end)
+
+                # log timestamp for sending weights to trainer
+                # recv_wts_from_trainer_ts - send_wts_to_trainer_ts => duration
+                # also check if trainer exists in the dict
+                if end not in self._trainer_training_duration_s.keys():
+                    last_send_wts_ts = time.time()
+                    new_trainer_track_training_duration = {
+                        "last_recv_wts_ts": "",
+                        "last_send_wts_ts": last_send_wts_ts,
+                        "total_training_time_s": 0
+                    }
+                    self._trainer_training_duration_s[
+                        end] = new_trainer_track_training_duration
+                else:
+                    last_send_wts_ts = time.time()
+                    self._trainer_training_duration_s[
+                        end]["last_send_wts_ts"] = last_send_wts_ts
+
             else:
                 if not picked_trainer_is_available:
                     logger.info(

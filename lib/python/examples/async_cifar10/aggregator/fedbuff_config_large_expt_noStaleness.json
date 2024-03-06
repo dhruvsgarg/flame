@@ -47,10 +47,11 @@
     "hyperparameters": {
         "batchSize": 32,
         "learningRate": 40.9,
-        "rounds": 750,
+        "rounds": 5000,
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 10,
-        "trackTrainerAvail": "False"
+        "trackTrainerAvail": "False",
+        "rejectStaleUpdates": "True"
     },
     "baseModel": {
         "name": "",

@@ -19,24 +19,23 @@ The example below is implemented based on the following example from pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
+import ast
+import json
 import logging
 import os
-import json
-import ast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-
-from flame.config import Config
-from flame.dataset import Dataset
-from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10
 
 # wandb setup
 import wandb
+from flame.config import Config
+from flame.dataset import Dataset
+from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
+from torchvision.datasets import CIFAR10
 
 wandb.init(
     # set the wandb project where this run will be logged
@@ -115,8 +114,9 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
         self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or False
+        self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
         self.trainer_unavail_durations = None
-        if(self.track_trainer_avail):
+        if self.track_trainer_avail:
             self.trainer_unavail_durations = self.read_trainer_unavailability()
             print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
 
@@ -130,7 +130,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
     def read_trainer_unavailability(self) -> None:
         print("Came to read_trainer_unavailability")
-        # maintain <trainer_id: [(unavail_start1, duration1), (start2, duration2).. etc]>
+        # maintain <trainer_id: [(unavail_start1, duration1), (start2, duration2)..]>
         trainer_unavail_dict = {}
 
         # set path to read json files from
@@ -142,12 +142,16 @@ class PyTorchCifar10Aggregator(TopAggregator):
         trainer_end_num = 100
         for i in range(trainer_start_num, trainer_end_num + 1):
             dirname = os.path.dirname(__file__)
-            with open(os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")) as f:
+            with open(os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")
+                      ) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                curr_trainer_unavail_time = ast.literal_eval(trainer_json["hyperparameters"]["failure_durations_s"])
+                curr_trainer_unavail_time = ast.literal_eval(trainer_json[
+                    "hyperparameters"]["failure_durations_s"]
+                    )
                 trainer_unavail_dict[curr_trainer_id] = curr_trainer_unavail_time
-                print("Completed file read for ", os.path.join(files_path, "trainer_" + str(i) + ".json"))
+                print("Completed file read for ", os.path.join(files_path, "trainer_"
+                                                               + str(i) + ".json"))
 
         # selector - do a linear search in the selector based on availability
         # selector - delete those tuples whose sleep time has passed
