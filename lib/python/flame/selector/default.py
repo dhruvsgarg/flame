@@ -23,7 +23,7 @@ from . import AbstractSelector, SelectorReturnType
 
 logger = logging.getLogger(__name__)
 
-
+# Debopam: trainers should use the default selector to select the aggregator
 class DefaultSelector(AbstractSelector):
     """A default selector class."""
 

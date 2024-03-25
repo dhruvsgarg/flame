@@ -76,6 +76,7 @@ class SelectorType(str, Enum):
     RANDOM = "random"
     FEDBUFF = "fedbuff"
     OORT = "oort"
+    ASYNCOORT = "async_oort"
 
 
 class DataSamplerType(str, Enum):

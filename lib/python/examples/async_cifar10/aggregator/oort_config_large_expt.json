@@ -64,13 +64,13 @@
         "uri": ""
     },
     "selector": {
-        "sort": "oort",
+        "sort": "async_oort",
         "kwargs": {
             "aggr_num": 10
         }
     },
     "optimizer": {
-        "sort": "fedavg",
+        "sort": "fedbuff",
         "kwargs": {}
     },
     "maxRunTime": 600,

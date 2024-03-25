@@ -21,7 +21,7 @@ from .selector.default import DefaultSelector
 from .selector.fedbuff import FedBuffSelector
 from .selector.random import RandomSelector
 from .selector.oort import OortSelector
-
+from .selector.async_oort import AsyncOortSelector
 
 class SelectorProvider(ObjectFactory):
     """Selector Provider."""
@@ -36,3 +36,4 @@ selector_provider.register(SelectorType.DEFAULT, DefaultSelector)
 selector_provider.register(SelectorType.RANDOM, RandomSelector)
 selector_provider.register(SelectorType.FEDBUFF, FedBuffSelector)
 selector_provider.register(SelectorType.OORT, OortSelector)
+selector_provider.register(SelectorType.ASYNCOORT, AsyncOortSelector)

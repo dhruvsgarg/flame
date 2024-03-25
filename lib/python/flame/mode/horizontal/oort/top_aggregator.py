@@ -60,6 +60,7 @@ class TopAggregator(BaseTopAggregator):
         # (k * overcommitment is selected for training with Oort)
 
         end_ids = channel.ends()
+        # TODO [Debopam]: check aggr_num in config files (this is K, should be 100 as in oort paper)
         aggr_num = min(self.config.selector.kwargs["aggr_num"], len(end_ids))
 
         received_end_count = 0

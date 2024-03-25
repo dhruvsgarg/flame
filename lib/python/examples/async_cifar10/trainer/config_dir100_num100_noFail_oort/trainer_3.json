@@ -569,7 +569,7 @@
         "kwargs": {}
     },
     "optimizer": {
-        "sort": "fedavg",
+        "sort": "fedbuff",
         "kwargs": {}
     },
     "maxRunTime": 300,
