@@ -9,6 +9,7 @@ from flame.common.typing import Scalar
 from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,10 @@ class AsyncOortSelector(AbstractSelector):
 
         self.exploitation_util_history = []
 
-        self.round_preferred_duration = float("inf")
-        self.round_threshold = 30
-        self.pacer_delta = 5
+        # self.round_preferred_duration = float("inf")
+        self.round_preferred_duration = timedelta.max
+        self.round_threshold = 30 # Debopam: couldn't find this value in paper
+        self.pacer_delta = 5 # Debopam: couldn't find this value in paper
         self.pacer_step = 20
 
         self.blocklist_threshold = -1
@@ -71,7 +73,7 @@ class AsyncOortSelector(AbstractSelector):
         trainer_unavail_list: list,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
-        logger.debug("calling oort select")
+        logger.debug("calling async_oort select")
 
         num_of_ends = min(len(ends), self.num_of_ends)
         if num_of_ends == 0:
@@ -319,6 +321,9 @@ class AsyncOortSelector(AbstractSelector):
 
         return utility_list, unexplored_end_ids
 
+    # Debopam - see if previous round's (ends in buffer) durations are used properly
+    # print updates from ends aggregated in buffer
+    # then see if the duration is coming from these ends
     def calculate_round_preferred_duration(self, ends: dict[str, End]) -> float:
         """
         Calculate round preferred duration based on round_threshold and
@@ -344,7 +349,9 @@ class AsyncOortSelector(AbstractSelector):
                 )
             ]
         else:
-            round_preferred_duration = float("inf")
+            # ***Debopam cannot return inf here; convert to datetime type
+            # round_preferred_duration = float("inf")
+            round_preferred_duration = timedelta.max
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
@@ -365,6 +372,7 @@ class AsyncOortSelector(AbstractSelector):
         """
 
         end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+        logger.info(f"***Debopam end_round_duration: {end_round_duration}, round_preferred_duration: {self.round_preferred_duration}")
         if end_round_duration <= self.round_preferred_duration:
             return 1
         else:
@@ -463,6 +471,7 @@ class AsyncOortSelector(AbstractSelector):
             curr_end_utility += temporal_uncertainty
 
             # Multiply global system utility
+            logger.info(f"***Debopam calling calculate_global_system_utility_of_trainer")
             global_system_utility = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )

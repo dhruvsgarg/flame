@@ -46,10 +46,11 @@
     ],
     "hyperparameters": {
         "batchSize": 32,
-        "learningRate": 0.001,
+        "learningRate": 40.9,
         "rounds": 750,
+        "aggGoal": 3,
         "epochs": 4,
-        "trackTrainerAvail": "True"
+        "trackTrainerAvail": "False"
     },
     "baseModel": {
         "name": "",
@@ -66,7 +67,7 @@
     "selector": {
         "sort": "async_oort",
         "kwargs": {
-            "aggr_num": 10
+            "aggr_num": 3
         }
     },
     "optimizer": {

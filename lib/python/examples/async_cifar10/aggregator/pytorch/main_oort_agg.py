@@ -135,7 +135,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         # set path to read json files from
         # TODO: Remove hardcoding later
-        files_path = "../../trainer/config_dir100_num100_traceFailure_1.5h"
+        files_path = "../../trainer/config_dir100_num100_noFail_oort"
 
         # set range of trainer ids to read from
         trainer_start_num = 1
