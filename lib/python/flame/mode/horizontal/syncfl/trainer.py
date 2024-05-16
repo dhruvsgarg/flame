@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
+TAG_HEARTBEAT = "heartbeat_send"
 
 
 class Trainer(Role, metaclass=ABCMeta):
@@ -174,6 +175,32 @@ class Trainer(Role, metaclass=ABCMeta):
         """Set data to remote role(s)."""
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
+        elif tag == TAG_HEARTBEAT:
+            self._send_heartbeat_to_agg(tag)
+
+    def _send_heartbeat_to_agg(self, tag: str) -> None:
+        logger.info(f"### SEND heartbeat for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_send_heartbeat] channel not found with {tag}")
+            return
+        
+        # this call waits for at least one peer to join this channel
+        logger.info(f"_send_heartbeat: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.HEARTBEAT: time.time(),
+        }
+        channel.send(end, msg)
+        logger.info(f"sending heartbeat done for trainer_id: {self.trainer_id}")
+
+        return
 
     def _send_weights(self, tag: str) -> None:
         logger.info(f"### SEND WEIGHTS for tag: {tag} "
@@ -234,6 +261,10 @@ class Trainer(Role, metaclass=ABCMeta):
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
+    
+    def send_heartbeat_to_agg(self) -> None:
+        logger.info("Inside trainer.py will call self.put(heartbeat)")
+        self.put(TAG_HEARTBEAT)
 
     def compose(self) -> None:
         """Compose role with tasklets."""
@@ -255,7 +286,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
             task_sleep_after_eval = Tasklet("sleep_after_eval", self.check_and_sleep)
 
-            task_sleep_after_put = Tasklet("sleep_after_put", self.check_and_sleep)
+            task_sleep_after_put_weight = Tasklet("sleep_after_put_weight",
+                                                  self.check_and_sleep)
 
             task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics",
                                                     self.check_and_sleep)
@@ -264,12 +296,14 @@ class Trainer(Role, metaclass=ABCMeta):
 
             task_eval = Tasklet("evaluate", self.evaluate)
 
-            task_put = Tasklet("upload", self.put, TAG_UPLOAD)
+            task_put_weight = Tasklet("upload", self.put, TAG_UPLOAD)
 
             task_save_metrics = Tasklet("save_metrics", self.save_metrics)
 
             # create a loop object with loop exit condition function
             loop = Loop(loop_check_fn=lambda: self._work_done)
+
+            # Now start the rest of the tasks
             (
                 task_internal_init
                 >> task_load_data
@@ -277,8 +311,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 >> loop(
                     task_get >> task_sleep_after_get >> task_train >>
                     task_sleep_after_train >> task_eval >> task_sleep_after_eval >>
-                    task_put >> task_sleep_after_put >> task_save_metrics >>
-                    task_sleep_after_save_metrics
+                    task_put_weight >> task_sleep_after_put_weight >>
+                    task_save_metrics >> task_sleep_after_save_metrics
                 )
             )
 
@@ -289,4 +323,4 @@ class Trainer(Role, metaclass=ABCMeta):
     @classmethod
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the trainer role."""
-        return [TAG_FETCH, TAG_UPLOAD]
+        return [TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT]

@@ -19,24 +19,23 @@ The example below is implemented based on the following example from pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
+import ast
+import json
 import logging
 import os
-import json
-import ast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-
-from flame.config import Config
-from flame.dataset import Dataset
-from flame.mode.horizontal.oort.top_aggregator import TopAggregator
 import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10
 
 # wandb setup
 import wandb
+from flame.config import Config
+from flame.dataset import Dataset
+from flame.mode.horizontal.oort.top_aggregator import TopAggregator
+from torchvision.datasets import CIFAR10
 
 wandb.init(
     # set the wandb project where this run will be logged
@@ -114,9 +113,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
-        self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or False
+        self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
         self.trainer_unavail_durations = None
-        if(self.track_trainer_avail):
+        if (self.track_trainer_avail["enabled"] and
+            self.track_trainer_avail["type"] == "ORACULAR"):
             self.trainer_unavail_durations = self.read_trainer_unavailability()
             print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
 

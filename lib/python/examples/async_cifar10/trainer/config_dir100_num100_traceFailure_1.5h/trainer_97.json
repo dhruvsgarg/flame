@@ -31,11 +31,13 @@
       "funcTags": {
         "aggregator": [
           "distribute",
-          "aggregate"
+          "aggregate",
+          "heartbeat_recv"
         ],
         "trainer": [
           "fetch",
-          "upload"
+          "upload",
+          "heartbeat_send"
         ]
       }
     }
@@ -550,7 +552,11 @@
       30781,
       49475
     ],
-    "failure_durations_s": "[(157, 919), (1076, 7), (1083, 4), (1090, 700), (1856, 753), (2731, 852), (3679, 762), (4520, 970)]"
+    "failure_durations_s": "[(157, 919), (1076, 7), (1083, 4), (1090, 700), (1856, 753), (2731, 852), (3679, 762), (4520, 970)]",
+    "heartbeats": {
+      "enabled": "False",
+      "frequency_s": 1
+    }
   },
   "baseModel": {
     "name": "",
