@@ -31,11 +31,13 @@
             "funcTags": {
                 "aggregator": [
                     "distribute",
-                    "aggregate"
+                    "aggregate",
+                    "heartbeat_recv"
                 ],
                 "trainer": [
                     "fetch",
-                    "upload"
+                    "upload",
+                    "heartbeat_send"
                 ]
             }
         }

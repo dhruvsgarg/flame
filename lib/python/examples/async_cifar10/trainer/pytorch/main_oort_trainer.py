@@ -19,23 +19,22 @@ The example below is implemented based on the following example from pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
+import ast
+import calendar
 import logging
-
-from flame.config import Config
-from flame.mode.horizontal.oort.trainer import Trainer
+import time
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
-from torch import Tensor
 import torch.optim as optim
 import torch.utils.data as data_utils
+import torchvision
+import torchvision.transforms as transforms
+from flame.config import Config
+from flame.mode.horizontal.oort.trainer import Trainer
+from torch import Tensor
 from torchvision.datasets import CIFAR10
-import time
-import calendar
-import ast
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +102,8 @@ class PyTorchCifar10Trainer(Trainer):
                 self.trainer_start_ts + self.failure_durations_s[0][0]
             )
         
-        self.sleep_check_complete = False
 
     def check_and_sleep(self):
-        self.sleep_check_complete = False
         curr_time = time.time()
         
         if (curr_time >= self.timestamp_next_sleep_s) and (
@@ -150,7 +147,6 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        self.sleep_check_complete = True
         logger.info(f"Task_id: {self.trainer_id} check_and_sleep completed at timestamp: {time.time()}")
 
     def initialize(self) -> None:

@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
+TAG_HEARTBEAT = "heartbeat_recv"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_END_TIME = "round_end_time"
 
@@ -122,8 +123,37 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
+        logger.debug(f"Invoking get() with tag {tag}")
         if tag == TAG_AGGREGATE:
+            logger.info("In get(), got message for tag_agg")
             self._aggregate_weights(tag)
+        elif tag == TAG_HEARTBEAT:
+            logger.info(f"In get(), got message for tag_heartbeat,"
+                        f" will still invoke _aggregate_weights(with tag={tag})")
+            self._aggregate_weights(tag)
+
+    # def _read_heartbeat(self, tag: str) -> None:
+    #     logger.info("In _read_heartbeat()")
+    #     channel = self.cm.get_by_tag(tag)
+    #     if not channel:
+    #         logger.info("No channel found for read_heartbeat")
+    #         return
+        
+    #     logger.info(f"Channel {channel} found for read_heartbeat")
+    #     # receive heartbeat message from trainers
+    #     for msg, metadata in channel.recv_fifo(channel.ends()):
+    #         end, timestamp = metadata
+    #         if not msg:
+    #             logger.info(f"No data from {end}; skipping it")
+    #             continue
+
+    #         if MessageType.HEARTBEAT in msg:
+    #             heartbeat_timestamp = msg[MessageType.HEARTBEAT]
+    #             logger.info(f"received heartbeat from {end} "
+    #                         f"at timestamp {heartbeat_timestamp}")
+    #         else:
+    #             logger.warm(f"Tried to read message in _read_heartbeat() "
+    #                         f"but got message of type {msg}")
 
     def _aggregate_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)
@@ -141,6 +171,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             logger.info(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
+
+            logger.info(f"received message in agg_weights {msg} from {end}")
 
             if MessageType.WEIGHTS in msg:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -361,7 +393,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
-            task_get = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+            task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+
+            task_get_heartbeat = Tasklet("heartbeat_recv", self.get, TAG_HEARTBEAT)
 
             task_train = Tasklet("train", self.train)
 
@@ -389,12 +423,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
             >> task_init
             >> loop(
                 task_put
-                >> task_get
+                >> task_get_weights
                 >> task_train
                 >> task_eval
                 >> task_analysis
                 >> task_save_metrics
                 >> task_increment_round
+                >> task_get_heartbeat
             )
             >> task_end_of_training
             >> task_save_params
@@ -408,4 +443,4 @@ class TopAggregator(Role, metaclass=ABCMeta):
     @classmethod
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]

@@ -26,7 +26,8 @@ from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import GROUPBY_DEFAULT_GROUP
-from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, End
+from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT, VAL_END_STATE_RECVD, End
+from flame.mode.message import MessageType
 from flame.mode.role import Role
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
+VAL_CH_STATE_HEARTBEAT = "heartbeat"
 
 KEY_CH_SELECT_REQUESTER = "requester"
 
@@ -223,6 +225,8 @@ class Channel(object):
         return status
 
     def recv(self, end_id) -> tuple[Any, datetime]:
+        # NOTE (DG): This isnt being used in horizontal top-agg async, checked
+
         """Receive a message from an end in a blocking call fashion."""
         logger.debug(f"will receive data from {end_id}")
 
@@ -246,6 +250,9 @@ class Channel(object):
 
         if self.has(end_id):
             # set a property that says a message was received for the end
+            # TODO: (DG) All messages received are in the same state VAL_END_STATE_RECVD
+            # Not using VAL_END_STATE_HEARTBEAT yet
+            # NOTE: (DG) This is not used for async aggregator so can ignore for now
             self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
 
         # dissect the payload into msg and timestamp
@@ -329,6 +336,18 @@ class Channel(object):
             )
             metadata = (end_id, timestamp)
 
+            if msg is not None:
+                if MessageType.MODEL_VERSION in msg:
+                    logger.debug(f"msg of type MODEL_VERSION recvd for end {end_id}")
+                elif MessageType.HEARTBEAT in msg:
+                    logger.debug(f"msg of type HEARTBEAT recvd for end {end_id}")
+                    # TODO: (DG) Check if it helps here-
+                    # can reset ends state to VAL_END_STATE_HEARTBEAT
+                else:
+                    logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
+            else:
+                logger.warning("Tried to populate None message")
+
             # set cleanup ready event
             self._backend.set_cleanup_ready(end_id)
 
@@ -357,6 +376,7 @@ class Channel(object):
             except KeyError:
                 yield end_id, None
 
+            logger.debug(f"_get_inner() invoked for end_id: {end_id}")
             yield end_id, payload
 
         runs = []
@@ -377,6 +397,7 @@ class Channel(object):
 
                 await self._rx_queue.put(result)
                 self._active_recv_fifo_tasks.remove(end_id)
+                logger.debug(f"active task removed for {end_id}")
 
     def peek(self, end_id):
         """Peek rxq of end_id and return data if queue is not empty."""

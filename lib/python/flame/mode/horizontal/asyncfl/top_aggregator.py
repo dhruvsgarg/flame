@@ -24,7 +24,11 @@ from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
-from flame.mode.horizontal.syncfl.top_aggregator import TAG_AGGREGATE, TAG_DISTRIBUTE
+from flame.mode.horizontal.syncfl.top_aggregator import (
+    TAG_AGGREGATE,
+    TAG_DISTRIBUTE,
+    TAG_HEARTBEAT,
+)
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
@@ -55,6 +59,16 @@ class TopAggregator(SyncTopAgg):
         self._per_trainer_staleness_track = {}
         self._trainer_training_duration_s = {}
 
+        # check if distribute_weights was successful
+        self._prev_distribute_weights_success = False
+
+        # variables related to checking trainer availability
+        self._per_trainer_last_heartbeat_ts = {}
+        self._trainer_heartbeat_freq_s = self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"] or 99999
+        self._trainer_max_miss_heartbeats = self.config.hyperparameters.track_trainer_avail["max_allowed_miss_heartbeats"] or 99999
+        # maintain a set of all trainers that have sent heartbeats previously
+        self.all_trainers = set()
+
     def _reset_agg_goal_variables(self):
         logger.info("##### reset agg goal variables")
         # reset agg goal count
@@ -67,6 +81,65 @@ class TopAggregator(SyncTopAgg):
             f"{self._agg_goal_weights}"
         )
 
+    # TODO: (DG) Need to update or delete, not used right now
+    # def _read_heartbeat(self, tag: str) -> None:
+    #     """Receive trainer heartbeat messaages asynchronously.
+
+    #     This method is overriden from one in synchronous top aggregator
+    #     (..top_aggregator).
+    #     """
+    #     logger.info("In _read_heartbeat()")
+    #     channel = self.cm.get_by_tag(tag)
+    #     if not channel:
+    #         logger.info("No channel found for read_heartbeat")
+    #         return
+        
+    #     logger.info(f"Channel {channel} found for read_heartbeat")
+    #     # receive heartbeat message from trainers
+    #     msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+    #     end, _ = metadata
+    #     if not msg:
+    #         logger.debug(f"No data from {end}; skipping it")
+    #         return
+
+    #     logger.info(f"received heartbeat from {end}, will process further")
+
+    #     if MessageType.HEARTBEAT in msg:
+    #         heartbeat_timestamp = msg[MessageType.HEARTBEAT]
+    #         logger.info(f"received heartbeat from {end} "
+    #                     f"at timestamp {heartbeat_timestamp}")
+    
+    def _process_trainer_heartbeat(self, msg, end) -> None:
+        if MessageType.HEARTBEAT in msg:
+            heartbeat_timestamp = msg[MessageType.HEARTBEAT]
+            logger.info(f"received heartbeat from {end} "
+                        f"with timestamp {heartbeat_timestamp} "
+                        f"at current time: {time.time()}")
+            
+            # Add trainer to global_trainer set
+            # Used only to check unavailable trainers later
+            if end not in self.all_trainers:
+                self.all_trainers.add(end)
+                logger.info(f"Added end {end} to all_trainers set")
+            
+            # Add trainer to heartbeat dict if it isnt there
+            # Add only most recent heartbeat timestamp as value
+            # Discard stale heartbeats if received.
+            if end not in self._per_trainer_last_heartbeat_ts.keys():
+                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
+                logger.info(f"Added first timestamp for trainer {end} "
+                            f"with timestamp {heartbeat_timestamp}")
+            elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
+                logger.info(f"Will update timestamp for trainer {end} "
+                            f" (current={self._per_trainer_last_heartbeat_ts[end]})"
+                            f" with new timestamp {heartbeat_timestamp}")
+                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
+            else:
+                logger.info(f"the heartbeat for {end} with timestamp "
+                            f"{heartbeat_timestamp} was stale")
+        else:
+            logger.warning(f"Got invalid {msg} while processing heartbeat")
+    
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -77,15 +150,87 @@ class TopAggregator(SyncTopAgg):
         if not channel:
             return
 
-        # receive local model parameters from a trainer who arrives first
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
-        end, _ = metadata
-        if not msg:
-            logger.debug(f"No data from {end}; skipping it")
-            return
+        # # receive local model parameters from a trainer who arrives first
+        # msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+        # end, _ = metadata
+        # if not msg:
+        #     logger.debug(f"No data from {end}; skipping it")
+        #     return
+        
+        # # TODO (DG): Fix temporary hack
+        # # Both heartbeat and agg_weights operate on the same channel state
+        # # messages might bet mixed
+        # # handle heartbeat messages using an if condition
+        # # Ideally it should happen in a separate async loop
+        # if MessageType.MODEL_VERSION not in msg:
+        #     if MessageType.HEARTBEAT in msg:
+        #         self._process_trainer_heartbeat(msg=msg, end=end)
+        #     return
+        
+        # created a do-while equivalent to process messages from the queue
+        # the fifo queue is read for messages of type [heartbeats, wt_updates]
+        # we keep processing heartbeat messages till we hit a wt_update msg
 
+        while True:
+            # TODO: (DG) This condition might be causing the aggregator to perform blocking wait
+            # Confirm from logs- All trainers in recv state?
+            # The function gets blocked on next() and no weights get sent from distr_weights since it is not getting called
+
+            # If distr weights is called and concurrency is already met, will it still dispatch an update?
+            # Ideally it should not based on the condition.
+
+            # receive local model parameters from a trainer who arrives first
+            msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+            end, _ = metadata
+            if not msg:
+                logger.debug(f"No data from {end}; skipping it")
+                # THINK DG: Instead of returning from here, should the code wait
+                # Will it be an issue for concurrency? Will concurrency be maintained
+                # by distribute weights? Or will it assume that get has succeeded
+                # means that one trainer is now free to train?
+                return
+            
+            # TODO (DG): Fix temporary hack
+            # Both heartbeat and agg_weights operate on the same channel state
+            # messages might bet mixed
+            # handle heartbeat messages using an if condition
+            # Ideally it should happen in a separate async loop
+            if MessageType.HEARTBEAT in msg:
+                logger.info(f"received HEARTBEAT message in agg_weights from {end}")
+                self._process_trainer_heartbeat(msg=msg, end=end)
+                
+                # Trainer has declared availability and prev attempt had failed, 
+                # try to distribute weights now
+                if self._prev_tried_sampling_unavailable_trainer is True:
+                    # logger.info(f"breaking from checking heartbeats since {end} is now "
+                                # f"available to train")
+                    # return
+                    logger.info(f"Got heartbeat from trainer which can be used, "
+                                f"but will continue to next fifo_recv() msg")
+
+                # Return to retry _distribute_weights if previous invocation was
+                # unsuccessful in finding any available trainer to send weights to
+                if (self._prev_distribute_weights_success is False and
+                    end not in self._trainers_used_in_curr_round
+                    ):
+                    logger.info("Will retry _distribute_weights() since prev invocation "
+                                "did not use this newly available trainer.")
+                    # pause for 1 second before returning.
+                    # time.sleep(1)
+                    return
+
+            else:
+                break
+
+        # If message contains model updates, handle it
         logger.debug(f"received data from {end}")
         logger.info(f"*** received data from {end}")
+        if MessageType.MODEL_VERSION in msg:
+            logger.info(f"received MODEL_VERSION message in agg_weights from {end}")
+        else:
+            logger.warn(f"received UNKNOWN message in agg_weights from {end}")
+            return
+
         if self.reject_stale_updates:
             logger.info("Check trainer model version, disallow stale updates")
             if MessageType.MODEL_VERSION in msg:
@@ -311,7 +456,9 @@ class TopAggregator(SyncTopAgg):
                 f"P99 {np.percentile(trainer_staleness_arr, 99)}"
             )
 
-    def check_trainer_availability(self, end: str) -> bool:
+    def oracular_trainer_avail_check(self, end: str) -> bool:
+        logger.debug("In oracular_trainer_avail_check")
+        
         picked_trainer_is_available = True
         
         if end in self.trainer_unavail_durations.keys():
@@ -357,6 +504,69 @@ class TopAggregator(SyncTopAgg):
                 self.trainer_unavail_durations[end] = (
                     updated_trainer_unavail_list
                 )
+        else:
+            logger.info(f"No info on end {end} in self.trainer_unavail_durations"
+                        f", returning TRUE (default)")
+        return picked_trainer_is_available
+
+    def hearbeat_trainer_avail_check(self, end: str) -> bool:
+        picked_trainer_is_available = True
+        last_acceptable_heartbeat_ts = time.time() - (
+            self._trainer_max_miss_heartbeats * self._trainer_heartbeat_freq_s
+            )
+        
+        # return True if:
+        # heartbeat was received from trainer and
+        # it is within last_acceptable_heartbeat_ts
+
+        # return False if:
+        # if end isnt in heartbeat dict, means
+        # that the trainer hasn't given a heartbeat in a while and was removed
+        # based on last_acceptable_heartbeat_ts
+
+        # NOTE: During agg init, it might have registered a trainer, but not received heartbeat
+        # in such a scenario, we return True so that
+        # agg is able to send init_weights to trainer and start the training process
+        # this is when trainer not in all_trainers and not in dict
+
+        if (end not in self._per_trainer_last_heartbeat_ts.keys()) and (end not in self.all_trainers):
+            picked_trainer_is_available = True
+            logger.info(f"Might be trainer init(), trainer {end} hasnt sent any"
+                        f" heartbeats yet, but we return True")
+        elif end not in self._per_trainer_last_heartbeat_ts.keys():
+            picked_trainer_is_available = False
+            logger.info(f"Trainer {end} was already marked unavailable")
+        elif self._per_trainer_last_heartbeat_ts[end] < last_acceptable_heartbeat_ts:
+            del self._per_trainer_last_heartbeat_ts[end]
+            picked_trainer_is_available = False
+            logger.info(f"Trainer {end} missed max_allowed_heartbeats, "
+                        f"marked unavailable")
+        elif self._per_trainer_last_heartbeat_ts[end] >= last_acceptable_heartbeat_ts:
+            picked_trainer_is_available = True
+            logger.info(f"Trainer {end} is available")
+        else:
+            logger.error(f"Availability check failed, trainer {end}, returning True")
+        
+        return picked_trainer_is_available
+    
+    def get_unavailable_trainers(self) -> list:
+        # Works only for heartbeat based right now
+        # TODO: (DG) Extend for other trainer_avail_checks too
+        current_unavailable_trainers = [
+            end for end in
+            self.all_trainers if
+            end not in
+            self._per_trainer_last_heartbeat_ts.keys()]
+        return current_unavailable_trainers
+    
+    def check_trainer_availability(self, end: str) -> bool:
+        picked_trainer_is_available = True
+        if self.track_trainer_avail["enabled"] == "False":
+            return True
+        elif self.track_trainer_avail["type"] == "ORACULAR":
+            picked_trainer_is_available = self.oracular_trainer_avail_check(end)
+        elif self.track_trainer_avail["type"] == "HEARTBEAT":
+            picked_trainer_is_available = self.hearbeat_trainer_avail_check(end)
 
         return picked_trainer_is_available
 
@@ -374,6 +584,11 @@ class TopAggregator(SyncTopAgg):
         # this call waits for at least one peer to join this channel
         channel.await_join()
 
+        # set the _prev_dist_weights bool variable false at start
+        # it will be set to true on success and gets checked before agg_weights
+        # iff _prev_dist_weights_success was false at agg_weights, return and try again
+        self._prev_distribute_weights_success = False
+
         # before distributing weights, update it from global model
         self._update_weights()
 
@@ -384,7 +599,7 @@ class TopAggregator(SyncTopAgg):
 
             # TODO (DG): Separately maintain state of trainer availability
             # Should be easy to query the function to get the count of availability
-            if self.trainer_unavail_durations is not None:
+            if self.track_trainer_avail["enabled"]:
                 logger.info(f"### Will check if trainer {end} is available")
                 picked_trainer_is_available = self.check_trainer_availability(end)
             else:
@@ -394,6 +609,11 @@ class TopAggregator(SyncTopAgg):
             if (
                 end not in self._trainers_used_in_curr_round
             ) and picked_trainer_is_available:
+                # TODO: (DG) Verify if this implementation is correct
+                # _prev_tried_sampling_unavailable_trainer flag will be used
+                # to unblock agg_wts() function in the case that no new wts are arriving
+                # for aggregation but trainer has declared availability 
+                self._prev_tried_sampling_unavailable_trainer = False
                 logger.info(
                     f"sending weights with aggregator version {self._round} to {end}"
                 )
@@ -410,6 +630,10 @@ class TopAggregator(SyncTopAgg):
                 )
                 # add trainer to list of trainers used in the current round
                 self._trainers_used_in_curr_round.append(end)
+                
+                # set _prev_distribute_weights_success to true since
+                # we could send weights
+                self._prev_distribute_weights_success = True
 
                 # log timestamp for sending weights to trainer
                 # recv_wts_from_trainer_ts - send_wts_to_trainer_ts => duration
@@ -434,6 +658,8 @@ class TopAggregator(SyncTopAgg):
                         f"Tried to send weights to trainer {end} in round "
                         f"{self._round}, unavailable"
                     )
+                    # TODO: (DG) Verify if this implementation is correct
+                    self._prev_tried_sampling_unavailable_trainer = True
                 else:
                     logger.info(
                         f"Tried to send weights again to trainer {end} in "
@@ -466,7 +692,9 @@ class TopAggregator(SyncTopAgg):
 
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
-            task_get = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+            task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+
+            # task_get_heartbeat = Tasklet("heartbeat_recv", self.get, TAG_HEARTBEAT)
 
         c = self.composer
         # unlink tasklets that are chained from the parent class
@@ -479,7 +707,6 @@ class TopAggregator(SyncTopAgg):
         c.unlink()
 
         loop = Loop(loop_check_fn=lambda: self._work_done)
-
         # create a loop object for asyncfl to manage concurrency as well as
         # aggregation goal
         asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
@@ -491,7 +718,7 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("initialize")
             >> loop(
                 task_reset_agg_goal_vars
-                >> asyncfl_loop(task_put >> task_get)
+                >> asyncfl_loop(task_put >> task_get_weights)
                 >> c.tasklet("train")
                 >> c.tasklet("evaluate")
                 >> c.tasklet("analysis")
@@ -506,4 +733,4 @@ class TopAggregator(SyncTopAgg):
     @classmethod
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]

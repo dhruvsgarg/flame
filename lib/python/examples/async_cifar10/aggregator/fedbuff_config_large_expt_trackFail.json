@@ -31,11 +31,13 @@
             "funcTags": {
                 "aggregator": [
                     "distribute",
-                    "aggregate"
+                    "aggregate",
+                    "heartbeat_recv"
                 ],
                 "trainer": [
                     "fetch",
-                    "upload"
+                    "upload",
+                    "heartbeat_send"
                 ]
             }
         }
@@ -50,7 +52,13 @@
         "rounds": 5000,
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 10,
-        "trackTrainerAvail": "True"
+        "trackTrainerAvail": {
+            "enabled": "True",
+            "type": "HEARTBEAT",
+            "//": "Need heartbeat_freq_s and max_allowed_miss_heartbeats for heartbeat based tracking",
+            "heartbeat_freq_s": 600,
+            "max_allowed_miss_heartbeats": 2
+        }
     },
     "baseModel": {
         "name": "",

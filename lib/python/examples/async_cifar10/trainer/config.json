@@ -31,11 +31,13 @@
             "funcTags": {
                 "aggregator": [
                     "distribute",
-                    "aggregate"
+                    "aggregate",
+                    "heartbeat_recv"
                 ],
                 "trainer": [
                     "fetch",
-                    "upload"
+                    "upload",
+                    "heartbeat_send"
                 ]
             }
         }
@@ -47,7 +49,7 @@
     "hyperparameters": {
         "batchSize": 4,
         "learningRate": 0.01,
-        "rounds": 5,
+        "rounds": 10,
         "trainer_indices_list": [
             1,
             2,
@@ -59,7 +61,12 @@
             8,
             9,
             10
-        ]
+        ],
+        "failure_durations_s": "[(10, 20), (40,10), (70,10)]",
+        "heartbeats": {
+            "enabled": "True",
+            "frequency_s": 1
+        }
     },
     "baseModel": {
         "name": "",
