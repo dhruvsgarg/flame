@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """horizontal FL top level aggregator."""
@@ -93,7 +93,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self.metrics = dict()
 
         # disk cache is used for saving memory in case model is large
-        # automatic eviction of disk cache is disabled with cull_limit 0
+        # automatic eviction of disk cache is disabled with cull_limit
+        # 0
         self.cache = Cache()
         self.cache.reset("size_limit", 1e15)
         self.cache.reset("cull_limit", 0)
@@ -125,35 +126,43 @@ class TopAggregator(Role, metaclass=ABCMeta):
         """Get data from remote role(s)."""
         logger.debug(f"Invoking get() with tag {tag}")
         if tag == TAG_AGGREGATE:
-            logger.info("In get(), got message for tag_agg")
+            logger.info(f"In get(), got message for tag {tag},"
+                        f"invoking _aggregate_weights({tag})")
             self._aggregate_weights(tag)
         elif tag == TAG_HEARTBEAT:
-            logger.info(f"In get(), got message for tag_heartbeat,"
-                        f" will still invoke _aggregate_weights(with tag={tag})")
-            self._aggregate_weights(tag)
+            logger.info(f"In get(), got message for tag {tag},"
+                        f" will invoke _read_heartbeat({tag})")
+            self._read_heartbeat(tag)
 
-    # def _read_heartbeat(self, tag: str) -> None:
-    #     logger.info("In _read_heartbeat()")
-    #     channel = self.cm.get_by_tag(tag)
-    #     if not channel:
-    #         logger.info("No channel found for read_heartbeat")
-    #         return
+    def _read_heartbeat(self, tag: str) -> None:
+        logger.info("In syncfl _read_heartbeat()")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.info("No channel found for read_heartbeat")
+            return
         
-    #     logger.info(f"Channel {channel} found for read_heartbeat")
-    #     # receive heartbeat message from trainers
-    #     for msg, metadata in channel.recv_fifo(channel.ends()):
-    #         end, timestamp = metadata
-    #         if not msg:
-    #             logger.info(f"No data from {end}; skipping it")
-    #             continue
+        logger.info(f"Channel {channel} found for _read_heartbeat and tag {tag}")
+        logger.info(f"channel.ends(): {channel.ends()}")
+        # receive heartbeat message from trainers
+        # TODO: (DG) Check if it processes all heartbeats at once
+        # before proceeding to the next sampling?
+        for msg, metadata in channel.recv_fifo(channel.ends()):
+            end, timestamp = metadata
+            if not msg:
+                logger.info(f"No data from {end}; skipping it")
+                continue
 
-    #         if MessageType.HEARTBEAT in msg:
-    #             heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-    #             logger.info(f"received heartbeat from {end} "
-    #                         f"at timestamp {heartbeat_timestamp}")
-    #         else:
-    #             logger.warm(f"Tried to read message in _read_heartbeat() "
-    #                         f"but got message of type {msg}")
+            if MessageType.HEARTBEAT in msg:
+                heartbeat_timestamp = msg[MessageType.HEARTBEAT]
+                logger.info(
+                    f"received heartbeat from {end} "
+                    f"at timestamp {heartbeat_timestamp}"
+                    )
+            else:
+                logger.warm(
+                    f"Tried to read message in _read_heartbeat()"
+                    f"but got message of type {msg}"
+                    )
 
     def _aggregate_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)
@@ -249,7 +258,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     MessageType.DATASAMPLER_METADATA: datasampler_metadata,
                 },
             )
-            # register round start time on each end for round duration measurement.
+            # register round start time on each end for round duration
+            # measurement.
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
@@ -306,7 +316,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
             return
 
         logger.debug(f"Incremented round to {self._round}")
-        # set necessary properties to help channel decide how to select ends
+        # set necessary properties to help channel decide how to
+        # select ends
         channel.set_property("round", self._round)
 
     def save_params(self):
@@ -347,8 +358,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 logger.info(f"### Will check if trainer {end} is available")
                 curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
-                # iterate through unavailability list
-                # First, check if the current time is within any failure window
+                # iterate through unavailability list First, check if
+                # the current time is within any failure window
 
                 for start_time, duration in curr_trainer_unavail_list:
                     if start_time <= agg_time_since_start_s < start_time + duration:
@@ -366,8 +377,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     if (start_time + duration) >= agg_time_since_start_s
                     ]
 
-                # Remove end from trainer_unavail_durations if list is empty
-                # TODO: Check if deletion is happening properly
+                # Remove end from trainer_unavail_durations if list is
+                # empty TODO: Check if deletion is happening properly
                 if len(updated_trainer_unavail_list) == 0:
                     logger.info(f"### Trainer {end} will no longer fail, removing "
                                 f"from trainer_unavail_durations")
@@ -442,5 +453,6 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the top level aggregator role."""
+        """Return a list of function tags defined in the top level
+        aggregator role."""
         return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]

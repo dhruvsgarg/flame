@@ -12,7 +12,8 @@
     }
   ],
   "groupAssociation": {
-    "param-channel": "default"
+    "param-channel": "default",
+    "status-channel": "default"
   },
   "channels": [
     {
@@ -31,12 +32,32 @@
       "funcTags": {
         "aggregator": [
           "distribute",
-          "aggregate",
-          "heartbeat_recv"
+          "aggregate"
         ],
         "trainer": [
           "fetch",
-          "upload",
+          "upload"
+        ]
+      }
+    },
+    {
+      "description": "Liveliness update is sent from trainer to aggregator",
+      "groupBy": {
+        "type": "tag",
+        "value": [
+          "default"
+        ]
+      },
+      "name": "status-channel",
+      "pair": [
+        "trainer",
+        "aggregator"
+      ],
+      "funcTags": {
+        "aggregator": [
+          "heartbeat_recv"
+        ],
+        "trainer": [
           "heartbeat_send"
         ]
       }

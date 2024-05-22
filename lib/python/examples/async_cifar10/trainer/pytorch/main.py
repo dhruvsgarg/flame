@@ -122,12 +122,16 @@ class PyTorchCifar10Trainer(Trainer):
                 )
 
         # sending heartbeats to aggregator
-        self.heartbeats_enabled = (
-            self.config.hyperparameters.heartbeats["enabled"] or False
-            )
-        self.heartbeats_second_freq = (
-            self.config.hyperparameters.heartbeats["frequency_s"] or 99999
-        )
+        if "enabled" in self.config.hyperparameters.heartbeats.keys():
+            self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
+        else:
+            self.heartbeats_enabled = False
+        
+        if "frequency_s" in self.config.hyperparameters.heartbeats.keys():
+            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats["frequency_s"]
+        else:
+            self.heartbeats_second_freq = 99999    
+        
         # TODO: (DG) self.timestamp_next_heartbeat_s might not be getting used. Remove?
         # if heartbeats are enabled, compute first heartbeat time
         if self.heartbeats_enabled is True:
