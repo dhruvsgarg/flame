@@ -18,7 +18,7 @@
 import logging
 import time
 
-from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -192,7 +192,7 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.await_join()
 
         # one aggregator is sufficient
-        end = channel.one_end(VAL_CH_STATE_SEND)
+        end = channel.one_end(VAL_CH_STATE_HTBT_SEND)
 
         msg = {
             MessageType.HEARTBEAT: time.time(),
