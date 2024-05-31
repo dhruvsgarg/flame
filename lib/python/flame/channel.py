@@ -22,7 +22,6 @@ from typing import Any, Union
 
 import cloudpickle
 from aiostream import stream
-
 from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
@@ -157,15 +156,21 @@ class Channel(object):
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
         async def inner():
-            selected = self._selector.select(self._ends, self.properties)
+            selected = self._selector.select(
+                self._ends,
+                self.properties
+                )
 
             id_list = list()
             for end_id, kv in selected.items():
                 id_list.append(end_id)
+                logger.debug(f"appended end_id {end_id} to id_list, kv is {kv}")
                 if not kv:
                     continue
 
                 (key, value) = kv
+                logger.debug(f"Setting property for end_id {end_id} "
+                             f"using (key,val) = ({key},{value})")
                 self._ends[end_id].set_property(key, value)
 
             return id_list
@@ -176,6 +181,12 @@ class Channel(object):
     def all_ends(self):
         """Return a list of all end ids (needed in FedDyn to compute alpha values)."""
         return list(self._ends.keys())
+    
+    def cleanup_recvd_ends(self):
+        """Performs cleanup of end states in the selector. Usually
+        only performed after aggregation of a round completes"""
+        self._selector._cleanup_recvd_ends(self._ends)
+        logger.debug("Cleaned up ends successfully")
 
     def ends_digest(self) -> str:
         """Compute a digest of ends."""

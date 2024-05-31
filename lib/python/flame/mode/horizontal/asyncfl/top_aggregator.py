@@ -114,37 +114,53 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug(f"aggregation finished for round {self._round}")
 
-    def _distribute_weights(self, tag: str) -> None:
-        """Distributed a global model in asynchronous FL fashion.
+        logger.debug("Agg goal reached, so resetting trainer end states in the channel")
+        channel.cleanup_recvd_ends()
 
-        This method is overriden from one in synchronous top aggregator
+    def _distribute_weights(self, tag: str) -> None:
+        """Distribute a global model in asynchronous FL fashion.
+
+        This method is overridden from one in synchronous top aggregator
         (..top_aggregator).
         """
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug(f"channel not found for tag {tag}")
-            return
+        while True:
+            channel = self.cm.get_by_tag(tag)
+            if not channel:
+                logger.debug(f"channel not found for tag {tag}, retrying in 1s")
+                time.sleep(1)
+                continue
 
-        # this call waits for at least one peer to join this channel
-        channel.await_join()
+            # this call waits for at least one peer to join this channel
+            channel.await_join()
 
-        # before distributing weights, update it from global model
-        self._update_weights()
+            # before distributing weights, update it from global model
+            self._update_weights()
 
-        # send out global model parameters to trainers
-        for end in channel.ends(VAL_CH_STATE_SEND):
-            logger.debug(f"sending weights to {end}")
-            # we use _round to indicate a model version
-            channel.send(
-                end,
-                {
-                    MessageType.WEIGHTS: weights_to_device(
-                        self.weights, DeviceType.CPU
-                    ),
-                    MessageType.ROUND: self._round,
-                    MessageType.MODEL_VERSION: self._round,
-                },
-            )
+            # check if there are any ends to send weights to
+            ends = channel.ends(VAL_CH_STATE_SEND)
+            if not ends:
+                logger.debug(f"no trainers found for tag {tag}, retrying in 1 second")
+                time.sleep(1)
+                continue
+
+            # send out global model parameters to trainers
+            for end in ends:
+                # Send shouldn't be allowed if already sent to a
+                # trainer in that same round
+                logger.debug(f"sending weights to {end}")
+                # we use _round to indicate a model version
+                channel.send(
+                    end,
+                    {
+                        MessageType.WEIGHTS: weights_to_device(
+                            self.weights, DeviceType.CPU
+                        ),
+                        MessageType.ROUND: self._round,
+                        MessageType.MODEL_VERSION: self._round,
+                    },
+                )
+            # if successfully sent, break out of the loop
+            break
 
     def compose(self) -> None:
         """Compose role with tasklets."""

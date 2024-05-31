@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """horizontal FL trainer."""
@@ -22,10 +22,15 @@ from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
-from flame.common.util import (MLFramework, delta_weights_pytorch,
-                               delta_weights_tensorflow,
-                               get_ml_framework_in_use, valid_frameworks,
-                               weights_to_device, weights_to_model_device)
+from flame.common.util import (
+    MLFramework,
+    delta_weights_pytorch,
+    delta_weights_tensorflow,
+    get_ml_framework_in_use,
+    valid_frameworks,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
@@ -70,7 +75,8 @@ class Trainer(Role, metaclass=ABCMeta):
         self.registry_client.setup_run()
         self.metrics = dict()
 
-        # needed for trainer-side optimization algorithms such as fedprox
+        # needed for trainer-side optimization algorithms such as
+        # fedprox
         temp_opt = optimizer_provider.get(
             self.config.optimizer.sort, **self.config.optimizer.kwargs
         )
@@ -114,8 +120,8 @@ class Trainer(Role, metaclass=ABCMeta):
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"channel not found with tag {tag}")
-            # we don't want to keep calling this too fast
-            # so let's sleep 1 second
+            # we don't want to keep calling this too fast so let's
+            # sleep 1 second
             time.sleep(1)
             return
 
@@ -132,8 +138,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 # when the work is done, we cancel continue condition
                 # (i.e., we set fetch_success to True)
                 self.fetch_success = True
-            # we don't want to keep calling this too fast
-            # so let's sleep 1 second
+            # we don't want to keep calling this too fast so let's
+            # sleep 1 second
             time.sleep(1)
             return
 
@@ -154,6 +160,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.fetch_success = True
         logger.debug(f"work_done: {self._work_done}, round: {self._round}")
+
+        logger.debug("Model weights received, so resetting aggregator end states in "
+                     "the channel")
+        channel.cleanup_recvd_ends()
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
@@ -192,7 +202,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def save_metrics(self):
         """Save metrics in a model registry."""
-        # update self.metrics with metrics from MetricCollector instance
+        # update self.metrics with metrics from MetricCollector
+        # instance
         self.metrics = self.metrics | self.mc.get()
         self.mc.clear()
         logger.debug(f"saving metrics: {self.metrics}")
@@ -259,5 +270,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the trainer role."""
+        """Return a list of function tags defined in the trainer
+        role."""
         return [TAG_FETCH, TAG_UPLOAD]

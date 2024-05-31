@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """FedBuffSelector class."""
@@ -51,13 +51,13 @@ class FedBuffSelector(AbstractSelector):
     ) -> SelectorReturnType:
         """Select ends from the given ends to meet concurrency level.
 
-        This select method chooses ends differently depending on what state
-        a channel is in.
-        In 'send' state, it chooses ends that are not in self.selected_ends.
-        In 'recv' state, it chooses all ends from self.selected_ends.
-        Essentially, if an end is in self.selected_ends, it means that we sent
-        some message already to that end. For such an end, we exclude it from
-        send and include it for recv in return.
+        This select method chooses ends differently depending on what
+        state a channel is in. In 'send' state, it chooses ends that
+        are not in self.selected_ends. In 'recv' state, it chooses all
+        ends from self.selected_ends. Essentially, if an end is in
+        self.selected_ends, it means that we sent some message already
+        to that end. For such an end, we exclude it from send and
+        include it for recv in return.
         """
         logger.debug("calling fedbuff select")
         logger.debug(f"len(ends): {len(ends)}, c: {self.c}")
@@ -73,8 +73,7 @@ class FedBuffSelector(AbstractSelector):
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
-
-        self._cleanup_recvd_ends(ends)
+        
         results = {}
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
             results = self._handle_send_state(ends, concurrency)
@@ -94,7 +93,14 @@ class FedBuffSelector(AbstractSelector):
         return results
 
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
-        """Clean up ends whose a message was received, from selected ends."""
+        """Clean up ends whose a message was received, from selected
+        ends.
+        
+        Note: It sets the end state to none which makes it eligible to
+        be sampled again. This can cause problems if sampled in the
+        same round. Thus, for aggregator, the _cleanup_recvd_ends
+        should be triggered only after aggregation of weights succeeds
+        on meeting agg_goal."""
         logger.debug("clean up recvd ends")
         logger.debug(f"ends: {ends.keys()}")
         logger.debug(f"selected ends: {self.selected_ends}")
@@ -102,10 +108,10 @@ class FedBuffSelector(AbstractSelector):
         selected_ends = self.selected_ends[self.requester]
         for end_id in list(selected_ends):
             if end_id not in ends:
-                # something happened to end of end_id
-                # (e.g., connection loss)
-                # let's remove it from selected_ends
-                logger.debug(f"no end id {end_id} in ends")
+                # something happened to end of end_id (e.g.,
+                # connection loss) let's remove it from selected_ends
+                logger.debug(f"no end id {end_id} in ends, removing "
+                             f"from selected_ends and all_selected")
                 selected_ends.remove(end_id)
                 self.all_selected.remove(end_id)
             else:
@@ -113,6 +119,8 @@ class FedBuffSelector(AbstractSelector):
                 logger.debug(f"end id {end_id} state: {state}")
                 if state == VAL_END_STATE_RECVD:
                     ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+                    logger.debug(f"Setting {end_id} state to {VAL_END_STATE_NONE}, and"
+                                 f" removing from selected_ends and all_selected")
                     selected_ends.remove(end_id)
                     self.all_selected.remove(end_id)
 
@@ -120,19 +128,35 @@ class FedBuffSelector(AbstractSelector):
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
+        
+        # Check for invalid selections and remove them
+        for end_id in list(selected_ends):
+            if end_id not in ends:
+                # something happened to end of end_id (e.g.,
+                # connection loss) let's remove it from selected_ends
+                logger.debug(f"Removing invalid prior selection! "
+                             f"No end id {end_id} in ends, "
+                             f"removing from selected_ends "
+                             f"and all_selected")
+                selected_ends.remove(end_id)
+                self.all_selected.remove(end_id)
 
-        extra = max(0, concurrency - len(selected_ends))
-        logger.debug(f"c: {concurrency}, ends: {ends.keys()}")
+        extra = min(max(0, concurrency - len(selected_ends)), 1)
+        
+        logger.debug(f"c: {concurrency}, ends: {ends.keys()},"
+                     f"len(selected_ends): {len(selected_ends)}, extra: {extra}")
         candidates = []
         idx = 0
         # reservoir sampling
         for end_id in ends.keys():
             if end_id in self.all_selected:
                 # skip if an end is already selected
+                logging.debug(f"end_id {end_id} in all_selected, so skipping")
                 continue
 
             idx += 1
             if len(candidates) < extra:
+                logging.debug(f"Added end_id {end_id} to candidates")
                 candidates.append(end_id)
                 continue
 
@@ -141,12 +165,14 @@ class FedBuffSelector(AbstractSelector):
                 candidates[i] = end_id
 
         logger.debug(f"candidates: {candidates}")
-
+ 
         # add candidates to selected ends
         selected_ends = selected_ends.union(candidates)
         self.selected_ends[self.requester] = selected_ends
 
         self.all_selected = self.all_selected.union(candidates)
+        logging.debug(f"self.all_selected {self.all_selected} after combining with "
+                      f"candidates {candidates}")
 
         return {end_id: None for end_id in candidates}
 
@@ -161,6 +187,8 @@ class FedBuffSelector(AbstractSelector):
             candidates = dict()
             for end_id, end in ends.items():
                 if end_id not in self.all_selected:
+                    logging.debug(f"end_id {end_id} not in all_selected, adding "
+                                  f"to candidates: key {end_id}, val: {end}")
                     candidates[end_id] = end
 
             cc = min(len(candidates), concurrency)
@@ -169,6 +197,8 @@ class FedBuffSelector(AbstractSelector):
             self.selected_ends[self.requester] = selected_ends
 
             self.all_selected = self.all_selected.union(selected_ends)
+            logging.debug(f"self.all_selected {self.all_selected} after combining with "
+                          f"selected_ends {selected_ends}")
 
         logger.debug(f"requester: {self.requester}, selected: {selected_ends}")
 
@@ -177,7 +207,8 @@ class FedBuffSelector(AbstractSelector):
     def reset_selected_ends(self, requester: str) -> None:
         """Reset mapping between requester and selected ends.
 
-        This is needed when requester leaves channel due to e.g., failure.
+        This is needed when requester leaves channel due to e.g.,
+        failure.
         """
         logger.debug(f"trying to reset selected ends of {requester}")
         if requester not in self.selected_ends:
