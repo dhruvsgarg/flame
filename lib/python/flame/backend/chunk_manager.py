@@ -77,13 +77,15 @@ class ChunkThread(Thread):
                 # set cleanup ready event for a given end id
                 await self._backend.set_cleanup_ready_async(end_id)
                 return
-
+            logger.debug(f"rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
 
         while not self._done:
             try:
+                logger.debug("Trying to fetch from queue")
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
+                logger.debug("Currently empty")
                 continue
 
             timestamp = datetime.now()
@@ -91,14 +93,18 @@ class ChunkThread(Thread):
             # assemble is done in a chunk thread so that it won't block
             # asyncio task
             status = self.chunk_store.assemble(msg)
+            logger.debug("Assemble attempted for chunkstore")
             if not status:
                 # reset chunk_store if message is wrong
                 self.chunk_store.reset()
 
                 # set cleanup ready event for a given end id
                 self._backend.set_cleanup_ready(msg.end_id)
+                logger.debug(f"EOM was set, put a cleanup ready for end_id: {msg.end_id}")
             else:
+                logger.debug(f"Status is {status}")
                 if not self.chunk_store.eom:
+                    logger.debug(f"self.chunk_store.eom is {self.chunk_store.eom}")
                     # not an end of message, hence, can't get a payload
                     # out of chunk store yet
 
@@ -107,6 +113,7 @@ class ChunkThread(Thread):
                     continue
 
                 payload = self.chunk_store.get_data()
+                logger.debug("Payload will now be pushed to target receive queue")
                 # now push payload to a target receive queue.
                 _, status = run_async(
                     inner(msg.end_id, payload, timestamp), self._backend.loop()

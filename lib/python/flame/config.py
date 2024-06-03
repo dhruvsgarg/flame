@@ -141,6 +141,12 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     #       This needs to be revisited (perhaps removed) once per-role config
     #       functionality is in place in the control plane.
     concurrency: t.Optional[int] = Field(alias="concurrency", default=None)
+    track_trainer_avail: t.Optional[dict] = Field(alias="trackTrainerAvail",
+                                                  default={})
+    reject_stale_updates: t.Optional[bool] = Field(alias="rejectStaleUpdates",
+                                                   default=False)
+    heartbeats: t.Optional[dict] = Field(alias="heartbeats",
+                                         default={})
 
 
 class Groups(FlameSchema):

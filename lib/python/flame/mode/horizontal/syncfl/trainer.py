@@ -18,7 +18,7 @@
 import logging
 import time
 
-from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
+TAG_HEARTBEAT = "heartbeat_send"
 
 
 class Trainer(Role, metaclass=ABCMeta):
@@ -108,24 +109,30 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.fetch_success = False
 
+        self.trainer_id = self.config.task_id
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        logger.debug("calling _fetch_weights")
+        logger.info(f"### FETCH WEIGHTS start for tag: {tag} "
+                    f"and trainer_id {self.trainer_id}")
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.debug(f"channel not found with tag {tag}")
-            # we don't want to keep calling this too fast so let's
-            # sleep 1 second
+            logger.info(f"fetch weights, channel not found with tag {tag} "
+                        f"for trainer_id {self.trainer_id}")
+            # we don't want to keep calling this too fast
+            # so let's sleep 1 second
             time.sleep(1)
             return
 
         # this call waits for at least one peer joins this channel
+        logger.info(f"_fetch_weights: waiting for someone to join channel: {channel} "
+                    f"for trainer_id {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -133,7 +140,7 @@ class Trainer(Role, metaclass=ABCMeta):
         msg, _ = channel.recv(end)
 
         if not msg:
-            logger.debug("no message received")
+            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition
                 # (i.e., we set fetch_success to True)
@@ -142,6 +149,8 @@ class Trainer(Role, metaclass=ABCMeta):
             # sleep 1 second
             time.sleep(1)
             return
+
+        logger.info(f"New message received for trainer_id {self.trainer_id}")
 
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -159,7 +168,13 @@ class Trainer(Role, metaclass=ABCMeta):
             )
 
         self.fetch_success = True
-        logger.debug(f"work_done: {self._work_done}, round: {self._round}")
+
+        logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
+                    f"round: {self._round} and work_done: {self._work_done} ###")
+
+        logger.debug("Model weights received, so resetting aggregator end states in "
+                     "the channel")
+        channel.cleanup_recvd_ends()
 
         logger.debug("Model weights received, so resetting aggregator end states in "
                      "the channel")
@@ -169,15 +184,44 @@ class Trainer(Role, metaclass=ABCMeta):
         """Set data to remote role(s)."""
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
+        elif tag == TAG_HEARTBEAT:
+            self._send_heartbeat_to_agg(tag)
+
+    def _send_heartbeat_to_agg(self, tag: str) -> None:
+        logger.info(f"### SEND heartbeat for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_send_heartbeat] channel not found with {tag}")
+            return
+        
+        # this call waits for at least one peer to join this channel
+        logger.info(f"_send_heartbeat: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_HTBT_SEND)
+
+        msg = {
+            MessageType.HEARTBEAT: time.time(),
+        }
+        channel.send(end, msg)
+        logger.info(f"sending heartbeat done for trainer_id: {self.trainer_id}")
+
+        return
 
     def _send_weights(self, tag: str) -> None:
-        logger.debug("calling _send_weights")
+        logger.info(f"### SEND WEIGHTS for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_weights] channel not found with {tag}")
             return
 
         # this call waits for at least one peer to join this channel
+        logger.info(f"_send_weights: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -198,7 +242,7 @@ class Trainer(Role, metaclass=ABCMeta):
             MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
         }
         channel.send(end, msg)
-        logger.debug("sending weights done")
+        logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
 
         # DHRUV: REMOVE LATER
         logger.debug("Testing channel leave after 5s after first update is sent")
@@ -242,6 +286,10 @@ class Trainer(Role, metaclass=ABCMeta):
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
+    
+    def send_heartbeat_to_agg(self) -> None:
+        logger.info("Inside trainer.py will call self.put(heartbeat)")
+        self.put(TAG_HEARTBEAT)
 
     def compose(self) -> None:
         """Compose role with tasklets."""
@@ -257,22 +305,39 @@ class Trainer(Role, metaclass=ABCMeta):
             task_get = Tasklet("fetch", self.get, TAG_FETCH)
             task_get.set_continue_fn(cont_fn=lambda: not self.fetch_success)
 
+            task_sleep_after_get = Tasklet("sleep_after_get", self.check_and_sleep)
+
+            task_sleep_after_train = Tasklet("sleep_after_train", self.check_and_sleep)
+
+            task_sleep_after_eval = Tasklet("sleep_after_eval", self.check_and_sleep)
+
+            task_sleep_after_put_weight = Tasklet("sleep_after_put_weight",
+                                                  self.check_and_sleep)
+
+            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics",
+                                                    self.check_and_sleep)
+
             task_train = Tasklet("train", self.train)
 
             task_eval = Tasklet("evaluate", self.evaluate)
 
-            task_put = Tasklet("upload", self.put, TAG_UPLOAD)
+            task_put_weight = Tasklet("upload", self.put, TAG_UPLOAD)
 
             task_save_metrics = Tasklet("save_metrics", self.save_metrics)
 
             # create a loop object with loop exit condition function
             loop = Loop(loop_check_fn=lambda: self._work_done)
+
+            # Now start the rest of the tasks
             (
                 task_internal_init
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_train >> task_eval >> task_put >> task_save_metrics
+                    task_get >> task_sleep_after_get >> task_train >>
+                    task_sleep_after_train >> task_eval >> task_sleep_after_eval >>
+                    task_put_weight >> task_sleep_after_put_weight >>
+                    task_save_metrics >> task_sleep_after_save_metrics
                 )
             )
 
@@ -282,6 +347,5 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the trainer
-        role."""
-        return [TAG_FETCH, TAG_UPLOAD]
+        """Return a list of function tags defined in the trainer role."""
+        return [TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT]

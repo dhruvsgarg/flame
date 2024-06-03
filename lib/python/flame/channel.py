@@ -26,7 +26,13 @@ from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import GROUPBY_DEFAULT_GROUP
-from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, End
+from flame.end import (
+    KEY_END_STATE,
+    VAL_END_STATE_HEARTBEAT_RECVD,
+    VAL_END_STATE_RECVD,
+    End,
+)
+from flame.mode.message import MessageType
 from flame.mode.role import Role
 
 logger = logging.getLogger(__name__)
@@ -34,6 +40,8 @@ logger = logging.getLogger(__name__)
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
+VAL_CH_STATE_HTBT_RECV = "heartbeat_recv"
+VAL_CH_STATE_HTBT_SEND = "heartbeat_send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
 
@@ -62,6 +70,8 @@ class Channel(object):
         self.properties = dict()
         self.await_join_event = None
         self.mc = Role.mc
+
+        self.trainer_unavail_list = None
 
         # access _ends with caution. in many cases, _ends must be
         # accessed within a backend's loop
@@ -151,17 +161,25 @@ class Channel(object):
 
     def ends(self, state: Union[None, str] = None) -> list[str]:
         """Return a list of end ids."""
-        if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
+        logger.info(f"ends() for channel name: {self._name}, current self._ends: {self._ends}")
+        if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND or state == VAL_CH_STATE_HTBT_RECV or state == VAL_CH_STATE_HTBT_SEND:
             self.properties[KEY_CH_STATE] = state
 
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
         async def inner():
-            selected = self._selector.select(
-                self._ends,
-                self.properties
-                )
-
+            if self.trainer_unavail_list is not None:
+                selected = self._selector.select(
+                    self._ends, self.properties,
+                    self.trainer_unavail_list
+                    )
+            else:
+                selected = self._selector.select(
+                    self._ends,
+                    self.properties
+                    )
+            logger.info(f"selected returned from select(): {selected}")
+            
             id_list = list()
             for end_id, kv in selected.items():
                 id_list.append(end_id)
@@ -173,10 +191,12 @@ class Channel(object):
                 logger.debug(f"Setting property for end_id {end_id} "
                              f"using (key,val) = ({key},{value})")
                 self._ends[end_id].set_property(key, value)
-
+                logger.info(f"Updated end_id {end_id} property to key: {key}, value: {value} in self._ends")
+            logger.info(f"Going to return id_list: {id_list}")
             return id_list
 
         result, _ = run_async(inner(), self._backend.loop())
+        logger.info(f"Going to return result: {result}")
         return result
 
     def all_ends(self):
@@ -231,6 +251,9 @@ class Channel(object):
         return status
 
     def recv(self, end_id) -> tuple[Any, datetime]:
+        # NOTE (DG): This isnt being used in horizontal top-agg async,
+        # checked
+
         """Receive a message from an end in a blocking call
         fashion."""
         logger.debug(f"will receive data from {end_id}")
@@ -299,18 +322,23 @@ class Channel(object):
         if first_k <= 0:
             # a negative value in first_k is an error we handle it by
             # setting first_k as the length of the array
+            logger.debug(f"first_k < 0 with value {first_k}")
             first_k = len(end_ids)
 
         self.first_k = first_k
+        logger.debug(f"self.first_k: {self.first_k}")
 
         if self.first_k == 0:
             # we got an empty end id list
+            logger.debug("Got an empty end id list, will yield None")
             yield None, ("", datetime.now())
 
         async def _put_message_to_rxq_inner():
+            logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
             _ = asyncio.create_task(self._streamer_for_recv_fifo(end_ids))
 
         async def _get_message_inner():
+            logger.debug("In _get_msg_inner(), will await until getting a message")
             return await self._rx_queue.get()
 
         # first, create an asyncio task to fetch messages and put a
@@ -322,6 +350,7 @@ class Channel(object):
         # the temp queue; we call this coroutine first_k times
         for _ in range(first_k):
             result, status = run_async(_get_message_inner(), self._backend.loop())
+            logger.debug(f"After getting message, status: {status}")
             (end_id, payload) = result
             logger.debug(f"get payload for {end_id}")
 
@@ -331,7 +360,7 @@ class Channel(object):
                 # received for the end
                 self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
             else:
-                logger.debug(f"channel has no end id {end_id} for msg")
+                logger.debug(f"channel {self._name} has no end id {end_id} for msg")
 
             msg, timestamp = (
                 (cloudpickle.loads(payload[0]), payload[1])
@@ -339,6 +368,18 @@ class Channel(object):
                 else (None, None)
             )
             metadata = (end_id, timestamp)
+
+            if msg is not None:
+                if MessageType.MODEL_VERSION in msg:
+                    logger.debug(f"msg of type MODEL_VERSION recvd for end {end_id}")
+                elif MessageType.HEARTBEAT in msg:
+                    logger.debug(f"msg of type HEARTBEAT recvd for end {end_id}")
+                    # TODO: (DG) Check if it helps here- can reset
+                    # ends state to VAL_END_STATE_HEARTBEAT
+                else:
+                    logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
+            else:
+                logger.warning("Tried to populate None message")
 
             # set cleanup ready event
             self._backend.set_cleanup_ready(end_id)
@@ -357,10 +398,12 @@ class Channel(object):
         async def _get_inner(end_id) -> tuple[str, Any]:
             if not self.has(end_id):
                 # can't receive message from end_id
+                logger.info(f"Cannot receive message from end_id {end_id}")
                 yield end_id, None
 
             payload = None
             try:
+                logger.info(f"channel {self._name} awaiting get() on end_id {end_id} in self.ends")
                 payload = await self._ends[end_id].get()
                 if payload:
                     # ignore timestamp for measuring bytes received
@@ -368,6 +411,7 @@ class Channel(object):
             except KeyError:
                 yield end_id, None
 
+            logger.debug(f"_get_inner() invoked for end_id: {end_id}")
             yield end_id, payload
 
         runs = []
@@ -379,7 +423,7 @@ class Channel(object):
                 self._active_recv_fifo_tasks.add(end_id)
 
                 logger.debug(f"active task added for {end_id}")
-                logger.debug(f"{str(self._active_recv_fifo_tasks)}")
+                logger.debug(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
 
         merged = stream.merge(*runs)
         async with merged.stream() as streamer:
@@ -388,6 +432,7 @@ class Channel(object):
 
                 await self._rx_queue.put(result)
                 self._active_recv_fifo_tasks.remove(end_id)
+                logger.debug(f"active task removed for {end_id}")
 
     def peek(self, end_id):
         """Peek rxq of end_id and return data if queue is not
@@ -538,3 +583,6 @@ class Channel(object):
     def get_backend_id(self) -> str:
         """Return backend id."""
         return self._backend.uid()
+    
+    def set_curr_unavailable_trainers(self, trainer_unavail_list: list):
+        self.trainer_unavail_list = trainer_unavail_list
