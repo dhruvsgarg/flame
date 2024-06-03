@@ -27,8 +27,7 @@ import math
 from diskcache import Cache
 
 from ..common.typing import ModelWeights
-from ..common.util import (MLFramework, get_ml_framework_in_use,
-                           valid_frameworks)
+from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .regularizer.default import Regularizer
 
@@ -52,7 +51,8 @@ class FedBuff(AbstractOptimizer):
         else:
             raise NotImplementedError(
                 "supported ml framework not found; "
-                f"supported frameworks are: {valid_frameworks}")
+                f"supported frameworks are: {valid_frameworks}"
+            )
 
         self.regularizer = Regularizer()
 
@@ -63,6 +63,7 @@ class FedBuff(AbstractOptimizer):
         *,
         total: int = 0,
         version: int = 0,
+        staleness_factor: float = 0.0,
         **kwargs,
     ) -> ModelWeights:
         """Do aggregates models of trainers.
@@ -91,7 +92,7 @@ class FedBuff(AbstractOptimizer):
             # hence, explicit cache cleanup is not needed
             tres = cache.pop(k)
 
-            logger.debug(f"agg ver: {version}, trainer ver: {tres.version}")
+            logger.info(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
             rate = 1 / math.sqrt(1 + version - tres.version)
             self.aggregate_fn(tres, rate)
@@ -103,6 +104,7 @@ class FedBuff(AbstractOptimizer):
         base_weights: ModelWeights,
         agg_goal_weights: ModelWeights,
         agg_goal: int,
+        rate: float,
     ) -> ModelWeights:
         """Scale aggregated weights and add it to the original weights,
         when aggregation goal is achieved.
@@ -117,13 +119,24 @@ class FedBuff(AbstractOptimizer):
         -------
         updated weights
         """
-        return self.scale_add_fn(base_weights, agg_goal_weights, agg_goal)
+        return self.scale_add_fn(base_weights, agg_goal_weights, agg_goal, rate)
 
     def _scale_add_agg_weights_pytorch(
-        self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
+        self,
+        base_weights: ModelWeights,
+        agg_goal_weights: ModelWeights,
+        agg_goal: int,
+        rate: float,
     ) -> ModelWeights:
+        logger.info(f"base_weights.keys(): {base_weights.keys()}")
+
         for k in base_weights.keys():
-            base_weights[k] += agg_goal_weights[k] / agg_goal
+            # agg_goal_weights are already adjusted with rate
+            # Using hardcoded learning_rate for now, will pass as an argument later
+            learning_rate = 40.9
+            base_weights[k] = (base_weights[k]) + (
+                learning_rate * ((agg_goal_weights[k] / agg_goal))
+            )
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(
