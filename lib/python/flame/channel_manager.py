@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Channel manager."""
@@ -33,14 +33,13 @@ logger = logging.getLogger(__name__)
 def custom_excepthook(exc_type, exc_value, exc_traceback):
     """Implement a custom exception hook.
 
-    NOTE: this custom version is implemented due to the following warning
-    message printed at the end of execution:
-    "Error in sys.excepthook:
+    NOTE: this custom version is implemented due to the following
+    warning message printed at the end of execution: "Error in
+    sys.excepthook:
 
-    Original exception was:"
-    This is caused by _inner() function in cleanup().
-    A root-cause is not identified. As a workaround, this custom hook is
-    implemented and set to sys.excepthook
+    Original exception was:" This is caused by _inner() function in
+    cleanup(). A root-cause is not identified. As a workaround, this
+    custom hook is implemented and set to sys.excepthook
     """
     logger.critical(
         "Uncaught exception:", exc_info=(exc_type, exc_value, exc_traceback)
@@ -51,7 +50,8 @@ sys.excepthook = custom_excepthook
 
 
 class ChannelManager(object):
-    """ChannelManager manages channels and creates a singleton instance."""
+    """ChannelManager manages channels and creates a singleton
+    instance."""
 
     _instance = None
 
@@ -90,7 +90,8 @@ class ChannelManager(object):
         distinct_backends = {} 
 
         for ch_name, channel in self._config.channels.items():
-            # rename backend in channel config as sort to avoid confusion
+            # rename backend in channel config as sort to avoid
+            # confusion
             sort = channel.backend
             if not sort:
                 # channel doesn't have its own backend, nothing to do
@@ -109,8 +110,8 @@ class ChannelManager(object):
             self._backends[ch_name] = distinct_backends[sort]
 
         if len(self._backends) == len(self._config.channels):
-            # every channel has its own backend
-            # no need to have a default backend
+            # every channel has its own backend no need to have a
+            # default backend
             return
 
         # set up a default backend
@@ -165,13 +166,13 @@ class ChannelManager(object):
         if not self.is_joined(name):
             return
 
-        # TODO: leave() is only implemented for p2p backend;
-        #       implement it completely for mqtt backend
+        logger.debug(f"Leaving channel {name}")
         self._channels[name].leave()
         del self._channels[name]
 
     def get_by_tag(self, tag: str) -> Optional[Channel]:
-        """Return a channel object that matches a given function tag."""
+        """Return a channel object that matches a given function
+        tag."""
         if tag not in self._config.func_tag_map:
             return None
 

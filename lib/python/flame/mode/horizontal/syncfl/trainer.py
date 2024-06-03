@@ -200,6 +200,18 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.send(end, msg)
         logger.debug("sending weights done")
 
+        # DHRUV: REMOVE LATER
+        logger.debug("Testing channel leave after 5s after first update is sent")
+        time.sleep(5)
+        channel.leave()
+
+        logger.debug("Will sleep for 20s before becoming available again")
+        time.sleep(20)
+
+        logger.debug("Awake, will try to join channel")
+        channel.join()
+        logger.debug("Joined channel back successfully")
+
     def save_metrics(self):
         """Save metrics in a model registry."""
         # update self.metrics with metrics from MetricCollector

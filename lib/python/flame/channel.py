@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Channel."""
@@ -63,8 +63,8 @@ class Channel(object):
         self.await_join_event = None
         self.mc = Role.mc
 
-        # access _ends with caution.
-        # in many cases, _ends must be accessed within a backend's loop
+        # access _ends with caution. in many cases, _ends must be
+        # accessed within a backend's loop
         self._ends: dict[str, End] = dict()
 
         # dict showing active, awaiting recv fifo tasks on each ends
@@ -109,8 +109,8 @@ class Channel(object):
 
         Parameters
         ----------
-        key: string
-        value: any of boolean, bytes, float, int, or string
+        key: string value: any of boolean, bytes, float, int, or
+        string
         """
         self.properties[key] = value
 
@@ -127,14 +127,15 @@ class Channel(object):
             return None
 
     """
-    ### The following are not asyncio methods
-    ### But access to _ends variable should take place in the backend loop
-    ### Therefore, when necessary, coroutine is defined inside each method
-    ### and the coroutine is executed via run_async()
+    ### The following are not asyncio methods ### But access to _ends
+    variable should take place in the backend loop ### Therefore, when
+    necessary, coroutine is defined inside each method ### and the
+    coroutine is executed via run_async()
     """
 
     def empty(self) -> bool:
-        """Return True if channels has no end. Otherwise, return False."""
+        """Return True if channels has no end. Otherwise, return
+        False."""
 
         async def inner() -> bool:
             return len(self._ends) == 0
@@ -179,7 +180,8 @@ class Channel(object):
         return result
 
     def all_ends(self):
-        """Return a list of all end ids (needed in FedDyn to compute alpha values)."""
+        """Return a list of all end ids (needed in FedDyn to compute
+        alpha values)."""
         return list(self._ends.keys())
     
     def cleanup_recvd_ends(self):
@@ -229,7 +231,8 @@ class Channel(object):
         return status
 
     def recv(self, end_id) -> tuple[Any, datetime]:
-        """Receive a message from an end in a blocking call fashion."""
+        """Receive a message from an end in a blocking call
+        fashion."""
         logger.debug(f"will receive data from {end_id}")
 
         async def _get():
@@ -251,7 +254,8 @@ class Channel(object):
         payload, status = run_async(_get(), self._backend.loop())
 
         if self.has(end_id):
-            # set a property that says a message was received for the end
+            # set a property that says a message was received for the
+            # end
             self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
 
         # dissect the payload into msg and timestamp
@@ -271,19 +275,19 @@ class Channel(object):
     ) -> tuple[Any, tuple[str, datetime]]:
         """Receive a message per end from a list of ends.
 
-        The message arrival order among ends is not fixed.
-        Messages are yielded in a FIFO manner. This allows recv_fifo to return
-        (msg, metadata) asynchronously to the caller method.
-        This method is not thread-safe.
+        The message arrival order among ends is not fixed. Messages
+        are yielded in a FIFO manner. This allows recv_fifo to return
+        (msg, metadata) asynchronously to the caller method. This
+        method is not thread-safe.
 
         Parameters
         ----------
-        end_ids: a list of ends to receive a message from
-        first_k: an integer argument to restrict the number of ends
+        end_ids: a list of ends to receive a message from first_k: an
+        integer argument to restrict the number of ends
                  to receive a messagae from. The default value (= 0)
                  means that we'd like to receive messages from all
-                 ends in the list. If first_k > len(end_ids),
-                 first_k is set to len(end_ids).
+                 ends in the list. If first_k > len(end_ids), first_k
+                 is set to len(end_ids).
 
         Returns
         -------
@@ -293,8 +297,8 @@ class Channel(object):
 
         first_k = min(first_k, len(end_ids))
         if first_k <= 0:
-            # a negative value in first_k is an error
-            # we handle it by setting first_k as the length of the array
+            # a negative value in first_k is an error we handle it by
+            # setting first_k as the length of the array
             first_k = len(end_ids)
 
         self.first_k = first_k
@@ -309,13 +313,13 @@ class Channel(object):
         async def _get_message_inner():
             return await self._rx_queue.get()
 
-        # first, create an asyncio task to fetch messages and put a temp queue
-        # _put_message_to_rxq_inner works as if it is a non-blocking call
-        # because a task is created within it
+        # first, create an asyncio task to fetch messages and put a
+        # temp queue _put_message_to_rxq_inner works as if it is a
+        # non-blocking call because a task is created within it
         _, _ = run_async(_put_message_to_rxq_inner(), self._backend.loop())
 
-        # the _get_message_inner() coroutine fetches a message from the temp
-        # queue; we call this coroutine first_k times
+        # the _get_message_inner() coroutine fetches a message from
+        # the temp queue; we call this coroutine first_k times
         for _ in range(first_k):
             result, status = run_async(_get_message_inner(), self._backend.loop())
             (end_id, payload) = result
@@ -323,8 +327,8 @@ class Channel(object):
 
             if self.has(end_id):
                 logger.debug(f"channel got a msg for {end_id}")
-                # set a property to indicate that a message was received
-                # for the end
+                # set a property to indicate that a message was
+                # received for the end
                 self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
             else:
                 logger.debug(f"channel has no end id {end_id} for msg")
@@ -344,9 +348,9 @@ class Channel(object):
     async def _streamer_for_recv_fifo(self, end_ids: list[str]):
         """Read messages in a FIFO fashion.
 
-        This method reads messages from queues associated with each end
-        and puts first_k number of the messages into a queue;
-        The remaining messages are saved back into a variable (peek_buf)
+        This method reads messages from queues associated with each
+        end and puts first_k number of the messages into a queue; The
+        remaining messages are saved back into a variable (peek_buf)
         of their corresponding end so that they can be read later.
         """
 
@@ -386,7 +390,8 @@ class Channel(object):
                 self._active_recv_fifo_tasks.remove(end_id)
 
     def peek(self, end_id):
-        """Peek rxq of end_id and return data if queue is not empty."""
+        """Peek rxq of end_id and return data if queue is not
+        empty."""
 
         async def _peek():
             if not self.has(end_id):
@@ -414,7 +419,8 @@ class Channel(object):
                 if not msg:
                     break
 
-                # drain message from end so that cleanup ready event is set
+                # drain message from end so that cleanup ready event
+                # is set
                 _ = self.recv(end_id)
 
     def join(self):
@@ -422,7 +428,8 @@ class Channel(object):
         self._backend.join(self)
 
     def leave(self):
-        """Clean up resources allocated in the channel and leave it."""
+        """Clean up resources allocated in the channel and leave
+        it."""
         logger.debug(f"calling channel leave for {self._name}")
 
         self.drain_messages()
@@ -435,7 +442,8 @@ class Channel(object):
         """Wait for at least one peer joins a channel.
 
         If timeout value is set, it will wait until timeout occurs.
-        Returns a boolean value to indicate whether timeout occurred or not.
+        Returns a boolean value to indicate whether timeout occurred
+        or not.
 
         Parameters
         ----------
@@ -466,12 +474,13 @@ class Channel(object):
         return self._ends[end_id].is_txq_empty()
 
     """
-    ### The following are asyncio methods of backend loop
-    ### Therefore, they must be called in the backend loop
+    ### The following are asyncio methods of backend loop ###
+    Therefore, they must be called in the backend loop
     """
 
     async def add(self, end_id):
-        """Add an end to the channel and allocate rx and tx queues for it."""
+        """Add an end to the channel and allocate rx and tx queues for
+        it."""
         if self.has(end_id):
             return
 
@@ -480,12 +489,13 @@ class Channel(object):
         # create tx task in the backend for the channel
         self._backend.create_tx_task(self._name, end_id)
 
-        # set the event true
-        # it's okay to call set() without checking its condition
+        # set the event true it's okay to call set() without checking
+        # its condition
         self.await_join_event.set()
 
     async def remove(self, end_id):
         """Remove an end from the channel."""
+        logger.debug(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
             return
 
