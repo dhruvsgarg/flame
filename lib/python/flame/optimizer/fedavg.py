@@ -19,8 +19,7 @@ import logging
 from diskcache import Cache
 
 from ..common.typing import ModelWeights
-from ..common.util import (MLFramework, get_ml_framework_in_use,
-                           valid_frameworks)
+from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .regularizer.default import Regularizer
 
@@ -42,17 +41,20 @@ class FedAvg(AbstractOptimizer):
         else:
             raise NotImplementedError(
                 "supported ml framework not found; "
-                f"supported frameworks are: {valid_frameworks}")
-        
+                f"supported frameworks are: {valid_frameworks}"
+            )
+
         self.regularizer = Regularizer()
 
-    def do(self,
-           base_weights: ModelWeights,
-           cache: Cache,
-           *,
-           total: int = 0,
-           version: int = 0,
-           **kwargs) -> ModelWeights:
+    def do(
+        self,
+        base_weights: ModelWeights,
+        cache: Cache,
+        *,
+        total: int = 0,
+        version: int = 0,
+        **kwargs,
+    ) -> ModelWeights:
         """Do aggregates models of trainers.
 
         Parameters
@@ -68,7 +70,7 @@ class FedAvg(AbstractOptimizer):
         """
         logger.debug("calling fedavg")
 
-        assert (base_weights is not None)
+        assert base_weights is not None
 
         # reset global weights before aggregation
         self.agg_weights = base_weights

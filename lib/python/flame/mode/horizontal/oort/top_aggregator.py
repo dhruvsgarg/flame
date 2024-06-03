@@ -17,20 +17,21 @@
 
 import logging
 import time
-from datetime import datetime
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Tuple
 
-from flame.common.util import weights_to_device, weights_to_model_device
 from flame.common.constants import DeviceType
-from flame.optimizer.train_result import TrainResult
+from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.message import MessageType
+from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
+    PROP_LAST_SELECTED_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
-    PROP_LAST_SELECTED_ROUND,
 )
+
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 
 logger = logging.getLogger(__name__)
@@ -143,8 +144,22 @@ class TopAggregator(BaseTopAggregator):
         # before distributing weights, update it from global model
         self._update_weights()
 
+        # before invoking channel.ends() to select,
+        # set the trainer_unavail if it isn't None
+        if self.trainer_unavail_durations != None:
+            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            channel.set_curr_unavailable_trainers(
+                trainer_unavail_list=curr_unavail_trainer_list
+            )
+        else:
+            # Handling the case for oort's selector since it expects 3 arguments
+            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+
         # send out global model parameters to trainers
         for end in channel.ends():
+            # Note: channel.ends() is where the select() is invoked
+            # Need to pass self.trainer_unavail_durations to channel
+            # manager so that it can pass it to oort select()
             logger.debug(f"sending weights to {end}")
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
