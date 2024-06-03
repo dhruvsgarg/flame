@@ -25,35 +25,36 @@ class MessageType(Enum):
     EOT = 2  # end of training
     DATASET_SIZE = 3  # dataset size
     ROUND = 4  # round number
+    HEARTBEAT = 5  # heartbeat from trainer to aggregator
 
     # a digest of all the workers in distributed learning
-    MEMBER_DIGEST = 5
-    RING_WEIGHTS = 6  # global model weights in distributed learning
-    NEW_TRAINER = 7  # sending message for the arrival of a new trainer
+    MEMBER_DIGEST = 6
+    RING_WEIGHTS = 7  # global model weights in distributed learning
+    NEW_TRAINER = 8  # sending message for the arrival of a new trainer
 
     # a variable to indicate that a trainer is responsible to send weights
     # to a new trainer joining a distributed learning job
-    IS_COMMITTER = 8
+    IS_COMMITTER = 9
 
-    MODEL_VERSION = 9  # model version used; an non-negative integer
+    MODEL_VERSION = 10  # model version used; an non-negative integer
 
-    STAT_UTILITY = 10  # measured utility of a trainer based on Oort
+    STAT_UTILITY = 11  # measured utility of a trainer based on Oort
 
-    COORDINATED_ENDS = 11  # ends coordinated by a coordinator
+    COORDINATED_ENDS = 12  # ends coordinated by a coordinator
 
-    DATASAMPLER_METADATA = 12  # datasampler metadata
+    DATASAMPLER_METADATA = 13  # datasampler metadata
 
-    META_INFO_REQ = 13  # Request for meta information
-    META_INFO_RES = 14  # Response that contains meta information
+    META_INFO_REQ = 14  # Request for meta information
+    META_INFO_RES = 15  # Response that contains meta information
 
-    ALPHA_ADPT = 15  # adaptive hyperparameter used in FedDyn implementation
+    ALPHA_ADPT = 16  # adaptive hyperparameter used in FedDyn implementation
 
-    REQ_COORDINATED_ENDS = 16  # request ends coordinated by a coordinator
-    RES_COORDINATED_ENDS = 17  # get ends coordinated by a coordinator
+    REQ_COORDINATED_ENDS = 17  # request ends coordinated by a coordinator
+    RES_COORDINATED_ENDS = 18  # get ends coordinated by a coordinator
 
-    HYBRID_METADATA = 18  # metadata for hybrid aggregation
+    HYBRID_METADATA = 19  # metadata for hybrid aggregation
 
-    BIAS = 19  # bias matrix used in FedGFT
+    BIAS = 20  # bias matrix used in FedGFT
 
-    CONTROL_WEIGHTS = 20  # control variate weights used in SCAFFOLD
-    CLIENT_WEIGHT = 21  # client-side control variate weight used in SCAFFOLD
+    CONTROL_WEIGHTS = 21  # control variate weights used in SCAFFOLD
+    CLIENT_WEIGHT = 22  # client-side control variate weight used in SCAFFOLD

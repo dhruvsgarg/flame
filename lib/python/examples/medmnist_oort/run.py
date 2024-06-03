@@ -55,7 +55,7 @@ os.makedirs("output", exist_ok=True)
 os.makedirs("output/aggregator", exist_ok=True)
 os.makedirs("output/trainer", exist_ok=True)
 
-num_trainers = 10
+num_trainers = 3
 for i in range(1, num_trainers + 1):
     filename = f"config/trainer{i}.json"
     generate_config(filename, i)

@@ -67,7 +67,7 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 4
+            "c": 10
         }
     },
     "optimizer": {
