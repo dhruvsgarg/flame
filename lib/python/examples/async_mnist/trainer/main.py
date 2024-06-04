@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """MNIST horizontal FL trainer for Keras."""
@@ -113,7 +113,8 @@ class KerasMnistTrainer(Trainer):
         while i < 1000000000:
             i += 1
 
-        # save dataset size so that the info can be shared with aggregator
+        # save dataset size so that the info can be shared with
+        # aggregator
         self.dataset_size = len(self._x_train)
 
         loss = mean(history.history["loss"])
@@ -127,9 +128,15 @@ class KerasMnistTrainer(Trainer):
         logger.info(f"Test loss: {score[0]}")
         logger.info(f"Test accuracy: {score[1]}")
 
-        # update metrics after each evaluation so that the metrics can be
-        # logged in a model registry.
+        # update metrics after each evaluation so that the metrics can
+        # be logged in a model registry.
         self.update_metrics({"test-loss": score[0], "test-accuracy": score[1]})
+
+    def check_and_sleep(self) -> None:
+        """Induce transient unavailability"""
+        # Implement this if transient unavailability need to be
+        # emulated in aggregator
+        pass
 
 
 if __name__ == "__main__":

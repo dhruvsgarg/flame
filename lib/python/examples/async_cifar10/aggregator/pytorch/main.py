@@ -1,21 +1,22 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """CIFAR-10 horizontal FL aggregator for PyTorch.
 
-The example below is implemented based on the following example from pytorch:
+The example below is implemented based on the following example from
+pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
@@ -48,8 +49,7 @@ def initialize_wandb():
             "server_learning_rate": 40.9,
             "client_learning_rate": 0.000195,
             
-            # oort
-            # "client_learning_rate": 0.04,
+            # oort "client_learning_rate": 0.04,
 
             "architecture": "CNN",
             "dataset": "CIFAR-10",
@@ -138,11 +138,12 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
     def read_trainer_unavailability(self) -> None:
         print("Came to read_trainer_unavailability")
-        # maintain <trainer_id: [(unavail_start1, duration1), (start2, duration2)..]>
+        # maintain <trainer_id: [(unavail_start1, duration1), (start2,
+        # duration2)..]>
         trainer_unavail_dict = {}
 
-        # set path to read json files from
-        # TODO: Remove hardcoding later
+        # set path to read json files from TODO: Remove hardcoding
+        # later
         files_path = "../../trainer/config_dir100_num100_traceFailure_1.5h"
 
         # set range of trainer ids to read from
@@ -161,8 +162,9 @@ class PyTorchCifar10Aggregator(TopAggregator):
                 print("Completed file read for ", os.path.join(files_path, "trainer_"
                                                                + str(i) + ".json"))
 
-        # selector - do a linear search in the selector based on availability
-        # selector - delete those tuples whose sleep time has passed
+        # selector - do a linear search in the selector based on
+        # availability selector - delete those tuples whose sleep time
+        # has passed
         print("Completed reading all trainer unavailability from files")
         return trainer_unavail_dict
 
@@ -221,8 +223,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
         logger.info(f"Test loss: {test_loss}")
         logger.info(f"Test accuracy: {correct}/{total} ({test_accuracy})")
 
-        # update metrics after each evaluation so that the metrics can be
-        # logged in a model registry.
+        # update metrics after each evaluation so that the metrics can
+        # be logged in a model registry.
         self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
 
         # Send metrics to wandb
@@ -234,8 +236,9 @@ class PyTorchCifar10Aggregator(TopAggregator):
         logger.debug(f"loss list at cifar agg: {self.loss_list}")
 
     def check_and_sleep(self) -> None:
-        """Induce transient failures"""
-        # Implement this if transient failures need to be emulated in aggregator
+        """Induce transient unavailability"""
+        # Implement this if transient unavailability need to be
+        # emulated in aggregator
         pass
 
 

@@ -66,8 +66,20 @@ class TopAggregator(SyncTopAgg):
 
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
-        self._trainer_heartbeat_freq_s = self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"] or 99999
-        self._trainer_max_miss_heartbeats = self.config.hyperparameters.track_trainer_avail["max_allowed_miss_heartbeats"] or 99999
+        if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
+            self._trainer_heartbeat_freq_s = (
+                self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"]
+            )
+        else:
+            self._trainer_heartbeat_freq_s = 99999
+        
+        if "max_allowed_miss_heartbeats" in self.config.hyperparameters.track_trainer_avail.keys():
+            self._trainer_max_miss_heartbeats = (
+                self.config.hyperparameters.track_trainer_avail["max_allowed_miss_heartbeats"]
+            )
+        else:
+            self._trainer_max_miss_heartbeats = 99999
+
         # maintain a set of all trainers that have sent heartbeats
         # previously
         self.all_trainers = set()
@@ -114,8 +126,8 @@ class TopAggregator(SyncTopAgg):
                         f"with timestamp {heartbeat_timestamp} "
                         f"at current time: {time.time()}")
             
-            # Add trainer to global_trainer set
-            # Used only to check unavailable trainers later
+            # Add trainer to global_trainer set Used only to check
+            # unavailable trainers later
             if end not in self.all_trainers:
                 self.all_trainers.add(end)
                 logger.info(f"Added end {end} to all_trainers set")
@@ -150,7 +162,8 @@ class TopAggregator(SyncTopAgg):
             return
         
         logger.info(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives first
+        # receive local model parameters from a trainer who arrives
+        # first
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
         end, _ = metadata
         if not msg:
@@ -337,7 +350,7 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f" rate at top_agg: {rate}")
 
         self.weights = self.optimizer.scale_add_agg_weights(
-            self.weights, self._agg_goal_weights, self._agg_goal, rate
+            self.weights, self._agg_goal_weights, self._agg_goal
         )
 
         # update model with global weights
@@ -500,12 +513,11 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
-
     def _distribute_weights(self, tag: str) -> None:
         """Distribute a global model in asynchronous FL fashion.
 
-        This method is overridden from one in synchronous top aggregator
-        (..top_aggregator).
+        This method is overridden from one in synchronous top
+        aggregator (..top_aggregator).
         """
         while True:
             channel = self.cm.get_by_tag(tag)
@@ -514,7 +526,8 @@ class TopAggregator(SyncTopAgg):
                 time.sleep(1)
                 continue
 
-            # this call waits for at least one peer to join this channel
+            # this call waits for at least one peer to join this
+            # channel
             channel.await_join()
 
             # before distributing weights, update it from global model
@@ -578,12 +591,10 @@ class TopAggregator(SyncTopAgg):
         # task_get_heartbeat.reset()
 
         # # Start a separate thread for the heartbeat task
-        # logger.debug("Going to start the thread for processing heartbeats")
-        # heartbeat_thread = threading.Thread(
-        #     target=self.heartbeat_task, args=(task_get_heartbeat,)
-        # )
-        # heartbeat_thread.daemon = True
-        # heartbeat_thread.start()
+        # logger.debug("Going to start the thread for processing
+        # heartbeats") heartbeat_thread = threading.Thread(
+        #     target=self.heartbeat_task, args=(task_get_heartbeat,) )
+        # heartbeat_thread.daemon = True heartbeat_thread.start()
 
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as
@@ -597,7 +608,8 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("initialize")
             >> loop(
                 task_reset_agg_goal_vars
-                # >> asyncfl_loop(task_put >> task_get_weights >> task_get_heartbeat)
+                # >> asyncfl_loop(task_put >> task_get_weights >>
+                # >> task_get_heartbeat)
                 >> asyncfl_loop(task_put >> task_get_weights)
                 >> c.tasklet("train")
                 >> c.tasklet("evaluate")
