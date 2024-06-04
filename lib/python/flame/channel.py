@@ -162,7 +162,7 @@ class Channel(object):
     def ends(self, state: Union[None, str] = None) -> list[str]:
         """Return a list of end ids."""
         logger.info(f"ends() for channel name: {self._name}, current self._ends: {self._ends}")
-        if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND or state == VAL_CH_STATE_HTBT_RECV or state == VAL_CH_STATE_HTBT_SEND:
+        if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()

@@ -125,8 +125,8 @@ class Trainer(Role, metaclass=ABCMeta):
         if not channel:
             logger.info(f"fetch weights, channel not found with tag {tag} "
                         f"for trainer_id {self.trainer_id}")
-            # we don't want to keep calling this too fast
-            # so let's sleep 1 second
+            # we don't want to keep calling this too fast so let's
+            # sleep 1 second
             time.sleep(1)
             return
 
@@ -171,10 +171,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
                     f"round: {self._round} and work_done: {self._work_done} ###")
-
-        logger.debug("Model weights received, so resetting aggregator end states in "
-                     "the channel")
-        channel.cleanup_recvd_ends()
 
         logger.debug("Model weights received, so resetting aggregator end states in "
                      "the channel")
@@ -347,5 +343,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the trainer role."""
+        """Return a list of function tags defined in the trainer
+        role."""
         return [TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT]

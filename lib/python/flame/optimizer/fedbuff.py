@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """FedBuff optimizer.
@@ -71,13 +71,14 @@ class FedBuff(AbstractOptimizer):
         Parameters
         ----------
         agg_goal_weights: delta weights aggregated until agg goal
-        cache: a container that includes a list of weights for aggregation
-        total: a number of data samples used to train weights in cache
-        version: a version number of base weights
+        cache: a container that includes a list of weights for
+        aggregation total: a number of data samples used to train
+        weights in cache version: a version number of base weights
 
         Returns
         -------
-        aggregated model: type is either list (tensorflow) or dict (pytorch)
+        aggregated model: type is either list (tensorflow) or dict
+        (pytorch)
         """
         logger.debug("calling fedbuff")
 
@@ -88,8 +89,8 @@ class FedBuff(AbstractOptimizer):
             return None
 
         for k in list(cache.iterkeys()):
-            # after popping, the item is removed from the cache
-            # hence, explicit cache cleanup is not needed
+            # after popping, the item is removed from the cache hence,
+            # explicit cache cleanup is not needed
             tres = cache.pop(k)
 
             logger.info(f"agg ver: {version}, trainer ver: {tres.version}")
@@ -103,36 +104,35 @@ class FedBuff(AbstractOptimizer):
         self,
         base_weights: ModelWeights,
         agg_goal_weights: ModelWeights,
-        agg_goal: int,
-        rate: float,
+        agg_goal: int
     ) -> ModelWeights:
-        """Scale aggregated weights and add it to the original weights,
-        when aggregation goal is achieved.
+        """Scale aggregated weights and add it to the original 
+        weights, when aggregation goal is achieved.
 
         Parameters
         ----------
         base_weights: original weights of the aggregator
-        agg_goal_weights: weights to be scaled and added
-        agg_goal: aggregation goal of FedBuff algorithm.
+        agg_goal_weights: weights to be scaled and added agg_goal:
+        aggregation goal of FedBuff algorithm.
 
         Returns
         -------
         updated weights
         """
-        return self.scale_add_fn(base_weights, agg_goal_weights, agg_goal, rate)
+        return self.scale_add_fn(base_weights, agg_goal_weights, agg_goal)
 
     def _scale_add_agg_weights_pytorch(
         self,
         base_weights: ModelWeights,
         agg_goal_weights: ModelWeights,
-        agg_goal: int,
-        rate: float,
+        agg_goal: int
     ) -> ModelWeights:
         logger.info(f"base_weights.keys(): {base_weights.keys()}")
 
         for k in base_weights.keys():
-            # agg_goal_weights are already adjusted with rate
-            # Using hardcoded learning_rate for now, will pass as an argument later
+            # agg_goal_weights are already adjusted with rate Using
+            # hardcoded learning_rate for now, will pass as an
+            # argument later
             learning_rate = 40.9
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
@@ -155,11 +155,12 @@ class FedBuff(AbstractOptimizer):
         for k, v in tres.weights.items():
             tmp = v * rate
             # tmp.dtype is always float32 or double as rate is float
-            # if v.dtype is integer (int32 or int64), there is type mismatch
-            # this leads to the following error when self.agg_weights[k] += tmp:
-            #   RuntimeError: result type Float can't be cast to the desired
-            #   output type Long
-            # To handle this issue, we typecast tmp to the original type of v
+            # if v.dtype is integer (int32 or int64), there is type
+            # mismatch this leads to the following error when
+            #   self.agg_weights[k] += tmp: RuntimeError: result type
+            #   Float can't be cast to the desired output type Long To
+            # handle this issue, we typecast tmp to the original type
+            # of v
             #
             # TODO: this may need to be revisited
             tmp = tmp.to(dtype=v.dtype) if tmp.dtype != v.dtype else tmp

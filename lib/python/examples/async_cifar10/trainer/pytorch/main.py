@@ -1,21 +1,22 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """CIFAR-10 horizontal FL trainer for PyTorch.
 
-The example below is implemented based on the following example from pytorch:
+The example below is implemented based on the following example from
+pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
@@ -85,8 +86,9 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.criterion = None
 
-        # TODO: (DG) Remove the hard requirement for config to include trainer_indices_list and failure_durations_s
-        # Setting the indices used by the trainer
+        # TODO: (DG) Remove the hard requirement for config to include
+        # trainer_indices_list and failure_durations_s Setting the
+        # indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers
         self.trainer_start_ts = time.time()
@@ -104,9 +106,9 @@ class PyTorchCifar10Trainer(Trainer):
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
                 )
             
-        # TODO: (DG) Fix the hack later. 
-        # Creating duplicate data struct for dup_check_and_sleep() which
-        # is used by heartbeat thread
+        # TODO: (DG) Fix the hack later. Creating duplicate data
+        # struct for dup_check_and_sleep() which is used by heartbeat
+        # thread
         self.dup_failure_durations_s = ast.literal_eval(
             self.config.hyperparameters.failure_durations_s
         )
@@ -132,8 +134,9 @@ class PyTorchCifar10Trainer(Trainer):
         else:
             self.heartbeats_second_freq = 99999    
         
-        # TODO: (DG) self.timestamp_next_heartbeat_s might not be getting used. Remove?
-        # if heartbeats are enabled, compute first heartbeat time
+        # TODO: (DG) self.timestamp_next_heartbeat_s might not be
+        # getting used. Remove? if heartbeats are enabled, compute
+        # first heartbeat time
         if self.heartbeats_enabled is True:
             self.timestamp_next_heartbeat_s = (
                 self.trainer_start_ts + self.heartbeats_second_freq
@@ -152,17 +155,20 @@ class PyTorchCifar10Trainer(Trainer):
             # pop leftmost element
             sleep_config_tuple = self.failure_durations_s.pop(0)
 
-            # get the duration of sleep and set the params for next sleep
+            # get the duration of sleep and set the params for next
+            # sleep
             sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
             sleep_duration_s = sleep_config_tuple[1]
 
-            # remaining sleep = trainer_start_ts + actual_sleep_start + actual_sleep_duration - current_ts 
+            # remaining sleep = trainer_start_ts + actual_sleep_start
+            # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
             logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if(remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
-                # Need to pop out failure intervals that occur in the past
+                # Need to pop out failure intervals that occur in the
+                # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
                 while time_elapsed_from_start > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1]):
                     self.failure_durations_s.pop(0)
@@ -173,8 +179,8 @@ class PyTorchCifar10Trainer(Trainer):
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
 
-            # check if failure_list is now empty, if yes, reset ts_next_sleep_s
-            # if not empty, set it to the next value
+            # check if failure_list is now empty, if yes, reset
+            # ts_next_sleep_s if not empty, set it to the next value
             if len(self.failure_durations_s) > 0:
                 self.timestamp_next_sleep_s = self.trainer_start_ts + self.failure_durations_s[0][0]
                 if(self.timestamp_next_sleep_s < time.time()):
@@ -198,17 +204,20 @@ class PyTorchCifar10Trainer(Trainer):
             # pop leftmost element
             sleep_config_tuple = self.dup_failure_durations_s.pop(0)
 
-            # get the duration of sleep and set the params for next sleep
+            # get the duration of sleep and set the params for next
+            # sleep
             sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
             sleep_duration_s = sleep_config_tuple[1]
 
-            # remaining sleep = trainer_start_ts + actual_sleep_start + actual_sleep_duration - current_ts 
+            # remaining sleep = trainer_start_ts + actual_sleep_start
+            # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
             logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if(remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
-                # Need to pop out failure intervals that occur in the past
+                # Need to pop out failure intervals that occur in the
+                # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
                 while time_elapsed_from_start > (self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]):
                     self.dup_failure_durations_s.pop(0)
@@ -219,8 +228,8 @@ class PyTorchCifar10Trainer(Trainer):
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
 
-            # check if failure_list is now empty, if yes, reset ts_next_sleep_s
-            # if not empty, set it to the next value
+            # check if failure_list is now empty, if yes, reset
+            # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
                 self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
                 if(self.dup_timestamp_next_sleep_s < time.time()):
@@ -284,7 +293,8 @@ class PyTorchCifar10Trainer(Trainer):
         for epoch in range(1, self.epochs + 1):
             self._train_epoch(epoch)
 
-        # save dataset size so that the info can be shared with aggregator
+        # save dataset size so that the info can be shared with
+        # aggregator
         self.dataset_size = len(self.train_loader.dataset)
 
     def _train_epoch(self, epoch):
@@ -313,17 +323,19 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initiate_heartbeat(self) -> None:
         while True:
-            # heartbeats are sent from a different thread
-            # ideally heartbeats and sleep should have happened on the same thread
-            # but in the current scenario, both threads need to be put to sleep
-            # whenever the trainer is marked to be unavailable.
+            # heartbeats are sent from a different thread ideally
+            # heartbeats and sleep should have happened on the same
+            # thread but in the current scenario, both threads need to
+            # be put to sleep whenever the trainer is marked to be
+            # unavailable.
 
-            # issue: if i use check_and_sleep here as well,
-            # it will modify existing data struct
-            # HACK: duplicate check_and_sleep as dup_check_and_sleep 
-            # and operate on a duplicate data structure
+            # issue: if i use check_and_sleep here as well, it will
+            # modify existing data struct HACK: duplicate
+            # check_and_sleep as dup_check_and_sleep and operate on a
+            # duplicate data structure
             
-            # TODO: DG Need to fix that arg isnt being used to enable/disable this
+            # TODO: DG Need to fix that arg isnt being used to
+            # enable/disable this
             time.sleep(self.heartbeats_second_freq)
             self.dup_check_and_sleep()
             logger.info("Initiating send heartbeat to aggregator")
