@@ -207,6 +207,11 @@ class Channel(object):
     def cleanup_recvd_ends(self):
         """Performs cleanup of end states in the selector. Usually
         only performed after aggregation of a round completes"""
+
+        # TODO: (DG) This function is named to cleanup recvd ends, but
+        # can extend beyond just "recvd" state. We might also want to
+        # send a subset of ends here not the entire self._ends?
+
         self._selector._cleanup_recvd_ends(self._ends)
         logger.debug("Cleaned up ends successfully")
 
@@ -379,7 +384,10 @@ class Channel(object):
                 else:
                     logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
             else:
-                logger.warning("Tried to populate None message")
+                # TODO: (DG) It comes here even for channel leave
+                # notifications. Need a cleaner processing for it
+                # later
+                logger.warning(f"Tried to populate None message (maybe leave notification) from end_id {end_id}. Will not yield msg and metadata until it gets a valid MODEL_VERSION msg")
 
             # set cleanup ready event
             self._backend.set_cleanup_ready(end_id)

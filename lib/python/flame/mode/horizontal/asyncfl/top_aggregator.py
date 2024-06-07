@@ -163,7 +163,9 @@ class TopAggregator(SyncTopAgg):
         
         logger.info(f"Channel {channel} found for tag {tag}")
         # receive local model parameters from a trainer who arrives
-        # first
+        # first NOTE: (DG) Right now, the leave notifications also
+        # cause a message to be processed and yield (None,None) from
+        # recv_fifo().
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
         end, _ = metadata
         if not msg:
@@ -174,6 +176,8 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"received data from {end}")
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received MODEL_VERSION message in agg_weights from {end}")
+            channel._selector.ordered_updates_recv_ends.append(end)
+            logger.debug(f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}")
         else:
             logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}")
             return
@@ -192,7 +196,7 @@ class TopAggregator(SyncTopAgg):
 
         # update _trainer_training_duration_s to capture training time
         if end not in self._trainer_training_duration_s.keys():
-            logger.error(f"{end} not in _trainer_training_duration_s at recv!")
+            logger.warning(f"{end} not in _trainer_training_duration_s at recv!")
         else:
             last_recv_wts_ts = time.time()
             self._trainer_training_duration_s[
@@ -519,45 +523,51 @@ class TopAggregator(SyncTopAgg):
         This method is overridden from one in synchronous top
         aggregator (..top_aggregator).
         """
-        while True:
-            channel = self.cm.get_by_tag(tag)
-            if not channel:
-                logger.debug(f"channel not found for tag {tag}, retrying in 1s")
-                time.sleep(1)
-                continue
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"channel not found for tag {tag}")
+            return
 
-            # this call waits for at least one peer to join this
-            # channel
-            channel.await_join()
+        # this call waits for at least one peer to join this channel
+        channel.await_join()
 
-            # before distributing weights, update it from global model
-            self._update_weights()
+        # before distributing weights, update it from global model
+        self._update_weights()
 
-            # check if there are any ends to send weights to
-            ends = channel.ends(VAL_CH_STATE_SEND)
-            if not ends:
-                logger.debug(f"no trainers found for tag {tag}, retrying in 1 second")
-                time.sleep(1)
-                continue
+        # busy wait for 2 seconds before proceeding. This is to wait
+        # on distribute_weights to let the system state get updated
+        # before selector is invoked again
+        logger.debug(f"Starting busy wait at time {time.time()}")
+        time.sleep(2)
+        logger.debug(f"Ended busy wait at time {time.time()}")
 
-            # send out global model parameters to trainers
-            for end in ends:
-                # Send shouldn't be allowed if already sent to a
-                # trainer in that same round
-                logger.debug(f"sending weights to {end}")
-                # we use _round to indicate a model version
-                channel.send(
-                    end,
-                    {
-                        MessageType.WEIGHTS: weights_to_device(
-                            self.weights, DeviceType.CPU
-                        ),
-                        MessageType.ROUND: self._round,
-                        MessageType.MODEL_VERSION: self._round,
-                    },
-                )
-            # if successfully sent, break out of the loop
-            break
+        # check if there are any ends to send weights to
+        ends = channel.ends(VAL_CH_STATE_SEND)
+        if not ends:
+            # logger.debug(f"no trainers found for tag {tag}, retrying
+            # in 1 second") time.sleep(1) continue
+
+            logger.debug(f"No trainers found for tag {tag}, will "
+                         f"move to get() in 0.1s for fetch weights from trainers")
+            time.sleep(0.1)
+            return
+
+        # send out global model parameters to trainers
+        for end in ends:
+            # Send shouldn't be allowed if already sent to a trainer
+            # in that same round
+            logger.debug(f"sending weights to {end}")
+            # we use _round to indicate a model version
+            channel.send(
+                end,
+                {
+                    MessageType.WEIGHTS: weights_to_device(
+                        self.weights, DeviceType.CPU
+                    ),
+                    MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                },
+            )
 
     def compose(self) -> None:
         """Compose role with tasklets."""
@@ -574,7 +584,8 @@ class TopAggregator(SyncTopAgg):
 
             task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-            task_get_heartbeat = Tasklet("heartbeat", self.get, TAG_HEARTBEAT)
+            # task_get_heartbeat = Tasklet("heartbeat", self.get,
+            # TAG_HEARTBEAT)
 
         c = self.composer
         # unlink tasklets that are chained from the parent class

@@ -174,6 +174,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug("Model weights received, so resetting aggregator end states in "
                      "the channel")
+        
+        channel._selector.ordered_updates_recv_ends.append(end)
+        logger.debug(f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}")
+        
         channel.cleanup_recvd_ends()
 
     def put(self, tag: str) -> None:
@@ -240,17 +244,16 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.send(end, msg)
         logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
 
-        # DHRUV: REMOVE LATER
-        logger.debug("Testing channel leave after 5s after first update is sent")
-        time.sleep(5)
-        channel.leave()
+        # DHRUV: REMOVE LATER logger.debug("Testing channel leave
+        # after 5s after first update is sent") time.sleep(5)
+        # channel.leave()
 
-        logger.debug("Will sleep for 20s before becoming available again")
-        time.sleep(20)
+        # logger.debug("Will sleep for 20s before becoming available
+        # again") time.sleep(20)
 
-        logger.debug("Awake, will try to join channel")
-        channel.join()
-        logger.debug("Joined channel back successfully")
+        # logger.debug("Awake, will try to join channel")
+        # channel.join() logger.debug("Joined channel back
+        # successfully")
 
     def save_metrics(self):
         """Save metrics in a model registry."""

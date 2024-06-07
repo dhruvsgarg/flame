@@ -67,7 +67,8 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency (this irrelevant since it's traner)",
-            "c": 4
+            "c": 4,
+            "aggGoal": 4
         }
     },
     "optimizer": {
