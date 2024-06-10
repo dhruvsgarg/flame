@@ -236,11 +236,13 @@ class FedBuffSelector(AbstractSelector):
             # remove end from all_selected if we havent got an update
             # from it yet. It would have flushed the agg-weights after
             # initiating channel.leave().
-            logger.debug(f"Removing end_id {end_id} from all_selected and selected_ends"
+            logger.debug(f"Removing end_id {end_id} from all_selected"
                          f" since no update received before it left the channel.")
             selected_ends = self.selected_ends[self.requester]
-            selected_ends.remove(end_id)
-            self.selected_ends[self.requester] = selected_ends
+            if end_id in selected_ends:
+                selected_ends.remove(end_id)
+                logger.debug(f"Also removing end_id {end_id} from selected_ends")
+                self.selected_ends[self.requester] = selected_ends
             del self.all_selected[end_id]
         elif (
             end_id in self.all_selected
