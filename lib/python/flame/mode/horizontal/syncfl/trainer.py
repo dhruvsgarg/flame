@@ -244,16 +244,21 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.send(end, msg)
         logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
 
-        # DHRUV: REMOVE LATER logger.debug("Testing channel leave
-        # after 5s after first update is sent") time.sleep(5)
-        # channel.leave()
+        channel._selector._cleanup_send_ends()
 
-        # logger.debug("Will sleep for 20s before becoming available
-        # again") time.sleep(20)
+        # DHRUV: REMOVE LATER
+        logger.debug("Testing channel leave after 5s after first update is sent")
+        time.sleep(5)
+        channel.leave()
 
-        # logger.debug("Awake, will try to join channel")
-        # channel.join() logger.debug("Joined channel back
-        # successfully")
+        logger.debug("Will sleep for 20s before becoming available again")
+        time.sleep(20)
+
+        logger.debug("Awake, will try to join channel")
+        # should cleanup all current ends state before join again?
+        # channel.cleanup_recvd_ends()
+        channel.join()
+        logger.debug("Joined channel back successfully")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
