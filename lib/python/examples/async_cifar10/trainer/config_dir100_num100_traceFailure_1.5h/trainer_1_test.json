@@ -575,9 +575,10 @@
     ],
     "failure_durations_s": "[(21, 4), (33, 23), (70, 4), (90,32), (140, 45), (200, 100), (321, 50)]",
     "heartbeats": {
-      "enabled": "True",
+      "enabled": "False",
       "frequency_s": 20
-    }
+    },
+    "client_avail_aware_notify": "True"
   },
   "baseModel": {
     "name": "",
@@ -592,8 +593,11 @@
     "uri": ""
   },
   "selector": {
-    "sort": "default",
-    "kwargs": {}
+    "sort": "fedbuff",
+    "kwargs": {
+      "c": 20,
+      "aggGoal": 1
+    }
   },
   "optimizer": {
     "sort": "fedavg",
