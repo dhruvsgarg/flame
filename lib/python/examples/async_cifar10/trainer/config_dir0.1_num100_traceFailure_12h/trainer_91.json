@@ -328,8 +328,11 @@
     "uri": ""
   },
   "selector": {
-    "sort": "default",
-    "kwargs": {}
+    "sort": "fedbuff",
+    "kwargs": {
+      "c": 20,
+      "aggGoal": 1
+    }
   },
   "optimizer": {
     "sort": "fedavg",

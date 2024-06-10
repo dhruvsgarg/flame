@@ -517,7 +517,8 @@
     "heartbeats": {
       "enabled": "False",
       "frequency_s": 1
-    }
+    },
+    "client_avail_aware_notify": "True"
   },
   "baseModel": {
     "name": "",
@@ -532,8 +533,11 @@
     "uri": ""
   },
   "selector": {
-    "sort": "default",
-    "kwargs": {}
+    "sort": "fedbuff",
+    "kwargs": {
+      "c": 20,
+      "aggGoal": 1
+    }
   },
   "optimizer": {
     "sort": "fedavg",
