@@ -31,9 +31,7 @@ KEY_BACKEND = "backend"
 KEY_CHANNEL = "channel"
 KEY_END_ID = "end_id"
 
-# Configurable, higher queue timeout for of 120s after which the queue
-# state is reset to allow training to proceed.
-QUEUE_TIMEOUT = 120  # 120 seconds
+QUEUE_TIMEOUT = 5  # 5 seconds
 
 
 class ChunkThread(Thread):
@@ -77,7 +75,11 @@ class ChunkThread(Thread):
                 logger.debug(f"rxq not found for {end_id}")
 
                 # set cleanup ready event for a given end id
-                await self._backend.set_cleanup_ready_async(end_id)
+                cleanup_ready_future = self._backend.set_cleanup_ready_async(end_id)
+                if cleanup_ready_future is not None:
+                    await cleanup_ready_future
+                else:
+                    logger.error(f"set_cleanup_ready_async returned None for end_id: {end_id}")
                 return
             logger.debug(f"rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
@@ -88,8 +90,6 @@ class ChunkThread(Thread):
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
                 logger.debug("Currently empty")
-                logger.debug("Attempted fix, going to reset chucnkstore to enable training to proceed")
-                self.chunk_store.reset()
                 continue
 
             timestamp = datetime.now()

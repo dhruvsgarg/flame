@@ -182,7 +182,7 @@ class TopAggregator(SyncTopAgg):
             logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}")
             return
 
-        if self.reject_stale_updates:
+        if self.reject_stale_updates == "True":
             logger.info("Check trainer model version, disallow stale updates")
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]

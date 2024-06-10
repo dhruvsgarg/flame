@@ -156,6 +156,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="heartbeats",
         default={}
         )
+    client_avail_aware_notify: t.Optional[bool] = Field(
+        alias="clientAvailAwareNotify",
+        default=False
+        )
 
 
 class Groups(FlameSchema):
