@@ -550,6 +550,7 @@ class Channel(object):
         """Remove an end from the channel."""
         logger.debug(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
+            logger.debug(f"Noting to remove since end {end_id} not in channel {self._name}")
             return
 
         rxq = self._ends[end_id].get_rxq()
@@ -565,6 +566,11 @@ class Channel(object):
         if len(self._ends) == 0:
             # clear (or unset) the event
             self.await_join_event.clear()
+
+        # inform selector to cleanup its send/recieve state to allow
+        # quicker addition next time it joins
+        logger.debug("Also removing existing trainer update send/recv state from selector")
+        self._selector._cleanup_removed_ends(end_id)
 
     def has(self, end_id: str) -> bool:
         """Check if an end is in the channel."""

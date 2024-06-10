@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Chunk Manager."""
@@ -31,7 +31,9 @@ KEY_BACKEND = "backend"
 KEY_CHANNEL = "channel"
 KEY_END_ID = "end_id"
 
-QUEUE_TIMEOUT = 5  # 5 seconds
+# Configurable, higher queue timeout for of 120s after which the queue
+# state is reset to allow training to proceed.
+QUEUE_TIMEOUT = 120  # 120 seconds
 
 
 class ChunkThread(Thread):
@@ -63,8 +65,8 @@ class ChunkThread(Thread):
     def run(self):
         """Override run function of Thread.
 
-        The function assembles chunks into a full-size message and passes
-        the message to its designated receive queue.
+        The function assembles chunks into a full-size message and
+        passes the message to its designated receive queue.
         """
 
         async def inner(end_id: str, data: bytes, timestamp: datetime):
@@ -86,12 +88,14 @@ class ChunkThread(Thread):
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
                 logger.debug("Currently empty")
+                logger.debug("Attempted fix, going to reset chucnkstore to enable training to proceed")
+                self.chunk_store.reset()
                 continue
 
             timestamp = datetime.now()
 
-            # assemble is done in a chunk thread so that it won't block
-            # asyncio task
+            # assemble is done in a chunk thread so that it won't
+            # block asyncio task
             status = self.chunk_store.assemble(msg)
             logger.debug("Assemble attempted for chunkstore")
             if not status:
@@ -105,8 +109,8 @@ class ChunkThread(Thread):
                 logger.debug(f"Status is {status}")
                 if not self.chunk_store.eom:
                     logger.debug(f"self.chunk_store.eom is {self.chunk_store.eom}")
-                    # not an end of message, hence, can't get a payload
-                    # out of chunk store yet
+                    # not an end of message, hence, can't get a
+                    # payload out of chunk store yet
 
                     # set cleanup ready event for a given end id
                     self._backend.set_cleanup_ready(msg.end_id)
@@ -119,7 +123,8 @@ class ChunkThread(Thread):
                     inner(msg.end_id, payload, timestamp), self._backend.loop()
                 )
 
-                # message was completely assembled, reset the chunk store
+                # message was completely assembled, reset the chunk
+                # store
                 self.chunk_store.reset()
 
         logger.debug(f"finished chunk thread for {self._end_id}")
