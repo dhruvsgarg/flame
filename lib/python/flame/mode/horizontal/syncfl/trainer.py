@@ -246,19 +246,39 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel._selector._cleanup_send_ends()
 
-        # DHRUV: REMOVE LATER
-        logger.debug("Testing channel leave after 5s after first update is sent")
-        time.sleep(5)
+    def _perform_channel_leave(self, tag: str) -> None:
+        logger.info(f"In _perform_channel_leave for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_perform_channel_leave] channel not found with {tag}")
+            return
+
+        # this call waits for at least one peer to join this channel
+        logger.info(f"_perform_channel_leave: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
         channel.leave()
+        logger.debug(f"Sent channel leave message for channel: "
+                     f"{channel._name} and trainer: {self.trainer_id}")
+        
+    def _perform_channel_join(self, tag: str) -> None:
+        logger.info(f"In _perform_channel_join for tag: {tag} "
+                    f"and trainer_id: {self.trainer_id}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_perform_channel_join] channel not found with {tag}")
+            return
 
-        logger.debug("Will sleep for 20s before becoming available again")
-        time.sleep(20)
+        # this call waits for at least one peer to join this channel
+        logger.info(f"_perform_channel_join: waiting for someone to join channel: {channel} "
+                    f"for trainer_id: {self.trainer_id}")
+        channel.await_join()
 
-        logger.debug("Awake, will try to join channel")
-        # should cleanup all current ends state before join again?
-        # channel.cleanup_recvd_ends()
         channel.join()
-        logger.debug("Joined channel back successfully")
+        logger.debug(f"Sent channel join message for channel: "
+                     f"{channel._name} and trainer: {self.trainer_id}")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
