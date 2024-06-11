@@ -56,8 +56,8 @@ class KerasMnistTrainer(Trainer):
 
         # TODO: (DG) Remove the hard requirement for config to include
         # trainer_indices_list and failure_durations_s Setting the
-        # indices used by the trainer
-        # Loading the failure durations for trainers
+        # indices used by the trainer Loading the failure durations
+        # for trainers
         self.trainer_start_ts = time.time()
         self.failure_durations_s = ast.literal_eval(
             self.config.hyperparameters.failure_durations_s
@@ -176,7 +176,7 @@ class KerasMnistTrainer(Trainer):
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
@@ -216,8 +216,8 @@ class KerasMnistTrainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.info(f"Task_id: {self.trainer_id} check_and_sleep completed at "
-                    f"timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at "
+                     f"timestamp: {time.time()}")
 
 
 if __name__ == "__main__":

@@ -169,7 +169,7 @@ class PyTorchCifar10Trainer(Trainer):
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
@@ -207,7 +207,7 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.info(f"Task_id: {self.trainer_id} check_and_sleep completed at "
+        logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at "
                     f"timestamp: {time.time()}")
 
     def dup_check_and_sleep(self):
@@ -227,7 +227,7 @@ class PyTorchCifar10Trainer(Trainer):
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
@@ -264,7 +264,7 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.info(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at timestamp: {time.time()}")
     
     def check_leave_sleep_join(self):
         """Indicate transient unavailability to aggregator"""
@@ -287,7 +287,7 @@ class PyTorchCifar10Trainer(Trainer):
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
             if remaining_sleep_duration_s <= 0:
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
@@ -332,14 +332,14 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.info(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
-        logger.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}")
 
     def load_data(self) -> None:
         """Load data."""
@@ -371,7 +371,7 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
-        logger.info(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
 
     def train(self) -> None:
         """Train a model."""
@@ -428,7 +428,7 @@ class PyTorchCifar10Trainer(Trainer):
             # enable/disable this
             time.sleep(self.heartbeats_second_freq)
             self.dup_check_and_sleep()
-            logger.info("Initiating send heartbeat to aggregator")
+            logger.debug("Initiating send heartbeat to aggregator")
             self.send_heartbeat_to_agg()
 
     def notify_trainer_avail(self) -> None:

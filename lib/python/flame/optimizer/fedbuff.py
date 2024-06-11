@@ -127,7 +127,7 @@ class FedBuff(AbstractOptimizer):
         agg_goal_weights: ModelWeights,
         agg_goal: int
     ) -> ModelWeights:
-        logger.info(f"base_weights.keys(): {base_weights.keys()}")
+        logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
         for k in base_weights.keys():
             # agg_goal_weights are already adjusted with rate Using
