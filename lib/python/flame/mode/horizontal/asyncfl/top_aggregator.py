@@ -85,13 +85,13 @@ class TopAggregator(SyncTopAgg):
         self.all_trainers = set()
 
     def _reset_agg_goal_variables(self):
-        logger.info("##### reset agg goal variables")
+        logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
 
         # reset agg goal weights
         self._agg_goal_weights = None
-        logger.info(
+        logger.debug(
             f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights: "
             f"{self._agg_goal_weights}"
         )
@@ -108,7 +108,7 @@ class TopAggregator(SyncTopAgg):
             logger.info("No channel found")
             return
         
-        logger.info(f"Channel {channel} found for tag {tag}")
+        logger.debug(f"Channel {channel} found for tag {tag}")
         # receive heartbeat message from trainers
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_HTBT_RECV), 1))
         end, _ = metadata
@@ -116,13 +116,13 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"No data from {end}; skipping it")
             return
 
-        logger.info(f"received heartbeat from {end}, will process further")
+        logger.debug(f"received heartbeat from {end}, will process further")
         self._process_trainer_heartbeat(msg=msg, end=end)
     
     def _process_trainer_heartbeat(self, msg, end) -> None:
         if MessageType.HEARTBEAT in msg:
             heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-            logger.info(f"received heartbeat from {end} "
+            logger.debug(f"received heartbeat from {end} "
                         f"with timestamp {heartbeat_timestamp} "
                         f"at current time: {time.time()}")
             
@@ -130,17 +130,17 @@ class TopAggregator(SyncTopAgg):
             # unavailable trainers later
             if end not in self.all_trainers:
                 self.all_trainers.add(end)
-                logger.info(f"Added end {end} to all_trainers set")
+                logger.debug(f"Added end {end} to all_trainers set")
             
             # Add trainer to heartbeat dict if it isnt there Add only
             # most recent heartbeat timestamp as value Discard stale
             # heartbeats if received.
             if end not in self._per_trainer_last_heartbeat_ts.keys():
                 self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-                logger.info(f"Added first timestamp for trainer {end} "
+                logger.debug(f"Added first timestamp for trainer {end} "
                             f"with timestamp {heartbeat_timestamp}")
             elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
-                logger.info(f"Will update timestamp for trainer {end} "
+                logger.debug(f"Will update timestamp for trainer {end} "
                             f" (current={self._per_trainer_last_heartbeat_ts[end]})"
                             f" with new timestamp {heartbeat_timestamp}")
                 self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
@@ -161,7 +161,7 @@ class TopAggregator(SyncTopAgg):
             logger.info("No channel found")
             return
         
-        logger.info(f"Channel {channel} found for tag {tag}")
+        logger.debug(f"Channel {channel} found for tag {tag}")
         # receive local model parameters from a trainer who arrives
         # first NOTE: (DG) Right now, the leave notifications also
         # cause a message to be processed and yield (None,None) from
@@ -183,7 +183,7 @@ class TopAggregator(SyncTopAgg):
             return
 
         if self.reject_stale_updates == "True":
-            logger.info("Check trainer model version, disallow stale updates")
+            logger.debug("Check trainer model version, disallow stale updates")
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]
 
@@ -217,7 +217,7 @@ class TopAggregator(SyncTopAgg):
                 self._trainer_training_duration_s[
                     end
                 ]["total_training_time_s"] = new_cumulative_training_s
-                logger.info(f"Updated training time record for {end}, details: "
+                logger.debug(f"Updated training time record for {end}, details: "
                             f"{self._trainer_training_duration_s[end]}")
 
         # capture telemetry on trainer participation in rounds
@@ -393,7 +393,7 @@ class TopAggregator(SyncTopAgg):
         # per trainer analytics
         for k, v in self._per_trainer_staleness_track.items():
             trainer_staleness_arr = np.array(v)
-            logger.info(
+            logger.debug(
                 f"Trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, "
                 f"Max {np.max(trainer_staleness_arr)}, "
                 f"Avg {np.mean(trainer_staleness_arr)}, "
@@ -482,7 +482,7 @@ class TopAggregator(SyncTopAgg):
                         f" heartbeats yet, but we return True")
         elif end not in self._per_trainer_last_heartbeat_ts.keys():
             picked_trainer_is_available = False
-            logger.info(f"Trainer {end} was already marked unavailable")
+            logger.debug(f"Trainer {end} was already marked unavailable")
         elif self._per_trainer_last_heartbeat_ts[end] < last_acceptable_heartbeat_ts:
             del self._per_trainer_last_heartbeat_ts[end]
             picked_trainer_is_available = False
@@ -490,7 +490,7 @@ class TopAggregator(SyncTopAgg):
                         f"marked unavailable")
         elif self._per_trainer_last_heartbeat_ts[end] >= last_acceptable_heartbeat_ts:
             picked_trainer_is_available = True
-            logger.info(f"Trainer {end} is available")
+            logger.debug(f"Trainer {end} is available")
         else:
             logger.error(f"Availability check failed, trainer {end}, returning True")
         

@@ -1,21 +1,22 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """CIFAR-10 horizontal FL aggregator for PyTorch.
 
-The example below is implemented based on the following example from pytorch:
+The example below is implemented based on the following example from
+pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
@@ -24,10 +25,10 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.slow_top_aggregator import SlowTopAggregator
-import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 
 logger = logging.getLogger(__name__)
@@ -118,11 +119,11 @@ class PyTorchCifar10Aggregator(SlowTopAggregator):
         test_loss /= total
         test_accuray = correct / total
 
-        logger.info(f"Test loss: {test_loss}")
-        logger.info(f"Test accuracy: {correct}/{total} ({test_accuray})")
+        logger.info(f"Test loss: {test_loss}, test accuracy: "
+                    f"{correct}/{total} ({test_accuracy})")
 
-        # update metrics after each evaluation so that the metrics can be
-        # logged in a model registry.
+        # update metrics after each evaluation so that the metrics can
+        # be logged in a model registry.
         self.update_metrics({
             'test-loss': test_loss,
             'test-accuracy': test_accuray

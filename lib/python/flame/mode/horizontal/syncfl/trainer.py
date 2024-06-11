@@ -117,7 +117,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        logger.info(f"### FETCH WEIGHTS start for tag: {tag} "
+        logger.debug(f"### FETCH WEIGHTS start for tag: {tag} "
                     f"and trainer_id {self.trainer_id}")
 
         self.fetch_success = False
@@ -131,7 +131,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer joins this channel
-        logger.info(f"_fetch_weights: waiting for someone to join channel: {channel} "
+        logger.debug(f"_fetch_weights: waiting for someone to join channel: {channel} "
                     f"for trainer_id {self.trainer_id}")
         channel.await_join()
 
@@ -150,7 +150,7 @@ class Trainer(Role, metaclass=ABCMeta):
             time.sleep(1)
             return
 
-        logger.info(f"New message received for trainer_id {self.trainer_id}")
+        logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -188,7 +188,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._send_heartbeat_to_agg(tag)
 
     def _send_heartbeat_to_agg(self, tag: str) -> None:
-        logger.info(f"### SEND heartbeat for tag: {tag} "
+        logger.debug(f"### SEND heartbeat for tag: {tag} "
                     f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -196,7 +196,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
         
         # this call waits for at least one peer to join this channel
-        logger.info(f"_send_heartbeat: waiting for someone to join channel: {channel} "
+        logger.debug(f"_send_heartbeat: waiting for someone to join channel: {channel} "
                     f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
@@ -212,7 +212,7 @@ class Trainer(Role, metaclass=ABCMeta):
         return
 
     def _send_weights(self, tag: str) -> None:
-        logger.info(f"### SEND WEIGHTS for tag: {tag} "
+        logger.debug(f"### SEND WEIGHTS for tag: {tag} "
                     f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -220,7 +220,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.info(f"_send_weights: waiting for someone to join channel: {channel} "
+        logger.debug(f"_send_weights: waiting for someone to join channel: {channel} "
                     f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
@@ -247,7 +247,7 @@ class Trainer(Role, metaclass=ABCMeta):
         channel._selector._cleanup_send_ends()
 
     def _perform_channel_leave(self, tag: str) -> None:
-        logger.info(f"In _perform_channel_leave for tag: {tag} "
+        logger.debug(f"In _perform_channel_leave for tag: {tag} "
                     f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -255,16 +255,16 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.info(f"_perform_channel_leave: waiting for someone to join channel: {channel} "
+        logger.debug(f"_perform_channel_leave: waiting for someone to join channel: {channel} "
                     f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         channel.leave()
-        logger.debug(f"Sent channel leave message for channel: "
+        logger.info(f"Sent channel leave message for channel: "
                      f"{channel._name} and trainer: {self.trainer_id}")
         
     def _perform_channel_join(self, tag: str) -> None:
-        logger.info(f"In _perform_channel_join for tag: {tag} "
+        logger.debug(f"In _perform_channel_join for tag: {tag} "
                     f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -272,12 +272,12 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.info(f"_perform_channel_join: waiting for someone to join channel: {channel} "
+        logger.debug(f"_perform_channel_join: waiting for someone to join channel: {channel} "
                     f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         channel.join()
-        logger.debug(f"Sent channel join message for channel: "
+        logger.info(f"Sent channel join message for channel: "
                      f"{channel._name} and trainer: {self.trainer_id}")
 
     def save_metrics(self):
@@ -312,7 +312,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self.weights = self.model.get_weights()
     
     def send_heartbeat_to_agg(self) -> None:
-        logger.info("Inside trainer.py will call self.put(heartbeat)")
+        logger.debug("Inside trainer.py will call self.put(heartbeat)")
         self.put(TAG_HEARTBEAT)
 
     def compose(self) -> None:

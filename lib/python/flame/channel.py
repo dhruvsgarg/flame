@@ -161,7 +161,7 @@ class Channel(object):
 
     def ends(self, state: Union[None, str] = None) -> list[str]:
         """Return a list of end ids."""
-        logger.info(f"ends() for channel name: {self._name}, current self._ends: {self._ends}")
+        logger.debug(f"ends() for channel name: {self._name}, current self._ends: {self._ends}")
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
@@ -178,7 +178,7 @@ class Channel(object):
                     self._ends,
                     self.properties
                     )
-            logger.info(f"selected returned from select(): {selected}")
+            logger.debug(f"selected returned from select(): {selected}")
             
             id_list = list()
             for end_id, kv in selected.items():
@@ -191,12 +191,12 @@ class Channel(object):
                 logger.debug(f"Setting property for end_id {end_id} "
                              f"using (key,val) = ({key},{value})")
                 self._ends[end_id].set_property(key, value)
-                logger.info(f"Updated end_id {end_id} property to key: {key}, value: {value} in self._ends")
-            logger.info(f"Going to return id_list: {id_list}")
+                logger.debug(f"Updated end_id {end_id} property to key: {key}, value: {value} in self._ends")
+            logger.debug(f"Going to return id_list: {id_list}")
             return id_list
 
         result, _ = run_async(inner(), self._backend.loop())
-        logger.info(f"Going to return result: {result}")
+        logger.debug(f"Going to return result: {result}")
         return result
 
     def all_ends(self):
@@ -411,7 +411,7 @@ class Channel(object):
 
             payload = None
             try:
-                logger.info(f"channel {self._name} awaiting get() on end_id {end_id} in self.ends")
+                logger.debug(f"channel {self._name} awaiting get() on end_id {end_id} in self.ends")
                 payload = await self._ends[end_id].get()
                 if payload:
                     # ignore timestamp for measuring bytes received

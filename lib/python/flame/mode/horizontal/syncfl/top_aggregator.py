@@ -21,13 +21,16 @@ from copy import deepcopy
 from datetime import datetime
 
 from diskcache import Cache
-
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
-from flame.common.util import (MLFramework, get_ml_framework_in_use,
-                               valid_frameworks, weights_to_device,
-                               weights_to_model_device)
+from flame.common.util import (
+    MLFramework,
+    get_ml_framework_in_use,
+    valid_frameworks,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
@@ -123,26 +126,26 @@ class TopAggregator(Role, metaclass=ABCMeta):
         """Get data from remote role(s)."""
         logger.debug(f"Invoking get() with tag {tag}")
         if tag == TAG_AGGREGATE:
-            logger.info(f"In get(), got message for tag {tag},"
+            logger.debug(f"In get(), got message for tag {tag},"
                         f"invoking _aggregate_weights({tag})")
             self._aggregate_weights(tag)
         elif tag == TAG_HEARTBEAT:
-            logger.info(f"In get(), got message for tag {tag},"
+            logger.debug(f"In get(), got message for tag {tag},"
                         f" will invoke _read_heartbeat({tag})")
             self._read_heartbeat(tag)
 
     def _read_heartbeat(self, tag: str) -> None:
-        logger.info("In syncfl _read_heartbeat()")
+        logger.debug("In syncfl _read_heartbeat()")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info("No channel found for read_heartbeat")
             return
         
-        logger.info(f"Channel {channel} found for _read_heartbeat and tag {tag}")
-        logger.info(f"channel.ends(): {channel.ends()}")
-        # receive heartbeat message from trainers
-        # TODO: (DG) Check if it processes all heartbeats at once
-        # before proceeding to the next sampling?
+        logger.debug(f"Channel {channel} found for _read_heartbeat and tag {tag}")
+        logger.debug(f"channel.ends(): {channel.ends()}")
+        # receive heartbeat message from trainers TODO: (DG) Check if
+        # it processes all heartbeats at once before proceeding to the
+        # next sampling?
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
@@ -151,7 +154,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             if MessageType.HEARTBEAT in msg:
                 heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-                logger.info(
+                logger.debug(
                     f"received heartbeat from {end} "
                     f"at timestamp {heartbeat_timestamp}"
                     )
@@ -175,10 +178,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 logger.info(f"No data from {end}; skipping it")
                 continue
 
-            logger.info(f"received data from {end}")
+            logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
-            logger.info(f"received message in agg_weights {msg} from {end}")
+            logger.debug(f"received message in agg_weights {msg} from {end}")
 
             if MessageType.WEIGHTS in msg:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -351,7 +354,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             # get aggregator seconds from start
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
             for end in self.trainer_unavail_durations.keys():
-                logger.info(f"### Will check if trainer {end} is available")
+                logger.debug(f"### Will check if trainer {end} is available")
                 curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
                 # iterate through unavailability list First, check if
@@ -359,10 +362,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
                 for start_time, duration in curr_trainer_unavail_list:
                     if start_time <= agg_time_since_start_s < start_time + duration:
-                        logger.info(f"### Trainer {end} attempted to be picked in "
+                        logger.debug(f"### Trainer {end} attempted to be picked in "
                                     f"failed state.")
                         curr_unavail_trainer_list.append(end)
                         break
+                    # TODO: (DG) Check, how is the else going to work?
+                    # wrong indent?
                 else:
                     print("### Trainer " , end, " is available.")
                 
@@ -383,7 +388,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     self.trainer_unavail_durations[end] = updated_trainer_unavail_list
 
         # return the list
-        logger.info(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list}")
+        logger.debug(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list}")
 
         return curr_unavail_trainer_list
 
