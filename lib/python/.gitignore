@@ -2,6 +2,7 @@ build
 dist
 flame.egg-info
 *.txt
+*.log
 
 # ignore dataset and wandb generated files
 data

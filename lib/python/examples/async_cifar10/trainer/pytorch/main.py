@@ -145,10 +145,9 @@ class PyTorchCifar10Trainer(Trainer):
             self.timestamp_next_heartbeat_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
                 )
-        
+            
         # Check if client will notify aggregator of its availability
         self.client_avail_aware_notify = self.config.hyperparameters.client_avail_aware_notify
-        logger.debug(f"client_avail_aware_notify is set to {self.client_avail_aware_notify}")
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -178,25 +177,21 @@ class PyTorchCifar10Trainer(Trainer):
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while time_elapsed_from_start > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1]):
+                while len(self.failure_durations_s) > 0 and (
+                    time_elapsed_from_start > (
+                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                        )
+                ):
                     self.failure_durations_s.pop(0)
                     if len(self.failure_durations_s) == 0:
                         break
             else:
-                # leave channel, if notify is enabled
-                if self.client_avail_aware_notify == "True":
-                    self._perform_channel_leave(tag="upload")
-
                 # sleep for remaining time
                 logger.info(f"Task_id: {self.trainer_id} going to sleep "
                             f"at timestamp: {time.time()}")
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
                             f"{time.time()}")
-
-                # join channel, if notify is enabled
-                if self.client_avail_aware_notify == "True":
-                    self._perform_channel_join(tag="upload")
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
@@ -234,25 +229,32 @@ class PyTorchCifar10Trainer(Trainer):
             remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
             logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
             
-            if(remaining_sleep_duration_s <= 0):
+            if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while time_elapsed_from_start > (self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]):
+                while len(self.failure_durations_s) > 0 and (
+                    time_elapsed_from_start > (
+                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                        )
+                ):
                     self.dup_failure_durations_s.pop(0)
                     if len(self.dup_failure_durations_s) == 0:
                         break
-            else: 
-                logger.info(f"Task_id: {self.trainer_id} going to sleep at timestamp: {time.time()}")
+            else:
+                # sleep for remaining time
+                logger.info(f"Task_id: {self.trainer_id} going to sleep "
+                            f"at timestamp: {time.time()}")
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
+                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
+                            f"{time.time()}")
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
                 self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
-                if(self.dup_timestamp_next_sleep_s < time.time()):
+                if (self.dup_timestamp_next_sleep_s < time.time()):
                     logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < curr_time")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
@@ -263,6 +265,74 @@ class PyTorchCifar10Trainer(Trainer):
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
         logger.info(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at timestamp: {time.time()}")
+    
+    def check_leave_sleep_join(self):
+        """Indicate transient unavailability to aggregator"""
+        # NOTE: Builds on top of dup_check_and_sleep, both cannot be
+        # used together
+
+        curr_time = time.time()
+        
+        if (curr_time >= self.dup_timestamp_next_sleep_s) and (
+            len(self.dup_failure_durations_s) > 0
+        ):
+            # pop leftmost element
+            sleep_config_tuple = self.dup_failure_durations_s.pop(0)
+
+            # get the duration of sleep and set the params for next
+            # sleep
+            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_duration_s = sleep_config_tuple[1]
+
+            # remaining sleep = trainer_start_ts + actual_sleep_start
+            # + actual_sleep_duration - current_ts 
+            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+            logger.info(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            
+            if remaining_sleep_duration_s <= 0:
+                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
+                # Need to pop out failure intervals that occur in the
+                # past
+                time_elapsed_from_start = curr_time - self.trainer_start_ts
+                while len(self.failure_durations_s) > 0 and (
+                    time_elapsed_from_start > (
+                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                        )
+                ):
+                    self.dup_failure_durations_s.pop(0)
+                    if len(self.dup_failure_durations_s) == 0:
+                        break
+            else:
+                # leave channel, if notify is enabled
+                if self.client_avail_aware_notify == "True":
+                    self._perform_channel_leave(tag="upload")
+
+                # sleep for remaining time
+                logger.info(f"Task_id: {self.trainer_id} going to sleep "
+                            f"at timestamp: {time.time()}")
+                time.sleep(remaining_sleep_duration_s)
+                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
+                            f"{time.time()}")
+
+                # join channel, if notify is enabled
+                if self.client_avail_aware_notify == "True":
+                    self._perform_channel_join(tag="upload")
+
+            # check if failure_list is now empty, if yes, reset
+            # ts_next_sleep_s if not empty, set it to the next value
+            if len(self.dup_failure_durations_s) > 0:
+                self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
+                if (self.dup_timestamp_next_sleep_s < time.time()):
+                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < curr_time")
+            else:
+                self.dup_timestamp_next_sleep_s = calendar.timegm(
+                    time.strptime(
+                        "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
+                    )
+                )
+                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
+
+        logger.info(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -343,7 +413,7 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initiate_heartbeat(self) -> None:
         while True:
-            # heartbeats are sent from a different thread ideally
+            # heartbeats are sent from a different thread. Ideally
             # heartbeats and sleep should have happened on the same
             # thread but in the current scenario, both threads need to
             # be put to sleep whenever the trainer is marked to be
@@ -361,6 +431,13 @@ class PyTorchCifar10Trainer(Trainer):
             logger.info("Initiating send heartbeat to aggregator")
             self.send_heartbeat_to_agg()
 
+    def notify_trainer_avail(self) -> None:
+        while True:
+            # Adopted from initiate heartbeats
+            
+            time.sleep(1)             # Will check every one second
+            self.check_leave_sleep_join()
+
 
 def main():
     import argparse
@@ -372,15 +449,21 @@ def main():
     config = Config(args.config)
 
     t = PyTorchCifar10Trainer(config)
-    print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: {t.heartbeats_enabled}")
+    print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
+          f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
+          f"{t.client_avail_aware_notify}")
 
     if t.heartbeats_enabled == "True":
         logger.info(f"Will initiate thread to send heartbeats for trainer {t.trainer_id}")
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
+    elif t.client_avail_aware_notify == "True":
+        logger.info(f"Will initiate thread to send avail notifications for trainer {t.trainer_id}")
+        avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
+        avail_notify_thread.daemon = True
+        avail_notify_thread.start()
 
-    # t = PyTorchCifar10Trainer(config)
     t.compose()
     t.run()
 
