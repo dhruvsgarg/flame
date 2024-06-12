@@ -61,7 +61,10 @@ class FedBuffSelector(AbstractSelector):
         self.ordered_updates_recv_ends = list()
 
     def select(
-        self, ends: dict[str, End], channel_props: dict[str, Scalar]
+        self,
+        ends: dict[str, End],
+        channel_props: dict[str, Scalar],
+        trainer_unavail_list: list = None,
     ) -> SelectorReturnType:
         """Select ends from the given ends to meet concurrency level.
 
@@ -91,11 +94,29 @@ class FedBuffSelector(AbstractSelector):
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
         
+        # default, availability unaware way of using ends
+        eligible_ends = ends
+        
+        # Make a filter of unavailable ends, update eligible_ends
+        # given trainer_unavail_list
+        if trainer_unavail_list != [] and trainer_unavail_list is not None:
+            # Updating passed ends and filtering out unavailable ones
+            # before passing
+            eligible_ends = {
+                end_id: end
+                for end_id, end in ends.items()
+                if end_id not in trainer_unavail_list
+                }
+            logger.debug(f"Fedbuff select got non-empty trainer_unavail_list, "
+                         f"populated eligible_ends: {eligible_ends}")
+        
         results = {}
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-            results = self._handle_send_state(ends, concurrency)
+            results = self._handle_send_state(eligible_ends, concurrency)
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
+            # TODO: (DG) See if eligible_ends should be passed here
+            # too in place of ends
             results = self._handle_recv_state(ends, concurrency)
         
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_HTBT_RECV:

@@ -353,36 +353,31 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if self.trainer_unavail_durations is not None:
             # get aggregator seconds from start
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
-            for end in self.trainer_unavail_durations.keys():
-                logger.debug(f"### Will check if trainer {end} is available")
+            for end in list(self.trainer_unavail_durations.keys()):
+                logger.debug(f"Check trainer {end}'s availability")
                 curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
-                # iterate through unavailability list First, check if
-                # the current time is within any failure window
-
+                # iterate through unavailability list
                 for start_time, duration in curr_trainer_unavail_list:
                     if start_time <= agg_time_since_start_s < start_time + duration:
-                        logger.debug(f"### Trainer {end} attempted to be picked in "
-                                    f"failed state.")
+                        logger.debug(f"Trainer {end} is unavailable.")
                         curr_unavail_trainer_list.append(end)
                         break
-                    # TODO: (DG) Check, how is the else going to work?
-                    # wrong indent?
-                else:
-                    print("### Trainer " , end, " is available.")
-                
+                    else:
+                        logger.debug(f"Trainer {end} is available.")
+                        
                 # Remove entries that occurred in the past
                 updated_trainer_unavail_list = [
-                    (start_time, duration) for
-                    start_time, duration in curr_trainer_unavail_list
+                    (start_time, duration)
+                    for start_time, duration in curr_trainer_unavail_list
                     if (start_time + duration) >= agg_time_since_start_s
-                    ]
+                ]
 
                 # Remove end from trainer_unavail_durations if list is
-                # empty TODO: Check if deletion is happening properly
+                # empty
                 if len(updated_trainer_unavail_list) == 0:
-                    logger.info(f"### Trainer {end} will no longer fail, removing "
-                                f"from trainer_unavail_durations")
+                    logger.info(f"Trainer {end} will no longer fail, "
+                                f"removing from trainer_unavail_durations")
                     del self.trainer_unavail_durations[end]
                 else:
                     self.trainer_unavail_durations[end] = updated_trainer_unavail_list

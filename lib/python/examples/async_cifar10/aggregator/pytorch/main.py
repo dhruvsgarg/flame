@@ -118,8 +118,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
         self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
         self.trainer_unavail_durations = None
-        if (self.track_trainer_avail["enabled"] and
-            self.track_trainer_avail["type"] == "ORACULAR"):
+        if (
+            self.track_trainer_avail["enabled"] and
+            self.track_trainer_avail["type"] == "ORACULAR"
+        ):
             self.trainer_unavail_durations = self.read_trainer_unavailability()
             print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
 

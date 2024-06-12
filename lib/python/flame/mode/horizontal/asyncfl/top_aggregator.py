@@ -17,7 +17,6 @@
 
 import logging
 import math
-import threading
 import time
 
 import numpy as np
@@ -123,8 +122,8 @@ class TopAggregator(SyncTopAgg):
         if MessageType.HEARTBEAT in msg:
             heartbeat_timestamp = msg[MessageType.HEARTBEAT]
             logger.debug(f"received heartbeat from {end} "
-                        f"with timestamp {heartbeat_timestamp} "
-                        f"at current time: {time.time()}")
+                         f"with timestamp {heartbeat_timestamp} "
+                         f"at current time: {time.time()}")
             
             # Add trainer to global_trainer set Used only to check
             # unavailable trainers later
@@ -138,11 +137,11 @@ class TopAggregator(SyncTopAgg):
             if end not in self._per_trainer_last_heartbeat_ts.keys():
                 self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
                 logger.debug(f"Added first timestamp for trainer {end} "
-                            f"with timestamp {heartbeat_timestamp}")
+                             f"with timestamp {heartbeat_timestamp}")
             elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
                 logger.debug(f"Will update timestamp for trainer {end} "
-                            f" (current={self._per_trainer_last_heartbeat_ts[end]})"
-                            f" with new timestamp {heartbeat_timestamp}")
+                             f" (current={self._per_trainer_last_heartbeat_ts[end]})"
+                             f" with new timestamp {heartbeat_timestamp}")
                 self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
             else:
                 logger.info(f"the heartbeat for {end} with timestamp "
@@ -218,7 +217,7 @@ class TopAggregator(SyncTopAgg):
                     end
                 ]["total_training_time_s"] = new_cumulative_training_s
                 logger.debug(f"Updated training time record for {end}, details: "
-                            f"{self._trainer_training_duration_s[end]}")
+                             f"{self._trainer_training_duration_s[end]}")
 
         # capture telemetry on trainer participation in rounds
         self._per_round_update_list.append(end)
@@ -420,16 +419,13 @@ class TopAggregator(SyncTopAgg):
 
             for start_time, duration in curr_trainer_unavail_list:
                 if start_time <= agg_time_since_start_s < start_time + duration:
-                    print(
-                        "### Trainer ",
-                        end,
-                        " attempted to be picked in failed state.",
-                    )
+                    logger.debug(f"### Trainer {end} attempted to be picked in failed "
+                                 f"state.")
                     picked_trainer_is_available = False
                     return picked_trainer_is_available
-            else:
-                print("### Trainer ", end, " is available.")
-                picked_trainer_is_available = True
+                else:
+                    logger.debug(f"### Trainer {end} is available.")
+                    picked_trainer_is_available = True
 
             # Remove entries that occurred in the past
             updated_trainer_unavail_list = [
@@ -441,12 +437,8 @@ class TopAggregator(SyncTopAgg):
             # Remove end from trainer_unavail_durations if list is
             # empty TODO: Check if deletion is happening properly
             if len(updated_trainer_unavail_list) == 0:
-                print(
-                    "### Trainer ",
-                    end,
-                    " will no longer fail, removing from "
-                    " trainer_unavail_durations",
-                )
+                logger.debug(f"### Trainer {end} will no longer fail, removing from "
+                             f"trainer_unavail_durations")
                 del self.trainer_unavail_durations[end]
             else:
                 self.trainer_unavail_durations[end] = (
@@ -540,6 +532,19 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"Starting busy wait at time {time.time()}")
         time.sleep(2)
         logger.debug(f"Ended busy wait at time {time.time()}")
+
+        # before invoking channel.ends() to select,
+        # set the trainer_unavail if it isn't None
+        if self.trainer_unavail_durations is not None:
+            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            channel.set_curr_unavailable_trainers(
+                trainer_unavail_list=curr_unavail_trainer_list
+            )
+            logger.debug(f"Passed curr_unavail_trainer_list: "
+                         f"{curr_unavail_trainer_list} to channel")
+        else:
+            # Handling the case for oort's selector since it expects 3 arguments
+            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
         ends = channel.ends(VAL_CH_STATE_SEND)
