@@ -33,7 +33,7 @@ from flame.selector import AbstractSelector, SelectorReturnType
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 90      # 90 seconds timeout
+SEND_TIMEOUT_WAIT_S = 45      # 45 seconds timeout
 
 
 class FedBuffSelector(AbstractSelector):
