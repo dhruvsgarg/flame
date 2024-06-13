@@ -77,6 +77,7 @@ class MqttBackend(AbstractBackend):
         self._mqtt_client = None
         self._last_payload_sig = None
         self._cleanup_waits = None
+        self._cleanup_ready = set()
         if self._initialized:
             return
 
@@ -480,23 +481,39 @@ class MqttBackend(AbstractBackend):
 
     async def cleanup(self):
         """Clean up resources in backend."""
-        pass
+        # NOTE: DG attempted implementation to fix issue
+        # Stop MQTT client loop
+        if self._mqtt_client is not None:
+            self._mqtt_client.loop_stop()
+
+        # Disconnect MQTT client
+        if self._mqtt_client is not None:
+            self._mqtt_client.disconnect()
+
+        # Clear channels
+        self._channels.clear()
+
+        # Cancel asyncio tasks
+        for task in asyncio.all_tasks(self._loop):
+            task.cancel()
+
+        await self._loop.shutdown_asyncgens()
+        self._loop.stop()
 
     def set_cleanup_ready_async(self, end_id: str) -> None:
-        """Set cleanup ready event for a given end id.
-
-        This should be called in self._loop thread. This is not yet
-        implemented.
-        """
-        pass
+        """Set cleanup ready event for a given end id."""
+        # NOTE: DG attempted implementation to fix issue
+        logger.debug(f"Setting cleanup ready for {end_id} in async loop")
+        self._cleanup_ready.add(end_id)
 
     def set_cleanup_ready(self, end_id: str) -> None:
-        """Set cleanup ready event for a given end id.
-
-        This should be called non self._loop thread. This is not yet
-        implemented.
-        """
-        pass
+        """Set cleanup ready event for a given end id."""
+        # NOTE: DG attempted implementation to fix issue
+        logger.debug(f"Setting cleanup ready for {end_id} from non-loop thread")
+        if self._loop.is_running():
+            self._loop.call_soon_threadsafe(self.set_cleanup_ready_async, end_id)
+        else:
+            self.set_cleanup_ready_async(end_id)
 
 
 class AsyncioHelper:

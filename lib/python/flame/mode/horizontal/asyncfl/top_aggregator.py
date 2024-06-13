@@ -530,7 +530,7 @@ class TopAggregator(SyncTopAgg):
         # on distribute_weights to let the system state get updated
         # before selector is invoked again
         logger.debug(f"Starting busy wait at time {time.time()}")
-        time.sleep(2)
+        time.sleep(0.1)
         logger.debug(f"Ended busy wait at time {time.time()}")
 
         # before invoking channel.ends() to select,

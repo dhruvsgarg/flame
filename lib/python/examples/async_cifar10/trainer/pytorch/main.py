@@ -22,6 +22,7 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 
 import ast
 import calendar
+import gc
 import logging
 import threading
 import time
@@ -371,6 +372,10 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
+        # Release the memory of the full dataset
+        del dataset
+        gc.collect()
+
         logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
 
     def train(self) -> None:
@@ -435,7 +440,7 @@ class PyTorchCifar10Trainer(Trainer):
         while True:
             # Adopted from initiate heartbeats
             
-            time.sleep(1)             # Will check every one second
+            time.sleep(0.1)             # Will check every 0.1 second
             self.check_leave_sleep_join()
 
 

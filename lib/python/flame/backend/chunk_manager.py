@@ -79,7 +79,11 @@ class ChunkThread(Thread):
                 if cleanup_ready_future is not None:
                     await cleanup_ready_future
                 else:
-                    logger.error(f"set_cleanup_ready_async returned None for end_id: {end_id}")
+                    # NOTE: (DG) Attempted fix for set_cleanup_ready
+                    # in mqtt.py. Downgraded log from error to warning
+                    # since it no longer blocks the training from that
+                    # client.
+                    logger.warning(f"set_cleanup_ready_async returned None for end_id: {end_id}")
                 return
             logger.debug(f"rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
