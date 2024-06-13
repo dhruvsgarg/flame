@@ -77,7 +77,10 @@ class MqttBackend(AbstractBackend):
         self._mqtt_client = None
         self._last_payload_sig = None
         self._cleanup_waits = None
+        # TODO: (DG) check if _cleanup_ready is being used correctly
+        # Refer p2p.py for implementation
         self._cleanup_ready = set()
+
         if self._initialized:
             return
 
