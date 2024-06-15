@@ -160,6 +160,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="clientAvailAwareNotify",
         default=False
         )
+    training_delay_enabled: t.Optional[bool] = Field(
+        alias="trainingDelayEnabled",
+        default=False
+        )
+    training_delay_s: t.Optional[float] = Field(
+        alias="trainingDelaySeconds",
+        default=None
+        )
 
 
 class Groups(FlameSchema):

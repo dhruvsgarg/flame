@@ -33,7 +33,7 @@ from flame.selector import AbstractSelector, SelectorReturnType
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 45      # 45 seconds timeout
+SEND_TIMEOUT_WAIT_S = 60      # 60 seconds timeout
 
 
 class FedBuffSelector(AbstractSelector):
@@ -59,6 +59,14 @@ class FedBuffSelector(AbstractSelector):
         # Tracks updates received from trainers and makes them
         # available to select again
         self.ordered_updates_recv_ends = list()
+
+        # Tracks timeouted trainers and number of times it happened to
+        # a trainer
+        self.track_trainer_timeouts = dict()
+
+        # Tracks trainers that were selected but left training in
+        # between
+        self.track_selected_trainers_which_left = dict()
 
     def select(
         self,
@@ -224,9 +232,8 @@ class FedBuffSelector(AbstractSelector):
                         # from here as well. Is the failure scenario
                         # being handled correctly if the trainer
                         # contributes, fails and then comes back
-                        # within the same round.
-                        # TODO: (DG) Need a diagram in the paper to
-                        # explain this?
+                        # within the same round. TODO: (DG) Need a
+                        # diagram in the paper to explain this?
                         logger.debug(f"Found end {end_id} in state None. Might have left/rejoined. Need to remove it from selected_ends and self.all_selected if it was selected")
                         if end_id in selected_ends:
                             selected_ends.remove(end_id)
@@ -264,7 +271,26 @@ class FedBuffSelector(AbstractSelector):
                 selected_ends.remove(end_id)
                 logger.debug(f"Also removing end_id {end_id} from selected_ends")
                 self.selected_ends[self.requester] = selected_ends
-            del self.all_selected[end_id]
+            
+            # Track trainers that were sent weights but dropped off
+            # before sending back an update
+            if end_id in self.track_selected_trainers_which_left:
+                self.track_selected_trainers_which_left[end_id] += 1
+            else:
+                self.track_selected_trainers_which_left[end_id] = 1
+            
+            total_trainers_dropped_off = 0
+            for k, v in self.track_selected_trainers_which_left.items():
+                total_trainers_dropped_off += v
+
+            logger.info(f"Trainer: {end_id} with count "
+                        f"{self.track_selected_trainers_which_left[end_id]}, left "
+                        f"before returning update. "
+                        f"total_trainers_dropped_off: {total_trainers_dropped_off} "
+                        f"self.track_selected_trainers_which_left: "
+                        f"{self.track_selected_trainers_which_left}")
+            if end_id in self.all_selected.keys():
+                del self.all_selected[end_id]
         elif (
             end_id in self.all_selected
          ) and (
@@ -280,8 +306,8 @@ class FedBuffSelector(AbstractSelector):
     def _cleanup_send_ends(self):
         # TODO: (DG) Get a more principled solution here. Hacky right
         # now to fix the issue for trainer side when failures occur.
-        logger.debug(f"Going to cleanup selector state after "
-                     f"send.")
+        logger.debug("Going to cleanup selector state after "
+                     "send.")
         selected_ends = self.selected_ends[self.requester]
         curr_list_selected_ends = list(selected_ends)
         for end_id in curr_list_selected_ends:
@@ -336,23 +362,57 @@ class FedBuffSelector(AbstractSelector):
         # update in UPDATE_TIMEOUT_WAIT_S. The client might have
         # dropped the message with transient unavailability.
 
-        # TODO: (DG) Check if it affects trainer code
-        # TODO: (DG) Check if it is still needed after cleanup_remove_end() method
+        # TODO: (DG) Check if it affects trainer code TODO: (DG) Check
+        # if it is still needed after cleanup_remove_end() method
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
             current_time_s = time.time()
-            trainer_weight_send_timestamp_s = self.all_selected[end]
-            if (
-                trainer_weight_send_timestamp_s < (current_time_s - SEND_TIMEOUT_WAIT_S)
-                ) and (
-                    end not in self.ordered_updates_recv_ends
-                    ):
-                # trainer hasn't returned with an update in
-                # SEND_TIMEOUT_WAIT_S delete it from self.all_selected
-                # so that it is eligible to be sampled again
-                logger.debug(f"Removing end {end} from self.all_selected since havent "
-                             f"got its update in {SEND_TIMEOUT_WAIT_S}")
-                del self.all_selected[end]
+            if end in self.all_selected.keys():
+                # Check again to avoid possible case of race condition
+                # when all_selected has been updated from another
+                # thread
+                trainer_weight_send_timestamp_s = self.all_selected[end]
+                if (trainer_weight_send_timestamp_s < (
+                        current_time_s - SEND_TIMEOUT_WAIT_S)
+                    ) and (
+                        end not in self.ordered_updates_recv_ends):
+                    # trainer hasn't returned with an update in
+                    # SEND_TIMEOUT_WAIT_S delete it from
+                    # self.all_selected so that it is eligible to be
+                    # sampled again
+                    logger.debug(f"Removing end {end} from self.all_selected since havent "
+                                 f"got its update in {SEND_TIMEOUT_WAIT_S}")
+                    
+                    # Tracking timeouts and time spend waiting TODO:
+                    # (DG) Check if it is okay to have it triggered
+                    # for oracular too? TODO: (DG) pass
+                    # timeout_duration as a flag from config, also
+                    # pass enable/disable it?
+                    if end in self.track_trainer_timeouts:
+                        self.track_trainer_timeouts[end] += 1
+                    else:
+                        self.track_trainer_timeouts[end] = 1
+                    
+                    # Capture total time spent in timeouts
+                    num_of_timeouts_occured = 0
+                    for k, v in self.track_trainer_timeouts.items():
+                        num_of_timeouts_occured += v
+                    
+                    total_time_spent_timeouts_s = (
+                        num_of_timeouts_occured * SEND_TIMEOUT_WAIT_S
+                    )
+                    
+                    logger.info(f"Timeout for trainer: {end} with count "
+                                f"{self.track_trainer_timeouts[end]}. "
+                                f"num_of_timeouts_occured : "
+                                f"{num_of_timeouts_occured}, "
+                                f"total_time_spent_timeouts_s: "
+                                f"{total_time_spent_timeouts_s}, "
+                                f"Timeout frequency: {self.track_trainer_timeouts}")
+                    
+                    # delete the end from self.all_selected
+                    if end in self.all_selected.keys():
+                        del self.all_selected[end]
 
         for end_id in shuffled_end_ids:
             if end_id in self.all_selected.keys():
@@ -421,7 +481,8 @@ class FedBuffSelector(AbstractSelector):
                     logger.debug(f"Removed end_id {end_id} from selected ends since it "
                                  f"was already in recvd state")
                 # TODO: (DG) Remove ends from send state also here for
-                # the trainer side? But how will it impact the aggregator?
+                # the trainer side? But how will it impact the
+                # aggregator?
             else:
                 # TODO: (DG) Should we not remove it from selected
                 # ends here?

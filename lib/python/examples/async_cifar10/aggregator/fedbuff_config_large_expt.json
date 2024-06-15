@@ -47,7 +47,7 @@
     "hyperparameters": {
         "batchSize": 32,
         "learningRate": 40.9,
-        "rounds": 5000,
+        "rounds": 300,
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 10,
         "trackTrainerAvail": {
