@@ -158,9 +158,8 @@ class PyTorchCifar10Trainer(Trainer):
         """Induce transient unavailability"""
         # Implement this if transient unavailability need to be
         # emulated in the trainer
-        curr_time = time.time()
         
-        if (curr_time >= self.timestamp_next_sleep_s) and (
+        if (time.time() >= self.timestamp_next_sleep_s) and (
             len(self.failure_durations_s) > 0
         ):
             # pop leftmost element
@@ -173,15 +172,15 @@ class PyTorchCifar10Trainer(Trainer):
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {time.time()}")
             
             if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
-                            f"at timestamp: {curr_time}")
+                            f"at timestamp: {time.time()}")
                 # Need to pop out failure intervals that occur in the
                 # past
-                time_elapsed_from_start = curr_time - self.trainer_start_ts
+                time_elapsed_from_start = time.time() - self.trainer_start_ts
                 while len(self.failure_durations_s) > 0 and (
                     time_elapsed_from_start > (
                         self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
@@ -201,9 +200,12 @@ class PyTorchCifar10Trainer(Trainer):
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.failure_durations_s) > 0:
-                self.timestamp_next_sleep_s = self.trainer_start_ts + self.failure_durations_s[0][0]
-                if(self.timestamp_next_sleep_s < time.time()):
-                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time")
+                self.timestamp_next_sleep_s = max((
+                    self.trainer_start_ts + self.failure_durations_s[0][0]),
+                    time.time()+1
+                    )
+                if self.timestamp_next_sleep_s < time.time():
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < time.time()")
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -213,12 +215,11 @@ class PyTorchCifar10Trainer(Trainer):
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
         logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at "
-                    f"timestamp: {time.time()}")
+                     f"timestamp: {time.time()}")
 
     def dup_check_and_sleep(self):
-        curr_time = time.time()
         
-        if (curr_time >= self.dup_timestamp_next_sleep_s) and (
+        if (time.time() >= self.dup_timestamp_next_sleep_s) and (
             len(self.dup_failure_durations_s) > 0
         ):
             # pop leftmost element
@@ -231,14 +232,14 @@ class PyTorchCifar10Trainer(Trainer):
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {time.time()}")
             
             if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
+                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {time.time()}")
                 # Need to pop out failure intervals that occur in the
                 # past
-                time_elapsed_from_start = curr_time - self.trainer_start_ts
+                time_elapsed_from_start = time.time() - self.trainer_start_ts
                 while len(self.dup_failure_durations_s) > 0 and (
                     time_elapsed_from_start > (
                         self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
@@ -258,9 +259,12 @@ class PyTorchCifar10Trainer(Trainer):
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
-                self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
+                self.dup_timestamp_next_sleep_s = max((
+                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    time.time()+1
+                    )
                 if (self.dup_timestamp_next_sleep_s < time.time()):
-                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < curr_time")
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < time.time()")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -275,10 +279,8 @@ class PyTorchCifar10Trainer(Trainer):
         """Indicate transient unavailability to aggregator"""
         # NOTE: Builds on top of dup_check_and_sleep, both cannot be
         # used together
-
-        curr_time = time.time()
         
-        if (curr_time >= self.dup_timestamp_next_sleep_s) and (
+        if (time.time() >= self.dup_timestamp_next_sleep_s) and (
             len(self.dup_failure_durations_s) > 0
         ):
             # pop leftmost element
@@ -294,21 +296,21 @@ class PyTorchCifar10Trainer(Trainer):
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts
             remaining_sleep_duration_s = (
-                sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+                sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
             )
             logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
                          f"{sleep_duration_s} with remaining_sleep_duration_s: "
                          f"{remaining_sleep_duration_s}"
-                         f" at timestamp: {curr_time}"
+                         f" at timestamp: {time.time()}"
                          )
             
             if remaining_sleep_duration_s < 0:
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
-                            f"at timestamp: {curr_time}")
+                            f"at timestamp: {time.time()}")
                 # Need to pop out failure intervals that occur in the
                 # past
                 while len(self.dup_failure_durations_s) > 0 and (
-                    (curr_time - self.trainer_start_ts) > (
+                    (time.time() - self.trainer_start_ts) > (
                         self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
                         )
                 ):
@@ -322,10 +324,10 @@ class PyTorchCifar10Trainer(Trainer):
 
                 # sleep for remaining time
                 logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {curr_time}")
+                            f"at timestamp: {time.time()}")
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{curr_time}")
+                            f"{time.time()}")
 
                 # join channel, if notify is enabled
                 if self.client_avail_aware_notify == "True":
@@ -334,9 +336,12 @@ class PyTorchCifar10Trainer(Trainer):
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
-                self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
-                if (self.dup_timestamp_next_sleep_s < curr_time):
-                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < curr_time")
+                self.dup_timestamp_next_sleep_s = max((
+                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    time.time()+1
+                    )
+                if (self.dup_timestamp_next_sleep_s < time.time()):
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < time.time()")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -345,7 +350,7 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {curr_time}")
+        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
 
     def initialize(self) -> None:
         """Initialize role."""
