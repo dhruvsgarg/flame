@@ -195,7 +195,7 @@ class TopAggregator(SyncTopAgg):
 
         # update _trainer_training_duration_s to capture training time
         if end not in self._trainer_training_duration_s.keys():
-            logger.warning(f"{end} not in _trainer_training_duration_s at recv!")
+            logger.warning(f"{end} not in _trainer_training_duration_s in agg_weights")
         else:
             last_recv_wts_ts = time.time()
             self._trainer_training_duration_s[
@@ -206,6 +206,11 @@ class TopAggregator(SyncTopAgg):
             if last_send_wts_ts > last_recv_wts_ts:
                 logger.error(f"{end} last_recv_ts before last_send_ts!")
             else:
+                # NOTE: total_training_time_s is approximate. It only
+                # captures training time for those send_wt and recv_wt
+                # that complete. Timeouts are not
+                # included in this time and can be observed
+                # separately.
                 curr_cumulative_training_s = self._trainer_training_duration_s[
                     end
                 ]["total_training_time_s"]
@@ -400,6 +405,16 @@ class TopAggregator(SyncTopAgg):
                 f"P90 {np.percentile(trainer_staleness_arr, 90)}, "
                 f"P99 {np.percentile(trainer_staleness_arr, 99)}"
             )
+        
+        total_training_time_all_trainers = 0
+        for k, v in self._trainer_training_duration_s.items():
+            total_training_time_all_trainers += v["total_training_time_s"]
+        avg_training_time = (
+            total_training_time_all_trainers/len(self._trainer_training_duration_s)
+        )
+        logger.info(f"Avg training time {avg_training_time} across "
+                    f"{len(self._trainer_training_duration_s)} trainers")
+
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
@@ -573,6 +588,18 @@ class TopAggregator(SyncTopAgg):
                     MessageType.MODEL_VERSION: self._round,
                 },
             )
+
+            # Update send_time in training_duration_s
+            if end not in self._trainer_training_duration_s.keys():
+                logger.debug(f"{end} not in _trainer_training_duration_s, will add")
+                self._trainer_training_duration_s[end] = dict()
+                self._trainer_training_duration_s[end]["last_send_wts_ts"] = 0
+                self._trainer_training_duration_s[end]["last_recv_wts_ts"] = 0
+                self._trainer_training_duration_s[end]["total_training_time_s"] = 0
+            
+            # Update last_send_wts_timestamp
+            self._trainer_training_duration_s[
+                end]["last_send_wts_ts"] = time.time()
 
     def compose(self) -> None:
         """Compose role with tasklets."""

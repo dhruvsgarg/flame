@@ -149,6 +149,10 @@ class PyTorchCifar10Trainer(Trainer):
             
         # Check if client will notify aggregator of its availability
         self.client_avail_aware_notify = self.config.hyperparameters.client_avail_aware_notify
+
+        # Check if client will emulate delays in training time
+        self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
+        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -235,9 +239,9 @@ class PyTorchCifar10Trainer(Trainer):
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while len(self.failure_durations_s) > 0 and (
+                while len(self.dup_failure_durations_s) > 0 and (
                     time_elapsed_from_start > (
-                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                        self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
                         )
                 ):
                     self.dup_failure_durations_s.pop(0)
@@ -282,22 +286,30 @@ class PyTorchCifar10Trainer(Trainer):
 
             # get the duration of sleep and set the params for next
             # sleep
-            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_start_ts_from_trainer_init = (
+                self.trainer_start_ts + sleep_config_tuple[0]
+                )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
-            # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
+            # + actual_sleep_duration - current_ts
+            remaining_sleep_duration_s = (
+                sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+            )
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                         f"{remaining_sleep_duration_s}"
+                         f" at timestamp: {curr_time}"
+                         )
             
-            if remaining_sleep_duration_s <= 0:
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
+            if remaining_sleep_duration_s < 0:
+                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
+                            f"at timestamp: {curr_time}")
                 # Need to pop out failure intervals that occur in the
                 # past
-                time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while len(self.failure_durations_s) > 0 and (
-                    time_elapsed_from_start > (
-                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                while len(self.dup_failure_durations_s) > 0 and (
+                    (curr_time - self.trainer_start_ts) > (
+                        self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
                         )
                 ):
                     self.dup_failure_durations_s.pop(0)
@@ -310,10 +322,10 @@ class PyTorchCifar10Trainer(Trainer):
 
                 # sleep for remaining time
                 logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {time.time()}")
+                            f"at timestamp: {curr_time}")
                 time.sleep(remaining_sleep_duration_s)
                 logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{time.time()}")
+                            f"{curr_time}")
 
                 # join channel, if notify is enabled
                 if self.client_avail_aware_notify == "True":
@@ -323,7 +335,7 @@ class PyTorchCifar10Trainer(Trainer):
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
                 self.dup_timestamp_next_sleep_s = self.trainer_start_ts + self.dup_failure_durations_s[0][0]
-                if (self.dup_timestamp_next_sleep_s < time.time()):
+                if (self.dup_timestamp_next_sleep_s < curr_time):
                     logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < curr_time")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
@@ -333,7 +345,7 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {curr_time}")
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -391,6 +403,13 @@ class PyTorchCifar10Trainer(Trainer):
         # save dataset size so that the info can be shared with
         # aggregator
         self.dataset_size = len(self.train_loader.dataset)
+
+        # emulate delays in training (due to compute resource and/or
+        # dataset size and/or network latency) if enabled
+        if self.training_delay_enabled == "True":
+            time.sleep(self.training_delay_s)
+            logger.debug(f"Delayed training time for trainer "
+                         f"{self.trainer_id} by {self.training_delay_s}s")
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -456,7 +475,9 @@ def main():
     t = PyTorchCifar10Trainer(config)
     print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
           f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
-          f"{t.client_avail_aware_notify}")
+          f"{t.client_avail_aware_notify}, has "
+          f"training_delay_enabled: {t.training_delay_enabled}, "
+          f"with training_delay_s: {t.training_delay_s}")
 
     if t.heartbeats_enabled == "True":
         logger.info(f"Will initiate thread to send heartbeats for trainer {t.trainer_id}")
