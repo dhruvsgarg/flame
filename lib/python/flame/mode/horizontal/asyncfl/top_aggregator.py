@@ -18,6 +18,7 @@
 import logging
 import math
 import time
+from datetime import datetime
 
 import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -33,6 +34,12 @@ from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTop
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
+from flame.selector.oort import (
+    PROP_LAST_SELECTED_ROUND,
+    PROP_ROUND_DURATION,
+    PROP_ROUND_START_TIME,
+    PROP_STAT_UTILITY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +183,41 @@ class TopAggregator(SyncTopAgg):
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received MODEL_VERSION message in agg_weights from {end}")
             channel._selector.ordered_updates_recv_ends.append(end)
-            logger.debug(f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}")
+            logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
+                         f"{channel._selector.ordered_updates_recv_ends}")
+            
+            # For OORT selector
+            channel.set_end_property(
+                end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
+            )
+            # calculate round duration for this end, if the round number information
+            # is identical with round_start_time
+            logger.debug(f"Getting channel property {PROP_ROUND_START_TIME} for "
+                         f"end {end}")
+            round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
+            end = metadata[0]
+            timestamp = metadata[1]
+            logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
+                         f"end {end} and timestamp {timestamp}")
+            # TODO: (DG) Remove equality check from here
+            
+            if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
+                logger.debug(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
+                             f"matched with msg[MessageType.MODEL_VERSION] "
+                             f"{msg[MessageType.MODEL_VERSION]}")
+                logger.debug(f"Setting channel property {PROP_ROUND_DURATION} for end "
+                             f"{end} with duration "
+                             f"{timestamp - round_start_time_tup[1]}")
+                channel.set_end_property(
+                    end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
+                )
+            else:
+                logger.error(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
+                             f"did not match with msg[MessageType.MODEL_VERSION] "
+                             f"{msg[MessageType.MODEL_VERSION]}")
+                logger.error(f"COULD NOT set channel property {PROP_ROUND_DURATION} "
+                             f"for end {end} with duration "
+                             f"{timestamp - round_start_time_tup[1]}")
         else:
             logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}")
             return
@@ -208,9 +249,8 @@ class TopAggregator(SyncTopAgg):
             else:
                 # NOTE: total_training_time_s is approximate. It only
                 # captures training time for those send_wt and recv_wt
-                # that complete. Timeouts are not
-                # included in this time and can be observed
-                # separately.
+                # that complete. Timeouts are not included in this
+                # time and can be observed separately.
                 curr_cumulative_training_s = self._trainer_training_duration_s[
                     end
                 ]["total_training_time_s"]
@@ -240,6 +280,11 @@ class TopAggregator(SyncTopAgg):
 
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
+        
+        if MessageType.STAT_UTILITY in msg:
+            channel.set_end_property(
+                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+            )
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 
@@ -548,8 +593,8 @@ class TopAggregator(SyncTopAgg):
         time.sleep(0.1)
         logger.debug(f"Ended busy wait at time {time.time()}")
 
-        # before invoking channel.ends() to select,
-        # set the trainer_unavail if it isn't None
+        # before invoking channel.ends() to select, set the
+        # trainer_unavail if it isn't None
         if self.trainer_unavail_durations is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
@@ -558,7 +603,8 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"Passed curr_unavail_trainer_list: "
                          f"{curr_unavail_trainer_list} to channel")
         else:
-            # Handling the case for oort's selector since it expects 3 arguments
+            # Handling the case for oort's selector since it expects 3
+            # arguments
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
@@ -577,6 +623,17 @@ class TopAggregator(SyncTopAgg):
             # Send shouldn't be allowed if already sent to a trainer
             # in that same round
             logger.debug(f"sending weights to {end}")
+
+            # setting start time for OORT TODO: (DG)
+            # round_start_time for all trainers in the same round may
+            # not be the same
+            logger.debug(f"Setting channel property {PROP_ROUND_START_TIME} for "
+                         f"end {end}. For round {self._round} at time: {datetime.now()}"
+                         )
+            channel.set_end_property(
+                end, PROP_ROUND_START_TIME, (self._round, datetime.now())
+            )
+
             # we use _round to indicate a model version
             channel.send(
                 end,

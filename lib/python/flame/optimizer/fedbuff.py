@@ -133,7 +133,8 @@ class FedBuff(AbstractOptimizer):
             # agg_goal_weights are already adjusted with rate Using
             # hardcoded learning_rate for now, will pass as an
             # argument later
-            learning_rate = 40.9
+            # learning_rate = 40.9    # for Fedbuff
+            learning_rate = 1.0      # for AsyncOORT
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
