@@ -30,13 +30,10 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import torch.utils.data as data_utils
-import torchvision
 import torchvision.transforms as transforms
 from flame.config import Config
 from flame.mode.horizontal.trainer import Trainer
-from torch import Tensor
 from torchvision.datasets import CIFAR10
 
 logger = logging.getLogger(__name__)
@@ -76,6 +73,9 @@ class PyTorchCifar10Trainer(Trainer):
         self.config = config
         self.dataset_size = 0
         self.model = None
+        # Oort requires its loss function to have 'reduction'
+        # parameter
+        self.loss_fn = torch.nn.CrossEntropyLoss
 
         self.device = None
         self.train_loader = None
@@ -131,10 +131,12 @@ class PyTorchCifar10Trainer(Trainer):
             self.heartbeats_enabled = False
         
         if "frequency_s" in self.config.hyperparameters.heartbeats.keys():
-            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats["frequency_s"]
+            self.heartbeats_second_freq = (
+                self.config.hyperparameters.heartbeats["frequency_s"]
+                )
         else:
-            self.heartbeats_second_freq = 99999    
-        
+            self.heartbeats_second_freq = 99999
+
         # TODO: (DG) self.timestamp_next_heartbeat_s might not be
         # getting used. Remove? if heartbeats are enabled, compute
         # first heartbeat time
@@ -148,7 +150,9 @@ class PyTorchCifar10Trainer(Trainer):
                 )
             
         # Check if client will notify aggregator of its availability
-        self.client_avail_aware_notify = self.config.hyperparameters.client_avail_aware_notify
+        self.client_avail_aware_notify = (
+            self.config.hyperparameters.client_avail_aware_notify
+        )
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
@@ -167,13 +171,19 @@ class PyTorchCifar10Trainer(Trainer):
 
             # get the duration of sleep and set the params for next
             # sleep
-            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_start_ts_from_trainer_init = (
+                self.trainer_start_ts + sleep_config_tuple[0]
+            )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
-            # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {time.time()}")
+            # + actual_sleep_duration - current_ts
+            remaining_sleep_duration_s = (
+                sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
+            )
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                         f"{remaining_sleep_duration_s} at timestamp: {time.time()}")
             
             if (remaining_sleep_duration_s <= 0):
                 logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
@@ -205,7 +215,8 @@ class PyTorchCifar10Trainer(Trainer):
                     time.time()+1
                     )
                 if self.timestamp_next_sleep_s < time.time():
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < time.time()")
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                                 f"self.timestamp_next_sleep_s < time.time()")
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -227,22 +238,30 @@ class PyTorchCifar10Trainer(Trainer):
 
             # get the duration of sleep and set the params for next
             # sleep
-            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_start_ts_from_trainer_init = (
+                self.trainer_start_ts + sleep_config_tuple[0]
+            )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
             # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {time.time()}")
+            remaining_sleep_duration_s = (
+                sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
+            )
+            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                         f"{remaining_sleep_duration_s} at timestamp: {time.time()}")
             
             if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {time.time()}")
+                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at "
+                            f"timestamp: {time.time()}")
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = time.time() - self.trainer_start_ts
                 while len(self.dup_failure_durations_s) > 0 and (
                     time_elapsed_from_start > (
-                        self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
+                        self.dup_failure_durations_s[0][0] +
+                        self.dup_failure_durations_s[0][1]
                         )
                 ):
                     self.dup_failure_durations_s.pop(0)
@@ -264,7 +283,8 @@ class PyTorchCifar10Trainer(Trainer):
                     time.time()+1
                     )
                 if (self.dup_timestamp_next_sleep_s < time.time()):
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < time.time()")
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                                 f"self.dup_timestamp_next_sleep_s < time.time()")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -273,7 +293,8 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at "
+                     f"timestamp: {time.time()}")
     
     def check_leave_sleep_join(self):
         """Indicate transient unavailability to aggregator"""
@@ -311,7 +332,8 @@ class PyTorchCifar10Trainer(Trainer):
                 # past
                 while len(self.dup_failure_durations_s) > 0 and (
                     (time.time() - self.trainer_start_ts) > (
-                        self.dup_failure_durations_s[0][0] + self.dup_failure_durations_s[0][1]
+                        self.dup_failure_durations_s[0][0] +
+                        self.dup_failure_durations_s[0][1]
                         )
                 ):
                     self.dup_failure_durations_s.pop(0)
@@ -341,7 +363,8 @@ class PyTorchCifar10Trainer(Trainer):
                     time.time()+1
                     )
                 if (self.dup_timestamp_next_sleep_s < time.time()):
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.dup_timestamp_next_sleep_s < time.time()")
+                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                                 f"self.dup_timestamp_next_sleep_s < time.time()")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -350,14 +373,16 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
+                     f"timestamp: {time.time()}")
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
-        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+                     f"{time.time()}")
 
     def load_data(self) -> None:
         """Load data."""
@@ -393,7 +418,8 @@ class PyTorchCifar10Trainer(Trainer):
         del dataset
         gc.collect()
 
-        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
+        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: "
+                     f"{time.time()}")
 
     def train(self) -> None:
         """Train a model."""
@@ -401,6 +427,9 @@ class PyTorchCifar10Trainer(Trainer):
         self.optimizer = torch.optim.SGD(
             self.model.parameters(), lr=self.learning_rate
         )
+
+        # reset stat utility for OORT
+        self.reset_stat_utility()
 
         for epoch in range(1, self.epochs + 1):
             self._train_epoch(epoch)
@@ -423,7 +452,10 @@ class PyTorchCifar10Trainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            loss = F.nll_loss(output, target)
+            # OLD CODE loss BEFORE OORT loss = F.nll_loss(output,
+            # target) calculate statistical utility of a trainer while
+            # calculating loss
+            loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
             loss.backward()
             self.optimizer.step()
             if batch_idx % 100 == 0:
@@ -434,6 +466,10 @@ class PyTorchCifar10Trainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
+            
+        # normalize statistical utility of a trainer based on the size
+        # of the dataset
+        self.normalize_stat_utility(epoch)
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -485,12 +521,14 @@ def main():
           f"with training_delay_s: {t.training_delay_s}")
 
     if t.heartbeats_enabled == "True":
-        logger.info(f"Will initiate thread to send heartbeats for trainer {t.trainer_id}")
+        logger.info(f"Will initiate thread to send heartbeats for "
+                    f"trainer {t.trainer_id}")
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
     elif t.client_avail_aware_notify == "True":
-        logger.info(f"Will initiate thread to send avail notifications for trainer {t.trainer_id}")
+        logger.info(f"Will initiate thread to send avail notifications for "
+                    f"trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True
         avail_notify_thread.start()

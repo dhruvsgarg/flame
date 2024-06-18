@@ -14,10 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """horizontal FL trainer."""
-
+import inspect
 import logging
+import math
 import time
 
+import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
@@ -52,6 +54,10 @@ class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
 
     @abstract_attribute
+    def loss_fn(self):
+        # Added for OORT
+        """Abstract attribute for loss function."""
+        
     def config(self) -> Config:
         """Abstract attribute for config object."""
 
@@ -118,7 +124,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(f"### FETCH WEIGHTS start for tag: {tag} "
-                    f"and trainer_id {self.trainer_id}")
+                     f"and trainer_id {self.trainer_id}")
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
@@ -132,7 +138,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # this call waits for at least one peer joins this channel
         logger.debug(f"_fetch_weights: waiting for someone to join channel: {channel} "
-                    f"for trainer_id {self.trainer_id}")
+                     f"for trainer_id {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -176,7 +182,8 @@ class Trainer(Role, metaclass=ABCMeta):
                      "the channel")
         
         channel._selector.ordered_updates_recv_ends.append(end)
-        logger.debug(f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}")
+        logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
+                     f"{channel._selector.ordered_updates_recv_ends}")
         
         channel.cleanup_recvd_ends()
 
@@ -189,7 +196,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(f"### SEND heartbeat for tag: {tag} "
-                    f"and trainer_id: {self.trainer_id}")
+                     f"and trainer_id: {self.trainer_id}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_heartbeat] channel not found with {tag}")
@@ -197,7 +204,7 @@ class Trainer(Role, metaclass=ABCMeta):
         
         # this call waits for at least one peer to join this channel
         logger.debug(f"_send_heartbeat: waiting for someone to join channel: {channel} "
-                    f"for trainer_id: {self.trainer_id}")
+                     f"for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -235,11 +242,13 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.regularizer.update()
 
+        # NOTE: Also sending stat_utility for OORT
         msg = {
             MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
             MessageType.DATASET_SIZE: self.dataset_size,
             MessageType.MODEL_VERSION: self._round,
             MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+            MessageType.STAT_UTILITY: self._stat_utility,
         }
         channel.send(end, msg)
         logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
@@ -255,8 +264,8 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_perform_channel_leave: waiting for someone to join channel: {channel} "
-                     f"for trainer_id: {self.trainer_id}")
+        logger.debug(f"_perform_channel_leave: waiting for someone to join channel: "
+                     f"{channel} for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         channel.leave()
@@ -272,8 +281,8 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_perform_channel_join: waiting for someone to join channel: {channel} "
-                     f"for trainer_id: {self.trainer_id}")
+        logger.debug(f"_perform_channel_join: waiting for someone to join channel: "
+                     f"{channel} for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         channel.join()
@@ -315,12 +324,78 @@ class Trainer(Role, metaclass=ABCMeta):
         logger.debug("Inside trainer.py will call self.put(heartbeat)")
         self.put(TAG_HEARTBEAT)
 
+    # #### ADDED OORT RELATED FUNCTIONALITY
+    def init_oort_variables(self) -> None:
+        """Initialize Oort variables."""
+        self._stat_utility = 0
+
+        if "reduction" not in inspect.signature(self.loss_fn).parameters:
+            msg = "Parameter 'reduction' not found in loss function "
+            msg += f"'{self.loss_fn.__name__}', which is required for Oort"
+            raise TypeError(msg)
+
+    def oort_loss(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        epoch: int,
+        batch_idx: int,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Measure the loss of a trainer during training. The trainer's
+        statistical utility is measured at epoch 1.
+        """
+        if epoch == 1 and batch_idx == 0:
+            if "reduction" in kwargs.keys():
+                reduction = kwargs["reduction"]
+            else:
+                reduction = "mean"  # default reduction policy is mean
+            kwargs_wo_reduction = {
+                key: value for key, value in kwargs.items() if key != "reduction"
+            }
+
+            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
+            loss_list = criterion(output, target)
+            self._stat_utility += torch.square(loss_list).sum()
+
+            if reduction == "mean":
+                loss = loss_list.mean()
+            elif reduction == "sum":
+                loss = loss_list.sum()
+        else:
+            criterion = self.loss_fn(**kwargs)
+            loss = criterion(output, target)
+
+        return loss
+
+    def normalize_stat_utility(self, epoch) -> None:
+        """
+        Normalize statistical utility of a trainer based on the size
+        of the trainer's datset, at epoch 1.
+        """
+        if epoch == 1:
+            self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
+                self._stat_utility / len(self.train_loader.dataset)
+            )
+        else:
+            return
+
+    def reset_stat_utility(self) -> None:
+        """Reset the trainer's statistical utility to zero."""
+        self._stat_utility = 0
+
     def compose(self) -> None:
         """Compose role with tasklets."""
         with Composer() as composer:
             self.composer = composer
 
             task_internal_init = Tasklet("internal_init", self.internal_init)
+
+            task_init_oort_variables = Tasklet(
+                "init_oort_variables",
+                self.init_oort_variables
+                )
 
             task_load_data = Tasklet("load_data", self.load_data)
 
@@ -355,6 +430,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # Now start the rest of the tasks
             (
                 task_internal_init
+                >> task_init_oort_variables
                 >> task_load_data
                 >> task_init
                 >> loop(

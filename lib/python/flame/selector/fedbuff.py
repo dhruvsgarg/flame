@@ -53,6 +53,8 @@ class FedBuffSelector(AbstractSelector):
         except KeyError:
             raise KeyError("agg_goal (aggregation goal) is not specified in config")
 
+        # Tracking selected ends to ensure selection correctness for
+        # each round (a trainer can participate only once per round).
         self.all_selected = dict()
         self.selected_ends = dict()
 
@@ -96,7 +98,7 @@ class FedBuffSelector(AbstractSelector):
             return {}
 
         if KEY_CH_STATE not in channel_props:
-            raise KeyError("channel property doesn't have {KEY_CH_STATE}")
+            raise KeyError(f"channel property doesn't have {KEY_CH_STATE}")
         
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
         if self.requester not in self.selected_ends:
@@ -175,13 +177,13 @@ class FedBuffSelector(AbstractSelector):
         
             # removing the first agg-goal number of ends to free them
             # to participate in the next round
-            self.ordered_updates_recv_ends = self.ordered_updates_recv_ends[num_ends_to_remove:]
+            self.ordered_updates_recv_ends = (
+                self.ordered_updates_recv_ends[num_ends_to_remove:]
+            )
             logger.debug(f"self.ordered_updates_recv_ends after removing first "
                          f"num_ends_to_remove: {num_ends_to_remove} "
                          f"elements: {self.ordered_updates_recv_ends}")
 
-            # TODO: (DG) check, replacing selected_ends with
-            # ends_to_remove
             for end_id in ends_to_remove:
                 if end_id not in ends:
                     # something happened to end of end_id (e.g.,
@@ -195,7 +197,8 @@ class FedBuffSelector(AbstractSelector):
                     # middle of a round
                     if end_id in selected_ends:
                         selected_ends.remove(end_id)
-                        logger.debug(f"No end id {end_id} in ends, removed from selected_ends: "
+                        logger.debug(f"No end id {end_id} in ends, removed from "
+                                     f"selected_ends: "
                                      f"{selected_ends}"
                                      )
                     if end_id in self.all_selected:
@@ -212,8 +215,9 @@ class FedBuffSelector(AbstractSelector):
                     )
                     if state == VAL_END_STATE_RECVD:
                         ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                        logger.debug(f"Setting {end_id} state to {VAL_END_STATE_NONE}, and"
-                                    f" removing from selected_ends and all_selected")
+                        logger.debug(f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
+                                     f"and removing from selected_ends "
+                                     f"and all_selected")
                         if end_id in selected_ends:
                             selected_ends.remove(end_id)
                             logger.debug(f"FOUND end id {end_id} in state: {state}.. "
@@ -234,7 +238,10 @@ class FedBuffSelector(AbstractSelector):
                         # contributes, fails and then comes back
                         # within the same round. TODO: (DG) Need a
                         # diagram in the paper to explain this?
-                        logger.debug(f"Found end {end_id} in state None. Might have left/rejoined. Need to remove it from selected_ends and self.all_selected if it was selected")
+                        logger.debug(f"Found end {end_id} in state None. Might have "
+                                     f"left/rejoined. Need to remove it from "
+                                     f"selected_ends and self.all_selected if it "
+                                     f"was selected")
                         if end_id in selected_ends:
                             selected_ends.remove(end_id)
                             logger.debug(f"FOUND end id {end_id} in state: {state}.. "
@@ -249,7 +256,8 @@ class FedBuffSelector(AbstractSelector):
                                          f"{self.all_selected} too"
                                          )
                     else:
-                        logger.debug(f"FOUND end id {end_id} in state: {state}. Not doing anything")
+                        logger.debug(f"FOUND end id {end_id} in state: {state}. "
+                                     f"Not doing anything")
         else:
             logger.debug("No ends to remove so far")
 
@@ -299,13 +307,20 @@ class FedBuffSelector(AbstractSelector):
             # Dont remove it if it was in all_selected and we have got
             # an update from it before it did channel.leave(). It has
             # completed its participation for this round.
-            logger.debug(f"Update was alreacy received from {end_id} before it left the channel. Not deleting from all_ends now.")
+            logger.debug(f"Update was alreacy received from {end_id} before it left "
+                         f"the channel. Not deleting from all_ends now.")
         else:
-            logger.warn(f"End_id {end_id} remove check from all_selected failed. Need to check")
+            logger.warn(f"End_id {end_id} remove check from all_selected failed. "
+                        f"Need to check")
   
     def _cleanup_send_ends(self):
         # TODO: (DG) Get a more principled solution here. Hacky right
         # now to fix the issue for trainer side when failures occur.
+        
+        # NOTE: (DG) This function isn't incorporated into async_oort
+        # since the trainer still uses fedbuff selector and not
+        # async_oort selector
+        
         logger.debug("Going to cleanup selector state after "
                      "send.")
         selected_ends = self.selected_ends[self.requester]
@@ -348,10 +363,8 @@ class FedBuffSelector(AbstractSelector):
         candidates = []
         idx = 0
 
-        # reservoir sampling
-                
-        # DG: Updated existing reservoir sampling to randomized
-        # sampling. NOTE: Might revert back if needed
+        # reservoir sampling DG: Updated existing reservoir sampling
+        # to randomized sampling. NOTE: Might revert back if needed
         random.seed(time.time())  # Seed with current system time
         shuffled_end_ids = list(ends.keys())    # get the keys
         logger.debug(f"Original shuffled_end_ids: {shuffled_end_ids}")
@@ -362,8 +375,8 @@ class FedBuffSelector(AbstractSelector):
         # update in UPDATE_TIMEOUT_WAIT_S. The client might have
         # dropped the message with transient unavailability.
 
-        # TODO: (DG) Check if it affects trainer code TODO: (DG) Check
-        # if it is still needed after cleanup_remove_end() method
+        # TODO: (DG) Check if it is still needed after
+        # cleanup_remove_end() method
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
             current_time_s = time.time()
@@ -380,7 +393,8 @@ class FedBuffSelector(AbstractSelector):
                     # SEND_TIMEOUT_WAIT_S delete it from
                     # self.all_selected so that it is eligible to be
                     # sampled again
-                    logger.debug(f"Removing end {end} from self.all_selected since havent "
+                    logger.debug(f"Removing end {end} from self.all_selected "
+                                 f"since havent "
                                  f"got its update in {SEND_TIMEOUT_WAIT_S}")
                     
                     # Tracking timeouts and time spend waiting TODO:
@@ -436,7 +450,8 @@ class FedBuffSelector(AbstractSelector):
         selected_ends = selected_ends.union(candidates)
         self.selected_ends[self.requester] = selected_ends
         logger.debug(
-            f"added candidates to selected_ends: {candidates}, selected_ends: {selected_ends}, "
+            f"added candidates to selected_ends: {candidates}, selected_ends: "
+            f"{selected_ends}, "
             f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
         )
 
@@ -452,14 +467,13 @@ class FedBuffSelector(AbstractSelector):
     
     def _handle_htbt_send_state(
             self, ends: dict[str, End]
-        ) -> SelectorReturnType:
+    ) -> SelectorReturnType:
         # TODO: Implement again Earlier (not fully functional)
         # implementation was using same code as handle_send_state()
         # and was commented out.
 
         logger.debug(f"ends: {ends}")
         return {end_id: None for end_id in ends}
-
 
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
@@ -486,8 +500,8 @@ class FedBuffSelector(AbstractSelector):
             else:
                 # TODO: (DG) Should we not remove it from selected
                 # ends here?
-                logger.debug(f"Tried to check state of end {end_id} but it is no longer "
-                             f"in self._ends")
+                logger.debug(f"Tried to check state of end {end_id} but it is no "
+                             f"longer in self._ends")
 
         if len(selected_ends) == 0:
             logger.debug(f"len(selected_ends)=0, let's select {concurrency} ends")

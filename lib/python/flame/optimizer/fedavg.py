@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Federated Averaging optimizer."""
@@ -59,14 +59,15 @@ class FedAvg(AbstractOptimizer):
 
         Parameters
         ----------
-        base_weights: weights to be used as base
-        cache: a container that includes a list of weights for aggregation
-        total: a number of data samples used to train weights in cache
-        version: a version number of base weights
+        base_weights: weights to be used as base cache: a container
+        that includes a list of weights for aggregation total: a
+        number of data samples used to train weights in cache version:
+        a version number of base weights
 
         Returns
         -------
-        aggregated model: type is either list (tensorflow) or dict (pytorch)
+        aggregated model: type is either list (tensorflow) or dict
+        (pytorch)
         """
         logger.debug("calling fedavg")
 
@@ -79,8 +80,8 @@ class FedAvg(AbstractOptimizer):
             return None
 
         for k in list(cache.iterkeys()):
-            # after popping, the item is removed from the cache
-            # hence, explicit cache cleanup is not needed
+            # after popping, the item is removed from the cache hence,
+            # explicit cache cleanup is not needed
             tres = cache.pop(k)
 
             rate = tres.count / total
@@ -94,11 +95,12 @@ class FedAvg(AbstractOptimizer):
         for k, v in tres.weights.items():
             tmp = v * rate
             # tmp.dtype is always float32 or double as rate is float
-            # if v.dtype is integer (int32 or int64), there is type mismatch
-            # this leads to the following error when self.agg_weights[k] += tmp:
-            #   RuntimeError: result type Float can't be cast to the desired
-            #   output type Long
-            # To handle this issue, we typecast tmp to the original type of v
+            # if v.dtype is integer (int32 or int64), there is type
+            # mismatch this leads to the following error when
+            #   self.agg_weights[k] += tmp: RuntimeError: result type
+            #   Float can't be cast to the desired output type Long To
+            # handle this issue, we typecast tmp to the original type
+            # of v
             #
             # TODO: this may need to be revisited
             tmp = tmp.to(dtype=v.dtype) if tmp.dtype != v.dtype else tmp
