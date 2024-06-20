@@ -26,12 +26,7 @@ from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import GROUPBY_DEFAULT_GROUP
-from flame.end import (
-    KEY_END_STATE,
-    VAL_END_STATE_HEARTBEAT_RECVD,
-    VAL_END_STATE_RECVD,
-    End,
-)
+from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 
@@ -161,7 +156,8 @@ class Channel(object):
 
     def ends(self, state: Union[None, str] = None) -> list[str]:
         """Return a list of end ids."""
-        logger.debug(f"ends() for channel name: {self._name}, current self._ends: {self._ends}")
+        logger.debug(f"ends() for channel name: {self._name}, "
+                     f"current self._ends: {self._ends}")
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
@@ -191,7 +187,8 @@ class Channel(object):
                 logger.debug(f"Setting property for end_id {end_id} "
                              f"using (key,val) = ({key},{value})")
                 self._ends[end_id].set_property(key, value)
-                logger.debug(f"Updated end_id {end_id} property to key: {key}, value: {value} in self._ends")
+                logger.debug(f"Updated end_id {end_id} property to key: {key}, "
+                             f"value: {value} in self._ends")
             logger.debug(f"Going to return id_list: {id_list}")
             return id_list
 
@@ -467,6 +464,7 @@ class Channel(object):
     def drain_messages(self):
         """Drain messages from rx queues of ends."""
         for end_id in list(self._ends.keys()):
+            msg_delete_count = 0
             while True:
                 msg, _ = self.peek(end_id)
                 if not msg:
@@ -475,9 +473,13 @@ class Channel(object):
                 # drain message from end so that cleanup ready event
                 # is set
                 _ = self.recv(end_id)
+                msg_delete_count += 1
+            logger.debug(f"Drained {msg_delete_count} messages from end_id {end_id}")
 
     def join(self):
         """Join the channel."""
+        logger.debug(f"calling channel join for {self._name}")
+
         self._backend.join(self)
 
     def leave(self):

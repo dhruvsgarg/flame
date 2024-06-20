@@ -50,7 +50,7 @@
         "rounds": 5,
         "//": "aggGoal is irrelevant since it's a trainer",
         "aggGoal": 2,
-        "failure_durations_s": "[(21, 4), (33, 23), (70, 4), (90,32), (140, 45), (200, 100), (321, 50)]"
+        "failure_durations_s": "[]"
     },
     "baseModel": {
         "name": "",

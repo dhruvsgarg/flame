@@ -151,8 +151,8 @@ class FedBuffSelector(AbstractSelector):
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Clean up ends whose a message was received, from selected
         ends.
-        
-        Note: It sets the end state to none which makes it eligible to
+
+        NOTE: It sets the end state to none which makes it eligible to
         be sampled again. This can cause problems if sampled in the
         same round. Thus, for aggregator, the _cleanup_recvd_ends
         should be triggered only after aggregation of weights succeeds
@@ -544,6 +544,39 @@ class FedBuffSelector(AbstractSelector):
 
         logger.debug(f"ends: {ends}")
         return {key: None for key in ends}
+    
+    def reset_end_state_to_none(
+            self, ends: dict[str, End], end_id: str) -> None:
+        """Reset's the state of end_id from send/recv to none"""
+        if end_id in ends.keys():
+            curr_end_state = ends[end_id].get_property(KEY_END_STATE)
+            ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            new_end_state = ends[end_id].get_property(KEY_END_STATE)
+            logger.debug(f"Successfully reset state for end "
+                         f"{end_id} from previous: {curr_end_state} to "
+                         f"current: {new_end_state}")
+        else:
+            logger.debug(f"Attempted to reset end {end_id} state "
+                         f"but it wasnt in ends")
+        
+    def remove_from_selected_ends(
+            self, ends: dict[str, End], end_id: str) -> None:
+        """Remove an end from selected ends"""
+        selected_ends = self.selected_ends[self.requester]
+        if end_id in ends.keys():
+            if end_id in selected_ends:
+                logger.debug(f"Going to remove end_id {end_id} from selected_ends "
+                             f"{selected_ends}")
+                selected_ends.remove(end_id)
+                self.selected_ends[self.requester] = selected_ends
+                logger.debug(f"selected_ends: {selected_ends} after "
+                             f"removing end_id: {end_id}")
+            else:
+                logger.debug(f"Attempted to remove end {end_id} from "
+                             f"selected_ends {selected_ends}, but it wasnt present")
+        else:
+            logger.debug(f"Attempted to remove end {end_id} from "
+                         f"selected_ends {selected_ends}, but it wasnt in ends")
 
     def reset_selected_ends(self, requester: str) -> None:
         """Reset mapping between requester and selected ends.

@@ -19,7 +19,7 @@ import logging
 import math
 import time
 
-import torch
+# import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
@@ -42,6 +42,13 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
+
+# TODO: (DG) torch is needed for asyncoort in oort_loss() function,
+# but need to comment / uncomment based on the backend used. If it is
+# commented, Flame can detect and use either of the backends. But if
+# torch code is uncommented, it will be used and will not work for
+# trainers wanting to use backends like tensorflow.
+
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +124,11 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.trainer_id = self.config.task_id
 
+        # for tracking trainer round progress and checking before
+        # sending updates
+        self._updates_returned_upto_round = 0
+        self._trainer_online_channel_status = True
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -146,7 +158,7 @@ class Trainer(Role, metaclass=ABCMeta):
         msg, _ = channel.recv(end)
 
         if not msg:
-            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
+            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition
                 # (i.e., we set fetch_success to True)
@@ -158,15 +170,38 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
+        if MessageType.ROUND in msg:
+            self._round = msg[MessageType.ROUND]
+
         if MessageType.WEIGHTS in msg:
+            # Before proceeding, check if this model version is newer
+            # than previously processed NOTE: The condition could have
+            # been round <= updates_retuned. But there are scenarios
+            # where the channel.leave() executes before the aggregator
+            # processes the weight update. Hence, with <= condition,
+            # the trainer would never make progress. We allow to
+            # trainer to re-train for == round condition if the
+            # message was dropped.
+            if self._round <= self._updates_returned_upto_round:
+                logger.info(f"Fetch weights aborted for given model version "
+                            f"{self._round} while trainer has already sent updates "
+                            f"upto round: {self._updates_returned_upto_round}")
+                
+                # Received old data but still allow aggregator cleanup
+                # state to occur so as to receive the next update
+                logger.info("Cleaning up recvd ends to allow fetch from aggregator "
+                            "again and returning from function")
+                channel._selector.ordered_updates_recv_ends.append(end)
+                logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
+                             f"{channel._selector.ordered_updates_recv_ends}")
+                channel.cleanup_recvd_ends()
+                return
+
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
-
-        if MessageType.ROUND in msg:
-            self._round = msg[MessageType.ROUND]
 
         if MessageType.DATASAMPLER_METADATA in msg:
             self.datasampler.handle_metadata_from_aggregator(
@@ -250,8 +285,25 @@ class Trainer(Role, metaclass=ABCMeta):
             MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
             MessageType.STAT_UTILITY: self._stat_utility,
         }
+
+        # Do not proceed with sending of sending of weights if the
+        # client-avail-notify thread has left the channel. Wait for it
+        # to come back online before sending an update.
+        send_start_time = time.time()
+        while not self._trainer_online_channel_status:
+            time.sleep(0.1)
+            send_wait_time = math.ceil(time.time() - send_start_time)
+            if send_wait_time % 5 == 0:
+                logger.debug(f"Waiting for channel to join before send "
+                             f"since: {send_wait_time} seconds")
+
         channel.send(end, msg)
-        logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
+
+        self._updates_returned_upto_round = self._round
+
+        logger.info(f"sending weights done for trainer_id: {self.trainer_id} "
+                    f"and _updates_returned_upto_round "
+                    f"{self._updates_returned_upto_round}")
 
         channel._selector._cleanup_send_ends()
 
@@ -268,9 +320,15 @@ class Trainer(Role, metaclass=ABCMeta):
                      f"{channel} for trainer_id: {self.trainer_id}")
         channel.await_join()
 
+        # Setting the channel status to False. Means that trainer
+        # should not send updates during this time.
+        self._trainer_online_channel_status = False
+
         channel.leave()
         logger.info(f"Sent channel leave message for channel: "
-                    f"{channel._name} and trainer: {self.trainer_id}")
+                    f"{channel._name} and trainer: {self.trainer_id}."
+                    f" Set trainer_online_channel_status: "
+                    f"{self._trainer_online_channel_status}")
         
     def _perform_channel_join(self, tag: str) -> None:
         logger.debug(f"In _perform_channel_join for tag: {tag} "
@@ -286,8 +344,15 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.await_join()
 
         channel.join()
+
+        # Setting the channel status to True. Means that trainer can
+        # now resume sending updates.
+        self._trainer_online_channel_status = True
+
         logger.info(f"Sent channel join message for channel: "
-                    f"{channel._name} and trainer: {self.trainer_id}")
+                    f"{channel._name} and trainer: {self.trainer_id}."
+                    f" Set trainer_online_channel_status: "
+                    f"{self._trainer_online_channel_status}")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
@@ -334,40 +399,29 @@ class Trainer(Role, metaclass=ABCMeta):
             msg += f"'{self.loss_fn.__name__}', which is required for Oort"
             raise TypeError(msg)
 
-    def oort_loss(
-        self,
-        output: torch.Tensor,
-        target: torch.Tensor,
-        epoch: int,
-        batch_idx: int,
-        **kwargs,
-    ) -> torch.Tensor:
-        """
-        Measure the loss of a trainer during training. The trainer's
-        statistical utility is measured at epoch 1.
-        """
-        if epoch == 1 and batch_idx == 0:
-            if "reduction" in kwargs.keys():
-                reduction = kwargs["reduction"]
-            else:
-                reduction = "mean"  # default reduction policy is mean
-            kwargs_wo_reduction = {
-                key: value for key, value in kwargs.items() if key != "reduction"
-            }
+    # def oort_loss( self, output: torch.Tensor, target: torch.Tensor,
+    #     epoch: int, batch_idx: int, **kwargs, ) -> torch.Tensor: """
+    #     Measure the loss of a trainer during training. The trainer's
+    #     statistical utility is measured at epoch 1. """ if epoch ==
+    #     1 and batch_idx == 0: if "reduction" in kwargs.keys():
+    #     reduction = kwargs["reduction"] else: reduction = "mean"  #
+    #     default reduction policy is mean kwargs_wo_reduction = {
+    # key: value for key, value in kwargs.items() if key !=
+    #     "reduction" }
 
-            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
-            loss_list = criterion(output, target)
-            self._stat_utility += torch.square(loss_list).sum()
+    #         criterion = self.loss_fn(reduction="none",
+    #         **kwargs_wo_reduction) loss_list = criterion(output,
+    #         target) self._stat_utility +=
+    #         torch.square(loss_list).sum()
 
-            if reduction == "mean":
-                loss = loss_list.mean()
-            elif reduction == "sum":
-                loss = loss_list.sum()
-        else:
-            criterion = self.loss_fn(**kwargs)
-            loss = criterion(output, target)
+    #         if reduction == "mean":
+    #             loss = loss_list.mean()
+    #         elif reduction == "sum":
+    #             loss = loss_list.sum()
+    #     else: criterion = self.loss_fn(**kwargs) loss =
+    #         criterion(output, target)
 
-        return loss
+    #     return loss
 
     def normalize_stat_utility(self, epoch) -> None:
         """
@@ -430,7 +484,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # Now start the rest of the tasks
             (
                 task_internal_init
-                >> task_init_oort_variables
+                # >> task_init_oort_variables
                 >> task_load_data
                 >> task_init
                 >> loop(

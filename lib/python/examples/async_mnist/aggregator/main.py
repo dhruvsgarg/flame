@@ -41,6 +41,8 @@ class KerasMnistAggregator(TopAggregator):
 
         self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
 
+        self.trainer_unavail_durations = None
+
     def initialize(self):
         """Initialize role."""
         model = keras.Sequential([
