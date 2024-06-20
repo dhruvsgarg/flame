@@ -1,5 +1,5 @@
 {
-    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580374",
+    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580370",
     "backend": "mqtt",
     "brokers": [
         {
@@ -50,7 +50,7 @@
         "rounds": 5,
         "//": "aggGoal is irrelevant since it's a trainer",
         "aggGoal": 2,
-        "failure_durations_s": "[]"
+        "failure_durations_s": "[(21, 4), (33, 23), (70, 4), (90,32), (140, 45), (200, 100), (321, 50)]"
     },
     "baseModel": {
         "name": "",
@@ -67,7 +67,7 @@
     "selector": {
         "sort": "fedbuff",
         "kwargs": {
-            "//": "c: concurrency (this irrelevant since it's traner)",
+            "//": "c: concurrency, aggGoal (both irrelevant since it's traner)",
             "c": 4,
             "aggGoal": 4
         }
@@ -77,6 +77,6 @@
         "kwargs": {}
     },
     "maxRunTime": 300,
-    "realm": "default/us/west",
+    "realm": "default/us",
     "role": "trainer"
 }

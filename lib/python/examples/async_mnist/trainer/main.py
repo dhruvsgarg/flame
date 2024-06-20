@@ -48,6 +48,10 @@ class KerasMnistTrainer(Trainer):
         self._x_test = None
         self._y_test = None
 
+        # Added after changes due to asyncoort
+        self.loss_fn = None
+        self._stat_utility = 0
+
         self.epochs = self.config.hyperparameters.epochs
         print("==== Trainer epochs: ", self.epochs)
         self.batch_size = self.config.hyperparameters.batch_size or 128
@@ -72,7 +76,7 @@ class KerasMnistTrainer(Trainer):
             self.timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
                 )
-
+    
     def initialize(self) -> None:
         """Initialize role."""
         model = keras.Sequential(
@@ -133,9 +137,9 @@ class KerasMnistTrainer(Trainer):
             validation_split=0.1,
         )
 
-        i = 0
-        while i < 1000000000:
-            i += 1
+        # i = 0
+        # while i < 1000000000:
+        #     i += 1
 
         # save dataset size so that the info can be shared with
         # aggregator

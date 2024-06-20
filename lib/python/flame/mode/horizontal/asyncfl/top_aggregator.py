@@ -16,7 +16,6 @@
 """Asynchronous horizontal FL top level aggregator."""
 
 import logging
-import math
 import time
 from datetime import datetime
 
@@ -43,6 +42,8 @@ from flame.selector.oort import (
 
 logger = logging.getLogger(__name__)
 
+SEND_TIMEOUT_WAIT_S = 60      # 60 seconds timeout
+
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -65,7 +66,7 @@ class TopAggregator(SyncTopAgg):
         self._aggregator_staleness_track_rounds = []
         self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
-        self._trainer_training_duration_s = {}
+        self._track_trainer_version_duration_s = {}
 
         # check if distribute_weights was successful
         self._prev_distribute_weights_success = False
@@ -137,7 +138,7 @@ class TopAggregator(SyncTopAgg):
             if end not in self.all_trainers:
                 self.all_trainers.add(end)
                 logger.debug(f"Added end {end} to all_trainers set")
-            
+
             # Add trainer to heartbeat dict if it isnt there Add only
             # most recent heartbeat timestamp as value Discard stale
             # heartbeats if received.
@@ -155,7 +156,7 @@ class TopAggregator(SyncTopAgg):
                             f"{heartbeat_timestamp} was stale")
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
-    
+
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -166,7 +167,7 @@ class TopAggregator(SyncTopAgg):
         if not channel:
             logger.info("No channel found")
             return
-        
+
         logger.debug(f"Channel {channel} found for tag {tag}")
         # receive local model parameters from a trainer who arrives
         # first NOTE: (DG) Right now, the leave notifications also
@@ -181,17 +182,15 @@ class TopAggregator(SyncTopAgg):
         # If message contains model updates, handle it
         logger.debug(f"received data from {end}")
         if MessageType.MODEL_VERSION in msg:
-            logger.info(f"received MODEL_VERSION message in agg_weights from {end}")
-            channel._selector.ordered_updates_recv_ends.append(end)
-            logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
-                         f"{channel._selector.ordered_updates_recv_ends}")
-            
+            logger.info(f"received model updates from {end} "
+                        f"with model version {msg[MessageType.MODEL_VERSION]}")
+
             # For OORT selector
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
-            # calculate round duration for this end, if the round number information
-            # is identical with round_start_time
+            # calculate round duration for this end, if the round
+            # number information is identical with round_start_time
             logger.debug(f"Getting channel property {PROP_ROUND_START_TIME} for "
                          f"end {end}")
             round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
@@ -199,27 +198,28 @@ class TopAggregator(SyncTopAgg):
             timestamp = metadata[1]
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
-            # TODO: (DG) Remove equality check from here
-            
-            if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
-                logger.debug(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
-                             f"matched with msg[MessageType.MODEL_VERSION] "
-                             f"{msg[MessageType.MODEL_VERSION]}")
-                logger.debug(f"Setting channel property {PROP_ROUND_DURATION} for end "
-                             f"{end} with duration "
-                             f"{timestamp - round_start_time_tup[1]}")
-                channel.set_end_property(
-                    end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
-                )
-            else:
-                logger.error(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
-                             f"did not match with msg[MessageType.MODEL_VERSION] "
-                             f"{msg[MessageType.MODEL_VERSION]}")
-                logger.error(f"COULD NOT set channel property {PROP_ROUND_DURATION} "
-                             f"for end {end} with duration "
-                             f"{timestamp - round_start_time_tup[1]}")
+
+            if round_start_time_tup is not None:
+                if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
+                    logger.debug(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
+                                 f"matched with msg[MessageType.MODEL_VERSION] "
+                                 f"{msg[MessageType.MODEL_VERSION]}")
+                    logger.debug(f"Setting channel property {PROP_ROUND_DURATION} for "
+                                 f"end {end} with duration "
+                                 f"{timestamp - round_start_time_tup[1]}")
+                    channel.set_end_property(
+                        end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
+                    )
+                else:
+                    logger.error(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
+                                 f"did not match with msg[MessageType.MODEL_VERSION] "
+                                 f"{msg[MessageType.MODEL_VERSION]}")
+                    logger.error(f"COULD NOT set channel property {PROP_ROUND_DURATION}"
+                                 f" for end {end} with duration "
+                                 f"{timestamp - round_start_time_tup[1]}")
         else:
-            logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}")
+            logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}, "
+                        f"will return")
             return
 
         if self.reject_stale_updates == "True":
@@ -229,42 +229,98 @@ class TopAggregator(SyncTopAgg):
 
             if version != self._round:
                 logger.info(f"Rejecting trainer update of version {version}, "
-                            f"agg self._round: {self._round}")
+                            f"agg self._round: {self._round}. Will return.")
                 return
 
-        self._updates_in_queue += 1
-
-        # update _trainer_training_duration_s to capture training time
-        if end not in self._trainer_training_duration_s.keys():
-            logger.warning(f"{end} not in _trainer_training_duration_s in agg_weights")
+        # update _track_trainer_version_duration_s to capture training
+        # time
+        if end not in self._track_trainer_version_duration_s.keys():
+            logger.error(f"{end} not found in _track_trainer_version_duration_s "
+                         f"during aggregation")
         else:
             last_recv_wts_ts = time.time()
-            self._trainer_training_duration_s[
+            self._track_trainer_version_duration_s[
                 end]["last_recv_wts_ts"] = last_recv_wts_ts
-            # recv_wts_ts should be strictly > send_wts_ts
-            last_send_wts_ts = self._trainer_training_duration_s[
+            last_send_wts_ts = self._track_trainer_version_duration_s[
                 end]["last_send_wts_ts"]
+            last_send_wts_version = self._track_trainer_version_duration_s[
+                end]["last_send_wts_version"]
+            # recv_wts_ts should be strictly > send_wts_ts
             if last_send_wts_ts > last_recv_wts_ts:
                 logger.error(f"{end} last_recv_ts before last_send_ts!")
+            elif (last_recv_wts_ts - last_send_wts_ts) > SEND_TIMEOUT_WAIT_S:
+                # NOTE: (DG) Timeout means that an update returns with
+                # latency of [timeout, infinty). While some updates
+                # might be less stale, most could be very stale.
+                # Instead of cherry-picking which updates to keep and
+                # which to discard, we will discard all such delayed
+                # updates.
+                time_staleness_s = (
+                    last_recv_wts_ts - last_send_wts_ts - SEND_TIMEOUT_WAIT_S
+                    )
+                logger.info(f"Update from end {end} arrived more "
+                            f"than {SEND_TIMEOUT_WAIT_S} seconds after last send. "
+                            f"Update is stale by time {time_staleness_s} over the "
+                            f"timeout and will be discarded.")
+                # TODO: (DG) Check if this works. Done it based on the
+                # below elif condition on redundant update from
+                # trainer. NEEDS TESTING.
+                logger.info(f"Attempting to remove end {end} from selected_ends and "
+                            f"re-setting its channel state")
+                channel._selector.remove_from_selected_ends(channel._ends, end)
+                channel._selector.reset_end_state_to_none(channel._ends, end)
+                channel._selector._cleanup_removed_ends(end)
+                return
+            elif last_send_wts_version != msg[MessageType.MODEL_VERSION]:
+                logger.info(f"Received redundant update from trainer {end} with model "
+                            f"version {msg[MessageType.MODEL_VERSION]} while the last "
+                            f"sent version was {last_send_wts_version}. "
+                            f"Update will be discarded and messages will be drained.")
+
+                # NOTE: At this point, the getter from recv_fifo on
+                # this end has been freed. A getter on the end will
+                # not come up again until it is selected again by
+                # handle_recv_state in the fedbuff selector. To make
+                # up for the lost getter, we have to ensure that the
+                # handle_recv_state picks up the trainer in the next
+                # try.
+
+                # Currently, the end is now in recvd state and will be
+                # removed from selected_ends in handle_recv_state in
+                # the next iteration. To add the getter through
+                # recv_fifo again, we will (i) remove the end from
+                # selected_ends, and (ii) set the end state to none.
+                logger.info(f"Attempting to remove end {end} from selected_ends and "
+                            f"re-setting its channel state")
+                channel._selector.remove_from_selected_ends(channel._ends, end)
+                channel._selector.reset_end_state_to_none(channel._ends, end)
+                channel._selector._cleanup_removed_ends(end)
+                return
             else:
                 # NOTE: total_training_time_s is approximate. It only
                 # captures training time for those send_wt and recv_wt
                 # that complete. Timeouts are not included in this
                 # time and can be observed separately.
-                curr_cumulative_training_s = self._trainer_training_duration_s[
+                curr_cumulative_training_s = self._track_trainer_version_duration_s[
                     end
                 ]["total_training_time_s"]
                 curr_round_time_s = last_recv_wts_ts - last_send_wts_ts
                 new_cumulative_training_s = (
                     curr_cumulative_training_s + curr_round_time_s
                 )
-                self._trainer_training_duration_s[
+                self._track_trainer_version_duration_s[
                     end
                 ]["total_training_time_s"] = new_cumulative_training_s
                 logger.debug(f"Updated training time record for {end}, details: "
-                             f"{self._trainer_training_duration_s[end]}")
+                             f"{self._track_trainer_version_duration_s[end]}")
 
         # capture telemetry on trainer participation in rounds
+        channel._selector.ordered_updates_recv_ends.append(end)
+        logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
+                     f"{channel._selector.ordered_updates_recv_ends}")
+
+        self._updates_in_queue += 1
+
         self._per_round_update_list.append(end)
 
         if end not in self._updates_recevied.keys():
@@ -272,6 +328,7 @@ class TopAggregator(SyncTopAgg):
         else:
             self._updates_recevied[end] += 1
 
+        # Process the weights and send to optimizer
         if MessageType.WEIGHTS in msg:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
@@ -398,9 +455,9 @@ class TopAggregator(SyncTopAgg):
             self._per_round_update_list = []
             self._per_round_staleness_list = []
 
-        # Computing rate
-        rate = 1 / math.sqrt(1 + self._round - tres.version)
-        logger.debug(f" rate at top_agg: {rate}")
+        # Computing rate: Not used anywhere right now rate = 1 /
+        # math.sqrt(1 + self._round - tres.version) logger.debug(f"
+        # rate at top_agg: {rate}")
 
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
@@ -452,22 +509,22 @@ class TopAggregator(SyncTopAgg):
             )
         
         total_training_time_all_trainers = 0
-        for k, v in self._trainer_training_duration_s.items():
+        for k, v in self._track_trainer_version_duration_s.items():
             total_training_time_all_trainers += v["total_training_time_s"]
         avg_training_time = (
-            total_training_time_all_trainers/len(self._trainer_training_duration_s)
+            total_training_time_all_trainers/len(self._track_trainer_version_duration_s)
         )
         logger.info(f"Avg training time {avg_training_time} across "
-                    f"{len(self._trainer_training_duration_s)} trainers")
+                    f"{len(self._track_trainer_version_duration_s)} trainers")
 
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
     def oracular_trainer_avail_check(self, end: str) -> bool:
         logger.debug("In oracular_trainer_avail_check")
-        
+
         picked_trainer_is_available = True
-        
+
         if end in self.trainer_unavail_durations.keys():
             # get aggregator seconds from start
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
@@ -528,7 +585,11 @@ class TopAggregator(SyncTopAgg):
         # start the training process this is when trainer not in
         # all_trainers and not in dict
 
-        if (end not in self._per_trainer_last_heartbeat_ts.keys()) and (end not in self.all_trainers):
+        if (
+            end not in self._per_trainer_last_heartbeat_ts.keys()
+            ) and (
+                end not in self.all_trainers
+                ):
             picked_trainer_is_available = True
             logger.info(f"Might be trainer init(), trainer {end} hasnt sent any"
                         f" heartbeats yet, but we return True")
@@ -545,9 +606,9 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"Trainer {end} is available")
         else:
             logger.error(f"Availability check failed, trainer {end}, returning True")
-        
+
         return picked_trainer_is_available
-    
+
     def get_unavailable_trainers(self) -> list:
         # Works only for heartbeat based right now TODO: (DG) Extend
         # for other trainer_avail_checks too
@@ -557,7 +618,7 @@ class TopAggregator(SyncTopAgg):
             end not in
             self._per_trainer_last_heartbeat_ts.keys()]
         return current_unavailable_trainers
-    
+
     def check_trainer_availability(self, end: str) -> bool:
         picked_trainer_is_available = True
         if self.track_trainer_avail["enabled"] == "False":
@@ -586,7 +647,7 @@ class TopAggregator(SyncTopAgg):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        # busy wait for 2 seconds before proceeding. This is to wait
+        # busy wait for 0.1 seconds before proceeding. This is to wait
         # on distribute_weights to let the system state get updated
         # before selector is invoked again
         logger.debug(f"Starting busy wait at time {time.time()}")
@@ -610,23 +671,18 @@ class TopAggregator(SyncTopAgg):
         # check if there are any ends to send weights to
         ends = channel.ends(VAL_CH_STATE_SEND)
         if not ends:
-            # logger.debug(f"no trainers found for tag {tag}, retrying
-            # in 1 second") time.sleep(1) continue
-
             logger.debug(f"No trainers found for tag {tag}, will "
-                         f"move to get() in 0.1s for fetch weights from trainers")
-            time.sleep(0.1)
+                         f"move to get() for fetch weights from trainers")
             return
 
         # send out global model parameters to trainers
         for end in ends:
             # Send shouldn't be allowed if already sent to a trainer
             # in that same round
-            logger.debug(f"sending weights to {end}")
+            logger.debug(f"sending weights to {end} with model_version: {self._round}")
 
-            # setting start time for OORT TODO: (DG)
-            # round_start_time for all trainers in the same round may
-            # not be the same
+            # setting start time for OORT TODO: (DG) round_start_time
+            # for all trainers in the same round may not be the same
             logger.debug(f"Setting channel property {PROP_ROUND_START_TIME} for "
                          f"end {end}. For round {self._round} at time: {datetime.now()}"
                          )
@@ -647,16 +703,22 @@ class TopAggregator(SyncTopAgg):
             )
 
             # Update send_time in training_duration_s
-            if end not in self._trainer_training_duration_s.keys():
-                logger.debug(f"{end} not in _trainer_training_duration_s, will add")
-                self._trainer_training_duration_s[end] = dict()
-                self._trainer_training_duration_s[end]["last_send_wts_ts"] = 0
-                self._trainer_training_duration_s[end]["last_recv_wts_ts"] = 0
-                self._trainer_training_duration_s[end]["total_training_time_s"] = 0
+            if end not in self._track_trainer_version_duration_s.keys():
+                logger.debug(f"{end} not in _track_trainer_version_duration_s, "
+                             f"will add")
+                self._track_trainer_version_duration_s[end] = dict()
+                self._track_trainer_version_duration_s[end]["last_send_wts_ts"] = -1
+                self._track_trainer_version_duration_s[
+                    end]["last_send_wts_version"] = -1
+                self._track_trainer_version_duration_s[end]["last_recv_wts_ts"] = -1
+                self._track_trainer_version_duration_s[
+                    end]["total_training_time_s"] = -1
             
             # Update last_send_wts_timestamp
-            self._trainer_training_duration_s[
+            self._track_trainer_version_duration_s[
                 end]["last_send_wts_ts"] = time.time()
+            self._track_trainer_version_duration_s[
+                end]["last_send_wts_version"] = self._round
 
     def compose(self) -> None:
         """Compose role with tasklets."""
