@@ -19,7 +19,7 @@ import logging
 import math
 import time
 
-# import torch
+import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
@@ -399,29 +399,42 @@ class Trainer(Role, metaclass=ABCMeta):
             msg += f"'{self.loss_fn.__name__}', which is required for Oort"
             raise TypeError(msg)
 
-    # def oort_loss( self, output: torch.Tensor, target: torch.Tensor,
-    #     epoch: int, batch_idx: int, **kwargs, ) -> torch.Tensor: """
-    #     Measure the loss of a trainer during training. The trainer's
-    #     statistical utility is measured at epoch 1. """ if epoch ==
-    #     1 and batch_idx == 0: if "reduction" in kwargs.keys():
-    #     reduction = kwargs["reduction"] else: reduction = "mean"  #
-    #     default reduction policy is mean kwargs_wo_reduction = {
-    # key: value for key, value in kwargs.items() if key !=
-    #     "reduction" }
+    # TODO: Enable this in trainer code using a flag based on selector
+    # used. Needs to also pass to trainer/main.py
+    def oort_loss(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        epoch: int,
+        batch_idx: int,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Measure the loss of a trainer during training. The trainer's
+        statistical utility is measured at epoch 1.
+        """
+        if epoch == 1 and batch_idx == 0:
+            if "reduction" in kwargs.keys():
+                reduction = kwargs["reduction"]
+            else:
+                reduction = "mean"  # default reduction policy is mean
+            kwargs_wo_reduction = {
+                key: value for key, value in kwargs.items() if key != "reduction"
+            }
 
-    #         criterion = self.loss_fn(reduction="none",
-    #         **kwargs_wo_reduction) loss_list = criterion(output,
-    #         target) self._stat_utility +=
-    #         torch.square(loss_list).sum()
+            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
+            loss_list = criterion(output, target)
+            self._stat_utility += torch.square(loss_list).sum()
 
-    #         if reduction == "mean":
-    #             loss = loss_list.mean()
-    #         elif reduction == "sum":
-    #             loss = loss_list.sum()
-    #     else: criterion = self.loss_fn(**kwargs) loss =
-    #         criterion(output, target)
+            if reduction == "mean":
+                loss = loss_list.mean()
+            elif reduction == "sum":
+                loss = loss_list.sum()
+        else:
+            criterion = self.loss_fn(**kwargs)
+            loss = criterion(output, target)
 
-    #     return loss
+        return loss
 
     def normalize_stat_utility(self, epoch) -> None:
         """
