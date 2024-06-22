@@ -138,8 +138,8 @@ class FedBuff(AbstractOptimizer):
             # TODO: (DG) Hyper-parameters for AsyncOORT need tuning?
             # Which all hyper-parameters apart from LR need to be
             # tuned?
-            # learning_rate = 40.9    # for Fedbuff
-            learning_rate = 1.0      # for AsyncOORT
+            learning_rate = 40.9    # for Fedbuff
+            # learning_rate = 1.0      # for AsyncOORT
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )

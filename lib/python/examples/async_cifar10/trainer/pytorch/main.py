@@ -452,10 +452,14 @@ class PyTorchCifar10Trainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            # OLD CODE loss BEFORE OORT loss = F.nll_loss(output,
-            # target) calculate statistical utility of a trainer while
+            
+            # Loss function to use with Fedbuff
+            loss = F.nll_loss(output, target)
+            
+            # Loss function to use with OORT selector.
+            # Calculate statistical utility of a trainer while
             # calculating loss
-            loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+            # loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
             loss.backward()
             self.optimizer.step()
             if batch_idx % 100 == 0:

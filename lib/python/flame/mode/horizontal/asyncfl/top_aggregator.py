@@ -200,6 +200,11 @@ class TopAggregator(SyncTopAgg):
                          f"end {end} and timestamp {timestamp}")
 
             if round_start_time_tup is not None:
+                # TODO: (DG) Recheck. Following the relaxation in
+                # asyncFL to not check for model version equality at
+                # the aggregator, we do the same for asyncoort too. We
+                # will set the end property without doing the equality
+                # check.
                 if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
                     logger.debug(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
                                  f"matched with msg[MessageType.MODEL_VERSION] "
@@ -271,31 +276,31 @@ class TopAggregator(SyncTopAgg):
                 channel._selector.reset_end_state_to_none(channel._ends, end)
                 channel._selector._cleanup_removed_ends(end)
                 return
-            elif last_send_wts_version != msg[MessageType.MODEL_VERSION]:
-                logger.info(f"Received redundant update from trainer {end} with model "
-                            f"version {msg[MessageType.MODEL_VERSION]} while the last "
-                            f"sent version was {last_send_wts_version}. "
-                            f"Update will be discarded and messages will be drained.")
+            # elif last_send_wts_version != msg[MessageType.MODEL_VERSION]:
+            #     logger.info(f"Received redundant update from trainer {end} with model "
+            #                 f"version {msg[MessageType.MODEL_VERSION]} while the last "
+            #                 f"sent version was {last_send_wts_version}. "
+            #                 f"Update will be discarded and messages will be drained.")
 
-                # NOTE: At this point, the getter from recv_fifo on
-                # this end has been freed. A getter on the end will
-                # not come up again until it is selected again by
-                # handle_recv_state in the fedbuff selector. To make
-                # up for the lost getter, we have to ensure that the
-                # handle_recv_state picks up the trainer in the next
-                # try.
+            #     # NOTE: At this point, the getter from recv_fifo on
+            #     # this end has been freed. A getter on the end will
+            #     # not come up again until it is selected again by
+            #     # handle_recv_state in the fedbuff selector. To make
+            #     # up for the lost getter, we have to ensure that the
+            #     # handle_recv_state picks up the trainer in the next
+            #     # try.
 
-                # Currently, the end is now in recvd state and will be
-                # removed from selected_ends in handle_recv_state in
-                # the next iteration. To add the getter through
-                # recv_fifo again, we will (i) remove the end from
-                # selected_ends, and (ii) set the end state to none.
-                logger.info(f"Attempting to remove end {end} from selected_ends and "
-                            f"re-setting its channel state")
-                channel._selector.remove_from_selected_ends(channel._ends, end)
-                channel._selector.reset_end_state_to_none(channel._ends, end)
-                channel._selector._cleanup_removed_ends(end)
-                return
+            #     # Currently, the end is now in recvd state and will be
+            #     # removed from selected_ends in handle_recv_state in
+            #     # the next iteration. To add the getter through
+            #     # recv_fifo again, we will (i) remove the end from
+            #     # selected_ends, and (ii) set the end state to none.
+            #     logger.info(f"Attempting to remove end {end} from selected_ends and "
+            #                 f"re-setting its channel state")
+            #     channel._selector.remove_from_selected_ends(channel._ends, end)
+            #     channel._selector.reset_end_state_to_none(channel._ends, end)
+            #     channel._selector._cleanup_removed_ends(end)
+            #     return
             else:
                 # NOTE: total_training_time_s is approximate. It only
                 # captures training time for those send_wt and recv_wt
@@ -679,7 +684,7 @@ class TopAggregator(SyncTopAgg):
         for end in ends:
             # Send shouldn't be allowed if already sent to a trainer
             # in that same round
-            logger.debug(f"sending weights to {end} with model_version: {self._round}")
+            logger.info(f"sending weights to {end} with model_version: {self._round}")
 
             # setting start time for OORT TODO: (DG) round_start_time
             # for all trainers in the same round may not be the same
