@@ -184,12 +184,14 @@ class Trainer(Role, metaclass=ABCMeta):
             # message was dropped.
             if self._round <= self._updates_returned_upto_round:
                 logger.info(f"Fetch weights aborted for given model version "
-                            f"{self._round} while trainer has already sent updates "
+                            f"{self._round} while trainer_id {self.trainer_id} has "
+                            f"already sent updates "
                             f"upto round: {self._updates_returned_upto_round}")
                 
                 # Received old data but still allow aggregator cleanup
                 # state to occur so as to receive the next update
-                logger.info("Cleaning up recvd ends to allow fetch from aggregator "
+                logger.info(f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
+                            f" to allow fetch from aggregator "
                             "again and returning from function")
                 channel._selector.ordered_updates_recv_ends.append(end)
                 logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
