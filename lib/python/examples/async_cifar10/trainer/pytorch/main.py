@@ -454,12 +454,13 @@ class PyTorchCifar10Trainer(Trainer):
             output = self.model(data)
             
             # Loss function to use with Fedbuff
-            loss = F.nll_loss(output, target)
+            # loss = F.nll_loss(output, target)
             
             # Loss function to use with OORT selector.
             # Calculate statistical utility of a trainer while
             # calculating loss
-            # loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+            # TODO: (DG) Add OORT-flag here
+            loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
             loss.backward()
             self.optimizer.step()
             if batch_idx % 100 == 0:
