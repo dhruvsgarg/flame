@@ -133,13 +133,13 @@ class FedBuff(AbstractOptimizer):
             # agg_goal_weights are already adjusted with rate Using
             # hardcoded learning_rate for now, will pass as an
             # argument later
-            # TODO: (DG) Add an flag here to check if selector was
+            # TODO: (DG) Add an OORT-flag here to check if selector was
             # fedbuff or asyncOORT. Adjust LR based on that.
             # TODO: (DG) Hyper-parameters for AsyncOORT need tuning?
             # Which all hyper-parameters apart from LR need to be
             # tuned?
-            learning_rate = 40.9    # for Fedbuff
-            # learning_rate = 1.0      # for AsyncOORT
+            # learning_rate = 40.9    # for Fedbuff
+            learning_rate = 1.0      # for AsyncOORT
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )

@@ -186,6 +186,11 @@ class TopAggregator(SyncTopAgg):
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
 
             # For OORT selector
+            # NOTE: (DG) Last selected round should have ideally been
+            # set in distribute weights. But it was here in the old
+            # oort code and ive kept it. Instead of
+            # PROP_LAST_SELECTED_ROUND, it should have been
+            # PROP_LAST_UPDATE_RECVD_ROUND.
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
@@ -198,30 +203,6 @@ class TopAggregator(SyncTopAgg):
             timestamp = metadata[1]
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
-
-            if round_start_time_tup is not None:
-                # TODO: (DG) Recheck. Following the relaxation in
-                # asyncFL to not check for model version equality at
-                # the aggregator, we do the same for asyncoort too. We
-                # will set the end property without doing the equality
-                # check.
-                if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
-                    logger.debug(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
-                                 f"matched with msg[MessageType.MODEL_VERSION] "
-                                 f"{msg[MessageType.MODEL_VERSION]}")
-                    logger.debug(f"Setting channel property {PROP_ROUND_DURATION} for "
-                                 f"end {end} with duration "
-                                 f"{timestamp - round_start_time_tup[1]}")
-                    channel.set_end_property(
-                        end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
-                    )
-                else:
-                    logger.error(f"round_start_time_tup[0]: {round_start_time_tup[0]} "
-                                 f"did not match with msg[MessageType.MODEL_VERSION] "
-                                 f"{msg[MessageType.MODEL_VERSION]}")
-                    logger.error(f"COULD NOT set channel property {PROP_ROUND_DURATION}"
-                                 f" for end {end} with duration "
-                                 f"{timestamp - round_start_time_tup[1]}")
         else:
             logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}, "
                         f"will return")
@@ -243,17 +224,38 @@ class TopAggregator(SyncTopAgg):
             logger.error(f"{end} not found in _track_trainer_version_duration_s "
                          f"during aggregation")
         else:
-            last_recv_wts_ts = time.time()
-            self._track_trainer_version_duration_s[
-                end]["last_recv_wts_ts"] = last_recv_wts_ts
-            last_send_wts_ts = self._track_trainer_version_duration_s[
-                end]["last_send_wts_ts"]
-            last_send_wts_version = self._track_trainer_version_duration_s[
-                end]["last_send_wts_version"]
-            # recv_wts_ts should be strictly > send_wts_ts
-            if last_send_wts_ts > last_recv_wts_ts:
-                logger.error(f"{end} last_recv_ts before last_send_ts!")
-            elif (last_recv_wts_ts - last_send_wts_ts) > SEND_TIMEOUT_WAIT_S:
+            recv_wts_ts = datetime.now()
+            recv_wts_version = msg[MessageType.MODEL_VERSION]
+
+            # check0- verify that this recvd version was sent to
+            # trainer
+            if recv_wts_version in self._track_trainer_version_duration_s[
+                end]["sent_wts_version_ts"].keys():
+                sent_wts_ts = self._track_trainer_version_duration_s[
+                    end]["sent_wts_version_ts"][recv_wts_version]
+                # check1- sent_wts should have happened before current
+                # time. Else, handle error
+                if recv_wts_ts <= sent_wts_ts:
+                    logger.error(f"Trainer: {end}. Recv wts {recv_wts_ts} happened "
+                                 f"before send wts: {sent_wts_ts} "
+                                 f"for version {recv_wts_version}")
+                
+                # check2- recv_wts should not have happend for this
+                # version before. Else, handle error
+                if recv_wts_version in self._track_trainer_version_duration_s[
+                end]["recv_wts_version_ts"].keys():
+                    logger.error(f"Trainer: {end}. Recv wts {recv_wts_ts} has already "
+                                 f"occured for version: {recv_wts_version}")
+                    
+                # Process the recv_wts_ts and update training time
+                self._track_trainer_version_duration_s[
+                end]["recv_wts_version_ts"][recv_wts_version] = recv_wts_ts
+            
+            # TODO: (DG) Can pass a flag for this later.
+            allow_updates_more_than_timeout_old = True
+
+            if ((recv_wts_ts - sent_wts_ts).total_seconds() > SEND_TIMEOUT_WAIT_S) and (
+                    not allow_updates_more_than_timeout_old):
                 # NOTE: (DG) Timeout means that an update returns with
                 # latency of [timeout, infinty). While some updates
                 # might be less stale, most could be very stale.
@@ -261,46 +263,36 @@ class TopAggregator(SyncTopAgg):
                 # which to discard, we will discard all such delayed
                 # updates.
                 time_staleness_s = (
-                    last_recv_wts_ts - last_send_wts_ts - SEND_TIMEOUT_WAIT_S
+                    (recv_wts_ts - sent_wts_ts).total_seconds() - SEND_TIMEOUT_WAIT_S
                     )
                 logger.info(f"Update from end {end} arrived more "
                             f"than {SEND_TIMEOUT_WAIT_S} seconds after last send. "
                             f"Update is stale by time {time_staleness_s} over the "
                             f"timeout and will be discarded.")
-                # TODO: (DG) Check if this works. Done it based on the
-                # below elif condition on redundant update from
-                # trainer. NEEDS TESTING.
+                # TODO: (DG) Check if this works. Done it based on a
+                # now deleted (but tested) condition on redundant
+                # update from trainer. NEEDS TESTING.
+                # Currently, the end is now in recvd state and will be
+                # removed from selected_ends in handle_recv_state in
+                # the next iteration. To add the getter through
+                # recv_fifo again, we will (i) remove the end from
+                # selected_ends, and (ii) set the end state to none.
                 logger.info(f"Attempting to remove end {end} from selected_ends and "
                             f"re-setting its channel state")
                 channel._selector.remove_from_selected_ends(channel._ends, end)
                 channel._selector.reset_end_state_to_none(channel._ends, end)
                 channel._selector._cleanup_removed_ends(end)
                 return
-            # elif last_send_wts_version != msg[MessageType.MODEL_VERSION]:
-            #     logger.info(f"Received redundant update from trainer {end} with model "
-            #                 f"version {msg[MessageType.MODEL_VERSION]} while the last "
-            #                 f"sent version was {last_send_wts_version}. "
-            #                 f"Update will be discarded and messages will be drained.")
-
-            #     # NOTE: At this point, the getter from recv_fifo on
-            #     # this end has been freed. A getter on the end will
-            #     # not come up again until it is selected again by
-            #     # handle_recv_state in the fedbuff selector. To make
-            #     # up for the lost getter, we have to ensure that the
-            #     # handle_recv_state picks up the trainer in the next
-            #     # try.
-
-            #     # Currently, the end is now in recvd state and will be
-            #     # removed from selected_ends in handle_recv_state in
-            #     # the next iteration. To add the getter through
-            #     # recv_fifo again, we will (i) remove the end from
-            #     # selected_ends, and (ii) set the end state to none.
-            #     logger.info(f"Attempting to remove end {end} from selected_ends and "
-            #                 f"re-setting its channel state")
-            #     channel._selector.remove_from_selected_ends(channel._ends, end)
-            #     channel._selector.reset_end_state_to_none(channel._ends, end)
-            #     channel._selector._cleanup_removed_ends(end)
-            #     return
+            # NOTE: (DG) Previously had a version equality check here
+            # for version sent and version received. It was
+            # supposed to be equal for syncfl and help discard
+            # incorrect round messages. For asyncfl too it should be
+            # equal. However it is possible that after leave/join of a
+            # trainer between two rounds, a new round version is sent
+            # to the trainer, while it sends back the previous version
+            # sent to it. This is also a valid update since it is just
+            # the previous one (and there are checks on the trainer
+            # side to avoid redundant updates).
             else:
                 # NOTE: total_training_time_s is approximate. It only
                 # captures training time for those send_wt and recv_wt
@@ -309,7 +301,7 @@ class TopAggregator(SyncTopAgg):
                 curr_cumulative_training_s = self._track_trainer_version_duration_s[
                     end
                 ]["total_training_time_s"]
-                curr_round_time_s = last_recv_wts_ts - last_send_wts_ts
+                curr_round_time_s = (recv_wts_ts - sent_wts_ts).total_seconds()
                 new_cumulative_training_s = (
                     curr_cumulative_training_s + curr_round_time_s
                 )
@@ -318,6 +310,19 @@ class TopAggregator(SyncTopAgg):
                 ]["total_training_time_s"] = new_cumulative_training_s
                 logger.debug(f"Updated training time record for {end}, details: "
                              f"{self._track_trainer_version_duration_s[end]}")
+                
+                # Following the relaxation in asyncFL to not check for
+                # model version equality at
+                # the aggregator, we do the same for asyncoort too. We
+                # will set the end property without doing the equality
+                # check. Round duration can be calculated based on
+                # send and recv time for that version to that trainer.
+                logger.debug(f"Setting channel property {PROP_ROUND_DURATION} for "
+                             f"end {end} with duration "
+                             f"{recv_wts_ts - sent_wts_ts}")
+                channel.set_end_property(
+                        end, PROP_ROUND_DURATION, recv_wts_ts - sent_wts_ts
+                    )
 
         # capture telemetry on trainer participation in rounds
         channel._selector.ordered_updates_recv_ends.append(end)
@@ -713,17 +718,26 @@ class TopAggregator(SyncTopAgg):
                              f"will add")
                 self._track_trainer_version_duration_s[end] = dict()
                 self._track_trainer_version_duration_s[end]["last_send_wts_ts"] = -1
+
+                # sent_wts_version_ts, recv_wts_version_ts is a dict
+                # of version sent/recv and its timestamp. This will be
+                # primarily used by AsyncOORT selector since it needs
+                # round_duration times.
+                # TODO: (DG) Right now the dict maintains ALL
+                # sent/recv versions and timestamps for all trainers.
+                # For thousands of trainers it might incur
+                # memory-bloat. Can optimize to retain just the
+                # versions and timestamps of those that were sent but
+                # not received back for the trainer.
                 self._track_trainer_version_duration_s[
-                    end]["last_send_wts_version"] = -1
-                self._track_trainer_version_duration_s[end]["last_recv_wts_ts"] = -1
+                    end]["sent_wts_version_ts"] = {}
+                self._track_trainer_version_duration_s[end]["recv_wts_version_ts"] = {}
                 self._track_trainer_version_duration_s[
                     end]["total_training_time_s"] = -1
             
-            # Update last_send_wts_timestamp
+            # Update sent_wts_version_ts with version and timestamp
             self._track_trainer_version_duration_s[
-                end]["last_send_wts_ts"] = time.time()
-            self._track_trainer_version_duration_s[
-                end]["last_send_wts_version"] = self._round
+                end]["sent_wts_version_ts"][self._round] = datetime.now()
 
     def compose(self) -> None:
         """Compose role with tasklets."""
