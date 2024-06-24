@@ -87,6 +87,12 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.criterion = None
 
+        # Enable/disable use of oort_loss fromt he config. Needed for
+        # oort and asyncOORT.
+        self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
+        logger.info(f"Trainer: {self.trainer_id} has "
+                    f"use_oort_loss_fn: {self.use_oort_loss_fn}")
+
         # TODO: (DG) Remove the hard requirement for config to include
         # trainer_indices_list and failure_durations_s Setting the
         # indices used by the trainer
@@ -453,14 +459,15 @@ class PyTorchCifar10Trainer(Trainer):
             self.optimizer.zero_grad()
             output = self.model(data)
             
-            # Loss function to use with Fedbuff
-            # loss = F.nll_loss(output, target)
-            
-            # Loss function to use with OORT selector.
-            # Calculate statistical utility of a trainer while
-            # calculating loss
-            # TODO: (DG) Add OORT-flag here
-            loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+            if self.use_oort_loss_fn == "False":
+                # Loss function to use with Fedbuff
+                loss = F.nll_loss(output, target)
+            elif self.use_oort_loss_fn == "True":
+                # Calculate statistical utility of a trainer while
+                # calculating loss
+                loss = self.oort_loss(
+                    output, target.squeeze(), epoch, batch_idx)
+
             loss.backward()
             self.optimizer.step()
             if batch_idx % 100 == 0:

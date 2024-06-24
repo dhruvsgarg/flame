@@ -25,6 +25,11 @@ from ..common.typing import ModelWeights
 class AbstractOptimizer(ABC):
     """Abstract base class for optimizer implementation."""
 
+    def __init__(self, **kwargs) -> None:
+        """Initialize an instance with keyword-based arguments."""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
     @abstractmethod
     def do(self,
            base_weights: ModelWeights,
