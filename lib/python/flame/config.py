@@ -167,7 +167,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         )
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds",
-        default=None
+        default=False
+        )
+    use_oort_loss_fn: t.Optional[float] = Field(
+        alias="useOORTLossFn",
+        default=False
         )
 
 

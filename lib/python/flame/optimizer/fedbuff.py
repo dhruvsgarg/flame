@@ -37,8 +37,10 @@ logger = logging.getLogger(__name__)
 class FedBuff(AbstractOptimizer):
     """FedBuff class."""
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         """Initialize FedBuff instance."""
+        super().__init__(**kwargs)
+
         self.agg_goal_weights = None
 
         ml_framework_in_use = get_ml_framework_in_use()
@@ -55,6 +57,12 @@ class FedBuff(AbstractOptimizer):
             )
 
         self.regularizer = Regularizer()
+
+        # Set learning rate differently if asyncOORT selector is used
+        try:
+            self.use_oort_lr = kwargs["use_oort_lr"]
+        except KeyError:
+            raise KeyError("Not specified wether to use oort lr or not in config")
 
     def do(
         self,
@@ -133,13 +141,15 @@ class FedBuff(AbstractOptimizer):
             # agg_goal_weights are already adjusted with rate Using
             # hardcoded learning_rate for now, will pass as an
             # argument later
-            # TODO: (DG) Add an OORT-flag here to check if selector was
-            # fedbuff or asyncOORT. Adjust LR based on that.
             # TODO: (DG) Hyper-parameters for AsyncOORT need tuning?
             # Which all hyper-parameters apart from LR need to be
             # tuned?
-            # learning_rate = 40.9    # for Fedbuff
-            learning_rate = 1.0      # for AsyncOORT
+            if self.use_oort_lr == "False":
+                # for fedbuff asyncfl
+                learning_rate = 40.9
+            elif self.use_oort_lr == "True":
+                # for asyncOORT asyncfl
+                learning_rate = 1.0
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
