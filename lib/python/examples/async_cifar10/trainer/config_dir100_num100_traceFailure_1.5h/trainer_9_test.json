@@ -578,7 +578,7 @@
       "enabled": "False",
       "frequency_s": 1
     },
-    "client_avail_aware_notify": "True"
+    "client_avail_aware_notify": "False"
   },
   "baseModel": {
     "name": "",

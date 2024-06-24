@@ -1,5 +1,5 @@
 {
-  "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580406",
+  "taskid": "505f9fc483cf4df68a2409257b5fad7d3c58406",
   "backend": "mqtt",
   "brokers": [
     {
@@ -893,12 +893,15 @@
       33911,
       25030
     ],
-    "failure_durations_s": "[(254, 679), (958, 256), (1487, 534), (2073, 486), (2715, 391), (3117, 218), (3853, 246), (4245, 435), (4996, 494)]",
+    "failure_durations_s": "[(123, 1466), (1754, 716), (2524, 195), (2799, 2061), (5022, 378)]",
     "heartbeats": {
       "enabled": "False",
       "frequency_s": 1
     },
-    "client_avail_aware_notify": "True"
+    "use_oort_loss_fn": "False",
+    "client_avail_aware_notify": "True",
+    "training_delay_enabled": "True",
+    "training_delay_s": "1.0"
   },
   "baseModel": {
     "name": "",

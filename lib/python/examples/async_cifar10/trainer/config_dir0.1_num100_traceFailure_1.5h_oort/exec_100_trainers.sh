@@ -10,7 +10,7 @@ for ((X=1; X<=100; X++)); do
     echo "ASSIGN_TO_GPU=${ASSIGN_TO_GPU} value for X=${X}" 
 
     # Run the Python command with the corresponding trainer_X.json file
-    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python ../pytorch/main_oort_trainer.py "trainer_${X}.json" &
+    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python ../pytorch/main.py "trainer_${X}.json" &
     
     # Set the time gap based on the condition
     # if [ $X -eq 1 ] || [ $X -eq 2 ]; then

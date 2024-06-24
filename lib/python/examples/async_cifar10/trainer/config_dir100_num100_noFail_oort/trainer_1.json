@@ -550,7 +550,9 @@
             40082,
             7129
         ],
-        "failure_durations_s": "[]"
+        "failure_durations_s": "[]",
+        "training_delay_enabled": "True",
+        "training_delay_s": "0.0"
     },
     "baseModel": {
         "name": "",
@@ -565,8 +567,11 @@
         "uri": ""
     },
     "selector": {
-        "sort": "default",
-        "kwargs": {}
+        "sort": "fedbuff",
+        "kwargs": {
+            "c": 20,
+            "aggGoal": 1
+        }
     },
     "optimizer": {
         "sort": "fedavg",
