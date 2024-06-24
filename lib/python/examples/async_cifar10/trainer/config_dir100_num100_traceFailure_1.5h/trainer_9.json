@@ -525,7 +525,8 @@
       "enabled": "False",
       "frequency_s": 1
     },
-    "client_avail_aware_notify": "True",
+    "use_oort_loss_fn": "False",
+    "client_avail_aware_notify": "False",
     "training_delay_enabled": "True",
     "training_delay_s": "38.0"
   },

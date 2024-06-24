@@ -12,7 +12,8 @@
     }
   ],
   "groupAssociation": {
-    "param-channel": "default"
+    "param-channel": "default",
+    "status-channel": "default"
   },
   "channels": [
     {
@@ -36,6 +37,28 @@
         "trainer": [
           "fetch",
           "upload"
+        ]
+      }
+    },
+    {
+      "description": "Liveliness update is sent from trainer to aggregator",
+      "groupBy": {
+        "type": "tag",
+        "value": [
+          "default"
+        ]
+      },
+      "name": "status-channel",
+      "pair": [
+        "trainer",
+        "aggregator"
+      ],
+      "funcTags": {
+        "aggregator": [
+          "heartbeat_recv"
+        ],
+        "trainer": [
+          "heartbeat_send"
         ]
       }
     }
@@ -550,7 +573,12 @@
       34991,
       44624
     ],
-    "failure_durations_s": "[(50, 10), (110, 10), (170, 10), (260, 10), (350, 10)]"
+    "failure_durations_s": "[(50, 10), (110, 10), (170, 10), (260, 10), (350, 10)]",
+    "heartbeats": {
+      "enabled": "False",
+      "frequency_s": 20
+    },
+    "client_avail_aware_notify": "True"
   },
   "baseModel": {
     "name": "",
@@ -565,8 +593,11 @@
     "uri": ""
   },
   "selector": {
-    "sort": "default",
-    "kwargs": {}
+    "sort": "fedbuff",
+    "kwargs": {
+      "c": 20,
+      "aggGoal": 1
+    }
   },
   "optimizer": {
     "sort": "fedavg",
