@@ -118,7 +118,7 @@ class M5(nn.Module):
     """M5 model adapted for speech commands dataset."""
 
     def __init__(self, n_input=1, n_output=35, stride=4, n_channel=32):
-        super().__init__()
+        super(M5, self).__init__()
         self.conv1 = nn.Conv1d(n_input, n_channel, kernel_size=80, stride=stride)
         self.bn1 = nn.BatchNorm1d(n_channel)
         self.pool1 = nn.MaxPool1d(4)
@@ -185,7 +185,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
             initialize_wandb()
-
+    
     def initialize(self):
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -274,7 +274,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         """Train a model."""
         # Implement this if testing is needed in aggregator
         pass
-
+    
     def evaluate(self) -> None:
         """Evaluate (test) a model."""
         self.model.eval()
@@ -285,8 +285,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
                 
-                # Reshape output to [batch_size, n_output] from
-                # [batch_size, 1, n_output]
+                # Reshape output to [batch_size, n_output] from [batch_size, 1, n_output]
                 output = output.squeeze(1)
 
                 logger.debug(f"output before passing to nll_loss: {output}")
