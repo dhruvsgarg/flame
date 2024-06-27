@@ -71,6 +71,7 @@ LABEL_MAP = {
     'zero': 34
 }
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,7 +79,7 @@ class M5(nn.Module):
     """M5 model adapted for speech commands dataset."""
 
     def __init__(self, n_input=1, n_output=35, stride=4, n_channel=32):
-        super().__init__()
+        super(M5, self).__init__()
         self.conv1 = nn.Conv1d(n_input, n_channel, kernel_size=80, stride=stride)
         self.bn1 = nn.BatchNorm1d(n_channel)
         self.pool1 = nn.MaxPool1d(4)
@@ -471,9 +472,12 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
         # Check if trainer_indices_list is empty
         if self.trainer_indices_list:
+            logger.debug(f"Value of self.trainer_indices_list: {self.trainer_indices_list}")
             # Create indices into a list and convert to tensor
             indices = torch.tensor(self.trainer_indices_list)
             dataset = data_utils.Subset(dataset, indices)
+            logger.debug(f"dataset is: {dataset}")
+            time.sleep(60)
 
         train_kwargs = {
             "batch_size": self.batch_size,
@@ -498,12 +502,9 @@ class PyTorchSpeechCommandsTrainer(Trainer):
     def train(self) -> None:
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(
+        self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
-        )
-
-        # TODO: (DG) Check if diff optimizer needs to be used
-        # optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+            )
 
         # reset stat utility for OORT
         self.reset_stat_utility()
@@ -542,6 +543,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 logger.debug(f"Set loss to w/ oort_loss: {loss}")
 
             loss.backward()
+
             self.optimizer.step()
             if batch_idx % 100 == 0:
                 done = batch_idx * len(data)
