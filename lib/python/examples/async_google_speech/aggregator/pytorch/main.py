@@ -288,8 +288,6 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
                 # Reshape output to [batch_size, n_output] from [batch_size, 1, n_output]
                 output = output.squeeze(1)
 
-                logger.debug(f"output before passing to nll_loss: {output}")
-                
                 test_loss += F.nll_loss(
                     output, target, reduction="sum"
                 ).item()  # sum up batch loss

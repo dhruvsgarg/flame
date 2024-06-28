@@ -162,6 +162,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         self.config = config
         self.dataset_size = 0
         self.model = None
+        self.model_arch = ResNet34_1D
         # Oort requires its loss function to have 'reduction'
         # parameter
         self.loss_fn = torch.nn.CrossEntropyLoss
@@ -474,10 +475,8 @@ class PyTorchSpeechCommandsTrainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.model = ResNet34_1D().to(self.device)
         logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}")
+                     f"{time.time()}. Skipped model load.")
 
     def load_data(self) -> None:
         """Load data."""
@@ -515,8 +514,6 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             # Create indices into a list and convert to tensor
             indices = torch.tensor(self.trainer_indices_list)
             dataset = data_utils.Subset(dataset, indices)
-            logger.debug(f"dataset is: {dataset}")
-            time.sleep(60)
 
         train_kwargs = {
             "batch_size": self.batch_size,
@@ -540,6 +537,11 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
     def train(self) -> None:
         """Train a model."""
+        # Load model onto GPU
+        if self.model is None:
+            logger.error("Inside train() but model is None!")
+            return
+
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
@@ -563,6 +565,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                          f"{self.trainer_id} by {self.training_delay_s}s")
 
     def _train_epoch(self, epoch):
+        if self.model is None:
+            logger.error("Inside _train_epoch() but model is None!")
+            return
+
         self.model.train()
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
@@ -590,7 +596,13 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
-            
+
+        # Explicitly free GPU memory after processing all batches
+        del data, target
+        torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection
+        torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
+
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)

@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """horizontal FL trainer."""
+import gc
 import inspect
 import logging
 import math
@@ -199,6 +200,11 @@ class Trainer(Role, metaclass=ABCMeta):
                 channel.cleanup_recvd_ends()
                 return
 
+            # Load the model onto GPU
+            if self.model is None:
+                self._load_model_onto_gpu()
+
+            # Update the model
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()
 
@@ -307,6 +313,9 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"and _updates_returned_upto_round "
                     f"{self._updates_returned_upto_round}")
 
+        # Evict model from gpu to free up space
+        self._evict_model_from_gpu()
+
         channel._selector._cleanup_send_ends()
 
     def _perform_channel_leave(self, tag: str) -> None:
@@ -374,6 +383,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
+            if self.model is None:
+                self._load_model_onto_gpu()
+                logger.debug(f"Trainer_id: {self.trainer_id} came to update_model but "
+                             f"model was not on GPU. Load completed.")
             self.model.load_state_dict(self.weights)
         elif self.framework == MLFramework.TENSORFLOW:
             self.model.set_weights(self.weights)
@@ -383,9 +396,25 @@ class Trainer(Role, metaclass=ABCMeta):
         self.prev_weights = self.weights
 
         if self.framework == MLFramework.PYTORCH:
+            if self.model is None:
+                self._load_model_onto_gpu()
+                logger.error(f"Trainer {self.trainer_id} came to update_weights before "
+                             f"sending. But the model had to be loaded on the device.")
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
+
+    def _load_model_onto_gpu(self):
+        self.model = self.model_arch().to(self.device)
+        logger.debug(f"Loaded model on gpu for trainer_id: {self.trainer_id}")
+
+    def _evict_model_from_gpu(self):
+        self.model.cpu()
+        self.model = None
+        torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection
+        torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
+        logger.debug(f"Evicted model from gpu for trainer_id: {self.trainer_id}")
     
     def send_heartbeat_to_agg(self) -> None:
         logger.debug("Inside trainer.py will call self.put(heartbeat)")
