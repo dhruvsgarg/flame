@@ -3,8 +3,8 @@
 # TODO: Pass this from args
 NUM_AVAIL_GPUS=8
 
-# Loop from 1 to 300
-for ((X=1; X<=300; X++)); do
+# Loop from 1 to 100
+for ((X=1; X<=100; X++)); do
     # Load balance the trainers across available GPUs
     ASSIGN_TO_GPU=$(( $X % $NUM_AVAIL_GPUS))
     echo "ASSIGN_TO_GPU=${ASSIGN_TO_GPU} value for X=${X}" 

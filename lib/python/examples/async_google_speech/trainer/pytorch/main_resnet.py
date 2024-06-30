@@ -391,12 +391,14 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
         logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at "
                      f"timestamp: {time.time()}")
-    
+
     def check_leave_sleep_join(self):
         """Indicate transient unavailability to aggregator"""
         # NOTE: Builds on top of dup_check_and_sleep, both cannot be
         # used together
-        
+
+        # Condition 1: If current time >= time for next
+        # unavailability, leave channel and go to sleep
         if (time.time() >= self.dup_timestamp_next_sleep_s) and (
             len(self.dup_failure_durations_s) > 0
         ):
@@ -461,13 +463,55 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 if (self.dup_timestamp_next_sleep_s < time.time()):
                     logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
                                  f"self.dup_timestamp_next_sleep_s < time.time()")
+                else:
+                    # We have a next time for unavailability. To
+                    # reduce system load, thread can go to sleep until
+                    # then and wake up just before the next
+                    # unavailability needs to be announced.
+                    logger.info(f"Trainer {self.trainer_id} at time {time.time()} set "
+                                f"next dup_timestamp_next_sleep_s for "
+                                f"{self.dup_timestamp_next_sleep_s}.")
+                    self.remaining_time_before_next_unavail_s = (
+                        self.dup_timestamp_next_sleep_s - time.time())
+                    logger.debug(f"Trainer {self.trainer_id} will go to sleep for "
+                                 f"{self.remaining_time_before_next_unavail_s-1} since "
+                                 f"remaining time before next unavail is "
+                                 f"{self.remaining_time_before_next_unavail_s}")
+                    thread_rest_duration_s = max(
+                        0,
+                        (self.remaining_time_before_next_unavail_s-1)
+                        )
+                    time.sleep(thread_rest_duration_s)
+                    logger.debug(f"Trainer {self.trainer_id} got up from rest at "
+                                 f"time {time.time()}")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
                         "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
                     )
                 )
-                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
+                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer. "
+                            f"Thread will be put to rest for 7 days.")
+                thread_rest_duration_s = 7*24*60*60
+                time.sleep(thread_rest_duration_s)
+                logger.debug(f"Trainer {self.trainer_id} got up from rest at "
+                             f"time {time.time()}")
+
+        # Condition 2: If current time < time for next
+        # unavailability, put the thread to rest
+        elif (self.dup_timestamp_next_sleep_s > (time.time()+1)):
+            self.remaining_time_before_next_unavail_s = (
+                        self.dup_timestamp_next_sleep_s - time.time())
+            thread_rest_duration_s = max(
+                        0,
+                        min(
+                            (self.remaining_time_before_next_unavail_s-1), 7*24*60*60)
+                        )
+            logger.info(f"Outer check_leave_sleep_join check for trainer "
+                        f"{self.trainer_id}. Next sleep ts is "
+                        f"{self.dup_timestamp_next_sleep_s}, will "
+                        f"rest for {thread_rest_duration_s}")
+            time.sleep(thread_rest_duration_s)
 
         logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
                      f"timestamp: {time.time()}")
