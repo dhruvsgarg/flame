@@ -55,8 +55,8 @@
             "frequency_s": 1
         },
         "use_oort_loss_fn": "False",
-        "client_avail_aware_notify": "False",
-        "training_delay_enabled": "False",
+        "client_avail_aware_notify": "True",
+        "training_delay_enabled": "True",
         "training_delay_s": "8.0"
     },
     "baseModel": {
@@ -79,10 +79,8 @@
         }
     },
     "optimizer": {
-        "sort": "fedbuff",
-        "kwargs": {
-            "use_oort_lr": "False"
-        }
+        "sort": "fedavg",
+        "kwargs": {}
     },
     "maxRunTime": 300,
     "realm": "default/us",
