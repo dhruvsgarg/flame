@@ -480,6 +480,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model_arch().to(self.device)
         logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
                      f"{time.time()}. Skipped model load.")
 
@@ -537,11 +538,13 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         del dataset
         gc.collect()
 
-        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: "
-                     f"{time.time()}")
+        logger.info(f"Task_id: {self.trainer_id} load_data completed at timestamp: "
+                    f"{time.time()}, with {len(self.train_loader)} samples")
 
     def train(self) -> None:
         """Train a model."""
+        gpu_train_start_time = time.time()
+
         # Load model onto GPU
         if self.model is None:
             logger.error("Inside train() but model is None!")
@@ -562,12 +565,26 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         # aggregator
         self.dataset_size = len(self.train_loader.dataset)
 
+        gpu_train_end_time = time.time()
+        actual_gpu_train_time_s = gpu_train_end_time - gpu_train_start_time
+        logger.info(f"Actual GPU training time for trainer "
+                    f"{self.trainer_id} is {actual_gpu_train_time_s}s")
+
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency) if enabled
         if self.training_delay_enabled == "True":
-            time.sleep(self.training_delay_s)
-            logger.debug(f"Delayed training time for trainer "
-                         f"{self.trainer_id} by {self.training_delay_s}s")
+            remaining_time_delay_s = (
+                self.training_delay_s - actual_gpu_train_time_s)
+            if remaining_time_delay_s > 0:
+                time.sleep(remaining_time_delay_s)
+                logger.debug(f"Delayed training time for trainer "
+                             f"{self.trainer_id} by {remaining_time_delay_s} to get "
+                             f"total delay of {self.training_delay_s}s")
+            else:
+                logger.warn(f"GPU training time for "
+                            f"{self.trainer_id} was {actual_gpu_train_time_s}. It "
+                            f"exceedes the designated delay of "
+                            f"{self.training_delay_s}s")
 
     def _train_epoch(self, epoch):
         if self.model is None:
@@ -603,10 +620,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 )
 
         # Explicitly free GPU memory after processing all batches
-        del data, target
-        torch.cuda.empty_cache()
-        gc.collect()  # Force garbage collection
-        torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
+        # del data, target
+        # torch.cuda.empty_cache()
+        # gc.collect()  # Force garbage collection
+        # torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
 
         # normalize statistical utility of a trainer based on the size
         # of the dataset
