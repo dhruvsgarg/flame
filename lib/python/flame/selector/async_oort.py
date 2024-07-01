@@ -35,7 +35,7 @@ from flame.selector import AbstractSelector, SelectorReturnType
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 60      # 60 seconds timeout
+SEND_TIMEOUT_WAIT_S = 90      # 90 seconds timeout
 
 PROP_UTILITY = "utility"
 PROP_END_ID = "end_id"
