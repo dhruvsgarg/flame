@@ -123,6 +123,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         self.config = config
         self.dataset_size = 0
         self.model = None
+        self.model_arch = M5
         # Oort requires its loss function to have 'reduction'
         # parameter
         self.loss_fn = torch.nn.CrossEntropyLoss
@@ -351,12 +352,14 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
         logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at "
                      f"timestamp: {time.time()}")
-    
+
     def check_leave_sleep_join(self):
         """Indicate transient unavailability to aggregator"""
         # NOTE: Builds on top of dup_check_and_sleep, both cannot be
         # used together
-        
+
+        # Condition 1: If current time >= time for next
+        # unavailability, leave channel and go to sleep
         if (time.time() >= self.dup_timestamp_next_sleep_s) and (
             len(self.dup_failure_durations_s) > 0
         ):
@@ -421,13 +424,55 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 if (self.dup_timestamp_next_sleep_s < time.time()):
                     logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
                                  f"self.dup_timestamp_next_sleep_s < time.time()")
+                else:
+                    # We have a next time for unavailability. To
+                    # reduce system load, thread can go to sleep until
+                    # then and wake up just before the next
+                    # unavailability needs to be announced.
+                    logger.info(f"Trainer {self.trainer_id} at time {time.time()} set "
+                                f"next dup_timestamp_next_sleep_s for "
+                                f"{self.dup_timestamp_next_sleep_s}.")
+                    self.remaining_time_before_next_unavail_s = (
+                        self.dup_timestamp_next_sleep_s - time.time())
+                    logger.debug(f"Trainer {self.trainer_id} will go to sleep for "
+                                 f"{self.remaining_time_before_next_unavail_s-1} since "
+                                 f"remaining time before next unavail is "
+                                 f"{self.remaining_time_before_next_unavail_s}")
+                    thread_rest_duration_s = max(
+                        0,
+                        (self.remaining_time_before_next_unavail_s-1)
+                        )
+                    time.sleep(thread_rest_duration_s)
+                    logger.debug(f"Trainer {self.trainer_id} got up from rest at "
+                                 f"time {time.time()}")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
                         "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
                     )
                 )
-                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
+                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer. "
+                            f"Thread will be put to rest for 7 days.")
+                thread_rest_duration_s = 7*24*60*60
+                time.sleep(thread_rest_duration_s)
+                logger.debug(f"Trainer {self.trainer_id} got up from rest at "
+                             f"time {time.time()}")
+
+        # Condition 2: If current time < time for next
+        # unavailability, put the thread to rest
+        elif (self.dup_timestamp_next_sleep_s > (time.time()+1)):
+            self.remaining_time_before_next_unavail_s = (
+                        self.dup_timestamp_next_sleep_s - time.time())
+            thread_rest_duration_s = max(
+                        0,
+                        min(
+                            (self.remaining_time_before_next_unavail_s-1), 7*24*60*60)
+                        )
+            logger.info(f"Outer check_leave_sleep_join check for trainer "
+                        f"{self.trainer_id}. Next sleep ts is "
+                        f"{self.dup_timestamp_next_sleep_s}, will "
+                        f"rest for {thread_rest_duration_s}")
+            time.sleep(thread_rest_duration_s)
 
         logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
                      f"timestamp: {time.time()}")
@@ -435,10 +480,8 @@ class PyTorchSpeechCommandsTrainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.model = M5().to(self.device)
         logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}")
+                     f"{time.time()}. Skipped model load.")
 
     def load_data(self) -> None:
         """Load data."""
@@ -476,8 +519,6 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             # Create indices into a list and convert to tensor
             indices = torch.tensor(self.trainer_indices_list)
             dataset = data_utils.Subset(dataset, indices)
-            logger.debug(f"dataset is: {dataset}")
-            time.sleep(60)
 
         train_kwargs = {
             "batch_size": self.batch_size,
@@ -501,10 +542,15 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
     def train(self) -> None:
         """Train a model."""
+        # Load model onto GPU
+        if self.model is None:
+            logger.error("Inside train() but model is None!")
+            return
+
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
-            )
+        )
 
         # reset stat utility for OORT
         self.reset_stat_utility()
@@ -524,6 +570,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                          f"{self.trainer_id} by {self.training_delay_s}s")
 
     def _train_epoch(self, epoch):
+        if self.model is None:
+            logger.error("Inside _train_epoch() but model is None!")
+            return
+
         self.model.train()
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
@@ -534,13 +584,11 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             if self.use_oort_loss_fn == "False":
                 # Loss function to use with Fedbuff
                 loss = F.nll_loss(output.squeeze(1), target)
-                logger.debug(f"Set loss to w/o oort_loss: {loss}")
             elif self.use_oort_loss_fn == "True":
                 # Calculate statistical utility of a trainer while
                 # calculating loss
                 loss = self.oort_loss(
                     output.squeeze(1), target.squeeze(), epoch, batch_idx)
-                logger.debug(f"Set loss to w/ oort_loss: {loss}")
 
             loss.backward()
 
@@ -553,7 +601,13 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
-            
+
+        # Explicitly free GPU memory after processing all batches
+        del data, target
+        torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection
+        torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
+
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)

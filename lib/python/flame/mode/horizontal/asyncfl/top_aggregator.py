@@ -42,7 +42,7 @@ from flame.selector.oort import (
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 60      # 60 seconds timeout
+SEND_TIMEOUT_WAIT_S = 90      # 90 seconds timeout
 
 
 class TopAggregator(SyncTopAgg):
