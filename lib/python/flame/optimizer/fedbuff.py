@@ -24,6 +24,7 @@ SecAgg algorithm is not the scope of this implementation.
 import logging
 import math
 
+import numpy as np
 from diskcache import Cache
 
 from ..common.typing import ModelWeights
@@ -64,6 +65,56 @@ class FedBuff(AbstractOptimizer):
         except KeyError:
             raise KeyError("Not specified wether to use oort lr or not in config")
 
+    # #### FUNCTIONS TO TRADE-OFF STALENESS WITH STAT_UTILITY
+    def alpha_polynomial(self, staleness, a_exp):
+        return (1 / ((1 + staleness)**a_exp))
+
+    def alpha_exponential(self, staleness, a_exp):
+        return np.exp(-a_exp * staleness)
+
+    def beta_polynomial(self, loss, b_exp):
+        return (1 - (1 / ((1 + loss)**b_exp)))
+
+    def beta_polynomial_upshift(self, loss, b_exp):
+        return (1 - (1 / ((1 + loss)**b_exp)) + 0.5)
+
+    def beta_exponential(self, loss, b_exp):
+        return 1 - np.exp(-b_exp * loss)
+
+    def beta_exponential_custom(self, loss, b_exp):
+        decay_constant = 500 / math.log(2)  # Adjusting the decay constant
+        return math.exp(-loss / decay_constant)
+
+    def weight_factor(
+            self,
+            scale,
+            staleness,
+            a_exp,
+            loss,
+            b_exp,
+            alpha_type='polynomial',
+            beta_type='polynomial'):
+        if alpha_type == 'polynomial':
+            alpha = self.alpha_polynomial(staleness, a_exp)
+        elif alpha_type == 'exponential':
+            alpha = self.alpha_exponential(staleness, a_exp)
+        else:
+            raise ValueError('Invalid alpha type')
+
+        if beta_type == 'polynomial':
+            beta = self.beta_polynomial(loss, b_exp)
+        elif beta_type == 'exponential':
+            beta = self.beta_exponential(loss, b_exp)
+        elif beta_type == 'polynomial_upshift':
+            beta = self.beta_polynomial_upshift(loss, b_exp)
+        elif beta_type == 'exponential_custom':
+            beta = self.beta_exponential_custom(loss, b_exp)
+        else:
+            raise ValueError('Invalid beta type')
+
+        # weight_factor range is [0, 1]
+        return ((scale) * alpha) + ((1-scale) * beta)
+
     def do(
         self,
         agg_goal_weights: ModelWeights,
@@ -101,9 +152,22 @@ class FedBuff(AbstractOptimizer):
             # explicit cache cleanup is not needed
             tres = cache.pop(k)
 
-            logger.info(f"agg ver: {version}, trainer ver: {tres.version}")
             # rate determined based on the staleness of local model
-            rate = 1 / math.sqrt(1 + version - tres.version)
+            # rate = 1 / math.sqrt(1 + version - tres.version)
+
+            # New rate that trades off staleness and statistical
+            # utility
+            rate = self.weight_factor(
+                scale=0.4,
+                staleness=(version-tres.version),
+                a_exp=0.25,
+                loss=tres.stat_utility,
+                b_exp=0.1,
+                alpha_type='polynomial',
+                beta_type='polynomial_upshift')
+
+            logger.info(f"agg ver: {version}, trainer ver: {tres.version}, "
+                        f"trainer stat_utility: {tres.stat_utility}, rate: {rate}")
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
