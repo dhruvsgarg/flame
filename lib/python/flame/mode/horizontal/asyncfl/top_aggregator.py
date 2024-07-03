@@ -352,11 +352,12 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
+            stat_utility = msg[MessageType.STAT_UTILITY]
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 
         if weights is not None and count > 0:
-            tres = TrainResult(weights, count, version)
+            tres = TrainResult(weights, count, version, stat_utility)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
