@@ -214,7 +214,8 @@ class FedBuff(AbstractOptimizer):
                 learning_rate = 0.075       # Used with Google speech
             elif self.use_oort_lr == "True":
                 # for asyncOORT asyncfl
-                learning_rate = 1.0
+                # learning_rate = 1.0            # Used with CIFAR-10
+                learning_rate = 0.05       # Used with Google speech
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
