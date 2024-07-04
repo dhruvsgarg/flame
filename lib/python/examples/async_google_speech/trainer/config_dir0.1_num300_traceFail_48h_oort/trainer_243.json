@@ -1,0 +1,223 @@
+{
+    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580370",
+    "backend": "mqtt",
+    "brokers": [
+        {
+            "host": "130.207.125.87",
+            "sort": "mqtt"
+        },
+        {
+            "host": "localhost:10104",
+            "sort": "p2p"
+        }
+    ],
+    "groupAssociation": {
+        "param-channel": "default"
+    },
+    "channels": [
+        {
+            "description": "Model update is sent from trainer to aggregator and vice-versa",
+            "groupBy": {
+                "type": "tag",
+                "value": [
+                    "default"
+                ]
+            },
+            "name": "param-channel",
+            "pair": [
+                "trainer",
+                "aggregator"
+            ],
+            "funcTags": {
+                "aggregator": [
+                    "distribute",
+                    "aggregate"
+                ],
+                "trainer": [
+                    "fetch",
+                    "upload"
+                ]
+            }
+        }
+    ],
+    "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+    "dependencies": [
+        "numpy >= 1.2.0"
+    ],
+    "hyperparameters": {
+        "batchSize": 32,
+        "learningRate": 0.04,
+        "rounds": 5,
+        "trainer_indices_list": [
+            1583,
+            1561,
+            2592,
+            2803,
+            1797,
+            1786,
+            2117,
+            1868,
+            1761,
+            1498,
+            7873,
+            7587,
+            6427,
+            7029,
+            7522,
+            7665,
+            6753,
+            7333,
+            6898,
+            6622,
+            7514,
+            7684,
+            6948,
+            6694,
+            7161,
+            6492,
+            7857,
+            6845,
+            7477,
+            6640,
+            7696,
+            7440,
+            6630,
+            6810,
+            7565,
+            7885,
+            7179,
+            7144,
+            6721,
+            7257,
+            6968,
+            6339,
+            7077,
+            7677,
+            7800,
+            8828,
+            9232,
+            8203,
+            9412,
+            8240,
+            8133,
+            8520,
+            10214,
+            10148,
+            9856,
+            9704,
+            9818,
+            22878,
+            22539,
+            26358,
+            27026,
+            26489,
+            28766,
+            52846,
+            53158,
+            51518,
+            53618,
+            60239,
+            58771,
+            61447,
+            59177,
+            59722,
+            61342,
+            60954,
+            61298,
+            61003,
+            60965,
+            61686,
+            58895,
+            60315,
+            61000,
+            60779,
+            60640,
+            61385,
+            60699,
+            61319,
+            60942,
+            59437,
+            58772,
+            61438,
+            58781,
+            65835,
+            67394,
+            67587,
+            81903,
+            83942,
+            81947,
+            83766,
+            82492,
+            81810,
+            83142,
+            83818,
+            81942,
+            84337,
+            84417,
+            83202,
+            83540,
+            81991,
+            83941,
+            84452,
+            82564,
+            82182,
+            83862,
+            83686,
+            84014,
+            83069,
+            84589,
+            84816,
+            82337,
+            84770,
+            84066,
+            83653,
+            82490,
+            83520,
+            84282,
+            81647,
+            81829,
+            84257,
+            83373,
+            82750,
+            83104,
+            82964,
+            81649,
+            82462
+        ],
+        "failure_durations_s": "[(54, 3), (482, 1416), (2138, 790), (3426, 82), (3584, 7098), (10698, 529), (11416, 7), (11466, 977), (12672, 428), (13155, 1081), (14333, 2), (14529, 3403), (18096, 20), (18234, 1257), (19908, 1692)]",
+        "heartbeats": {
+            "enabled": "False",
+            "frequency_s": 1
+        },
+        "use_oort_loss_fn": "True",
+        "client_avail_aware_notify": "True",
+        "training_delay_enabled": "True",
+        "training_delay_s": "3.0"
+    },
+    "baseModel": {
+        "name": "",
+        "version": 1
+    },
+    "job": {
+        "id": "622a358619ab59012eabeefb",
+        "name": "cifar-10"
+    },
+    "registry": {
+        "sort": "dummy",
+        "uri": ""
+    },
+    "selector": {
+        "sort": "fedbuff",
+        "kwargs": {
+            "c": 20,
+            "aggGoal": 1
+        }
+    },
+    "optimizer": {
+        "sort": "fedavg",
+        "kwargs": {}
+    },
+    "maxRunTime": 300,
+    "realm": "default/us",
+    "role": "trainer"
+}

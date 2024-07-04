@@ -619,10 +619,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                              f"{self.trainer_id} by {remaining_time_delay_s} to get "
                              f"total delay of {self.training_delay_s}s")
             else:
-                logger.warn(f"GPU training time for "
-                            f"{self.trainer_id} was {actual_gpu_train_time_s}. It "
-                            f"exceedes the designated delay of "
-                            f"{self.training_delay_s}s")
+                logger.warning(f"GPU training time for "
+                               f"{self.trainer_id} was {actual_gpu_train_time_s}. It "
+                               f"exceedes the designated delay of "
+                               f"{self.training_delay_s}s")
 
     def _train_epoch(self, epoch):
         if self.model is None:

@@ -1,0 +1,239 @@
+{
+    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580446",
+    "backend": "mqtt",
+    "brokers": [
+        {
+            "host": "130.207.125.87",
+            "sort": "mqtt"
+        },
+        {
+            "host": "localhost:10104",
+            "sort": "p2p"
+        }
+    ],
+    "groupAssociation": {
+        "param-channel": "default"
+    },
+    "channels": [
+        {
+            "description": "Model update is sent from trainer to aggregator and vice-versa",
+            "groupBy": {
+                "type": "tag",
+                "value": [
+                    "default"
+                ]
+            },
+            "name": "param-channel",
+            "pair": [
+                "trainer",
+                "aggregator"
+            ],
+            "funcTags": {
+                "aggregator": [
+                    "distribute",
+                    "aggregate"
+                ],
+                "trainer": [
+                    "fetch",
+                    "upload"
+                ]
+            }
+        }
+    ],
+    "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+    "dependencies": [
+        "numpy >= 1.2.0"
+    ],
+    "hyperparameters": {
+        "batchSize": 32,
+        "learningRate": 0.04,
+        "rounds": 5,
+        "trainer_indices_list": [
+            5459,
+            4951,
+            5766,
+            4666,
+            6155,
+            5216,
+            4911,
+            6106,
+            6097,
+            5243,
+            4675,
+            6216,
+            5035,
+            4707,
+            4835,
+            5376,
+            4660,
+            4923,
+            25722,
+            25588,
+            25763,
+            23561,
+            25018,
+            23726,
+            25671,
+            24596,
+            25713,
+            24381,
+            24096,
+            23653,
+            25767,
+            23935,
+            25207,
+            24558,
+            25017,
+            25413,
+            25065,
+            25335,
+            25154,
+            23271,
+            25025,
+            23291,
+            23298,
+            24398,
+            23821,
+            23332,
+            24911,
+            23447,
+            24788,
+            23459,
+            25519,
+            23164,
+            25908,
+            25105,
+            23340,
+            25911,
+            23804,
+            24738,
+            24940,
+            24327,
+            25072,
+            24002,
+            24184,
+            24564,
+            25383,
+            24989,
+            25996,
+            25204,
+            25576,
+            24577,
+            25617,
+            24121,
+            25432,
+            23655,
+            23501,
+            23723,
+            24220,
+            23603,
+            24200,
+            23847,
+            23970,
+            23884,
+            23805,
+            24183,
+            24263,
+            25690,
+            25002,
+            24416,
+            48097,
+            49514,
+            50312,
+            48426,
+            47874,
+            48967,
+            49925,
+            50011,
+            47969,
+            56711,
+            64161,
+            63551,
+            63012,
+            62178,
+            62197,
+            62258,
+            63337,
+            63190,
+            63036,
+            63506,
+            62604,
+            62927,
+            63511,
+            64047,
+            64860,
+            62318,
+            64467,
+            63210,
+            63361,
+            62614,
+            62154,
+            64396,
+            63858,
+            63926,
+            62022,
+            63876,
+            63329,
+            66582,
+            66864,
+            67160,
+            66603,
+            65495,
+            66733,
+            67545,
+            66750,
+            67832,
+            67608,
+            67357,
+            66464,
+            65913,
+            66707,
+            65591,
+            66101,
+            66278,
+            67842,
+            67170,
+            65845,
+            65431,
+            65440,
+            77565,
+            78090,
+            77612
+        ],
+        "failure_durations_s": "[(151, 73543), (67739, 3084), (70825, 344), (71439, 322), (75176, 30991), (109500, 55424)]",
+        "heartbeats": {
+            "enabled": "False",
+            "frequency_s": 1
+        },
+        "use_oort_loss_fn": "True",
+        "client_avail_aware_notify": "True",
+        "training_delay_enabled": "True",
+        "training_delay_s": "10.0"
+    },
+    "baseModel": {
+        "name": "",
+        "version": 1
+    },
+    "job": {
+        "id": "622a358619ab59012eabeefb",
+        "name": "cifar-10"
+    },
+    "registry": {
+        "sort": "dummy",
+        "uri": ""
+    },
+    "selector": {
+        "sort": "fedbuff",
+        "kwargs": {
+            "c": 20,
+            "aggGoal": 1
+        }
+    },
+    "optimizer": {
+        "sort": "fedavg",
+        "kwargs": {}
+    },
+    "maxRunTime": 300,
+    "realm": "default/us",
+    "role": "trainer"
+}

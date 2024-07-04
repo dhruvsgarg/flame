@@ -1,0 +1,183 @@
+{
+    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580422",
+    "backend": "mqtt",
+    "brokers": [
+        {
+            "host": "130.207.125.87",
+            "sort": "mqtt"
+        },
+        {
+            "host": "localhost:10104",
+            "sort": "p2p"
+        }
+    ],
+    "groupAssociation": {
+        "param-channel": "default"
+    },
+    "channels": [
+        {
+            "description": "Model update is sent from trainer to aggregator and vice-versa",
+            "groupBy": {
+                "type": "tag",
+                "value": [
+                    "default"
+                ]
+            },
+            "name": "param-channel",
+            "pair": [
+                "trainer",
+                "aggregator"
+            ],
+            "funcTags": {
+                "aggregator": [
+                    "distribute",
+                    "aggregate"
+                ],
+                "trainer": [
+                    "fetch",
+                    "upload"
+                ]
+            }
+        }
+    ],
+    "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+    "dependencies": [
+        "numpy >= 1.2.0"
+    ],
+    "hyperparameters": {
+        "batchSize": 32,
+        "learningRate": 0.04,
+        "rounds": 5,
+        "trainer_indices_list": [
+            3351,
+            5702,
+            6015,
+            25803,
+            25723,
+            23818,
+            24390,
+            23199,
+            23644,
+            25453,
+            23580,
+            24468,
+            25365,
+            25059,
+            23924,
+            23347,
+            24959,
+            25917,
+            23030,
+            24948,
+            24202,
+            24130,
+            25159,
+            25550,
+            23092,
+            24012,
+            23905,
+            25769,
+            25728,
+            25609,
+            24544,
+            24075,
+            25678,
+            24785,
+            25261,
+            25631,
+            25241,
+            36672,
+            37612,
+            36760,
+            36996,
+            36809,
+            36745,
+            51022,
+            52700,
+            50955,
+            51368,
+            53803,
+            53836,
+            53816,
+            51597,
+            51466,
+            53553,
+            53651,
+            53469,
+            51137,
+            52269,
+            52886,
+            51803,
+            52542,
+            53065,
+            63659,
+            62027,
+            63092,
+            63265,
+            61910,
+            64196,
+            62221,
+            63080,
+            62724,
+            63942,
+            62480,
+            64391,
+            63300,
+            64899,
+            63394,
+            64538,
+            71455,
+            71481,
+            70644,
+            69301,
+            70968,
+            71344,
+            71437,
+            71743,
+            72373,
+            70874,
+            71287,
+            70424,
+            70453,
+            71047,
+            70673,
+            70828,
+            69768
+        ],
+        "failure_durations_s": "[(215, 14386), (10599, 9663), (21640, 25670), (47402, 4928), (54047, 3821), (60164, 20424), (83200, 958), (87728, 13496), (110253, 27555), (143033, 21891)]",
+        "heartbeats": {
+            "enabled": "False",
+            "frequency_s": 1
+        },
+        "use_oort_loss_fn": "True",
+        "client_avail_aware_notify": "True",
+        "training_delay_enabled": "True",
+        "training_delay_s": "14.0"
+    },
+    "baseModel": {
+        "name": "",
+        "version": 1
+    },
+    "job": {
+        "id": "622a358619ab59012eabeefb",
+        "name": "cifar-10"
+    },
+    "registry": {
+        "sort": "dummy",
+        "uri": ""
+    },
+    "selector": {
+        "sort": "fedbuff",
+        "kwargs": {
+            "c": 20,
+            "aggGoal": 1
+        }
+    },
+    "optimizer": {
+        "sort": "fedavg",
+        "kwargs": {}
+    },
+    "maxRunTime": 300,
+    "realm": "default/us",
+    "role": "trainer"
+}
