@@ -65,6 +65,13 @@ class FedBuff(AbstractOptimizer):
         except KeyError:
             raise KeyError("Not specified wether to use oort lr or not in config")
 
+        # Set learning rate differently for dataset used
+        # Current options: {"cifar-10", "google-speech"}
+        try:
+            self.dataset_name = kwargs["dataset_name"]
+        except KeyError:
+            raise KeyError("Dataset name not specified in the config")
+
     # #### FUNCTIONS TO TRADE-OFF STALENESS WITH STAT_UTILITY
     def alpha_polynomial(self, staleness, a_exp):
         return (1 / ((1 + staleness)**a_exp))
@@ -210,12 +217,26 @@ class FedBuff(AbstractOptimizer):
             # tuned?
             if self.use_oort_lr == "False":
                 # for fedbuff asyncfl
-                # learning_rate = 40.9         # Used with CIFAR-10
-                learning_rate = 0.075       # Used with Google speech
+                if self.dataset_name == "cifar-10":
+                    learning_rate = 40.9         # Used with CIFAR-10
+                elif self.dataset_name == "google-speech":
+                    learning_rate = 0.075       # Used with Google speech
+                else:
+                    learning_rate = 1.0
+                    logger.warning(f"Dataset not specified. using default learning "
+                                   f"rate of {learning_rate} "
+                                   f"for FedBuff optimizer")
             elif self.use_oort_lr == "True":
                 # for asyncOORT asyncfl
-                # learning_rate = 1.0            # Used with CIFAR-10
-                learning_rate = 0.065       # Used with Google speech
+                if self.dataset_name == "cifar-10":
+                    learning_rate = 1.0         # Used with CIFAR-10
+                elif self.dataset_name == "google-speech":
+                    learning_rate = 0.065       # Used with Google speech
+                else:
+                    learning_rate = 1.0
+                    logger.warning(f"Dataset not specified. using default learning "
+                                   f"rate of {learning_rate} "
+                                   f"for FedBuff optimizer")
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )

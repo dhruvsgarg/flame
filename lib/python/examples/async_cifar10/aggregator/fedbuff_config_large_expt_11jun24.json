@@ -78,7 +78,8 @@
     "optimizer": {
         "sort": "fedbuff",
         "kwargs": {
-            "use_oort_lr": "False"
+            "use_oort_lr": "False",
+            "dataset_name": "cifar-10"
         }
     },
     "maxRunTime": 600,
