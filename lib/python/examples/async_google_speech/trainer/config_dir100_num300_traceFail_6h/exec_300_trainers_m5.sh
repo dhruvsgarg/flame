@@ -18,5 +18,4 @@ for ((X=1; X<=300; X++)); do
     # else
     #     sleep 5   # 5 seconds gap for subsequent commands
     # fi
-    sleep 1
 done
