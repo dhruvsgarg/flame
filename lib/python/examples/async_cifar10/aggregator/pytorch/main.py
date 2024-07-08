@@ -20,6 +20,7 @@ pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
+import argparse
 import ast
 import json
 import logging
@@ -28,7 +29,6 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 import torchvision.transforms as transforms
 
 # wandb setup
@@ -39,16 +39,17 @@ from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
 
 
-def initialize_wandb():
+def initialize_wandb(run_name=None):
     wandb.init(
         # set the wandb project where this run will be logged
         project="ft-distr-ml",
+        name=run_name,  # Set the run name
         # track hyperparameters and run metadata
         config={
             # fedbuff
             "server_learning_rate": 40.9,
             "client_learning_rate": 0.000195,
-            
+
             # oort "client_learning_rate": 0.04,
 
             "architecture": "CNN",
@@ -63,13 +64,14 @@ def initialize_wandb():
 
             # fedbuff
             "client-concurrency C": 20,
-            
+
             "client agg goal K": 10,
             "server_batch_size": 32,
             "client_batch_size": 32,
             "comments": "First oort no failure run",
         },
     )
+
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,11 @@ class Net(nn.Module):
 class PyTorchCifar10Aggregator(TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
 
-    def __init__(self, config: Config, log_to_wandb: bool) -> None:
+    def __init__(
+            self,
+            config: Config,
+            log_to_wandb: bool,
+            wandb_run_name: str = None) -> None:
         """Initialize a class instance."""
         self.config = config
         self.model = None
@@ -130,7 +136,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         # Use wandb logging if enabled
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
-            initialize_wandb()
+            initialize_wandb(run_name=wandb_run_name)
 
     def initialize(self):
         """Initialize role."""
@@ -245,8 +251,6 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("config", nargs="?", default="./config.json")
     # Add the --log_to_wandb argument
@@ -255,11 +259,16 @@ if __name__ == "__main__":
         action='store_true',
         help='Flag to log to Weights and Biases'
     )
+    parser.add_argument(
+        '--wandb_run_name',
+        type=str,
+        help='Name of the Weights and Biases run'
+    )
 
     args = parser.parse_args()
 
     config = Config(args.config)
 
-    a = PyTorchCifar10Aggregator(config, args.log_to_wandb)
+    a = PyTorchCifar10Aggregator(config, args.log_to_wandb, args.wandb_run_name)
     a.compose()
     a.run()
