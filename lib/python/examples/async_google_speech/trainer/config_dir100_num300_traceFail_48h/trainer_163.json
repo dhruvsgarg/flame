@@ -319,7 +319,7 @@
       82966,
       83896
     ],
-    "failure_durations_s": "[(178, 48259), (42010, 5394), (50144, 114780)]",
+    "failure_durations_s": "[(6, 40383), (42010, 5394), (50144, 114780)]",
     "heartbeats": {
       "enabled": "False",
       "frequency_s": 1
