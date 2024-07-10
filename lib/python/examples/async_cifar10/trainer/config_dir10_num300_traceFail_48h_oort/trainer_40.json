@@ -232,7 +232,7 @@
             45035,
             1524
         ],
-        "failure_durations_s": "[(231, 100412), (103988, 60936)]",
+        "failure_durations_s": "[(27, 92536), (103988, 60936)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
