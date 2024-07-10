@@ -1,169 +1,169 @@
 {
-    "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580419",
-    "backend": "mqtt",
-    "brokers": [
-        {
-            "host": "130.207.125.87",
-            "sort": "mqtt"
-        },
-        {
-            "host": "localhost:10104",
-            "sort": "p2p"
-        }
-    ],
-    "groupAssociation": {
-        "param-channel": "default"
+  "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580419",
+  "backend": "mqtt",
+  "brokers": [
+    {
+      "host": "130.207.125.87",
+      "sort": "mqtt"
     },
-    "channels": [
-        {
-            "description": "Model update is sent from trainer to aggregator and vice-versa",
-            "groupBy": {
-                "type": "tag",
-                "value": [
-                    "default"
-                ]
-            },
-            "name": "param-channel",
-            "pair": [
-                "trainer",
-                "aggregator"
-            ],
-            "funcTags": {
-                "aggregator": [
-                    "distribute",
-                    "aggregate"
-                ],
-                "trainer": [
-                    "fetch",
-                    "upload"
-                ]
-            }
-        }
-    ],
-    "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
-    "dependencies": [
-        "numpy >= 1.2.0"
-    ],
-    "hyperparameters": {
-        "batchSize": 32,
-        "learningRate": 0.04,
-        "rounds": 5,
-        "trainer_indices_list": [
-            20123,
-            22181,
-            22773,
-            21520,
-            22316,
-            22223,
-            20651,
-            22612,
-            20914,
-            22160,
-            20947,
-            21120,
-            21895,
-            21832,
-            20759,
-            20516,
-            21448,
-            20092,
-            20055,
-            21733,
-            42928,
-            46192,
-            47231,
-            49070,
-            60653,
-            61111,
-            60895,
-            60789,
-            61596,
-            59645,
-            59312,
-            58813,
-            58872,
-            59767,
-            59067,
-            59029,
-            61484,
-            60055,
-            59675,
-            59236,
-            60290,
-            59283,
-            59038,
-            61453,
-            59439,
-            59889,
-            60977,
-            59669,
-            61272,
-            60508,
-            59658,
-            59297,
-            59972,
-            60902,
-            60475,
-            59290,
-            59763,
-            60090,
-            60075,
-            61671,
-            59078,
-            60582,
-            61553,
-            59962,
-            59939,
-            60196,
-            59709,
-            61197,
-            59964,
-            60300,
-            61580,
-            60306,
-            65609,
-            66632,
-            66405,
-            65231,
-            76301,
-            76470,
-            76237,
-            79573
+    {
+      "host": "localhost:10104",
+      "sort": "p2p"
+    }
+  ],
+  "groupAssociation": {
+    "param-channel": "default"
+  },
+  "channels": [
+    {
+      "description": "Model update is sent from trainer to aggregator and vice-versa",
+      "groupBy": {
+        "type": "tag",
+        "value": [
+          "default"
+        ]
+      },
+      "name": "param-channel",
+      "pair": [
+        "trainer",
+        "aggregator"
+      ],
+      "funcTags": {
+        "aggregator": [
+          "distribute",
+          "aggregate"
         ],
-        "failure_durations_s": "[(334, 172), (2805, 15229), (19519, 29), (21285, 7022), (28467, 813), (30851, 1), (30874, 3), (31726, 19), (32087, 14568), (48153, 9238), (59363, 6025), (73484, 1858), (75343, 4002), (79366, 57), (79631, 597), (80398, 7561), (87961, 11), (88355, 596), (90470, 5291), (103012, 4704), (107723, 59), (107802, 325), (108520, 24523), (133180, 132), (133455, 54), (133529, 12), (133587, 7), (133912, 230), (134771, 10), (134785, 3), (134794, 7), (134810, 1180), (137310, 910), (138497, 5), (139804, 4436), (144469, 8), (144485, 7), (146046, 1), (146059, 5), (146067, 2), (146101, 14), (146157, 1), (146162, 59), (146222, 1007), (147546, 17378)]",
-        "heartbeats": {
-            "enabled": "False",
-            "frequency_s": 1
-        },
-        "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
-        "training_delay_enabled": "True",
-        "training_delay_s": "12.0"
+        "trainer": [
+          "fetch",
+          "upload"
+        ]
+      }
+    }
+  ],
+  "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+  "dependencies": [
+    "numpy >= 1.2.0"
+  ],
+  "hyperparameters": {
+    "batchSize": 32,
+    "learningRate": 0.04,
+    "rounds": 5,
+    "trainer_indices_list": [
+      20123,
+      22181,
+      22773,
+      21520,
+      22316,
+      22223,
+      20651,
+      22612,
+      20914,
+      22160,
+      20947,
+      21120,
+      21895,
+      21832,
+      20759,
+      20516,
+      21448,
+      20092,
+      20055,
+      21733,
+      42928,
+      46192,
+      47231,
+      49070,
+      60653,
+      61111,
+      60895,
+      60789,
+      61596,
+      59645,
+      59312,
+      58813,
+      58872,
+      59767,
+      59067,
+      59029,
+      61484,
+      60055,
+      59675,
+      59236,
+      60290,
+      59283,
+      59038,
+      61453,
+      59439,
+      59889,
+      60977,
+      59669,
+      61272,
+      60508,
+      59658,
+      59297,
+      59972,
+      60902,
+      60475,
+      59290,
+      59763,
+      60090,
+      60075,
+      61671,
+      59078,
+      60582,
+      61553,
+      59962,
+      59939,
+      60196,
+      59709,
+      61197,
+      59964,
+      60300,
+      61580,
+      60306,
+      65609,
+      66632,
+      66405,
+      65231,
+      76301,
+      76470,
+      76237,
+      79573
+    ],
+    "failure_durations_s": "[(334, 172), (2805, 15229), (19519, 29), (21285, 7022), (28467, 813), (30851, 1), (30874, 3), (31726, 19), (32087, 14568), (48153, 9238), (59363, 6025), (73484, 1858), (75343, 4002), (79366, 57), (79631, 597), (80398, 7561), (87961, 11), (88355, 596), (90470, 5291), (103012, 4704), (107723, 59), (107802, 325), (108520, 24523), (133180, 132), (133455, 54), (133529, 12), (133587, 7), (133912, 230), (134771, 10), (134785, 3), (134794, 7), (134810, 1180), (137310, 910), (138497, 5), (139804, 4436), (144469, 8), (144485, 7), (146046, 1), (146059, 5), (146067, 2), (146101, 14), (146157, 1), (146162, 59), (146222, 1007), (147546, 17378)]",
+    "heartbeats": {
+      "enabled": "False",
+      "frequency_s": 1
     },
-    "baseModel": {
-        "name": "",
-        "version": 1
-    },
-    "job": {
-        "id": "622a358619ab59012eabeefb",
-        "name": "cifar-10"
-    },
-    "registry": {
-        "sort": "dummy",
-        "uri": ""
-    },
-    "selector": {
-        "sort": "fedbuff",
-        "kwargs": {
-            "c": 20,
-            "aggGoal": 1
-        }
-    },
-    "optimizer": {
-        "sort": "fedavg",
-        "kwargs": {}
-    },
-    "maxRunTime": 300,
-    "realm": "default/us",
-    "role": "trainer"
+    "use_oort_loss_fn": "True",
+    "client_avail_aware_notify": "True",
+    "training_delay_enabled": "True",
+    "training_delay_s": "12.0"
+  },
+  "baseModel": {
+    "name": "",
+    "version": 1
+  },
+  "job": {
+    "id": "622a358619ab59012eabeefb",
+    "name": "cifar-10"
+  },
+  "registry": {
+    "sort": "dummy",
+    "uri": ""
+  },
+  "selector": {
+    "sort": "fedbuff",
+    "kwargs": {
+      "c": 20,
+      "aggGoal": 1
+    }
+  },
+  "optimizer": {
+    "sort": "fedavg",
+    "kwargs": {}
+  },
+  "maxRunTime": 300,
+  "realm": "default/us",
+  "role": "trainer"
 }
