@@ -249,7 +249,7 @@ class FedBuff(AbstractOptimizer):
             elif self.use_oort_lr == "True":
                 # for asyncOORT asyncfl
                 if self.dataset_name == "cifar-10":
-                    learning_rate = 1.0         # Used with CIFAR-10
+                    learning_rate = 0.9         # Used with CIFAR-10
                 elif self.dataset_name == "google-speech":
                     learning_rate = 0.065       # Used with Google speech
                 else:
