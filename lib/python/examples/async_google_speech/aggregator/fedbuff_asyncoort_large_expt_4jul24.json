@@ -79,7 +79,13 @@
         "sort": "fedbuff",
         "kwargs": {
             "use_oort_lr": "True",
-            "dataset_name": "google-speech"
+            "dataset_name": "google-speech",
+            "agg_rate_conf": {
+                "type": "new",
+                "scale": 0.4,
+                "a_exp": 0.25,
+                "b_exp": 0.1
+            }
         }
     },
     "maxRunTime": 600,

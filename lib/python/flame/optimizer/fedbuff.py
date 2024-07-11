@@ -65,12 +65,20 @@ class FedBuff(AbstractOptimizer):
         except KeyError:
             raise KeyError("Not specified wether to use oort lr or not in config")
 
-        # Set learning rate differently for dataset used
-        # Current options: {"cifar-10", "google-speech"}
+        # Set learning rate differently for dataset used Current
+        # options: {"cifar-10", "google-speech"}
         try:
             self.dataset_name = kwargs["dataset_name"]
         except KeyError:
             raise KeyError("Dataset name not specified in the config")
+        
+        # Set aggregation rate type between old (just staleness) and
+        # new (tradeoff staleness and stat utility) Current options:
+        # {"old", "new"}
+        try:
+            self.agg_rate_conf = kwargs["agg_rate_conf"]
+        except KeyError:
+            raise KeyError("Aggregation rate type not specified in the config")
 
     # #### FUNCTIONS TO TRADE-OFF STALENESS WITH STAT_UTILITY
     def alpha_polynomial(self, staleness, a_exp):
@@ -160,21 +168,31 @@ class FedBuff(AbstractOptimizer):
             tres = cache.pop(k)
 
             # rate determined based on the staleness of local model
-            # rate = 1 / math.sqrt(1 + version - tres.version)
+            if self.agg_rate_conf["type"] == "old":
+                rate = 1 / math.sqrt(1 + version - tres.version)
+            
+            elif self.agg_rate_conf["type"] == "new":
+                # New rate that trades off staleness and statistical
+                # utility
 
-            # New rate that trades off staleness and statistical
-            # utility
-            rate = self.weight_factor(
-                scale=0.4,
-                staleness=(version-tres.version),
-                a_exp=0.25,
-                loss=tres.stat_utility,
-                b_exp=0.1,
-                alpha_type='polynomial',
-                beta_type='polynomial_upshift')
+                # agg_rate_conf will be a dict with keys: {type,
+                # scale, a_exp, b_exp}
+                scale_val = self.agg_rate_conf["scale"]
+                a_exp_val = self.agg_rate_conf["a_exp"]
+                b_exp_val = self.agg_rate_conf["b_exp"]
+
+                rate = self.weight_factor(
+                    scale=scale_val,
+                    staleness=(version-tres.version),
+                    a_exp=a_exp_val,
+                    loss=tres.stat_utility,
+                    b_exp=b_exp_val,
+                    alpha_type='polynomial',
+                    beta_type='polynomial_upshift')
 
             logger.info(f"agg ver: {version}, trainer ver: {tres.version}, "
-                        f"trainer stat_utility: {tres.stat_utility}, rate: {rate}")
+                        f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
+                        f"with agg_rate_type: {self.agg_rate_conf}")
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
@@ -211,10 +229,9 @@ class FedBuff(AbstractOptimizer):
         for k in base_weights.keys():
             # agg_goal_weights are already adjusted with rate Using
             # hardcoded learning_rate for now, will pass as an
-            # argument later
-            # TODO: (DG) Hyper-parameters for AsyncOORT need tuning?
-            # Which all hyper-parameters apart from LR need to be
-            # tuned?
+            # argument later TODO: (DG) Hyper-parameters for AsyncOORT
+            # need tuning? Which all hyper-parameters apart from LR
+            # need to be tuned?
             if self.use_oort_lr == "False":
                 # for fedbuff asyncfl
                 if self.dataset_name == "cifar-10":
