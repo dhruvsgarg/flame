@@ -243,6 +243,9 @@ class FedBuff(AbstractOptimizer):
                     logger.warning(f"Dataset not specified. using default learning "
                                    f"rate of {learning_rate} "
                                    f"for FedBuff optimizer")
+                logger.debug(f"Dataset was {self.dataset_name}. using learning "
+                             f"rate of {learning_rate} "
+                             f"for FedBuff optimizer")
             elif self.use_oort_lr == "True":
                 # for asyncOORT asyncfl
                 if self.dataset_name == "cifar-10":
@@ -254,6 +257,9 @@ class FedBuff(AbstractOptimizer):
                     logger.warning(f"Dataset not specified. using default learning "
                                    f"rate of {learning_rate} "
                                    f"for FedBuff optimizer")
+                logger.debug(f"Dataset was {self.dataset_name}. using learning "
+                             f"rate of {learning_rate} "
+                             f"for FedBuff optimizer")
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
