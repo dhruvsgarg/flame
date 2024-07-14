@@ -73,8 +73,8 @@ for alpha in "${alphas[@]}"; do
   conda activate dg_flame
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
   cd /home/dgarg39/flame/lib/python/examples/async_google_speech/trainer
-  cd config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/
-  trainer_log_file="trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_num300_${baseline_name}.log"
+  cd config_dir${alpha}_num100_traceFail${trainer_dir_suffix}/
+  trainer_log_file="trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_num100_${baseline_name}.log"
   bash exec_100_trainers.sh > "$trainer_log_file" 2>&1 &
   echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
 
