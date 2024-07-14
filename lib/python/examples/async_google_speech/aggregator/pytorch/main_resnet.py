@@ -40,10 +40,11 @@ from torch.utils.data import DataLoader
 from torchaudio.datasets import SPEECHCOMMANDS
 
 
-def initialize_wandb():
+def initialize_wandb(run_name=None):
     wandb.init(
         # set the wandb project where this run will be logged
         project="ft-distr-ml",
+        name=run_name,  # Set the run name
         # track hyperparameters and run metadata
         config={
             # fedbuff
@@ -196,7 +197,11 @@ class ResNet34_1D(nn.Module):
 class PyTorchSpeechCommandsAggregator(TopAggregator):
     """PyTorch Google Speech commands Aggregator."""
 
-    def __init__(self, config: Config, log_to_wandb: bool) -> None:
+    def __init__(
+            self,
+            config: Config,
+            log_to_wandb: bool,
+            wandb_run_name: str = None) -> None:
         """Initialize a class instance."""
         self.config = config
         self.model = None
@@ -223,7 +228,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         # Use wandb logging if enabled
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
-            initialize_wandb()
+            initialize_wandb(run_name=wandb_run_name)
     
     def initialize(self):
         """Initialize role."""
@@ -381,11 +386,16 @@ if __name__ == "__main__":
         action='store_true',
         help='Flag to log to Weights and Biases'
     )
+    parser.add_argument(
+        '--wandb_run_name',
+        type=str,
+        help='Name of the Weights and Biases run'
+    )
 
     args = parser.parse_args()
 
     config = Config(args.config)
 
-    a = PyTorchSpeechCommandsAggregator(config, args.log_to_wandb)
+    a = PyTorchSpeechCommandsAggregator(config, args.log_to_wandb, args.wandb_run_name)
     a.compose()
     a.run()
