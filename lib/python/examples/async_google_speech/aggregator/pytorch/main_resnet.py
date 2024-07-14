@@ -316,6 +316,14 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
     
     def evaluate(self) -> None:
         """Evaluate (test) a model."""
+
+        # NOTE: TO increase speed of execution of the aggregator, not
+        # going to evaluate for each round. Will do so only once in
+        # every 100 rounds.
+        if self._round % 100 != 0:
+            logger.info(f"Skipping evaluate for round: {self._round}")
+            return
+
         self.model.eval()
         test_loss = 0
         correct = 0
