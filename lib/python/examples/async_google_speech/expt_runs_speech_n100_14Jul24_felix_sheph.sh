@@ -48,7 +48,7 @@ fi
 
 # Array of alpha values
 alphas=(10)
-threshold=0.60  # Define the accuracy threshold
+threshold=0.95  # Define the accuracy threshold
 
 # Loop through each alpha value
 for alpha in "${alphas[@]}"; do
