@@ -34,6 +34,7 @@ from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
+    PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
@@ -344,6 +345,9 @@ class TopAggregator(SyncTopAgg):
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]
+            channel.set_end_property(
+                end, PROP_DATASET_SIZE, msg[MessageType.DATASET_SIZE]
+            )
 
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]

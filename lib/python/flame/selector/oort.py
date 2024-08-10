@@ -33,6 +33,7 @@ PROP_SELECTED_COUNT = "selected_count"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
+PROP_DATASET_SIZE = "dataset_size"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 
 
