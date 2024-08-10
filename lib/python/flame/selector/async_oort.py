@@ -43,6 +43,7 @@ PROP_SELECTED_COUNT = "selected_count"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
+PROP_DATASET_SIZE = "dataset_size"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 
 
@@ -66,11 +67,17 @@ class AsyncOortSelector(AbstractSelector):
             self.c = kwargs["c"]
         except KeyError:
             raise KeyError("c (concurrency level) is not specified in config")
-        
+
         try:
             self.agg_goal = kwargs["aggGoal"]
         except KeyError:
             raise KeyError("aggGoal is not specified in config")
+
+        try:
+            self.select_type = kwargs["selectType"]
+        except KeyError:
+            raise KeyError("selectType is not specified in config. Can be default, "
+                           "fastest, or maxSamples")
 
         if self.agg_goal < 0:
             self.agg_goal = 1
@@ -101,7 +108,7 @@ class AsyncOortSelector(AbstractSelector):
         # each round (a trainer can participate only once per round).
         self.all_selected = dict()
         self.selected_ends = dict()
-        
+
         # Tracks updates received from trainers and makes them
         # available to select again
         self.ordered_updates_recv_ends = list()
@@ -121,7 +128,7 @@ class AsyncOortSelector(AbstractSelector):
         trainer_unavail_list: list,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends.
-        
+
         NOTE: It incorporates the same send/recv mechanism from
         fedbuff. [From fedbuff selector]: Select ends from the given
         ends to meet concurrency level. This select method chooses
@@ -141,10 +148,10 @@ class AsyncOortSelector(AbstractSelector):
         if concurrency == 0:
             logger.debug("ends is empty")
             return {}
-        
+
         if KEY_CH_STATE not in channel_props:
             raise KeyError(f"channel property doesn't have {KEY_CH_STATE}")
-        
+
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
@@ -517,12 +524,12 @@ class AsyncOortSelector(AbstractSelector):
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
         return utility_list
-    
+
     # #### CHANGES BASED OFF FEDBUFF FOR ASYNCFL
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Clean up ends whose a message was received, from selected
         ends.
-        
+
         Note: It sets the end state to none which makes it eligible to
         be sampled again. This can cause problems if sampled in the
         same round. Thus, for aggregator, the _cleanup_recvd_ends
@@ -545,7 +552,7 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"Will remove these ends from "
                          f"ordered_updates_recv_ends: {ends_to_remove}"
                          f" and selected_ends and all_selected")
-        
+
             # removing the first agg-goal number of ends to free them
             # to participate in the next round
             self.ordered_updates_recv_ends = (
@@ -631,7 +638,7 @@ class AsyncOortSelector(AbstractSelector):
                                      f"Not doing anything")
         else:
             logger.debug("No ends to remove so far")
-    
+
     def _cleanup_removed_ends(self, end_id):
         logger.debug(f"Going to cleanup selector state for "
                      f"end_id {end_id} since it has left the channel")
@@ -650,14 +657,14 @@ class AsyncOortSelector(AbstractSelector):
                 selected_ends.remove(end_id)
                 logger.debug(f"Also removing end_id {end_id} from selected_ends")
                 self.selected_ends[self.requester] = selected_ends
-            
+
             # Track trainers that were sent weights but dropped off
             # before sending back an update
             if end_id in self.track_selected_trainers_which_left:
                 self.track_selected_trainers_which_left[end_id] += 1
             else:
                 self.track_selected_trainers_which_left[end_id] = 1
-            
+
             total_trainers_dropped_off = 0
             for k, v in self.track_selected_trainers_which_left.items():
                 total_trainers_dropped_off += v
@@ -684,6 +691,133 @@ class AsyncOortSelector(AbstractSelector):
             logger.warn(f"End_id {end_id} remove check from all_selected failed. "
                         f"Need to check")
 
+    # Invoked when selection mode is default i.e. of oort which trades
+    # off exploitation/exploration and speed/stat_utility
+    def _select_candidates_using_default(
+            self,
+            cutoff_utility,
+            utility_list,
+            exploitation_len,
+            exploration_len,
+            unexplored_end_ids,
+            ):
+        logger.debug("Asyncoort selection using default (tradeoff)")
+        logger.debug(f"Invoking sample_by_util() with cutoff_utility: {cutoff_utility}"
+                     f", utility_list: {utility_list}, exploitation_len: "
+                     f"{exploitation_len}")
+        exploit_end_ids = self.sample_by_util(
+            cutoff_utility, utility_list, exploitation_len
+        )
+        logger.debug(f"exploit_end_ids: {exploit_end_ids}")
+
+        # sample exploration_len of unexplored clients
+        explore_end_ids = []
+        if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
+            logger.debug(f"Invoking sample_by_speed(): with unexplored_end_ids: "
+                         f"{unexplored_end_ids}, exploration_len: {exploration_len}")
+            explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
+        logger.debug(f"explore_end_ids: {explore_end_ids}")
+
+        candidates = [*explore_end_ids, *exploit_end_ids]
+
+        return candidates, exploit_end_ids
+
+    # Invoked when selection mode is maxSamples i.e. select clients
+    # with largest local datasets
+    def _select_candidates_maxSamples(
+            self,
+            ends: dict[str, End],
+            num_of_ends: int,
+            ) -> tuple[list[str], list[str]]:
+        logger.debug("Asyncoort selection using maxSamples")
+        logger.debug(f"Will select num_ends: {num_of_ends} "
+                     f"from ends of length: {len(ends)}")
+
+        # get the end properties
+        end_id_to_samples = {}
+        for key, val in ends.items():
+            # if the PROP_DATASET_SIZE is None, it means the trainer
+            # hasnt trained even once till now. So we set it to
+            # 99999 to prioritize it to get picked up atleast once.
+            end_num_samples = val.get_property(PROP_DATASET_SIZE)
+            if end_num_samples is None:
+                end_num_samples = 99999
+                logger.debug(f"Num_samples for end_id: {key} was None, "
+                             f"set to {end_num_samples} to incentivise getting picked")
+
+            end_id_to_samples[key] = end_num_samples
+
+        # sort it in descending order of number of samples
+        sorted_end_ids = list(
+            dict(
+                sorted(
+                    end_id_to_samples.items(),
+                    key=lambda item: item[1],
+                    reverse=True)
+                ).keys()
+            )
+
+        # currently returning blank exploit_end_ids
+        # TODO: (DG) check later about why it is needed
+        exploit_end_ids = []
+
+        # pick first k elements as candidates and return
+        candidates = sorted_end_ids[:num_of_ends]
+        logger.debug(f"Selected candidates being returned: {candidates}")
+
+        return candidates, exploit_end_ids
+
+    # Invoked when selection mode is fastest i.e. select fastest
+    # clients
+    def _select_candidates_fastest(
+            self,
+            ends: dict[str, End],
+            num_of_ends: int,
+            ) -> tuple[list[str], list[str]]:
+        logger.debug("Asyncoort selection using fastestClients")
+        logger.debug(f"Will select num_ends: {num_of_ends} "
+                     f"from ends of length: {len(ends)}")
+
+        # get the end properties
+        end_id_to_round_durations = {}
+        for key, val in ends.items():
+            # if the PROP_ROUND_DURATION is None, it means the trainer
+            # hasnt trained even once till now. So we set it to
+            # 00:00:00.000000 (upto microseconds)
+            # to prioritize it to get picked up atleast once.
+            round_duration = val.get_property(PROP_ROUND_DURATION)
+            if round_duration is None:
+                round_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+                logger.debug(f"Round_duration for end_id: {key} was None, "
+                             f"set to {round_duration} to incentivise getting picked")
+
+            end_id_to_round_durations[key] = round_duration
+
+        # sort it in ascending order of durations
+        sorted_end_ids = list(
+            dict(
+                sorted(
+                    end_id_to_round_durations.items(),
+                    key=lambda item: item[1],
+                    reverse=False)
+                ).keys()
+            )
+
+        # currently returning blank exploit_end_ids
+        # TODO: (DG) check later about why it is needed
+        exploit_end_ids = []
+
+        # pick first k elements as candidates and return
+        candidates = sorted_end_ids[:num_of_ends]
+        logger.debug(f"Selected candidates being returned: {candidates}")
+
+        return candidates, exploit_end_ids
+
     def _handle_send_state(
         self,
         ends: dict[str, End],
@@ -692,7 +826,7 @@ class AsyncOortSelector(AbstractSelector):
         trainer_unavail_list: list = None,
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
-        
+
         # Check for invalid selections and remove them
         for end_id in list(selected_ends):
             if end_id not in ends:
@@ -713,11 +847,11 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(f"Current selected_ends: {selected_ends}")
 
         extra = max(0, concurrency - len(selected_ends))
-        
+
         logger.debug(f"c: {concurrency}, ends: {ends.keys()},"
                      f"len(selected_ends): {len(selected_ends)}, extra: {extra}")
         candidates = []
-        
+
         # ### From Oort selector
         # num_of_ends = min(len(ends), self.num_of_ends) if
         # num_of_ends == 0: logger.debug("ends is empty") return {}
@@ -727,7 +861,7 @@ class AsyncOortSelector(AbstractSelector):
 
         round = channel_props["round"] if "round" in channel_props else 0
         logger.debug(f"let's select {extra} ends for round {round}")
-        
+
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed
 
         # Invalidate previous all_selected entry if you don't get an
@@ -755,7 +889,7 @@ class AsyncOortSelector(AbstractSelector):
                     logger.debug(f"Removing end {end} from self.all_selected "
                                  f"since havent "
                                  f"got its update in {SEND_TIMEOUT_WAIT_S}")
-                    
+
                     # Tracking timeouts and time spend waiting TODO:
                     # (DG) Check if it is okay to have it triggered
                     # for oracular too? TODO: (DG) pass
@@ -765,16 +899,16 @@ class AsyncOortSelector(AbstractSelector):
                         self.track_trainer_timeouts[end] += 1
                     else:
                         self.track_trainer_timeouts[end] = 1
-                    
+
                     # Capture total time spent in timeouts
                     num_of_timeouts_occured = 0
                     for k, v in self.track_trainer_timeouts.items():
                         num_of_timeouts_occured += v
-                    
+
                     total_time_spent_timeouts_s = (
                         num_of_timeouts_occured * SEND_TIMEOUT_WAIT_S
                     )
-                    
+
                     logger.info(f"Timeout for trainer: {end} with count "
                                 f"{self.track_trainer_timeouts[end]}. "
                                 f"num_of_timeouts_occured : "
@@ -782,7 +916,7 @@ class AsyncOortSelector(AbstractSelector):
                                 f"total_time_spent_timeouts_s: "
                                 f"{total_time_spent_timeouts_s}, "
                                 f"Timeout frequency: {self.track_trainer_timeouts}")
-                    
+
                     # delete the end from self.all_selected
                     if end in self.all_selected.keys():
                         del self.all_selected[end]
@@ -801,7 +935,7 @@ class AsyncOortSelector(AbstractSelector):
         for end_id in ends:
             if end_id not in self.all_selected.keys():
                 filtered_ends[end_id] = ends[end_id]
-            
+
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count
         # infeasible ends too (ends that have already particpated in
@@ -813,7 +947,7 @@ class AsyncOortSelector(AbstractSelector):
         # (extra=1, filtered=3),  (extra=2, filtered=2), (extra=3,
         # filtered=1)
         feasible_extra = min(extra, len(filtered_ends))
-        
+
         # Early exit if filtered_ends is none (can happen when all
         # ends available are less than concurrency requirement)
         if len(filtered_ends) == 0:
@@ -852,7 +986,7 @@ class AsyncOortSelector(AbstractSelector):
         )
         logger.debug(f"After fetch_statistical_utility(): utility_list: "
                      f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}")
-        
+
         # DG: Removed old check for first round This indicates the
         # first round, where no end's utility has been measured; Then,
         # perform random selection
@@ -873,7 +1007,7 @@ class AsyncOortSelector(AbstractSelector):
                 candidates_dict=candidates_dict,
                 selected_ends=selected_ends
                 )
-            
+
             logger.debug(f"handle_send_state returning "
                          f"candidates_dict: {candidates_dict}")
 
@@ -932,33 +1066,38 @@ class AsyncOortSelector(AbstractSelector):
                 candidates_dict=candidates_dict,
                 selected_ends=selected_ends
                 )
-            
+
             logger.debug(f"handle_send_state returning "
                          f"candidates_dict: {candidates_dict}")
 
             return candidates_dict
 
-        # sample exploitation_len of clients by utility
-        logger.debug(f"Invoking sample_by_util() with cutoff_utility: {cutoff_utility}"
-                     f", utility_list: {utility_list}, exploitation_len: "
-                     f"{exploitation_len}")
-        exploit_end_ids = self.sample_by_util(
-            cutoff_utility, utility_list, exploitation_len
-        )
-        logger.debug(f"exploit_end_ids: {exploit_end_ids}")
+        # TODO: (DG) Separate this out based on the async_oort
+        # selection mode. Keep one for default, one for fastest and
+        # one for maxSamples
+        if self.select_type == "default":
+            candidates, exploit_end_ids = self._select_candidates_using_default(
+                cutoff_utility=cutoff_utility,
+                utility_list=utility_list,
+                exploitation_len=exploitation_len,
+                exploration_len=exploration_len,
+                unexplored_end_ids=unexplored_end_ids
+            )
+        elif self.select_type == "fastest":
+            candidates, exploit_end_ids = self._select_candidates_fastest(
+                ends=filtered_ends,
+                num_of_ends=feasible_extra
+            )
+        elif self.select_type == "maxSamples":
+            candidates, exploit_end_ids = self._select_candidates_maxSamples(
+                ends=filtered_ends,
+                num_of_ends=feasible_extra
+            )
 
-        # sample exploration_len of unexplored clients
-        explore_end_ids = []
-        if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
-            logger.debug(f"Invoking sample_by_speed(): with unexplored_end_ids: "
-                         f"{unexplored_end_ids}, exploration_len: {exploration_len}")
-            explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
-        logger.debug(f"explore_end_ids: {explore_end_ids}")
-
-        candidates = [*explore_end_ids, *exploit_end_ids]
         # Converting list of candidates to candidate_dict so that it
         # can be passed to a function to process it
         candidates_dict = {key: None for key in candidates}
+
         # Invoke process_chosen_candidate_dict(). It will
         # appropriately add candidates to selected_ends and
         # all_selected
@@ -970,20 +1109,21 @@ class AsyncOortSelector(AbstractSelector):
         # save the history of exploited utility at this round for
         # pacer TODO: (DG) check if ends needs to be passed or
         # filtered_ends
-        logger.debug(f"Invoking save_exploited_utility_history() with ends: {ends}, "
-                     f"exploit_end_ids: {exploit_end_ids}")
-        self.save_exploited_utility_history(ends, exploit_end_ids)
+        if self.select_type == "default":
+            logger.debug(f"Invoking save_exploited_utility_history() with ends: {ends},"
+                         f" exploit_end_ids: {exploit_end_ids}")
+            self.save_exploited_utility_history(ends, exploit_end_ids)
 
-        # update the exploration_factor
-        logger.debug("Invoking update_exploration_factor()")
-        self.update_exploration_factor()
+            # update the exploration_factor
+            logger.debug("Invoking update_exploration_factor()")
+            self.update_exploration_factor()
 
         # increment the round selected count on selected ends TODO:
         # (DG) simplify the code here
         candidate_ends = dict()
         for end_id in candidates:
             candidate_ends[end_id] = ends[end_id]
-        
+
         logger.debug(f"Invoking increment_selected_count_on_selected_ends() "
                      f"with ends: {ends}, candidate_ends: {candidate_ends}")
         self.increment_selected_count_on_selected_ends(ends, candidate_ends)
@@ -993,7 +1133,7 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(f"handle_send_state returning candidates_dict: {candidates_dict}")
 
         return candidates_dict
-    
+
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
@@ -1053,7 +1193,7 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
         return {key: None for key in selected_ends}
-    
+
     def process_chosen_candidate_dict(
             self,
             candidates_dict: dict[str, None],
