@@ -44,6 +44,7 @@ PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
 PROP_DATASET_SIZE = "dataset_size"
+PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 
 
@@ -737,8 +738,8 @@ class AsyncOortSelector(AbstractSelector):
         end_id_to_samples = {}
         for key, val in ends.items():
             # if the PROP_DATASET_SIZE is None, it means the trainer
-            # hasnt trained even once till now. So we set it to
-            # 99999 to prioritize it to get picked up atleast once.
+            # hasnt trained even once till now. So we set it to 99999
+            # to prioritize it to get picked up atleast once.
             end_num_samples = val.get_property(PROP_DATASET_SIZE)
             if end_num_samples is None:
                 end_num_samples = 99999
@@ -757,8 +758,8 @@ class AsyncOortSelector(AbstractSelector):
                 ).keys()
             )
 
-        # currently returning blank exploit_end_ids
-        # TODO: (DG) check later about why it is needed
+        # currently returning blank exploit_end_ids TODO: (DG) check
+        # later about why it is needed
         exploit_end_ids = []
 
         # pick first k elements as candidates and return
@@ -783,8 +784,8 @@ class AsyncOortSelector(AbstractSelector):
         for key, val in ends.items():
             # if the PROP_ROUND_DURATION is None, it means the trainer
             # hasnt trained even once till now. So we set it to
-            # 00:00:00.000000 (upto microseconds)
-            # to prioritize it to get picked up atleast once.
+            # 00:00:00.000000 (upto microseconds) to prioritize it to
+            # get picked up atleast once.
             round_duration = val.get_property(PROP_ROUND_DURATION)
             if round_duration is None:
                 round_duration = timedelta(
@@ -808,8 +809,64 @@ class AsyncOortSelector(AbstractSelector):
                 ).keys()
             )
 
-        # currently returning blank exploit_end_ids
-        # TODO: (DG) check later about why it is needed
+        # currently returning blank exploit_end_ids TODO: (DG) check
+        # later about why it is needed
+        exploit_end_ids = []
+
+        # pick first k elements as candidates and return
+        candidates = sorted_end_ids[:num_of_ends]
+        logger.debug(f"Selected candidates being returned: {candidates}")
+
+        return candidates, exploit_end_ids
+    
+    # Invoked when selection mode is prioritiseUnavail i.e. select and
+    # prioritize clients that have been unavailable for long durations
+    # of the training time
+    def _select_candidates_prioritiseUnavail(
+            self,
+            ends: dict[str, End],
+            num_of_ends: int,
+            ) -> tuple[list[str], list[str]]:
+        logger.debug("Asyncoort selection using prioritiseUnavail")
+        logger.debug(f"Will select num_ends: {num_of_ends} "
+                     f"from ends of length: {len(ends)}")
+
+        # get the end properties
+        end_id_to_unavail_durations = {}
+        for key, val in ends.items():
+            # if the PROP_TOTAL_UNAVAIL_DURATION is None, it means the
+            # trainer hasnt failed even once till now. So we set it to
+            # 00:00:00.000000 (upto microseconds) to allow it to get
+            # picked whenever there are no other unavailable clients
+            # to pick.
+            unavail_duration = val.get_property(PROP_TOTAL_UNAVAIL_DURATION)
+            if unavail_duration is None:
+                unavail_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+                logger.debug(f"Unavail_duration for end_id: {key} was None, "
+                             f"set to {unavail_duration} to allow  getting picked")
+            else:
+                logger.debug(f"Unavail_duration for end_id: {key} was set "
+                             f"to {unavail_duration}")
+
+            end_id_to_unavail_durations[key] = unavail_duration
+
+        # sort it in ascending order of durations
+        sorted_end_ids = list(
+            dict(
+                sorted(
+                    end_id_to_unavail_durations.items(),
+                    key=lambda item: item[1],
+                    reverse=True)
+                ).keys()
+            )
+
+        # currently returning blank exploit_end_ids TODO: (DG) check
+        # later about why it is needed
         exploit_end_ids = []
 
         # pick first k elements as candidates and return
@@ -1090,6 +1147,11 @@ class AsyncOortSelector(AbstractSelector):
             )
         elif self.select_type == "maxSamples":
             candidates, exploit_end_ids = self._select_candidates_maxSamples(
+                ends=filtered_ends,
+                num_of_ends=feasible_extra
+            )
+        elif self.select_type == "prioritiseUnavail":
+            candidates, exploit_end_ids = self._select_candidates_prioritiseUnavail(
                 ends=filtered_ends,
                 num_of_ends=feasible_extra
             )
