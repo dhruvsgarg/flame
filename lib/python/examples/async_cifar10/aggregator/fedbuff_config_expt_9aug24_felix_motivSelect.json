@@ -73,7 +73,7 @@
             "//": "c: concurrency level",
             "c": 20,
             "aggGoal": 10,
-            "selectType": "fastest"
+            "selectType": "prioritiseUnavail"
         }
     },
     "optimizer": {
