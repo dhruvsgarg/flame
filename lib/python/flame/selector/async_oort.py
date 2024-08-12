@@ -44,6 +44,7 @@ PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
 PROP_DATASET_SIZE = "dataset_size"
+PROP_UPDATE_COUNT = "update_count"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 
@@ -819,6 +820,52 @@ class AsyncOortSelector(AbstractSelector):
 
         return candidates, exploit_end_ids
     
+    # Invoked when selection mode is fair-share i.e. select clients
+    # such that all clients participate almost equally
+    def _select_candidates_fairShare(
+            self,
+            ends: dict[str, End],
+            num_of_ends: int,
+            ) -> tuple[list[str], list[str]]:
+        logger.debug("Asyncoort selection using fairShare")
+        logger.debug(f"Will select num_ends: {num_of_ends} "
+                     f"from ends of length: {len(ends)}")
+
+        # get the end properties
+        end_id_to_update_count = {}
+        for key, val in ends.items():
+            # if the PROP_UPDATE_COUNT is None, it means the trainer
+            # hasnt trained even once till now. So we set it to
+            # 0 to prioritize it to
+            # get picked up atleast once.
+            update_count = val.get_property(PROP_UPDATE_COUNT)
+            if update_count is None:
+                update_count = 0
+                logger.debug(f"Update_count for end_id: {key} was None, "
+                             f"set to {update_count} to incentivise getting picked")
+
+            end_id_to_update_count[key] = update_count
+
+        # sort it in ascending order of durations
+        sorted_end_ids = list(
+            dict(
+                sorted(
+                    end_id_to_update_count.items(),
+                    key=lambda item: item[1],
+                    reverse=False)
+                ).keys()
+            )
+
+        # currently returning blank exploit_end_ids TODO: (DG) check
+        # later about why it is needed
+        exploit_end_ids = []
+
+        # pick first k elements as candidates and return
+        candidates = sorted_end_ids[:num_of_ends]
+        logger.debug(f"Selected candidates being returned: {candidates}")
+
+        return candidates, exploit_end_ids
+    
     # Invoked when selection mode is prioritiseUnavail i.e. select and
     # prioritize clients that have been unavailable for long durations
     # of the training time
@@ -1152,6 +1199,11 @@ class AsyncOortSelector(AbstractSelector):
             )
         elif self.select_type == "prioritiseUnavail":
             candidates, exploit_end_ids = self._select_candidates_prioritiseUnavail(
+                ends=filtered_ends,
+                num_of_ends=feasible_extra
+            )
+        elif self.select_type == "fairShare":
+            candidates, exploit_end_ids = self._select_candidates_fairShare(
                 ends=filtered_ends,
                 num_of_ends=feasible_extra
             )
