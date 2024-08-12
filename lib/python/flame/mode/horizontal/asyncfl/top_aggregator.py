@@ -39,6 +39,7 @@ from flame.selector.oort import (
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
+    PROP_UPDATE_COUNT,
 )
 
 logger = logging.getLogger(__name__)
@@ -422,6 +423,16 @@ class TopAggregator(SyncTopAgg):
             # didn't reach the aggregation goal; return
             logger.debug("didn't reach agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
+
+            # TODO: (DG) Update trainer update count here and set end
+            # property to be used later in the selector
+            # Set trainer participation count
+            # property here.
+            channel.set_end_property(
+                end,
+                PROP_UPDATE_COUNT,
+                self._updates_recevied[end]
+                )
             return
 
         if self._agg_goal_weights is None:
