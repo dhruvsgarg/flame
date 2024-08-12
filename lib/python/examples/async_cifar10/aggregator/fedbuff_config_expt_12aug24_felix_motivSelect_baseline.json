@@ -68,12 +68,11 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_oort",
+        "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 20,
-            "aggGoal": 10,
-            "selectType": "fairShare"
+            "c": 30,
+            "aggGoal": 10
         }
     },
     "optimizer": {

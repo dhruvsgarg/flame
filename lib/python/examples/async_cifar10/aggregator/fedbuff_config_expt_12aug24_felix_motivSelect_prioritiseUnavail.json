@@ -71,9 +71,9 @@
         "sort": "async_oort",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 20,
+            "c": 30,
             "aggGoal": 10,
-            "selectType": "fairShare"
+            "selectType": "prioritiseUnavail"
         }
     },
     "optimizer": {
