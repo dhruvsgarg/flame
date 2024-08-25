@@ -9,20 +9,30 @@ check_accuracy() {
   local threshold=$2
   local accuracy_values
   accuracy_values=$(grep -oP 'test accuracy: [0-9]+/[0-9]+ \(\K[0-9]+\.[0-9]+' "$log_file" | tail -n 20)
-  
+
   # Check if we have at least 20 accuracy values
   if [ $(echo "$accuracy_values" | wc -l) -lt 20 ]; then
     return 1  # Condition not met
   fi
-  
-  # Check if all accuracy values are greater than or equal to the threshold
+
+  # Calculate the average of the last 20 accuracy values
+  local total=0
+  local count=0
   for value in $accuracy_values; do
-    if (( $(echo "$value < $threshold" | bc -l) )); then
-      return 1  # Condition not met
-    fi
+    total=$(echo "$total + $value" | bc -l)
+    count=$((count + 1))
   done
-  
-  return 0  # Condition met
+  local average=$(echo "$total / $count" | bc -l)
+
+  # Get the last accuracy value
+  local last_value=$(echo "$accuracy_values" | tail -n 1)
+
+  # Check if the average and the last accuracy value are both greater than or equal to the threshold
+  if (( $(echo "$average >= $threshold" | bc -l) )) && (( $(echo "$last_value >= $threshold" | bc -l) )); then
+    return 0  # Condition met
+  else
+    return 1  # Condition not met
+  fi
 }
 
 # Function to terminate main.py
@@ -39,11 +49,11 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("baseline" "fastest" "maxSamples" "prioritiseUnavail" "fairShare")
+baseline_names=("baseline" "fastest" "maxSamples")
 
 # Array of alpha values
-alphas=(100)
-threshold=0.60  # Define the accuracy threshold
+alphas=(0.1 100)
+threshold=0.70  # Define the accuracy threshold
 
 # Loop through each baseline name
 for baseline_name in "${baseline_names[@]}"; do
@@ -86,7 +96,7 @@ for baseline_name in "${baseline_names[@]}"; do
     # Monitor the log file
     while true; do
       if check_accuracy "$agg_log_file" "$threshold"; then
-        # If all last 20 accuracy values are >= threshold, terminate main.py and wait for 30 seconds
+        # If condition is met, terminate main.py and wait for 30 seconds
         terminate_main_py
         sleep 30  # Wait for all trainers and aggregator to stop
         break
