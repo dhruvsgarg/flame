@@ -79,6 +79,11 @@ class OortSelector(AbstractSelector):
 
         self.alpha = 2
 
+        # Tracks updates received from trainers and makes them
+        # available to select again
+        # NOTE: Not used in sync but just present there
+        self.ordered_updates_recv_ends = list()
+
     def select(
         self,
         ends: dict[str, End],
