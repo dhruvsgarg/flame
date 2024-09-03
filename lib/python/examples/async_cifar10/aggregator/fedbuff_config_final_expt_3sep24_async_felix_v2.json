@@ -72,7 +72,8 @@
         "kwargs": {
             "//": "c: concurrency level",
             "c": 30,
-            "aggGoal": 10
+            "aggGoal": 10,
+            "selectType": "default"
         }
     },
     "optimizer": {
