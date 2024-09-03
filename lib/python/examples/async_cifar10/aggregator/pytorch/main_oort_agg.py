@@ -38,35 +38,37 @@ from flame.dataset import Dataset
 from flame.mode.horizontal.oort.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
 
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="ft-distr-ml",
-    # track hyperparameters and run metadata
-    config={
-        # fedbuff "server_learning_rate": 40.9,
-        # "client_learning_rate": 0.000195,
-        
-        # oort
-        "client_learning_rate": 0.04,
 
-        "architecture": "CNN",
-        "dataset": "CIFAR-10",
-        "fl-type": "sync, oort",
-        "agg_rounds": 750,
-        "trainer_epochs": 1,
-        "config": "hetero",
-        "alpha": 100,
-        "failures": "No failure",
-        "total clients N": 100,
+def initialize_wandb(run_name=None):
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="ft-distr-ml",
+        # track hyperparameters and run metadata
+        config={
+            # fedbuff "server_learning_rate": 40.9,
+            # "client_learning_rate": 0.000195,
+            
+            # oort
+            "client_learning_rate": 0.04,
 
-        # fedbuff "client-concurrency C": 20,
+            "architecture": "CNN",
+            "dataset": "CIFAR-10",
+            "fl-type": "sync, oort",
+            "agg_rounds": 750,
+            "trainer_epochs": 1,
+            "config": "hetero",
+            "alpha": 100,
+            "failures": "No failure",
+            "total clients N": 100,
 
-        "client agg goal K": 10,
-        "server_batch_size": 32,
-        "client_batch_size": 32,
-        "comments": "First oort no failure run",
-    },
-)
+            # fedbuff "client-concurrency C": 20,
+
+            "client agg goal K": 10,
+            "server_batch_size": 32,
+            "client_batch_size": 32,
+            "comments": "First oort no failure run",
+        },
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,11 @@ class Net(nn.Module):
 class PyTorchCifar10Aggregator(TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+            self,
+            config: Config,
+            log_to_wandb: bool,
+            wandb_run_name: str = None) -> None:
         """Initialize a class instance."""
         self.config = config
         self.model = None
@@ -120,6 +126,11 @@ class PyTorchCifar10Aggregator(TopAggregator):
             print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
 
         self.loss_list = []
+
+        # Use wandb logging if enabled
+        self.log_to_wandb = log_to_wandb
+        if self.log_to_wandb:
+            initialize_wandb(run_name=wandb_run_name)
 
     def initialize(self):
         """Initialize role."""
@@ -234,6 +245,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("config", nargs="?", default="./config.json")
+    # Add the --log_to_wandb argument
+    parser.add_argument(
+        '--log_to_wandb',
+        action='store_true',
+        help='Flag to log to Weights and Biases'
+    )
+    parser.add_argument(
+        '--wandb_run_name',
+        type=str,
+        help='Name of the Weights and Biases run'
+    )
 
     args = parser.parse_args()
 
