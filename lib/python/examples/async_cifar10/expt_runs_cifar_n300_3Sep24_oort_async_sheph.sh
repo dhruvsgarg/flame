@@ -49,7 +49,7 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("sync")
+baseline_names=("async")
 
 # Array of alpha values
 alphas=(0.1 100)
