@@ -387,7 +387,7 @@ class PointToPointBackend(AbstractBackend):
 
             # this is the first time to see this end,
             # so let's notify my presence to the end
-            logger.debug("acknowledge notification")
+            logger.debug(f"Acknowledge join notification from {msg.end_id}")
             return msg_pb2.Notify(
                 end_id=self._id,
                 channel_name=msg.channel_name,

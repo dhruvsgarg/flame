@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """MQTT backend."""
@@ -40,8 +40,7 @@ from paho.mqtt.client import MQTTv5
 END_STATUS_ON = "online"
 END_STATUS_OFF = "offline"
 
-# wait time of 10 sec
-# clean up resources allocated for terminated end
+# wait time of 10 sec clean up resources allocated for terminated end
 # if no message arrives after the wait time
 MQTT_TIME_WAIT = 10  # 10 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
@@ -78,6 +77,10 @@ class MqttBackend(AbstractBackend):
         self._mqtt_client = None
         self._last_payload_sig = None
         self._cleanup_waits = None
+        # TODO: (DG) check if _cleanup_ready is being used correctly
+        # Refer p2p.py for implementation
+        self._cleanup_ready = set()
+
         if self._initialized:
             return
 
@@ -109,8 +112,8 @@ class MqttBackend(AbstractBackend):
             for end_id, expiry in list(self._cleanup_waits.items()):
                 if time.time() >= expiry:
                     logger.debug(f"end termination check timed out: {end_id}")
-                    # linear iteration is okay because there are not many
-                    # channels per role in general
+                    # linear iteration is okay because there are not
+                    # many channels per role in general
                     for _, channel in self._channels.items():
                         # remove the end id from the channel
                         await channel.remove(end_id)
@@ -125,7 +128,9 @@ class MqttBackend(AbstractBackend):
         self._job_id = job_id
         self._id = task_id
 
-        self._mqtt_client = mqtt.Client(self._id, protocol=MQTTv5)
+        self._mqtt_client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5
+            )
 
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
@@ -191,12 +196,17 @@ class MqttBackend(AbstractBackend):
 
         Send leave notify message and unsubscribe from topics.
         """
-        # FIXME: the following doesn't work; hence commented out
-        # self.notify(channel.name(), msg_pb2.NotifyType.LEAVE)
+        logger.debug(f"Sending notification of type LEAVE from "
+                     f"channel {channel.name()}")
+        self.notify(channel.name(), msg_pb2.NotifyType.LEAVE)
 
-        # # unsubscribe from topics after notify is finished
-        # for topic in self._topics_for_notify(channel):
-        #     self.unsubscribe(topic)
+        logger.debug("Going to start unsubscribing topics")
+
+        # unsubscribe from topics after notify is finished
+        for topic in self._topics_for_notify(channel):
+            logger.debug(f"Initiating unsubscribe for topic {topic} "
+                         f"on channel {channel.name()}")
+            self.unsubscribe(topic)
         pass
 
     def _handle_health_message(self, message):
@@ -217,8 +227,8 @@ class MqttBackend(AbstractBackend):
         any_msg.Unpack(msg)
 
         if msg.end_id == self._id:
-            # This case happens when message is broadcast to a self-loop
-            # e.g., distributed topology
+            # This case happens when message is broadcast to a
+            # self-loop e.g., distributed topology
             logger.debug("message sent to self; do nothing")
             return
 
@@ -229,25 +239,24 @@ class MqttBackend(AbstractBackend):
         channel = self._channels[msg.channel_name]
 
         if msg.type == msg_pb2.NotifyType.JOIN and not channel.has(msg.end_id):
-            # this is the first time to see this end,
-            # so let's notify my presence to the end
-            logger.debug("acknowledge notification")
+            # this is the first time to see this end, so let's notify
+            # my presence to the end
+            logger.debug(f"Acknowledge join notification from {msg.end_id}")
             self.notify(msg.channel_name, msg_pb2.NotifyType.JOIN)
 
             # add end to the channel
             await channel.add(msg.end_id)
         elif msg.type == msg_pb2.NotifyType.LEAVE:
-            # FIXME: the following doesn't work; hence commented out
-            # await channel.remove(msg.end_id)
-            pass
+            logger.debug(f"Got channel leave message from {msg.end_id}")
+            await channel.remove(msg.end_id)
 
     async def _handle_data(self, any_msg: Any) -> None:
         msg = msg_pb2.Data()
         any_msg.Unpack(msg)
 
         if msg.end_id == self._id:
-            # This case happens when message is broadcast to a self-loop
-            # e.g., distributed topology
+            # This case happens when message is broadcast to a
+            # self-loop e.g., distributed topology
             logger.debug("message sent to self; do nothing")
             return
 
@@ -290,11 +299,12 @@ class MqttBackend(AbstractBackend):
         return self._id
 
     def on_connect(self, client, userdata, flags, rc, properties=None):
-        """on_connect publishes a health check message to a mqtt broker."""
+        """on_connect publishes a health check message to a mqtt
+        broker."""
         logger.debug("calling on_connect")
 
-        # publish health data; format: <end_id>:<status>
-        # status is either END_STATUS_ON or END_STATUS_OFF
+        # publish health data; format: <end_id>:<status> status is
+        # either END_STATUS_ON or END_STATUS_OFF
         client.publish(
             self._health_check_topic,
             payload=f"{self._id}:{END_STATUS_ON}",
@@ -308,8 +318,8 @@ class MqttBackend(AbstractBackend):
         idx = len(self._rx_deque) - 1
 
         if self._rx_deque[idx].cancelled():
-            # this is because _rx_task is cancelled
-            # rx_task is cancelled when the program exits; nothing to do
+            # this is because _rx_task is cancelled rx_task is
+            # cancelled when the program exits; nothing to do
             return
 
         # set result at the end of the queue
@@ -414,10 +424,10 @@ class MqttBackend(AbstractBackend):
     async def _tx_task(self, channel, end_id, comm_type: CommType):
         """Conducts data transmission in a loop.
 
-        _tx_task() must be created per tx queue right after end_id is added to
-        channel (e.g., channel.add(end_id)).
-        In case of a tx task for broadcast queue, a broadcaset queue must be
-        created first.
+        _tx_task() must be created per tx queue right after end_id is
+        added to channel (e.g., channel.add(end_id)). In case of a tx
+        task for broadcast queue, a broadcaset queue must be created
+        first.
         """
         if comm_type == CommType.BROADCAST:
             txq = channel.broadcast_q()
@@ -474,23 +484,39 @@ class MqttBackend(AbstractBackend):
 
     async def cleanup(self):
         """Clean up resources in backend."""
-        pass
+        # NOTE: DG attempted implementation to fix issue
+        # Stop MQTT client loop
+        if self._mqtt_client is not None:
+            self._mqtt_client.loop_stop()
+
+        # Disconnect MQTT client
+        if self._mqtt_client is not None:
+            self._mqtt_client.disconnect()
+
+        # Clear channels
+        self._channels.clear()
+
+        # Cancel asyncio tasks
+        for task in asyncio.all_tasks(self._loop):
+            task.cancel()
+
+        await self._loop.shutdown_asyncgens()
+        self._loop.stop()
 
     def set_cleanup_ready_async(self, end_id: str) -> None:
-        """Set cleanup ready event for a given end id.
-
-        This should be called in self._loop thread.
-        This is not yet implemented.
-        """
-        pass
+        """Set cleanup ready event for a given end id."""
+        # NOTE: DG attempted implementation to fix issue
+        logger.debug(f"Setting cleanup ready for {end_id} in async loop")
+        self._cleanup_ready.add(end_id)
 
     def set_cleanup_ready(self, end_id: str) -> None:
-        """Set cleanup ready event for a given end id.
-
-        This should be called non self._loop thread.
-        This is not yet implemented.
-        """
-        pass
+        """Set cleanup ready event for a given end id."""
+        # NOTE: DG attempted implementation to fix issue
+        logger.debug(f"Setting cleanup ready for {end_id} from non-loop thread")
+        if self._loop.is_running():
+            self._loop.call_soon_threadsafe(self.set_cleanup_ready_async, end_id)
+        else:
+            self.set_cleanup_ready_async(end_id)
 
 
 class AsyncioHelper:

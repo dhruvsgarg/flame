@@ -1,33 +1,33 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Channel."""
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Union
 
 import cloudpickle
 from aiostream import stream
-
 from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, End
+from flame.mode.message import MessageType
 from flame.mode.role import Role
 
 logger = logging.getLogger(__name__)
@@ -35,8 +35,15 @@ logger = logging.getLogger(__name__)
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
+VAL_CH_STATE_HTBT_RECV = "heartbeat_recv"
+VAL_CH_STATE_HTBT_SEND = "heartbeat_send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
+
+END_LAST_AVAIL_TS = "end_last_avail_ts"
+END_LAST_UNAVAIL_TS = "end_last_unavail_ts"
+PROP_TOTAL_AVAIL_DURATION = "total_avail_duration"
+PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 
 
 class Channel(object):
@@ -64,9 +71,15 @@ class Channel(object):
         self.await_join_event = None
         self.mc = Role.mc
 
-        # access _ends with caution.
-        # in many cases, _ends must be accessed within a backend's loop
+        self.trainer_unavail_list = None
+
+        # access _ends with caution. in many cases, _ends must be
+        # accessed within a backend's loop
         self._ends: dict[str, End] = dict()
+
+        # separate data structure to track end state across
+        # disconnections
+        self._end_state_info = dict()
 
         # dict showing active, awaiting recv fifo tasks on each ends
         self._active_recv_fifo_tasks: set(str) = set()
@@ -110,8 +123,8 @@ class Channel(object):
 
         Parameters
         ----------
-        key: string
-        value: any of boolean, bytes, float, int, or string
+        key: string value: any of boolean, bytes, float, int, or
+        string
         """
         self.properties[key] = value
 
@@ -119,23 +132,32 @@ class Channel(object):
         """Set property of an end."""
         if self.has(end_id):
             self._ends[end_id].set_property(key, value)
+            logger.debug(f"SET property {key} with val {value} for end_id {end_id}")
+        else:
+            logger.debug(f"Failed to SET property {key} with {value} as end_id {end_id}"
+                         f" not found")
 
     def get_end_property(self, end_id, key) -> Scalar:
         """Get property of an end."""
         if self.has(end_id):
-            return self._ends[end_id].get_property(key)
+            val = self._ends[end_id].get_property(key)
+            logger.debug(f"GOT property {key} with val {val} for end_id {end_id}")
+            return val
         else:
+            logger.debug(f"Failed to GET property {key} as end_id {end_id}"
+                         f" not found")
             return None
 
     """
-    ### The following are not asyncio methods
-    ### But access to _ends variable should take place in the backend loop
-    ### Therefore, when necessary, coroutine is defined inside each method
-    ### and the coroutine is executed via run_async()
+    ### The following are not asyncio methods ### But access to _ends
+    variable should take place in the backend loop ### Therefore, when
+    necessary, coroutine is defined inside each method ### and the
+    coroutine is executed via run_async()
     """
 
     def empty(self) -> bool:
-        """Return True if channels has no end. Otherwise, return False."""
+        """Return True if channels has no end. Otherwise, return
+        False."""
 
         async def inner() -> bool:
             return len(self._ends) == 0
@@ -151,31 +173,61 @@ class Channel(object):
 
     def ends(self, state: Union[None, str] = None) -> list[str]:
         """Return a list of end ids."""
+        logger.debug(f"ends() for channel name: {self._name}, "
+                     f"current self._ends: {self._ends}")
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
         async def inner():
-            selected = self._selector.select(self._ends, self.properties)
-
+            if self.trainer_unavail_list is not None:
+                selected = self._selector.select(
+                    self._ends, self.properties,
+                    self.trainer_unavail_list
+                    )
+            else:
+                selected = self._selector.select(
+                    self._ends,
+                    self.properties
+                    )
+            logger.debug(f"selected returned from select(): {selected}")
+            
             id_list = list()
             for end_id, kv in selected.items():
                 id_list.append(end_id)
+                logger.debug(f"appended end_id {end_id} to id_list, kv is {kv}")
                 if not kv:
                     continue
 
                 (key, value) = kv
+                logger.debug(f"Setting property for end_id {end_id} "
+                             f"using (key,val) = ({key},{value})")
                 self._ends[end_id].set_property(key, value)
-
+                logger.debug(f"Updated end_id {end_id} property to key: {key}, "
+                             f"value: {value} in self._ends")
+            logger.debug(f"Going to return id_list: {id_list}")
             return id_list
 
         result, _ = run_async(inner(), self._backend.loop())
+        logger.debug(f"Going to return result: {result}")
         return result
 
     def all_ends(self):
-        """Return a list of all end ids (needed in FedDyn to compute alpha values)."""
+        """Return a list of all end ids (needed in FedDyn to compute
+        alpha values)."""
         return list(self._ends.keys())
+    
+    def cleanup_recvd_ends(self):
+        """Performs cleanup of end states in the selector. Usually
+        only performed after aggregation of a round completes"""
+
+        # TODO: (DG) This function is named to cleanup recvd ends, but
+        # can extend beyond just "recvd" state. We might also want to
+        # send a subset of ends here not the entire self._ends?
+
+        self._selector._cleanup_recvd_ends(self._ends)
+        logger.debug("Cleaned up ends successfully")
 
     def ends_digest(self) -> str:
         """Compute a digest of ends."""
@@ -218,7 +270,11 @@ class Channel(object):
         return status
 
     def recv(self, end_id) -> tuple[Any, datetime]:
-        """Receive a message from an end in a blocking call fashion."""
+        # NOTE (DG): This isnt being used in horizontal top-agg async,
+        # checked
+
+        """Receive a message from an end in a blocking call
+        fashion."""
         logger.debug(f"will receive data from {end_id}")
 
         async def _get():
@@ -240,7 +296,8 @@ class Channel(object):
         payload, status = run_async(_get(), self._backend.loop())
 
         if self.has(end_id):
-            # set a property that says a message was received for the end
+            # set a property that says a message was received for the
+            # end
             self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
 
         # dissect the payload into msg and timestamp
@@ -260,19 +317,19 @@ class Channel(object):
     ) -> tuple[Any, tuple[str, datetime]]:
         """Receive a message per end from a list of ends.
 
-        The message arrival order among ends is not fixed.
-        Messages are yielded in a FIFO manner. This allows recv_fifo to return
-        (msg, metadata) asynchronously to the caller method.
-        This method is not thread-safe.
+        The message arrival order among ends is not fixed. Messages
+        are yielded in a FIFO manner. This allows recv_fifo to return
+        (msg, metadata) asynchronously to the caller method. This
+        method is not thread-safe.
 
         Parameters
         ----------
-        end_ids: a list of ends to receive a message from
-        first_k: an integer argument to restrict the number of ends
+        end_ids: a list of ends to receive a message from first_k: an
+        integer argument to restrict the number of ends
                  to receive a messagae from. The default value (= 0)
                  means that we'd like to receive messages from all
-                 ends in the list. If first_k > len(end_ids),
-                 first_k is set to len(end_ids).
+                 ends in the list. If first_k > len(end_ids), first_k
+                 is set to len(end_ids).
 
         Returns
         -------
@@ -282,41 +339,47 @@ class Channel(object):
 
         first_k = min(first_k, len(end_ids))
         if first_k <= 0:
-            # a negative value in first_k is an error
-            # we handle it by setting first_k as the length of the array
+            # a negative value in first_k is an error we handle it by
+            # setting first_k as the length of the array
+            logger.debug(f"first_k < 0 with value {first_k}")
             first_k = len(end_ids)
 
         self.first_k = first_k
+        logger.debug(f"self.first_k: {self.first_k}")
 
         if self.first_k == 0:
             # we got an empty end id list
+            logger.debug("Got an empty end id list, will yield None")
             yield None, ("", datetime.now())
 
         async def _put_message_to_rxq_inner():
+            logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
             _ = asyncio.create_task(self._streamer_for_recv_fifo(end_ids))
 
         async def _get_message_inner():
+            logger.debug("In _get_msg_inner(), will await until getting a message")
             return await self._rx_queue.get()
 
-        # first, create an asyncio task to fetch messages and put a temp queue
-        # _put_message_to_rxq_inner works as if it is a non-blocking call
-        # because a task is created within it
+        # first, create an asyncio task to fetch messages and put a
+        # temp queue _put_message_to_rxq_inner works as if it is a
+        # non-blocking call because a task is created within it
         _, _ = run_async(_put_message_to_rxq_inner(), self._backend.loop())
 
-        # the _get_message_inner() coroutine fetches a message from the temp
-        # queue; we call this coroutine first_k times
+        # the _get_message_inner() coroutine fetches a message from
+        # the temp queue; we call this coroutine first_k times
         for _ in range(first_k):
             result, status = run_async(_get_message_inner(), self._backend.loop())
+            logger.debug(f"After getting message, status: {status}")
             (end_id, payload) = result
             logger.debug(f"get payload for {end_id}")
 
             if self.has(end_id):
                 logger.debug(f"channel got a msg for {end_id}")
-                # set a property to indicate that a message was received
-                # for the end
+                # set a property to indicate that a message was
+                # received for the end
                 self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
             else:
-                logger.debug(f"channel has no end id {end_id} for msg")
+                logger.debug(f"channel {self._name} has no end id {end_id} for msg")
 
             msg, timestamp = (
                 (cloudpickle.loads(payload[0]), payload[1])
@@ -324,6 +387,21 @@ class Channel(object):
                 else (None, None)
             )
             metadata = (end_id, timestamp)
+
+            if msg is not None:
+                if MessageType.MODEL_VERSION in msg:
+                    logger.debug(f"msg of type MODEL_VERSION recvd for end {end_id}")
+                elif MessageType.HEARTBEAT in msg:
+                    logger.debug(f"msg of type HEARTBEAT recvd for end {end_id}")
+                    # TODO: (DG) Check if it helps here- can reset
+                    # ends state to VAL_END_STATE_HEARTBEAT
+                else:
+                    logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
+            else:
+                # TODO: (DG) It comes here even for channel leave
+                # notifications. Need a cleaner processing for it
+                # later
+                logger.warning(f"Tried to populate None message (maybe leave notification) from end_id {end_id}. Will not yield msg and metadata until it gets a valid MODEL_VERSION msg")
 
             # set cleanup ready event
             self._backend.set_cleanup_ready(end_id)
@@ -333,19 +411,21 @@ class Channel(object):
     async def _streamer_for_recv_fifo(self, end_ids: list[str]):
         """Read messages in a FIFO fashion.
 
-        This method reads messages from queues associated with each end
-        and puts first_k number of the messages into a queue;
-        The remaining messages are saved back into a variable (peek_buf)
+        This method reads messages from queues associated with each
+        end and puts first_k number of the messages into a queue; The
+        remaining messages are saved back into a variable (peek_buf)
         of their corresponding end so that they can be read later.
         """
 
         async def _get_inner(end_id) -> tuple[str, Any]:
             if not self.has(end_id):
                 # can't receive message from end_id
+                logger.info(f"Cannot receive message from end_id {end_id}")
                 yield end_id, None
 
             payload = None
             try:
+                logger.debug(f"channel {self._name} awaiting get() on end_id {end_id} in self.ends")
                 payload = await self._ends[end_id].get()
                 if payload:
                     # ignore timestamp for measuring bytes received
@@ -353,6 +433,7 @@ class Channel(object):
             except KeyError:
                 yield end_id, None
 
+            logger.debug(f"_get_inner() invoked for end_id: {end_id}")
             yield end_id, payload
 
         runs = []
@@ -364,7 +445,7 @@ class Channel(object):
                 self._active_recv_fifo_tasks.add(end_id)
 
                 logger.debug(f"active task added for {end_id}")
-                logger.debug(f"{str(self._active_recv_fifo_tasks)}")
+                logger.debug(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
 
         merged = stream.merge(*runs)
         async with merged.stream() as streamer:
@@ -373,9 +454,11 @@ class Channel(object):
 
                 await self._rx_queue.put(result)
                 self._active_recv_fifo_tasks.remove(end_id)
+                logger.debug(f"active task removed for {end_id}")
 
     def peek(self, end_id):
-        """Peek rxq of end_id and return data if queue is not empty."""
+        """Peek rxq of end_id and return data if queue is not
+        empty."""
 
         async def _peek():
             if not self.has(end_id):
@@ -398,20 +481,27 @@ class Channel(object):
     def drain_messages(self):
         """Drain messages from rx queues of ends."""
         for end_id in list(self._ends.keys()):
+            msg_delete_count = 0
             while True:
                 msg, _ = self.peek(end_id)
                 if not msg:
                     break
 
-                # drain message from end so that cleanup ready event is set
+                # drain message from end so that cleanup ready event
+                # is set
                 _ = self.recv(end_id)
+                msg_delete_count += 1
+            logger.debug(f"Drained {msg_delete_count} messages from end_id {end_id}")
 
     def join(self):
         """Join the channel."""
+        logger.debug(f"calling channel join for {self._name}")
+
         self._backend.join(self)
 
     def leave(self):
-        """Clean up resources allocated in the channel and leave it."""
+        """Clean up resources allocated in the channel and leave
+        it."""
         logger.debug(f"calling channel leave for {self._name}")
 
         self.drain_messages()
@@ -424,7 +514,8 @@ class Channel(object):
         """Wait for at least one peer joins a channel.
 
         If timeout value is set, it will wait until timeout occurs.
-        Returns a boolean value to indicate whether timeout occurred or not.
+        Returns a boolean value to indicate whether timeout occurred
+        or not.
 
         Parameters
         ----------
@@ -455,12 +546,13 @@ class Channel(object):
         return self._ends[end_id].is_txq_empty()
 
     """
-    ### The following are asyncio methods of backend loop
-    ### Therefore, they must be called in the backend loop
+    ### The following are asyncio methods of backend loop ###
+    Therefore, they must be called in the backend loop
     """
 
     async def add(self, end_id):
-        """Add an end to the channel and allocate rx and tx queues for it."""
+        """Add an end to the channel and allocate rx and tx queues for
+        it."""
         if self.has(end_id):
             return
 
@@ -469,13 +561,93 @@ class Channel(object):
         # create tx task in the backend for the channel
         self._backend.create_tx_task(self._name, end_id)
 
-        # set the event true
-        # it's okay to call set() without checking its condition
+        # set the event true it's okay to call set() without checking
+        # its condition
         self.await_join_event.set()
+
+        # Set END_LAST_AVAIL_TS to current timestamp.
+        current_ts = datetime.now()
+        self.set_end_property(
+                end_id=end_id,
+                key=END_LAST_AVAIL_TS,
+                value=current_ts
+            )
+
+        # NOTE: Also set in end_state_info for further use
+        if end_id not in self._end_state_info.keys():
+            self._end_state_info[end_id] = {}
+        self._end_state_info[end_id][END_LAST_AVAIL_TS] = current_ts
+
+        end_last_avail_ts = self.get_end_property(
+            end_id=end_id,
+            key=END_LAST_AVAIL_TS
+        )
+        logger.debug(f"Get after setting END_LAST_AVAIL_TS was {end_last_avail_ts} "
+                     f"for end_id {end_id}")
+
+        # Check if END_LAST_UNAVAIL_TS is None. If it is, skip adding
+        # TOTAL_UNAVAIL_DURATION. If its not None, update the
+        # TOTAL_UNAVAIL_DURATION.
+        # NOTE: Since end_id was deleted from _ends, get its state
+        # info from end_state_info which persists information across
+        # connections and disconnections
+
+        if END_LAST_UNAVAIL_TS in self._end_state_info[end_id].keys():
+            end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
+        else:
+            end_last_unavail_ts = None
+        logger.debug(f"Got END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
+                     f"for end_id {end_id}")
+        
+        if end_last_unavail_ts is not None:
+            logger.debug(f"END_LAST_UNAVAIL_TS was not None for end_id {end_id}")
+            # subtraction of two datetime objects returns a timedelta
+            last_time_unavail_duration = (
+                datetime.now()-end_last_unavail_ts)
+
+            # Get total unavail duration from end_state_info
+            if PROP_TOTAL_UNAVAIL_DURATION in self._end_state_info[end_id].keys():
+                elapsed_end_unavail_duration = (
+                    self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION]
+                    )
+            else:
+                elapsed_end_unavail_duration = None
+            
+            if elapsed_end_unavail_duration is None:
+                elapsed_end_unavail_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+            total_end_unavail_duration = (
+                elapsed_end_unavail_duration + last_time_unavail_duration
+                )
+
+            # set as end_id property here to be used in asyncoort
+            # selector later.
+            self.set_end_property(
+                end_id=end_id,
+                key=PROP_TOTAL_UNAVAIL_DURATION,
+                value=total_end_unavail_duration
+                )
+            # NOTE: Also keeping it updated in end_node_info
+            self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION] = (
+                total_end_unavail_duration
+            )
+            logger.debug(f"Updated total unavail duration to "
+                         f"{total_end_unavail_duration} for end_id {end_id}. Added "
+                         f"{last_time_unavail_duration} to elapsed unavail duration "
+                         f"{elapsed_end_unavail_duration}")
+        else:
+            logger.debug(f"None got as END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
+                         f"for end_id {end_id}")
 
     async def remove(self, end_id):
         """Remove an end from the channel."""
+        logger.debug(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
+            logger.debug(f"Noting to remove since end {end_id} not in channel {self._name}")
             return
 
         rxq = self._ends[end_id].get_rxq()
@@ -491,6 +663,59 @@ class Channel(object):
         if len(self._ends) == 0:
             # clear (or unset) the event
             self.await_join_event.clear()
+
+        # NOTE: USE end_state_info since end has been deleted from
+        # _ends and no properties can be get OR set.
+
+        # Set END_LAST_UNAVAIL_TS to current timestamp.
+        self._end_state_info[end_id][END_LAST_UNAVAIL_TS] = datetime.now()
+        end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
+        logger.debug(f"Updated END_LAST_UNAVAIL_TS to {end_last_unavail_ts} "
+                     f"for end_id {end_id} in end_state_info")
+
+        # Check if END_LAST_AVAIL_TS is None. If it is, skip adding
+        # TOTAL_AVAIL_DURATION. If its not None, update the
+        # TOTAL_AVAIL_DURATION.
+        end_last_avail_ts = self._end_state_info[end_id][END_LAST_AVAIL_TS]
+        logger.debug(f"Got END_LAST_AVAIL_TS: {end_last_avail_ts} "
+                     f"for end_id {end_id} in end_state_info")
+        if end_last_avail_ts is not None:
+            logger.debug(f"END_LAST_AVAIL_TS was not None for end_id {end_id}")
+            last_time_avail_duration = (
+                datetime.now()-end_last_avail_ts
+                )
+            if PROP_TOTAL_AVAIL_DURATION in self._end_state_info[end_id].keys():
+                elapsed_end_avail_duration = (
+                    self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION]
+                    )
+            else:
+                elapsed_end_avail_duration = None
+            
+            if elapsed_end_avail_duration is None:
+                elapsed_end_avail_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+            total_end_avail_duration = (
+                elapsed_end_avail_duration + last_time_avail_duration
+            )
+            self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION] = (
+                total_end_avail_duration
+                )
+            logger.debug(f"Updated total unavail duration to "
+                         f"{total_end_avail_duration} for end_id {end_id}. Added "
+                         f"{last_time_avail_duration} to elapsed unavail duration "
+                         f"{elapsed_end_avail_duration}")
+        else:
+            logger.debug(f"None got as END_LAST_AVAIL_TS: {end_last_avail_ts} "
+                         f"for end_id {end_id}")
+
+        # inform selector to cleanup its send/recieve state to allow
+        # quicker addition next time it joins
+        logger.debug("Also removing existing trainer update send/recv state from selector")
+        self._selector._cleanup_removed_ends(end_id)
 
     def has(self, end_id: str) -> bool:
         """Check if an end is in the channel."""
@@ -517,3 +742,6 @@ class Channel(object):
     def get_backend_id(self) -> str:
         """Return backend id."""
         return self._backend.uid()
+    
+    def set_curr_unavailable_trainers(self, trainer_unavail_list: list):
+        self.trainer_unavail_list = trainer_unavail_list

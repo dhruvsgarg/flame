@@ -1,21 +1,22 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """MNIST horizontal FL aggregator for PyTorch.
 
-The example below is implemented based on the following example from pytorch:
+The example below is implemented based on the following example from
+pytorch:
 https://github.com/pytorch/examples/blob/master/mnist/main.py.
 """
 
@@ -119,14 +120,14 @@ class PyTorchOortMnistAggregator(TopAggregator):
 
         total = len(self.test_loader.dataset)
         test_loss /= total
-        test_accuray = correct / total
+        test_accuracy = correct / total
 
-        logger.info(f"Test loss: {test_loss}")
-        logger.info(f"Test accuracy: {correct}/{total} ({test_accuray})")
+        logger.info(f"Test loss: {test_loss}, test accuracy: "
+                    f"{correct}/{total} ({test_accuracy})")
 
-        # update metrics after each evaluation so that the metrics can be
-        # logged in a model registry.
-        self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuray})
+        # update metrics after each evaluation so that the metrics can
+        # be logged in a model registry.
+        self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
 
 
 if __name__ == "__main__":

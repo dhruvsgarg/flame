@@ -192,7 +192,7 @@ class MiddleAggregator(SyncMidAgg):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
 
-        logger.debug(f"{end}'s parameters trained with {count} samples")
+        logger.info(f"{end}'s parameters trained with {count} samples")
 
         if weights is not None and count > 0:
             tres = TrainResult(weights, count, version)
@@ -333,5 +333,5 @@ class MiddleAggregator(SyncMidAgg):
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
-        """Return a list of function tags defined in the middle level aggregator role."""
+        """Return a list of function tags defined in the middle aggregator role."""
         return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_FETCH, TAG_UPLOAD]

@@ -117,7 +117,7 @@ class MiddleAggregator(Role, metaclass=ABCMeta):
         logger.debug("calling _fetch_weights")
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.debug(f"[_fetch_weights] channel not found with tag {tag}")
+            logger.info(f"[_fetch_weights] channel not found with tag {tag}")
             return
 
         # this call waits for at least one peer to join this channel
@@ -179,7 +179,7 @@ class MiddleAggregator(Role, metaclass=ABCMeta):
             if MessageType.DATASET_SIZE in msg:
                 count = msg[MessageType.DATASET_SIZE]
 
-            logger.debug(f"{end}'s parameters trained with {count} samples")
+            logger.info(f"{end}'s parameters trained with {count} samples")
 
             if weights is not None and count > 0:
                 total += count

@@ -109,6 +109,7 @@ class KerasMnistTrainer(Trainer):
 
         loss = mean(history.history['loss'])
         accuracy = mean(history.history['accuracy'])
+        print("### MAIN THREAD TRAIN PRINT BY DG ###")
         self.update_metrics({'loss': loss, 'accuracy': accuracy})
 
     def evaluate(self) -> None:
