@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Oort horizontal FL top level aggregator."""
@@ -42,12 +42,14 @@ class Trainer(BaseTrainer):
 
     def _send_weights(self, tag: str) -> None:
         """
-        Send local model weights to the aggregator, and the statistical
-        utility information of a trainer for Oort algorithm.
+        Send local model weights to the aggregator, and the
+        statistical utility information of a trainer for Oort
+        algorithm.
 
         This method is overriden from one in horizontal trainer
         (..trainer).
         """
+        logger.debug(f"### SEND WEIGHTS for tag: {tag} and trainer_id: {self.trainer_id}")
         logger.debug("calling _send_weights")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -55,6 +57,7 @@ class Trainer(BaseTrainer):
             return
 
         # this call waits for at least one peer to join this channel
+        logger.debug(f"_send_weights: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
         channel.await_join()
 
         # one aggregator is sufficient
@@ -73,7 +76,7 @@ class Trainer(BaseTrainer):
             MessageType.STAT_UTILITY: self._stat_utility,
         }
         channel.send(end, msg)
-        logger.debug("sending weights done")
+        logger.info(f"sending weights done for trainer_id: {self.trainer_id}")
 
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
@@ -93,8 +96,8 @@ class Trainer(BaseTrainer):
         **kwargs,
     ) -> torch.Tensor:
         """
-        Measure the loss of a trainer during training.
-        The trainer's statistical utility is measured at epoch 1.
+        Measure the loss of a trainer during training. The trainer's
+        statistical utility is measured at epoch 1.
         """
         if epoch == 1 and batch_idx == 0:
             if "reduction" in kwargs.keys():
@@ -142,15 +145,23 @@ class Trainer(BaseTrainer):
 
             task_internal_init = Tasklet("internal_init", self.internal_init)
 
-            task_init_oort_variables = Tasklet(
-                "init_oort_variables", self.init_oort_variables
-            )
+            task_init_oort_variables = Tasklet("init_oort_variables", self.init_oort_variables)
 
             task_load_data = Tasklet("load_data", self.load_data)
 
-            task_init = Tasklet("initialize", self.initialize)
+            task_init = Tasklet("init", self.initialize)
 
             task_get = Tasklet("fetch", self.get, TAG_FETCH)
+
+            task_sleep_after_get = Tasklet("sleep_after_get", self.check_and_sleep)
+
+            task_sleep_after_train = Tasklet("sleep_after_train", self.check_and_sleep)
+
+            task_sleep_after_eval = Tasklet("sleep_after_eval", self.check_and_sleep)
+
+            task_sleep_after_put = Tasklet("sleep_after_put", self.check_and_sleep)
+
+            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics", self.check_and_sleep)
 
             task_train = Tasklet("train", self.train)
 
@@ -168,6 +179,6 @@ class Trainer(BaseTrainer):
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_train >> task_eval >> task_put >> task_save_metrics
+                    task_get >> task_sleep_after_get >> task_train >> task_sleep_after_train >> task_eval >> task_sleep_after_eval >> task_put >> task_sleep_after_put >> task_save_metrics >> task_sleep_after_save_metrics
                 )
             )

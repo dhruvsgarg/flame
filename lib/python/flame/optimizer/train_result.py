@@ -19,8 +19,15 @@
 class TrainResult(object):
     """TrainResult class."""
 
-    def __init__(self, weights=None, count=0, version=0):
+    def __init__(
+            self,
+            weights=None,
+            count=0,
+            version=0,
+            stat_utility=0):
         """Initialize."""
+
         self.weights = weights
         self.count = count
         self.version = version
+        self.stat_utility = stat_utility

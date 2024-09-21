@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Config parser."""
@@ -77,6 +77,7 @@ class SelectorType(str, Enum):
     RANDOM = "random"
     FEDBUFF = "fedbuff"
     OORT = "oort"
+    ASYNC_OORT = "async_oort"
 
 
 class DataSamplerType(str, Enum):
@@ -135,12 +136,43 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     rounds: int
     epochs: int
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
-    # TODO: concurrency is for coordinator in coordinated asyncfl
-    #       this is a workaround since there is no per-role config
-    #       mechanism in the control plane.
-    #       This needs to be revisited (perhaps removed) once per-role config
-    #       functionality is in place in the control plane.
-    concurrency: t.Optional[int] = Field(alias="concurrency", default=None)
+    # TODO: concurrency is for coordinator in coordinated asyncfl this
+    #       is a workaround since there is no per-role config
+    #       mechanism in the control plane. This needs to be revisited
+    #       (perhaps removed) once per-role config functionality is in
+    #       place in the control plane.
+    concurrency: t.Optional[int] = Field(
+        alias="concurrency",
+        default=None
+        )
+    track_trainer_avail: t.Optional[dict] = Field(
+        alias="trackTrainerAvail",
+        default={}
+        )
+    reject_stale_updates: t.Optional[bool] = Field(
+        alias="rejectStaleUpdates",
+        default=False
+        )
+    heartbeats: t.Optional[dict] = Field(
+        alias="heartbeats",
+        default={}
+        )
+    client_avail_aware_notify: t.Optional[bool] = Field(
+        alias="clientAvailAwareNotify",
+        default=False
+        )
+    training_delay_enabled: t.Optional[bool] = Field(
+        alias="trainingDelayEnabled",
+        default=False
+        )
+    training_delay_s: t.Optional[float] = Field(
+        alias="trainingDelaySeconds",
+        default=False
+        )
+    use_oort_loss_fn: t.Optional[float] = Field(
+        alias="useOORTLossFn",
+        default=False
+        )
 
 
 class Groups(FlameSchema):

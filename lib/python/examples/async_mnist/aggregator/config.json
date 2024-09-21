@@ -1,6 +1,6 @@
 {
     "taskid": "49d06b7526964db86cf37c70e8e0cdb6bd7aa742",
-    "backend": "p2p",
+    "backend": "mqtt",
     "brokers": [
         {
             "host": "localhost",
@@ -47,9 +47,9 @@
     "hyperparameters": {
         "batchSize": 32,
         "learningRate": 0.01,
-        "rounds": 10,
+        "rounds": 500,
         "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 2
+        "aggGoal": 3
     },
     "baseModel": {
         "name": "",
@@ -67,7 +67,8 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 4
+            "c": 5,
+            "aggGoal": 3
         }
     },
     "optimizer": {

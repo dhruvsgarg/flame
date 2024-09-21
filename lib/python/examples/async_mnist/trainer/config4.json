@@ -1,6 +1,6 @@
 {
     "taskid": "505f9fc483cf4df68a2409257b5fad7d3c580373",
-    "backend": "p2p",
+    "backend": "mqtt",
     "brokers": [
         {
             "host": "localhost",
@@ -49,7 +49,8 @@
         "learningRate": 0.01,
         "rounds": 5,
         "//": "aggGoal is irrelevant since it's a trainer",
-        "aggGoal": 2
+        "aggGoal": 2,
+        "failure_durations_s": "[(210, 40)]"
     },
     "baseModel": {
         "name": "",
@@ -67,7 +68,8 @@
         "sort": "fedbuff",
         "kwargs": {
             "//": "c: concurrency (this irrelevant since it's traner)",
-            "c": 4
+            "c": 4,
+            "aggGoal": 4
         }
     },
     "optimizer": {
@@ -75,6 +77,6 @@
         "kwargs": {}
     },
     "maxRunTime": 300,
-    "realm": "default/us/west",
+    "realm": "default/uk",
     "role": "trainer"
 }

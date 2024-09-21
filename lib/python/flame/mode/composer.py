@@ -104,6 +104,7 @@ class Composer(object):
         visited.add(root)
         while not q.empty():
             tasklet = q.get()
+            # logger.info(f"Running tasklet: {tasklet}")
 
             if (len(tasklet.siblings)):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasklet.siblings)) as executor:                    
