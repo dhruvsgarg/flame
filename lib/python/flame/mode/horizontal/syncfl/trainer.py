@@ -529,6 +529,7 @@ class Trainer(Role, metaclass=ABCMeta):
             (
                 task_internal_init
                 # >> task_init_oort_variables
+                # NRL TODO: Need to add code here to check for the status of the task
                 >> task_load_data
                 >> task_init
                 >> loop(
