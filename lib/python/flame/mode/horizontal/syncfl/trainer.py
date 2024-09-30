@@ -130,6 +130,8 @@ class Trainer(Role, metaclass=ABCMeta):
         self._updates_returned_upto_round = 0
         self._trainer_online_channel_status = True
 
+        self.task_to_perform = "train"
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -215,6 +217,11 @@ class Trainer(Role, metaclass=ABCMeta):
             self.datasampler.handle_metadata_from_aggregator(
                 msg[MessageType.DATASAMPLER_METADATA]
             )
+        if MessageType.TASK_TO_PERFORM in msg:
+            self.task_to_perform = msg[MessageType.TASK_TO_PERFORM]
+            logger.info(f"NRL: Found task_to_perform in msg: {self.task_to_perform}")
+        else:
+            logger.info(f"NRL: Didn't find TASK_TO_PERFORM in msg")
 
         self.fetch_success = True
 
@@ -529,12 +536,13 @@ class Trainer(Role, metaclass=ABCMeta):
             (
                 task_internal_init
                 # >> task_init_oort_variables
-                # NRL TODO: Need to add code here to check for the status of the task i.e., train + eval vs eval only 
+                # Added code here to check for the status of the task i.e., "train + eval" vs "eval only" 
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_sleep_after_get >> task_train >>
-                    task_sleep_after_train >> task_eval >> task_sleep_after_eval >>
+                    task_get >> task_sleep_after_get >>
+                    (task_train >> task_sleep_after_train >> task_eval if self.task_to_perform == "train" else task_eval) >>
+                    task_sleep_after_eval >>
                     task_put_weight >> task_sleep_after_put_weight >>
                     task_save_metrics >> task_sleep_after_save_metrics
                 )
