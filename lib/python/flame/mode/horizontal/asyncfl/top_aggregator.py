@@ -656,7 +656,7 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
-    def _distribute_weights(self, tag: str) -> None:
+    def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """Distribute a global model in asynchronous FL fashion.
 
         This method is overridden from one in synchronous top
@@ -695,7 +695,10 @@ class TopAggregator(SyncTopAgg):
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
-        ends = channel.ends(VAL_CH_STATE_SEND)
+        if task_to_perform == 'train':
+            logger.info(f"Sending following weights for training:")
+            ends = channel.ends(VAL_CH_STATE_SEND)
+        # NRL TODO: else will take care of randomly selecting x trainers for "eval only" operation 
         if not ends:
             logger.debug(f"No trainers found for tag {tag}, will "
                          f"move to get() for fetch weights from trainers")
@@ -725,6 +728,7 @@ class TopAggregator(SyncTopAgg):
                     ),
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform
                 },
             )
 
@@ -774,24 +778,7 @@ class TopAggregator(SyncTopAgg):
             # TAG_HEARTBEAT)
 
         c = self.composer
-        # unlink tasklets that are chained from the parent class
-        # (i.e., super().compose()).
-        #
-        # unlink() internally calls tasklet.reset(), which in turn
-        # initialize all loop related state, which includes cont_fn.
-        # therefore, if cont_fn is needed for a tasklet,
-        # set_continue_fn() in Tasklet class should be used.
         c.unlink()
-
-        # # Reset the task_get_heartbeat to ensure it is in the correct
-        # # state
-        # task_get_heartbeat.reset()
-
-        # # Start a separate thread for the heartbeat task
-        # logger.debug("Going to start the thread for processing
-        # heartbeats") heartbeat_thread = threading.Thread(
-        #     target=self.heartbeat_task, args=(task_get_heartbeat,) )
-        # heartbeat_thread.daemon = True heartbeat_thread.start()
 
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as
