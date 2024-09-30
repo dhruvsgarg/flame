@@ -87,6 +87,8 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.criterion = None
 
+        self.task_to_perform = "train"
+
         # Enable/disable use of oort_loss fromt he config. Needed for
         # oort and asyncOORT.
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
@@ -428,6 +430,7 @@ class PyTorchCifar10Trainer(Trainer):
                      f"{time.time()}")
 
     def train(self) -> None:
+        logger.info(f"NRL: Entered train method for {self.trainer_id}")
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(
