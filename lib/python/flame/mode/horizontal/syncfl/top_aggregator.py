@@ -227,7 +227,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         logger.info(f"NRL: distributing weights with task_to_perform = {task_to_perform}")
         if tag == TAG_DISTRIBUTE:
             self.dist_tag = tag
-            self._distribute_weights(tag)
+            self._distribute_weights(tag, task_to_perform)
 
     def _distribute_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)

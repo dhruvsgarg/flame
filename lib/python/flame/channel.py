@@ -171,47 +171,48 @@ class Channel(object):
         end_list = self.ends(state)
         return end_list[0] if len(end_list) > 0 else None
 
-    def ends(self, state: Union[None, str] = None) -> list[str]:
+    def ends(self, state: Union[None, str] = None, task_to_perform: str = "train") -> list[str]:
         """Return a list of end ids."""
-        logger.debug(f"ends() for channel name: {self._name}, "
-                     f"current self._ends: {self._ends}")
-        if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
-            self.properties[KEY_CH_STATE] = state
+        if task_to_perform == "train":
+            logger.debug(f"ends() for channel name: {self._name}, "
+                        f"current self._ends: {self._ends}")
+            if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
+                self.properties[KEY_CH_STATE] = state
 
-        self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
+            self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
-        async def inner():
-            if self.trainer_unavail_list is not None:
-                selected = self._selector.select(
-                    self._ends, self.properties,
-                    self.trainer_unavail_list
-                    )
-            else:
-                selected = self._selector.select(
-                    self._ends,
-                    self.properties
-                    )
-            logger.debug(f"selected returned from select(): {selected}")
-            
-            id_list = list()
-            for end_id, kv in selected.items():
-                id_list.append(end_id)
-                logger.debug(f"appended end_id {end_id} to id_list, kv is {kv}")
-                if not kv:
-                    continue
+            async def inner():
+                if self.trainer_unavail_list is not None:
+                    selected = self._selector.select(
+                        self._ends, self.properties,
+                        self.trainer_unavail_list
+                        )
+                else:
+                    selected = self._selector.select(
+                        self._ends,
+                        self.properties
+                        )
+                logger.debug(f"selected returned from select(): {selected}")
+                
+                id_list = list()
+                for end_id, kv in selected.items():
+                    id_list.append(end_id)
+                    logger.debug(f"appended end_id {end_id} to id_list, kv is {kv}")
+                    if not kv:
+                        continue
 
-                (key, value) = kv
-                logger.debug(f"Setting property for end_id {end_id} "
-                             f"using (key,val) = ({key},{value})")
-                self._ends[end_id].set_property(key, value)
-                logger.debug(f"Updated end_id {end_id} property to key: {key}, "
-                             f"value: {value} in self._ends")
-            logger.debug(f"Going to return id_list: {id_list}")
-            return id_list
+                    (key, value) = kv
+                    logger.debug(f"Setting property for end_id {end_id} "
+                                f"using (key,val) = ({key},{value})")
+                    self._ends[end_id].set_property(key, value)
+                    logger.debug(f"Updated end_id {end_id} property to key: {key}, "
+                                f"value: {value} in self._ends")
+                logger.debug(f"Going to return id_list: {id_list}")
+                return id_list
 
-        result, _ = run_async(inner(), self._backend.loop())
-        logger.debug(f"Going to return result: {result}")
-        return result
+            result, _ = run_async(inner(), self._backend.loop())
+            logger.debug(f"Going to return result: {result}")
+            return result
 
     def all_ends(self):
         """Return a list of all end ids (needed in FedDyn to compute
