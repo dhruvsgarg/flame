@@ -695,9 +695,9 @@ class TopAggregator(SyncTopAgg):
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
-        if task_to_perform == 'train':
-            logger.info(f"Sending following weights for training:")
-            ends = channel.ends(VAL_CH_STATE_SEND)
+        
+        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
+        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         # NRL TODO: else will take care of randomly selecting x trainers for "eval only" operation 
         if not ends:
             logger.debug(f"No trainers found for tag {tag}, will "
