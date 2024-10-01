@@ -535,7 +535,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # Now start the rest of the tasks
             (
                 task_internal_init
-                # >> task_init_oort_variables
+                >> task_init_oort_variables
                 # Added code here to check for the status of the task i.e., "train + eval" vs "eval only" 
                 >> task_load_data
                 >> task_init
