@@ -49,7 +49,7 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("async")
+baseline_names=("async_v2")
 
 # Array of alpha values
 alphas=(100)
@@ -78,20 +78,20 @@ for baseline_name in "${baseline_names[@]}"; do
 
     # Start the aggregator process with the correct configuration and log file name
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/neha_flame/flame/lib/python/examples/async_cifar10/aggregator
-    agg_log_file="/home/dgarg39/neha_flame/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}.log"
+    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
+    agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main.py fedbuff_config_final_expt_5sep24_${baseline_name}_v2_felix.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name} > "$agg_log_file" 2>&1 &
+    python pytorch/main.py fedbuff_config_final_expt_5sep24_${baseline_name}_felix.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name} > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
     # Start the trainers
     conda activate dg_flame
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/neha_flame/flame/lib/python/examples/async_cifar10/trainer
-    cd config_dir${alpha}_num100_traceFailure${trainer_dir_suffix}/
-    echo "going inside this folder: config_dir${alpha}_num100_traceFailure${trainer_dir_suffix}"
-    trainer_log_file="/home/dgarg39/neha_flame/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num100_traceFailure${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_num2_${baseline_name}.log"
+    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+    cd config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/
+    echo "going inside this folder: config_dir${alpha}_num300_traceFail${trainer_dir_suffix}"
+    trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_num2_${baseline_name}.log"
     echo "Created trainer log file: ${trainer_log_file}"
     bash exec_2_trainers.sh > "$trainer_log_file" 2>&1 &
     echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"

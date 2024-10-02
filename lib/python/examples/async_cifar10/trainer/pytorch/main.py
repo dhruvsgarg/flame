@@ -431,6 +431,12 @@ class PyTorchCifar10Trainer(Trainer):
 
     def train(self) -> None:
         logger.info(f"NRL: Entered train method for {self.trainer_id}")
+        if self.task_to_perform != "train":
+            logger.info(f"Trainer {self.trainer_id} is not required to train")
+            return
+        
+        logger.info(f"Trainer {self.trainer_id} asked to train")
+        
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(

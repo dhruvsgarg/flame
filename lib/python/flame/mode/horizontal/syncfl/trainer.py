@@ -171,7 +171,7 @@ class Trainer(Role, metaclass=ABCMeta):
             time.sleep(1)
             return
 
-        logger.debug(f"New message received for trainer_id {self.trainer_id}")
+        logger.info(f"New message received for trainer_id {self.trainer_id}")
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
@@ -202,9 +202,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 channel.cleanup_recvd_ends()
                 return
 
-            # Load the model onto GPU
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
+            # Load the model onto GPU if self.model is None:
+            # self._load_model_onto_gpu()
 
             # Update the model
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -390,10 +389,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
-            #     logger.debug(f"Trainer_id: {self.trainer_id} came to update_model but "
-            #                  f"model was not on GPU. Load completed.")
+            # if self.model is None: self._load_model_onto_gpu()
+            #     logger.debug(f"Trainer_id: {self.trainer_id} came to
+            #     update_model but " f"model was not on GPU. Load
+            #                  completed.")
             self.model.load_state_dict(self.weights)
         elif self.framework == MLFramework.TENSORFLOW:
             self.model.set_weights(self.weights)
@@ -403,10 +402,10 @@ class Trainer(Role, metaclass=ABCMeta):
         self.prev_weights = self.weights
 
         if self.framework == MLFramework.PYTORCH:
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
-            #     logger.error(f"Trainer {self.trainer_id} came to update_weights before "
-            #                  f"sending. But the model had to be loaded on the device.")
+            # if self.model is None: self._load_model_onto_gpu()
+            #     logger.error(f"Trainer {self.trainer_id} came to
+            #     update_weights before " f"sending. But the model had
+            #                  to be loaded on the device.")
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
@@ -536,12 +535,13 @@ class Trainer(Role, metaclass=ABCMeta):
             (
                 task_internal_init
                 >> task_init_oort_variables
-                # Added code here to check for the status of the task i.e., "train + eval" vs "eval only" 
+                # Added code here to check for the status of the task
+                # i.e., "train + eval" vs "eval only" 
                 >> task_load_data
                 >> task_init
                 >> loop(
                     task_get >> task_sleep_after_get >>
-                    (task_train >> task_sleep_after_train >> task_eval if self.task_to_perform == "train" else task_eval) >>
+                    task_train >> task_sleep_after_train >> task_eval >>
                     task_sleep_after_eval >>
                     task_put_weight >> task_sleep_after_put_weight >>
                     task_save_metrics >> task_sleep_after_save_metrics
