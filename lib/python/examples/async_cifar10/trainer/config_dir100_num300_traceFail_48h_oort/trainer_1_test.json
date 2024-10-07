@@ -213,6 +213,7 @@
             3114
         ],
         "failure_durations_s": "[]",
+        "availability_status_updates": "[(10, 'unavailable'), (20, 'available_to_evaluate'), (30, 'available_to_train')]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
