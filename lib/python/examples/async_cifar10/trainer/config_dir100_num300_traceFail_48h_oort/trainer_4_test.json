@@ -217,6 +217,7 @@
             33146
         ],
         "failure_durations_s": "[]",
+        "availability_status_updates": "[]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1

@@ -238,6 +238,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
+        logger.info(f"NRL: availability_status of trainer {self.trainer_id} when put is invoked, is: {self.availability_status}")
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
         elif tag == TAG_HEARTBEAT:
@@ -488,6 +489,41 @@ class Trainer(Role, metaclass=ABCMeta):
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
+
+    def send_availability_status(self, tag:str):
+        logger.info(f"Send availability_status update for tag: {tag} "
+                     f"and trainer_id: {self.trainer_id}. Status = {self.availability_status.value}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[send_availability_status] channel not found with {tag}")
+            return
+
+        # this call waits for at least one peer to join this channel
+        logger.debug(f"send_availability_status: waiting for someone to join channel: {channel} "
+                     f"for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        msg = {
+            MessageType.AVAILABILITY_STATUS: self.availability_status
+        }
+
+        try:
+            channel.send(end, msg)
+        except Exception as e:
+            logger.error("Failed to send availability_status for trainer_id: {self.trainer_id}. ERROR: {e}")
+            channel._selector._cleanup_send_ends()
+            return
+
+        logger.info(f"send_availability_status done for trainer_id: {self.trainer_id} "
+                    f"and msg is: {msg} ")
+
+        # Evict model from gpu to free up space
+        # self._evict_model_from_gpu()
+
+        channel._selector._cleanup_send_ends()
 
     def compose(self) -> None:
         """Compose role with tasklets."""

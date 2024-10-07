@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
-from flame.config import Config
+from flame.config import Config, TrainerAvailabilityStatus
 from flame.mode.horizontal.trainer import Trainer
 from torchvision.datasets import CIFAR10
 
@@ -165,6 +165,13 @@ class PyTorchCifar10Trainer(Trainer):
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+
+        #NRL: added new code for availability_status_updates
+        self.availability_status_updates = ast.literal_eval(
+            self.config.hyperparameters.availability_status_updates
+        )
+        logger.info(f"NRL: availability_status_updates = {self.availability_status_updates}")
+        self.availability_status = TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -384,6 +391,21 @@ class PyTorchCifar10Trainer(Trainer):
         logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
                      f"timestamp: {time.time()}")
 
+    def check_and_update_availability_status(self):
+       if len(self.availability_status_updates) > 0 and time.time() >= self.trainer_start_ts + self.availability_status_updates[0][0]:
+           status_to_set = self.availability_status_updates.pop(0)[1]
+           old_status = self.availability_status.value
+           try:
+               self.availability_status = TrainerAvailabilityStatus(status_to_set)
+           except ValueError:
+               logger.error(f"NRL: Invalid status encountered: {status_to_set}. Retaining old status {old_status}.")
+               return           
+           new_status = self.availability_status.value
+           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.availability_status_updates}")
+           self.send_availability_status("upload")
+    
+    
+
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -523,6 +545,7 @@ class PyTorchCifar10Trainer(Trainer):
             
             time.sleep(0.1)             # Will check every 0.1 second
             self.check_leave_sleep_join()
+            self.check_and_update_availability_status()
 
 
 def main():

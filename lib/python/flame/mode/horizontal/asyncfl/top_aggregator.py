@@ -182,7 +182,7 @@ class TopAggregator(SyncTopAgg):
             return
 
         # If message contains model updates, handle it
-        logger.debug(f"received data from {end}")
+        logger.debug(f"received data from {end}: availability_status update message: {MessageType.AVAILABILITY_STATUS in msg}")
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
