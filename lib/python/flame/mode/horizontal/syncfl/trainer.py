@@ -34,7 +34,7 @@ from flame.common.util import (
     weights_to_device,
     weights_to_model_device,
 )
-from flame.config import Config
+from flame.config import Config, TrainerAvailabilityStatus
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
@@ -239,10 +239,13 @@ class Trainer(Role, metaclass=ABCMeta):
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logger.info(f"NRL: availability_status of trainer {self.trainer_id} when put is invoked, is: {self.availability_status}")
-        if tag == TAG_UPLOAD:
-            self._send_weights(tag)
-        elif tag == TAG_HEARTBEAT:
-            self._send_heartbeat_to_agg(tag)
+        if self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE:
+            if tag == TAG_UPLOAD:
+                self._send_weights(tag)
+            elif tag == TAG_HEARTBEAT:
+                self._send_heartbeat_to_agg(tag)
+        else:
+            logger.info("NRL: Not sending any message back to aggregator for trainer id: {self.trainer_id} since the trainer was unavailable")
 
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(f"### SEND heartbeat for tag: {tag} "
@@ -270,7 +273,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(f"### SEND WEIGHTS for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id}")
+                     f"and trainer_id: {self.trainer_id} and availability_status = {self.availability_status}")
+        if self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+            logger.warn(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
+            while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+                time.sleep(0.1)
+
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_weights] channel not found with {tag}")
@@ -283,34 +291,29 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
+    
+        if self.task_to_perform == "train":
+            #trainer is expected to train and it is also available to train - best case
+                self._update_weights()
 
-        self._update_weights()
+                delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
 
-        delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
+                delta_weights = self.privacy.apply_dp_fn(delta_weights)
 
-        delta_weights = self.privacy.apply_dp_fn(delta_weights)
+                self.regularizer.update()
 
-        self.regularizer.update()
-
-        # NOTE: Also sending stat_utility for OORT
-        msg = {
-            MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
-            MessageType.DATASET_SIZE: self.dataset_size,
-            MessageType.MODEL_VERSION: self._round,
-            MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-            MessageType.STAT_UTILITY: self._stat_utility,
-        }
-
-        # Do not proceed with sending of sending of weights if the
-        # client-avail-notify thread has left the channel. Wait for it
-        # to come back online before sending an update.
-        send_start_time = time.time()
-        while not self._trainer_online_channel_status:
-            time.sleep(0.1)
-            send_wait_time = math.ceil(time.time() - send_start_time)
-            if send_wait_time % 5 == 0:
-                logger.debug(f"Waiting for channel to join before send "
-                             f"since: {send_wait_time} seconds")
+                # NOTE: Also sending stat_utility for OORT
+                msg = {
+                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                    MessageType.DATASET_SIZE: self.dataset_size,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+                    MessageType.STAT_UTILITY: self._stat_utility,
+                }
+        else:
+            msg = {
+                MessageType.STAT_UTILITY: self._stat_utility
+            }
 
         channel.send(end, msg)
 

@@ -456,8 +456,14 @@ class PyTorchCifar10Trainer(Trainer):
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
+        if self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+            logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+            while self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+                time.sleep(0.1)
+
+            # return
         
-        logger.info(f"Trainer {self.trainer_id} asked to train")
+        logger.info(f"NRL: Trainer {self.trainer_id} available to train")
         
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
@@ -516,8 +522,37 @@ class PyTorchCifar10Trainer(Trainer):
 
     def evaluate(self) -> None:
         """Evaluate a model."""
-        # Implement this if testing is needed in trainer
-        pass
+        # Implement only forward pass evaluate if the trainer is available to train or to evaluate
+        if self.task_to_perform == "evaluate" and self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE:
+            for epoch in range(1, self.epochs + 1):
+                for batch_idx, (data, target) in enumerate(self.train_loader):
+                    data, target = data.to(self.device), target.to(self.device)
+                    output = self.model(data)
+                    
+                    if self.use_oort_loss_fn == "False":
+                        # Loss function to use with Fedbuff
+                        loss = F.nll_loss(output, target)
+                    elif self.use_oort_loss_fn == "True":
+                        # Calculate statistical utility of a trainer while
+                        # calculating loss
+                        loss = self.oort_loss(
+                            output, target.squeeze(), epoch, batch_idx)
+                    if batch_idx % 100 == 0:
+                        done = batch_idx * len(data)
+                        total = len(self.train_loader.dataset)
+                        percent = 100.0 * batch_idx / len(self.train_loader)
+                        logger.info(
+                            f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                            f"\tloss: {loss.item():.6f}"
+                        )
+                    
+                # normalize statistical utility of a trainer based on the size
+                # of the dataset
+                self.normalize_stat_utility(epoch)
+
+        else:
+            logger.warn(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer availability_status = {self.availability_status.value}")
+
 
     def initiate_heartbeat(self) -> None:
         while True:
@@ -544,7 +579,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            self.check_leave_sleep_join()
+            # self.check_leave_sleep_join()
             self.check_and_update_availability_status()
 
 
