@@ -271,10 +271,10 @@ class Trainer(Role, metaclass=ABCMeta):
     def _send_weights(self, tag: str) -> None:
         logger.debug(f"### SEND WEIGHTS for tag: {tag} "
                      f"and trainer_id: {self.trainer_id} and availability_status = {self.availability_status}")
-        if self.check_availability_status == "True" and self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+        if self.check_availability_status == "True" and self.availability_status == TrainerAvailabilityStatus.UNAVL:
             if self.wait_to_become_available == "True":
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
-                while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+                while self.availability_status == TrainerAvailabilityStatus.UNAVL:
                     time.sleep(0.1)
             else:
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Exiting")
