@@ -208,6 +208,13 @@ class MqttBackend(AbstractBackend):
                          f"on channel {channel.name()}")
             self.unsubscribe(topic)
         pass
+    
+    def update_trainer_state(self, channel: Channel, state: str, timestamp: str) -> None:
+        """Update a trainer state in the backend."""
+        logger.debug(f"Sending notification of type STATE_UPDATE from "
+                     f"channel {channel.name()} for state {state} at timestamp {timestamp}")
+        # notify after subscription to topics is finished
+        self.notify(channel.name(), msg_pb2.NotifyType.STATE_UPDATE, (state, timestamp))
 
     def _handle_health_message(self, message):
         health_data = str(message.payload.decode("utf-8"))
@@ -249,6 +256,9 @@ class MqttBackend(AbstractBackend):
         elif msg.type == msg_pb2.NotifyType.LEAVE:
             logger.debug(f"Got channel leave message from {msg.end_id}")
             await channel.remove(msg.end_id)
+        elif msg.type == msg_pb2.NotifyType.STATE_UPDATE:
+            logger.debug(f"Got state update message from {msg.end_id}")
+            await channel.update_state(msg.end_id, msg.info.state, msg.info.timestamp)
 
     async def _handle_data(self, any_msg: Any) -> None:
         msg = msg_pb2.Data()
@@ -337,7 +347,7 @@ class MqttBackend(AbstractBackend):
         logger.debug(f"unsubscribe topic: {topic}")
         self._mqtt_client.unsubscribe(topic)
 
-    def notify(self, channel_name, notify_type) -> bool:
+    def notify(self, channel_name, notify_type, notify_info = None) -> bool:
         """Broadcast a notify message to a channel."""
         if channel_name not in self._channels:
             logger.debug(f"channel {channel_name} not found")
@@ -351,6 +361,11 @@ class MqttBackend(AbstractBackend):
         msg.end_id = self._id
         msg.channel_name = channel_name
         msg.type = notify_type
+        
+        # Add notify_info if it contains state and timestamp
+        if notify_info is not None:
+            msg.info.state = notify_info[0]
+            msg.info.timestamp = notify_info[1]
 
         any = Any()
         any.Pack(msg)

@@ -95,9 +95,9 @@ class PrivacyType(str, Enum):
 
 class TrainerAvailabilityStatus(str, Enum):
    """Define availability status types."""
-   AVAILABLE_TO_TRAIN = "available_to_train"
-   AVAILABLE_TO_EVALUATE = "available_to_evaluate"
-   UNAVAILABLE = "unavailable"
+   AVL_TRAIN = "available_to_train"
+   AVL_EVAL = "available_to_evaluate"
+   UNAVL = "unavailable"
 
 class Job(FlameSchema):
     job_id: str = Field(alias="id")
