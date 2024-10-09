@@ -462,7 +462,7 @@ class PyTorchCifar10Trainer(Trainer):
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
-        if self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+        if self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.AVL_TRAIN:
             if self.wait_to_become_available == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
@@ -533,12 +533,12 @@ class PyTorchCifar10Trainer(Trainer):
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
         #Evaluate after train is written in the train_epoch method itself 
 
-        if self.wait_to_become_available == "True" and self.check_availability_status and self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+        if self.wait_to_become_available == "True" and self.check_availability_status and self.availability_status == TrainerAvailabilityStatus.UNAVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
             while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
                 time.sleep(0.1)
 
-        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE or self.check_availability_status == "False"):
+        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVL or self.check_availability_status == "False"):
             for epoch in range(1, self.epochs + 1):
                 for batch_idx, (data, target) in enumerate(self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
