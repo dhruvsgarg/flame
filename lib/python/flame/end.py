@@ -24,6 +24,7 @@ KEY_END_STATE = "state"
 VAL_END_STATE_RECVD = "recvd"
 VAL_END_STATE_HEARTBEAT_RECVD = "heartbeat_recvd"
 VAL_END_STATE_NONE = ""
+KEY_END_AVL_STATE = "availability_state"
 
 
 class End(object):
