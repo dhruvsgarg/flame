@@ -170,8 +170,15 @@ class PyTorchCifar10Trainer(Trainer):
         self.availability_status_updates = ast.literal_eval(
             self.config.hyperparameters.availability_status_updates
         )
-        logger.info(f"NRL: availability_status_updates = {self.availability_status_updates}")
+        logger.info(f"NRL: availability_status_updates for trainer id {self.trainer_id} = {self.availability_status_updates}")
+
         self.availability_status = TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN
+
+        #flag to flip between old logic (avl/unavl state) and new logic(avl_to_train/eval/unavl)
+        self.check_availability_status = self.config.hyperparameters.check_availability_status
+
+        #flag to decide whether the trainer upon unavailability will wait or exit
+        self.wait_to_become_available = self.config.hyperparameters.wait_to_become_available
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -456,12 +463,14 @@ class PyTorchCifar10Trainer(Trainer):
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
-        if self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
-            logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
-            while self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
-                time.sleep(0.1)
-
-            # return
+        if self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+            if self.wait_to_become_available == "True":
+                logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+                while self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+                    time.sleep(0.1)
+            else:
+                logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting.")
+                return
         
         logger.info(f"NRL: Trainer {self.trainer_id} available to train")
         
@@ -523,7 +532,14 @@ class PyTorchCifar10Trainer(Trainer):
     def evaluate(self) -> None:
         """Evaluate a model."""
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
-        if self.task_to_perform == "evaluate" and self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE:
+        #Evaluate after train is written in the train_epoch method itself 
+
+        if self.wait_to_become_available == "True" and self.check_availability_status and self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+            logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
+            while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+                time.sleep(0.1)
+
+        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE or self.check_availability_status == "False"):
             for epoch in range(1, self.epochs + 1):
                 for batch_idx, (data, target) in enumerate(self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
@@ -551,7 +567,7 @@ class PyTorchCifar10Trainer(Trainer):
                 self.normalize_stat_utility(epoch)
 
         else:
-            logger.warn(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer availability_status = {self.availability_status.value}")
+            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer availability_status = {self.availability_status.value} and wait_to_become_available = {self.wait_to_become_available}")
 
 
     def initiate_heartbeat(self) -> None:
@@ -579,8 +595,10 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            # self.check_leave_sleep_join()
-            self.check_and_update_availability_status()
+            if self.check_availability_status == "True":
+                self.check_and_update_availability_status()
+            else:
+                self.check_leave_sleep_join()
 
 
 def main():

@@ -239,13 +239,10 @@ class Trainer(Role, metaclass=ABCMeta):
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logger.info(f"NRL: availability_status of trainer {self.trainer_id} when put is invoked, is: {self.availability_status}")
-        if self.availability_status != TrainerAvailabilityStatus.UNAVAILABLE:
-            if tag == TAG_UPLOAD:
-                self._send_weights(tag)
-            elif tag == TAG_HEARTBEAT:
-                self._send_heartbeat_to_agg(tag)
-        else:
-            logger.info("NRL: Not sending any message back to aggregator for trainer id: {self.trainer_id} since the trainer was unavailable")
+        if tag == TAG_UPLOAD:
+            self._send_weights(tag)
+        elif tag == TAG_HEARTBEAT:
+            self._send_heartbeat_to_agg(tag)
 
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(f"### SEND heartbeat for tag: {tag} "
@@ -274,10 +271,16 @@ class Trainer(Role, metaclass=ABCMeta):
     def _send_weights(self, tag: str) -> None:
         logger.debug(f"### SEND WEIGHTS for tag: {tag} "
                      f"and trainer_id: {self.trainer_id} and availability_status = {self.availability_status}")
-        if self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
-            logger.warn(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
-            while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
-                time.sleep(0.1)
+        if self.check_availability_status == "True" and self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+            if self.wait_to_become_available == "True":
+                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
+                while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+                    time.sleep(0.1)
+            else:
+                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Exiting")
+                return
+
+
 
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -292,7 +295,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
     
-        if self.task_to_perform == "train":
+        if self.task_to_perform == "train" or self.check_availability_status == "False":
             #trainer is expected to train and it is also available to train - best case
                 self._update_weights()
 
