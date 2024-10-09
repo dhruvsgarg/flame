@@ -40,7 +40,7 @@ from flame.selector.oort import (
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
-    PROP_AVAILABILITY_STATUS
+    PROP_AVL_STATE
 )
 
 logger = logging.getLogger(__name__)
@@ -209,9 +209,9 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.info(f"received status update message {msg} in agg_weights from {end}, "
                         f"will return")
-            old_status = channel.get_end_property(end, PROP_AVAILABILITY_STATUS)
-            channel.set_end_property(end, PROP_AVAILABILITY_STATUS, msg[MessageType.AVAILABILITY_STATUS].value)
-            new_status = channel.get_end_property(end, PROP_AVAILABILITY_STATUS)
+            old_status = channel.get_end_property(end, PROP_AVL_STATE)
+            channel.set_end_property(end, PROP_AVL_STATE, msg[MessageType.AVAILABILITY_STATUS].value)
+            new_status = channel.get_end_property(end, PROP_AVL_STATE)
             logger.info(f"Changed the availability_status for end {end} from {old_status} to {new_status}. Exiting")
             return
 

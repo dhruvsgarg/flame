@@ -295,7 +295,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
     
-        if self.task_to_perform == "train" or self.check_availability_status == "False":
+        if self.task_to_perform == "train":
             #trainer is expected to train and it is also available to train - best case
                 self._update_weights()
 

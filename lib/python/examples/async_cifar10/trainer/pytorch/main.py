@@ -465,7 +465,7 @@ class PyTorchCifar10Trainer(Trainer):
         if self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.AVL_TRAIN:
             if self.wait_to_become_available == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
-                while self.availability_status != TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN:
+                while self.availability_status != TrainerAvailabilityStatus.AVL_TRAIN:
                     time.sleep(0.1)
             else:
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting.")
@@ -538,7 +538,7 @@ class PyTorchCifar10Trainer(Trainer):
             while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
                 time.sleep(0.1)
 
-        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVL or self.check_availability_status == "False"):
+        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVL):
             for epoch in range(1, self.epochs + 1):
                 for batch_idx, (data, target) in enumerate(self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
