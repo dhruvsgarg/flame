@@ -221,6 +221,8 @@
         ],
         "failure_durations_s": "[]",
         "availability_status_updates": "[]",
+        "check_availability_status": "True",
+        "wait_to_become_available": "True",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
