@@ -25,8 +25,8 @@ from aiostream import stream
 from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
-from flame.config import GROUPBY_DEFAULT_GROUP
-from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, End
+from flame.config import TrainerAvailabilityStatus, GROUPBY_DEFAULT_GROUP
+from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, KEY_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 
@@ -510,6 +510,12 @@ class Channel(object):
         self._backend.leave(self)
 
         logger.debug(f" channel leave done for {self._name}")
+        
+    def update_trainer_state(self, state: TrainerAvailabilityStatus, timestamp: str):
+        """Update the state of an end in the channel."""
+        logger.debug(f"calling channel update state for {self._name}")
+
+        self._backend.update_trainer_state(self, state, timestamp)
 
     def await_join(self, timeout=None) -> bool:
         """Wait for at least one peer joins a channel.
@@ -717,6 +723,20 @@ class Channel(object):
         # quicker addition next time it joins
         logger.debug("Also removing existing trainer update send/recv state from selector")
         self._selector._cleanup_removed_ends(end_id)
+    
+    async def update_state(self, end_id: str, state: TrainerAvailabilityStatus, timestamp: str):
+        """Update the state of an end in the channel."""
+        logger.debug(f"Updating state of end {end_id} in channel {self._name} to state: {state} from timestamp: {timestamp}")
+
+        if not self.has(end_id):
+            logger.debug(f"End {end_id} not in channel {self._name}")
+            return
+
+        self._ends[end_id].set_property(KEY_END_AVL_STATE, state)
+        logger.debug(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(KEY_END_AVL_STATE)}")
+
+        # set cleanup ready event
+        self._backend.set_cleanup_ready(end_id)
 
     def has(self, end_id: str) -> bool:
         """Check if an end is in the channel."""

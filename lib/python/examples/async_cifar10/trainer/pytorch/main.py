@@ -171,7 +171,7 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.availability_status_updates
         )
         logger.info(f"NRL: availability_status_updates = {self.availability_status_updates}")
-        self.availability_status = TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN
+        self.availability_status = TrainerAvailabilityStatus.AVL_TRAIN
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -402,9 +402,8 @@ class PyTorchCifar10Trainer(Trainer):
                return           
            new_status = self.availability_status.value
            logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.availability_status_updates}")
-           self.send_availability_status("upload")
-    
-    
+        #    self.send_availability_status("upload")
+           self._perform_channel_state_update(tag="upload", state=self.availability_status, timestamp=str(time.time()))
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -544,7 +543,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            self.check_leave_sleep_join()
+            # self.check_leave_sleep_join()
             self.check_and_update_availability_status()
 
 

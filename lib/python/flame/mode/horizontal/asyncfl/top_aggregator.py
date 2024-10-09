@@ -182,7 +182,7 @@ class TopAggregator(SyncTopAgg):
             return
 
         # If message contains model updates, handle it
-        logger.debug(f"received data from {end}: availability_status update message: {MessageType.AVAILABILITY_STATUS in msg}")
+        logger.debug(f"received data from {end}")
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
@@ -206,7 +206,7 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
         else:
-            logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}, "
+            logger.warning(f"received INCORRECT message {msg} in agg_weights from {end}, "
                         f"will return")
             return
 
