@@ -172,7 +172,7 @@ class PyTorchCifar10Trainer(Trainer):
         )
         logger.info(f"NRL: availability_status_updates for trainer id {self.trainer_id} = {self.availability_status_updates}")
 
-        self.availability_status = TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN
+        self.availability_status = TrainerAvailabilityStatus.AVL_TRAIN
 
         #flag to flip between old logic (avl/unavl state) and new logic(avl_to_train/eval/unavl)
         self.check_availability_status = self.config.hyperparameters.check_availability_status
@@ -409,9 +409,8 @@ class PyTorchCifar10Trainer(Trainer):
                return           
            new_status = self.availability_status.value
            logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.availability_status_updates}")
-           self.send_availability_status("upload")
-    
-    
+        #    self.send_availability_status("upload")
+           self._perform_channel_state_update(tag="upload", state=self.availability_status, timestamp=str(time.time()))
 
     def initialize(self) -> None:
         """Initialize role."""
