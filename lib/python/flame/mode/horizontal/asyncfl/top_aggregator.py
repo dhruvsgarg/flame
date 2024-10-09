@@ -40,6 +40,7 @@ from flame.selector.oort import (
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
+    PROP_AVAILABILITY_STATUS
 )
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,6 @@ class TopAggregator(SyncTopAgg):
             return
 
         # If message contains model updates, handle it
-        logger.debug(f"received data from {end}: availability_status update message: {MessageType.AVAILABILITY_STATUS in msg}")
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
@@ -205,10 +205,16 @@ class TopAggregator(SyncTopAgg):
             timestamp = metadata[1]
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
+        
         else:
-            logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}, "
+            logger.info(f"received status update message {msg} in agg_weights from {end}, "
                         f"will return")
+            old_status = channel.get_end_property(end, PROP_AVAILABILITY_STATUS)
+            channel.set_end_property(end, PROP_AVAILABILITY_STATUS, msg[MessageType.AVAILABILITY_STATUS].value)
+            new_status = channel.get_end_property(end, PROP_AVAILABILITY_STATUS)
+            logger.info(f"Changed the availability_status for end {end} from {old_status} to {new_status}. Exiting")
             return
+
 
         if self.reject_stale_updates == "True":
             logger.debug("Check trainer model version, disallow stale updates")

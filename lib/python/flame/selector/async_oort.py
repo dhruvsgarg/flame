@@ -21,6 +21,7 @@ import random
 import time
 from datetime import timedelta
 
+from flame.config import TrainerAvailabilityStatus
 import numpy as np
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
@@ -47,7 +48,7 @@ PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
-
+PROP_AVAILABILITY_STATUS = "availability_status"
 
 class AsyncOortSelector(AbstractSelector):
     """A AsyncFL selector class based on Oort."""
@@ -122,6 +123,7 @@ class AsyncOortSelector(AbstractSelector):
         # Tracks trainers that were selected but left training in
         # between
         self.track_selected_trainers_which_left = dict()
+        self.check_availability_status = True
 
     def select(
         self,
@@ -1037,8 +1039,15 @@ class AsyncOortSelector(AbstractSelector):
         # i.e. avoids repeating a trainer in the same round
         filtered_ends = dict()
         for end_id in ends:
-            if end_id not in self.all_selected.keys():
-                filtered_ends[end_id] = ends[end_id]
+            if end_id not in self.all_selected.keys(): 
+                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, availability_status = {ends[end_id].get_property(PROP_AVAILABILITY_STATUS)}")
+                if self.check_availability_status and ends[end_id].get_property(PROP_AVAILABILITY_STATUS) in (TrainerAvailabilityStatus.AVAILABLE_TO_TRAIN.value, None) or self.check_availability_status == False:
+                    filtered_ends[end_id] = ends[end_id]
+                    logger.info(f"Adding end {end_id} to filtered ends")
+                else:
+                    logger.info(f"NRL: Not sending weights to end {end_id} as the trainer is unavailable to train")
+            
+                    
 
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count

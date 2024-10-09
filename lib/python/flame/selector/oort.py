@@ -36,7 +36,7 @@ PROP_STAT_UTILITY = "stat_utility"
 PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
-
+PROP_AVAILABILITY_STATUS = "availability_status"
 
 class OortSelector(AbstractSelector):
     """A selector class based on Oort."""
