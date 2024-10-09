@@ -1041,7 +1041,7 @@ class AsyncOortSelector(AbstractSelector):
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
                 logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, availability_status = {ends[end_id].get_property(PROP_AVAILABILITY_STATUS)}")
-                if self.check_availability_status and ends[end_id].get_property(PROP_AVAILABILITY_STATUS) in (TrainerAvailabilityStatus.AVL_EVAL.value, None) or self.check_availability_status == False:
+                if self.check_availability_status and ends[end_id].get_property(PROP_AVAILABILITY_STATUS) in (TrainerAvailabilityStatus.AVL_TRAIN.value, None) or self.check_availability_status == False:
                     filtered_ends[end_id] = ends[end_id]
                     logger.info(f"Adding end {end_id} to filtered ends")
                 else:
