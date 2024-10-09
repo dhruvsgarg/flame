@@ -26,7 +26,7 @@ from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import TrainerAvailabilityStatus, GROUPBY_DEFAULT_GROUP
-from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, KEY_END_AVL_STATE, End
+from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 
@@ -732,8 +732,8 @@ class Channel(object):
             logger.debug(f"End {end_id} not in channel {self._name}")
             return
 
-        self._ends[end_id].set_property(KEY_END_AVL_STATE, state)
-        logger.debug(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(KEY_END_AVL_STATE)}")
+        self._ends[end_id].set_property(PROP_END_AVL_STATE, state)
+        logger.debug(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)}")
 
         # set cleanup ready event
         self._backend.set_cleanup_ready(end_id)

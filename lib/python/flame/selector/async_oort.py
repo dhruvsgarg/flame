@@ -48,7 +48,7 @@ PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
-PROP_AVAILABILITY_STATUS = "availability_status"
+PROP_AVL_STATE = "availability_state"
 
 class AsyncOortSelector(AbstractSelector):
     """A AsyncFL selector class based on Oort."""
@@ -1040,8 +1040,8 @@ class AsyncOortSelector(AbstractSelector):
         filtered_ends = dict()
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
-                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, availability_status = {ends[end_id].get_property(PROP_AVAILABILITY_STATUS)}")
-                if self.check_availability_status and ends[end_id].get_property(PROP_AVAILABILITY_STATUS) in (TrainerAvailabilityStatus.AVL_TRAIN.value, None) or self.check_availability_status == False:
+                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, availability_status = {ends[end_id].get_property(PROP_AVL_STATE)}")
+                if self.check_availability_status and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailabilityStatus.AVL_TRAIN.value, None) or self.check_availability_status == False:
                     filtered_ends[end_id] = ends[end_id]
                     logger.info(f"Adding end {end_id} to filtered ends")
                 else:
