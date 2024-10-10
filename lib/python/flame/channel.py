@@ -25,7 +25,7 @@ from aiostream import stream
 from flame.common.constants import EMPTY_PAYLOAD, CommType
 from flame.common.typing import Scalar
 from flame.common.util import run_async
-from flame.config import TrainerAvailabilityState, GROUPBY_DEFAULT_GROUP
+from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
@@ -511,7 +511,7 @@ class Channel(object):
 
         logger.debug(f" channel leave done for {self._name}")
         
-    def update_trainer_state(self, state: TrainerAvailabilityState, timestamp: str):
+    def update_trainer_state(self, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
         logger.debug(f"calling channel update state for {self._name}")
 
@@ -724,7 +724,7 @@ class Channel(object):
         logger.debug("Also removing existing trainer update send/recv state from selector")
         self._selector._cleanup_removed_ends(end_id)
     
-    async def update_state(self, end_id: str, state: TrainerAvailabilityState, timestamp: str):
+    async def update_state(self, end_id: str, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
         logger.debug(f"Updating state of end {end_id} in channel {self._name} to state: {state} from timestamp: {timestamp}")
 

@@ -21,7 +21,7 @@ import random
 import time
 from datetime import timedelta
 
-from flame.config import TrainerAvailabilityState
+from flame.config import TrainerAvailState
 import numpy as np
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
@@ -1043,7 +1043,7 @@ class AsyncOortSelector(AbstractSelector):
                 logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
                 # if the switch for new avl state check is on - only select trainer with AVL_STATE = None or AVL_TRAIN 
                 # if switch is off - do no more checks
-                if (self.check_three_state_avl and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailabilityState.AVL_TRAIN.value, None)) or self.check_three_state_avl== False:
+                if (self.check_three_state_avl and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailState.AVL_TRAIN.value, None)) or self.check_three_state_avl== False:
                     filtered_ends[end_id] = ends[end_id]
                     logger.info(f"Adding end {end_id} to filtered ends")
                 else:
