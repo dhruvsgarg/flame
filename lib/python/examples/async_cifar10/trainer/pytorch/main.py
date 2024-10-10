@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
-from flame.config import Config, TrainerAvailabilityState
+from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from torchvision.datasets import CIFAR10
 
@@ -96,20 +96,20 @@ class PyTorchCifar10Trainer(Trainer):
                     f"use_oort_loss_fn: {self.use_oort_loss_fn}")
 
         # TODO: (DG) Remove the hard requirement for config to include
-        # trainer_indices_list and failure_durations_s Setting the
+        # trainer_indices_list and two_state_unavl_durations_s Setting the
         # indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers
         self.trainer_start_ts = time.time()
-        self.failure_durations_s = ast.literal_eval(
-            self.config.hyperparameters.failure_durations_s
+        self.two_state_unavl_durations_s = ast.literal_eval(
+            self.config.hyperparameters.two_state_unavl_durations_s
         )
-        if len(self.failure_durations_s) > 0:
+        if len(self.two_state_unavl_durations_s) > 0:
             self.timestamp_next_sleep_s = (
-                self.trainer_start_ts + self.failure_durations_s[0][0]
+                self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
             )
-            print(f"# Trainer id: {self.trainer_id}, self.failure_durations_s: "
-                  f"{self.failure_durations_s}")
+            print(f"# Trainer id: {self.trainer_id}, self.two_state_unavl_durations_s: "
+                  f"{self.two_state_unavl_durations_s}")
         else:
             self.timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
@@ -118,15 +118,15 @@ class PyTorchCifar10Trainer(Trainer):
         # TODO: (DG) Fix the hack later. Creating duplicate data
         # struct for dup_check_and_sleep() which is used by heartbeat
         # thread
-        self.dup_failure_durations_s = ast.literal_eval(
-            self.config.hyperparameters.failure_durations_s
+        self.dup_two_state_unavl_durations_s = ast.literal_eval(
+            self.config.hyperparameters.two_state_unavl_durations_s
         )
-        if len(self.dup_failure_durations_s) > 0:
+        if len(self.dup_two_state_unavl_durations_s) > 0:
             self.dup_timestamp_next_sleep_s = (
-                self.trainer_start_ts + self.dup_failure_durations_s[0][0]
+                self.trainer_start_ts + self.dup_two_state_unavl_durations_s[0][0]
             )
-            print(f"# Trainer id: {self.trainer_id}, self.dup_failure_durations_s: "
-                  f"{self.dup_failure_durations_s}")
+            print(f"# Trainer id: {self.trainer_id}, self.dup_two_state_unavl_durations_s: "
+                  f"{self.dup_two_state_unavl_durations_s}")
         else:
             self.dup_timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
@@ -166,19 +166,16 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
 
-        #NRL: added new code for avl_state_updates
-        self.avl_state_updates = ast.literal_eval(
-            self.config.hyperparameters.avl_state_updates
+        #NRL: added new code for avl_event_ts
+        self.avl_event_ts = ast.literal_eval(
+            self.config.hyperparameters.avl_event_ts
         )
-        logger.info(f"NRL: avl_state_updates for trainer id {self.trainer_id} = {self.avl_state_updates}")
+        logger.info(f"NRL: avl_event_ts for trainer id {self.trainer_id} = {self.avl_event_ts}")
 
-        self.avl_state = TrainerAvailabilityState.AVL_TRAIN
-
-        #flag to flip between old logic (avl/unavl state) and new logic(avl_to_train/eval/unavl)
-        self.check_three_state_avl = self.config.hyperparameters.check_three_state_avl
+        self.avl_state = TrainerAvailState.AVL_TRAIN
 
         #flag to decide whether the trainer upon unavailability will wait or exit
-        self.wait_to_become_avl = self.config.hyperparameters.wait_to_become_avl
+        self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -186,10 +183,10 @@ class PyTorchCifar10Trainer(Trainer):
         # emulated in the trainer
         
         if (time.time() >= self.timestamp_next_sleep_s) and (
-            len(self.failure_durations_s) > 0
+            len(self.two_state_unavl_durations_s) > 0
         ):
             # pop leftmost element
-            sleep_config_tuple = self.failure_durations_s.pop(0)
+            sleep_config_tuple = self.two_state_unavl_durations_s.pop(0)
 
             # get the duration of sleep and set the params for next
             # sleep
@@ -213,13 +210,13 @@ class PyTorchCifar10Trainer(Trainer):
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = time.time() - self.trainer_start_ts
-                while len(self.failure_durations_s) > 0 and (
+                while len(self.two_state_unavl_durations_s) > 0 and (
                     time_elapsed_from_start > (
-                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                        self.two_state_unavl_durations_s[0][0] + self.two_state_unavl_durations_s[0][1]
                         )
                 ):
-                    self.failure_durations_s.pop(0)
-                    if len(self.failure_durations_s) == 0:
+                    self.two_state_unavl_durations_s.pop(0)
+                    if len(self.two_state_unavl_durations_s) == 0:
                         break
             else:
                 # sleep for remaining time
@@ -231,9 +228,9 @@ class PyTorchCifar10Trainer(Trainer):
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
-            if len(self.failure_durations_s) > 0:
+            if len(self.two_state_unavl_durations_s) > 0:
                 self.timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.failure_durations_s[0][0]),
+                    self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]),
                     time.time()+1
                     )
                 if self.timestamp_next_sleep_s < time.time():
@@ -253,10 +250,10 @@ class PyTorchCifar10Trainer(Trainer):
     def dup_check_and_sleep(self):
         
         if (time.time() >= self.dup_timestamp_next_sleep_s) and (
-            len(self.dup_failure_durations_s) > 0
+            len(self.dup_two_state_unavl_durations_s) > 0
         ):
             # pop leftmost element
-            sleep_config_tuple = self.dup_failure_durations_s.pop(0)
+            sleep_config_tuple = self.dup_two_state_unavl_durations_s.pop(0)
 
             # get the duration of sleep and set the params for next
             # sleep
@@ -280,14 +277,14 @@ class PyTorchCifar10Trainer(Trainer):
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = time.time() - self.trainer_start_ts
-                while len(self.dup_failure_durations_s) > 0 and (
+                while len(self.dup_two_state_unavl_durations_s) > 0 and (
                     time_elapsed_from_start > (
-                        self.dup_failure_durations_s[0][0] +
-                        self.dup_failure_durations_s[0][1]
+                        self.dup_two_state_unavl_durations_s[0][0] +
+                        self.dup_two_state_unavl_durations_s[0][1]
                         )
                 ):
-                    self.dup_failure_durations_s.pop(0)
-                    if len(self.dup_failure_durations_s) == 0:
+                    self.dup_two_state_unavl_durations_s.pop(0)
+                    if len(self.dup_two_state_unavl_durations_s) == 0:
                         break
             else:
                 # sleep for remaining time
@@ -299,9 +296,9 @@ class PyTorchCifar10Trainer(Trainer):
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
-            if len(self.dup_failure_durations_s) > 0:
+            if len(self.dup_two_state_unavl_durations_s) > 0:
                 self.dup_timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    self.trainer_start_ts + self.dup_two_state_unavl_durations_s[0][0]),
                     time.time()+1
                     )
                 if (self.dup_timestamp_next_sleep_s < time.time()):
@@ -324,10 +321,10 @@ class PyTorchCifar10Trainer(Trainer):
         # used together
         
         if (time.time() >= self.dup_timestamp_next_sleep_s) and (
-            len(self.dup_failure_durations_s) > 0
+            len(self.dup_two_state_unavl_durations_s) > 0
         ):
             # pop leftmost element
-            sleep_config_tuple = self.dup_failure_durations_s.pop(0)
+            sleep_config_tuple = self.dup_two_state_unavl_durations_s.pop(0)
 
             # get the duration of sleep and set the params for next
             # sleep
@@ -352,18 +349,18 @@ class PyTorchCifar10Trainer(Trainer):
                             f"at timestamp: {time.time()}")
                 # Need to pop out failure intervals that occur in the
                 # past
-                while len(self.dup_failure_durations_s) > 0 and (
+                while len(self.dup_two_state_unavl_durations_s) > 0 and (
                     (time.time() - self.trainer_start_ts) > (
-                        self.dup_failure_durations_s[0][0] +
-                        self.dup_failure_durations_s[0][1]
+                        self.dup_two_state_unavl_durations_s[0][0] +
+                        self.dup_two_state_unavl_durations_s[0][1]
                         )
                 ):
-                    self.dup_failure_durations_s.pop(0)
-                    if len(self.dup_failure_durations_s) == 0:
+                    self.dup_two_state_unavl_durations_s.pop(0)
+                    if len(self.dup_two_state_unavl_durations_s) == 0:
                         break
             else:
                 # leave channel, if notify is enabled
-                if self.client_avail_aware_notify == "True":
+                if self.client_avail_aware_notify["enabled"] == "True":
                     self._perform_channel_leave(tag="upload")
 
                 # sleep for remaining time
@@ -374,14 +371,14 @@ class PyTorchCifar10Trainer(Trainer):
                             f"{time.time()}")
 
                 # join channel, if notify is enabled
-                if self.client_avail_aware_notify == "True":
+                if self.client_avail_aware_notify["enabled"] == "True":
                     self._perform_channel_join(tag="upload")
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
-            if len(self.dup_failure_durations_s) > 0:
+            if len(self.dup_two_state_unavl_durations_s) > 0:
                 self.dup_timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    self.trainer_start_ts + self.dup_two_state_unavl_durations_s[0][0]),
                     time.time()+1
                     )
                 if (self.dup_timestamp_next_sleep_s < time.time()):
@@ -399,16 +396,16 @@ class PyTorchCifar10Trainer(Trainer):
                      f"timestamp: {time.time()}")
 
     def check_and_update_three_state_avl(self):
-       if len(self.avl_state_updates) > 0 and time.time() >= self.trainer_start_ts + self.avl_state_updates[0][0]:
-           state_to_set = self.avl_state_updates.pop(0)[1]
+       if len(self.avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.avl_event_ts[0][0]:
+           state_to_set = self.avl_event_ts.pop(0)[1]
            old_status = self.avl_state.value
            try:
-               self.avl_state = TrainerAvailabilityState(state_to_set)
+               self.avl_state = TrainerAvailState(state_to_set)
            except ValueError:
                logger.error(f"NRL: Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
                return           
            new_status = self.avl_state.value
-           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.avl_state_updates}")
+           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.avl_event_ts}")
         #    self.send_availability_status("upload")
            self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
 
@@ -464,10 +461,10 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
-        if self.check_three_state_avl== "True" and self.avl_state != TrainerAvailabilityState.AVL_TRAIN:
-            if self.wait_to_become_avl == "True":
+        if self.client_avail_aware_notify['type'] == "three_state" and self.avl_state != TrainerAvailState.AVL_TRAIN:
+            if self.wait_until_next_avl == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
-                while self.avl_state != TrainerAvailabilityState.AVL_TRAIN:
+                while self.avl_state != TrainerAvailState.AVL_TRAIN:
                     time.sleep(0.1)
             else:
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting.")
@@ -540,14 +537,14 @@ class PyTorchCifar10Trainer(Trainer):
         #2. switch to check for three_state_avl is off 
         #3. Trainer is unavailable and we don't want it to wait for availability
         if self.task_to_perform != "eval" or \
-        self.check_three_state_avl == "False" or \
-        (self.avl_state == TrainerAvailabilityState.UNAVL and self.wait_to_become_avl == "False"):
-            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_to_become_avl = {self.wait_to_become_avl}")
+        self.client_avail_aware_notify['type'] == "two_state" or \
+        (self.avl_state == TrainerAvailState.UNAVL and self.wait_until_next_avl == "False"):
+            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}")
             return
 
-        if self.avl_state == TrainerAvailabilityState.UNAVL:
+        if self.avl_state == TrainerAvailState.UNAVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
-            while self.avl_state == TrainerAvailabilityState.UNAVAILABLE:
+            while self.avl_state == TrainerAvailState.UNAVAILABLE:
                 time.sleep(0.1)
 
         logger.info("Starting eval (forward pass) for trainer id {self.trainer_id}")
@@ -603,7 +600,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            if self.check_three_state_avl== "True":
+            if self.client_avail_aware_notify['type']== "three_state":
                 self.check_and_update_three_state_avl()
             else:
                 self.check_leave_sleep_join()
@@ -621,7 +618,7 @@ def main():
     t = PyTorchCifar10Trainer(config)
     print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
           f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
-          f"{t.client_avail_aware_notify}, has "
+          f"{t.client_avail_aware_notify['enabled']}, has "
           f"training_delay_enabled: {t.training_delay_enabled}, "
           f"with training_delay_s: {t.training_delay_s}")
 
@@ -631,7 +628,7 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_avail_aware_notify == "True":
+    elif t.client_avail_aware_notify['enabled'] == "True":
         logger.info(f"Will initiate thread to send avail notifications for "
                     f"trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)

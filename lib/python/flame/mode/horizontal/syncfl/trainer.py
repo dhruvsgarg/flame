@@ -34,7 +34,7 @@ from flame.common.util import (
     weights_to_device,
     weights_to_model_device,
 )
-from flame.config import Config, TrainerAvailabilityState
+from flame.config import Config, TrainerAvailState
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
@@ -273,10 +273,10 @@ class Trainer(Role, metaclass=ABCMeta):
                      f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}")
         # if switch to do three_state_avl is on and the trainer is unavailable - check the wait_to_become_avl switch
         # depending on the switch we decide whether to wait for availability or exit
-        if self.check_three_state_avl== "True" and self.avl_state == TrainerAvailabilityState.UNAVL:
+        if self.client_avail_aware_notify['type']== "three_state" and self.avl_state == TrainerAvailState.UNAVL:
             if self.wait_to_become_avl == "True":
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
-                while self.avl_state == TrainerAvailabilityState.UNAVL:
+                while self.avl_state == TrainerAvailState.UNAVL:
                     time.sleep(0.1)
             else:
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Exiting")
@@ -380,7 +380,7 @@ class Trainer(Role, metaclass=ABCMeta):
                     f" Set trainer_online_channel_status: "
                     f"{self._trainer_online_channel_status}")
         
-    def _perform_channel_state_update(self, tag: str, state: TrainerAvailabilityState, timestamp: str) -> None:
+    def _perform_channel_state_update(self, tag: str, state: TrainerAvailState, timestamp: str) -> None:
         logger.debug(f"In _perform_channel_state_update for tag: {tag}, "
                      f"trainer_id: {self.trainer_id}, "
                      f"new state: {state}, "
