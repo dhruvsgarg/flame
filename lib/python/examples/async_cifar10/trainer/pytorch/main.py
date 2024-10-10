@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
-from flame.config import Config, TrainerAvailabilityStatus
+from flame.config import Config, TrainerAvailabilityState
 from flame.mode.horizontal.trainer import Trainer
 from torchvision.datasets import CIFAR10
 
@@ -166,19 +166,19 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
 
-        #NRL: added new code for availability_status_updates
-        self.availability_status_updates = ast.literal_eval(
-            self.config.hyperparameters.availability_status_updates
+        #NRL: added new code for avl_state_updates
+        self.avl_state_updates = ast.literal_eval(
+            self.config.hyperparameters.avl_state_updates
         )
-        logger.info(f"NRL: availability_status_updates for trainer id {self.trainer_id} = {self.availability_status_updates}")
+        logger.info(f"NRL: avl_state_updates for trainer id {self.trainer_id} = {self.avl_state_updates}")
 
-        self.availability_status = TrainerAvailabilityStatus.AVL_TRAIN
+        self.avl_state = TrainerAvailabilityState.AVL_TRAIN
 
         #flag to flip between old logic (avl/unavl state) and new logic(avl_to_train/eval/unavl)
-        self.check_availability_status = self.config.hyperparameters.check_availability_status
+        self.check_three_state_avl = self.config.hyperparameters.check_three_state_avl
 
         #flag to decide whether the trainer upon unavailability will wait or exit
-        self.wait_to_become_available = self.config.hyperparameters.wait_to_become_available
+        self.wait_to_become_avl = self.config.hyperparameters.wait_to_become_avl
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -398,19 +398,19 @@ class PyTorchCifar10Trainer(Trainer):
         logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
                      f"timestamp: {time.time()}")
 
-    def check_and_update_availability_status(self):
-       if len(self.availability_status_updates) > 0 and time.time() >= self.trainer_start_ts + self.availability_status_updates[0][0]:
-           status_to_set = self.availability_status_updates.pop(0)[1]
-           old_status = self.availability_status.value
+    def check_and_update_three_state_avl(self):
+       if len(self.avl_state_updates) > 0 and time.time() >= self.trainer_start_ts + self.avl_state_updates[0][0]:
+           state_to_set = self.avl_state_updates.pop(0)[1]
+           old_status = self.avl_state.value
            try:
-               self.availability_status = TrainerAvailabilityStatus(status_to_set)
+               self.avl_state = TrainerAvailabilityState(state_to_set)
            except ValueError:
-               logger.error(f"NRL: Invalid status encountered: {status_to_set}. Retaining old status {old_status}.")
+               logger.error(f"NRL: Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
                return           
-           new_status = self.availability_status.value
-           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.availability_status_updates}")
+           new_status = self.avl_state.value
+           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.avl_state_updates}")
         #    self.send_availability_status("upload")
-           self._perform_channel_state_update(tag="upload", state=self.availability_status, timestamp=str(time.time()))
+           self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -462,10 +462,12 @@ class PyTorchCifar10Trainer(Trainer):
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
-        if self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.AVL_TRAIN:
-            if self.wait_to_become_available == "True":
+        # don't enter the if condition if the three_state_avl switch is off
+        # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
+        if self.check_three_state_avl== "True" and self.avl_state != TrainerAvailabilityState.AVL_TRAIN:
+            if self.wait_to_become_avl == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
-                while self.availability_status != TrainerAvailabilityStatus.AVL_TRAIN:
+                while self.avl_state != TrainerAvailabilityState.AVL_TRAIN:
                     time.sleep(0.1)
             else:
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting.")
@@ -533,40 +535,47 @@ class PyTorchCifar10Trainer(Trainer):
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
         #Evaluate after train is written in the train_epoch method itself 
 
-        if self.wait_to_become_available == "True" and self.check_availability_status and self.availability_status == TrainerAvailabilityStatus.UNAVL:
+        #Evaluate will be skipped if one of these three is satisfied:
+        #1. task_to_perform is train
+        #2. switch to check for three_state_avl is off 
+        #3. Trainer is unavailable and we don't want it to wait for availability
+        if self.task_to_perform != "eval" or \
+        self.check_three_state_avl == "False" or \
+        (self.avl_state == TrainerAvailabilityState.UNAVL and self.wait_to_become_avl == "False"):
+            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_to_become_avl = {self.wait_to_become_avl}")
+            return
+
+        if self.avl_state == TrainerAvailabilityState.UNAVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
-            while self.availability_status == TrainerAvailabilityStatus.UNAVAILABLE:
+            while self.avl_state == TrainerAvailabilityState.UNAVAILABLE:
                 time.sleep(0.1)
 
-        if self.task_to_perform == "evaluate" and (self.check_availability_status == "True" and self.availability_status != TrainerAvailabilityStatus.UNAVL):
-            for epoch in range(1, self.epochs + 1):
-                for batch_idx, (data, target) in enumerate(self.train_loader):
-                    data, target = data.to(self.device), target.to(self.device)
-                    output = self.model(data)
-                    
-                    if self.use_oort_loss_fn == "False":
-                        # Loss function to use with Fedbuff
-                        loss = F.nll_loss(output, target)
-                    elif self.use_oort_loss_fn == "True":
-                        # Calculate statistical utility of a trainer while
-                        # calculating loss
-                        loss = self.oort_loss(
-                            output, target.squeeze(), epoch, batch_idx)
-                    if batch_idx % 100 == 0:
-                        done = batch_idx * len(data)
-                        total = len(self.train_loader.dataset)
-                        percent = 100.0 * batch_idx / len(self.train_loader)
-                        logger.info(
-                            f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                            f"\tloss: {loss.item():.6f}"
-                        )
-                    
-                # normalize statistical utility of a trainer based on the size
-                # of the dataset
-                self.normalize_stat_utility(epoch)
-
-        else:
-            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer availability_status = {self.availability_status.value} and wait_to_become_available = {self.wait_to_become_available}")
+        logger.info("Starting eval (forward pass) for trainer id {self.trainer_id}")
+        for epoch in range(1, self.epochs + 1):
+            for batch_idx, (data, target) in enumerate(self.train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                output = self.model(data)
+                
+                if self.use_oort_loss_fn == "False":
+                    # Loss function to use with Fedbuff
+                    loss = F.nll_loss(output, target)
+                elif self.use_oort_loss_fn == "True":
+                    # Calculate statistical utility of a trainer while
+                    # calculating loss
+                    loss = self.oort_loss(
+                        output, target.squeeze(), epoch, batch_idx)
+                if batch_idx % 100 == 0:
+                    done = batch_idx * len(data)
+                    total = len(self.train_loader.dataset)
+                    percent = 100.0 * batch_idx / len(self.train_loader)
+                    logger.info(
+                        f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                        f"\tloss: {loss.item():.6f}"
+                    )
+                
+            # normalize statistical utility of a trainer based on the size
+            # of the dataset
+            self.normalize_stat_utility(epoch)
 
 
     def initiate_heartbeat(self) -> None:
@@ -594,8 +603,8 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            if self.check_availability_status == "True":
-                self.check_and_update_availability_status()
+            if self.check_three_state_avl== "True":
+                self.check_and_update_three_state_avl()
             else:
                 self.check_leave_sleep_join()
 
