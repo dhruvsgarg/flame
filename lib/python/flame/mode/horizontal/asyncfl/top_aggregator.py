@@ -210,9 +210,9 @@ class TopAggregator(SyncTopAgg):
             logger.info(f"received status update message {msg} in agg_weights from {end}, "
                         f"will return")
             old_status = channel.get_end_property(end, PROP_AVL_STATE)
-            channel.set_end_property(end, PROP_AVL_STATE, msg[MessageType.AVAILABILITY_STATUS].value)
+            channel.set_end_property(end, PROP_AVL_STATE, msg[MessageType.AVL_STATE].value)
             new_status = channel.get_end_property(end, PROP_AVL_STATE)
-            logger.info(f"Changed the availability_status for end {end} from {old_status} to {new_status}. Exiting")
+            logger.info(f"Changed the avl_state for end {end} from {old_status} to {new_status}. Exiting")
             return
 
 

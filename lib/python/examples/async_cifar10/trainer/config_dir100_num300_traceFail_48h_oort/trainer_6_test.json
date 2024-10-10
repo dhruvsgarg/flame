@@ -205,9 +205,9 @@
             21798
         ],
         "failure_durations_s": "[]",
-        "availability_status_updates": "[]",
-        "check_availability_status": "True",
-        "wait_to_become_available": "True",
+        "avl_state_updates": "[]",
+        "check_three_state_avl": "True",
+        "wait_to_become_avl": "True",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1

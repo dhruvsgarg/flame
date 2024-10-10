@@ -93,7 +93,7 @@ class PrivacyType(str, Enum):
     DEFAULT = "default"
     DP = "dp"
 
-class TrainerAvailabilityStatus(str, Enum):
+class TrainerAvailabilityState(str, Enum):
    """Define availability status types."""
    AVL_TRAIN = "available_to_train"
    AVL_EVAL = "available_to_evaluate"

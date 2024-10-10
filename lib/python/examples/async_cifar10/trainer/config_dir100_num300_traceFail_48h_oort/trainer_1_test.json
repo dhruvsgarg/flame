@@ -213,9 +213,9 @@
             3114
         ],
         "failure_durations_s": "[]",
-        "availability_status_updates": "[(0, 'unavailable'), (20, 'available_to_train')]",
-        "check_availability_status": "True",
-        "wait_to_become_available": "True",
+        "avl_state_updates": "[(0, 'unavailable'), (20, 'available_to_train')]",
+        "check_three_state_avl": "True",
+        "wait_to_become_avl": "True",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1

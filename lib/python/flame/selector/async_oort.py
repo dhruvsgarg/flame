@@ -21,7 +21,7 @@ import random
 import time
 from datetime import timedelta
 
-from flame.config import TrainerAvailabilityStatus
+from flame.config import TrainerAvailabilityState
 import numpy as np
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
@@ -48,7 +48,7 @@ PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
-PROP_AVL_STATE = "availability_state"
+PROP_AVL_STATE = "avl_state"
 
 class AsyncOortSelector(AbstractSelector):
     """A AsyncFL selector class based on Oort."""
@@ -123,7 +123,7 @@ class AsyncOortSelector(AbstractSelector):
         # Tracks trainers that were selected but left training in
         # between
         self.track_selected_trainers_which_left = dict()
-        self.check_availability_status = True
+        self.check_three_state_avl= True
 
     def select(
         self,
@@ -1040,8 +1040,10 @@ class AsyncOortSelector(AbstractSelector):
         filtered_ends = dict()
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
-                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, availability_status = {ends[end_id].get_property(PROP_AVL_STATE)}")
-                if self.check_availability_status and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailabilityStatus.AVL_TRAIN.value, None) or self.check_availability_status == False:
+                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
+                # if the switch for new avl state check is on - only select trainer with AVL_STATE = None or AVL_TRAIN 
+                # if switch is off - do no more checks
+                if (self.check_three_state_avl and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailabilityState.AVL_TRAIN.value, None)) or self.check_three_state_avl== False:
                     filtered_ends[end_id] = ends[end_id]
                     logger.info(f"Adding end {end_id} to filtered ends")
                 else:
