@@ -209,13 +209,16 @@
             1187,
             2855
         ],
-        "failure_durations_s": "[(5390, 48286), (61152, 103772)]",
+        "two_state_unavl_durations_s": "[(5390, 48286), (61152, 103772)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
         },
         "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
+        "client_avail_aware_notify": {
+            "enabled": "True",
+            "type": "three_state"
+        },
         "training_delay_enabled": "True",
         "training_delay_s": "11.0"
     },
