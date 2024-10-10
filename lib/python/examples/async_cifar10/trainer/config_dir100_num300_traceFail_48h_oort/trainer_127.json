@@ -209,13 +209,16 @@
             9868,
             43045
         ],
-        "failure_durations_s": "[(7828, 54622), (64902, 1619), (67461, 4213), (80427, 61282), (151357, 13567)]",
+        "two_state_unavl_durations_s": "[(7828, 54622), (64902, 1619), (67461, 4213), (80427, 61282), (151357, 13567)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
         },
         "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
+        "client_avail_aware_notify": {
+            "enabled": "True",
+            "type": "three_state"
+        },
         "training_delay_enabled": "True",
         "training_delay_s": "2.0"
     },
