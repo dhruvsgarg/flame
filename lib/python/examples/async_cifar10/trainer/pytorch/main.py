@@ -175,7 +175,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.avl_state = TrainerAvailState.AVL_TRAIN
 
         #flag to decide whether the trainer upon unavailability will wait or exit
-        self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
+        self.wait_until_next_avl = "False"
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -573,6 +573,11 @@ class PyTorchCifar10Trainer(Trainer):
             # normalize statistical utility of a trainer based on the size
             # of the dataset
             self.normalize_stat_utility(epoch)
+        if self.training_delay_enabled == "True":
+            eval_delay = self.training_delay_s//2
+            time.sleep(eval_delay)
+            logger.debug(f"Delayed eval time for trainer "
+                         f"{self.trainer_id} by {eval_delay}s")
 
 
     def initiate_heartbeat(self) -> None:
