@@ -112,9 +112,13 @@ class AsyncOortSelector(AbstractSelector):
         self.all_selected = dict()
         self.selected_ends = dict()
 
-        # Tracks updates received from trainers and makes them
+        # Tracks weight updates received from trainers and makes them
         # available to select again
         self.ordered_updates_recv_ends = list()
+        
+        # Tracks eval updates received from trainers and makes them
+        # available to select again
+        self.trainer_eval_recv_ends = list()
 
         # Tracks timeouted trainers and number of times it happened to
         # a trainer
@@ -130,6 +134,7 @@ class AsyncOortSelector(AbstractSelector):
         ends: dict[str, End],
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list,
+        task_to_perform: str,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends.
 
@@ -144,10 +149,15 @@ class AsyncOortSelector(AbstractSelector):
         to that end. For such an end, we exclude it from send and
         include it for recv in return.
         """
-        logger.debug("calling oort select")
+        logger.debug("calling async oort select")
 
-        concurrency = min(len(ends), self.c)
-        logger.debug(f"len(ends): {len(ends)}, c: {self.c}, concurrency: {concurrency}")
+        # TODO: (DG) Update later, currently setting eval concurrency
+        # to be twice of training concurrency
+        if task_to_perform == "train":
+            concurrency = min(len(ends), self.c)
+        elif task_to_perform == "eval":
+            concurrency = min(len(ends), 2 * self.c)
+        logger.debug(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
 
         if concurrency == 0:
             logger.debug("ends is empty")
@@ -187,7 +197,8 @@ class AsyncOortSelector(AbstractSelector):
                 eligible_ends,
                 concurrency,
                 channel_props,
-                trainer_unavail_list
+                trainer_unavail_list,
+                task_to_perform
                 )
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
@@ -370,6 +381,10 @@ class AsyncOortSelector(AbstractSelector):
                 )
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
+                elif end_round_duration is None:
+                    # TODO: (DG) HACK. Check if this is okay. If the
+                    # end hasn't trained yet, we set it to a very high value
+                    sorted_round_duration.append(timedelta(seconds=99999))
             logger.info(
                 f"after for loop, sorted_round_duration: {sorted_round_duration}"
             )
@@ -393,7 +408,15 @@ class AsyncOortSelector(AbstractSelector):
         """
 
         end_last_selected_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
-        return math.sqrt(0.1 * math.log(round) / end_last_selected_round)
+        
+        # TODO: (DG) Enable a flag to use or not use temporal
+        # uncertainty as 0 based on our solution. We might want to
+        # disable it in the final selection process in FeLiX.
+        if end_last_selected_round is None:
+            trainer_temporal_uncertainty = 0
+        else:
+            trainer_temporal_uncertainty = math.sqrt(0.1 * math.log(round) / end_last_selected_round)
+        return trainer_temporal_uncertainty
 
     def calculate_global_system_utility_of_trainer(
         self, ends: dict[str, End], end_id: str
@@ -404,6 +427,23 @@ class AsyncOortSelector(AbstractSelector):
         """
 
         end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+        
+        # In normal training, the util of trainer is 1 if it is faster
+        # than preferred round duration. This is a multiplier to the
+        # trainer utility. Thus, if the trainer is slower than
+        # preferred round duration, the multiplier is (0, 1) which
+        # means that the utility of the trainer decreases.
+        
+        # For eval-enabled training, it is possible that the trainer
+        # hasn't trained yet but has only pushed an eval update. For
+        # these trainers, we retain the multiplicative factor as 1 so
+        # as to incentivise them to be picked whenever available to
+        # train.
+        
+        # TODO:(DG) Make it configurable via flag for Felix selection
+        # policy.
+        if end_round_duration is None:
+            return 1
 
         if end_round_duration <= self.round_preferred_duration:
             return 1
@@ -549,8 +589,10 @@ class AsyncOortSelector(AbstractSelector):
             f"{selected_ends} before processing"
         )
 
-        num_ends_to_remove = min(len(self.ordered_updates_recv_ends), self.agg_goal)
-        logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
+        num_ends_to_remove = min(
+            len(self.ordered_updates_recv_ends), 
+            self.agg_goal
+            )
         if num_ends_to_remove != 0:
             ends_to_remove = self.ordered_updates_recv_ends[:num_ends_to_remove]
             logger.debug(f"Will remove these ends from "
@@ -565,6 +607,20 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"self.ordered_updates_recv_ends after removing first "
                          f"num_ends_to_remove: {num_ends_to_remove} "
                          f"elements: {self.ordered_updates_recv_ends}")
+            
+            
+            logger.info(f"Ends to remove based on trainer updates received: {ends_to_remove}")
+            
+            # Adding trainer_eval_recv_ends to accoount for trainers that
+            # have finished eval updates. These trainers also need
+            # to be freed up to participate in the next round.
+            logger.info(f"Ends to remove based on eval updates received: {self.trainer_eval_recv_ends}")
+            ends_to_remove = ends_to_remove + self.trainer_eval_recv_ends
+            
+            logger.info(f"All ends to remove (train + eval): {ends_to_remove}")
+            
+            self.trainer_eval_recv_ends = []
+            logger.debug(f"Cleared trainer_eval_recv_ends: {self.trainer_eval_recv_ends}")
 
             for end_id in ends_to_remove:
                 if end_id not in ends:
@@ -930,6 +986,7 @@ class AsyncOortSelector(AbstractSelector):
         concurrency: int,
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list = None,
+        task_to_perform: str = "train",
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
 
@@ -1040,16 +1097,44 @@ class AsyncOortSelector(AbstractSelector):
         filtered_ends = dict()
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
-                logger.info(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
-                # if the switch for new avl state check is on - only select trainer with AVL_STATE = None or AVL_TRAIN 
-                # if switch is off - do no more checks
-                if (self.check_three_state_avl and ends[end_id].get_property(PROP_AVL_STATE) in (TrainerAvailabilityState.AVL_TRAIN.value, None)) or self.check_three_state_avl== False:
+                logger.debug(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
+                
+                # If check_three_state_avl=False, no more checks,
+                # directly add end to filtered_ends
+                
+                # If check_three_state_avl=True, filtered ends needs
+                # to be populated based on the following conditions:
+                # For task_to_perform=train, eligible ends are in
+                # states {avl_train, None}
+                # For task_to_perform=eval, eligible ends are in
+                # states {avl_train, avl_eval None}
+                
+                if self.check_three_state_avl == False:
                     filtered_ends[end_id] = ends[end_id]
-                    logger.info(f"Adding end {end_id} to filtered ends")
+                    logger.debug(f"No three_state_avl_check, adding end {end_id} to filtered ends")
                 else:
-                    logger.info(f"NRL: Not sending weights to end {end_id} as the trainer is unavailable to train")
-            
-                    
+                    # Three state avl check is enabled
+                    curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
+                    if task_to_perform == "train" and (
+                        curr_end_id_avl_state in (
+                            TrainerAvailabilityState.AVL_TRAIN.value,
+                            None
+                            )
+                        ):
+                        filtered_ends[end_id] = ends[end_id]
+                        logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
+                    elif task_to_perform == "eval" and (
+                        curr_end_id_avl_state in (
+                            TrainerAvailabilityState.AVL_TRAIN.value,
+                            TrainerAvailabilityState.AVL_EVAL.value, 
+                            None
+                            )
+                        ):
+                        filtered_ends[end_id] = ends[end_id]
+                        logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
+                    else:
+                        logger.debug(f"NRL: Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
+                                     f"but was in state {curr_end_id_avl_state}. Not eligible.")                    
 
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count

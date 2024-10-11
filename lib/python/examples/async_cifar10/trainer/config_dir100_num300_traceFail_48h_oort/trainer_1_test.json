@@ -213,7 +213,7 @@
             3114
         ],
         "failure_durations_s": "[]",
-        "avl_state_updates": "[(0, 'unavailable'), (20, 'available_to_train')]",
+        "avl_state_updates": "[(5, 'unavailable'), (20, 'available_to_train')]",
         "check_three_state_avl": "True",
         "wait_to_become_avl": "True",
         "heartbeats": {
