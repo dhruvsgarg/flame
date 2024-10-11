@@ -218,13 +218,16 @@
             7914,
             32775
         ],
-        "failure_durations_s": "[(9, 41441), (43247, 10), (43552, 10484), (55180, 7710), (63808, 52220), (116031, 20555), (137416, 7664), (148422, 2002), (151208, 13716)]",
+        "two_state_unavl_durations_s": "[(9, 41441), (43247, 10), (43552, 10484), (55180, 7710), (63808, 52220), (116031, 20555), (137416, 7664), (148422, 2002), (151208, 13716)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
         },
         "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
+        "client_avail_aware_notify": {
+            "enabled": "True",
+            "type": "three_state"
+        },
         "training_delay_enabled": "True",
         "training_delay_s": "12.0"
     },

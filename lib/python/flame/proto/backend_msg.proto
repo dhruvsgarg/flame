@@ -30,16 +30,23 @@ enum NotifyType {
   JOIN = 1;
   LEAVE = 2;
   ACK = 3; // simply acknowledge the receipt of notify message
+  STATE_UPDATE = 4; // update the state
 }
 
 message BackendID {
   string end_id = 1;
 }
 
+message NotifyInfo {
+  string state = 1;
+  string timestamp = 2;
+}
+
 message Notify {
   string end_id = 1;
   string channel_name = 2;
   NotifyType type = 3;
+  optional NotifyInfo info = 4;
 }
 
 message Data {

@@ -89,20 +89,20 @@ class PyTorchCifar10Trainer(Trainer):
         self.criterion = None
 
         # TODO: Remove the hard requirement for config to include
-        # trainer_indices_list and failure_durations_s Setting the
+        # trainer_indices_list and two_state_unavl_durations_s Setting the
         # indices used by the trainer
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         # Loading the failure durations for trainers
         self.trainer_start_ts = time.time()
-        self.failure_durations_s = ast.literal_eval(
-            self.config.hyperparameters.failure_durations_s
+        self.two_state_unavl_durations_s = ast.literal_eval(
+            self.config.hyperparameters.two_state_unavl_durations_s
         )
         self.timestamp_next_sleep_s = calendar.timegm(
             time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
         )
-        if len(self.failure_durations_s) > 0:
+        if len(self.two_state_unavl_durations_s) > 0:
             self.timestamp_next_sleep_s = (
-                self.trainer_start_ts + self.failure_durations_s[0][0]
+                self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
             )
         
 
@@ -110,10 +110,10 @@ class PyTorchCifar10Trainer(Trainer):
         curr_time = time.time()
         
         if (curr_time >= self.timestamp_next_sleep_s) and (
-            len(self.failure_durations_s) > 0
+            len(self.two_state_unavl_durations_s) > 0
         ):
             # pop leftmost element
-            sleep_config_tuple = self.failure_durations_s.pop(0)
+            sleep_config_tuple = self.two_state_unavl_durations_s.pop(0)
 
             # get the duration of sleep and set the params for next
             # sleep
@@ -130,9 +130,9 @@ class PyTorchCifar10Trainer(Trainer):
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while time_elapsed_from_start > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1]):
-                    self.failure_durations_s.pop(0)
-                    if len(self.failure_durations_s) == 0:
+                while time_elapsed_from_start > (self.two_state_unavl_durations_s[0][0] + self.two_state_unavl_durations_s[0][1]):
+                    self.two_state_unavl_durations_s.pop(0)
+                    if len(self.two_state_unavl_durations_s) == 0:
                         break
             else: 
                 logger.info(f"Task_id: {self.trainer_id} going to sleep up at timestamp: {time.time()}")
@@ -141,8 +141,8 @@ class PyTorchCifar10Trainer(Trainer):
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
-            if len(self.failure_durations_s) > 0:
-                self.timestamp_next_sleep_s = self.trainer_start_ts + self.failure_durations_s[0][0]
+            if len(self.two_state_unavl_durations_s) > 0:
+                self.timestamp_next_sleep_s = self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
                 if(self.timestamp_next_sleep_s < time.time()):
                     logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time")
             else:

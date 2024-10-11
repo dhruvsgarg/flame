@@ -34,7 +34,7 @@ from flame.common.util import (
     weights_to_device,
     weights_to_model_device,
 )
-from flame.config import Config
+from flame.config import Config, TrainerAvailState
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
@@ -130,6 +130,8 @@ class Trainer(Role, metaclass=ABCMeta):
         self._updates_returned_upto_round = 0
         self._trainer_online_channel_status = True
 
+        self.task_to_perform = "train"
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -169,7 +171,7 @@ class Trainer(Role, metaclass=ABCMeta):
             time.sleep(1)
             return
 
-        logger.debug(f"New message received for trainer_id {self.trainer_id}")
+        logger.info(f"New message received for trainer_id {self.trainer_id}")
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
@@ -200,9 +202,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 channel.cleanup_recvd_ends()
                 return
 
-            # Load the model onto GPU
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
+            # Load the model onto GPU if self.model is None:
+            # self._load_model_onto_gpu()
 
             # Update the model
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -215,6 +216,11 @@ class Trainer(Role, metaclass=ABCMeta):
             self.datasampler.handle_metadata_from_aggregator(
                 msg[MessageType.DATASAMPLER_METADATA]
             )
+        if MessageType.TASK_TO_PERFORM in msg:
+            self.task_to_perform = msg[MessageType.TASK_TO_PERFORM]
+            logger.info(f"NRL: Found task_to_perform in msg: {self.task_to_perform}")
+        else:
+            logger.info(f"NRL: Didn't find TASK_TO_PERFORM in msg")
 
         self.fetch_success = True
 
@@ -232,6 +238,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
+        logger.info(f"NRL: avl_state of trainer {self.trainer_id} when put is invoked, is: {self.avl_state}")
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
         elif tag == TAG_HEARTBEAT:
@@ -263,7 +270,20 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(f"### SEND WEIGHTS for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id}")
+                     f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}")
+        # if switch to do three_state_avl is on and the trainer is unavailable - check the wait_to_become_avl switch
+        # depending on the switch we decide whether to wait for availability or exit
+        if self.client_avail_aware_notify['type']== "three_state" and self.avl_state == TrainerAvailState.UNAVL:
+            if self.wait_until_next_avl == "True":
+                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
+                while self.avl_state == TrainerAvailState.UNAVL:
+                    time.sleep(0.1)
+            else:
+                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Exiting")
+                return
+
+
+
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_weights] channel not found with {tag}")
@@ -276,34 +296,29 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
+    
+        if self.task_to_perform == "train":
+            #trainer is expected to train and it is also available to train - best case
+                self._update_weights()
 
-        self._update_weights()
+                delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
 
-        delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
+                delta_weights = self.privacy.apply_dp_fn(delta_weights)
 
-        delta_weights = self.privacy.apply_dp_fn(delta_weights)
+                self.regularizer.update()
 
-        self.regularizer.update()
-
-        # NOTE: Also sending stat_utility for OORT
-        msg = {
-            MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
-            MessageType.DATASET_SIZE: self.dataset_size,
-            MessageType.MODEL_VERSION: self._round,
-            MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-            MessageType.STAT_UTILITY: self._stat_utility,
-        }
-
-        # Do not proceed with sending of sending of weights if the
-        # client-avail-notify thread has left the channel. Wait for it
-        # to come back online before sending an update.
-        send_start_time = time.time()
-        while not self._trainer_online_channel_status:
-            time.sleep(0.1)
-            send_wait_time = math.ceil(time.time() - send_start_time)
-            if send_wait_time % 5 == 0:
-                logger.debug(f"Waiting for channel to join before send "
-                             f"since: {send_wait_time} seconds")
+                # NOTE: Also sending stat_utility for OORT
+                msg = {
+                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                    MessageType.DATASET_SIZE: self.dataset_size,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+                    MessageType.STAT_UTILITY: self._stat_utility,
+                }
+        else:
+            msg = {
+                MessageType.STAT_UTILITY: self._stat_utility
+            }
 
         channel.send(end, msg)
 
@@ -364,6 +379,25 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"{channel._name} and trainer: {self.trainer_id}."
                     f" Set trainer_online_channel_status: "
                     f"{self._trainer_online_channel_status}")
+        
+    def _perform_channel_state_update(self, tag: str, state: TrainerAvailState, timestamp: str) -> None:
+        logger.debug(f"In _perform_channel_state_update for tag: {tag}, "
+                     f"trainer_id: {self.trainer_id}, "
+                     f"new state: {state}, "
+                     f"from timestamp: {timestamp}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_perform_channel_state_update] channel not found with {tag}")
+            return
+
+        # this call waits for at least one peer to join this channel
+        logger.debug(f"_perform_channel_state_update: waiting for someone to join channel: "
+                     f"{channel} for trainer_id: {self.trainer_id}")
+        channel.await_join()
+
+        channel.update_trainer_state(state, timestamp)
+        logger.info(f"Sent channel state update message for channel: "
+                    f"{channel._name} and trainer: {self.trainer_id}, with state: {state} from timestamp: {timestamp}")
 
     def save_metrics(self):
         """Save metrics in a model registry."""
@@ -383,10 +417,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
-            #     logger.debug(f"Trainer_id: {self.trainer_id} came to update_model but "
-            #                  f"model was not on GPU. Load completed.")
+            # if self.model is None: self._load_model_onto_gpu()
+            #     logger.debug(f"Trainer_id: {self.trainer_id} came to
+            #     update_model but " f"model was not on GPU. Load
+            #                  completed.")
             self.model.load_state_dict(self.weights)
         elif self.framework == MLFramework.TENSORFLOW:
             self.model.set_weights(self.weights)
@@ -396,10 +430,10 @@ class Trainer(Role, metaclass=ABCMeta):
         self.prev_weights = self.weights
 
         if self.framework == MLFramework.PYTORCH:
-            # if self.model is None:
-            #     self._load_model_onto_gpu()
-            #     logger.error(f"Trainer {self.trainer_id} came to update_weights before "
-            #                  f"sending. But the model had to be loaded on the device.")
+            # if self.model is None: self._load_model_onto_gpu()
+            #     logger.error(f"Trainer {self.trainer_id} came to
+            #     update_weights before " f"sending. But the model had
+            #                  to be loaded on the device.")
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
@@ -528,12 +562,15 @@ class Trainer(Role, metaclass=ABCMeta):
             # Now start the rest of the tasks
             (
                 task_internal_init
-                # >> task_init_oort_variables
+                >> task_init_oort_variables
+                # Added code here to check for the status of the task
+                # i.e., "train + eval" vs "eval only" 
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_sleep_after_get >> task_train >>
-                    task_sleep_after_train >> task_eval >> task_sleep_after_eval >>
+                    task_get >> task_sleep_after_get >>
+                    task_train >> task_sleep_after_train >> task_eval >>
+                    task_sleep_after_eval >>
                     task_put_weight >> task_sleep_after_put_weight >>
                     task_save_metrics >> task_sleep_after_save_metrics
                 )

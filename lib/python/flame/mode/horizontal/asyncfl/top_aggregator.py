@@ -40,6 +40,7 @@ from flame.selector.oort import (
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
+    PROP_AVL_STATE
 )
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,6 @@ class TopAggregator(SyncTopAgg):
             return
 
         # If message contains model updates, handle it
-        logger.debug(f"received data from {end}")
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
@@ -205,10 +205,16 @@ class TopAggregator(SyncTopAgg):
             timestamp = metadata[1]
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
+        
         else:
-            logger.warn(f"received INCORRECT message {msg} in agg_weights from {end}, "
+            logger.info(f"received status update message {msg} in agg_weights from {end}, "
                         f"will return")
+            old_status = channel.get_end_property(end, PROP_AVL_STATE)
+            channel.set_end_property(end, PROP_AVL_STATE, msg[MessageType.AVL_STATE].value)
+            new_status = channel.get_end_property(end, PROP_AVL_STATE)
+            logger.info(f"Changed the avl_state for end {end} from {old_status} to {new_status}. Exiting")
             return
+
 
         if self.reject_stale_updates == "True":
             logger.debug("Check trainer model version, disallow stale updates")
@@ -656,7 +662,7 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
-    def _distribute_weights(self, tag: str) -> None:
+    def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """Distribute a global model in asynchronous FL fashion.
 
         This method is overridden from one in synchronous top
@@ -695,7 +701,10 @@ class TopAggregator(SyncTopAgg):
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
-        ends = channel.ends(VAL_CH_STATE_SEND)
+        
+        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
+        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        # NRL TODO: else will take care of randomly selecting x trainers for "eval only" operation 
         if not ends:
             logger.debug(f"No trainers found for tag {tag}, will "
                          f"move to get() for fetch weights from trainers")
@@ -725,6 +734,7 @@ class TopAggregator(SyncTopAgg):
                     ),
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform
                 },
             )
 
@@ -774,24 +784,7 @@ class TopAggregator(SyncTopAgg):
             # TAG_HEARTBEAT)
 
         c = self.composer
-        # unlink tasklets that are chained from the parent class
-        # (i.e., super().compose()).
-        #
-        # unlink() internally calls tasklet.reset(), which in turn
-        # initialize all loop related state, which includes cont_fn.
-        # therefore, if cont_fn is needed for a tasklet,
-        # set_continue_fn() in Tasklet class should be used.
         c.unlink()
-
-        # # Reset the task_get_heartbeat to ensure it is in the correct
-        # # state
-        # task_get_heartbeat.reset()
-
-        # # Start a separate thread for the heartbeat task
-        # logger.debug("Going to start the thread for processing
-        # heartbeats") heartbeat_thread = threading.Thread(
-        #     target=self.heartbeat_task, args=(task_get_heartbeat,) )
-        # heartbeat_thread.daemon = True heartbeat_thread.start()
 
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as

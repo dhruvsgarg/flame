@@ -222,11 +222,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # update model with global weights
         self._update_model()
 
-    def put(self, tag: str) -> None:
+    def put(self, tag: str, task_to_perform: str = "train") -> None:
         """Set data to remote role(s)."""
+        logger.info(f"NRL: distributing weights with task_to_perform = {task_to_perform}")
         if tag == TAG_DISTRIBUTE:
             self.dist_tag = tag
-            self._distribute_weights(tag)
+            self._distribute_weights(tag, task_to_perform)
 
     def _distribute_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)

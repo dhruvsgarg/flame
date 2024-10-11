@@ -164,7 +164,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
                 curr_trainer_unavail_time = ast.literal_eval(trainer_json[
-                    "hyperparameters"]["failure_durations_s"]
+                    "hyperparameters"]["two_state_unavl_durations_s"]
                     )
                 trainer_unavail_dict[curr_trainer_id] = curr_trainer_unavail_time
                 print("Completed file read for ", os.path.join(files_path, "trainer_"
