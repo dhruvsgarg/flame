@@ -182,7 +182,13 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"No data from {end}; skipping it")
             return
 
-        # If message contains model updates, handle it
+        # NOTE: Only 2 types of messages are expected here: (i) model
+        # updates after task_to_perform=TRAIN with weights or (ii)
+        # statistical utility updates after task_to_perform=EVAL with
+        # info on stat_utility. Else, throw an error.
+         
+        # Case #1: Message after task_to_perform=TRAIN. This will
+        # contain stat_utility too but will processed later.
         if MessageType.MODEL_VERSION in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
@@ -205,14 +211,34 @@ class TopAggregator(SyncTopAgg):
             timestamp = metadata[1]
             logger.debug(f"Returned round_start_time_tup: {round_start_time_tup} for "
                          f"end {end} and timestamp {timestamp}")
+            
+            # TODO: (DG) Also set the end property for task=eval done
+            # at timestamp=current.
         
+        # Case #2: Message after task_to_perform=EVAL
+        elif MessageType.STAT_UTILITY in msg:
+            logger.info(f"received eval message {msg} in agg_weights from {end}, "
+                        f"with stat_utility, updating end property")
+            
+            channel.set_end_property(
+                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+            )
+            
+            # TODO: (DG) Also set the end property for task=eval done
+            # at timestamp=current.
+            
+            # add trainer to list of ends that have replied with eval
+            # updates
+            # capture telemetry on trainer participation in rounds
+            channel._selector.trainer_eval_recv_ends.append(end)
+            logger.debug(f"After appending {end} to trainer_eval_recv_ends: "
+                        f"{channel._selector.trainer_eval_recv_ends}")
+            
+            return
+        
+        # Else, throw an error and return
         else:
-            logger.info(f"received status update message {msg} in agg_weights from {end}, "
-                        f"will return")
-            old_status = channel.get_end_property(end, PROP_AVL_STATE)
-            channel.set_end_property(end, PROP_AVL_STATE, msg[MessageType.AVL_STATE].value)
-            new_status = channel.get_end_property(end, PROP_AVL_STATE)
-            logger.info(f"Changed the avl_state for end {end} from {old_status} to {new_status}. Exiting")
+            logger.error(f"Invalid message received from {end} in aggregate_weights: {msg}")
             return
 
 
@@ -430,10 +456,8 @@ class TopAggregator(SyncTopAgg):
             logger.debug("didn't reach agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
 
-            # TODO: (DG) Update trainer update count here and set end
-            # property to be used later in the selector
-            # Set trainer participation count
-            # property here.
+            # Set trainer participation count property here to be used
+            # later in selection.
             channel.set_end_property(
                 end,
                 PROP_UPDATE_COUNT,
@@ -714,7 +738,7 @@ class TopAggregator(SyncTopAgg):
         for end in ends:
             # Send shouldn't be allowed if already sent to a trainer
             # in that same round
-            logger.info(f"sending weights to {end} with model_version: {self._round}")
+            logger.info(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
 
             # setting start time for OORT TODO: (DG) round_start_time
             # for all trainers in the same round may not be the same
@@ -775,9 +799,15 @@ class TopAggregator(SyncTopAgg):
             task_reset_agg_goal_vars = Tasklet(
                 "reset_agg_goal_vars", self._reset_agg_goal_variables
             )
-
-            task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
-
+            
+            # Created separate put tasklets for train and eval
+            task_put_train = Tasklet("distribute", self.put, TAG_DISTRIBUTE, "train")
+            
+            task_put_eval = Tasklet("distribute", self.put, TAG_DISTRIBUTE, "eval")
+            
+            # TODO: (DG) Update later, task_get_weights gets both
+            # weights from train and eval tasks. Will create a cleaner
+            # separation later.
             task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
             # task_get_heartbeat = Tasklet("heartbeat", self.get,
@@ -800,7 +830,7 @@ class TopAggregator(SyncTopAgg):
                 task_reset_agg_goal_vars
                 # >> asyncfl_loop(task_put >> task_get_weights >>
                 # >> task_get_heartbeat)
-                >> asyncfl_loop(task_put >> task_get_weights)
+                >> asyncfl_loop(task_put_train >> task_put_eval >> task_get_weights)
                 >> c.tasklet("train")
                 >> c.tasklet("evaluate")
                 >> c.tasklet("analysis")
