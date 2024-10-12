@@ -324,9 +324,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self._updates_returned_upto_round = self._round
 
-        logger.info(f"sending weights done for trainer_id: {self.trainer_id} "
-                    f"and _updates_returned_upto_round "
-                    f"{self._updates_returned_upto_round}")
+        if self.task_to_perform == "train":
+            logger.info(f"sending weights done for trainer_id: {self.trainer_id} "
+                        f"and _updates_returned_upto_round "
+                        f"{self._updates_returned_upto_round}")
+        elif self.task_to_perform == "eval":
+            logger.info(f"sending eval stat utility done for trainer_id: {self.trainer_id} "
+                        f"for model version: {self._round}")
+        else:
+            logger.error(f"Task to perform is not defined for trainer_id: {self.trainer_id}")
 
         # Evict model from gpu to free up space
         # self._evict_model_from_gpu()
