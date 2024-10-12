@@ -156,7 +156,9 @@ class AsyncOortSelector(AbstractSelector):
         if task_to_perform == "train":
             concurrency = min(len(ends), self.c)
         elif task_to_perform == "eval":
-            concurrency = min(len(ends), 2 * self.c)
+            # TODO: (DG) Update later. Have as many trainers doing
+            # eval as there are for training.
+            concurrency = min(len(ends), self.agg_goal - len(self.trainer_eval_recv_ends))
         logger.debug(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
 
         if concurrency == 0:
@@ -1117,7 +1119,7 @@ class AsyncOortSelector(AbstractSelector):
                     curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
                     if task_to_perform == "train" and (
                         curr_end_id_avl_state in (
-                            TrainerAvailabilityState.AVL_TRAIN.value,
+                            TrainerAvailState.AVL_TRAIN.value,
                             None
                             )
                         ):
@@ -1125,8 +1127,8 @@ class AsyncOortSelector(AbstractSelector):
                         logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
                     elif task_to_perform == "eval" and (
                         curr_end_id_avl_state in (
-                            TrainerAvailabilityState.AVL_TRAIN.value,
-                            TrainerAvailabilityState.AVL_EVAL.value, 
+                            TrainerAvailState.AVL_TRAIN.value,
+                            TrainerAvailState.AVL_EVAL.value, 
                             None
                             )
                         ):
