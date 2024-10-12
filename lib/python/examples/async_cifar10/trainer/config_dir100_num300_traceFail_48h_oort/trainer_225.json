@@ -203,13 +203,16 @@
             7757,
             1980
         ],
-        "failure_durations_s": "[(8, 6872), (16847, 20342), (49462, 5832), (57219, 8851), (66074, 32399), (98797, 20), (100569, 8710), (109516, 2), (110751, 7718), (122956, 17005), (141733, 23191)]",
+        "two_state_unavl_durations_s": "[(8, 6872), (16847, 20342), (49462, 5832), (57219, 8851), (66074, 32399), (98797, 20), (100569, 8710), (109516, 2), (110751, 7718), (122956, 17005), (141733, 23191)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
         },
         "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
+        "client_avail_aware_notify": {
+            "enabled": "True",
+            "type": "three_state"
+        },
         "training_delay_enabled": "True",
         "training_delay_s": "17.0"
     },
