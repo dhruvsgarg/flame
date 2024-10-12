@@ -158,7 +158,7 @@ class AsyncOortSelector(AbstractSelector):
         elif task_to_perform == "eval":
             # TODO: (DG) Update later. Have as many trainers doing
             # eval as there are for training.
-            concurrency = min(len(ends), self.agg_goal - len(self.trainer_eval_recv_ends))
+            concurrency = min(len(ends), self.c + self.agg_goal - len(self.trainer_eval_recv_ends))
         logger.debug(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
 
         if concurrency == 0:
