@@ -93,7 +93,7 @@ class PrivacyType(str, Enum):
     DEFAULT = "default"
     DP = "dp"
 
-class TrainerAvailabilityState(str, Enum):
+class TrainerAvailState(str, Enum):
    """Define availability status types."""
    AVL_TRAIN = "available_to_train"
    AVL_EVAL = "available_to_evaluate"
@@ -162,7 +162,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="heartbeats",
         default={}
         )
-    client_avail_aware_notify: t.Optional[bool] = Field(
+    client_avail_aware_notify: t.Optional[dict] = Field(
         alias="clientAvailAwareNotify",
         default=False
         )

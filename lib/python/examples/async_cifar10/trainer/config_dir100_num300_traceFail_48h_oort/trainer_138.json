@@ -211,13 +211,16 @@
             25290,
             47931
         ],
-        "failure_durations_s": "[(20724, 58616), (80212, 16), (80244, 23), (82800, 82124)]",
+        "two_state_unavl_durations_s": "[(20724, 58616), (80212, 16), (80244, 23), (82800, 82124)]",
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
         },
         "use_oort_loss_fn": "True",
-        "client_avail_aware_notify": "True",
+        "client_avail_aware_notify": {
+            "enabled": "True",
+            "type": "three_state"
+        },
         "training_delay_enabled": "True",
         "training_delay_s": "12.0"
     },

@@ -21,7 +21,7 @@ import random
 import time
 from datetime import timedelta
 
-from flame.config import TrainerAvailabilityState
+from flame.config import TrainerAvailState
 import numpy as np
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
