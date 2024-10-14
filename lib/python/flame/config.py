@@ -141,6 +141,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     rounds: int
     epochs: int
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
+    eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
     #       mechanism in the control plane. This needs to be revisited
