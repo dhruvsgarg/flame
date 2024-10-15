@@ -1115,32 +1115,28 @@ class AsyncOortSelector(AbstractSelector):
                 # states {avl_train, None}
                 # For task_to_perform=eval, eligible ends are in
                 # states {avl_train, avl_eval None}
-                
-                if self.check_three_state_avl == False:
+                    
+                curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
+                # Even if client notify is not enabled, this logic would work since curr_end_id_avl_state = None 
+                if task_to_perform == "train" and (
+                    curr_end_id_avl_state in (
+                        TrainerAvailState.AVL_TRAIN.value,
+                        None
+                        )
+                    ):
                     filtered_ends[end_id] = ends[end_id]
-                    logger.debug(f"No three_state_avl_check, adding end {end_id} to filtered ends")
+                    logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check is True, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
+                elif self.check_three_state_avl and task_to_perform == "eval" and (
+                    curr_end_id_avl_state in (
+                        TrainerAvailState.AVL_TRAIN.value,
+                        TrainerAvailState.AVL_EVAL.value, 
+                        None
+                        )
+                    ):
+                    filtered_ends[end_id] = ends[end_id]
+                    logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
                 else:
-                    # Three state avl check is enabled
-                    curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
-                    if task_to_perform == "train" and (
-                        curr_end_id_avl_state in (
-                            TrainerAvailState.AVL_TRAIN.value,
-                            None
-                            )
-                        ):
-                        filtered_ends[end_id] = ends[end_id]
-                        logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
-                    elif task_to_perform == "eval" and (
-                        curr_end_id_avl_state in (
-                            TrainerAvailState.AVL_TRAIN.value,
-                            TrainerAvailState.AVL_EVAL.value, 
-                            None
-                            )
-                        ):
-                        filtered_ends[end_id] = ends[end_id]
-                        logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
-                    else:
-                        logger.debug(f"NRL: Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
+                    logger.debug(f"NRL: Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
                                      f"but was in state {curr_end_id_avl_state}. Not eligible.")                    
 
         # extra informs about maximum possible available ends that can
