@@ -213,8 +213,8 @@
             3114
         ],
         "two_state_unavl_durations_s": "[]",
-        "two_state_avl_event_ts": "[(5, 'unavailable'), (40, 'available_to_train')]",
-        "three_state_avl_event_ts": "[]",
+        "two_state_avl_event_ts": "[]",
+        "three_state_avl_event_ts": "[(5, 'unavailable'), (40, 'available_to_train')]",
         "wait_until_next_avl": "True",
         "heartbeats": {
             "enabled": "False",
@@ -223,7 +223,7 @@
         "use_oort_loss_fn": "True",
         "client_avail_aware_notify": {
             "enabled": "True",
-            "type": "two_state"
+            "type": "three_state"
         },
         "training_delay_enabled": "True",
         "training_delay_s": "8.0"
