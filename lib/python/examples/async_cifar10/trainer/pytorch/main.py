@@ -166,16 +166,25 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
 
-        #NRL: added new code for avl_event_ts
-        self.avl_event_ts = ast.literal_eval(
-            self.config.hyperparameters.avl_event_ts
+        #NRL: added new code for three_state_avl_event_ts
+        self.three_state_avl_event_ts = ast.literal_eval(
+            self.config.hyperparameters.three_state_avl_event_ts
         )
-        logger.info(f"NRL: avl_event_ts for trainer id {self.trainer_id} = {self.avl_event_ts}")
+        logger.info(f"NRL: three_state_avl_event_ts for trainer id {self.trainer_id} = {self.three_state_avl_event_ts}")
+
+        self.two_state_avl_event_ts = ast.literal_eval(
+            self.config.hyperparameters.two_state_avl_event_ts
+        )
+        logger.info(f"NRL: two_state_avl_event_ts for trainer id {self.trainer_id} = {self.two_state_avl_event_ts}")
+        if self.client_avail_aware_notify['type'] == "three_state":
+            self.state_avl_event_ts = self.three_state_avl_event_ts
+        else:
+            self.state_avl_event_ts = self.two_state_avl_event_ts
 
         self.avl_state = TrainerAvailState.AVL_TRAIN
 
         #flag to decide whether the trainer upon unavailability will wait or exit
-        self.wait_until_next_avl = "False"
+        self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
     
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -395,9 +404,9 @@ class PyTorchCifar10Trainer(Trainer):
         logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
                      f"timestamp: {time.time()}")
 
-    def check_and_update_three_state_avl(self):
-       if len(self.avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.avl_event_ts[0][0]:
-           state_to_set = self.avl_event_ts.pop(0)[1]
+    def check_and_update_state_avl(self):
+        if len(self.state_avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.state_avl_event_ts[0][0]:
+           state_to_set = self.state_avl_event_ts.pop(0)[1]
            old_status = self.avl_state.value
            try:
                self.avl_state = TrainerAvailState(state_to_set)
@@ -405,7 +414,7 @@ class PyTorchCifar10Trainer(Trainer):
                logger.error(f"NRL: Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
                return           
            new_status = self.avl_state.value
-           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.avl_event_ts}")
+           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.state_avl_event_ts}")
         #    self.send_availability_status("upload")
            self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
 
@@ -461,7 +470,7 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
-        if self.client_avail_aware_notify['type'] == "three_state" and self.avl_state != TrainerAvailState.AVL_TRAIN:
+        if self.client_avail_aware_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
@@ -544,10 +553,10 @@ class PyTorchCifar10Trainer(Trainer):
 
         if self.avl_state == TrainerAvailState.UNAVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
-            while self.avl_state == TrainerAvailState.UNAVAILABLE:
+            while self.avl_state == TrainerAvailState.UNAVL:
                 time.sleep(0.1)
 
-        logger.info("Starting eval (forward pass) for trainer id {self.trainer_id}")
+        logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
         for epoch in range(1, self.epochs + 1):
             for batch_idx, (data, target) in enumerate(self.train_loader):
                 data, target = data.to(self.device), target.to(self.device)
@@ -605,12 +614,8 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            if self.client_avail_aware_notify['type']== "three_state":
-                self.check_and_update_three_state_avl()
-            else:
-                self.check_leave_sleep_join()
-
-
+            if self.client_avail_aware_notify['enabled']== "True":
+                self.check_and_update_state_avl()
 def main():
     import argparse
 

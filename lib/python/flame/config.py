@@ -179,6 +179,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="useOORTLossFn",
         default=False
         )
+    wait_until_next_avl: t.Optional[bool] = Field(
+        alias="waitUntilNextAvail",
+        default=False
+        )
 
 
 class Groups(FlameSchema):

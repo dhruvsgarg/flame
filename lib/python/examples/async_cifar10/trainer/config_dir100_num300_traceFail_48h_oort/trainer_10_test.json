@@ -213,8 +213,8 @@
             6328
         ],
         "two_state_unavl_durations_s": "[]",
-        "avl_event_ts": "[]",
-        "check_three_state_avl": "True",
+        "two_state_avl_event_ts": "[]",
+        "three_state_avl_event_ts": "[]",
         "wait_until_next_avl": "True",
         "heartbeats": {
             "enabled": "False",
