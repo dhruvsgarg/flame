@@ -68,7 +68,7 @@ class Net(nn.Module):
 class PyTorchCifar10Trainer(Trainer):
     """PyTorch CIFAR-10 Trainer."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, battery_threshold) -> None:
         """Initialize a class instance."""
         self.config = config
         self.dataset_size = 0
@@ -127,28 +127,38 @@ class PyTorchCifar10Trainer(Trainer):
                 )
             
         # Check if client will notify aggregator of its availability
-        self.client_avail_aware_notify = (
-            self.config.hyperparameters.client_avail_aware_notify
+        self.client_notify = (
+            self.config.hyperparameters.client_notify
         )
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        
+        # Use the battery_threshold to determine the
+        # avl_events_3_state config. Default to 50 if not provided
+        self.event_battery_threshold = battery_threshold
+        logger.info(f"Trainer id {self.trainer_id} has battery threshold set to {self.event_battery_threshold}")
+        if self.event_battery_threshold == 50:
+            self.avl_events_3_state = ast.literal_eval(
+                self.config.hyperparameters.avl_events_3_state_50
+            )
+        elif self.event_battery_threshold == 75:
+            self.avl_events_3_state = ast.literal_eval(
+                self.config.hyperparameters.avl_events_3_state_75
+            )
 
-        #NRL: added new code for three_state_avl_event_ts
-        self.three_state_avl_event_ts = ast.literal_eval(
-            self.config.hyperparameters.three_state_avl_event_ts
+        self.avl_events_2_state = ast.literal_eval(
+            self.config.hyperparameters.avl_events_2_state
         )
-        logger.info(f"NRL: three_state_avl_event_ts for trainer id {self.trainer_id} = {self.three_state_avl_event_ts}")
-
-        self.two_state_avl_event_ts = ast.literal_eval(
-            self.config.hyperparameters.two_state_avl_event_ts
-        )
-        logger.info(f"NRL: two_state_avl_event_ts for trainer id {self.trainer_id} = {self.two_state_avl_event_ts}")
-        if self.client_avail_aware_notify['type'] == "three_state":
-            self.state_avl_event_ts = self.three_state_avl_event_ts
+        if self.client_notify['type'] == "three_state":
+            self.state_avl_event_ts = self.avl_events_3_state
+            logger.info(f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}")
+        elif self.client_notify['type'] == "two_state":
+            self.state_avl_event_ts = self.avl_events_2_state
+            logger.info(f"Set avl_events_2_state for trainer id {self.trainer_id}.")
         else:
-            self.state_avl_event_ts = self.two_state_avl_event_ts
+            logger.info(f"No avl_events set for trainer id {self.trainer_id} since state not specified.")
 
         self.avl_state = TrainerAvailState.AVL_TRAIN
 
@@ -226,7 +236,7 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
-        if self.client_avail_aware_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
+        if self.client_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
                 logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
@@ -302,14 +312,14 @@ class PyTorchCifar10Trainer(Trainer):
         #2. switch to check for three_state_avl is off 
         #3. Trainer is unavailable and we don't want it to wait for availability
         if self.task_to_perform != "eval" or \
-        self.client_avail_aware_notify['type'] == "two_state" or \
-        (self.avl_state == TrainerAvailState.UNAVL and self.wait_until_next_avl == "False"):
+        self.client_notify['type'] == "two_state" or \
+        (self.avl_state == TrainerAvailState.UN_AVL and self.wait_until_next_avl == "False"):
             logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}")
             return
 
-        if self.avl_state == TrainerAvailState.UNAVL:
+        if self.avl_state == TrainerAvailState.UN_AVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
-            while self.avl_state == TrainerAvailState.UNAVL:
+            while self.avl_state == TrainerAvailState.UN_AVL:
                 time.sleep(0.1)
 
         logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
@@ -370,21 +380,36 @@ class PyTorchCifar10Trainer(Trainer):
             # Adopted from initiate heartbeats
             
             time.sleep(0.1)             # Will check every 0.1 second
-            if self.client_avail_aware_notify['enabled']== "True":
+            if self.client_notify['enabled']== "True":
                 self.check_and_update_state_avl()
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument("config", nargs="?", default="./config.json")
+    parser.add_argument(
+        "--config", 
+        type=str,
+        default="./config.json",
+        required=True
+        )
+    
+    # Add a parser argument to get battery threshold (either 50 or 75)
+    parser.add_argument(
+        "--battery_threshold",
+        type=int,
+        choices=[50, 75],
+        default=50,
+        help="Battery threshold for the trainer 3-state events (either 50 or 75)",
+        required=False
+    )
 
     args = parser.parse_args()
     config = Config(args.config)
 
-    t = PyTorchCifar10Trainer(config)
+    t = PyTorchCifar10Trainer(config, args.battery_threshold)
     print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
-          f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
-          f"{t.client_avail_aware_notify['enabled']}, has "
+          f"{t.heartbeats_enabled}, has client_notify: "
+          f"{t.client_notify['enabled']}, has "
           f"training_delay_enabled: {t.training_delay_enabled}, "
           f"with training_delay_s: {t.training_delay_s}")
 
@@ -394,7 +419,7 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_avail_aware_notify['enabled'] == "True":
+    elif t.client_notify['enabled'] == "True":
         logger.info(f"Will initiate thread to send avail notifications for "
                     f"trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)

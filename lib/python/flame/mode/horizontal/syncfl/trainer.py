@@ -273,10 +273,10 @@ class Trainer(Role, metaclass=ABCMeta):
                      f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}")
         # if switch to do three_state_avl is on and the trainer is unavailable - check the wait_to_become_avl switch
         # depending on the switch we decide whether to wait for availability or exit
-        if self.client_avail_aware_notify['enabled']== "True" and self.avl_state == TrainerAvailState.UNAVL:
+        if self.client_notify['enabled']== "True" and self.avl_state == TrainerAvailState.UN_AVL:
             if self.wait_until_next_avl == "True":
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
-                while self.avl_state == TrainerAvailState.UNAVL:
+                while self.avl_state == TrainerAvailState.UN_AVL:
                     time.sleep(0.1)
             else:
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting")
