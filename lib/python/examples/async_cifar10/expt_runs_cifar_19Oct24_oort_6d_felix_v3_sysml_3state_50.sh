@@ -86,7 +86,7 @@ for baseline_name in "${baseline_names[@]}"; do
     # Start the aggregator process with the correct configuration and log file name
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/dsanyal7/miniconda3/envs/dg_flame/lib/
     cd /home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/aggregator
-    agg_log_file="/home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}.log"
+    agg_log_file="/home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}_felix_3state_50.log"
     echo "Created aggregator log file: ${agg_log_file}"
     python pytorch/main.py fedbuff_config_final_expt_19oct24_${baseline_name}_felix_3state.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}_felix_3state_50 > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
