@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # Source the bashrc file to ensure conda is set up
-source /serenity/scratch/dgarg/anaconda3/etc/profile.d/conda.sh
+source /home/dsanyal7/miniconda3/etc/profile.d/conda.sh
 
-# Function to check the last 20 accuracy values from the given log file against a threshold
 check_accuracy() {
   local log_file=$1
   local threshold=$2
@@ -12,23 +11,31 @@ check_accuracy() {
 
   # Check if we have at least 20 accuracy values
   if [ $(echo "$accuracy_values" | wc -l) -lt 20 ]; then
+    echo "Less than 20 accuracy values found."
     return 1  # Condition not met
   fi
 
-  # Calculate the average of the last 20 accuracy values
+  # Initialize total and count
   local total=0
   local count=0
+
+  # Calculate the total of the last 20 accuracy values
   for value in $accuracy_values; do
-    total=$(echo "$total + $value" | bc -l)
+    total=$(python -c "print($total + $value)")
     count=$((count + 1))
   done
-  local average=$(echo "$total / $count" | bc -l)
+
+  # Calculate the average
+  local average=$(python -c "print($total / $count)")
 
   # Get the last accuracy value
   local last_value=$(echo "$accuracy_values" | tail -n 1)
 
-  # Check if the average and the last accuracy value are both greater than or equal to the threshold
-  if (( $(echo "$average >= $threshold" | bc -l) )) && (( $(echo "$last_value >= $threshold" | bc -l) )); then
+  # Perform the comparison using Python
+  result=$(python -c "print(float($average) >= float($threshold) and float($last_value) >= float($threshold))")
+
+  # Check the result of the comparison
+  if [ "$result" == "True" ]; then
     return 0  # Condition met
   else
     return 1  # Condition not met
@@ -49,7 +56,7 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("async_v2")
+baseline_names=("async_v3")
 
 # Array of alpha values
 alphas=(100)
@@ -60,7 +67,7 @@ for baseline_name in "${baseline_names[@]}"; do
 
   # Determine the trainer directory suffix based on the baseline name
   if [[ $baseline_name == *"_v2" || $baseline_name == *"_v3" ]]; then
-    trainer_dir_suffix="_6d_oort"
+    trainer_dir_suffix="_6d_3state_oort"
   else
     trainer_dir_suffix="_1.5h"
   fi
@@ -77,23 +84,23 @@ for baseline_name in "${baseline_names[@]}"; do
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited for cleanup to complete"
 
     # Start the aggregator process with the correct configuration and log file name
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
-    agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}.log"
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/dsanyal7/miniconda3/envs/dg_flame/lib/
+    cd /home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/aggregator
+    agg_log_file="/home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main.py fedbuff_config_final_expt_5sep24_${baseline_name}_felix.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name} > "$agg_log_file" 2>&1 &
+    python pytorch/main.py fedbuff_config_final_expt_19oct24_${baseline_name}_felix_2state.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_oort_${baseline_name}_felix_2state > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
     # Start the trainers
     conda activate dg_flame
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/dsanyal7/miniconda3/envs/dg_flame/lib/
+    cd /home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/trainer
     cd config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/
     echo "going inside this folder: config_dir${alpha}_num300_traceFail${trainer_dir_suffix}"
-    trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${baseline_name}.log"
+    trainer_log_file="/home/dsanyal7/dhruv/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${baseline_name}_felix_2state.log"
     echo "Created trainer log file: ${trainer_log_file}"
-    bash exec_10_trainers.sh > "$trainer_log_file" 2>&1 &
+    bash exec_300_trainers_battery_50.sh > "$trainer_log_file" 2>&1 &
     echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
 
     # Monitor the log file
