@@ -161,9 +161,13 @@ class AsyncOortSelector(AbstractSelector):
         if task_to_perform == "train":
             concurrency = min(len(ends), self.c)
         elif task_to_perform == "eval":
-            # TODO: (DG) Update later. Have as many trainers doing
-            # eval as there are for training.
-            concurrency = min(len(ends), self.c + int(self.eval_goal_factor * self.agg_goal) - len(self.trainer_eval_recv_ends))
+            # Select ends for eval only if eval-goal is set in 3-state
+            # availability tracking. Else, don't select any eval ends-
+            # this would be for 2-state tracking.
+            if self.eval_goal_factor > 0.0:
+                concurrency = min(len(ends), self.c + int(self.eval_goal_factor * self.agg_goal) - len(self.trainer_eval_recv_ends))
+            else:
+                concurrency = 0
         logger.debug(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
 
         if concurrency == 0:
@@ -389,9 +393,15 @@ class AsyncOortSelector(AbstractSelector):
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
                 elif end_round_duration is None:
-                    # TODO: (DG) HACK. Check if this is okay. If the
-                    # end hasn't trained yet, we set it to a very high value
-                    sorted_round_duration.append(timedelta(seconds=99999))
+                    # (DG) HACK. Comes here if the trainer
+                    # participates in eval, so technically doesnt have
+                    # a round duration. Can set it to 60 seconds since
+                    # that is the max round duration for training.
+                    # TODO: Eval is half of round duration so can use
+                    # that information to set correct round duration.
+                    # But it might break other code, so leaving it for
+                    # later.
+                    sorted_round_duration.append(timedelta(seconds=60))
             logger.info(
                 f"after for loop, sorted_round_duration: {sorted_round_duration}"
             )
@@ -404,6 +414,9 @@ class AsyncOortSelector(AbstractSelector):
                     )
         else:
             round_preferred_duration = timedelta(seconds=99999)
+        
+        logger.debug(
+            f"returning round_preferred_duration: {round_preferred_duration}")
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
