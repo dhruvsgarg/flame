@@ -231,14 +231,14 @@ class FedBuffSelector(AbstractSelector):
                                          f"self.all_selected: "
                                          f"{self.all_selected}"
                                          )
-                    elif state is None:
+                    elif state == VAL_END_STATE_NONE:
                         # TODO: (DG) Recheck if it needs to be deleted
                         # from here as well. Is the failure scenario
                         # being handled correctly if the trainer
                         # contributes, fails and then comes back
                         # within the same round. TODO: (DG) Need a
                         # diagram in the paper to explain this?
-                        logger.debug(f"Found end {end_id} in state None. Might have "
+                        logger.debug(f"Found end {end_id} in state {VAL_END_STATE_NONE}. Might have "
                                      f"left/rejoined. Need to remove it from "
                                      f"selected_ends and self.all_selected if it "
                                      f"was selected")

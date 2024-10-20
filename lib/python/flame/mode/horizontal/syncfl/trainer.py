@@ -322,9 +322,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel.send(end, msg)
 
-        self._updates_returned_upto_round = self._round
-
         if self.task_to_perform == "train":
+            # To allow the trainer to participate in eval AND train in
+            # the same round, we set _updates_returned_upto_round only
+            # over here.
+            self._updates_returned_upto_round = self._round
+            
             logger.info(f"sending weights done for trainer_id: {self.trainer_id} "
                         f"and _updates_returned_upto_round "
                         f"{self._updates_returned_upto_round}")

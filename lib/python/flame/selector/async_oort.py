@@ -689,14 +689,14 @@ class AsyncOortSelector(AbstractSelector):
                                          f"self.all_selected: "
                                          f"{self.all_selected}"
                                          )
-                    elif state is None:
+                    elif state == VAL_END_STATE_NONE:
                         # TODO: (DG) Recheck if it needs to be deleted
                         # from here as well. Is the failure scenario
                         # being handled correctly if the trainer
                         # contributes, fails and then comes back
                         # within the same round. TODO: (DG) Need a
                         # diagram in the paper to explain this?
-                        logger.debug(f"Found end {end_id} in state None. Might have "
+                        logger.debug(f"Found end {end_id} in state {VAL_END_STATE_NONE}. Might have "
                                      f"left/rejoined. Need to remove it from "
                                      f"selected_ends and self.all_selected "
                                      f"if it was selected")
@@ -768,7 +768,7 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"Update was alreacy received from {end_id} before it left "
                          f"the channel. Not deleting from all_ends now.")
         else:
-            logger.warn(f"End_id {end_id} remove check from all_selected failed. "
+            logger.warning(f"End_id {end_id} remove check from all_selected failed. "
                         f"Need to check")
 
     # Invoked when selection mode is default i.e. of oort which trades
@@ -1071,7 +1071,8 @@ class AsyncOortSelector(AbstractSelector):
                     # sampled again
                     logger.debug(f"Removing end {end} from self.all_selected "
                                  f"since havent "
-                                 f"got its update in {SEND_TIMEOUT_WAIT_S}")
+                                 f"got its update in {SEND_TIMEOUT_WAIT_S}. "
+                                 f"Last weight send timestamp was: {trainer_weight_send_timestamp_s}")
 
                     # Tracking timeouts and time spend waiting TODO:
                     # (DG) Check if it is okay to have it triggered
@@ -1419,6 +1420,39 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
         return {key: None for key in selected_ends}
+    
+    def reset_end_state_to_none(
+            self, ends: dict[str, End], end_id: str) -> None:
+        """Reset's the state of end_id from send/recv to none"""
+        if end_id in ends.keys():
+            curr_end_state = ends[end_id].get_property(KEY_END_STATE)
+            ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            new_end_state = ends[end_id].get_property(KEY_END_STATE)
+            logger.debug(f"Successfully reset state for end "
+                         f"{end_id} from previous: {curr_end_state} to "
+                         f"current: {new_end_state}")
+        else:
+            logger.debug(f"Attempted to reset end {end_id} state "
+                         f"but it wasnt in ends")
+        
+    def remove_from_selected_ends(
+            self, ends: dict[str, End], end_id: str) -> None:
+        """Remove an end from selected ends"""
+        selected_ends = self.selected_ends[self.requester]
+        if end_id in ends.keys():
+            if end_id in selected_ends:
+                logger.debug(f"Going to remove end_id {end_id} from selected_ends "
+                             f"{selected_ends}")
+                selected_ends.remove(end_id)
+                self.selected_ends[self.requester] = selected_ends
+                logger.debug(f"selected_ends: {selected_ends} after "
+                             f"removing end_id: {end_id}")
+            else:
+                logger.debug(f"Attempted to remove end {end_id} from "
+                             f"selected_ends {selected_ends}, but it wasnt present")
+        else:
+            logger.debug(f"Attempted to remove end {end_id} from "
+                         f"selected_ends {selected_ends}, but it wasnt in ends")
 
     def process_chosen_candidate_dict(
             self,

@@ -725,14 +725,31 @@ class Channel(object):
         logger.debug("Also removing existing trainer update send/recv state from selector")
         self._selector._cleanup_removed_ends(end_id)
     
-    async def update_state(self, end_id: str, state: TrainerAvailState, timestamp: str):
+    async def update_state(self, end_id: str, new_state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
         if not self.has(end_id):
             logger.info(f"End {end_id} not in channel {self._name}")
             return
 
-        self._ends[end_id].set_property(PROP_END_AVL_STATE, state)
-        logger.info(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}")
+        old_end_state = self._ends[end_id].get_property(PROP_END_AVL_STATE)
+        self._ends[end_id].set_property(PROP_END_AVL_STATE, new_state)
+        logger.info(f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}")
+        
+        # If new updated_state is UN_AVL, reset end state to unblock
+        # any train or eval tasks sent to that trainer
+        if new_state == TrainerAvailState.UN_AVL:
+            logger.info(f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and set end state to None")
+            self._selector.remove_from_selected_ends(self._ends, end_id)
+            self._selector.reset_end_state_to_none(self._ends, end_id)
+            self._selector._cleanup_removed_ends(end_id)
+        elif old_end_state == TrainerAvailState.AVL_TRAIN and new_state == TrainerAvailState.AVL_EVAL:
+            # TODO: (DG) This is a temporary fix to reset the state of
+            # a trainer from AVL_TRAIN to AVL_EVAL. Check actual last
+            # task sent before resetting.
+            logger.info(f"Trainer {end_id} moved from state {old_end_state} to {new_state}. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now.")
+            self._selector.remove_from_selected_ends(self._ends, end_id)
+            self._selector.reset_end_state_to_none(self._ends, end_id)
+            self._selector._cleanup_removed_ends(end_id)
 
         # set cleanup ready event
         self._backend.set_cleanup_ready(end_id)

@@ -234,6 +234,14 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"After appending {end} to trainer_eval_recv_ends: "
                         f"{channel._selector.trainer_eval_recv_ends}")
             
+            # Remove end from selected_ends and set its state to none
+            # so that it can be selected for training in this round.
+            logger.info(f"Eval done, will remove end {end} from selected_ends and "
+                            f"re-setting its channel state to allow re-selection in same round for train")
+            channel._selector.remove_from_selected_ends(channel._ends, end)
+            channel._selector.reset_end_state_to_none(channel._ends, end)
+            channel._selector._cleanup_removed_ends(end)
+            
             return
         
         # Else, throw an error and return
