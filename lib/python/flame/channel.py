@@ -727,14 +727,12 @@ class Channel(object):
     
     async def update_state(self, end_id: str, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
-        logger.debug(f"Updating state of end {end_id} in channel {self._name} to state: {state} from timestamp: {timestamp}")
-
         if not self.has(end_id):
-            logger.debug(f"End {end_id} not in channel {self._name}")
+            logger.info(f"End {end_id} not in channel {self._name}")
             return
 
         self._ends[end_id].set_property(PROP_END_AVL_STATE, state)
-        logger.debug(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)}")
+        logger.info(f"Updated state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}")
 
         # set cleanup ready event
         self._backend.set_cleanup_ready(end_id)
