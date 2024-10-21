@@ -235,7 +235,7 @@
             "enabled": "True",
             "type": "two_state"
         },
-        "wait_until_next_avl": "True"
+        "wait_until_next_avl": "False"
     },
     "baseModel": {
         "name": "",
