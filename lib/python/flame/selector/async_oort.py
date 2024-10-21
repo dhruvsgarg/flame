@@ -168,7 +168,7 @@ class AsyncOortSelector(AbstractSelector):
                 concurrency = min(len(ends), self.c + int(self.eval_goal_factor * self.agg_goal) - len(self.trainer_eval_recv_ends))
             else:
                 concurrency = 0
-        logger.debug(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
+        logger.info(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
 
         if concurrency == 0:
             logger.debug("ends is empty")
