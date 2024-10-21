@@ -277,7 +277,7 @@ class Trainer(Role, metaclass=ABCMeta):
             if self.wait_until_next_avl == "True":
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
                 while self.avl_state == TrainerAvailState.UN_AVL:
-                    time.sleep(0.1)
+                    time.sleep(1)
             else:
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting")
                 return

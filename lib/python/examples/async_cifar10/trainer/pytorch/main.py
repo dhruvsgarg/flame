@@ -377,9 +377,7 @@ class PyTorchCifar10Trainer(Trainer):
 
     def notify_trainer_avail(self) -> None:
         while True:
-            # Adopted from initiate heartbeats
-            
-            time.sleep(0.1)             # Will check every 0.1 second
+            time.sleep(1)             # Will check every 1 second
             if self.client_notify['enabled']== "True":
                 self.check_and_update_state_avl()
 def main():
