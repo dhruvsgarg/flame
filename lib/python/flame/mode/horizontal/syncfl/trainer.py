@@ -271,15 +271,17 @@ class Trainer(Role, metaclass=ABCMeta):
     def _send_weights(self, tag: str) -> None:
         logger.debug(f"### SEND WEIGHTS for tag: {tag} "
                      f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}")
-        # if switch to do three_state_avl is on and the trainer is unavailable - check the wait_to_become_avl switch
-        # depending on the switch we decide whether to wait for availability or exit
+        # if switch to do three_state_avl is on and the trainer is
+        # unavailable - check the wait_to_become_avl switch depending
+        # on the switch we decide whether to wait for availability or
+        # exit
         if self.client_notify['enabled']== "True" and self.avl_state == TrainerAvailState.UN_AVL:
             if self.wait_until_next_avl == "True":
                 logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
                 while self.avl_state == TrainerAvailState.UN_AVL:
                     time.sleep(1)
             else:
-                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting")
+                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights.")
                 return
 
 
@@ -298,7 +300,8 @@ class Trainer(Role, metaclass=ABCMeta):
         end = channel.one_end(VAL_CH_STATE_SEND)
     
         if self.task_to_perform == "train":
-            #trainer is expected to train and it is also available to train - best case
+            #trainer is expected to train and it is also available to
+            #train - best case
                 self._update_weights()
 
                 delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)

@@ -599,9 +599,7 @@ class AsyncOortSelector(AbstractSelector):
         same round. Thus, for aggregator, the _cleanup_recvd_ends
         should be triggered only after aggregation of weights succeeds
         on meeting agg_goal."""
-        logger.debug("clean up recvd ends")
-        logger.debug(f"ends: {ends.keys()}")
-        logger.debug(f"selected ends: {self.selected_ends}")
+        logger.debug(f"clean up recvd ends. selected_ends: {self.selected_ends}, ends: {ends.keys()}")
 
         selected_ends = self.selected_ends[self.requester]
         logger.debug(
@@ -694,8 +692,7 @@ class AsyncOortSelector(AbstractSelector):
                         # from here as well. Is the failure scenario
                         # being handled correctly if the trainer
                         # contributes, fails and then comes back
-                        # within the same round. TODO: (DG) Need a
-                        # diagram in the paper to explain this?
+                        # within the same round.
                         logger.debug(f"Found end {end_id} in state {VAL_END_STATE_NONE}. Might have "
                                      f"left/rejoined. Need to remove it from "
                                      f"selected_ends and self.all_selected "
@@ -1031,8 +1028,8 @@ class AsyncOortSelector(AbstractSelector):
 
         extra = max(0, concurrency - len(selected_ends))
 
-        logger.debug(f"c: {concurrency}, ends: {ends.keys()},"
-                     f"len(selected_ends): {len(selected_ends)}, extra: {extra}")
+        logger.debug(f"c: {concurrency}, "
+                     f"len(selected_ends): {len(selected_ends)}, extra: {extra}, selected_ends: {selected_ends}," f"len(ends): {len(ends)}")
         candidates = []
 
         # ### From Oort selector
@@ -1116,6 +1113,13 @@ class AsyncOortSelector(AbstractSelector):
         # that are not in all_selected and can be picked in this round
         # i.e. avoids repeating a trainer in the same round
         filtered_ends = dict()
+        
+        # track the ends that are eligible vs ineligible based on
+        # their state
+        count_avl_train = 0
+        count_avl_eval = 0
+        count_ineligible = 0
+        
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
                 logger.debug(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
@@ -1140,6 +1144,7 @@ class AsyncOortSelector(AbstractSelector):
                     ):
                     filtered_ends[end_id] = ends[end_id]
                     logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check is True, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
+                    count_avl_train += 1
                 elif self.check_three_state_avl and task_to_perform == "eval" and (
                     curr_end_id_avl_state in (
                         TrainerAvailState.AVL_TRAIN.value,
@@ -1149,10 +1154,13 @@ class AsyncOortSelector(AbstractSelector):
                     ):
                     filtered_ends[end_id] = ends[end_id]
                     logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
+                    count_avl_eval += 1
                 else:
                     logger.debug(f"NRL: Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
-                                     f"but was in state {curr_end_id_avl_state}. Not eligible.")                    
-
+                                     f"but was in state {curr_end_id_avl_state}. Not eligible.")
+                    count_ineligible += 1                    
+                    
+        logger.debug(f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}")
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count
         # infeasible ends too (ends that have already particpated in
@@ -1164,6 +1172,7 @@ class AsyncOortSelector(AbstractSelector):
         # (extra=1, filtered=3),  (extra=2, filtered=2), (extra=3,
         # filtered=1)
         feasible_extra = min(extra, len(filtered_ends))
+        logger.debug(f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}")
 
         # Early exit if filtered_ends is none (can happen when all
         # ends available are less than concurrency requirement)
@@ -1445,14 +1454,14 @@ class AsyncOortSelector(AbstractSelector):
                              f"{selected_ends}")
                 selected_ends.remove(end_id)
                 self.selected_ends[self.requester] = selected_ends
-                logger.debug(f"selected_ends: {selected_ends} after "
+                logger.debug(f"self.selected_ends: {self.selected_ends} after "
                              f"removing end_id: {end_id}")
             else:
                 logger.debug(f"Attempted to remove end {end_id} from "
-                             f"selected_ends {selected_ends}, but it wasnt present")
+                             f"self.selected_ends {self.selected_ends}, but it wasnt present")
         else:
             logger.debug(f"Attempted to remove end {end_id} from "
-                         f"selected_ends {selected_ends}, but it wasnt in ends")
+                         f"self.selected_ends {self.selected_ends}, but it wasnt in ends")
 
     def process_chosen_candidate_dict(
             self,

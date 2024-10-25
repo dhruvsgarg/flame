@@ -236,10 +236,9 @@ class TopAggregator(SyncTopAgg):
             
             # Remove end from selected_ends and set its state to none
             # so that it can be selected for training in this round.
-            logger.info(f"Eval done, will remove end {end} from selected_ends and "
-                            f"re-setting its channel state to allow re-selection in same round for train")
+            logger.info(f"Eval done, will remove end {end} from selected_ends and all_selected "
+                            f"to allow re-selection in same round for train")
             channel._selector.remove_from_selected_ends(channel._ends, end)
-            channel._selector.reset_end_state_to_none(channel._ends, end)
             channel._selector._cleanup_removed_ends(end)
             
             return
@@ -311,9 +310,13 @@ class TopAggregator(SyncTopAgg):
                             f"than {SEND_TIMEOUT_WAIT_S} seconds after last send. "
                             f"Update is stale by time {time_staleness_s} over the "
                             f"timeout and will be discarded.")
-                # TODO: (DG) Check if this works. Done it based on a
-                # now deleted (but tested) condition on redundant
-                # update from trainer. NEEDS TESTING.
+                
+                # TODO: (DG) NEEDS TESTING. Sanity check is that it
+                # should not come here with ClientNotify enabled. But
+                # when it did come with ClientNotify and
+                # Train->Eval calling reset_end_state_to_none, it
+                # caused issues.
+                
                 # Currently, the end is now in recvd state and will be
                 # removed from selected_ends in handle_recv_state in
                 # the next iteration. To add the getter through

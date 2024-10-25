@@ -569,14 +569,14 @@ class FedBuffSelector(AbstractSelector):
                              f"{selected_ends}")
                 selected_ends.remove(end_id)
                 self.selected_ends[self.requester] = selected_ends
-                logger.debug(f"selected_ends: {selected_ends} after "
+                logger.debug(f"self.selected_ends: {self.selected_ends} after "
                              f"removing end_id: {end_id}")
             else:
                 logger.debug(f"Attempted to remove end {end_id} from "
-                             f"selected_ends {selected_ends}, but it wasnt present")
+                             f"self.selected_ends {self.selected_ends}, but it wasnt present")
         else:
             logger.debug(f"Attempted to remove end {end_id} from "
-                         f"selected_ends {selected_ends}, but it wasnt in ends")
+                         f"self.selected_ends {self.selected_ends}, but it wasnt in ends")
 
     def reset_selected_ends(self, requester: str) -> None:
         """Reset mapping between requester and selected ends.

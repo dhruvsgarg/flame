@@ -180,7 +180,7 @@ class PyTorchCifar10Trainer(Trainer):
                logger.error(f"NRL: Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
                return           
            new_status = self.avl_state.value
-           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}. Current list = {self.state_avl_event_ts}")
+           logger.info(f"NRL: Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
         #    self.send_availability_status("upload")
            self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
 
@@ -238,11 +238,11 @@ class PyTorchCifar10Trainer(Trainer):
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
         if self.client_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
-                logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+                logger.info(f"NRL: Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
-                    time.sleep(0.1)
+                    time.sleep(1)
             else:
-                logger.error(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting.")
+                logger.info(f"NRL: Trainer id {self.trainer_id} is not available to train. Exiting training.")
                 return
         
         logger.info(f"NRL: Trainer {self.trainer_id} available to train")
@@ -320,7 +320,7 @@ class PyTorchCifar10Trainer(Trainer):
         if self.avl_state == TrainerAvailState.UN_AVL:
             logger.warning(f"NRL: Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
             while self.avl_state == TrainerAvailState.UN_AVL:
-                time.sleep(0.1)
+                time.sleep(1)
 
         logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
         for epoch in range(1, self.epochs + 1):

@@ -738,17 +738,15 @@ class Channel(object):
         # If new updated_state is UN_AVL, reset end state to unblock
         # any train or eval tasks sent to that trainer
         if new_state == TrainerAvailState.UN_AVL:
-            logger.info(f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and set end state to None")
+            logger.info(f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected")
             self._selector.remove_from_selected_ends(self._ends, end_id)
-            self._selector.reset_end_state_to_none(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
         elif old_end_state == TrainerAvailState.AVL_TRAIN and new_state == TrainerAvailState.AVL_EVAL:
             # TODO: (DG) This is a temporary fix to reset the state of
             # a trainer from AVL_TRAIN to AVL_EVAL. Check actual last
             # task sent before resetting.
-            logger.info(f"Trainer {end_id} moved from state {old_end_state} to {new_state}. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now.")
+            logger.info(f"Trainer {end_id} moved from state {old_end_state} to {new_state}, removing the end from selected and all_selected. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now.")
             self._selector.remove_from_selected_ends(self._ends, end_id)
-            self._selector.reset_end_state_to_none(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
 
         # set cleanup ready event

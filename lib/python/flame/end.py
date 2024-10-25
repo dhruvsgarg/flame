@@ -22,7 +22,7 @@ from .common.typing import Scalar
 KEY_END_STATE = "state"
 VAL_END_STATE_RECVD = "recvd"
 VAL_END_STATE_HEARTBEAT_RECVD = "heartbeat_recvd"
-VAL_END_STATE_NONE = "NONE"
+VAL_END_STATE_NONE = "none"
 PROP_END_AVL_STATE = "avl_state"
 
 
