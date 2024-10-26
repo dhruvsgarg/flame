@@ -224,7 +224,8 @@ class TopAggregator(SyncTopAgg):
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
             logger.info(f"received eval message {msg} in agg_weights from {end}, "
-                        f"with stat_utility, updating end property")
+                        f"with stat_utility {msg[MessageType.STAT_UTILITY]} after "
+                        f"round {msg[MessageType.MODEL_VERSION]}. Updating end property")
             
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
@@ -413,7 +414,7 @@ class TopAggregator(SyncTopAgg):
             )
             stat_utility = msg[MessageType.STAT_UTILITY]
 
-        logger.debug(f"{end}'s parameters trained with {count} samples")
+        logger.info(f"Received weights from {end}. It was trained on model version {version}, with {count} samples. Returned stat utility {stat_utility}")
 
         if weights is not None and count > 0:
             tres = TrainResult(weights, count, version, stat_utility)
@@ -575,16 +576,17 @@ class TopAggregator(SyncTopAgg):
         logger.info(f"==== aggregator avg staleness: {np.mean(agg_staleness_arr)}")
 
         # per trainer analytics
-        for k, v in self._per_trainer_staleness_track.items():
-            trainer_staleness_arr = np.array(v)
-            logger.debug(
-                f"Trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, "
-                f"Max {np.max(trainer_staleness_arr)}, "
-                f"Avg {np.mean(trainer_staleness_arr)}, "
-                f"P50 {np.median(trainer_staleness_arr)}, "
-                f"P90 {np.percentile(trainer_staleness_arr, 90)}, "
-                f"P99 {np.percentile(trainer_staleness_arr, 99)}"
-            )
+        if self._round % 100 == 0:
+            for k, v in self._per_trainer_staleness_track.items():
+                trainer_staleness_arr = np.array(v)
+                logger.info(
+                    f"Trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, "
+                    f"Max {np.max(trainer_staleness_arr)}, "
+                    f"Avg {np.mean(trainer_staleness_arr)}, "
+                    f"P50 {np.median(trainer_staleness_arr)}, "
+                    f"P90 {np.percentile(trainer_staleness_arr, 90)}, "
+                    f"P99 {np.percentile(trainer_staleness_arr, 99)}"
+                )
         
         total_training_time_all_trainers = 0
         for k, v in self._track_trainer_version_duration_s.items():

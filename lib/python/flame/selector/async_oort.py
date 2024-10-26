@@ -388,12 +388,12 @@ class AsyncOortSelector(AbstractSelector):
         and end_round_duration of trainers. round_threshold is
         controlled by pacer.
         """
-        logger.info(f"calculate_round_pref_duration ends.keys(): {ends.keys()}")
+        logger.debug(f"calculate_round_pref_duration ends.keys(): {ends.keys()}")
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
-                logger.info(
+                logger.debug(
                     f"end_id: {end_id}, end_round_duration: {end_round_duration}"
                 )
                 if end_round_duration is not None:
@@ -596,12 +596,14 @@ class AsyncOortSelector(AbstractSelector):
                 ends, curr_end_id, round
             )
             curr_end_utility += temporal_uncertainty
+            logger.info(f"end_id: {curr_end_id}, adding temporal_uncertainty: {temporal_uncertainty} to get curr_end_utility: {curr_end_utility}")
 
             # Multiply global system utility
             global_system_utility = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
             curr_end_utility *= global_system_utility
+            logger.info(f"end_id: {curr_end_id}, curr_end_utility: {curr_end_utility} after multiplying global_system_utility: {global_system_utility}")
 
             utility_list[utility_idx][PROP_UTILITY] = curr_end_utility
 
@@ -1283,7 +1285,7 @@ class AsyncOortSelector(AbstractSelector):
                      f"{utility_list}, filtered_ends: {filtered_ends}, round: {round}")
         utility_list = self.calculate_total_utility(utility_list, filtered_ends, round)
 
-        logger.debug(f"After calculate_total_utility, utility_list: {utility_list}")
+        logger.info(f"After calculate_total_utility, utility_list: {utility_list}")
 
         # cutOfUtil from Oort algorithm
         logger.debug(f"Invoking cutoff_util() with utility_list: {utility_list}, "
@@ -1292,7 +1294,7 @@ class AsyncOortSelector(AbstractSelector):
             utility_list,
             num_of_ends=feasible_extra
             )
-        logger.debug(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
+        logger.info(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
 
         # perform random if cutoff_utility == 0 TODO: (DG) Check.
         # Removed "and len(self.selected_ends) == 0 from the if
@@ -1387,7 +1389,7 @@ class AsyncOortSelector(AbstractSelector):
 
         self.round = round
 
-        logger.debug(f"handle_send_state returning candidates_dict: {candidates_dict}")
+        logger.info(f"handle_send_state returning candidates_dict: {candidates_dict}")
 
         return candidates_dict
 
