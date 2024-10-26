@@ -224,7 +224,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def put(self, tag: str, task_to_perform: str = "train") -> None:
         """Set data to remote role(s)."""
-        logger.info(f"NRL: distributing weights with task_to_perform = {task_to_perform}")
+        logger.info(f"distributing weights with task_to_perform = {task_to_perform}")
         if tag == TAG_DISTRIBUTE:
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)

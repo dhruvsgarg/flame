@@ -1145,7 +1145,7 @@ class AsyncOortSelector(AbstractSelector):
         
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
-                logger.debug(f"NRL: Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
+                logger.debug(f"Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")
                 
                 # If check_three_state_avl=False, no more checks,
                 # directly add end to filtered_ends
@@ -1179,7 +1179,7 @@ class AsyncOortSelector(AbstractSelector):
                     logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
                     count_avl_eval += 1
                 else:
-                    logger.debug(f"NRL: Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
+                    logger.debug(f"Not adding end {end_id} to filtered ends since required for task{task_to_perform}, "
                                      f"but was in state {curr_end_id_avl_state}. Not eligible.")
                     count_ineligible += 1                    
                     

@@ -218,9 +218,9 @@ class Trainer(Role, metaclass=ABCMeta):
             )
         if MessageType.TASK_TO_PERFORM in msg:
             self.task_to_perform = msg[MessageType.TASK_TO_PERFORM]
-            logger.info(f"NRL: Found task_to_perform in msg: {self.task_to_perform}")
+            logger.info(f"Found task_to_perform in msg: {self.task_to_perform}")
         else:
-            logger.info(f"NRL: Didn't find TASK_TO_PERFORM in msg")
+            logger.info(f"Didn't find TASK_TO_PERFORM in msg")
 
         self.fetch_success = True
 
@@ -238,7 +238,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
-        logger.info(f"NRL: avl_state of trainer {self.trainer_id} when put is invoked, is: {self.avl_state}")
+        logger.info(f"avl_state of trainer {self.trainer_id} when put is invoked, is: {self.avl_state}")
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
         elif tag == TAG_HEARTBEAT:
@@ -277,11 +277,11 @@ class Trainer(Role, metaclass=ABCMeta):
         # exit
         if self.client_notify['enabled']== "True" and self.avl_state == TrainerAvailState.UN_AVL:
             if self.wait_until_next_avl == "True":
-                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
+                logger.warning(f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
                 while self.avl_state == TrainerAvailState.UN_AVL:
                     time.sleep(1)
             else:
-                logger.warning(f"NRL: Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights.")
+                logger.warning(f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights.")
                 return
 
 
