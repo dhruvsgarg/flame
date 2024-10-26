@@ -36,11 +36,11 @@ from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
+    PROP_LAST_EVAL_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
-    PROP_UPDATE_COUNT,
-    PROP_AVL_STATE
+    PROP_UPDATE_COUNT
 )
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class TopAggregator(SyncTopAgg):
          
         # Case #1: Message after task_to_perform=TRAIN. This will
         # contain stat_utility too but will processed later.
-        if MessageType.MODEL_VERSION in msg:
+        if MessageType.WEIGHTS in msg:
             logger.info(f"received model updates from {end} "
                         f"with model version {msg[MessageType.MODEL_VERSION]}")
 
@@ -201,6 +201,12 @@ class TopAggregator(SyncTopAgg):
             # PROP_LAST_UPDATE_RECVD_ROUND.
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
+            )
+            
+            # Set last eval round for the trainer since training also
+            # means that eval was done for the same round.
+            channel.set_end_property(
+                end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
             # calculate round duration for this end, if the round
             # number information is identical with round_start_time
@@ -222,6 +228,11 @@ class TopAggregator(SyncTopAgg):
             
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+            )
+            
+            # Set last eval round to be used later for the ranking
+            channel.set_end_property(
+                end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
             
             # TODO: (DG) Also set the end property for task=eval done

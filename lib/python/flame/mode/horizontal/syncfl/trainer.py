@@ -320,6 +320,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 }
         else:
             msg = {
+                MessageType.MODEL_VERSION: self._round,
                 MessageType.STAT_UTILITY: self._stat_utility
             }
 

@@ -48,6 +48,7 @@ PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
+PROP_LAST_EVAL_ROUND = "last_eval_round"
 PROP_AVL_STATE = "avl_state"
 
 class AsyncOortSelector(AbstractSelector):
@@ -79,7 +80,12 @@ class AsyncOortSelector(AbstractSelector):
         try:
             self.eval_goal_factor = kwargs["evalGoalFactor"]
         except KeyError:
-            raise KeyError("evalGoalFactor is not specified in config")
+            raise KeyError("evalGoalFactor is not specified in config. It is the decimal multiplicative factor wrt agg goal for eval")
+        
+        try:
+            self.round_nudge_type = kwargs["roundNudgeType"]
+        except KeyError:
+            raise KeyError("roundNudgeType is not specified in config. It is last_train or last_eval based on the selector nudging critera")
 
         try:
             self.select_type = kwargs["selectType"]
@@ -426,8 +432,23 @@ class AsyncOortSelector(AbstractSelector):
         Calculate temproal uncertainty term based on the end's last
         selected round.
         """
-
-        end_last_selected_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
+        
+        # OPTION 1: nudge temporal rank of trainer based on last
+        # trained round. This value might be stale based on when the
+        # trainer was last selected for training. It represents the
+        # original OORT style.
+        
+        # OPTION 2: nudge temporal rank of trainer based on last
+        # evaluated round. This means that the value will be updated
+        # for each train or eval task given to the trainer. It helps
+        # track the utility to a fresher extent.
+        
+        if self.round_nudge_type == "last_train":
+            end_last_selected_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
+        elif self.round_nudge_type == "last_eval":
+            end_last_selected_round = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
+        
+        logger.debug(f"using round_nudge_type: {self.round_nudge_type} for end_id: {end_id}, end_last_selected_round: {end_last_selected_round}")
         
         # TODO: (DG) Enable a flag to use or not use temporal
         # uncertainty as 0 based on our solution. We might want to
