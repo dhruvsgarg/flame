@@ -74,7 +74,8 @@
             "c": 30,
             "aggGoal": 10,
             "evalGoalFactor": 2.0,
-            "selectType": "default"
+            "selectType": "default",
+            "roundNudgeType": "last_eval"
         }
     },
     "optimizer": {
