@@ -56,7 +56,7 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("fedbuff_iSel_clientNotify")
+baseline_names=("fedbuff_asyncoort_clientNotify")
 
 # Array of alpha values
 alphas=(100 10 1 0.1)
