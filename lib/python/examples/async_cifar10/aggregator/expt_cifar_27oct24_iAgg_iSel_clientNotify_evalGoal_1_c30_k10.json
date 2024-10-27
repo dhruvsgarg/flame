@@ -73,7 +73,7 @@
             "//": "c: concurrency level",
             "c": 30,
             "aggGoal": 10,
-            "evalGoalFactor": 2.0,
+            "evalGoalFactor": 1.0,
             "selectType": "default",
             "roundNudgeType": "last_eval"
         }

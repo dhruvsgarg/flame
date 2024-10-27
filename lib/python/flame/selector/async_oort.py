@@ -1183,7 +1183,7 @@ class AsyncOortSelector(AbstractSelector):
                                      f"but was in state {curr_end_id_avl_state}. Not eligible.")
                     count_ineligible += 1                    
                     
-        logger.debug(f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}")
+        logger.info(f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}")
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count
         # infeasible ends too (ends that have already particpated in
@@ -1195,7 +1195,7 @@ class AsyncOortSelector(AbstractSelector):
         # (extra=1, filtered=3),  (extra=2, filtered=2), (extra=3,
         # filtered=1)
         feasible_extra = min(extra, len(filtered_ends))
-        logger.debug(f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}")
+        logger.info(f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}")
 
         # Early exit if filtered_ends is none (can happen when all
         # ends available are less than concurrency requirement)

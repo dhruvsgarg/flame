@@ -89,7 +89,7 @@ for baseline_name in "${baseline_names[@]}"; do
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
     agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_${baseline_name}_50.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main.py expt_cifar_27oct24_iAgg_iSel_clientNotify_evalGoal_2_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_${baseline_name}_battery50_evalGoal2_c30_k10 > "$agg_log_file" 2>&1 &
+    python pytorch/main.py expt_cifar_27oct24_iAgg_iSel_clientNotify_evalGoal_1_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_${baseline_name}_battery50_evalGoal1_c30_k10 > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
