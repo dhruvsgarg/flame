@@ -75,7 +75,7 @@ for baseline_name in "${baseline_names[@]}"; do
 
   # Loop through each alpha value
   for alpha in "${alphas[@]}"; do
-    echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment with alpha=${alpha}, aggType=${aggType}, selType=${selType}, awareType=${awareType} on node=${node_name} with baseline=${baseline_name}..."
+    echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment with alpha=${alpha}, aggType=${aggType}, selType=${selType}, awareType=${awareType} on node=${node_name}..."
     start_time=$(date +%s)
 
     # Start a new shell, activate conda environment, and clean all currently running processes
@@ -87,9 +87,9 @@ for baseline_name in "${baseline_names[@]}"; do
     # Start the aggregator process with the correct configuration and log file name
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
-    agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_${baseline_name}_50.log"
+    agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_50.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main.py expt_cifar_27oct24_fedbuff_asyncoort_clientNotify_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_${baseline_name}_battery50_c30_k10 > "$agg_log_file" 2>&1 &
+    python pytorch/main.py expt_cifar_27oct24_fedbuff_asyncoort_clientNotify_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_battery50_c30_k10 > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
@@ -99,7 +99,7 @@ for baseline_name in "${baseline_names[@]}"; do
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
     cd config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/
     echo "going inside this folder: config_dir${alpha}_num300_traceFail${trainer_dir_suffix}"
-    trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${aggType}_${selType}_${awareType}_${baseline_name}_50.log"
+    trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${aggType}_${selType}_${awareType}_50.log"
     echo "Created trainer log file: ${trainer_log_file}"
     bash exec_300_trainers_battery_50.sh > "$trainer_log_file" 2>&1 &
     echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
