@@ -42,7 +42,8 @@ END_STATUS_OFF = "offline"
 
 # wait time of 10 sec clean up resources allocated for terminated end
 # if no message arrives after the wait time
-MQTT_TIME_WAIT = 10  # 10 sec
+# NOTE: DG increased wait_time to 30 min to handle trainer init stalls
+MQTT_TIME_WAIT = 1800  # 1800 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
 TOPIC_SEP = "/"
@@ -105,13 +106,13 @@ class MqttBackend(AbstractBackend):
         self._initialized = True
 
     async def _monitor_end_termination(self):
-        period = MQTT_TIME_WAIT * 0.5
+        period = MQTT_TIME_WAIT * 1
         period = MIN_CHECK_PERIOD if period <= MIN_CHECK_PERIOD else period
 
         while True:
             for end_id, expiry in list(self._cleanup_waits.items()):
                 if time.time() >= expiry:
-                    logger.debug(f"end termination check timed out: {end_id}")
+                    logger.info(f"end termination check timed out: {end_id}")
                     # linear iteration is okay because there are not
                     # many channels per role in general
                     for _, channel in self._channels.items():

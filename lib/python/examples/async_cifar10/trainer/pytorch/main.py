@@ -171,18 +171,29 @@ class PyTorchCifar10Trainer(Trainer):
 
 
     def check_and_update_state_avl(self):
-        if len(self.state_avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.state_avl_event_ts[0][0]:
-           state_to_set = self.state_avl_event_ts.pop(0)[1]
-           old_status = self.avl_state.value
-           try:
-               self.avl_state = TrainerAvailState(state_to_set)
-           except ValueError:
-               logger.error(f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
-               return           
-           new_status = self.avl_state.value
-           logger.info(f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
-        #    self.send_availability_status("upload")
-           self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
+        # NOTE: due to slow gpu model load in initialize(), it is
+        # possible that the channel manager is not yet setup. The
+        # sending of update will fail in that case. Thus, simply
+        # return in case channel manager is not set. Events will start
+        # getting sent after the channel is setup.
+        if hasattr(self, 'cm') and self.cm is not None:
+            if len(self.state_avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.state_avl_event_ts[0][0]:
+                state_to_set = self.state_avl_event_ts.pop(0)[1]
+                old_status = self.avl_state.value
+                try:
+                    self.avl_state = TrainerAvailState(state_to_set)
+                except ValueError:
+                    logger.error(f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
+                    return           
+                new_status = self.avl_state.value
+                logger.info(f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
+                #    self.send_availability_status("upload")
+                self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
+        else:
+            logger.info(f"Channel manager not set yet for trainer {self.trainer_id}. "
+                        f"Skipping avail status update. "
+                        f"Sleep for 20s before checking again.")
+            time.sleep(20)
 
     def initialize(self) -> None:
         """Initialize role."""

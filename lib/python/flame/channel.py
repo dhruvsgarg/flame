@@ -565,6 +565,8 @@ class Channel(object):
             return
 
         self._ends[end_id] = End(end_id)
+        
+        logger.info(f"Adding end {end_id} to channel {self._name}")
 
         # create tx task in the backend for the channel
         self._backend.create_tx_task(self._name, end_id)
@@ -653,7 +655,7 @@ class Channel(object):
 
     async def remove(self, end_id):
         """Remove an end from the channel."""
-        logger.debug(f"Removing end {end_id} from channel {self._name}")
+        logger.info(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
             logger.debug(f"Noting to remove since end {end_id} not in channel {self._name}")
             return

@@ -574,12 +574,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Now start the rest of the tasks
             (
-                task_internal_init
+                task_init
+                >> task_internal_init
                 >> task_init_oort_variables
                 # Added code here to check for the status of the task
                 # i.e., "train + eval" vs "eval only" 
                 >> task_load_data
-                >> task_init
                 >> loop(
                     task_get >> task_sleep_after_get >>
                     task_train >> task_sleep_after_train >> task_eval >>
