@@ -130,6 +130,7 @@ class AsyncOortSelector(AbstractSelector):
         # Tracks eval updates received from trainers and makes them
         # available to select again
         self.trainer_eval_recv_ends = list()
+        self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
 
         # Tracks timeouted trainers and number of times it happened to
         # a trainer
@@ -171,7 +172,10 @@ class AsyncOortSelector(AbstractSelector):
             # availability tracking. Else, don't select any eval ends-
             # this would be for 2-state tracking.
             if self.eval_goal_factor > 0.0:
-                concurrency = min(len(ends), self.c + int(self.eval_goal_factor * self.agg_goal) - len(self.trainer_eval_recv_ends))
+                # this is set to maximum possible concurrency for
+                # eval. It will be adjusted later based on eval tasks
+                # already sent and received for the round.
+                concurrency = min(len(ends), self.c + self.curr_round_eval_slots_left)
             else:
                 concurrency = 0
         logger.info(f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}")
@@ -662,6 +666,9 @@ class AsyncOortSelector(AbstractSelector):
             
             self.trainer_eval_recv_ends = []
             logger.debug(f"Cleared trainer_eval_recv_ends: {self.trainer_eval_recv_ends}")
+            
+            self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+            logger.info(f"Reset curr_round_eval_slots_left: {self.curr_round_eval_slots_left}")
 
             for end_id in ends_to_remove:
                 if end_id not in ends:
@@ -1204,192 +1211,238 @@ class AsyncOortSelector(AbstractSelector):
                          f"with empty candidates")
             return {}
 
-        # Make a filter of blocklist ends
-        blocklist_end_ids = self.find_blocklists(filtered_ends)
+        # TODO: (DG) Clean up this implementation later. Candidates
+        # are being selected differently based on the train or eval
+        # tasks.
+        if task_to_perform == "train":
+            # Make a filter of blocklist ends
+            blocklist_end_ids = self.find_blocklists(filtered_ends)
 
-        # TODO: (DG) Move trainer unavail list to inside select()
-        # instead? Make a filter of unavailable ends
-        if trainer_unavail_list != []:
-            logger.info(
-                "### Oort select got non-empty trainer_unavail_list, will "
-                "remove unavail trainers from round"
+            # TODO: (DG) Move trainer unavail list to inside select()
+            # instead? Make a filter of unavailable ends
+            if trainer_unavail_list != []:
+                logger.info(
+                    "### Oort select got non-empty trainer_unavail_list, will "
+                    "remove unavail trainers from round"
+                )
+
+            # get the list of unavailable_ends and pass to
+            # fetch_statistical_utility treat unavailable_ends like
+            # blocklist_ends inside fetch_statistical_utility
+
+            # Make a list of tuple (end_id, end_utility) as an
+            # utility_list As unexplored ends that are not selected before
+            # do not have utility value, collect them separately with
+            # unexplored_end_ids list TODO: (DG) Check inside
+            # fetch_statistical_utility to see if we can directly pass
+            # eligible_ends or a subset of ends, that take into account
+            # unavailable ends too.
+            logger.debug(f"Invoking fetch_statistical_utility(): with filtered_ends: "
+                        f"{filtered_ends}, blocklist_end_ids: {blocklist_end_ids}, "
+                        f"trainer_unavail_list: {trainer_unavail_list}"
+                        )
+            utility_list, unexplored_end_ids = self.fetch_statistical_utility(
+                filtered_ends, blocklist_end_ids, trainer_unavail_list
             )
+            logger.debug(f"After fetch_statistical_utility(): utility_list: "
+                        f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}")
 
-        # get the list of unavailable_ends and pass to
-        # fetch_statistical_utility treat unavailable_ends like
-        # blocklist_ends inside fetch_statistical_utility
+            # DG: Removed old check for first round This indicates the
+            # first round, where no end's utility has been measured; Then,
+            # perform random selection
+            if round == 0:
+                self.round = round
 
-        # Make a list of tuple (end_id, end_utility) as an
-        # utility_list As unexplored ends that are not selected before
-        # do not have utility value, collect them separately with
-        # unexplored_end_ids list TODO: (DG) Check inside
-        # fetch_statistical_utility to see if we can directly pass
-        # eligible_ends or a subset of ends, that take into account
-        # unavailable ends too.
-        logger.debug(f"Invoking fetch_statistical_utility(): with filtered_ends: "
-                     f"{filtered_ends}, blocklist_end_ids: {blocklist_end_ids}, "
-                     f"trainer_unavail_list: {trainer_unavail_list}"
-                     )
-        utility_list, unexplored_end_ids = self.fetch_statistical_utility(
-            filtered_ends, blocklist_end_ids, trainer_unavail_list
-        )
-        logger.debug(f"After fetch_statistical_utility(): utility_list: "
-                     f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}")
+                logger.debug(f"Round: {self.round}, will sample feasible_extra: "
+                            f"{feasible_extra} from len(filtered_ends): "
+                            f"{len(filtered_ends)}")
+                candidates_dict = self.select_random(
+                    filtered_ends,
+                    num_of_ends=feasible_extra
+                    )
+                # Invoke process_chosen_candidate_dict(). It will
+                # appropriately add candidates to selected_ends and
+                # all_selected
+                self.process_chosen_candidate_dict(
+                    candidates_dict=candidates_dict,
+                    selected_ends=selected_ends
+                    )
 
-        # DG: Removed old check for first round This indicates the
-        # first round, where no end's utility has been measured; Then,
-        # perform random selection
-        if round == 0:
-            self.round = round
+                logger.debug(f"handle_send_state returning "
+                            f"candidates_dict: {candidates_dict}")
 
-            logger.debug(f"Round: {self.round}, will sample feasible_extra: "
-                         f"{feasible_extra} from len(filtered_ends): "
-                         f"{len(filtered_ends)}")
-            candidates_dict = self.select_random(
-                filtered_ends,
-                num_of_ends=feasible_extra
-                )
-            # Invoke process_chosen_candidate_dict(). It will
-            # appropriately add candidates to selected_ends and
-            # all_selected
-            self.process_chosen_candidate_dict(
-                candidates_dict=candidates_dict,
-                selected_ends=selected_ends
-                )
+                return candidates_dict
 
-            logger.debug(f"handle_send_state returning "
-                         f"candidates_dict: {candidates_dict}")
-
-            return candidates_dict
-
-        # Not the first round, performing Oort-based selection
-        # Calculate number of ends to select for exploration and
-        # exploitation
-        logger.debug(f"Invoking calculate_num_of_exploration_exploitation() "
-                     f"with num_of_ends: {feasible_extra}, "
-                     f"unexplored_end_ids: {unexplored_end_ids}")
-        (
-            exploration_len,
-            exploitation_len,
-        ) = self.calculate_num_of_exploration_exploitation(
-            num_of_ends=feasible_extra,
-            unexplored_end_ids=unexplored_end_ids
-        )
-        logger.debug(f"After calculate_num_of_exploration_exploitation(), "
-                     f"exploration_len: {exploration_len}, exploitation_len: "
-                     f"{exploitation_len}")
-
-        # Calculate the total utility value of trainers with applying
-        # temporal uncertainty and global system utility
-        logger.debug(f"Invoking calculate_total_utility() with utility_list: "
-                     f"{utility_list}, filtered_ends: {filtered_ends}, round: {round}")
-        utility_list = self.calculate_total_utility(utility_list, filtered_ends, round)
-
-        logger.info(f"After calculate_total_utility, utility_list: {utility_list}")
-
-        # cutOfUtil from Oort algorithm
-        logger.debug(f"Invoking cutoff_util() with utility_list: {utility_list}, "
-                     f"num_of_ends: {feasible_extra}")
-        cutoff_utility = self.cutoff_util(
-            utility_list,
-            num_of_ends=feasible_extra
-            )
-        logger.info(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
-
-        # perform random if cutoff_utility == 0 TODO: (DG) Check.
-        # Removed "and len(self.selected_ends) == 0 from the if
-        # condition"
-        if len(utility_list) == 0:
-            self.round = round
-            logger.debug(f"len(utility_list) = {len(utility_list)}, will invoke "
-                         f"select_random() with filtered_ends: {filtered_ends} and "
-                         f"feasible_extra: {feasible_extra}")
-            candidates_dict = self.select_random(
-                filtered_ends,
-                num_of_ends=feasible_extra
-                )
-            # Invoke process_chosen_candidate_dict(). It will
-            # appropriately add candidates to selected_ends and
-            # all_selected
-            self.process_chosen_candidate_dict(
-                candidates_dict=candidates_dict,
-                selected_ends=selected_ends
-                )
-
-            logger.debug(f"handle_send_state returning "
-                         f"candidates_dict: {candidates_dict}")
-
-            return candidates_dict
-
-        # TODO: (DG) Separate this out based on the async_oort
-        # selection mode. Keep one for default, one for fastest and
-        # one for maxSamples
-        if self.select_type == "default":
-            candidates, exploit_end_ids = self._select_candidates_using_default(
-                cutoff_utility=cutoff_utility,
-                utility_list=utility_list,
-                exploitation_len=exploitation_len,
-                exploration_len=exploration_len,
+            # Not the first round, performing Oort-based selection
+            # Calculate number of ends to select for exploration and
+            # exploitation
+            logger.debug(f"Invoking calculate_num_of_exploration_exploitation() "
+                        f"with num_of_ends: {feasible_extra}, "
+                        f"unexplored_end_ids: {unexplored_end_ids}")
+            (
+                exploration_len,
+                exploitation_len,
+            ) = self.calculate_num_of_exploration_exploitation(
+                num_of_ends=feasible_extra,
                 unexplored_end_ids=unexplored_end_ids
             )
-        elif self.select_type == "fastest":
-            candidates, exploit_end_ids = self._select_candidates_fastest(
-                ends=filtered_ends,
+            logger.debug(f"After calculate_num_of_exploration_exploitation(), "
+                        f"exploration_len: {exploration_len}, exploitation_len: "
+                        f"{exploitation_len}")
+
+            # Calculate the total utility value of trainers with applying
+            # temporal uncertainty and global system utility
+            logger.debug(f"Invoking calculate_total_utility() with utility_list: "
+                        f"{utility_list}, filtered_ends: {filtered_ends}, round: {round}")
+            utility_list = self.calculate_total_utility(utility_list, filtered_ends, round)
+
+            logger.info(f"After calculate_total_utility, utility_list: {utility_list}")
+
+            # cutOfUtil from Oort algorithm
+            logger.debug(f"Invoking cutoff_util() with utility_list: {utility_list}, "
+                        f"num_of_ends: {feasible_extra}")
+            cutoff_utility = self.cutoff_util(
+                utility_list,
                 num_of_ends=feasible_extra
+                )
+            logger.info(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
+
+            # perform random if cutoff_utility == 0 TODO: (DG) Check.
+            # Removed "and len(self.selected_ends) == 0 from the if
+            # condition"
+            if len(utility_list) == 0:
+                self.round = round
+                logger.debug(f"len(utility_list) = {len(utility_list)}, will invoke "
+                            f"select_random() with filtered_ends: {filtered_ends} and "
+                            f"feasible_extra: {feasible_extra}")
+                candidates_dict = self.select_random(
+                    filtered_ends,
+                    num_of_ends=feasible_extra
+                    )
+                # Invoke process_chosen_candidate_dict(). It will
+                # appropriately add candidates to selected_ends and
+                # all_selected
+                self.process_chosen_candidate_dict(
+                    candidates_dict=candidates_dict,
+                    selected_ends=selected_ends
+                    )
+
+                logger.debug(f"handle_send_state returning "
+                            f"candidates_dict: {candidates_dict}")
+
+                return candidates_dict
+
+            # TODO: (DG) Separate this out based on the async_oort
+            # selection mode. Keep one for default, one for fastest and
+            # one for maxSamples
+            if self.select_type == "default":
+                candidates, exploit_end_ids = self._select_candidates_using_default(
+                    cutoff_utility=cutoff_utility,
+                    utility_list=utility_list,
+                    exploitation_len=exploitation_len,
+                    exploration_len=exploration_len,
+                    unexplored_end_ids=unexplored_end_ids
+                )
+            elif self.select_type == "fastest":
+                candidates, exploit_end_ids = self._select_candidates_fastest(
+                    ends=filtered_ends,
+                    num_of_ends=feasible_extra
+                )
+            elif self.select_type == "maxSamples":
+                candidates, exploit_end_ids = self._select_candidates_maxSamples(
+                    ends=filtered_ends,
+                    num_of_ends=feasible_extra
+                )
+            elif self.select_type == "prioritiseUnavail":
+                candidates, exploit_end_ids = self._select_candidates_prioritiseUnavail(
+                    ends=filtered_ends,
+                    num_of_ends=feasible_extra
+                )
+            elif self.select_type == "fairShare":
+                candidates, exploit_end_ids = self._select_candidates_fairShare(
+                    ends=filtered_ends,
+                    num_of_ends=feasible_extra
+                )
+
+            # Converting list of candidates to candidate_dict so that it
+            # can be passed to a function to process it
+            candidates_dict = {key: None for key in candidates}
+
+            # Invoke process_chosen_candidate_dict(). It will
+            # appropriately add candidates to selected_ends and
+            # all_selected
+            self.process_chosen_candidate_dict(
+                candidates_dict=candidates_dict,
+                selected_ends=selected_ends
+                )
+
+            # save the history of exploited utility at this round for
+            # pacer TODO: (DG) check if ends needs to be passed or
+            # filtered_ends
+            if self.select_type == "default":
+                logger.debug(f"Invoking save_exploited_utility_history() with ends: {ends},"
+                            f" exploit_end_ids: {exploit_end_ids}")
+                self.save_exploited_utility_history(ends, exploit_end_ids)
+
+                # update the exploration_factor
+                logger.debug("Invoking update_exploration_factor()")
+                self.update_exploration_factor()
+
+            # increment the round selected count on selected ends TODO:
+            # (DG) simplify the code here
+            candidate_ends = dict()
+            for end_id in candidates:
+                candidate_ends[end_id] = ends[end_id]
+
+            logger.debug(f"Invoking increment_selected_count_on_selected_ends() "
+                        f"with ends: {ends}, candidate_ends: {candidate_ends}")
+            self.increment_selected_count_on_selected_ends(ends, candidate_ends)
+
+            self.round = round
+        
+        elif task_to_perform == "eval":
+            # Here we populate a mapping between all items in
+            # filtered_ends and the last eval round they participated
+            # in. We then sort this list in ascending order of the
+            # eval rounds and pick the first feasible_extra items from
+            # it. This ensures that the clients that have not been
+            # picked for evaluation for the longest time are picked up
+            # first.
+            
+            # feasible_extra is the number of ends that can be picked
+            # in this round for eval.
+            original_feasible_extra = feasible_extra
+            feasible_extra = min(feasible_extra, self.curr_round_eval_slots_left)
+            logger.info(f"feasible_extra: {feasible_extra} after min with original_feasible_extra: {original_feasible_extra} and curr_round_eval_slots_left: {self.curr_round_eval_slots_left}")
+            
+            end_id_to_last_eval_round = {
+                end_id: ends[end_id].get_property(PROP_LAST_EVAL_ROUND) or 0
+                for end_id in filtered_ends
+            }
+
+            sorted_end_ids = sorted(
+                end_id_to_last_eval_round,
+                key=end_id_to_last_eval_round.get
             )
-        elif self.select_type == "maxSamples":
-            candidates, exploit_end_ids = self._select_candidates_maxSamples(
-                ends=filtered_ends,
-                num_of_ends=feasible_extra
-            )
-        elif self.select_type == "prioritiseUnavail":
-            candidates, exploit_end_ids = self._select_candidates_prioritiseUnavail(
-                ends=filtered_ends,
-                num_of_ends=feasible_extra
-            )
-        elif self.select_type == "fairShare":
-            candidates, exploit_end_ids = self._select_candidates_fairShare(
-                ends=filtered_ends,
-                num_of_ends=feasible_extra
-            )
 
-        # Converting list of candidates to candidate_dict so that it
-        # can be passed to a function to process it
-        candidates_dict = {key: None for key in candidates}
+            candidates = sorted_end_ids[:feasible_extra]
+            
+            # Adjust eval slots left based on candidate list chosen
+            self.curr_round_eval_slots_left -= len(candidates)
+            
+            logger.info(f"Selected candidates with last_eval_rounds for eval: {[(end_id, end_id_to_last_eval_round[end_id]) for end_id in candidates]}, curr_round_eval_slots_left: {self.curr_round_eval_slots_left} for round {round}")
+            
+            candidates_dict = {key: None for key in candidates}
 
-        # Invoke process_chosen_candidate_dict(). It will
-        # appropriately add candidates to selected_ends and
-        # all_selected
-        self.process_chosen_candidate_dict(
-            candidates_dict=candidates_dict,
-            selected_ends=selected_ends
+            # Invoke process_chosen_candidate_dict(). It will
+            # appropriately add candidates to selected_ends and
+            # all_selected
+            self.process_chosen_candidate_dict(
+                candidates_dict=candidates_dict,
+                selected_ends=selected_ends
             )
 
-        # save the history of exploited utility at this round for
-        # pacer TODO: (DG) check if ends needs to be passed or
-        # filtered_ends
-        if self.select_type == "default":
-            logger.debug(f"Invoking save_exploited_utility_history() with ends: {ends},"
-                         f" exploit_end_ids: {exploit_end_ids}")
-            self.save_exploited_utility_history(ends, exploit_end_ids)
-
-            # update the exploration_factor
-            logger.debug("Invoking update_exploration_factor()")
-            self.update_exploration_factor()
-
-        # increment the round selected count on selected ends TODO:
-        # (DG) simplify the code here
-        candidate_ends = dict()
-        for end_id in candidates:
-            candidate_ends[end_id] = ends[end_id]
-
-        logger.debug(f"Invoking increment_selected_count_on_selected_ends() "
-                     f"with ends: {ends}, candidate_ends: {candidate_ends}")
-        self.increment_selected_count_on_selected_ends(ends, candidate_ends)
-
-        self.round = round
-
-        logger.info(f"handle_send_state returning candidates_dict: {candidates_dict}")
+        logger.info(f"handle_send_state returning candidates_dict: {candidates_dict} for task_to_perform: {task_to_perform}")
 
         return candidates_dict
 
