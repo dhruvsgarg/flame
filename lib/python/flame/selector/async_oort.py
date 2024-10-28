@@ -1177,11 +1177,15 @@ class AsyncOortSelector(AbstractSelector):
                     count_avl_train += 1
                 elif self.check_three_state_avl and task_to_perform == "eval" and (
                     curr_end_id_avl_state in (
-                        TrainerAvailState.AVL_TRAIN.value,
                         TrainerAvailState.AVL_EVAL.value, 
                         None
                         )
                     ):
+                    # Removed AVL_TRAIN to make the eval task operate
+                    # on AVL_EVAL alone since it might be slowing down
+                    # the training. Also, the AVL_TRAIN trainers will
+                    # eventually get picked and return updated
+                    # utilities.
                     filtered_ends[end_id] = ends[end_id]
                     logger.debug(f"Adding end {end_id} to filtered ends. Three_state_avl_check, task_to_perform: {task_to_perform} in state: {ends[end_id].get_property(PROP_AVL_STATE)}")
                     count_avl_eval += 1
