@@ -101,7 +101,7 @@ for baseline_name in "${baseline_names[@]}"; do
     echo "going inside this folder: config_dir${alpha}_num300_traceFail${trainer_dir_suffix}"
     trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${aggType}_${selType}_${awareType}_50.log"
     echo "Created trainer log file: ${trainer_log_file}"
-    bash exec_300_trainers_battery_50.sh > "$trainer_log_file" 2>&1 &
+    bash exec_300_trainers_battery50_speed2.sh > "$trainer_log_file" 2>&1 &
     echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
 
     # Monitor the log file

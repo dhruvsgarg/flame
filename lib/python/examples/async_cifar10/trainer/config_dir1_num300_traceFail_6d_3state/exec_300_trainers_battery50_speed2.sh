@@ -10,7 +10,7 @@ for ((X=1; X<=300; X++)); do
     echo "ASSIGN_TO_GPU=${ASSIGN_TO_GPU} value for X=${X}" 
 
     # Run the Python command with the corresponding trainer_X.json file
-    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python ../pytorch/main.py --config "trainer_${X}.json" --battery_threshold 50 &
+    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python ../pytorch/main.py --config "trainer_${X}.json" --battery_threshold 50 --speedup_factor 2.0 &
     
     # Set the time gap based on the condition
     # if [ $X -eq 1 ] || [ $X -eq 2 ]; then
