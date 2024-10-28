@@ -26,6 +26,7 @@ import gc
 import logging
 import threading
 import time
+import math
 
 import torch
 import torch.nn as nn
@@ -68,7 +69,12 @@ class Net(nn.Module):
 class PyTorchCifar10Trainer(Trainer):
     """PyTorch CIFAR-10 Trainer."""
 
-    def __init__(self, config: Config, battery_threshold) -> None:
+    def __init__(
+        self,
+        config: Config,
+        battery_threshold,
+        speedup_factor
+        ) -> None:
         """Initialize a class instance."""
         self.config = config
         self.dataset_size = 0
@@ -135,6 +141,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
         
+        # Set speedup factor to accelerate all events and training/
+        # eval durations
+        self.speedup_factor = speedup_factor
+        
         # Use the battery_threshold to determine the
         # avl_events_3_state config. Default to 50 if not provided
         self.event_battery_threshold = battery_threshold
@@ -177,7 +187,10 @@ class PyTorchCifar10Trainer(Trainer):
         # return in case channel manager is not set. Events will start
         # getting sent after the channel is setup.
         if hasattr(self, 'cm') and self.cm is not None:
-            if len(self.state_avl_event_ts) > 0 and time.time() >= self.trainer_start_ts + self.state_avl_event_ts[0][0]:
+            next_event_ts = self.trainer_start_ts + (
+                self.state_avl_event_ts[0][0] / self.speedup_factor
+                )
+            if len(self.state_avl_event_ts) > 0 and time.time() >= next_event_ts:
                 state_to_set = self.state_avl_event_ts.pop(0)[1]
                 old_status = self.avl_state.value
                 try:
@@ -277,7 +290,7 @@ class PyTorchCifar10Trainer(Trainer):
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency) if enabled
         if self.training_delay_enabled == "True":
-            time.sleep(self.training_delay_s)
+            time.sleep(self.training_delay_s / self.speedup_factor)
             logger.debug(f"Delayed training time for trainer "
                          f"{self.trainer_id} by {self.training_delay_s}s")
 
@@ -360,8 +373,11 @@ class PyTorchCifar10Trainer(Trainer):
             # of the dataset
             self.normalize_stat_utility(epoch)
         if self.training_delay_enabled == "True":
-            eval_delay = self.training_delay_s//2
-            time.sleep(eval_delay)
+            # Updated eval duration to be one-third of training
+            # duration since it is evidenced on text and through
+            # profiling
+            eval_delay = math.floor(self.training_delay_s/3.0)
+            time.sleep(eval_delay / self.speedup_factor)
             logger.debug(f"Delayed eval time for trainer "
                          f"{self.trainer_id} by {eval_delay}s")
 
@@ -411,11 +427,24 @@ def main():
         help="Battery threshold for the trainer 3-state events (either 50 or 75)",
         required=False
     )
+    
+    # Add argument to speed up client's timescale by a factor
+    parser.add_argument(
+        "--speedup_factor",
+        type=float,
+        default=1.0,
+        help="Speedup factor to accelarate all events and training/ eval durations from the trainer. Default- no acceleration",
+        required=False
+    )
 
     args = parser.parse_args()
     config = Config(args.config)
 
-    t = PyTorchCifar10Trainer(config, args.battery_threshold)
+    t = PyTorchCifar10Trainer(
+        config,
+        args.battery_threshold,
+        args.speedup_factor
+        )
     print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
           f"{t.heartbeats_enabled}, has client_notify: "
           f"{t.client_notify['enabled']}, has "
