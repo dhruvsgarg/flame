@@ -1486,7 +1486,7 @@ class AsyncOortSelector(AbstractSelector):
             for end_id, end in ends.items():
                 curr_end_state = end.get_property(KEY_END_STATE)
                 if end_id not in self.all_selected.keys():
-                    if curr_end_state != VAL_END_STATE_NONE:
+                    if curr_end_state != VAL_END_STATE_NONE and curr_end_state != None:
                         logging.debug(f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                                   f"to candidates: key {end_id}, val: {end}")
                         candidates[end_id] = end
