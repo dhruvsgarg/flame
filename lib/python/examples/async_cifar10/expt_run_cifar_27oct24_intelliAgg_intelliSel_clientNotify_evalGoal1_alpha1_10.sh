@@ -59,7 +59,7 @@ node_name=$1
 baseline_names=("IAgg_ISel_clientNotify")
 
 # Array of alpha values
-alphas=(0.1 100)
+alphas=(1 10)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
