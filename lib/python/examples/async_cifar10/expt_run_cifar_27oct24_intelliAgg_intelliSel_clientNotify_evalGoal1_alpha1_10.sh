@@ -56,15 +56,15 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("fedbuff_asyncoort_clientNotify")
+baseline_names=("IAgg_ISel_clientNotify")
 
 # Array of alpha values
-alphas=(1 0.1 10 100)
+alphas=(0.1 100)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
-aggType="fedbuff"
-selType="asyncoort"
+aggType="IAgg"
+selType="ISel"
 awareType="clientNotify"
 
 # Loop through each baseline name
@@ -89,7 +89,7 @@ for baseline_name in "${baseline_names[@]}"; do
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
     agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_50.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main.py expt_cifar_27oct24_fedbuff_asyncoort_clientNotify_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_battery50_c30_k10 > "$agg_log_file" 2>&1 &
+    python pytorch/main.py expt_cifar_27oct24_iAgg_iSel_clientNotify_evalGoal1_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_battery50_evalGoal1_c30_k10 > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
@@ -121,7 +121,7 @@ for baseline_name in "${baseline_names[@]}"; do
     elapsed_time=$((end_time - start_time))
     elapsed_human=$(printf '%02dh:%02dm:%02ds\n' $((elapsed_time/3600)) $((elapsed_time%3600/60)) $((elapsed_time%60)))
 
-    echo "$(date +'%Y-%m-%d %H:%M:%S') Finished experiment with alpha=${alpha}, aggType=${aggType}, selType=${selType}, awareType=${awareType} on node=${node_name} with baseline=${baseline_name}. Time taken: ${elapsed_human}"
+    echo "$(date +'%Y-%m-%d %H:%M:%S') Finished experiment with alpha=${alpha}, aggType=${aggType}, selType=${selType}, awareType=${awareType} on node=${node_name}. Time taken: ${elapsed_human}"
     echo "$(date +'%Y-%m-%d %H:%M:%S') Sleeping for a minute, before next experiment"
     sleep 60
   done
