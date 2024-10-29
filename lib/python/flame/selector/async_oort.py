@@ -656,9 +656,9 @@ class AsyncOortSelector(AbstractSelector):
             
             logger.info(f"Ends to remove based on trainer updates received: {ends_to_remove}")
             
-            # Adding trainer_eval_recv_ends to accoount for trainers that
-            # have finished eval updates. These trainers also need
-            # to be freed up to participate in the next round.
+            # Adding trainer_eval_recv_ends to accoount for trainers
+            # that have finished eval updates. These trainers also
+            # need to be freed up to participate in the next round.
             logger.info(f"Ends to remove based on eval updates received: {self.trainer_eval_recv_ends}")
             ends_to_remove = ends_to_remove + self.trainer_eval_recv_ends
             
@@ -940,9 +940,8 @@ class AsyncOortSelector(AbstractSelector):
         end_id_to_update_count = {}
         for key, val in ends.items():
             # if the PROP_UPDATE_COUNT is None, it means the trainer
-            # hasnt trained even once till now. So we set it to
-            # 0 to prioritize it to
-            # get picked up atleast once.
+            # hasnt trained even once till now. So we set it to 0 to
+            # prioritize it to get picked up atleast once.
             update_count = val.get_property(PROP_UPDATE_COUNT)
             if update_count is None:
                 update_count = 0
@@ -1160,12 +1159,13 @@ class AsyncOortSelector(AbstractSelector):
                 # If check_three_state_avl=True, filtered ends needs
                 # to be populated based on the following conditions:
                 # For task_to_perform=train, eligible ends are in
-                # states {avl_train, None}
-                # For task_to_perform=eval, eligible ends are in
-                # states {avl_train, avl_eval None}
+                # states {avl_train, None} For task_to_perform=eval,
+                # eligible ends are in states {avl_train, avl_eval
+                # None}
                     
                 curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
-                # Even if client notify is not enabled, this logic would work since curr_end_id_avl_state = None 
+                # Even if client notify is not enabled, this logic
+                # would work since curr_end_id_avl_state = None 
                 if task_to_perform == "train" and (
                     curr_end_id_avl_state in (
                         TrainerAvailState.AVL_TRAIN.value,
@@ -1235,12 +1235,12 @@ class AsyncOortSelector(AbstractSelector):
             # blocklist_ends inside fetch_statistical_utility
 
             # Make a list of tuple (end_id, end_utility) as an
-            # utility_list As unexplored ends that are not selected before
-            # do not have utility value, collect them separately with
-            # unexplored_end_ids list TODO: (DG) Check inside
-            # fetch_statistical_utility to see if we can directly pass
-            # eligible_ends or a subset of ends, that take into account
-            # unavailable ends too.
+            # utility_list As unexplored ends that are not selected
+            # before do not have utility value, collect them
+            # separately with unexplored_end_ids list TODO: (DG) Check
+            # inside fetch_statistical_utility to see if we can
+            # directly pass eligible_ends or a subset of ends, that
+            # take into account unavailable ends too.
             logger.debug(f"Invoking fetch_statistical_utility(): with filtered_ends: "
                         f"{filtered_ends}, blocklist_end_ids: {blocklist_end_ids}, "
                         f"trainer_unavail_list: {trainer_unavail_list}"
@@ -1252,8 +1252,8 @@ class AsyncOortSelector(AbstractSelector):
                         f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}")
 
             # DG: Removed old check for first round This indicates the
-            # first round, where no end's utility has been measured; Then,
-            # perform random selection
+            # first round, where no end's utility has been measured;
+            # Then, perform random selection
             if round == 0:
                 self.round = round
 
@@ -1294,8 +1294,8 @@ class AsyncOortSelector(AbstractSelector):
                         f"exploration_len: {exploration_len}, exploitation_len: "
                         f"{exploitation_len}")
 
-            # Calculate the total utility value of trainers with applying
-            # temporal uncertainty and global system utility
+            # Calculate the total utility value of trainers with
+            # applying temporal uncertainty and global system utility
             logger.debug(f"Invoking calculate_total_utility() with utility_list: "
                         f"{utility_list}, filtered_ends: {filtered_ends}, round: {round}")
             utility_list = self.calculate_total_utility(utility_list, filtered_ends, round)
@@ -1337,8 +1337,8 @@ class AsyncOortSelector(AbstractSelector):
                 return candidates_dict
 
             # TODO: (DG) Separate this out based on the async_oort
-            # selection mode. Keep one for default, one for fastest and
-            # one for maxSamples
+            # selection mode. Keep one for default, one for fastest
+            # and one for maxSamples
             if self.select_type == "default":
                 candidates, exploit_end_ids = self._select_candidates_using_default(
                     cutoff_utility=cutoff_utility,
@@ -1368,8 +1368,8 @@ class AsyncOortSelector(AbstractSelector):
                     num_of_ends=feasible_extra
                 )
 
-            # Converting list of candidates to candidate_dict so that it
-            # can be passed to a function to process it
+            # Converting list of candidates to candidate_dict so that
+            # it can be passed to a function to process it
             candidates_dict = {key: None for key in candidates}
 
             # Invoke process_chosen_candidate_dict(). It will
@@ -1392,8 +1392,8 @@ class AsyncOortSelector(AbstractSelector):
                 logger.debug("Invoking update_exploration_factor()")
                 self.update_exploration_factor()
 
-            # increment the round selected count on selected ends TODO:
-            # (DG) simplify the code here
+            # increment the round selected count on selected ends
+            # TODO: (DG) simplify the code here
             candidate_ends = dict()
             for end_id in candidates:
                 candidate_ends[end_id] = ends[end_id]
@@ -1465,10 +1465,11 @@ class AsyncOortSelector(AbstractSelector):
             # trainer might have become unavailable, check if it is
             # still available first
             if end_id in ends:
-                if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
+                curr_end_state = ends[end_id].get_property(KEY_END_STATE)
+                if curr_end_state == VAL_END_STATE_RECVD:
                     selected_ends.remove(end_id)
                     logger.debug(f"Removed end_id {end_id} from selected ends since it "
-                                 f"was already in recvd state")
+                                 f"was already in {curr_end_state} state")
                 # TODO: (DG) Remove ends from send state also here for
                 # the trainer side? But how will it impact the
                 # aggregator?
@@ -1483,10 +1484,15 @@ class AsyncOortSelector(AbstractSelector):
 
             candidates = dict()
             for end_id, end in ends.items():
+                curr_end_state = end.get_property(KEY_END_STATE)
                 if end_id not in self.all_selected.keys():
-                    logging.debug(f"end_id {end_id} not in all_selected, adding "
+                    if curr_end_state != VAL_END_STATE_NONE:
+                        logging.debug(f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                                   f"to candidates: key {end_id}, val: {end}")
-                    candidates[end_id] = end
+                        candidates[end_id] = end
+                    else:
+                        logging.debug(f"end_id {end_id} not in all_selected but in state: {curr_end_state}, not adding "
+                                  f"to candidates")
 
             cc = min(len(candidates), concurrency)
             logger.debug(
