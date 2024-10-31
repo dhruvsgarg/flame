@@ -1070,6 +1070,12 @@ class AsyncOortSelector(AbstractSelector):
 
         round = channel_props["round"] if "round" in channel_props else 0
         logger.debug(f"let's select {extra} ends for round {round}")
+        
+        if round % 100 == 0:
+            # Log to info level the property of LAST_EVAL_ROUND for
+            # all the ends
+            for end_id, end in ends.items():
+                logger.info(f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_STAT_UTILITY)}")
 
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed
 
@@ -1486,7 +1492,7 @@ class AsyncOortSelector(AbstractSelector):
             for end_id, end in ends.items():
                 curr_end_state = end.get_property(KEY_END_STATE)
                 if end_id not in self.all_selected.keys():
-                    if curr_end_state != VAL_END_STATE_NONE and curr_end_state != None:
+                    if curr_end_state != VAL_END_STATE_NONE:
                         logging.debug(f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                                   f"to candidates: key {end_id}, val: {end}")
                         candidates[end_id] = end
