@@ -371,7 +371,7 @@ class MqttBackend(AbstractBackend):
         any = Any()
         any.Pack(msg)
         payload = any.SerializeToString()
-
+        logger.info(f"NRL: payload: {payload}")
         logger.debug(f"notify: publish topic: {topic}")
         self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
 
