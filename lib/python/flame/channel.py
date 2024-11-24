@@ -29,6 +29,9 @@ from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
+import gzip
+import zstandard as zstd
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -263,8 +266,14 @@ class Channel(object):
                 return
 
             payload = cloudpickle.dumps(message)
+            # payload2 = gzip.compress(payload)
+            # compressor = zstd.ZstdCompressor()
+            # payload2 = compressor.compress(payload)
             self.mc.accumulate("bytes", "send", len(payload))
-            logger.debug(f"length of payload = {len(payload)}")
+            # logger.info(f"msg = {message}")
+            # logger.info(f"payload = {payload}")
+            logger.info(f"size of payload = {sys.getsizeof(payload)}")
+            # logger.info(f"size of compressed payload = {sys.getsizeof(payload2)}")
             await self._ends[end_id].put(payload)
 
         _, status = run_async(_put(), self._backend.loop())
@@ -289,6 +298,9 @@ class Channel(object):
                 payload = await self._ends[end_id].get()
                 if payload:
                     # ignore timestamp for measuring bytes received
+                    # payload = gzip.decompress(payload)
+                    # decompressor = zstd.ZstdDecompressor()
+                    # payload = decompressor.decompress(payload)
                     self.mc.accumulate("bytes", "recv", len(payload[0]))
             except KeyError:
                 return None
@@ -355,11 +367,11 @@ class Channel(object):
             yield None, ("", datetime.now())
 
         async def _put_message_to_rxq_inner():
-            logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
+            logger.info("Created task for recv_fifo in put_msg_to_rxq_inner")
             _ = asyncio.create_task(self._streamer_for_recv_fifo(end_ids))
 
         async def _get_message_inner():
-            logger.debug("In _get_msg_inner(), will await until getting a message")
+            logger.info("In _get_msg_inner(), will await until getting a message")
             return await self._rx_queue.get()
 
         # first, create an asyncio task to fetch messages and put a
@@ -373,10 +385,10 @@ class Channel(object):
             result, status = run_async(_get_message_inner(), self._backend.loop())
             logger.debug(f"After getting message, status: {status}")
             (end_id, payload) = result
-            logger.debug(f"get payload for {end_id}")
+            logger.info(f"get payload for {end_id}")
 
             if self.has(end_id):
-                logger.debug(f"channel got a msg for {end_id}")
+                logger.info(f"channel got a msg for {end_id}")
                 # set a property to indicate that a message was
                 # received for the end
                 self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
@@ -435,7 +447,7 @@ class Channel(object):
             except KeyError:
                 yield end_id, None
 
-            logger.debug(f"_get_inner() invoked for end_id: {end_id}")
+            logger.info(f"_get_inner() invoked for end_id: {end_id}")
             yield end_id, payload
 
         runs = []
@@ -446,8 +458,8 @@ class Channel(object):
                 runs.append(_get_inner(end_id))
                 self._active_recv_fifo_tasks.add(end_id)
 
-                logger.debug(f"active task added for {end_id}")
-                logger.debug(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
+                logger.info(f"active task added for {end_id}")
+                logger.info(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
 
         merged = stream.merge(*runs)
         async with merged.stream() as streamer:
@@ -477,7 +489,6 @@ class Channel(object):
             if payload and status
             else (None, None)
         )
-
         return msg, timestamp
 
     def drain_messages(self):
