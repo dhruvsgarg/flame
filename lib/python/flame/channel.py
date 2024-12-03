@@ -349,7 +349,7 @@ class Channel(object):
         -------
         The function yields a pair: end id and message
         """
-        logger.debug(f"first_k = {first_k}, len(end_ids) = {len(end_ids)}")
+        logger.info(f"Receive fifo: first_k = {first_k}, len(end_ids) = {len(end_ids)}")
 
         first_k = min(first_k, len(end_ids))
         if first_k <= 0:
@@ -458,7 +458,7 @@ class Channel(object):
                 runs.append(_get_inner(end_id))
                 self._active_recv_fifo_tasks.add(end_id)
 
-                logger.info(f"active task added for {end_id}")
+                logger.info(f"active task added for {end_id}, runs length: {len(runs)}")
                 logger.info(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
 
         merged = stream.merge(*runs)
