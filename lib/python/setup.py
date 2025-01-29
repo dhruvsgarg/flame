@@ -36,7 +36,7 @@ setup(
         "boto3",
         "cloudpickle",
         "diskcache",
-        "mlflow==2.12.1",
+        "mlflow==1.30.1",
         "paho-mqtt",
         "protobuf==3.20.3",
         "grpcio==1.53.2",
@@ -46,7 +46,7 @@ setup(
         "numpy",
         "pathlib",
         "fedscale",
-        "shared-memory-dict==0.7.2"
+        # "shared-memory-dict==0.7.2"     # removed since it is not there for py<3.8 and fwdllm needs py3.7
     ],
     extras_require={
         "dev": [
