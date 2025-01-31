@@ -72,3 +72,5 @@ third_party/spright_utility/bin/
 # ignore dataset and wandb generated files
 */data/*
 *wandb
+fednlp_data*
+cache_dir
