@@ -423,6 +423,7 @@ class AsyncOortSelector(AbstractSelector):
                         ].total_seconds()
                     )
         else:
+            # Assuming a max round duration of 99999 seconds (~1.2 days)
             round_preferred_duration = timedelta(seconds=99999)
         
         logger.debug(

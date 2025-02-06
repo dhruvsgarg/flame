@@ -71,6 +71,7 @@ class OortSelector(AbstractSelector):
 
         self.exploitation_util_history = []
 
+        # Assuming a max round duration of 99999 seconds (~1.2 days)
         self.round_preferred_duration = timedelta(seconds=99999)
         self.round_threshold = 30
         self.pacer_delta = 5
@@ -346,17 +347,28 @@ class OortSelector(AbstractSelector):
                 )
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
+                elif end_round_duration is None:
+                    # TODO: (DG) Check if this is needed. Was put in as a hack
+                    # for eval selector. Unsure if it will be used in sync OORT.
+                    # Can set it to 60 seconds since
+                    # that is the max round duration for training.
+                    sorted_round_duration.append(timedelta(seconds=60))
             logger.info(
                 f"after for loop, sorted_round_duration: {sorted_round_duration}"
             )
-            round_preferred_duration = sorted_round_duration[
-                min(
-                    int(len(sorted_round_duration) * self.round_threshold / 100.0),
-                    len(sorted_round_duration) - 1,
-                )
-            ]
+            round_preferred_duration = timedelta(
+                seconds=sorted_round_duration[
+                    min(int(len(sorted_round_duration) * self.round_threshold / 100.0),
+                        len(sorted_round_duration) - 1,
+                        )
+                        ].total_seconds()
+                    )
         else:
-            round_preferred_duration = float("inf")
+            # Assuming a max round duration of 99999 seconds (~1.2 days)
+            round_preferred_duration = timedelta(seconds=99999)
+
+        logger.debug(
+            f"returning round_preferred_duration: {round_preferred_duration}")
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
@@ -377,11 +389,20 @@ class OortSelector(AbstractSelector):
         """
 
         end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+        
+        
+        # TODO:(DG) Verify if this is needed for syncfl oort. Was put in place
+        # to replicate async_oort.py. 
+        if end_round_duration is None:
+            return 1
+        
         if end_round_duration <= self.round_preferred_duration:
             return 1
         else:
+            # Get both into datetime seconds before division
             return math.pow(
-                self.round_preferred_duration / end_round_duration,
+                self.round_preferred_duration.total_seconds() /
+                end_round_duration.total_seconds(),
                 self.alpha,
             )
 
