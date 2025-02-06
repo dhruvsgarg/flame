@@ -192,12 +192,14 @@ class OortSelector(AbstractSelector):
         num_of_ends: int,
     ) -> float:
         """Return a cutoff utility based on Oort."""
+        if not sorted_utility_list:
+            logger.debug("Got empty utility_list, returning 999999.0")
+            return 999999.0
 
-        return 0.95 * (
-            sorted_utility_list[int(num_of_ends * (1 - self.exploration_factor)) - 1][
-                PROP_UTILITY
-            ]
-        )
+        index = int(num_of_ends * (1 - self.exploration_factor)) - 1
+        index = max(0, min(index, len(sorted_utility_list) - 1))
+
+        return 0.95 * sorted_utility_list[index][PROP_UTILITY]
 
     def sample_by_util(
         self,

@@ -359,18 +359,18 @@ class TopAggregator(Role, metaclass=ABCMeta):
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
 
             for trainer_id, event_dict in list(self.trainer_event_dict.items()):
-                logger.info(f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}")
+                logger.debug(f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}")
 
                 if not event_dict:
                     continue  # Skip if no events for trainer
 
                 # Binary search for closest past event
                 idx = event_dict.bisect_right(agg_time_since_start_s) - 1
-                logger.info(f"Trainer_id: {trainer_id} got index: {idx}")
+                logger.debug(f"Trainer_id: {trainer_id} got index: {idx}")
 
                 if idx >= 0:
                     most_recent_event = event_dict.peekitem(idx)
-                    logger.info(f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}")
+                    logger.debug(f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}")
                     
                     most_recent_event_ts = most_recent_event[0]
                     most_recent_event_state = most_recent_event[1]
