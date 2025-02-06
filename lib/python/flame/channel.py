@@ -186,7 +186,8 @@ class Channel(object):
         async def inner():
             if self.trainer_unavail_list is not None:
                 selected = self._selector.select(
-                    self._ends, self.properties,
+                    self._ends,
+                    self.properties,
                     self.trainer_unavail_list,
                     task_to_perform
                     )

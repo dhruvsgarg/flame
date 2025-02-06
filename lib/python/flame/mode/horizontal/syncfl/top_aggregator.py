@@ -229,7 +229,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
 
-    def _distribute_weights(self, tag: str) -> None:
+    def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"channel not found for tag {tag}")
@@ -241,12 +241,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # before distributing weights, update it from global model
         self._update_weights()
 
+        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
         selected_ends = channel.ends()
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # send out global model parameters to trainers
         for end in selected_ends:
-            logger.debug(f"sending weights to {end}")
+            logger.debug(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
             channel.send(
                 end,
                 {
@@ -255,6 +256,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     ),
                     MessageType.ROUND: self._round,
                     MessageType.DATASAMPLER_METADATA: datasampler_metadata,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform
                 },
             )
             # register round start time on each end for round duration
@@ -350,40 +353,40 @@ class TopAggregator(Role, metaclass=ABCMeta):
     def get_curr_unavail_trainers(self) -> list:
         curr_unavail_trainer_list = []
 
-        # get list of unavailable trainers based on timestamp
-        if self.trainer_unavail_durations is not None:
-            # get aggregator seconds from start
+        # Ensure trainer_event_dict exists
+        if self.trainer_event_dict is not None:
+            # Get aggregator time since start
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
-            for end in list(self.trainer_unavail_durations.keys()):
-                logger.debug(f"Check trainer {end}'s availability")
-                curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
-                # iterate through unavailability list
-                for start_time, duration in curr_trainer_unavail_list:
-                    if start_time <= agg_time_since_start_s < start_time + duration:
-                        logger.debug(f"Trainer {end} is unavailable.")
-                        curr_unavail_trainer_list.append(end)
-                        break
+            for trainer_id, event_dict in list(self.trainer_event_dict.items()):
+                logger.info(f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}")
+
+                if not event_dict:
+                    continue  # Skip if no events for trainer
+
+                # Binary search for closest past event
+                idx = event_dict.bisect_right(agg_time_since_start_s) - 1
+                logger.info(f"Trainer_id: {trainer_id} got index: {idx}")
+
+                if idx >= 0:
+                    most_recent_event = event_dict.peekitem(idx)
+                    logger.info(f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}")
+                    
+                    most_recent_event_ts = most_recent_event[0]
+                    most_recent_event_state = most_recent_event[1]
+
+                    if most_recent_event_state == "UN_AVL":
+                        logger.debug(f"Trainer {trainer_id} is unavailable since time {most_recent_event_ts}.")
+                        curr_unavail_trainer_list.append(trainer_id)
+                    elif most_recent_event_state == "AVL_TRAIN":
+                        logger.debug(f"Trainer {trainer_id} is available since time {most_recent_event_ts}.")
                     else:
-                        logger.debug(f"Trainer {end} is available.")
-                        
-                # Remove entries that occurred in the past
-                updated_trainer_unavail_list = [
-                    (start_time, duration)
-                    for start_time, duration in curr_trainer_unavail_list
-                    if (start_time + duration) >= agg_time_since_start_s
-                ]
+                        logger.warning(f"Trainer {trainer_id} was in state {most_recent_event_state} since time {most_recent_event_ts}, needs to be handled.")
 
-                # Remove end from trainer_unavail_durations if list is
-                # empty
-                if len(updated_trainer_unavail_list) == 0:
-                    logger.info(f"Trainer {end} will no longer fail, "
-                                f"removing from trainer_unavail_durations")
-                    del self.trainer_unavail_durations[end]
-                else:
-                    self.trainer_unavail_durations[end] = updated_trainer_unavail_list
+                # TODO: To be more memory efficient, we can delete events that
+                # are way past their time and already used
 
-        # return the list
+        # Return the list of currently unavailable trainers
         logger.debug(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list}")
 
         return curr_unavail_trainer_list

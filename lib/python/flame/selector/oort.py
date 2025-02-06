@@ -89,6 +89,7 @@ class OortSelector(AbstractSelector):
         ends: dict[str, End],
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list,
+        task_to_perform: str,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
         logger.debug("calling oort select")
@@ -99,8 +100,8 @@ class OortSelector(AbstractSelector):
             return {}
 
         round = channel_props["round"] if "round" in channel_props else 0
-        logger.debug(f"let's select {num_of_ends} ends for new round {round}")
-
+        logger.debug(f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}")        
+        
         # Return existing selected end_ids if the round did not proceed
         if round <= self.round and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
