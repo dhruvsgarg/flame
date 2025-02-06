@@ -33,6 +33,8 @@ PROP_SELECTED_COUNT = "selected_count"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
+PROP_DATASET_SIZE = "dataset_size"
+PROP_UPDATE_COUNT = "update_count"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 
 
@@ -76,6 +78,11 @@ class OortSelector(AbstractSelector):
         self.blocklist_threshold = -1
 
         self.alpha = 2
+
+        # Tracks updates received from trainers and makes them
+        # available to select again
+        # NOTE: Not used in sync but just present there
+        self.ordered_updates_recv_ends = list()
 
     def select(
         self,

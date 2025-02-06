@@ -34,15 +34,17 @@ from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
+    PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
+    PROP_UPDATE_COUNT,
 )
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 60      # 60 seconds timeout
+SEND_TIMEOUT_WAIT_S = 90      # 90 seconds timeout
 
 
 class TopAggregator(SyncTopAgg):
@@ -344,6 +346,9 @@ class TopAggregator(SyncTopAgg):
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]
+            channel.set_end_property(
+                end, PROP_DATASET_SIZE, msg[MessageType.DATASET_SIZE]
+            )
 
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
@@ -352,11 +357,12 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
+            stat_utility = msg[MessageType.STAT_UTILITY]
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 
         if weights is not None and count > 0:
-            tres = TrainResult(weights, count, version)
+            tres = TrainResult(weights, count, version, stat_utility)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
@@ -417,6 +423,16 @@ class TopAggregator(SyncTopAgg):
             # didn't reach the aggregation goal; return
             logger.debug("didn't reach agg goal")
             logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
+
+            # TODO: (DG) Update trainer update count here and set end
+            # property to be used later in the selector
+            # Set trainer participation count
+            # property here.
+            channel.set_end_property(
+                end,
+                PROP_UPDATE_COUNT,
+                self._updates_recevied[end]
+                )
             return
 
         if self._agg_goal_weights is None:

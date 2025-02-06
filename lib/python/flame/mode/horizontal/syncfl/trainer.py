@@ -201,8 +201,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 return
 
             # Load the model onto GPU
-            if self.model is None:
-                self._load_model_onto_gpu()
+            # if self.model is None:
+            #     self._load_model_onto_gpu()
 
             # Update the model
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
@@ -314,7 +314,7 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"{self._updates_returned_upto_round}")
 
         # Evict model from gpu to free up space
-        self._evict_model_from_gpu()
+        # self._evict_model_from_gpu()
 
         channel._selector._cleanup_send_ends()
 
@@ -383,10 +383,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
-            if self.model is None:
-                self._load_model_onto_gpu()
-                logger.debug(f"Trainer_id: {self.trainer_id} came to update_model but "
-                             f"model was not on GPU. Load completed.")
+            # if self.model is None:
+            #     self._load_model_onto_gpu()
+            #     logger.debug(f"Trainer_id: {self.trainer_id} came to update_model but "
+            #                  f"model was not on GPU. Load completed.")
             self.model.load_state_dict(self.weights)
         elif self.framework == MLFramework.TENSORFLOW:
             self.model.set_weights(self.weights)
@@ -396,10 +396,10 @@ class Trainer(Role, metaclass=ABCMeta):
         self.prev_weights = self.weights
 
         if self.framework == MLFramework.PYTORCH:
-            if self.model is None:
-                self._load_model_onto_gpu()
-                logger.error(f"Trainer {self.trainer_id} came to update_weights before "
-                             f"sending. But the model had to be loaded on the device.")
+            # if self.model is None:
+            #     self._load_model_onto_gpu()
+            #     logger.error(f"Trainer {self.trainer_id} came to update_weights before "
+            #                  f"sending. But the model had to be loaded on the device.")
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()

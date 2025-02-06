@@ -33,7 +33,7 @@ def time_tasklet(func):
 
             s.composer.mc.save("runtime", s.alias, end - start)
             s.composer.mc.save("starttime", s.alias, start)
-            logger.debug(f"Runtime of {s.alias} is {end-start}")
+            logger.info(f"Runtime of {s.alias} is {end-start}")
             return result
         else:
             logger.debug("No MetricCollector; won't record runtime")

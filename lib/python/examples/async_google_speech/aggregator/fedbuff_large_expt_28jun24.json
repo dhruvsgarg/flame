@@ -78,7 +78,11 @@
     "optimizer": {
         "sort": "fedbuff",
         "kwargs": {
-            "use_oort_lr": "False"
+            "use_oort_lr": "False",
+            "dataset_name": "google-speech",
+            "agg_rate_conf": {
+                "type": "old"
+            }
         }
     },
     "maxRunTime": 600,

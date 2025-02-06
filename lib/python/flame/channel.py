@@ -17,7 +17,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Union
 
 import cloudpickle
@@ -39,6 +39,11 @@ VAL_CH_STATE_HTBT_RECV = "heartbeat_recv"
 VAL_CH_STATE_HTBT_SEND = "heartbeat_send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
+
+END_LAST_AVAIL_TS = "end_last_avail_ts"
+END_LAST_UNAVAIL_TS = "end_last_unavail_ts"
+PROP_TOTAL_AVAIL_DURATION = "total_avail_duration"
+PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 
 
 class Channel(object):
@@ -71,6 +76,10 @@ class Channel(object):
         # access _ends with caution. in many cases, _ends must be
         # accessed within a backend's loop
         self._ends: dict[str, End] = dict()
+
+        # separate data structure to track end state across
+        # disconnections
+        self._end_state_info = dict()
 
         # dict showing active, awaiting recv fifo tasks on each ends
         self._active_recv_fifo_tasks: set(str) = set()
@@ -123,12 +132,20 @@ class Channel(object):
         """Set property of an end."""
         if self.has(end_id):
             self._ends[end_id].set_property(key, value)
+            logger.debug(f"SET property {key} with val {value} for end_id {end_id}")
+        else:
+            logger.debug(f"Failed to SET property {key} with {value} as end_id {end_id}"
+                         f" not found")
 
     def get_end_property(self, end_id, key) -> Scalar:
         """Get property of an end."""
         if self.has(end_id):
-            return self._ends[end_id].get_property(key)
+            val = self._ends[end_id].get_property(key)
+            logger.debug(f"GOT property {key} with val {val} for end_id {end_id}")
+            return val
         else:
+            logger.debug(f"Failed to GET property {key} as end_id {end_id}"
+                         f" not found")
             return None
 
     """
@@ -548,6 +565,84 @@ class Channel(object):
         # its condition
         self.await_join_event.set()
 
+        # Set END_LAST_AVAIL_TS to current timestamp.
+        current_ts = datetime.now()
+        self.set_end_property(
+                end_id=end_id,
+                key=END_LAST_AVAIL_TS,
+                value=current_ts
+            )
+
+        # NOTE: Also set in end_state_info for further use
+        if end_id not in self._end_state_info.keys():
+            self._end_state_info[end_id] = {}
+        self._end_state_info[end_id][END_LAST_AVAIL_TS] = current_ts
+
+        end_last_avail_ts = self.get_end_property(
+            end_id=end_id,
+            key=END_LAST_AVAIL_TS
+        )
+        logger.debug(f"Get after setting END_LAST_AVAIL_TS was {end_last_avail_ts} "
+                     f"for end_id {end_id}")
+
+        # Check if END_LAST_UNAVAIL_TS is None. If it is, skip adding
+        # TOTAL_UNAVAIL_DURATION. If its not None, update the
+        # TOTAL_UNAVAIL_DURATION.
+        # NOTE: Since end_id was deleted from _ends, get its state
+        # info from end_state_info which persists information across
+        # connections and disconnections
+
+        if END_LAST_UNAVAIL_TS in self._end_state_info[end_id].keys():
+            end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
+        else:
+            end_last_unavail_ts = None
+        logger.debug(f"Got END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
+                     f"for end_id {end_id}")
+        
+        if end_last_unavail_ts is not None:
+            logger.debug(f"END_LAST_UNAVAIL_TS was not None for end_id {end_id}")
+            # subtraction of two datetime objects returns a timedelta
+            last_time_unavail_duration = (
+                datetime.now()-end_last_unavail_ts)
+
+            # Get total unavail duration from end_state_info
+            if PROP_TOTAL_UNAVAIL_DURATION in self._end_state_info[end_id].keys():
+                elapsed_end_unavail_duration = (
+                    self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION]
+                    )
+            else:
+                elapsed_end_unavail_duration = None
+            
+            if elapsed_end_unavail_duration is None:
+                elapsed_end_unavail_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+            total_end_unavail_duration = (
+                elapsed_end_unavail_duration + last_time_unavail_duration
+                )
+
+            # set as end_id property here to be used in asyncoort
+            # selector later.
+            self.set_end_property(
+                end_id=end_id,
+                key=PROP_TOTAL_UNAVAIL_DURATION,
+                value=total_end_unavail_duration
+                )
+            # NOTE: Also keeping it updated in end_node_info
+            self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION] = (
+                total_end_unavail_duration
+            )
+            logger.debug(f"Updated total unavail duration to "
+                         f"{total_end_unavail_duration} for end_id {end_id}. Added "
+                         f"{last_time_unavail_duration} to elapsed unavail duration "
+                         f"{elapsed_end_unavail_duration}")
+        else:
+            logger.debug(f"None got as END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
+                         f"for end_id {end_id}")
+
     async def remove(self, end_id):
         """Remove an end from the channel."""
         logger.debug(f"Removing end {end_id} from channel {self._name}")
@@ -568,6 +663,54 @@ class Channel(object):
         if len(self._ends) == 0:
             # clear (or unset) the event
             self.await_join_event.clear()
+
+        # NOTE: USE end_state_info since end has been deleted from
+        # _ends and no properties can be get OR set.
+
+        # Set END_LAST_UNAVAIL_TS to current timestamp.
+        self._end_state_info[end_id][END_LAST_UNAVAIL_TS] = datetime.now()
+        end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
+        logger.debug(f"Updated END_LAST_UNAVAIL_TS to {end_last_unavail_ts} "
+                     f"for end_id {end_id} in end_state_info")
+
+        # Check if END_LAST_AVAIL_TS is None. If it is, skip adding
+        # TOTAL_AVAIL_DURATION. If its not None, update the
+        # TOTAL_AVAIL_DURATION.
+        end_last_avail_ts = self._end_state_info[end_id][END_LAST_AVAIL_TS]
+        logger.debug(f"Got END_LAST_AVAIL_TS: {end_last_avail_ts} "
+                     f"for end_id {end_id} in end_state_info")
+        if end_last_avail_ts is not None:
+            logger.debug(f"END_LAST_AVAIL_TS was not None for end_id {end_id}")
+            last_time_avail_duration = (
+                datetime.now()-end_last_avail_ts
+                )
+            if PROP_TOTAL_AVAIL_DURATION in self._end_state_info[end_id].keys():
+                elapsed_end_avail_duration = (
+                    self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION]
+                    )
+            else:
+                elapsed_end_avail_duration = None
+            
+            if elapsed_end_avail_duration is None:
+                elapsed_end_avail_duration = timedelta(
+                    hours=0,
+                    minutes=0,
+                    seconds=0,
+                    microseconds=0
+                    )
+            total_end_avail_duration = (
+                elapsed_end_avail_duration + last_time_avail_duration
+            )
+            self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION] = (
+                total_end_avail_duration
+                )
+            logger.debug(f"Updated total unavail duration to "
+                         f"{total_end_avail_duration} for end_id {end_id}. Added "
+                         f"{last_time_avail_duration} to elapsed unavail duration "
+                         f"{elapsed_end_avail_duration}")
+        else:
+            logger.debug(f"None got as END_LAST_AVAIL_TS: {end_last_avail_ts} "
+                         f"for end_id {end_id}")
 
         # inform selector to cleanup its send/recieve state to allow
         # quicker addition next time it joins
