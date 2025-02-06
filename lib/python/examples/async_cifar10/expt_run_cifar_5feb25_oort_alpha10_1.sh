@@ -45,6 +45,7 @@ check_accuracy() {
 # Function to terminate main.py
 terminate_main_py() {
   pkill -f main.py
+  pkill -f main_oort_agg.py
 }
 
 # Check for the correct number of arguments
@@ -59,7 +60,7 @@ node_name=$1
 baseline_names=("syncfl_oort")
 
 # Array of alpha values
-alphas=(100)
+alphas=(10 1)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
@@ -81,6 +82,7 @@ for baseline_name in "${baseline_names[@]}"; do
     # Start a new shell, activate conda environment, and clean all currently running processes
     conda activate dg_flame
     pkill -f main.py
+    pkill -f main_oort_agg.py
     sleep 10  # Wait for the system to stabilize
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited for cleanup to complete"
 
