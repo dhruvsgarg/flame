@@ -18,6 +18,7 @@
 import logging
 import math
 import random
+from datetime import timedelta
 
 import numpy as np
 from flame.common.typing import Scalar
@@ -70,7 +71,7 @@ class OortSelector(AbstractSelector):
 
         self.exploitation_util_history = []
 
-        self.round_preferred_duration = float("inf")
+        self.round_preferred_duration = timedelta(seconds=99999)
         self.round_threshold = 30
         self.pacer_delta = 5
         self.pacer_step = 20
