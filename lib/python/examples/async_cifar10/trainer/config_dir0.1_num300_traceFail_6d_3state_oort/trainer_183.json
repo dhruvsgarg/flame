@@ -48,7 +48,21 @@
         "batchSize": 32,
         "learningRate": 0.04,
         "rounds": 5,
-        "trainer_indices_list": [],
+        "trainer_indices_list": [
+            36050,
+            26655,
+            25800,
+            8479,
+            46781,
+            45802,
+            30966,
+            5164,
+            19549,
+            1223,
+            27030,
+            1542,
+            32597
+        ],
         "heartbeats": {
             "enabled": "False",
             "frequency_s": 1
