@@ -85,7 +85,7 @@ class ChunkThread(Thread):
                     # client.
                     logger.warning(f"set_cleanup_ready_async returned None for end_id: {end_id}")
                 return
-            logger.info(f"rxq {rxq} found for {end_id}, will await put")
+            logger.debug(f"rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
 
         while not self._done:
@@ -121,7 +121,7 @@ class ChunkThread(Thread):
                     continue
 
                 payload = self.chunk_store.get_data()
-                logger.info(f"Payload will now be pushed to target receive queue for end: {msg.end_id}")
+                logger.debug(f"Payload will now be pushed to target receive queue for end: {msg.end_id}")
                 # now push payload to a target receive queue.
                 _, status = run_async(
                     inner(msg.end_id, payload, timestamp), self._backend.loop()
@@ -155,9 +155,9 @@ class ChunkManager(object):
             chunk_thd.start()
 
         chunk_thd = self._chunk_threads[msg.end_id]
-        logger.info(f"adding message to chunk thd for end: {msg.end_id}")
+        logger.debug(f"adding message to chunk thd for end: {msg.end_id}")
         chunk_thd.insert(msg)
-        logger.info(f"len of chunk thd for end: {msg.end_id} is {chunk_thd.queue.qsize()}")
+        logger.debug(f"len of chunk thd for end: {msg.end_id} is {chunk_thd.queue.qsize()}")
 
     def stop(self, end_id):
         """Stop chunk thread associated with end id."""
