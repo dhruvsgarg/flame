@@ -146,7 +146,7 @@ class AsyncOortSelector(AbstractSelector):
         ends: dict[str, End],
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list,
-        task_to_perform: str,
+        task_to_perform: str = "train",
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends.
 

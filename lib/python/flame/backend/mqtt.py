@@ -124,6 +124,7 @@ class MqttBackend(AbstractBackend):
             await asyncio.sleep(period)
 
     def configure(self, broker: str, job_id: str, task_id: str):
+        logger.info(f"Inside configure {task_id}")
         """Configure the backend."""
         self._broker = broker
         self._job_id = job_id
@@ -284,12 +285,13 @@ class MqttBackend(AbstractBackend):
     async def _rx_task(self):
         self._rx_deque = deque()
         self._rx_deque.append(self._loop.create_future())
-
+        logger.info("inside _rx_task")
         while True:
             message = await self._rx_deque[0]
             self._rx_deque.popleft()
 
             if message.topic == self._health_check_topic:
+                logger.info("topic same")
                 self._handle_health_message(message)
                 continue
 
@@ -317,11 +319,13 @@ class MqttBackend(AbstractBackend):
 
         # publish health data; format: <end_id>:<status> status is
         # either END_STATUS_ON or END_STATUS_OFF
-        client.publish(
+        temp = client.publish(
             self._health_check_topic,
             payload=f"{self._id}:{END_STATUS_ON}",
             qos=MqttQoS.EXACTLY_ONCE,
         )
+        if temp:
+            logger.info(f"on_connect temp: {temp}")
 
     def on_message(self, client, userdata, message):
         """on_message receives message."""

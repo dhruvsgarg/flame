@@ -2,6 +2,8 @@ client_num_per_round=$1
 LR=$2
 FL_ALG=$3
 
+pkill -f main.py
+sleep 10  # Wait for the system to stabilize
 C_LR=0.01
 S_LR=0.1
 ROUND=3
@@ -112,74 +114,22 @@ elif [ $FL_ALG = FedSgd ];then
 else
   # Run aggregator/main.py once with logging
   python /home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/aggregator/main.py \
-    --gpu_mapping_file "gpu_mapping.yaml" \
-    --gpu_mapping_key mapping_myMap \
-    --client_num_per_round $client_num_per_round \
-    --comm_round $ROUND \
-    --ci $CI \
-    --dataset "${DATA_NAME}" \
-    --data_file "${DATA_DIR}/data_files/${DATA_NAME}_data.h5" \
-    --partition_file "${DATA_DIR}/partition_files/${DATA_NAME}_partition.h5" \
-    --partition_method $PARTITION_METHOD \
-    --fl_algorithm $FL_ALG \
-    --model_type $model_type \
-    --model_name $model_name \
-    --frequency_of_the_test $frequency_of_the_test \
-    --do_lower_case True \
-    --train_batch_size $train_batch_size \
-    --eval_batch_size 8 \
-    --max_seq_length $max_seq_length \
-    --lr $C_LR \
-    --server_lr $S_LR \
-    --worker_num $WORKER_NUM \
-    --epochs 1 \
-    --peft_method $peft_method \
-    --forward_mode \
-    --learning_rate $LR \
-    --var_control \
-    --perturbation_sampling \
-    > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical.log 2>&1
+    --config "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
+    > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1
 
   # Run trainer/main.py 100 times, each with a unique log file
   NUM_AVAIL_GPUS=8
 
   # Run trainer/main.py 100 times, each with a unique log file
-  for X in $(seq 0 99)
+  for X in $(seq 0 1)
   do
     # Assign GPUs in a round-robin fashion
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
-
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python /home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/trainer/main.py \
-      --client_idx $X \
-      --gpu_mapping_file "gpu_mapping.yaml" \
-      --gpu_mapping_key mapping_myMap \
-      --client_num_per_round $client_num_per_round \
-      --comm_round $ROUND \
-      --ci $CI \
-      --dataset "${DATA_NAME}" \
-      --data_file "${DATA_DIR}/data_files/${DATA_NAME}_data.h5" \
-      --partition_file "${DATA_DIR}/partition_files/${DATA_NAME}_partition.h5" \
-      --partition_method $PARTITION_METHOD \
-      --fl_algorithm $FL_ALG \
-      --model_type $model_type \
-      --model_name $model_name \
-      --frequency_of_the_test $frequency_of_the_test \
-      --do_lower_case True \
-      --train_batch_size $train_batch_size \
-      --eval_batch_size 8 \
-      --max_seq_length $max_seq_length \
-      --lr $C_LR \
-      --server_lr $S_LR \
-      --worker_num $WORKER_NUM \
-      --epochs 1 \
-      --peft_method $peft_method \
-      --forward_mode \
-      --learning_rate $LR \
-      --var_control \
-      --perturbation_sampling \
-      > ./log/new/test_trainer_${X}_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical.log 2>&1 &
+      --config "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
+      >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
   done
 
   # Wait for all processes to finish
