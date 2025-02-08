@@ -1156,6 +1156,12 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
         
+        # Check the eligible set first. Out of the ends, how many are not in
+        # all_selected? Only those are eligible since the rest have weights
+        # already sent to them for either train/eval task.
+        count_eligible_set_to_check = [end for end in ends if end not in self.all_selected]
+        logger.debug(f"Before creating filtered_ends. count_eligible_set_to_check: {len(count_eligible_set_to_check)} from total {len(ends)} ends.")
+        
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 
                 logger.debug(f"Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}")

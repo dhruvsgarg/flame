@@ -387,7 +387,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 # are way past their time and already used
 
         # Return the list of currently unavailable trainers
-        logger.debug(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list}")
+        logger.debug(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list} has {len(curr_unavail_trainer_list)} ends out of total {len(self.trainer_event_dict)} ends dict")
 
         return curr_unavail_trainer_list
 
