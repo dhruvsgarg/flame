@@ -501,3 +501,9 @@ class OortSelector(AbstractSelector):
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
         return utility_list
+    
+    # TODO: (DG) Check why this is being invoked even if trainer doesn't
+    # explicitly invoke remove() method
+    def _cleanup_removed_ends(self, end_id):
+        logger.debug(f"Going to cleanup selector state for "
+                     f"end_id {end_id} since it has left the channel")

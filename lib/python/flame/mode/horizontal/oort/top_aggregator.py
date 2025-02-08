@@ -146,7 +146,7 @@ class TopAggregator(BaseTopAggregator):
 
         # before invoking channel.ends() to select,
         # set the trainer_unavail if it isn't None
-        if self.trainer_event_dict != None:
+        if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
                 trainer_unavail_list=curr_unavail_trainer_list
@@ -159,9 +159,6 @@ class TopAggregator(BaseTopAggregator):
         
         # send out global model parameters to trainers
         for end in channel.ends():
-            # Note: channel.ends() is where the select() is invoked
-            # Need to pass self.trainer_event_dict to channel
-            # manager so that it can pass it to oort select()
             logger.info(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
             logger.debug(f"Setting channel property {PROP_ROUND_START_TIME} for "
                          f"end {end}. For round {self._round} at time: {datetime.now()}"

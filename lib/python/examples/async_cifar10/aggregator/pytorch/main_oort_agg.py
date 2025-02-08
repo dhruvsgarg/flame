@@ -123,7 +123,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
         self.trainer_event_dict = None
         if (self.track_trainer_avail["enabled"] and
-            self.track_trainer_avail["type"] == "ORACULAR"):
+            self.track_trainer_avail["type"] == "ORACULAR"
+            ):
             self.trainer_event_dict = self.read_trainer_unavailability()
             print("self.trainer_event_dict: ", self.trainer_event_dict)
 

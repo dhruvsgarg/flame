@@ -37,6 +37,7 @@ from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
+from sortedcontainers import SortedDict
 
 
 def initialize_wandb(run_name=None):
@@ -123,13 +124,13 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
         self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
-        self.trainer_unavail_durations = None
+        self.trainer_event_dict = None
         if (
             self.track_trainer_avail["enabled"] and
             self.track_trainer_avail["type"] == "ORACULAR"
         ):
-            self.trainer_unavail_durations = self.read_trainer_unavailability()
-            print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
+            self.trainer_event_dict = self.read_trainer_unavailability()
+            print("self.trainer_event_dict: ", self.trainer_event_dict)
 
         self.loss_list = []
 
@@ -146,35 +147,36 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
     def read_trainer_unavailability(self) -> None:
         print("Came to read_trainer_unavailability")
-        # maintain <trainer_id: [(unavail_start1, duration1), (start2,
-        # duration2)..]>
-        trainer_unavail_dict = {}
+        trainer_events_dict = {}
 
-        # set path to read json files from TODO: Remove hardcoding
-        # later
-        files_path = "../../trainer/config_dir100_num100_traceFailure_1.5h"
+        # Set path to read JSON files from (TODO: Remove hardcoding later)
+        files_path = "../../trainer/config_dir100_num300_traceFail_6d_3state"
 
-        # set range of trainer ids to read from
+        # Set range of trainer IDs to read from
         trainer_start_num = 1
-        trainer_end_num = 100
+        trainer_end_num = 300
+
         for i in range(trainer_start_num, trainer_end_num + 1):
             dirname = os.path.dirname(__file__)
-            with open(os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")
-                      ) as f:
+            file_path = os.path.join(dirname, files_path, f"trainer_{i}.json")
+            
+            with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                curr_trainer_unavail_time = ast.literal_eval(trainer_json[
-                    "hyperparameters"]["two_state_unavl_durations_s"]
-                    )
-                trainer_unavail_dict[curr_trainer_id] = curr_trainer_unavail_time
-                print("Completed file read for ", os.path.join(files_path, "trainer_"
-                                                               + str(i) + ".json"))
+                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_2_state"])
+                
+                # SortedDict for efficient timestamp lookup
+                state_dict = SortedDict()
 
-        # selector - do a linear search in the selector based on
-        # availability selector - delete those tuples whose sleep time
-        # has passed
+                # Process the events
+                for timestamp, event_name in event_list:
+                    state_dict[timestamp] = event_name
+
+                trainer_events_dict[curr_trainer_id] = state_dict
+                print(f"Completed file read for {file_path}")
+
         print("Completed reading all trainer unavailability from files")
-        return trainer_unavail_dict
+        return trainer_events_dict
 
     def load_data(self) -> None:
         """Load a test dataset."""
