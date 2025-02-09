@@ -146,7 +146,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         trainer_events_dict = {}
 
         # Set path to read JSON files from (TODO: Remove hardcoding later)
-        files_path = "../../trainer/config_dir100_num300_traceFail_6d_3state"
+        files_path = "../../trainer/config_dir10_num300_traceFail_6d_3state_oort"
 
         # Set range of trainer IDs to read from
         trainer_start_num = 1
@@ -159,7 +159,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
             with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_2_state"])
+                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_syn_20"])
                 
                 # SortedDict for efficient timestamp lookup
                 state_dict = SortedDict()
