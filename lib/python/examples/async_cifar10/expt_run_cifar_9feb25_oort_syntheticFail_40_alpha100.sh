@@ -66,7 +66,7 @@ threshold=0.70  # Define the accuracy threshold
 # Experiment types
 aggType="fedavg"
 selType="oort"
-awareType="oracular_synFail_20"
+awareType="oracular_synFail_40"
 
 # Loop through each baseline name
 for baseline_name in "${baseline_names[@]}"; do
