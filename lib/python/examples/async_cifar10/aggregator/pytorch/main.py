@@ -150,7 +150,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
         trainer_events_dict = {}
 
         # Set path to read JSON files from (TODO: Remove hardcoding later)
-        files_path = "../../trainer/config_dir10_num300_traceFail_6d_3state"
+        files_path = "../../trainer/config_dir10_num300_traceFail_6d_3state_oort"
 
         # Set range of trainer IDs to read from
         trainer_start_num = 1
