@@ -91,7 +91,7 @@ for baseline_name in "${baseline_names[@]}"; do
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
     agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main_oort_agg.py oort_config_large_expt_oracular_5feb25.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_c24_1.3k > "$agg_log_file" 2>&1 &
+    python pytorch/main_oort_agg.py oort_config_large_expt_oracular_9feb25_syn_40fail.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_c120_1.3k > "$agg_log_file" 2>&1 &
     agg_pid=$!
     echo "Aggregator PID: $agg_pid"
     sleep 15  # Wait for the aggregator to start
