@@ -126,8 +126,7 @@ class TopAggregator(BaseTopAggregator):
         logger.info(
             f"====== aggregation finished for round {self._round}, "
             f"self._updates_recevied: "
-            f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
-            f"{self._trainer_participation_in_round_count}"
+            f"{self._updates_recevied}"
         )
 
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
