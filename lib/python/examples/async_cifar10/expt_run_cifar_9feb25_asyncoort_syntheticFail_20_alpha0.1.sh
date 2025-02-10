@@ -45,7 +45,6 @@ check_accuracy() {
 # Function to terminate main.py
 terminate_main_py() {
   pkill -f main.py
-  pkill -f main_oort_agg.py
 }
 
 # Check for the correct number of arguments
@@ -57,16 +56,16 @@ fi
 node_name=$1
 
 # List of baseline names
-baseline_names=("syncfl_oort")
+baseline_names=("asyncoort")
 
 # Array of alpha values
-alphas=(100)
+alphas=(0.1)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
-aggType="fedavg"
-selType="oort"
-awareType="oracular_synFail_40"
+aggType="fedbuff"
+selType="asyncoort"
+awareType="oracular_synFail_20"
 
 # Loop through each baseline name
 for baseline_name in "${baseline_names[@]}"; do
@@ -82,7 +81,6 @@ for baseline_name in "${baseline_names[@]}"; do
     # Start a new shell, activate conda environment, and clean all currently running processes
     conda activate dg_flame
     pkill -f main.py
-    pkill -f main_oort_agg.py
     sleep 10  # Wait for the system to stabilize
     echo "$(date +'%Y-%m-%d %H:%M:%S') Waited for cleanup to complete"
 
@@ -91,7 +89,7 @@ for baseline_name in "${baseline_names[@]}"; do
     cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
     agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}.log"
     echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main_oort_agg.py oort_config_large_expt_oracular_9feb25_syn_40fail.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_c120_1.3k > "$agg_log_file" 2>&1 &
+    python pytorch/main.py asyncoort_large_expt_oracular_9feb25_syn_20fail.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_c160_k10 > "$agg_log_file" 2>&1 &
     agg_pid=$!
     echo "Aggregator PID: $agg_pid"
     sleep 15  # Wait for the aggregator to start

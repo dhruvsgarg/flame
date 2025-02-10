@@ -59,7 +59,7 @@ node_name=$1
 baseline_names=("asyncoort")
 
 # Array of alpha values
-alphas=(100)
+alphas=(0.1)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
