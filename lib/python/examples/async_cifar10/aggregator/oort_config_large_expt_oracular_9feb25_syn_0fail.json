@@ -46,8 +46,7 @@
     ],
     "hyperparameters": {
         "batchSize": 32,
-        "learningRate": 1.0,
-        "//": "server_lr based on google keyboard LR",
+        "learningRate": 0.3,
         "rounds": 20000,
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 200,
