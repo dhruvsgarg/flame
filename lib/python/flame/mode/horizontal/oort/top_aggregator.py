@@ -77,6 +77,11 @@ class TopAggregator(BaseTopAggregator):
 
             total = self._handle_weights_msg(msg, metadata, channel, total)
 
+            if end not in self._updates_recevied.keys():
+                self._updates_recevied[end] = 1
+            else:
+                self._updates_recevied[end] += 1
+            
             # remove end_id if it sends a valid message with correct round info
             # break the for loop if k valid messages arrive
             received_end_count += 1
