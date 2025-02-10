@@ -261,7 +261,8 @@
         },
         "wait_until_next_avl": "False",
         "avl_events_syn_20": "[(0, 'AVL_TRAIN'), (11400, 'UN_AVL'), (12000, 'AVL_TRAIN'), (18600, 'UN_AVL'), (19200, 'AVL_TRAIN'), (30600, 'UN_AVL'), (31200, 'AVL_TRAIN'), (36600, 'UN_AVL'), (37200, 'AVL_TRAIN'), (47400, 'UN_AVL'), (48000, 'AVL_TRAIN'), (49200, 'UN_AVL'), (49800, 'AVL_TRAIN'), (54000, 'UN_AVL'), (54600, 'AVL_TRAIN'), (55200, 'UN_AVL'), (55800, 'AVL_TRAIN'), (66000, 'UN_AVL'), (66600, 'AVL_TRAIN'), (68400, 'UN_AVL'), (69000, 'AVL_TRAIN'), (76800, 'UN_AVL'), (77400, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
-        "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (76800, 'UN_AVL'), (77400, 'AVL_TRAIN'), (86400, 'UN_AVL')]"
+        "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (76800, 'UN_AVL'), (77400, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
+        "avl_events_syn_0": "[(0, 'AVL_TRAIN')]"
     },
     "baseModel": {
         "name": "",

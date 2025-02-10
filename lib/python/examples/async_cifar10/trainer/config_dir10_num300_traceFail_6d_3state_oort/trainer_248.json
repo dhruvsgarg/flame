@@ -240,7 +240,8 @@
         },
         "wait_until_next_avl": "False",
         "avl_events_syn_20": "[(0, 'AVL_TRAIN'), (9000, 'UN_AVL'), (9600, 'AVL_TRAIN'), (11400, 'UN_AVL'), (12000, 'AVL_TRAIN'), (15600, 'UN_AVL'), (17400, 'AVL_TRAIN'), (18600, 'UN_AVL'), (19200, 'AVL_TRAIN'), (24000, 'UN_AVL'), (24600, 'AVL_TRAIN'), (49200, 'UN_AVL'), (49800, 'AVL_TRAIN'), (53400, 'UN_AVL'), (54000, 'AVL_TRAIN'), (59400, 'UN_AVL'), (60000, 'AVL_TRAIN'), (67200, 'UN_AVL'), (67800, 'AVL_TRAIN'), (69600, 'UN_AVL'), (70200, 'AVL_TRAIN'), (71400, 'UN_AVL'), (72000, 'AVL_TRAIN'), (73200, 'UN_AVL'), (73800, 'AVL_TRAIN'), (78600, 'UN_AVL'), (79200, 'AVL_TRAIN'), (80400, 'UN_AVL'), (81000, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
-        "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (86400, 'UN_AVL')]"
+        "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
+        "avl_events_syn_0": "[(0, 'AVL_TRAIN')]"
     },
     "baseModel": {
         "name": "",
