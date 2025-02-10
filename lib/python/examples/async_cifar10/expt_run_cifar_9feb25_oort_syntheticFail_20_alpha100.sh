@@ -60,7 +60,7 @@ node_name=$1
 baseline_names=("syncfl_oort")
 
 # Array of alpha values
-alphas=(0.1)
+alphas=(100)
 threshold=0.70  # Define the accuracy threshold
 
 # Experiment types
