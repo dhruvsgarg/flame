@@ -122,6 +122,13 @@ class TopAggregator(BaseTopAggregator):
 
         # update model with global weights
         self._update_model()
+        
+        logger.info(
+            f"====== aggregation finished for round {self._round}, "
+            f"self._updates_recevied: "
+            f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
+            f"{self._trainer_participation_in_round_count}"
+        )
 
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """
@@ -205,10 +212,12 @@ class TopAggregator(BaseTopAggregator):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
+            logger.info(f"End {end} sent a message with utility {msg[MessageType.STAT_UTILITY]}")
         if MessageType.MODEL_VERSION in msg:
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            logger.info(f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}")
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 

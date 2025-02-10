@@ -121,6 +121,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
         
         self._trainers_used_in_curr_round = []
         self.agg_start_time_ts = time.time()
+        
+        self._updates_recevied = {}
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
