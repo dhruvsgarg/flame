@@ -159,7 +159,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
             with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_syn_20"])
+                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_syn_0"])
                 
                 # SortedDict for efficient timestamp lookup
                 state_dict = SortedDict()
