@@ -210,9 +210,9 @@
         "avl_events_2_state": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (23806, 'AVL_TRAIN'), (25021, 'UN_AVL'), (26094, 'AVL_TRAIN'), (46374, 'UN_AVL'), (79734, 'AVL_TRAIN'), (82158, 'UN_AVL'), (85721, 'AVL_TRAIN'), (93487, 'UN_AVL'), (98413, 'AVL_TRAIN'), (104583, 'UN_AVL'), (104584, 'AVL_TRAIN'), (104594, 'UN_AVL'), (104594, 'AVL_TRAIN'), (137852, 'UN_AVL'), (201015, 'AVL_TRAIN'), (205298, 'UN_AVL'), (220815, 'AVL_TRAIN'), (226749, 'UN_AVL'), (229944, 'AVL_TRAIN'), (230647, 'UN_AVL'), (231229, 'AVL_TRAIN'), (252203, 'UN_AVL'), (315065, 'AVL_TRAIN'), (316571, 'UN_AVL'), (320582, 'AVL_TRAIN'), (320593, 'UN_AVL'), (320596, 'AVL_TRAIN'), (321535, 'UN_AVL'), (321552, 'AVL_TRAIN'), (321623, 'UN_AVL'), (322812, 'AVL_TRAIN'), (322980, 'UN_AVL'), (336586, 'AVL_TRAIN'), (347449, 'UN_AVL'), (354999, 'AVL_TRAIN'), (355800, 'UN_AVL'), (359355, 'AVL_TRAIN'), (377086, 'UN_AVL'), (377092, 'AVL_TRAIN'), (377828, 'UN_AVL'), (379673, 'AVL_TRAIN'), (395072, 'UN_AVL'), (440263, 'AVL_TRAIN'), (447983, 'UN_AVL'), (449643, 'AVL_TRAIN'), (454776, 'UN_AVL'), (459695, 'AVL_TRAIN'), (491573, 'UN_AVL'), (510368, 'AVL_TRAIN'), (513114, 'UN_AVL'), (513405, 'AVL_TRAIN'), (514909, 'UN_AVL')]",
         "client_notify": {
             "enabled": "False",
-            "type": "three_state"
+            "type": "two_state"
         },
-        "wait_until_next_avl": "False",
+        "wait_until_next_avl": "True",
         "avl_events_syn_20": "[(0, 'AVL_TRAIN'), (7800, 'UN_AVL'), (8400, 'AVL_TRAIN'), (10200, 'UN_AVL'), (10800, 'AVL_TRAIN'), (14400, 'UN_AVL'), (15000, 'AVL_TRAIN'), (15600, 'UN_AVL'), (16200, 'AVL_TRAIN'), (36000, 'UN_AVL'), (37200, 'AVL_TRAIN'), (43200, 'UN_AVL'), (43800, 'AVL_TRAIN'), (49800, 'UN_AVL'), (50400, 'AVL_TRAIN'), (52800, 'UN_AVL'), (53400, 'AVL_TRAIN'), (54600, 'UN_AVL'), (55200, 'AVL_TRAIN'), (64800, 'UN_AVL'), (65400, 'AVL_TRAIN'), (71400, 'UN_AVL'), (72000, 'AVL_TRAIN'), (76800, 'UN_AVL'), (77400, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
         "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
         "avl_events_syn_0": "[(0, 'AVL_TRAIN')]"
