@@ -286,11 +286,11 @@ class PyTorchCifar10Trainer(Trainer):
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
         if self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
-                logger.debug(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+                logger.info(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
                     time.sleep(1)
             else:
-                logger.debug(f"Trainer id {self.trainer_id} is not available to train. Exiting training.")
+                logger.info(f"Trainer id {self.trainer_id} is not available to train. Exiting training.")
                 return
         
         logger.info(f"Trainer {self.trainer_id} available to train")
@@ -481,9 +481,11 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_notify['enabled'] == "True":
-        logger.info(f"Will initiate thread to send avail notifications for "
+    elif t.client_notify['type'] is not None:
+        logger.info(f"Will initiate thread to update state of "
                     f"trainer {t.trainer_id}")
+        if t.client_notify['enabled'] == "True":
+            logger.info(f"Will send avail notifications for trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True
         avail_notify_thread.start()
