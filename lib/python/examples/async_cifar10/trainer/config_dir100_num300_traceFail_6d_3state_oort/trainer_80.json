@@ -230,7 +230,7 @@
         "avl_events_2_state": "[(0, 'UN_AVL'), (15600, 'AVL_TRAIN'), (16200, 'UN_AVL'), (18000, 'AVL_TRAIN'), (19800, 'UN_AVL'), (23400, 'AVL_TRAIN'), (24000, 'UN_AVL'), (45000, 'AVL_TRAIN'), (45600, 'UN_AVL'), (58200, 'AVL_TRAIN'), (58800, 'UN_AVL'), (86400, 'AVL_TRAIN')]",
         "client_notify": {
             "enabled": "False",
-            "type": "three_state"
+            "type": "syn_20"
         },
         "wait_until_next_avl": "True",
         "avl_events_syn_0": "[(0, 'AVL_TRAIN')]",
