@@ -51,8 +51,8 @@
         "//": "aggGoal is aggregation goal for fedbuff",
         "aggGoal": 13,
         "trackTrainerAvail": {
-            "enabled": "True",
-            "type": "ORACULAR"
+            "enabled": "False",
+            "type": "None"
         }
     },
     "baseModel": {
