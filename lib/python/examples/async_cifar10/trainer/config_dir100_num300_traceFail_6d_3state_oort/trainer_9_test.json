@@ -234,7 +234,7 @@
         "avl_events_2_state": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN')]",
         "client_notify": {
             "enabled": "True",
-            "type": "two_state"
+            "type": "three_state"
         },
         "wait_until_next_avl": "False"
     },
