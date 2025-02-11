@@ -42,8 +42,9 @@ END_STATUS_OFF = "offline"
 
 # wait time of 10 sec clean up resources allocated for terminated end
 # if no message arrives after the wait time
-# NOTE: DG increased wait_time to 30 min to handle trainer init stalls
-MQTT_TIME_WAIT = 1800  # 1800 sec
+# NOTE: DG increased wait_time to 4h to handle trainer init stalls and other
+# waits during unavailability unaware training
+MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
 TOPIC_SEP = "/"
