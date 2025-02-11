@@ -201,7 +201,8 @@ class PyTorchCifar10Trainer(Trainer):
                 new_status = self.avl_state.value
                 logger.info(f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
                 #    self.send_availability_status("upload")
-                self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
+                if self.client_notify['enabled']== "True":
+                    self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
         else:
             logger.info(f"Channel manager not set yet for trainer {self.trainer_id}. "
                         f"Skipping avail status update. "
@@ -260,13 +261,13 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
-        if self.client_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
+        if self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
-                logger.info(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+                logger.debug(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
                     time.sleep(1)
             else:
-                logger.info(f"Trainer id {self.trainer_id} is not available to train. Exiting training.")
+                logger.debug(f"Trainer id {self.trainer_id} is not available to train. Exiting training.")
                 return
         
         logger.info(f"Trainer {self.trainer_id} available to train")
@@ -405,8 +406,8 @@ class PyTorchCifar10Trainer(Trainer):
     def notify_trainer_avail(self) -> None:
         while True:
             time.sleep(1)             # Will check every 1 second
-            if self.client_notify['enabled']== "True":
-                self.check_and_update_state_avl()
+            self.check_and_update_state_avl()
+
 def main():
     import argparse
 
