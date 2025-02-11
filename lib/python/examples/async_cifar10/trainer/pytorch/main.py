@@ -161,12 +161,35 @@ class PyTorchCifar10Trainer(Trainer):
         self.avl_events_2_state = ast.literal_eval(
             self.config.hyperparameters.avl_events_2_state
         )
+        
+        # Storing synthetic avail traces
+        self.avl_events_syn_0 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_0
+        )
+        
+        self.avl_events_syn_20 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_20
+        )
+        
+        self.avl_events_syn_40 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_40
+        )
+        
         if self.client_notify['type'] == "three_state":
             self.state_avl_event_ts = self.avl_events_3_state
             logger.info(f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}")
         elif self.client_notify['type'] == "two_state":
             self.state_avl_event_ts = self.avl_events_2_state
             logger.info(f"Set avl_events_2_state for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_0":
+            self.state_avl_event_ts = self.avl_events_syn_0
+            logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_20":
+            self.state_avl_event_ts = self.avl_events_syn_20
+            logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_40":
+            self.state_avl_event_ts = self.avl_events_syn_40
+            logger.info(f"Set avl_events_syn_40 for trainer id {self.trainer_id}.")
         else:
             logger.info(f"No avl_events set for trainer id {self.trainer_id} since state not specified.")
 
