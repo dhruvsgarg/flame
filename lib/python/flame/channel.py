@@ -186,7 +186,8 @@ class Channel(object):
         async def inner():
             if self.trainer_unavail_list is not None:
                 selected = self._selector.select(
-                    self._ends, self.properties,
+                    self._ends,
+                    self.properties,
                     self.trainer_unavail_list,
                     task_to_perform
                     )
@@ -270,10 +271,7 @@ class Channel(object):
             # compressor = zstd.ZstdCompressor()
             # payload2 = compressor.compress(payload)
             self.mc.accumulate("bytes", "send", len(payload))
-            # logger.info(f"msg = {message}")
-            # logger.info(f"payload = {payload}")
-            logger.info(f"size of payload = {sys.getsizeof(payload)}")
-            # logger.info(f"size of compressed payload = {sys.getsizeof(payload2)}")
+            logger.debug(f"size of payload = {sys.getsizeof(payload)}")
             await self._ends[end_id].put(payload)
 
         _, status = run_async(_put(), self._backend.loop())
@@ -349,7 +347,7 @@ class Channel(object):
         -------
         The function yields a pair: end id and message
         """
-        logger.info(f"Receive fifo: first_k = {first_k}, len(end_ids) = {len(end_ids)}")
+        logger.debug(f"Receive fifo: first_k = {first_k}, len(end_ids) = {len(end_ids)}")
 
         first_k = min(first_k, len(end_ids))
         if first_k <= 0:
@@ -367,11 +365,11 @@ class Channel(object):
             yield None, ("", datetime.now())
 
         async def _put_message_to_rxq_inner():
-            logger.info("Created task for recv_fifo in put_msg_to_rxq_inner")
+            logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
             _ = asyncio.create_task(self._streamer_for_recv_fifo(end_ids))
 
         async def _get_message_inner():
-            logger.info("In _get_msg_inner(), will await until getting a message")
+            logger.debug("In _get_msg_inner(), will await until getting a message")
             return await self._rx_queue.get()
 
         # first, create an asyncio task to fetch messages and put a
@@ -385,10 +383,10 @@ class Channel(object):
             result, status = run_async(_get_message_inner(), self._backend.loop())
             logger.debug(f"After getting message, status: {status}")
             (end_id, payload) = result
-            logger.info(f"get payload for {end_id}")
+            logger.debug(f"get payload for {end_id}")
 
             if self.has(end_id):
-                logger.info(f"channel got a msg for {end_id}")
+                logger.debug(f"channel got a msg for {end_id}")
                 # set a property to indicate that a message was
                 # received for the end
                 self._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
@@ -447,7 +445,7 @@ class Channel(object):
             except KeyError:
                 yield end_id, None
 
-            logger.info(f"_get_inner() invoked for end_id: {end_id}")
+            logger.debug(f"_get_inner() invoked for end_id: {end_id}")
             yield end_id, payload
 
         runs = []
@@ -458,8 +456,8 @@ class Channel(object):
                 runs.append(_get_inner(end_id))
                 self._active_recv_fifo_tasks.add(end_id)
 
-                logger.info(f"active task added for {end_id}, runs length: {len(runs)}")
-                logger.info(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
+                logger.debug(f"active task added for {end_id}, runs length: {len(runs)}")
+                logger.debug(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
 
         merged = stream.merge(*runs)
         async with merged.stream() as streamer:

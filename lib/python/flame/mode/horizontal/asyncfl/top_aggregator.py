@@ -736,7 +736,7 @@ class TopAggregator(SyncTopAgg):
 
         # before invoking channel.ends() to select, set the
         # trainer_unavail if it isn't None
-        if self.trainer_unavail_durations is not None:
+        if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
                 trainer_unavail_list=curr_unavail_trainer_list

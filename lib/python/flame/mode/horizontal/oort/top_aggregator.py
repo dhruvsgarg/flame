@@ -77,6 +77,11 @@ class TopAggregator(BaseTopAggregator):
 
             total = self._handle_weights_msg(msg, metadata, channel, total)
 
+            if end not in self._updates_recevied.keys():
+                self._updates_recevied[end] = 1
+            else:
+                self._updates_recevied[end] += 1
+            
             # remove end_id if it sends a valid message with correct round info
             # break the for loop if k valid messages arrive
             received_end_count += 1
@@ -122,8 +127,14 @@ class TopAggregator(BaseTopAggregator):
 
         # update model with global weights
         self._update_model()
+        
+        logger.info(
+            f"====== aggregation finished for round {self._round}, "
+            f"self._updates_recevied: "
+            f"{self._updates_recevied}"
+        )
 
-    def _distribute_weights(self, tag: str) -> None:
+    def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """
         Distribute local model weights to 1.3K clients, where K is the number
         of desired trainers to select. Moreover, measure the start time of
@@ -146,7 +157,7 @@ class TopAggregator(BaseTopAggregator):
 
         # before invoking channel.ends() to select,
         # set the trainer_unavail if it isn't None
-        if self.trainer_unavail_durations != None:
+        if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
                 trainer_unavail_list=curr_unavail_trainer_list
@@ -155,12 +166,14 @@ class TopAggregator(BaseTopAggregator):
             # Handling the case for oort's selector since it expects 3 arguments
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
+        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
+        
         # send out global model parameters to trainers
         for end in channel.ends():
-            # Note: channel.ends() is where the select() is invoked
-            # Need to pass self.trainer_unavail_durations to channel
-            # manager so that it can pass it to oort select()
-            logger.debug(f"sending weights to {end}")
+            logger.info(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
+            logger.debug(f"Setting channel property {PROP_ROUND_START_TIME} for "
+                         f"end {end}. For round {self._round} at time: {datetime.now()}"
+                         )
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
@@ -172,6 +185,8 @@ class TopAggregator(BaseTopAggregator):
                         self.weights, DeviceType.CPU
                     ),
                     MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform
                 },
             )
 
@@ -201,10 +216,12 @@ class TopAggregator(BaseTopAggregator):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
+            logger.info(f"End {end} sent a message with utility {msg[MessageType.STAT_UTILITY]}")
         if MessageType.MODEL_VERSION in msg:
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            logger.info(f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}")
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 

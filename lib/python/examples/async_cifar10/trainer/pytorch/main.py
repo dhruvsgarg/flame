@@ -161,12 +161,35 @@ class PyTorchCifar10Trainer(Trainer):
         self.avl_events_2_state = ast.literal_eval(
             self.config.hyperparameters.avl_events_2_state
         )
+        
+        # Storing synthetic avail traces
+        self.avl_events_syn_0 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_0
+        )
+        
+        self.avl_events_syn_20 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_20
+        )
+        
+        self.avl_events_syn_40 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_40
+        )
+        
         if self.client_notify['type'] == "three_state":
             self.state_avl_event_ts = self.avl_events_3_state
             logger.info(f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}")
         elif self.client_notify['type'] == "two_state":
             self.state_avl_event_ts = self.avl_events_2_state
             logger.info(f"Set avl_events_2_state for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_0":
+            self.state_avl_event_ts = self.avl_events_syn_0
+            logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_20":
+            self.state_avl_event_ts = self.avl_events_syn_20
+            logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
+        elif self.client_notify['type'] == "syn_40":
+            self.state_avl_event_ts = self.avl_events_syn_40
+            logger.info(f"Set avl_events_syn_40 for trainer id {self.trainer_id}.")
         else:
             logger.info(f"No avl_events set for trainer id {self.trainer_id} since state not specified.")
 
@@ -201,7 +224,8 @@ class PyTorchCifar10Trainer(Trainer):
                 new_status = self.avl_state.value
                 logger.info(f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
                 #    self.send_availability_status("upload")
-                self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
+                if self.client_notify['enabled']== "True":
+                    self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
         else:
             logger.info(f"Channel manager not set yet for trainer {self.trainer_id}. "
                         f"Skipping avail status update. "
@@ -260,7 +284,7 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
-        if self.client_notify['enabled'] == "True" and self.avl_state != TrainerAvailState.AVL_TRAIN:
+        if self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
                 logger.info(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
@@ -405,8 +429,8 @@ class PyTorchCifar10Trainer(Trainer):
     def notify_trainer_avail(self) -> None:
         while True:
             time.sleep(1)             # Will check every 1 second
-            if self.client_notify['enabled']== "True":
-                self.check_and_update_state_avl()
+            self.check_and_update_state_avl()
+
 def main():
     import argparse
 
@@ -457,9 +481,11 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_notify['enabled'] == "True":
-        logger.info(f"Will initiate thread to send avail notifications for "
+    elif t.client_notify['type'] is not None:
+        logger.info(f"Will initiate thread to update state of "
                     f"trainer {t.trainer_id}")
+        if t.client_notify['enabled'] == "True":
+            logger.info(f"Will send avail notifications for trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True
         avail_notify_thread.start()

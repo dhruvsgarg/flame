@@ -224,10 +224,13 @@
         "avl_events_3_state_75": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (581, 'AVL_EVAL'), (8063, 'UN_AVL'), (72822, 'AVL_TRAIN'), (73755, 'UN_AVL'), (85095, 'AVL_TRAIN'), (88212, 'UN_AVL'), (88232, 'AVL_TRAIN'), (91594, 'UN_AVL'), (91595, 'AVL_TRAIN'), (92991, 'UN_AVL'), (93368, 'AVL_TRAIN'), (95996, 'AVL_EVAL'), (129871, 'UN_AVL'), (154355, 'AVL_TRAIN'), (163702, 'AVL_EVAL'), (165124, 'AVL_TRAIN'), (170213, 'AVL_EVAL'), (178813, 'UN_AVL'), (180830, 'AVL_TRAIN'), (181738, 'UN_AVL'), (181985, 'AVL_TRAIN'), (183081, 'AVL_EVAL'), (183737, 'AVL_TRAIN'), (184078, 'AVL_EVAL'), (185010, 'AVL_TRAIN'), (185150, 'AVL_EVAL'), (186922, 'UN_AVL'), (188916, 'AVL_TRAIN'), (199161, 'AVL_EVAL'), (243887, 'UN_AVL'), (244415, 'AVL_TRAIN'), (248578, 'AVL_EVAL'), (254027, 'UN_AVL'), (258656, 'AVL_TRAIN'), (259057, 'UN_AVL')]",
         "avl_events_2_state": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (72822, 'AVL_TRAIN'), (73755, 'UN_AVL'), (85095, 'AVL_TRAIN'), (88212, 'UN_AVL'), (88232, 'AVL_TRAIN'), (91594, 'UN_AVL'), (91595, 'AVL_TRAIN'), (92991, 'UN_AVL'), (93368, 'AVL_TRAIN'), (95996, 'UN_AVL'), (154355, 'AVL_TRAIN'), (163702, 'UN_AVL'), (165124, 'AVL_TRAIN'), (170213, 'UN_AVL'), (180830, 'AVL_TRAIN'), (181738, 'UN_AVL'), (181985, 'AVL_TRAIN'), (183081, 'UN_AVL'), (183737, 'AVL_TRAIN'), (184078, 'UN_AVL'), (185010, 'AVL_TRAIN'), (185150, 'UN_AVL'), (188916, 'AVL_TRAIN'), (199161, 'UN_AVL'), (244415, 'AVL_TRAIN'), (248578, 'UN_AVL'), (258656, 'AVL_TRAIN'), (259057, 'UN_AVL')]",
         "client_notify": {
-            "enabled": "True",
+            "enabled": "False",
             "type": "three_state"
         },
-        "wait_until_next_avl": "False"
+        "wait_until_next_avl": "True",
+        "avl_events_syn_20": "[(0, 'AVL_TRAIN'), (4800, 'UN_AVL'), (5400, 'AVL_TRAIN'), (11400, 'UN_AVL'), (12000, 'AVL_TRAIN'), (39000, 'UN_AVL'), (39600, 'AVL_TRAIN'), (64200, 'UN_AVL'), (64800, 'AVL_TRAIN'), (68400, 'UN_AVL'), (69000, 'AVL_TRAIN'), (78600, 'UN_AVL'), (80400, 'AVL_TRAIN'), (84600, 'UN_AVL'), (85200, 'AVL_TRAIN'), (85800, 'UN_AVL')]",
+        "avl_events_syn_40": "[(0, 'AVL_TRAIN'), (39000, 'UN_AVL'), (39600, 'AVL_TRAIN'), (79800, 'UN_AVL'), (80400, 'AVL_TRAIN'), (86400, 'UN_AVL')]",
+        "avl_events_syn_0": "[(0, 'AVL_TRAIN')]"
     },
     "baseModel": {
         "name": "",

@@ -423,6 +423,7 @@ class AsyncOortSelector(AbstractSelector):
                         ].total_seconds()
                     )
         else:
+            # Assuming a max round duration of 99999 seconds (~1.2 days)
             round_preferred_duration = timedelta(seconds=99999)
         
         logger.debug(
@@ -1154,6 +1155,12 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_train = 0
         count_avl_eval = 0
         count_ineligible = 0
+        
+        # Check the eligible set first. Out of the ends, how many are not in
+        # all_selected? Only those are eligible since the rest have weights
+        # already sent to them for either train/eval task.
+        count_eligible_set_to_check = [end for end in ends if end not in self.all_selected]
+        logger.debug(f"Before creating filtered_ends. count_eligible_set_to_check: {len(count_eligible_set_to_check)} from total {len(ends)} ends.")
         
         for end_id in ends:
             if end_id not in self.all_selected.keys(): 

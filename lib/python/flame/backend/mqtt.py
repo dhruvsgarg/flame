@@ -42,8 +42,9 @@ END_STATUS_OFF = "offline"
 
 # wait time of 10 sec clean up resources allocated for terminated end
 # if no message arrives after the wait time
-# NOTE: DG increased wait_time to 30 min to handle trainer init stalls
-MQTT_TIME_WAIT = 1800  # 1800 sec
+# NOTE: DG increased wait_time to 4h to handle trainer init stalls and other
+# waits during unavailability unaware training
+MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
 TOPIC_SEP = "/"
@@ -279,7 +280,7 @@ class MqttBackend(AbstractBackend):
             self._cleanup_waits[msg.end_id] = expiry
 
         channel = self._channels[msg.channel_name]
-        logger.info(f"Message being sent to chunk_mgr for end: {msg.end_id}")
+        logger.debug(f"Message being sent to chunk_mgr for end: {msg.end_id}")
         self.chunk_mgr.handle(msg, channel)
 
     async def _rx_task(self):
@@ -295,7 +296,7 @@ class MqttBackend(AbstractBackend):
                 self._handle_health_message(message)
                 continue
 
-            logger.info(
+            logger.debug(
                 f"_rx_task - topic: {message.topic}; len: {len(message.payload)}"
             )
 
@@ -329,8 +330,7 @@ class MqttBackend(AbstractBackend):
 
     def on_message(self, client, userdata, message):
         """on_message receives message."""
-        logger.info(f"topic: {message.topic}; len: {len(message.payload)}")
-        # logger.info(f"deque size = {len(self._rx_deque)}")
+        logger.debug(f"topic: {message.topic}; len: {len(message.payload)}")
         idx = len(self._rx_deque) - 1
 
         if self._rx_deque[idx].cancelled():
@@ -342,7 +342,7 @@ class MqttBackend(AbstractBackend):
         self._rx_deque[idx].set_result(message)
         # add one extra future in the queue
         self._rx_deque.append(self._loop.create_future())
-        logger.info(f"deque size = {len(self._rx_deque)}")
+        logger.debug(f"deque size = {len(self._rx_deque)}")
 
     def subscribe(self, topic) -> None:
         """Subscribe to a topic."""
@@ -377,7 +377,6 @@ class MqttBackend(AbstractBackend):
         any = Any()
         any.Pack(msg)
         payload = any.SerializeToString()
-        # logger.info(f"NRL: payload: {payload}")
         logger.debug(f"notify: publish topic: {topic}")
         self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
 
