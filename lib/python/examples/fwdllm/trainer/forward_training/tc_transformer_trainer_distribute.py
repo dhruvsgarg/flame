@@ -19,10 +19,10 @@ from transformers import (
 from functools import partial
 import functorch as fc
 from torch.cuda.amp import autocast
-from flame.mode.horizontal.fwdllmtrainer import Trainer
 
-class ForwardTextClassificationTrainer(Trainer):
-    def __init__(self, args, device, model, train_dl=None, test_dl=None, trainer_id=None, config=None):
+
+class ForwardTextClassificationTrainer:
+    def __init__(self, args, device, model, train_dl=None, test_dl=None, trainer_id=None):
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.loss_fn = None
@@ -31,7 +31,6 @@ class ForwardTextClassificationTrainer(Trainer):
         # set data
         self.num_labels = args.num_labels
         self.set_data(train_dl, test_dl)
-        self.config = config
 
         # model
         self.model = model
@@ -64,13 +63,13 @@ class ForwardTextClassificationTrainer(Trainer):
             self.layer_id_for_check = 22
         self.var = 0
 
-    def initialize(self) -> None:
-        """Initialize role."""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # def initialize(self) -> None:
+    #     """Initialize role."""
+    #     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # self.model = Net().to(self.device)
-        logging.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}")
+    #     # self.model = Net().to(self.device)
+    #     logging.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+    #                  f"{time.time()}")
 
     def set_data(self, train_dl=None, test_dl=None):
         # Used for fedtrainer
@@ -242,21 +241,6 @@ class ForwardTextClassificationTrainer(Trainer):
             {**{"mcc": mcc, "tp": tp, "tn": tn, "fp": fp, "fn": fn}, **extra_metrics},
             wrong,
         )
-    
-    def load_data(self) -> None:
-        pass
-
-
-    def train(self) -> None:
-        pass
-
-
-    def evaluate(self) -> None:
-        pass
-    
-
-    def check_and_sleep(self) -> None:
-        pass
 
 def get_parameter_number(net):
     total_num = sum(p.numel() for p in net.parameters())
