@@ -24,6 +24,8 @@ from examples.fwdllm.data_manager.base_data_manager import BaseDataManager
 # from FedML.fedml_api.distributed.utils.gpu_mapping import mapping_processes_to_gpu_device_from_yaml_file
 # from FedML.fedml_api.distributed.fedavg_beifen.FedAvgAPI import FedML_init
 from examples.fwdllm.expts.initializer import add_federated_args, set_seed, create_model#, \
+from examples.fwdllm.trainer.forward_training.fed_trainer_transformer import FedTransformerTrainer
+from examples.fwdllm.trainer.forward_training.FedSgdTrainer import FedSGDTrainer
     # get_fl_algorithm_initializer
 
 import argparse
@@ -146,11 +148,7 @@ if __name__ == "__main__":
 
 
      # trainer
-    fed_trainer = ForwardTextClassificationTrainer(
-        model_args, config.hyperparameters.client_idx%8, client_model, None, None, config.task_id, config)
-
-    fed_trainer.compose()
-    fed_trainer.run()
+    
 
     # if args.fl_algorithm == "FedFwd":
     #     client_trainer = ForwardTextClassificationTrainer(
@@ -176,6 +174,15 @@ if __name__ == "__main__":
     logging.info(f"NRL train_data_global: {train_data_global}")
     logging.info(f"NRL test_data_local_dict: {test_data_local_dict}")
     logging.info(f"NRL test_data_global: {test_data_global}")
+    client_trainer = ForwardTextClassificationTrainer(
+        model_args, config.hyperparameters.client_idx%8, client_model, None, None, config.task_id)
+    fed_trainer = FedTransformerTrainer(client_trainer, client_model)
+
+    # client manager in their code also passes client index which is the list of clients that need to do training 
+    trainer = FedSGDTrainer(config.task_id, train_data_local_dict, train_data_local_num_dict, test_data_local_dict,
+                            train_data_num, config.hyperparameters.client_idx%8, config.hyperparameters, fed_trainer, config)
+    trainer.compose()
+    trainer.run()
     # # start FedAvg algorithm
     # # for distributed algorithm, train_data_gloabl and test_data_global are required
     # if process_id == 0:
