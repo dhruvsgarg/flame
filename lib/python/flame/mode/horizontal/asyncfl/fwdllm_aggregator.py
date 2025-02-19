@@ -93,8 +93,12 @@ class TopAggregator(SyncTopAgg):
         # maintain a set of all trainers that have sent heartbeats
         # previously
         self.all_trainers = set()
-        logger.info("finished init for sync agg") 
-
+        logger.info("finished init for sync agg")
+        
+    # TODO (DG) Remove soon. Placeholder to keep the aggregator running.
+    def pause_execution(self):
+        time.sleep(0.1)
+        return
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -822,6 +826,9 @@ class TopAggregator(SyncTopAgg):
 
         with CloneComposer(self.composer) as _:
             task_internal_init = Tasklet("internal_init", self.internal_init)
+            
+            # TODO (DG) Remove soon.
+            task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 
             task_reset_agg_goal_vars = Tasklet(
                 "reset_agg_goal_vars", self._reset_agg_goal_variables
@@ -844,22 +851,19 @@ class TopAggregator(SyncTopAgg):
         c.unlink()
 
         loop = Loop(loop_check_fn=lambda: self._work_done)
-        # create a loop object for asyncfl to manage concurrency as
-        # well as aggregation goal
-        asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
-
         # chain them again with new tasklets introduced in this class
         (
             task_internal_init
             # >> c.tasklet("load_data")
             # >> c.tasklet("initialize")
-            >> task_get_heartbeat
+            # >> task_get_heartbeat
             # >> c.tasklet("heartbeat")
-            # >> loop(
-            #     task_reset_agg_goal_vars
-            #     # >> asyncfl_loop(task_put >> task_get_weights >>
-                # >> c.tasklet("heartbeat")
-            # )
+            >> loop(
+                task_reset_agg_goal_vars
+                # >> asyncfl_loop(task_put >> task_get_weights >>
+                >> task_get_heartbeat
+                >> task_pause_exec
+            )
             #     >> asyncfl_loop(task_put_train >> task_put_eval >> task_get_weights)
             #     >> c.tasklet("train")
             #     >> c.tasklet("evaluate")

@@ -68,8 +68,7 @@ if __name__ == "__main__":
     logging.info(config)
     set_seed(config.hyperparameters.manual_seed)
     
-    
-
+    # TODO: (Neha) Remove the commented out code in case we won't need it?
     # # initialize distributed computing (MPI)
     # comm, process_id, worker_number = FedML_init()
 
@@ -144,12 +143,14 @@ if __name__ == "__main__":
     model_config, client_model, tokenizer = create_model(
         model_args, formulation="classification")
 
-    
-
-
      # trainer
     fed_trainer = ForwardTextClassificationTrainer(
-        model_args, config.hyperparameters.client_idx%8, client_model, None, None, config.task_id, config)
+        args=model_args,
+        device=config.hyperparameters.client_idx%8,
+        model=client_model,
+        train_dl=None,
+        test_dl=None,
+        trainer_id=config.task_id)
 
     # fed_trainer.compose()
     # fed_trainer.run()
