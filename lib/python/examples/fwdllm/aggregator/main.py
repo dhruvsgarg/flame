@@ -25,6 +25,7 @@ from examples.fwdllm.data_manager.base_data_manager import BaseDataManager
 # from FedML.fedml_api.distributed.fedavg_beifen.FedAvgAPI import FedML_init
 from examples.fwdllm.expts.initializer import add_federated_args, set_seed, create_model#, \
     # get_fl_algorithm_initializer
+from examples.fwdllm.trainer.forward_training.fed_trainer_transformer import FedTransformerTrainer
 
 from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator
 
@@ -148,9 +149,9 @@ if __name__ == "__main__":
 
 
      # trainer
-    fed_trainer = ForwardTextClassificationTrainer(
-        model_args, config.hyperparameters.client_idx%8, client_model, None, None, config.task_id, config)
-
+    client_trainer = ForwardTextClassificationTrainer(
+        model_args, 0, client_model, None, None, config.task_id)
+    fed_trainer = FedTransformerTrainer(client_trainer, client_model)
     # fed_trainer.compose()
     # fed_trainer.run()
 

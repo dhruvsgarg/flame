@@ -157,7 +157,7 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.await_join()
 
         # one aggregator is sufficient
-        end = channel.one_end(VAL_CH_HTBT_SEND)
+        end = channel.one_end(VAL_CH_STATE_RECV)
         msg, _ = channel.recv(end)
 
         if not msg:
@@ -206,8 +206,11 @@ class Trainer(Role, metaclass=ABCMeta):
             # self._load_model_onto_gpu()
 
             # Update the model
+            logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            self._update_model()
+            # self.weights = msg[MessageType.WEIGHTS]
+            
+            # self._update_model()
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
@@ -230,12 +233,12 @@ class Trainer(Role, metaclass=ABCMeta):
         logger.debug("Model weights received, so resetting aggregator end states in "
                      "the channel")
         
-        channel._selector.ordered_updates_recv_ends.append(end)
+        channel._selector.ordered_updates_recv_ends.append(end) 
         logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
                      f"{channel._selector.ordered_updates_recv_ends}")
         
-        channel.cleanup_recvd_ends()
-
+        channel.cleanup_recvd_ends() 
+       
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -530,6 +533,10 @@ class Trainer(Role, metaclass=ABCMeta):
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
+    
+    def pause_execution(self):
+        time.sleep(0.1)
+        return
 
     def compose(self) -> None:
         """Compose role with tasklets."""
@@ -547,7 +554,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
             task_init = Tasklet("init", self.initialize)
 
-            # task_get = Tasklet("fetch", self.get, TAG_FETCH)
+            task_get = Tasklet("fetch", self.get, TAG_FETCH)
             # task_get.set_continue_fn(cont_fn=lambda: not self.fetch_success)
 
             # task_sleep_after_get = Tasklet("sleep_after_get", self.check_and_sleep)
@@ -567,6 +574,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # task_eval = Tasklet("evaluate", self.evaluate)
 
             # task_put_weight = Tasklet("upload", self.put, TAG_UPLOAD)
+            task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 
             # task_save_metrics = Tasklet("save_metrics", self.save_metrics)
             task_send_heartbeat = Tasklet("upload", self.put, TAG_HEARTBEAT)
@@ -578,6 +586,12 @@ class Trainer(Role, metaclass=ABCMeta):
             (
                 task_init
                 >> task_internal_init
+                >> loop(
+                    task_get 
+                    # >> asyncfl_loop(task_put >> task_get_weights >>
+                    # >> task_get_heartbeat
+                    >> task_pause_exec
+                )
                 # >> task_init_oort_variables
                 # Added code here to check for the status of the task
                 # i.e., "train + eval" vs "eval only" 
@@ -590,7 +604,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 #     task_save_metrics >> task_sleep_after_save_metrics
                 # # )
                 # >> loop(
-                >> task_send_heartbeat
+                # >> task_send_heartbeat
                 # )
             )
 

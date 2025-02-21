@@ -43,7 +43,7 @@ class RandomSelector(AbstractSelector):
         self.round = 0
 
     def select(self, ends: dict[str, End],
-               channel_props: dict[str, Scalar]) -> SelectorReturnType:
+               channel_props: dict[str, Scalar], task_to_perform : str ="train") -> SelectorReturnType:
         """Return k number of ends from the given ends."""
         logger.debug("calling random select")
 
@@ -56,6 +56,7 @@ class RandomSelector(AbstractSelector):
 
         if len(self.selected_ends) == 0 or round > self.round:
             logger.debug(f"let's select {k} ends for new round {round}")
+            random.seed(round) # make sure for each comparison, we are selecting the same clients each round-->adopted from FwdLLM
             self.selected_ends = set(random.sample(list(ends), k))
             self.round = round
 

@@ -95,6 +95,9 @@ class TopAggregator(SyncTopAgg):
         self.all_trainers = set()
         logger.info("finished init for sync agg") 
 
+    def pause_execution(self):
+        time.sleep(0.1)
+        return
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -725,9 +728,10 @@ class TopAggregator(SyncTopAgg):
 
         # this call waits for at least one peer to join this channel
         channel.await_join()
-
+        global_model_params = self.get_global_model_params()
+        self.weights = global_model_params #TODO: check this, not sure where self.weights is initialised
         # before distributing weights, update it from global model
-        self._update_weights()
+        # self._update_weights()
 
         # busy wait for 0.1 seconds before proceeding. This is to wait
         # on distribute_weights to let the system state get updated
@@ -738,17 +742,17 @@ class TopAggregator(SyncTopAgg):
 
         # before invoking channel.ends() to select, set the
         # trainer_unavail if it isn't None
-        if self.trainer_unavail_durations is not None:
-            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
-            channel.set_curr_unavailable_trainers(
-                trainer_unavail_list=curr_unavail_trainer_list
-            )
-            logger.debug(f"Passed curr_unavail_trainer_list: "
-                         f"{curr_unavail_trainer_list} to channel")
-        else:
-            # Handling the case for oort's selector since it expects 3
-            # arguments
-            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+        # if self.trainer_unavail_durations is not None:
+        #     curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+        #     channel.set_curr_unavailable_trainers(
+        #         trainer_unavail_list=curr_unavail_trainer_list
+        #     )
+        #     logger.debug(f"Passed curr_unavail_trainer_list: "
+        #                  f"{curr_unavail_trainer_list} to channel")
+        # else:
+        #     # Handling the case for oort's selector since it expects 3
+        #     # arguments
+        #     channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         # check if there are any ends to send weights to
         
@@ -781,7 +785,7 @@ class TopAggregator(SyncTopAgg):
                 {
                     MessageType.WEIGHTS: weights_to_device(
                         self.weights, DeviceType.CPU
-                    ),
+                    ),                    
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform
@@ -822,6 +826,7 @@ class TopAggregator(SyncTopAgg):
 
         with CloneComposer(self.composer) as _:
             task_internal_init = Tasklet("internal_init", self.internal_init)
+            task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 
             task_reset_agg_goal_vars = Tasklet(
                 "reset_agg_goal_vars", self._reset_agg_goal_variables
@@ -846,14 +851,22 @@ class TopAggregator(SyncTopAgg):
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as
         # well as aggregation goal
-        asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
+        # asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
 
         # chain them again with new tasklets introduced in this class
         (
             task_internal_init
+            >> loop(
+                task_reset_agg_goal_vars
+                >> task_put_train
+                # >> asyncfl_loop(task_put >> task_get_weights >>
+                # >> task_get_heartbeat
+                >> task_pause_exec
+            )
             # >> c.tasklet("load_data")
             # >> c.tasklet("initialize")
-            >> task_get_heartbeat
+            # >> task_get_heartbeat
+            # >> task_put_train
             # >> c.tasklet("heartbeat")
             # >> loop(
             #     task_reset_agg_goal_vars

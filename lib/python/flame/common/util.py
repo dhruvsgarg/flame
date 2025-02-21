@@ -202,6 +202,7 @@ def weights_to_model_device(weights, model):
         return weights
     elif framework == MLFramework.PYTORCH:
         # make assumption all tensors are on same device
+        # TODO: NRL add this to the code
         torch_device = next(model.parameters()).device
         return {name: weights[name].to(torch_device) for name in weights}
 

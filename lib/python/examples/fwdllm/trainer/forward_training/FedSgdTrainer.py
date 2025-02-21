@@ -26,7 +26,7 @@ class FedSGDTrainer(Trainer):
         # abstract attributes 
         self.loss_fn = None
         self.dataset_size = None 
-        self.model = None
+        self.model = model_trainer.model
 
     def initialize(self) -> None:
         """Initialize role."""

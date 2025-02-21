@@ -94,14 +94,9 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_oort",
+        "sort": "random",
         "kwargs": {
-            "//": "c: concurrency level",
-            "c": 30,
-            "aggGoal": 10,
-            "evalGoalFactor": 3.0,
-            "selectType": "default",
-            "roundNudgeType": "last_eval"
+            "k":5
         }
     },
     "optimizer": {

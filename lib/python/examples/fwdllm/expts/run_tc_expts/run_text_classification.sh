@@ -115,7 +115,10 @@ else
   # Run aggregator/main.py once with logging
   python /home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/aggregator/main.py \
     --config "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
-    > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1
+    > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
+
+  # Sleep for 5 seconds so that agg sets everything up before trainer starts
+  sleep 5
 
   # Run trainer/main.py 100 times, each with a unique log file
   NUM_AVAIL_GPUS=8
