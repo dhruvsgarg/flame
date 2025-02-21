@@ -206,7 +206,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # self._load_model_onto_gpu()
 
             # Update the model
-            logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
+            # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             # self.weights = msg[MessageType.WEIGHTS]
             
