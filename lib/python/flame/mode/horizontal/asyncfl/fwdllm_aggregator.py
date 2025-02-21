@@ -721,6 +721,7 @@ class TopAggregator(SyncTopAgg):
         This method is overridden from one in synchronous top
         aggregator (..top_aggregator).
         """
+        logger.info(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"channel not found for tag {tag}")

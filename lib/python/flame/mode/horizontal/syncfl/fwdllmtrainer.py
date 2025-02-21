@@ -210,7 +210,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             # self.weights = msg[MessageType.WEIGHTS]
             
-            # self._update_model()
+            self._update_model()
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]

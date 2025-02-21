@@ -22,7 +22,7 @@ class FedSGDAggregator(TopAggregator):
         self.val_global = self._generate_validation_set()
         self.all_train_data_num = all_train_data_num
         self.config = args
-        self.model = None
+        self.model = model_trainer.model
         self.dataset = None
 
         self.train_data_local_dict = train_data_local_dict
