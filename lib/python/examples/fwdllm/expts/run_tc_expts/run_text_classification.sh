@@ -53,7 +53,8 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-DATA_DIR=/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/
+REPO_PATH=/home/dgarg39/flame
+DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
@@ -113,13 +114,13 @@ elif [ $FL_ALG = FedSgd ];then
     > ./log/new/fedsgd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_full.log 2>&1
 else
   # Run aggregator/main.py once with logging
-  python /home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/aggregator/main.py \
-    --config "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
+  python $REPO_PATH/lib/python/examples/fwdllm/aggregator/main.py \
+    --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
     > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
 
   # Sleep for 5 seconds so that agg sets everything up before trainer starts
   sleep 5
-
+  
   # Run trainer/main.py 100 times, each with a unique log file
   NUM_AVAIL_GPUS=8
 
@@ -130,8 +131,8 @@ else
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
-    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python /home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/trainer/main.py \
-      --config "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
+    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/main.py \
+      --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
   done
 
