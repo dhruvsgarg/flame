@@ -69,7 +69,6 @@ class TopAggregator(BaseTopAggregator):
 
             task_get_coord_ends = Tasklet("get_coord_ends", self.get_coordinated_ends)
 
-
         self.composer.get_tasklet("distribute").insert_before(task_get_coord_ends)
         self.composer.get_tasklet("inform_end_of_training").remove()
 

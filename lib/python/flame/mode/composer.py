@@ -36,7 +36,7 @@ class Composer(object):
         self.reverse_chain = dict()
 
         self.unlinked_tasklets = dict()
-        
+
         self.mc = Role.mc
 
     def __enter__(self):
@@ -106,10 +106,14 @@ class Composer(object):
             tasklet = q.get()
             # logger.info(f"Running tasklet: {tasklet}")
 
-            if (len(tasklet.siblings)):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasklet.siblings)) as executor:                    
+            if len(tasklet.siblings):
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(tasklet.siblings)
+                ) as executor:
                     # execute sibling taskelts in parallel
-                    futures = [executor.submit(tasklet.do) for tasklet in [*tasklet.siblings]]
+                    futures = [
+                        executor.submit(tasklet.do) for tasklet in [*tasklet.siblings]
+                    ]
 
                     # execute first sibling tasklet
                     tasklet.do()
@@ -255,7 +259,7 @@ class Composer(object):
         tasklet = self.get_tasklet(alias)
         if tasklet.loop_state:
             raise NotImplementedError("Can't handle loop ends removal yet")
-        
+
         tasklet = next(iter(self.chain))
         root = tasklet.get_root()
 
@@ -269,7 +273,7 @@ class Composer(object):
             parent_t = q.get()
 
             for child_t in self.chain[parent_t]:
-                if child_t.alias == alias: # if child for removal
+                if child_t.alias == alias:  # if child for removal
                     # stitch the chain
                     self.chain[parent_t].remove(child_t)
                     self.chain[parent_t].update(self.chain[child_t])
@@ -290,8 +294,7 @@ class Composer(object):
         self.reverse_chain = self.get_reverse_chain()
 
     def insert(self, alias, new_tasklet, after=False):
-        """Insert a new tasklet before a given tasklet. If after is True, insert after the given tasklet.
-        """
+        """Insert a new tasklet before a given tasklet. If after is True, insert after the given tasklet."""
 
         if after:
             self._insert_after(alias, new_tasklet)
@@ -305,7 +308,9 @@ class Composer(object):
 
         for t in self.chain:
             if t.alias == new_tasklet.alias:
-                raise ValueError(f"Tasklet with alias '{new_tasklet.alias}' already exists")
+                raise ValueError(
+                    f"Tasklet with alias '{new_tasklet.alias}' already exists"
+                )
 
         if root.alias == alias:
             self.chain[new_tasklet] = {root}
@@ -313,7 +318,7 @@ class Composer(object):
             updated_chain_order = initial_chain_order.copy()
             updated_chain_order.insert(initial_chain_order.index(root), new_tasklet)
             self._update_chain(updated_chain_order)
-            
+
             return None
 
         q = Queue()
@@ -324,12 +329,14 @@ class Composer(object):
             for child_t in self.chain[parent_t]:
                 if child_t.alias == alias:
                     # handle new_tasklet loop insertion
-                    if child_t is child_t.loop_starter: # new_tasklet is new loop starter
+                    if (
+                        child_t is child_t.loop_starter
+                    ):  # new_tasklet is new loop starter
                         new_tasklet.update_loop_attrs(
                             check_fn=child_t.loop_check_fn,
                             state=child_t.loop_state,
                             starter=new_tasklet,
-                            ender=child_t.loop_ender
+                            ender=child_t.loop_ender,
                         )
                         child_t.update_loop_attrs(state=LoopIndicator.NONE)
                     elif child_t is child_t.loop_ender:
@@ -337,7 +344,7 @@ class Composer(object):
                             check_fn=child_t.loop_check_fn,
                             state=LoopIndicator.NONE,
                             starter=child_t.loop_starter,
-                            ender=child_t
+                            ender=child_t,
                         )
 
                     # relink the chain
@@ -347,7 +354,9 @@ class Composer(object):
                     self.chain[new_tasklet] = {child_t}
                     # update the chain order
                     updated_chain_order = initial_chain_order.copy()
-                    updated_chain_order.insert(initial_chain_order.index(child_t), new_tasklet)
+                    updated_chain_order.insert(
+                        initial_chain_order.index(child_t), new_tasklet
+                    )
                     self._update_chain(updated_chain_order)
 
                     # update the loop if new_tasklet is in a loop
@@ -357,8 +366,7 @@ class Composer(object):
 
                         for t in tasklets_in_loop:
                             t.update_loop_attrs(
-                                starter=new_tasklet, 
-                                ender=new_tasklet.loop_ender
+                                starter=new_tasklet, ender=new_tasklet.loop_ender
                             )
 
                     return None
@@ -373,8 +381,10 @@ class Composer(object):
 
         for t in self.chain:
             if t.alias == new_tasklet.alias:
-                raise ValueError(f"Tasklet with alias '{new_tasklet.alias}' already exists")
-            
+                raise ValueError(
+                    f"Tasklet with alias '{new_tasklet.alias}' already exists"
+                )
+
         q = Queue()
         q.put(root)
         while not q.empty():
@@ -382,12 +392,12 @@ class Composer(object):
 
             if parent_t.alias == alias:
                 # handle new_tasklet loop insertion
-                if parent_t is parent_t.loop_ender: # new_tasklet is new loop ender
+                if parent_t is parent_t.loop_ender:  # new_tasklet is new loop ender
                     new_tasklet.update_loop_attrs(
                         check_fn=parent_t.loop_check_fn,
                         state=parent_t.loop_state,
                         starter=parent_t.loop_starter,
-                        ender=new_tasklet
+                        ender=new_tasklet,
                     )
                     parent_t.update_loop_attrs(state=LoopIndicator.NONE)
                 elif parent_t is parent_t.loop_starter:
@@ -395,14 +405,16 @@ class Composer(object):
                         check_fn=parent_t.loop_check_fn,
                         state=LoopIndicator.NONE,
                         starter=parent_t.loop_ender,
-                        ender=parent_t.loop_ender
+                        ender=parent_t.loop_ender,
                     )
 
                 self.chain[new_tasklet] = {child_t for child_t in self.chain[parent_t]}
                 self.chain[parent_t] = {new_tasklet}
                 # update the chain order
                 updated_chain_order = initial_chain_order.copy()
-                updated_chain_order.insert(initial_chain_order.index(parent_t) + 1, new_tasklet)
+                updated_chain_order.insert(
+                    initial_chain_order.index(parent_t) + 1, new_tasklet
+                )
                 self._update_chain(updated_chain_order)
 
                 # update the loop if new_tasklet is in a loop
@@ -412,12 +424,12 @@ class Composer(object):
 
                     for t in tasklets_in_loop:
                         t.update_loop_attrs(
-                            starter=new_tasklet.loop_starter, 
-                            ender=new_tasklet.loop_ender
+                            starter=new_tasklet.loop_starter,
+                            ender=new_tasklet.loop_ender,
                         )
 
                 return None
-            
+
             for child in self.chain[parent_t]:
                 q.put(child)
 

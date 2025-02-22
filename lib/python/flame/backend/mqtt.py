@@ -133,7 +133,7 @@ class MqttBackend(AbstractBackend):
 
         self._mqtt_client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5
-            )
+        )
 
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
@@ -199,23 +199,30 @@ class MqttBackend(AbstractBackend):
 
         Send leave notify message and unsubscribe from topics.
         """
-        logger.debug(f"Sending notification of type LEAVE from "
-                     f"channel {channel.name()}")
+        logger.debug(
+            f"Sending notification of type LEAVE from " f"channel {channel.name()}"
+        )
         self.notify(channel.name(), msg_pb2.NotifyType.LEAVE)
 
         logger.debug("Going to start unsubscribing topics")
 
         # unsubscribe from topics after notify is finished
         for topic in self._topics_for_notify(channel):
-            logger.debug(f"Initiating unsubscribe for topic {topic} "
-                         f"on channel {channel.name()}")
+            logger.debug(
+                f"Initiating unsubscribe for topic {topic} "
+                f"on channel {channel.name()}"
+            )
             self.unsubscribe(topic)
         pass
-    
-    def update_trainer_state(self, channel: Channel, state: str, timestamp: str) -> None:
+
+    def update_trainer_state(
+        self, channel: Channel, state: str, timestamp: str
+    ) -> None:
         """Update a trainer state in the backend."""
-        logger.debug(f"Sending notification of type STATE_UPDATE from "
-                     f"channel {channel.name()} for state {state} at timestamp {timestamp}")
+        logger.debug(
+            f"Sending notification of type STATE_UPDATE from "
+            f"channel {channel.name()} for state {state} at timestamp {timestamp}"
+        )
         # notify after subscription to topics is finished
         self.notify(channel.name(), msg_pb2.NotifyType.STATE_UPDATE, (state, timestamp))
 
@@ -354,7 +361,7 @@ class MqttBackend(AbstractBackend):
         logger.debug(f"unsubscribe topic: {topic}")
         self._mqtt_client.unsubscribe(topic)
 
-    def notify(self, channel_name, notify_type, notify_info = None) -> bool:
+    def notify(self, channel_name, notify_type, notify_info=None) -> bool:
         """Broadcast a notify message to a channel."""
         if channel_name not in self._channels:
             logger.debug(f"channel {channel_name} not found")
@@ -368,7 +375,7 @@ class MqttBackend(AbstractBackend):
         msg.end_id = self._id
         msg.channel_name = channel_name
         msg.type = notify_type
-        
+
         # Add notify_info if it contains state and timestamp
         if notify_info is not None:
             msg.info.state = notify_info[0]

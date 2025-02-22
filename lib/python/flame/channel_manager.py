@@ -88,7 +88,7 @@ class ChannelManager(object):
 
     def _setup_backends(self):
         logger.info("setting up backend")
-        distinct_backends = {} 
+        distinct_backends = {}
 
         for ch_name, channel in self._config.channels.items():
             # rename backend in channel config as sort to avoid
@@ -103,7 +103,9 @@ class ChannelManager(object):
                 logger.info("backend found")
                 # Create a new backend instance if it doesn't exist
                 backend = backend_provider.get(sort)
-                broker_host = channel.broker_host or self._config.brokers.sort_to_host[sort]
+                broker_host = (
+                    channel.broker_host or self._config.brokers.sort_to_host[sort]
+                )
 
                 backend.configure(broker_host, self._job_id, self._task_id)
 

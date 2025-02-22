@@ -167,7 +167,7 @@ class SlowTrainer(Role, metaclass=ABCMeta):
 
     def _send_weights(self, tag: str) -> None:
         print("### SLOW trainer, will pause once every 5 iterations ###")
-        if(self._round % 2 == 0):
+        if self._round % 2 == 0:
             print("pausing for 1 minute")
             time.sleep(60)
             print("awake")

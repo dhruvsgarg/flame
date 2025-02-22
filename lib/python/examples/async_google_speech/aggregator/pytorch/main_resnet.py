@@ -50,9 +50,7 @@ def initialize_wandb(run_name=None):
             # fedbuff
             "server_learning_rate": 40.9,
             "client_learning_rate": 0.000195,
-            
             # oort "client_learning_rate": 0.04,
-
             "architecture": "CNN",
             "dataset": "CIFAR-10",
             "fl-type": "async, fedbuff",
@@ -62,10 +60,8 @@ def initialize_wandb(run_name=None):
             "alpha": 100,
             "failures": "No failure",
             "total clients N": 100,
-
             # fedbuff
             "client-concurrency C": 20,
-            
             "client agg goal K": 10,
             "server_batch_size": 32,
             "client_batch_size": 32,
@@ -75,41 +71,41 @@ def initialize_wandb(run_name=None):
 
 
 LABEL_MAP = {
-    'backward': 0,
-    'bed': 1,
-    'bird': 2,
-    'cat': 3,
-    'dog': 4,
-    'down': 5,
-    'eight': 6,
-    'five': 7,
-    'follow': 8,
-    'forward': 9,
-    'four': 10,
-    'go': 11,
-    'happy': 12,
-    'house': 13,
-    'learn': 14,
-    'left': 15,
-    'marvin': 16,
-    'nine': 17,
-    'no': 18,
-    'off': 19,
-    'on': 20,
-    'one': 21,
-    'right': 22,
-    'seven': 23,
-    'sheila': 24,
-    'six': 25,
-    'stop': 26,
-    'three': 27,
-    'tree': 28,
-    'two': 29,
-    'up': 30,
-    'visual': 31,
-    'wow': 32,
-    'yes': 33,
-    'zero': 34
+    "backward": 0,
+    "bed": 1,
+    "bird": 2,
+    "cat": 3,
+    "dog": 4,
+    "down": 5,
+    "eight": 6,
+    "five": 7,
+    "follow": 8,
+    "forward": 9,
+    "four": 10,
+    "go": 11,
+    "happy": 12,
+    "house": 13,
+    "learn": 14,
+    "left": 15,
+    "marvin": 16,
+    "nine": 17,
+    "no": 18,
+    "off": 19,
+    "on": 20,
+    "one": 21,
+    "right": 22,
+    "seven": 23,
+    "sheila": 24,
+    "six": 25,
+    "stop": 26,
+    "three": 27,
+    "tree": 28,
+    "two": 29,
+    "up": 30,
+    "visual": 31,
+    "wow": 32,
+    "yes": 33,
+    "zero": 34,
 }
 
 
@@ -119,10 +115,19 @@ logger = logging.getLogger(__name__)
 class BasicBlock1D(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1, downsample=None):
         super(BasicBlock1D, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv1d(
+            out_channels, out_channels, kernel_size=3, padding=1, bias=False
+        )
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.downsample = downsample
 
@@ -150,7 +155,9 @@ class ResNet34_1D(nn.Module):
         super(ResNet34_1D, self).__init__()
         self.in_channels = 64
 
-        self.conv1 = nn.Conv1d(n_input, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv1d(
+            n_input, 64, kernel_size=7, stride=2, padding=3, bias=False
+        )
         self.bn1 = nn.BatchNorm1d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
@@ -165,7 +172,13 @@ class ResNet34_1D(nn.Module):
         downsample = None
         if stride != 1 or self.in_channels != out_channels:
             downsample = nn.Sequential(
-                nn.Conv1d(self.in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(
+                    self.in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
                 nn.BatchNorm1d(out_channels),
             )
 
@@ -198,10 +211,8 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
     """PyTorch Google Speech commands Aggregator."""
 
     def __init__(
-            self,
-            config: Config,
-            log_to_wandb: bool,
-            wandb_run_name: str = None) -> None:
+        self, config: Config, log_to_wandb: bool, wandb_run_name: str = None
+    ) -> None:
         """Initialize a class instance."""
         self.config = config
         self.model = None
@@ -213,12 +224,16 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
-        self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
-        self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
+        self.track_trainer_avail = (
+            self.config.hyperparameters.track_trainer_avail or None
+        )
+        self.reject_stale_updates = (
+            self.config.hyperparameters.reject_stale_updates or False
+        )
         self.trainer_unavail_durations = None
         if (
-            self.track_trainer_avail["enabled"] and
-            self.track_trainer_avail["type"] == "ORACULAR"
+            self.track_trainer_avail["enabled"]
+            and self.track_trainer_avail["type"] == "ORACULAR"
         ):
             self.trainer_unavail_durations = self.read_trainer_unavailability()
             print("self.trainer_unavail_durations: ", self.trainer_unavail_durations)
@@ -229,7 +244,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
             initialize_wandb(run_name=wandb_run_name)
-    
+
     def initialize(self):
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -251,16 +266,19 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         trainer_end_num = 100
         for i in range(trainer_start_num, trainer_end_num + 1):
             dirname = os.path.dirname(__file__)
-            with open(os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")
-                      ) as f:
+            with open(
+                os.path.join(dirname, files_path, "trainer_" + str(i) + ".json")
+            ) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                curr_trainer_unavail_time = ast.literal_eval(trainer_json[
-                    "hyperparameters"]["failure_durations_s"]
-                    )
+                curr_trainer_unavail_time = ast.literal_eval(
+                    trainer_json["hyperparameters"]["failure_durations_s"]
+                )
                 trainer_unavail_dict[curr_trainer_id] = curr_trainer_unavail_time
-                print("Completed file read for ", os.path.join(files_path, "trainer_"
-                                                               + str(i) + ".json"))
+                print(
+                    "Completed file read for ",
+                    os.path.join(files_path, "trainer_" + str(i) + ".json"),
+                )
 
         # selector - do a linear search in the selector based on
         # availability selector - delete those tuples whose sleep time
@@ -273,13 +291,13 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         data_dir = "./data"
         os.makedirs(data_dir, exist_ok=True)
 
-        dataset = SPEECHCOMMANDS(
-            data_dir, download=True, subset='testing'
-        )
-        
+        dataset = SPEECHCOMMANDS(data_dir, download=True, subset="testing")
+
         def custom_collate_fn(batch):
             # Extract sequences and labels
-            sequences = [item[0].squeeze(0) for item in batch]  # Remove the extra dimension
+            sequences = [
+                item[0].squeeze(0) for item in batch
+            ]  # Remove the extra dimension
             labels = [item[2] for item in batch]  # Assuming item[2] is the label
 
             # Convert string labels to integers using the label map
@@ -289,9 +307,11 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
             max_length = max(sequence.size(0) for sequence in sequences)
 
             # Pad sequences to the maximum length
-            padded_sequences = torch.zeros((len(sequences), 1, max_length))  # Add channel dimension
+            padded_sequences = torch.zeros(
+                (len(sequences), 1, max_length)
+            )  # Add channel dimension
             for i, sequence in enumerate(sequences):
-                padded_sequences[i, 0, :sequence.size(0)] = sequence
+                padded_sequences[i, 0, : sequence.size(0)] = sequence
 
             # Convert labels to tensor
             labels = torch.tensor(labels)
@@ -318,7 +338,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         """Train a model."""
         # Implement this if testing is needed in aggregator
         pass
-    
+
     def evaluate(self) -> None:
         """Evaluate (test) a model."""
 
@@ -336,7 +356,7 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
             for data, target in self.test_loader:
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
-                
+
                 # Reshape output to [batch_size, n_output] from [batch_size, 1, n_output]
                 output = output.squeeze(1)
 
@@ -353,8 +373,10 @@ class PyTorchSpeechCommandsAggregator(TopAggregator):
         test_loss /= total
         test_accuracy = correct / total
 
-        logger.info(f"Test loss: {test_loss}, test accuracy: "
-                    f"{correct}/{total} ({test_accuracy})")
+        logger.info(
+            f"Test loss: {test_loss}, test accuracy: "
+            f"{correct}/{total} ({test_accuracy})"
+        )
 
         # update metrics after each evaluation so that the metrics can
         # be logged in a model registry.
@@ -382,14 +404,10 @@ if __name__ == "__main__":
     parser.add_argument("config", nargs="?", default="./config.json")
     # Add the --log_to_wandb argument
     parser.add_argument(
-        '--log_to_wandb',
-        action='store_true',
-        help='Flag to log to Weights and Biases'
+        "--log_to_wandb", action="store_true", help="Flag to log to Weights and Biases"
     )
     parser.add_argument(
-        '--wandb_run_name',
-        type=str,
-        help='Name of the Weights and Biases run'
+        "--wandb_run_name", type=str, help="Name of the Weights and Biases run"
     )
 
     args = parser.parse_args()

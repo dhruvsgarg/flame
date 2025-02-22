@@ -22,7 +22,9 @@ from torch.cuda.amp import autocast
 
 
 class ForwardTextClassificationTrainer:
-    def __init__(self, args, device, model, train_dl=None, test_dl=None, trainer_id=None):
+    def __init__(
+        self, args, device, model, train_dl=None, test_dl=None, trainer_id=None
+    ):
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.loss_fn = None
@@ -35,7 +37,7 @@ class ForwardTextClassificationTrainer:
         # model
         self.model = model
         if self.args.model_type == "distilbert":
-            self.model.add_module('pre_classifier',nn.Sequential())
+            self.model.add_module("pre_classifier", nn.Sequential())
         # self.model.to(self.device)
 
         # training results
@@ -49,7 +51,6 @@ class ForwardTextClassificationTrainer:
         if self.args.perturbation_sampling and self.args.var_control:
             self.old_grad = None
             self.grad_pool = []
-
 
         # var control
         self.grad_for_var_check_list = []
@@ -84,7 +85,9 @@ class ForwardTextClassificationTrainer:
         # self.model.to(device)
 
         logging.info(get_parameter_number(self.model))
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
 
         # training result
         global_step = 0
@@ -96,22 +99,24 @@ class ForwardTextClassificationTrainer:
             index = 0
             if self.args.var_control:
                 self.grad = self.old_grad
-            for k,v in self.model.named_parameters():
+            for k, v in self.model.named_parameters():
                 # logging.info(index)
                 if self.grad != None and v.requires_grad:
                     # logging.info("generate v")
                     shape = v.shape
-                    candidate_v = torch.randn((v_num*10,*shape),device="cpu")
+                    candidate_v = torch.randn((v_num * 10, *shape), device="cpu")
                     target_grad = self.grad[index]
 
                     # logging.info("flatten")
                     target_grad = torch.flatten(target_grad)
-                    candidate_v = torch.flatten(candidate_v,start_dim=1)
+                    candidate_v = torch.flatten(candidate_v, start_dim=1)
 
-                    cos_sim = calculate_cos_sim(candidate_v,target_grad,device)
+                    cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
 
-                    v_buffer[index] = [candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]]
+                    v_buffer[index] = [
+                        candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
+                    ]
                 index += 1
 
         self.grad = [torch.zeros_like(p) for p in self.params]
@@ -122,51 +127,77 @@ class ForwardTextClassificationTrainer:
                 for batch_idx, batch in enumerate(self.train_dl):
 
                     batch = tuple(t for t in batch)
-                    #TODO: See why .to(device) was called here
-                    x = batch[1]#.to(device)
-                    labels = batch[4]#.to(device)
+                    # TODO: See why .to(device) was called here
+                    x = batch[1]  # .to(device)
+                    labels = batch[4]  # .to(device)
 
                     # 优化函数
                     f = partial(
                         functional_get_loss,
                         model=self.fmodel,
-                        buffers = self.buffers,
-                        num_classes = self.num_labels,
+                        buffers=self.buffers,
+                        num_classes=self.num_labels,
                         x=x,
                         t=labels,
                     )
 
                     # 生成扰动
                     if self.args.perturbation_sampling and v_buffer != {}:
-                        v_params = tuple([v_buffer[i][batch_idx] if p.requires_grad == True else torch.zeros_like(p) for i,p in enumerate(self.params)])
+                        v_params = tuple(
+                            [
+                                (
+                                    v_buffer[i][batch_idx]
+                                    if p.requires_grad == True
+                                    else torch.zeros_like(p)
+                                )
+                                for i, p in enumerate(self.params)
+                            ]
+                        )
                     else:
-                        v_params = tuple([torch.randn_like(p) if p.requires_grad == True else torch.zeros_like(p) for p in self.params])
-                    
+                        v_params = tuple(
+                            [
+                                (
+                                    torch.randn_like(p)
+                                    if p.requires_grad == True
+                                    else torch.zeros_like(p)
+                                )
+                                for p in self.params
+                            ]
+                        )
+
                     # 计算方向导数
                     loss, jvp = calculate_jvp(f, self.params, v_params)
-                    
+
                     # 计算梯度
                     for j, fg in enumerate(self.grad):
-                        fg.add_(jvp*v_params[j])
+                        fg.add_(jvp * v_params[j])
                         if self.args.var_control and j == self.layer_id_for_check:
-                            self.grad_for_var_check_list.append(jvp*v_params[j])
-
+                            self.grad_for_var_check_list.append(jvp * v_params[j])
 
                     current_loss = loss.item()
-                    logging.info("epoch = %d, batch_idx = %d/%d, loss = %s" % (epoch, batch_idx,
-                                                                            len(self.train_dl), current_loss))
+                    logging.info(
+                        "epoch = %d, batch_idx = %d/%d, loss = %s"
+                        % (epoch, batch_idx, len(self.train_dl), current_loss)
+                    )
 
                     global_step += 1
-                    if self.args.evaluate_during_training and (self.args.evaluate_during_training_steps > 0
-                                                                and global_step!=0  and global_step % self.args.evaluate_during_training_steps == 0):
+                    if self.args.evaluate_during_training and (
+                        self.args.evaluate_during_training_steps > 0
+                        and global_step != 0
+                        and global_step % self.args.evaluate_during_training_steps == 0
+                    ):
                         results, _, _ = self.eval_model(epoch, global_step)
 
                     if self.args.is_debug_mode == 1 and global_step > 3:
                         break
 
         if self.args.var_control:
-            self.var = calculate_var(self.grad_for_var_check_list,)
-            logging.info(f"num of fwdgrad: {len(self.grad_for_var_check_list)}, var: {self.var}")
+            self.var = calculate_var(
+                self.grad_for_var_check_list,
+            )
+            logging.info(
+                f"num of fwdgrad: {len(self.grad_for_var_check_list)}, var: {self.var}"
+            )
             if self.args.perturbation_sampling:
                 self.grad_pool.append(self.grad)
         return global_step, tr_loss / global_step
@@ -184,11 +215,15 @@ class ForwardTextClassificationTrainer:
         preds = np.empty((test_sample_len, self.num_labels))
 
         out_label_ids = np.empty(test_sample_len)
-        #TODO: See why .to(device) was called here
-        self.model#.to(device)
+        # TODO: See why .to(device) was called here
+        self.model  # .to(device)
         self.model.eval()
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
-        logging.info("len(test_dl) = %d, n_batches = %d" % (len(self.test_dl), n_batches))
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
+        logging.info(
+            "len(test_dl) = %d, n_batches = %d" % (len(self.test_dl), n_batches)
+        )
         for i, batch in enumerate(self.test_dl):
             with torch.no_grad():
                 batch = tuple(t for t in batch)
@@ -205,7 +240,11 @@ class ForwardTextClassificationTrainer:
             nb_eval_steps += 1
             start_index = self.args.eval_batch_size * i
 
-            end_index = start_index + self.args.eval_batch_size if i != (n_batches - 1) else test_sample_len
+            end_index = (
+                start_index + self.args.eval_batch_size
+                if i != (n_batches - 1)
+                else test_sample_len
+            )
             preds[start_index:end_index] = logits.detach().cpu().numpy()
             out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
 
@@ -213,7 +252,9 @@ class ForwardTextClassificationTrainer:
 
         model_outputs = preds
         preds = np.argmax(preds, axis=1)
-        result, wrong = self.compute_metrics(preds, out_label_ids, self.test_dl.examples)
+        result, wrong = self.compute_metrics(
+            preds, out_label_ids, self.test_dl.examples
+        )
         result["eval_loss"] = eval_loss
         results.update(result)
 
@@ -221,7 +262,7 @@ class ForwardTextClassificationTrainer:
         logging.info(self.results)
 
         return result, model_outputs, wrong
-    
+
     def compute_metrics(self, preds, labels, eval_examples=None):
         assert len(preds) == len(labels)
 
@@ -242,7 +283,8 @@ class ForwardTextClassificationTrainer:
             wrong,
         )
 
+
 def get_parameter_number(net):
     total_num = sum(p.numel() for p in net.parameters())
     trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
-    return {'Total': total_num, 'Trainable': trainable_num}
+    return {"Total": total_num, "Trainable": trainable_num}

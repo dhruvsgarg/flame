@@ -39,6 +39,7 @@ PROP_UPDATE_COUNT = "update_count"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
 PROP_LAST_EVAL_ROUND = "last_eval_round"
 
+
 class OortSelector(AbstractSelector):
     """A selector class based on Oort."""
 
@@ -102,8 +103,10 @@ class OortSelector(AbstractSelector):
             return {}
 
         round = channel_props["round"] if "round" in channel_props else 0
-        logger.debug(f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}")        
-        
+        logger.debug(
+            f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}"
+        )
+
         # Return existing selected end_ids if the round did not proceed
         if round <= self.round and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
@@ -260,10 +263,10 @@ class OortSelector(AbstractSelector):
             and self.round % self.pacer_step == 0
         ):
             last_pacer_step_util = sum(
-                self.exploitation_util_history[-2 * self.pacer_step: -self.pacer_step]
+                self.exploitation_util_history[-2 * self.pacer_step : -self.pacer_step]
             )
             curr_pacer_step_util = sum(
-                self.exploitation_util_history[-self.pacer_step:]
+                self.exploitation_util_history[-self.pacer_step :]
             )
 
             # increases round threshold when recently exploited
@@ -358,17 +361,17 @@ class OortSelector(AbstractSelector):
             )
             round_preferred_duration = timedelta(
                 seconds=sorted_round_duration[
-                    min(int(len(sorted_round_duration) * self.round_threshold / 100.0),
+                    min(
+                        int(len(sorted_round_duration) * self.round_threshold / 100.0),
                         len(sorted_round_duration) - 1,
-                        )
-                        ].total_seconds()
                     )
+                ].total_seconds()
+            )
         else:
             # Assuming a max round duration of 99999 seconds (~1.2 days)
             round_preferred_duration = timedelta(seconds=99999)
 
-        logger.debug(
-            f"returning round_preferred_duration: {round_preferred_duration}")
+        logger.debug(f"returning round_preferred_duration: {round_preferred_duration}")
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
@@ -389,20 +392,19 @@ class OortSelector(AbstractSelector):
         """
 
         end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
-        
-        
+
         # TODO:(DG) Verify if this is needed for syncfl oort. Was put in place
-        # to replicate async_oort.py. 
+        # to replicate async_oort.py.
         if end_round_duration is None:
             return 1
-        
+
         if end_round_duration <= self.round_preferred_duration:
             return 1
         else:
             # Get both into datetime seconds before division
             return math.pow(
-                self.round_preferred_duration.total_seconds() /
-                end_round_duration.total_seconds(),
+                self.round_preferred_duration.total_seconds()
+                / end_round_duration.total_seconds(),
                 self.alpha,
             )
 
@@ -501,9 +503,11 @@ class OortSelector(AbstractSelector):
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
         return utility_list
-    
+
     # TODO: (DG) Check why this is being invoked even if trainer doesn't
     # explicitly invoke remove() method
     def _cleanup_removed_ends(self, end_id):
-        logger.debug(f"Going to cleanup selector state for "
-                     f"end_id {end_id} since it has left the channel")
+        logger.debug(
+            f"Going to cleanup selector state for "
+            f"end_id {end_id} since it has left the channel"
+        )

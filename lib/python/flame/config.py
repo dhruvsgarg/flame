@@ -93,11 +93,14 @@ class PrivacyType(str, Enum):
     DEFAULT = "default"
     DP = "dp"
 
+
 class TrainerAvailState(str, Enum):
-   """Define availability status types."""
-   AVL_TRAIN = "AVL_TRAIN"
-   AVL_EVAL = "AVL_EVAL"
-   UN_AVL = "UN_AVL"
+    """Define availability status types."""
+
+    AVL_TRAIN = "AVL_TRAIN"
+    AVL_EVAL = "AVL_EVAL"
+    UN_AVL = "UN_AVL"
+
 
 class Job(FlameSchema):
     job_id: str = Field(alias="id")
@@ -141,55 +144,34 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     rounds: int
     epochs: int
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
-    eval_goal_factor: t.Optional[float] = Field(
-        alias="evalGoalFactor",
-        default=None
-        )
+    eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     round_nudge_type: t.Optional[str] = Field(
-        alias="roundNudgeType",
-        default="last_train"
-        )
+        alias="roundNudgeType", default="last_train"
+    )
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
     #       mechanism in the control plane. This needs to be revisited
     #       (perhaps removed) once per-role config functionality is in
     #       place in the control plane.
-    concurrency: t.Optional[int] = Field(
-        alias="concurrency",
-        default=None
-        )
-    track_trainer_avail: t.Optional[dict] = Field(
-        alias="trackTrainerAvail",
-        default={}
-        )
+    concurrency: t.Optional[int] = Field(alias="concurrency", default=None)
+    track_trainer_avail: t.Optional[dict] = Field(alias="trackTrainerAvail", default={})
     reject_stale_updates: t.Optional[bool] = Field(
-        alias="rejectStaleUpdates",
-        default=False
-        )
-    heartbeats: t.Optional[dict] = Field(
-        alias="heartbeats",
-        default={}
-        )
+        alias="rejectStaleUpdates", default=False
+    )
+    heartbeats: t.Optional[dict] = Field(alias="heartbeats", default={})
     client_notify: t.Optional[dict] = Field(
-        alias="clientAvailAwareNotify",
-        default=False
-        )
+        alias="clientAvailAwareNotify", default=False
+    )
     training_delay_enabled: t.Optional[bool] = Field(
-        alias="trainingDelayEnabled",
-        default=False
-        )
+        alias="trainingDelayEnabled", default=False
+    )
     training_delay_s: t.Optional[float] = Field(
-        alias="trainingDelaySeconds",
-        default=False
-        )
-    use_oort_loss_fn: t.Optional[float] = Field(
-        alias="useOORTLossFn",
-        default=False
-        )
+        alias="trainingDelaySeconds", default=False
+    )
+    use_oort_loss_fn: t.Optional[float] = Field(alias="useOORTLossFn", default=False)
     wait_until_next_avl: t.Optional[bool] = Field(
-        alias="waitUntilNextAvail",
-        default=False
-        )
+        alias="waitUntilNextAvail", default=False
+    )
 
 
 class Groups(FlameSchema):

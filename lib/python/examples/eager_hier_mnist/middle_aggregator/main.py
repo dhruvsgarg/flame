@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 class Net(nn.Module):
     """Net class."""
+
     def __init__(self):
         """Initialize."""
         super(Net, self).__init__()
@@ -57,6 +58,7 @@ class Net(nn.Module):
 
 class PyTorchMnistMiddleAggregator(MiddleAggregator):
     """PyTorch Mnist Middle Aggregator."""
+
     def __init__(self, config: Config) -> None:
         """Initialize a class instance."""
         self.config = config
@@ -82,8 +84,8 @@ class PyTorchMnistMiddleAggregator(MiddleAggregator):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

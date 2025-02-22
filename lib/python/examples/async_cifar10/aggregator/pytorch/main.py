@@ -50,9 +50,7 @@ def initialize_wandb(run_name=None):
             # fedbuff
             "server_learning_rate": 40.9,
             "client_learning_rate": 0.000195,
-
             # oort "client_learning_rate": 0.04,
-
             "architecture": "CNN",
             "dataset": "CIFAR-10",
             "fl-type": "async, fedbuff",
@@ -62,10 +60,8 @@ def initialize_wandb(run_name=None):
             "alpha": 100,
             "failures": "No failure",
             "total clients N": 100,
-
             # fedbuff
             "client-concurrency C": 20,
-
             "client agg goal K": 10,
             "server_batch_size": 32,
             "client_batch_size": 32,
@@ -107,10 +103,8 @@ class PyTorchCifar10Aggregator(TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
 
     def __init__(
-            self,
-            config: Config,
-            log_to_wandb: bool,
-            wandb_run_name: str = None) -> None:
+        self, config: Config, log_to_wandb: bool, wandb_run_name: str = None
+    ) -> None:
         """Initialize a class instance."""
         self.config = config
         self.model = None
@@ -122,12 +116,16 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
 
-        self.track_trainer_avail = self.config.hyperparameters.track_trainer_avail or None
-        self.reject_stale_updates = self.config.hyperparameters.reject_stale_updates or False
+        self.track_trainer_avail = (
+            self.config.hyperparameters.track_trainer_avail or None
+        )
+        self.reject_stale_updates = (
+            self.config.hyperparameters.reject_stale_updates or False
+        )
         self.trainer_event_dict = None
         if (
-            self.track_trainer_avail["enabled"] and
-            self.track_trainer_avail["type"] == "ORACULAR"
+            self.track_trainer_avail["enabled"]
+            and self.track_trainer_avail["type"] == "ORACULAR"
         ):
             self.trainer_event_dict = self.read_trainer_unavailability()
             print("self.trainer_event_dict: ", self.trainer_event_dict)
@@ -159,12 +157,14 @@ class PyTorchCifar10Aggregator(TopAggregator):
         for i in range(trainer_start_num, trainer_end_num + 1):
             dirname = os.path.dirname(__file__)
             file_path = os.path.join(dirname, files_path, f"trainer_{i}.json")
-            
+
             with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
-                event_list = ast.literal_eval(trainer_json["hyperparameters"]["avl_events_syn_0"])
-                
+                event_list = ast.literal_eval(
+                    trainer_json["hyperparameters"]["avl_events_syn_0"]
+                )
+
                 # SortedDict for efficient timestamp lookup
                 state_dict = SortedDict()
 
@@ -230,8 +230,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         test_loss /= total
         test_accuracy = correct / total
 
-        logger.info(f"Test loss: {test_loss}, test accuracy: "
-                    f"{correct}/{total} ({test_accuracy})")
+        logger.info(
+            f"Test loss: {test_loss}, test accuracy: "
+            f"{correct}/{total} ({test_accuracy})"
+        )
 
         # update metrics after each evaluation so that the metrics can
         # be logged in a model registry.
@@ -257,14 +259,10 @@ if __name__ == "__main__":
     parser.add_argument("config", nargs="?", default="./config.json")
     # Add the --log_to_wandb argument
     parser.add_argument(
-        '--log_to_wandb',
-        action='store_true',
-        help='Flag to log to Weights and Biases'
+        "--log_to_wandb", action="store_true", help="Flag to log to Weights and Biases"
     )
     parser.add_argument(
-        '--wandb_run_name',
-        type=str,
-        help='Name of the Weights and Biases run'
+        "--wandb_run_name", type=str, help="Name of the Weights and Biases run"
     )
 
     args = parser.parse_args()

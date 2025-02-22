@@ -23,6 +23,7 @@ from flame.monitor.metric_collector import MetricCollector
 
 class Role(ABC):
     """Abstract base class for role implementation."""
+
     mc = MetricCollector()
 
     ###########################################################################
@@ -77,7 +78,7 @@ class Role(ABC):
     @abstractmethod
     def evaluate(self) -> None:
         """Abstract method to evaluate a model."""
-    
+
     @abstractmethod
     def check_and_sleep(self) -> None:
         """Abstract method to induce transient unavailability."""

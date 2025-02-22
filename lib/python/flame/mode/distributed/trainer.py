@@ -23,10 +23,15 @@ from copy import deepcopy
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
-from flame.common.util import (MLFramework, delta_weights_pytorch,
-                               delta_weights_tensorflow,
-                               get_ml_framework_in_use, valid_frameworks,
-                               weights_to_device, weights_to_model_device)
+from flame.common.util import (
+    MLFramework,
+    delta_weights_pytorch,
+    delta_weights_tensorflow,
+    get_ml_framework_in_use,
+    valid_frameworks,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.config import Config
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType

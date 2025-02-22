@@ -27,7 +27,7 @@ async def _recv_msg(reader):
     if len(data) == 0:
         return None
 
-    msg_len = struct.unpack('>I', data)[0]
+    msg_len = struct.unpack(">I", data)[0]
 
     data = await reader.readexactly(msg_len)
     any = Any().FromString(data)
@@ -40,7 +40,7 @@ async def _send_msg(writer, msg):
     any.Pack(msg)
 
     data = any.SerializeToString()
-    data = struct.pack('>I', len(data)) + data
+    data = struct.pack(">I", len(data)) + data
 
     writer.write(data)
 

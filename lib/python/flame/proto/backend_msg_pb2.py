@@ -6,30 +6,31 @@ from google.protobuf.internal import builder as _builder
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
+
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x62\x61\x63kend_msg.proto\x12\x07\x62\x61\x63kend\"\x1b\n\tBackendID\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t\".\n\nNotifyInfo\x12\r\n\x05state\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\t\"\x82\x01\n\x06Notify\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x02 \x01(\t\x12!\n\x04type\x18\x03 \x01(\x0e\x32\x13.backend.NotifyType\x12&\n\x04info\x18\x04 \x01(\x0b\x32\x13.backend.NotifyInfoH\x00\x88\x01\x01\x42\x07\n\x05_info\"Y\n\x04\x44\x61ta\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x02 \x01(\t\x12\r\n\x05seqno\x18\x03 \x01(\x05\x12\x0b\n\x03\x65om\x18\x04 \x01(\x08\x12\x0f\n\x07payload\x18\x05 \x01(\x0c*U\n\nNotifyType\x12\x17\n\x13UNKNOWN_NOTIFY_TYPE\x10\x00\x12\x08\n\x04JOIN\x10\x01\x12\t\n\x05LEAVE\x10\x02\x12\x07\n\x03\x41\x43K\x10\x03\x12\x10\n\x0cSTATE_UPDATE\x10\x04\x32\xa8\x01\n\x0c\x42\x61\x63kendRoute\x12\x30\n\nnotify_end\x12\x0f.backend.Notify\x1a\x0f.backend.Notify\"\x00\x12\x32\n\tsend_data\x12\r.backend.Data\x1a\x12.backend.BackendID\"\x00(\x01\x12\x32\n\trecv_data\x12\x12.backend.BackendID\x1a\r.backend.Data\"\x00\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n\x11\x62\x61\x63kend_msg.proto\x12\x07\x62\x61\x63kend"\x1b\n\tBackendID\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t".\n\nNotifyInfo\x12\r\n\x05state\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\t"\x82\x01\n\x06Notify\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x02 \x01(\t\x12!\n\x04type\x18\x03 \x01(\x0e\x32\x13.backend.NotifyType\x12&\n\x04info\x18\x04 \x01(\x0b\x32\x13.backend.NotifyInfoH\x00\x88\x01\x01\x42\x07\n\x05_info"Y\n\x04\x44\x61ta\x12\x0e\n\x06\x65nd_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x02 \x01(\t\x12\r\n\x05seqno\x18\x03 \x01(\x05\x12\x0b\n\x03\x65om\x18\x04 \x01(\x08\x12\x0f\n\x07payload\x18\x05 \x01(\x0c*U\n\nNotifyType\x12\x17\n\x13UNKNOWN_NOTIFY_TYPE\x10\x00\x12\x08\n\x04JOIN\x10\x01\x12\t\n\x05LEAVE\x10\x02\x12\x07\n\x03\x41\x43K\x10\x03\x12\x10\n\x0cSTATE_UPDATE\x10\x04\x32\xa8\x01\n\x0c\x42\x61\x63kendRoute\x12\x30\n\nnotify_end\x12\x0f.backend.Notify\x1a\x0f.backend.Notify"\x00\x12\x32\n\tsend_data\x12\r.backend.Data\x1a\x12.backend.BackendID"\x00(\x01\x12\x32\n\trecv_data\x12\x12.backend.BackendID\x1a\r.backend.Data"\x00\x30\x01\x62\x06proto3'
+)
 
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, globals())
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'backend_msg_pb2', globals())
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "backend_msg_pb2", globals())
 if _descriptor._USE_C_DESCRIPTORS == False:
 
-  DESCRIPTOR._options = None
-  _NOTIFYTYPE._serialized_start=331
-  _NOTIFYTYPE._serialized_end=416
-  _BACKENDID._serialized_start=30
-  _BACKENDID._serialized_end=57
-  _NOTIFYINFO._serialized_start=59
-  _NOTIFYINFO._serialized_end=105
-  _NOTIFY._serialized_start=108
-  _NOTIFY._serialized_end=238
-  _DATA._serialized_start=240
-  _DATA._serialized_end=329
-  _BACKENDROUTE._serialized_start=419
-  _BACKENDROUTE._serialized_end=587
+    DESCRIPTOR._options = None
+    _NOTIFYTYPE._serialized_start = 331
+    _NOTIFYTYPE._serialized_end = 416
+    _BACKENDID._serialized_start = 30
+    _BACKENDID._serialized_end = 57
+    _NOTIFYINFO._serialized_start = 59
+    _NOTIFYINFO._serialized_end = 105
+    _NOTIFY._serialized_start = 108
+    _NOTIFY._serialized_end = 238
+    _DATA._serialized_start = 240
+    _DATA._serialized_end = 329
+    _BACKENDROUTE._serialized_start = 419
+    _BACKENDROUTE._serialized_end = 587
 # @@protoc_insertion_point(module_scope)

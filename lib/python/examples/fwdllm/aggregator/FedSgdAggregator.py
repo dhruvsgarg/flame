@@ -11,11 +11,22 @@ from flame.mode.horizontal.asyncfl.fwdllm_aggregator import TopAggregator
 
 logger = logging.getLogger(__name__)
 
+
 class FedSGDAggregator(TopAggregator):
 
-    def __init__(self, train_global, test_global, all_train_data_num,
-                 train_data_local_dict, test_data_local_dict, train_data_local_num_dict, worker_num, device,
-                 args, model_trainer):
+    def __init__(
+        self,
+        train_global,
+        test_global,
+        all_train_data_num,
+        train_data_local_dict,
+        test_data_local_dict,
+        train_data_local_num_dict,
+        worker_num,
+        device,
+        args,
+        model_trainer,
+    ):
         self.trainer = model_trainer
 
         self.args = args.hyperparameters
@@ -58,7 +69,7 @@ class FedSGDAggregator(TopAggregator):
 
     def get_global_model_params(self):
         return self.trainer.get_model_params()
-    
+
     def get_global_model(self):
         return self.trainer.get_model()
 
@@ -79,25 +90,27 @@ class FedSGDAggregator(TopAggregator):
             self.flag_client_model_uploaded_dict[idx] = False
         return True
 
-    def aggregate(self,current_round):
+    def aggregate(self, current_round):
         start_time = time.time()
         model_list = []
         training_num = 0
 
         # self.warmup_rounds = 20
         if current_round < self.warmup_rounds:
-            ratio = float(current_round+1) / float(max(1, self.warmup_rounds))
+            ratio = float(current_round + 1) / float(max(1, self.warmup_rounds))
         else:
             ratio = max(
-            0.0, float(self.args.comm_round - current_round) / float(max(1, self.args.comm_round - self.warmup_rounds))
-        )
+                0.0,
+                float(self.args.comm_round - current_round)
+                / float(max(1, self.args.comm_round - self.warmup_rounds)),
+            )
         learning_rate = self.args.learning_rate * ratio
         logger.info(f"learning rate: {learning_rate}")
 
         for idx in range(self.worker_num):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
             training_num += self.sample_num_dict[idx]
-        
+
         # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，用于后面cache_v
         if self.args.var_control:
             model_dict_cached = copy.deepcopy(self.model_dict)
@@ -111,13 +124,13 @@ class FedSGDAggregator(TopAggregator):
             logger.info(f"training_num : {training_num}")
 
         logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
-        
+
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
-        
+
         # logger.info("################aggregate: %d" % len(model_list))
         (num0, averaged_params) = model_list[0]
-        for id,k in enumerate(averaged_params):
+        for id, k in enumerate(averaged_params):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
                 # w = local_sample_number / training_num
@@ -125,7 +138,9 @@ class FedSGDAggregator(TopAggregator):
                     averaged_params[id] = local_model_params[id]
                 else:
                     averaged_params[id] += local_model_params[id]
-            next(old_param).detach().to("cpu").sub_(learning_rate * averaged_params[id] / training_num)       
+            next(old_param).detach().to("cpu").sub_(
+                learning_rate * averaged_params[id] / training_num
+            )
         if self.args.var_control:
             if self.var <= self.var_threthod:
                 # 方差满足要求
@@ -134,7 +149,9 @@ class FedSGDAggregator(TopAggregator):
                 logger.info("current model is not good enough, calculate more v")
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v
                 for idx in range(self.worker_num):
-                    self.cached_v.append((self.sample_num_dict[idx], model_dict_cached[idx]))
+                    self.cached_v.append(
+                        (self.sample_num_dict[idx], model_dict_cached[idx])
+                    )
                 # 模型改回去
                 self.set_global_model_params(origin_param)
 
@@ -146,16 +163,22 @@ class FedSGDAggregator(TopAggregator):
 
     def client_sampling(self, round_idx, client_num_in_total, client_num_per_round):
         if client_num_in_total == client_num_per_round:
-            client_indexes = [client_index for client_index in range(client_num_in_total)]
+            client_indexes = [
+                client_index for client_index in range(client_num_in_total)
+            ]
         else:
             num_clients = min(client_num_per_round, client_num_in_total)
-            np.random.seed(round_idx)  # make sure for each comparison, we are selecting the same clients each round
-            client_indexes = np.random.choice(range(client_num_in_total), num_clients, replace=False)
+            np.random.seed(
+                round_idx
+            )  # make sure for each comparison, we are selecting the same clients each round
+            client_indexes = np.random.choice(
+                range(client_num_in_total), num_clients, replace=False
+            )
 
         index_list = [[] for _ in range(self.args.worker_num)]
 
         for i in range(len(client_indexes)):
-            index_list[i%self.args.worker_num].append(client_indexes[i])
+            index_list[i % self.args.worker_num].append(client_indexes[i])
 
         client_indexes = index_list
 
@@ -164,28 +187,51 @@ class FedSGDAggregator(TopAggregator):
 
     def _generate_validation_set(self, num_samples=10000):
         if self.args.dataset.startswith("stackoverflow"):
-            test_data_num  = len(self.test_global.dataset)
-            sample_indices = random.sample(range(test_data_num), min(num_samples, test_data_num))
+            test_data_num = len(self.test_global.dataset)
+            sample_indices = random.sample(
+                range(test_data_num), min(num_samples, test_data_num)
+            )
             subset = torch.utils.data.Subset(self.test_global.dataset, sample_indices)
-            sample_testset = torch.utils.data.DataLoader(subset, batch_size=self.args.batch_size)
+            sample_testset = torch.utils.data.DataLoader(
+                subset, batch_size=self.args.batch_size
+            )
             return sample_testset
         else:
             return self.test_global
 
     def test_on_server_for_all_clients(self, round_idx):
-        if round_idx % self.args.frequency_of_the_test == 0 or round_idx == self.args.comm_round - 1:
-            if self.trainer.test_on_the_server(self.train_data_local_dict, self.test_data_local_dict, self.device, self.args):
+        if (
+            round_idx % self.args.frequency_of_the_test == 0
+            or round_idx == self.args.comm_round - 1
+        ):
+            if self.trainer.test_on_the_server(
+                self.train_data_local_dict,
+                self.test_data_local_dict,
+                self.device,
+                self.args,
+            ):
                 return
 
-        if round_idx % self.args.frequency_of_the_test == 0 or round_idx == self.args.comm_round - 1:
-            logger.info("################test_on_server_for_all_clients : {}".format(round_idx))
+        if (
+            round_idx % self.args.frequency_of_the_test == 0
+            or round_idx == self.args.comm_round - 1
+        ):
+            logger.info(
+                "################test_on_server_for_all_clients : {}".format(round_idx)
+            )
             train_num_samples = []
             train_tot_corrects = []
             train_losses = []
             for client_idx in range(self.args.client_num_in_total):
                 # train data
-                metrics = self.trainer.test(self.train_data_local_dict[client_idx], self.device, self.args)
-                train_tot_correct, train_num_sample, train_loss = metrics['test_correct'], metrics['test_total'], metrics['test_loss']
+                metrics = self.trainer.test(
+                    self.train_data_local_dict[client_idx], self.device, self.args
+                )
+                train_tot_correct, train_num_sample, train_loss = (
+                    metrics["test_correct"],
+                    metrics["test_total"],
+                    metrics["test_loss"],
+                )
                 train_tot_corrects.append(copy.deepcopy(train_tot_correct))
                 train_num_samples.append(copy.deepcopy(train_num_sample))
                 train_losses.append(copy.deepcopy(train_loss))
@@ -202,7 +248,7 @@ class FedSGDAggregator(TopAggregator):
             train_loss = sum(train_losses) / sum(train_num_samples)
             # wandb.log({"Train/Acc": train_acc, "round": round_idx})
             # wandb.log({"Train/Loss": train_loss, "round": round_idx})
-            stats = {'training_acc': train_acc, 'training_loss': train_loss}
+            stats = {"training_acc": train_acc, "training_loss": train_loss}
             logger.info(stats)
 
             # test data
@@ -214,9 +260,12 @@ class FedSGDAggregator(TopAggregator):
                 metrics = self.trainer.test(self.test_global, self.device, self.args)
             else:
                 metrics = self.trainer.test(self.val_global, self.device, self.args)
-                
-            test_tot_correct, test_num_sample, test_loss = metrics['test_correct'], metrics['test_total'], metrics[
-                'test_loss']
+
+            test_tot_correct, test_num_sample, test_loss = (
+                metrics["test_correct"],
+                metrics["test_total"],
+                metrics["test_loss"],
+            )
             test_tot_corrects.append(copy.deepcopy(test_tot_correct))
             test_num_samples.append(copy.deepcopy(test_num_sample))
             test_losses.append(copy.deepcopy(test_loss))
@@ -224,23 +273,21 @@ class FedSGDAggregator(TopAggregator):
             # test on test dataset
             test_acc = sum(test_tot_corrects) / sum(test_num_samples)
             test_loss = sum(test_losses) / sum(test_num_samples)
-            stats = {'test_acc': test_acc, 'test_loss': test_loss}
+            stats = {"test_acc": test_acc, "test_loss": test_loss}
             logger.info(stats)
 
     def load_data(self) -> None:
         pass
 
-
     def train(self) -> None:
         pass
 
-
     def evaluate(self) -> None:
         pass
-    
 
     def check_and_sleep(self) -> None:
         pass
+
     def initialize(self):
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

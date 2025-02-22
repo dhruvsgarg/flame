@@ -5,6 +5,7 @@ from torch.nn import CrossEntropyLoss
 from typing import Callable, Tuple
 from torch.cuda.amp import autocast
 
+
 def _get_loss(x: torch.Tensor, t: torch.Tensor, num_classes: int = 10) -> torch.Tensor:
     """Compute cross-entropy loss.
 
@@ -45,7 +46,7 @@ def functional_get_loss(
     x: torch.Tensor,
     t: torch.Tensor,
     num_classes: int = 10,
-    buffers = None
+    buffers=None,
 ) -> torch.Tensor:
     """Functional cross-entropy loss. Given a functional version of a pytorch model, which can be obtained with
     `fmodel, params = functorch.make_functional(model)`, it computes the cross-entropy loss.
@@ -61,8 +62,9 @@ def functional_get_loss(
     Returns:
         torch.Tensor: Cross-entropy loss.
     """
-    y = model(params,buffers, x)[0]
+    y = model(params, buffers, x)[0]
     return _get_loss(y, t, num_classes)
+
 
 def calculate_jvp(func, params, v):
     """
@@ -70,26 +72,30 @@ def calculate_jvp(func, params, v):
     """
     h = 0.01
     with autocast():
-        loss = func(tuple([params[i]-h*v[i] for i in range(len(params))]))
-        terbulence_loss = func(tuple([params[i]+h*v[i] for i in range(len(params))]))
-    avg_loss = (terbulence_loss + loss)/2
-    jvp = (terbulence_loss - loss)/(2*h)
+        loss = func(tuple([params[i] - h * v[i] for i in range(len(params))]))
+        terbulence_loss = func(
+            tuple([params[i] + h * v[i] for i in range(len(params))])
+        )
+    avg_loss = (terbulence_loss + loss) / 2
+    jvp = (terbulence_loss - loss) / (2 * h)
     return avg_loss, jvp
+
 
 def calculate_var(fwdgrad_list):
     n = len(fwdgrad_list)
     # 计算前一半tensor的平均值
-    first_half_mean = torch.mean(torch.stack(fwdgrad_list[:n//2]), dim=0)
+    first_half_mean = torch.mean(torch.stack(fwdgrad_list[: n // 2]), dim=0)
 
     # 计算后一半tensor的平均值
-    second_half_mean = torch.mean(torch.stack(fwdgrad_list[n//2:]), dim=0)
+    second_half_mean = torch.mean(torch.stack(fwdgrad_list[n // 2 :]), dim=0)
 
     # 计算两个平均值之间的方差
     var = torch.var(torch.stack([first_half_mean, second_half_mean]), dim=0).mean()
 
     return var
 
-def calculate_cos_sim(A,target_grad,device):
+
+def calculate_cos_sim(A, target_grad, device):
     batch_size = 1000
 
     # 计算总批次数
@@ -105,8 +111,8 @@ def calculate_cos_sim(A,target_grad,device):
         end_idx = min((i + 1) * batch_size, A.size(0))
 
         # 提取当前批次的向量
-        #TODO: See why .to(device) was called here
-        batch = A[start_idx:end_idx]#.to(device)
+        # TODO: See why .to(device) was called here
+        batch = A[start_idx:end_idx]  # .to(device)
 
         # 计算当前批次的余弦相似度
         similarity = torch.cosine_similarity(batch, target_grad, dim=-1)

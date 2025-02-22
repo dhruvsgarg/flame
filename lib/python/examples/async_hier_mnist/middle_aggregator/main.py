@@ -19,6 +19,7 @@ import logging
 
 from flame.config import Config
 from flame.mode.horizontal.asyncfl.middle_aggregator import MiddleAggregator
+
 # the following needs to be imported to let the flame know
 # this aggregator works on tensorflow model
 from tensorflow import keras
@@ -53,8 +54,8 @@ class KerasMnistMiddleAggregator(MiddleAggregator):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

@@ -18,7 +18,8 @@
 
 import logging
 from flame.common.util import install_packages
-install_packages(['scikit-learn'])
+
+install_packages(["scikit-learn"])
 
 from flame.config import Config
 from flame.mode.horizontal.trainer import Trainer
@@ -29,6 +30,7 @@ from PIL import Image
 from sklearn.metrics import accuracy_score
 
 logger = logging.getLogger(__name__)
+
 
 class CNN(torch.nn.Module):
     """CNN Class"""
@@ -45,7 +47,7 @@ class CNN(torch.nn.Module):
             torch.nn.Conv2d(6, 16, kernel_size=3, padding=1),
             torch.nn.BatchNorm2d(16),
             torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size=2, stride=2)
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
         )
         self.fc = torch.nn.Linear(16 * 7 * 7, num_classes)
 
@@ -55,6 +57,7 @@ class CNN(torch.nn.Module):
         x = self.fc(x)
         return x
 
+
 class PathMNISTDataset(torch.utils.data.Dataset):
     def __init__(self, split, transform=None, as_rgb=False):
         npz_file = np.load("pathmnist.npz")
@@ -62,15 +65,15 @@ class PathMNISTDataset(torch.utils.data.Dataset):
         self.transform = transform
         self.as_rgb = as_rgb
 
-        if self.split == 'train':
-            self.imgs = npz_file['train_images']
-            self.labels = npz_file['train_labels']
-        elif self.split == 'val':
-            self.imgs = npz_file['val_images']
-            self.labels = npz_file['val_labels']
-        elif self.split == 'test':
-            self.imgs = npz_file['test_images']
-            self.labels = npz_file['test_labels']
+        if self.split == "train":
+            self.imgs = npz_file["train_images"]
+            self.labels = npz_file["train_labels"]
+        elif self.split == "val":
+            self.imgs = npz_file["val_images"]
+            self.labels = npz_file["val_labels"]
+        elif self.split == "test":
+            self.imgs = npz_file["test_images"]
+            self.labels = npz_file["test_labels"]
         else:
             raise ValueError
 
@@ -82,12 +85,13 @@ class PathMNISTDataset(torch.utils.data.Dataset):
         img = Image.fromarray(img)
 
         if self.as_rgb:
-            img = img.convert('RGB')
+            img = img.convert("RGB")
 
         if self.transform is not None:
             img = self.transform(img)
 
         return img, target
+
 
 class PyTorchMedMNistTrainer(Trainer):
     """PyTorch MedMNist Trainer"""
@@ -110,36 +114,44 @@ class PyTorchMedMNistTrainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
 
-        self.model = CNN(num_classes=9) # Should we add number of classes this into config?
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=1e-5)
+        self.model = CNN(
+            num_classes=9
+        )  # Should we add number of classes this into config?
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=1e-3, weight_decay=1e-5
+        )
         self.criterion = torch.nn.CrossEntropyLoss()
 
     def load_data(self) -> None:
         """MedMNIST Pathology Dataset
-        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper 
+        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper
         "Predicting survival from colorectal cancer histology slides using deep learning: A retrospective multicenter study",
-        and made available through Yang et al. (2021) in 
+        and made available through Yang et al. (2021) in
         "MedMNIST Classification Decathlon: A Lightweight AutoML Benchmark for Medical Image Analysis".
         Dataset Repo: https://github.com/MedMNIST/MedMNIST
         """
 
         self._download()
- 
-        data_transform = torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ])
 
-        train_dataset = PathMNISTDataset(split='train', transform=data_transform)
-        val_dataset = PathMNISTDataset(split='val', transform=data_transform)
+        data_transform = torchvision.transforms.Compose(
+            [
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Normalize(
+                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+                ),
+            ]
+        )
+
+        train_dataset = PathMNISTDataset(split="train", transform=data_transform)
+        val_dataset = PathMNISTDataset(split="val", transform=data_transform)
 
         self.train_loader = torch.utils.data.DataLoader(
-            train_dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True, 
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
             num_workers=4 * torch.cuda.device_count(),
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
         )
         self.val_loader = torch.utils.data.DataLoader(
             val_dataset,
@@ -147,15 +159,16 @@ class PyTorchMedMNistTrainer(Trainer):
             shuffle=True,
             num_workers=4 * torch.cuda.device_count(),
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
         )
 
         self.dataset_size = len(train_dataset)
 
     def _download(self) -> None:
         import requests
+
         r = requests.get(self.config.dataset, allow_redirects=True)
-        open('pathmnist.npz', 'wb').write(r.content)
+        open("pathmnist.npz", "wb").write(r.content)
 
     def train(self) -> None:
         """Train a model."""
@@ -169,7 +182,9 @@ class PyTorchMedMNistTrainer(Trainer):
                 data, label = data.to(self.device), label.to(self.device)
                 self.optimizer.zero_grad()
                 output = self.model(data)
-                loss = self.criterion(output, label.squeeze()) # Squeeze because of multi-class classification instead of multi-label classification.
+                loss = self.criterion(
+                    output, label.squeeze()
+                )  # Squeeze because of multi-class classification instead of multi-label classification.
                 loss_lst.append(loss.item())
                 loss.backward()
                 self.optimizer.step()
@@ -182,8 +197,8 @@ class PyTorchMedMNistTrainer(Trainer):
         """Evaluate a model."""
         self.model.eval()
         loss_lst = list()
-        labels = torch.tensor([],device=self.device)
-        labels_pred = torch.tensor([],device=self.device)
+        labels = torch.tensor([], device=self.device)
+        labels_pred = torch.tensor([], device=self.device)
         with torch.no_grad():
             for data, label in self.val_loader:
                 data, label = data.to(self.device), label.to(self.device)
@@ -198,17 +213,23 @@ class PyTorchMedMNistTrainer(Trainer):
         val_acc = accuracy_score(labels, labels_pred)
 
         val_loss = sum(loss_lst) / len(loss_lst)
-        self.update_metrics({"Val Loss": val_loss, "Val Accuracy": val_acc, "Testset Size": self.dataset_size})
+        self.update_metrics(
+            {
+                "Val Loss": val_loss,
+                "Val Accuracy": val_acc,
+                "Testset Size": self.dataset_size,
+            }
+        )
         logger.info(f"Test Loss: {val_loss}")
         logger.info(f"Test Accuracy: {val_acc}")
         logger.info(f"Testset Size: {self.dataset_size}")
-            
+
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

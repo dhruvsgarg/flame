@@ -181,7 +181,9 @@ class LeafAggregator(BaseLeafAggregator):
 
             task_liveness_check = Tasklet("liveness_check", self._liveness_check)
 
-            task_get_mid_aggregator = Tasklet("get_mid_aggregator", self._get_mid_aggregator)
+            task_get_mid_aggregator = Tasklet(
+                "get_mid_aggregator", self._get_mid_aggregator
+            )
 
             task_get_trainers = Tasklet("get_trainers", self._get_trainers)
 

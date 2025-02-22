@@ -69,12 +69,7 @@ class Net(nn.Module):
 class PyTorchCifar10Trainer(Trainer):
     """PyTorch CIFAR-10 Trainer."""
 
-    def __init__(
-        self,
-        config: Config,
-        battery_threshold,
-        speedup_factor
-        ) -> None:
+    def __init__(self, config: Config, battery_threshold, speedup_factor) -> None:
         """Initialize a class instance."""
         self.config = config
         self.dataset_size = 0
@@ -98,8 +93,10 @@ class PyTorchCifar10Trainer(Trainer):
         # Enable/disable use of oort_loss fromt he config. Needed for
         # oort and asyncOORT.
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
-        logger.info(f"Trainer: {self.trainer_id} has "
-                    f"use_oort_loss_fn: {self.use_oort_loss_fn}")
+        logger.info(
+            f"Trainer: {self.trainer_id} has "
+            f"use_oort_loss_fn: {self.use_oort_loss_fn}"
+        )
 
         # TODO: (DG) Remove the hard requirement for config to include
         # trainer_indices_list
@@ -112,11 +109,11 @@ class PyTorchCifar10Trainer(Trainer):
             self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
         else:
             self.heartbeats_enabled = False
-        
+
         if "frequency_s" in self.config.hyperparameters.heartbeats.keys():
-            self.heartbeats_second_freq = (
-                self.config.hyperparameters.heartbeats["frequency_s"]
-                )
+            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
+                "frequency_s"
+            ]
         else:
             self.heartbeats_second_freq = 99999
 
@@ -130,25 +127,25 @@ class PyTorchCifar10Trainer(Trainer):
         else:
             self.timestamp_next_heartbeat_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
-                )
-            
+            )
+
         # Check if client will notify aggregator of its availability
-        self.client_notify = (
-            self.config.hyperparameters.client_notify
-        )
+        self.client_notify = self.config.hyperparameters.client_notify
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
-        
+
         # Set speedup factor to accelerate all events and training/
         # eval durations
         self.speedup_factor = speedup_factor
-        
+
         # Use the battery_threshold to determine the
         # avl_events_3_state config. Default to 50 if not provided
         self.event_battery_threshold = battery_threshold
-        logger.info(f"Trainer id {self.trainer_id} has battery threshold set to {self.event_battery_threshold}")
+        logger.info(
+            f"Trainer id {self.trainer_id} has battery threshold set to {self.event_battery_threshold}"
+        )
         if self.event_battery_threshold == 50:
             self.avl_events_3_state = ast.literal_eval(
                 self.config.hyperparameters.avl_events_3_state_50
@@ -161,47 +158,50 @@ class PyTorchCifar10Trainer(Trainer):
         self.avl_events_2_state = ast.literal_eval(
             self.config.hyperparameters.avl_events_2_state
         )
-        
+
         # Storing synthetic avail traces
         self.avl_events_syn_0 = ast.literal_eval(
             self.config.hyperparameters.avl_events_syn_0
         )
-        
+
         self.avl_events_syn_20 = ast.literal_eval(
             self.config.hyperparameters.avl_events_syn_20
         )
-        
+
         self.avl_events_syn_40 = ast.literal_eval(
             self.config.hyperparameters.avl_events_syn_40
         )
-        
-        if self.client_notify['type'] == "three_state":
+
+        if self.client_notify["type"] == "three_state":
             self.state_avl_event_ts = self.avl_events_3_state
-            logger.info(f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}")
-        elif self.client_notify['type'] == "two_state":
+            logger.info(
+                f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
+            )
+        elif self.client_notify["type"] == "two_state":
             self.state_avl_event_ts = self.avl_events_2_state
             logger.info(f"Set avl_events_2_state for trainer id {self.trainer_id}.")
-        elif self.client_notify['type'] == "syn_0":
+        elif self.client_notify["type"] == "syn_0":
             self.state_avl_event_ts = self.avl_events_syn_0
             logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
-        elif self.client_notify['type'] == "syn_20":
+        elif self.client_notify["type"] == "syn_20":
             self.state_avl_event_ts = self.avl_events_syn_20
             logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
-        elif self.client_notify['type'] == "syn_40":
+        elif self.client_notify["type"] == "syn_40":
             self.state_avl_event_ts = self.avl_events_syn_40
             logger.info(f"Set avl_events_syn_40 for trainer id {self.trainer_id}.")
         else:
-            logger.info(f"No avl_events set for trainer id {self.trainer_id} since state not specified.")
+            logger.info(
+                f"No avl_events set for trainer id {self.trainer_id} since state not specified."
+            )
 
         self.avl_state = TrainerAvailState.AVL_TRAIN
 
-        #flag to decide whether the trainer upon unavailability will wait or exit
+        # flag to decide whether the trainer upon unavailability will wait or exit
         self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
-    
+
     def check_and_sleep(self):
         """Induce transient unavailability"""
         pass
-
 
     def check_and_update_state_avl(self):
         # NOTE: due to slow gpu model load in initialize(), it is
@@ -209,27 +209,35 @@ class PyTorchCifar10Trainer(Trainer):
         # sending of update will fail in that case. Thus, simply
         # return in case channel manager is not set. Events will start
         # getting sent after the channel is setup.
-        if hasattr(self, 'cm') and self.cm is not None:
+        if hasattr(self, "cm") and self.cm is not None:
             next_event_ts = self.trainer_start_ts + (
                 self.state_avl_event_ts[0][0] / self.speedup_factor
-                )
+            )
             if len(self.state_avl_event_ts) > 0 and time.time() >= next_event_ts:
                 state_to_set = self.state_avl_event_ts.pop(0)[1]
                 old_status = self.avl_state.value
                 try:
                     self.avl_state = TrainerAvailState(state_to_set)
                 except ValueError:
-                    logger.error(f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}.")
-                    return           
+                    logger.error(
+                        f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
+                    )
+                    return
                 new_status = self.avl_state.value
-                logger.info(f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}")
+                logger.info(
+                    f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
+                )
                 #    self.send_availability_status("upload")
-                if self.client_notify['enabled']== "True":
-                    self._perform_channel_state_update(tag="upload", state=self.avl_state, timestamp=str(time.time()))
+                if self.client_notify["enabled"] == "True":
+                    self._perform_channel_state_update(
+                        tag="upload", state=self.avl_state, timestamp=str(time.time())
+                    )
         else:
-            logger.info(f"Channel manager not set yet for trainer {self.trainer_id}. "
-                        f"Skipping avail status update. "
-                        f"Sleep for 20s before checking again.")
+            logger.info(
+                f"Channel manager not set yet for trainer {self.trainer_id}. "
+                f"Skipping avail status update. "
+                f"Sleep for 20s before checking again."
+            )
             time.sleep(20)
 
     def initialize(self) -> None:
@@ -237,8 +245,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
-        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+            f"{time.time()}"
+        )
 
     def load_data(self) -> None:
         """Load data."""
@@ -274,8 +284,10 @@ class PyTorchCifar10Trainer(Trainer):
         del dataset
         gc.collect()
 
-        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: "
-                     f"{time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} load_data completed at timestamp: "
+            f"{time.time()}"
+        )
 
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
@@ -283,23 +295,25 @@ class PyTorchCifar10Trainer(Trainer):
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
         # don't enter the if condition if the three_state_avl switch is off
-        # if we are checking for three_state_avl - check if the mechanism is to wait or exit 
+        # if we are checking for three_state_avl - check if the mechanism is to wait or exit
         if self.avl_state != TrainerAvailState.AVL_TRAIN:
             if self.wait_until_next_avl == "True":
-                logger.info(f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available")
+                logger.info(
+                    f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
+                )
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
                     time.sleep(1)
             else:
-                logger.info(f"Trainer id {self.trainer_id} is not available to train. Exiting training.")
+                logger.info(
+                    f"Trainer id {self.trainer_id} is not available to train. Exiting training."
+                )
                 return
-        
+
         logger.info(f"Trainer {self.trainer_id} available to train")
-        
+
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(
-            self.model.parameters(), lr=self.learning_rate
-        )
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate)
 
         # reset stat utility for OORT
         self.reset_stat_utility()
@@ -315,8 +329,10 @@ class PyTorchCifar10Trainer(Trainer):
         # dataset size and/or network latency) if enabled
         if self.training_delay_enabled == "True":
             time.sleep(self.training_delay_s / self.speedup_factor)
-            logger.debug(f"Delayed training time for trainer "
-                         f"{self.trainer_id} by {self.training_delay_s}s")
+            logger.debug(
+                f"Delayed training time for trainer "
+                f"{self.trainer_id} by {self.training_delay_s}s"
+            )
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -325,15 +341,14 @@ class PyTorchCifar10Trainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            
+
             if self.use_oort_loss_fn == "False":
                 # Loss function to use with Fedbuff
                 loss = F.nll_loss(output, target)
             elif self.use_oort_loss_fn == "True":
                 # Calculate statistical utility of a trainer while
                 # calculating loss
-                loss = self.oort_loss(
-                    output, target.squeeze(), epoch, batch_idx)
+                loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
 
             loss.backward()
             self.optimizer.step()
@@ -345,7 +360,7 @@ class PyTorchCifar10Trainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
-            
+
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)
@@ -353,20 +368,29 @@ class PyTorchCifar10Trainer(Trainer):
     def evaluate(self) -> None:
         """Evaluate a model."""
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
-        #Evaluate after train is written in the train_epoch method itself 
+        # Evaluate after train is written in the train_epoch method itself
 
-        #Evaluate will be skipped if one of these three is satisfied:
-        #1. task_to_perform is train
-        #2. switch to check for three_state_avl is off 
-        #3. Trainer is unavailable and we don't want it to wait for availability
-        if self.task_to_perform != "eval" or \
-        self.client_notify['type'] == "two_state" or \
-        (self.avl_state == TrainerAvailState.UN_AVL and self.wait_until_next_avl == "False"):
-            logger.warning(f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}")
+        # Evaluate will be skipped if one of these three is satisfied:
+        # 1. task_to_perform is train
+        # 2. switch to check for three_state_avl is off
+        # 3. Trainer is unavailable and we don't want it to wait for availability
+        if (
+            self.task_to_perform != "eval"
+            or self.client_notify["type"] == "two_state"
+            or (
+                self.avl_state == TrainerAvailState.UN_AVL
+                and self.wait_until_next_avl == "False"
+            )
+        ):
+            logger.warning(
+                f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}"
+            )
             return
 
         if self.avl_state == TrainerAvailState.UN_AVL:
-            logger.warning(f"Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available")
+            logger.warning(
+                f"Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available"
+            )
             while self.avl_state == TrainerAvailState.UN_AVL:
                 time.sleep(1)
 
@@ -375,15 +399,14 @@ class PyTorchCifar10Trainer(Trainer):
             for batch_idx, (data, target) in enumerate(self.train_loader):
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
-                
+
                 if self.use_oort_loss_fn == "False":
                     # Loss function to use with Fedbuff
                     loss = F.nll_loss(output, target)
                 elif self.use_oort_loss_fn == "True":
                     # Calculate statistical utility of a trainer while
                     # calculating loss
-                    loss = self.oort_loss(
-                        output, target.squeeze(), epoch, batch_idx)
+                    loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
                 if batch_idx % 100 == 0:
                     done = batch_idx * len(data)
                     total = len(self.train_loader.dataset)
@@ -392,7 +415,7 @@ class PyTorchCifar10Trainer(Trainer):
                         f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                         f"\tloss: {loss.item():.6f}"
                     )
-                
+
             # normalize statistical utility of a trainer based on the size
             # of the dataset
             self.normalize_stat_utility(epoch)
@@ -400,11 +423,11 @@ class PyTorchCifar10Trainer(Trainer):
             # Updated eval duration to be one-third of training
             # duration since it is evidenced on text and through
             # profiling
-            eval_delay = math.floor(self.training_delay_s/3.0)
+            eval_delay = math.floor(self.training_delay_s / 3.0)
             time.sleep(eval_delay / self.speedup_factor)
-            logger.debug(f"Delayed eval time for trainer "
-                         f"{self.trainer_id} by {eval_delay}s")
-
+            logger.debug(
+                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
+            )
 
     def initiate_heartbeat(self) -> None:
         while True:
@@ -418,7 +441,7 @@ class PyTorchCifar10Trainer(Trainer):
             # modify existing data struct HACK: duplicate
             # check_and_sleep as dup_check_and_sleep and operate on a
             # duplicate data structure
-            
+
             # TODO: DG Need to fix that arg isnt being used to
             # enable/disable this
             time.sleep(self.heartbeats_second_freq)
@@ -428,20 +451,16 @@ class PyTorchCifar10Trainer(Trainer):
 
     def notify_trainer_avail(self) -> None:
         while True:
-            time.sleep(1)             # Will check every 1 second
+            time.sleep(1)  # Will check every 1 second
             self.check_and_update_state_avl()
+
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument(
-        "--config", 
-        type=str,
-        default="./config.json",
-        required=True
-        )
-    
+    parser.add_argument("--config", type=str, default="./config.json", required=True)
+
     # Add a parser argument to get battery threshold (either 50 or 75)
     parser.add_argument(
         "--battery_threshold",
@@ -449,42 +468,42 @@ def main():
         choices=[50, 75],
         default=50,
         help="Battery threshold for the trainer 3-state events (either 50 or 75)",
-        required=False
+        required=False,
     )
-    
+
     # Add argument to speed up client's timescale by a factor
     parser.add_argument(
         "--speedup_factor",
         type=float,
         default=1.0,
         help="Speedup factor to accelarate all events and training/ eval durations from the trainer. Default- no acceleration",
-        required=False
+        required=False,
     )
 
     args = parser.parse_args()
     config = Config(args.config)
 
-    t = PyTorchCifar10Trainer(
-        config,
-        args.battery_threshold,
-        args.speedup_factor
-        )
-    print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
-          f"{t.heartbeats_enabled}, has client_notify: "
-          f"{t.client_notify['enabled']}, has "
-          f"training_delay_enabled: {t.training_delay_enabled}, "
-          f"with training_delay_s: {t.training_delay_s}")
+    t = PyTorchCifar10Trainer(config, args.battery_threshold, args.speedup_factor)
+    print(
+        f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
+        f"{t.heartbeats_enabled}, has client_notify: "
+        f"{t.client_notify['enabled']}, has "
+        f"training_delay_enabled: {t.training_delay_enabled}, "
+        f"with training_delay_s: {t.training_delay_s}"
+    )
 
     if t.heartbeats_enabled == "True":
-        logger.info(f"Will initiate thread to send heartbeats for "
-                    f"trainer {t.trainer_id}")
+        logger.info(
+            f"Will initiate thread to send heartbeats for " f"trainer {t.trainer_id}"
+        )
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_notify['type'] is not None:
-        logger.info(f"Will initiate thread to update state of "
-                    f"trainer {t.trainer_id}")
-        if t.client_notify['enabled'] == "True":
+    elif t.client_notify["type"] is not None:
+        logger.info(
+            f"Will initiate thread to update state of " f"trainer {t.trainer_id}"
+        )
+        if t.client_notify["enabled"] == "True":
             logger.info(f"Will send avail notifications for trainer {t.trainer_id}")
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True

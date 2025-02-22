@@ -70,13 +70,15 @@ class KerasMnistTrainer(Trainer):
             self.timestamp_next_sleep_s = (
                 self.trainer_start_ts + self.failure_durations_s[0][0]
             )
-            print(f"# Trainer id: {self.trainer_id}, self.failure_durations_s: "
-                  f"{self.failure_durations_s}")
+            print(
+                f"# Trainer id: {self.trainer_id}, self.failure_durations_s: "
+                f"{self.failure_durations_s}"
+            )
         else:
             self.timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
-                )
-    
+            )
+
     def initialize(self) -> None:
         """Initialize role."""
         model = keras.Sequential(
@@ -165,7 +167,7 @@ class KerasMnistTrainer(Trainer):
         # Implement this if transient unavailability need to be
         # emulated in the trainer
         curr_time = time.time()
-        
+
         if (curr_time >= self.timestamp_next_sleep_s) and (
             len(self.failure_durations_s) > 0
         ):
@@ -174,21 +176,31 @@ class KerasMnistTrainer(Trainer):
 
             # get the duration of sleep and set the params for next
             # sleep
-            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_start_ts_from_trainer_init = (
+                self.trainer_start_ts + sleep_config_tuple[0]
+            )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
-            # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
-            
-            if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
-                            f"at timestamp: {curr_time}")
+            # + actual_sleep_duration - current_ts
+            remaining_sleep_duration_s = (
+                sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+            )
+            logger.debug(
+                f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}"
+            )
+
+            if remaining_sleep_duration_s <= 0:
+                logger.info(
+                    f"Task_id: {self.trainer_id} got -ve remaining sleep "
+                    f"at timestamp: {curr_time}"
+                )
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while time_elapsed_from_start > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1]):
+                while time_elapsed_from_start > (
+                    self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
+                ):
                     self.failure_durations_s.pop(0)
                     if len(self.failure_durations_s) == 0:
                         break
@@ -197,11 +209,15 @@ class KerasMnistTrainer(Trainer):
                 self._perform_channel_leave(tag="upload")
 
                 # sleep for remaining time
-                logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} going to sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} woke up at timestamp: "
+                    f"{time.time()}"
+                )
 
                 # join channel
                 self._perform_channel_join(tag="upload")
@@ -209,9 +225,13 @@ class KerasMnistTrainer(Trainer):
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.failure_durations_s) > 0:
-                self.timestamp_next_sleep_s = self.trainer_start_ts + self.failure_durations_s[0][0]
-                if(self.timestamp_next_sleep_s < time.time()):
-                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time")
+                self.timestamp_next_sleep_s = (
+                    self.trainer_start_ts + self.failure_durations_s[0][0]
+                )
+                if self.timestamp_next_sleep_s < time.time():
+                    logger.info(
+                        f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time"
+                    )
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -220,8 +240,10 @@ class KerasMnistTrainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at "
-                     f"timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} check_and_sleep completed at "
+            f"timestamp: {time.time()}"
+        )
 
 
 if __name__ == "__main__":

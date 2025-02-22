@@ -81,7 +81,7 @@ class TopAggregator(BaseTopAggregator):
                 self._updates_recevied[end] = 1
             else:
                 self._updates_recevied[end] += 1
-            
+
             # remove end_id if it sends a valid message with correct round info
             # break the for loop if k valid messages arrive
             received_end_count += 1
@@ -127,7 +127,7 @@ class TopAggregator(BaseTopAggregator):
 
         # update model with global weights
         self._update_model()
-        
+
         logger.info(
             f"====== aggregation finished for round {self._round}, "
             f"self._updates_recevied: "
@@ -166,14 +166,19 @@ class TopAggregator(BaseTopAggregator):
             # Handling the case for oort's selector since it expects 3 arguments
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
-        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
-        
+        logger.info(
+            f"Sending weights to trainers with task_to_perform = {task_to_perform}"
+        )
+
         # send out global model parameters to trainers
         for end in channel.ends():
-            logger.info(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
-            logger.debug(f"Setting channel property {PROP_ROUND_START_TIME} for "
-                         f"end {end}. For round {self._round} at time: {datetime.now()}"
-                         )
+            logger.info(
+                f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
+            )
+            logger.debug(
+                f"Setting channel property {PROP_ROUND_START_TIME} for "
+                f"end {end}. For round {self._round} at time: {datetime.now()}"
+            )
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
@@ -186,7 +191,7 @@ class TopAggregator(BaseTopAggregator):
                     ),
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
-                    MessageType.TASK_TO_PERFORM: task_to_perform
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
                 },
             )
 
@@ -216,12 +221,16 @@ class TopAggregator(BaseTopAggregator):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
-            logger.info(f"End {end} sent a message with utility {msg[MessageType.STAT_UTILITY]}")
+            logger.info(
+                f"End {end} sent a message with utility {msg[MessageType.STAT_UTILITY]}"
+            )
         if MessageType.MODEL_VERSION in msg:
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
-            logger.info(f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}")
+            logger.info(
+                f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}"
+            )
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 

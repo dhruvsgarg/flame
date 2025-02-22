@@ -65,7 +65,7 @@ class Trainer(Role, metaclass=ABCMeta):
     def loss_fn(self):
         # Added for OORT
         """Abstract attribute for loss function."""
-        
+
     def config(self) -> Config:
         """Abstract attribute for config object."""
 
@@ -138,22 +138,28 @@ class Trainer(Role, metaclass=ABCMeta):
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        logger.debug(f"### FETCH WEIGHTS start for tag: {tag} "
-                     f"and trainer_id {self.trainer_id}")
+        logger.debug(
+            f"### FETCH WEIGHTS start for tag: {tag} "
+            f"and trainer_id {self.trainer_id}"
+        )
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info(f"fetch weights, channel not found with tag {tag} "
-                        f"for trainer_id {self.trainer_id}")
+            logger.info(
+                f"fetch weights, channel not found with tag {tag} "
+                f"for trainer_id {self.trainer_id}"
+            )
             # we don't want to keep calling this too fast so let's
             # sleep 1 second
             time.sleep(1)
             return
 
         # this call waits for at least one peer joins this channel
-        logger.debug(f"_fetch_weights: waiting for someone to join channel: {channel} "
-                     f"for trainer_id {self.trainer_id}")
+        logger.debug(
+            f"_fetch_weights: waiting for someone to join channel: {channel} "
+            f"for trainer_id {self.trainer_id}"
+        )
         channel.await_join()
 
         # one aggregator is sufficient
@@ -186,19 +192,25 @@ class Trainer(Role, metaclass=ABCMeta):
             # trainer to re-train for == round condition if the
             # message was dropped.
             if self._round <= self._updates_returned_upto_round:
-                logger.info(f"Fetch weights aborted for given model version "
-                            f"{self._round} while trainer_id {self.trainer_id} has "
-                            f"already sent updates "
-                            f"upto round: {self._updates_returned_upto_round}")
-                
+                logger.info(
+                    f"Fetch weights aborted for given model version "
+                    f"{self._round} while trainer_id {self.trainer_id} has "
+                    f"already sent updates "
+                    f"upto round: {self._updates_returned_upto_round}"
+                )
+
                 # Received old data but still allow aggregator cleanup
                 # state to occur so as to receive the next update
-                logger.info(f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
-                            f" to allow fetch from aggregator "
-                            "again and returning from function")
+                logger.info(
+                    f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
+                    f" to allow fetch from aggregator "
+                    "again and returning from function"
+                )
                 channel._selector.ordered_updates_recv_ends.append(end)
-                logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
-                             f"{channel._selector.ordered_updates_recv_ends}")
+                logger.debug(
+                    f"After appending {end} to ordered_updates_recv_ends: "
+                    f"{channel._selector.ordered_updates_recv_ends}"
+                )
                 channel.cleanup_recvd_ends()
                 return
 
@@ -209,7 +221,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             # self.weights = msg[MessageType.WEIGHTS]
-            
+
             self._update_model()
 
         if MessageType.EOT in msg:
@@ -227,18 +239,24 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.fetch_success = True
 
-        logger.info(f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
-                    f"round: {self._round} and work_done: {self._work_done} ###")
+        logger.info(
+            f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
+            f"round: {self._round} and work_done: {self._work_done} ###"
+        )
 
-        logger.debug("Model weights received, so resetting aggregator end states in "
-                     "the channel")
-        
-        channel._selector.ordered_updates_recv_ends.append(end) 
-        logger.debug(f"After appending {end} to ordered_updates_recv_ends: "
-                     f"{channel._selector.ordered_updates_recv_ends}")
-        
-        channel.cleanup_recvd_ends() 
-       
+        logger.debug(
+            "Model weights received, so resetting aggregator end states in "
+            "the channel"
+        )
+
+        channel._selector.ordered_updates_recv_ends.append(end)
+        logger.debug(
+            f"After appending {end} to ordered_updates_recv_ends: "
+            f"{channel._selector.ordered_updates_recv_ends}"
+        )
+
+        channel.cleanup_recvd_ends()
+
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -249,16 +267,19 @@ class Trainer(Role, metaclass=ABCMeta):
             self._send_heartbeat_to_agg(tag)
 
     def _send_heartbeat_to_agg(self, tag: str) -> None:
-        logger.debug(f"### SEND heartbeat for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
+        )
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_send_heartbeat] channel not found with {tag}")
             return
-        
+
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_send_heartbeat: waiting for someone to join channel: {channel} "
-                     f"for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_send_heartbeat: waiting for someone to join channel: {channel} "
+            f"for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         # one aggregator is sufficient
@@ -273,22 +294,29 @@ class Trainer(Role, metaclass=ABCMeta):
         return
 
     def _send_weights(self, tag: str) -> None:
-        logger.debug(f"### SEND WEIGHTS for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}")
+        logger.debug(
+            f"### SEND WEIGHTS for tag: {tag} "
+            f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}"
+        )
         # if switch to do three_state_avl is on and the trainer is
         # unavailable - check the wait_to_become_avl switch depending
         # on the switch we decide whether to wait for availability or
         # exit
-        if self.client_notify['enabled']== "True" and self.avl_state == TrainerAvailState.UN_AVL:
+        if (
+            self.client_notify["enabled"] == "True"
+            and self.avl_state == TrainerAvailState.UN_AVL
+        ):
             if self.wait_until_next_avl == "True":
-                logger.warning(f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again")
+                logger.warning(
+                    f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
+                )
                 while self.avl_state == TrainerAvailState.UN_AVL:
                     time.sleep(1)
             else:
-                logger.warning(f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights.")
+                logger.warning(
+                    f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights."
+                )
                 return
-
-
 
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -296,36 +324,38 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_send_weights: waiting for someone to join channel: {channel} "
-                     f"for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_send_weights: waiting for someone to join channel: {channel} "
+            f"for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
-    
+
         if self.task_to_perform == "train":
-            #trainer is expected to train and it is also available to
-            #train - best case
-                self._update_weights()
+            # trainer is expected to train and it is also available to
+            # train - best case
+            self._update_weights()
 
-                delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
+            delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
 
-                delta_weights = self.privacy.apply_dp_fn(delta_weights)
+            delta_weights = self.privacy.apply_dp_fn(delta_weights)
 
-                self.regularizer.update()
+            self.regularizer.update()
 
-                # NOTE: Also sending stat_utility for OORT
-                msg = {
-                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
-                    MessageType.DATASET_SIZE: self.dataset_size,
-                    MessageType.MODEL_VERSION: self._round,
-                    MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                    MessageType.STAT_UTILITY: self._stat_utility,
-                }
+            # NOTE: Also sending stat_utility for OORT
+            msg = {
+                MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                MessageType.DATASET_SIZE: self.dataset_size,
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+                MessageType.STAT_UTILITY: self._stat_utility,
+            }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._round,
-                MessageType.STAT_UTILITY: self._stat_utility
+                MessageType.STAT_UTILITY: self._stat_utility,
             }
 
         channel.send(end, msg)
@@ -335,15 +365,21 @@ class Trainer(Role, metaclass=ABCMeta):
             # the same round, we set _updates_returned_upto_round only
             # over here.
             self._updates_returned_upto_round = self._round
-            
-            logger.info(f"sending weights done for trainer_id: {self.trainer_id} "
-                        f"and _updates_returned_upto_round "
-                        f"{self._updates_returned_upto_round}")
+
+            logger.info(
+                f"sending weights done for trainer_id: {self.trainer_id} "
+                f"and _updates_returned_upto_round "
+                f"{self._updates_returned_upto_round}"
+            )
         elif self.task_to_perform == "eval":
-            logger.info(f"sending eval stat utility done for trainer_id: {self.trainer_id} "
-                        f"for model version: {self._round}")
+            logger.info(
+                f"sending eval stat utility done for trainer_id: {self.trainer_id} "
+                f"for model version: {self._round}"
+            )
         else:
-            logger.error(f"Task to perform is not defined for trainer_id: {self.trainer_id}")
+            logger.error(
+                f"Task to perform is not defined for trainer_id: {self.trainer_id}"
+            )
 
         # Evict model from gpu to free up space
         # self._evict_model_from_gpu()
@@ -351,16 +387,20 @@ class Trainer(Role, metaclass=ABCMeta):
         channel._selector._cleanup_send_ends()
 
     def _perform_channel_leave(self, tag: str) -> None:
-        logger.debug(f"In _perform_channel_leave for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"In _perform_channel_leave for tag: {tag} "
+            f"and trainer_id: {self.trainer_id}"
+        )
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_perform_channel_leave] channel not found with {tag}")
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_perform_channel_leave: waiting for someone to join channel: "
-                     f"{channel} for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_perform_channel_leave: waiting for someone to join channel: "
+            f"{channel} for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         # Setting the channel status to False. Means that trainer
@@ -368,22 +408,28 @@ class Trainer(Role, metaclass=ABCMeta):
         self._trainer_online_channel_status = False
 
         channel.leave()
-        logger.info(f"Sent channel leave message for channel: "
-                    f"{channel._name} and trainer: {self.trainer_id}."
-                    f" Set trainer_online_channel_status: "
-                    f"{self._trainer_online_channel_status}")
-        
+        logger.info(
+            f"Sent channel leave message for channel: "
+            f"{channel._name} and trainer: {self.trainer_id}."
+            f" Set trainer_online_channel_status: "
+            f"{self._trainer_online_channel_status}"
+        )
+
     def _perform_channel_join(self, tag: str) -> None:
-        logger.debug(f"In _perform_channel_join for tag: {tag} "
-                     f"and trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"In _perform_channel_join for tag: {tag} "
+            f"and trainer_id: {self.trainer_id}"
+        )
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"[_perform_channel_join] channel not found with {tag}")
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_perform_channel_join: waiting for someone to join channel: "
-                     f"{channel} for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_perform_channel_join: waiting for someone to join channel: "
+            f"{channel} for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         channel.join()
@@ -392,29 +438,41 @@ class Trainer(Role, metaclass=ABCMeta):
         # now resume sending updates.
         self._trainer_online_channel_status = True
 
-        logger.info(f"Sent channel join message for channel: "
-                    f"{channel._name} and trainer: {self.trainer_id}."
-                    f" Set trainer_online_channel_status: "
-                    f"{self._trainer_online_channel_status}")
-        
-    def _perform_channel_state_update(self, tag: str, state: TrainerAvailState, timestamp: str) -> None:
-        logger.debug(f"In _perform_channel_state_update for tag: {tag}, "
-                     f"trainer_id: {self.trainer_id}, "
-                     f"new state: {state}, "
-                     f"from timestamp: {timestamp}")
+        logger.info(
+            f"Sent channel join message for channel: "
+            f"{channel._name} and trainer: {self.trainer_id}."
+            f" Set trainer_online_channel_status: "
+            f"{self._trainer_online_channel_status}"
+        )
+
+    def _perform_channel_state_update(
+        self, tag: str, state: TrainerAvailState, timestamp: str
+    ) -> None:
+        logger.debug(
+            f"In _perform_channel_state_update for tag: {tag}, "
+            f"trainer_id: {self.trainer_id}, "
+            f"new state: {state}, "
+            f"from timestamp: {timestamp}"
+        )
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.debug(f"[_perform_channel_state_update] channel not found with {tag}")
+            logger.debug(
+                f"[_perform_channel_state_update] channel not found with {tag}"
+            )
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_perform_channel_state_update: waiting for someone to join channel: "
-                     f"{channel} for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_perform_channel_state_update: waiting for someone to join channel: "
+            f"{channel} for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         channel.update_trainer_state(state, timestamp)
-        logger.info(f"Sent channel state update message for channel: "
-                    f"{channel._name} and trainer: {self.trainer_id}, with state: {state} from timestamp: {timestamp}")
+        logger.info(
+            f"Sent channel state update message for channel: "
+            f"{channel._name} and trainer: {self.trainer_id}, with state: {state} from timestamp: {timestamp}"
+        )
 
     def save_metrics(self):
         """Save metrics in a model registry."""
@@ -466,7 +524,7 @@ class Trainer(Role, metaclass=ABCMeta):
         gc.collect()  # Force garbage collection
         torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
         logger.debug(f"Evicted model from gpu for trainer_id: {self.trainer_id}")
-    
+
     def send_heartbeat_to_agg(self) -> None:
         logger.debug("Inside trainer.py will call self.put(heartbeat)")
         self.put(TAG_HEARTBEAT)
@@ -533,7 +591,7 @@ class Trainer(Role, metaclass=ABCMeta):
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
-    
+
     def pause_execution(self):
         time.sleep(0.1)
         return
@@ -564,7 +622,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # task_sleep_after_eval = Tasklet("sleep_after_eval", self.check_and_sleep)
 
             # task_sleep_after_put_weight = Tasklet("sleep_after_put_weight",
-                                                #   self.check_and_sleep)
+            #   self.check_and_sleep)
 
             # task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics",
             #                                         self.check_and_sleep)
@@ -587,14 +645,14 @@ class Trainer(Role, metaclass=ABCMeta):
                 task_init
                 >> task_internal_init
                 >> loop(
-                    task_get 
+                    task_get
                     # >> asyncfl_loop(task_put >> task_get_weights >>
                     # >> task_get_heartbeat
                     >> task_pause_exec
                 )
                 # >> task_init_oort_variables
                 # Added code here to check for the status of the task
-                # i.e., "train + eval" vs "eval only" 
+                # i.e., "train + eval" vs "eval only"
                 # >> task_load_data
                 # >> loop(
                 #     task_get >> task_sleep_after_get >>

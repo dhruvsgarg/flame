@@ -60,9 +60,7 @@ class MiddleAggregator(BaseMiddleAggregator):
                 self.cache[end] = tres
 
             # optimizer conducts optimization (in this case, aggregation)
-            global_weights = self.optimizer.do(
-               base_weights, self.cache, total=total
-            )
+            global_weights = self.optimizer.do(base_weights, self.cache, total=total)
             if global_weights is None:
                 logger.debug("failed model aggregation")
                 time.sleep(1)

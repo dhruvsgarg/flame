@@ -33,7 +33,7 @@ class RandomSelector(AbstractSelector):
         super().__init__(**kwargs)
 
         try:
-            self.k = kwargs['k']
+            self.k = kwargs["k"]
         except KeyError:
             raise KeyError("k is not specified in config")
 
@@ -42,8 +42,12 @@ class RandomSelector(AbstractSelector):
 
         self.round = 0
 
-    def select(self, ends: dict[str, End],
-               channel_props: dict[str, Scalar], task_to_perform : str ="train") -> SelectorReturnType:
+    def select(
+        self,
+        ends: dict[str, End],
+        channel_props: dict[str, Scalar],
+        task_to_perform: str = "train",
+    ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
         logger.debug("calling random select")
 
@@ -52,11 +56,13 @@ class RandomSelector(AbstractSelector):
             logger.debug("ends is empty")
             return {}
 
-        round = channel_props['round'] if 'round' in channel_props else 0
+        round = channel_props["round"] if "round" in channel_props else 0
 
         if len(self.selected_ends) == 0 or round > self.round:
             logger.debug(f"let's select {k} ends for new round {round}")
-            random.seed(round) # make sure for each comparison, we are selecting the same clients each round-->adopted from FwdLLM
+            random.seed(
+                round
+            )  # make sure for each comparison, we are selecting the same clients each round-->adopted from FwdLLM
             self.selected_ends = set(random.sample(list(ends), k))
             self.round = round
 

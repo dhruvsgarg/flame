@@ -3,10 +3,22 @@ from flame.mode.horizontal.fwdllmtrainer import Trainer
 import torch
 import time
 
+
 class FedSGDTrainer(Trainer):
 
-    def __init__(self, trainer_id,train_data_local_dict, train_data_local_num_dict, test_data_local_dict,
-                 train_data_num, device, args, model_trainer, config=None, client_index=None):
+    def __init__(
+        self,
+        trainer_id,
+        train_data_local_dict,
+        train_data_local_num_dict,
+        test_data_local_dict,
+        train_data_num,
+        device,
+        args,
+        model_trainer,
+        config=None,
+        client_index=None,
+    ):
         self.trainer = model_trainer
         self.trainer_id = trainer_id
         self.client_index = client_index
@@ -23,18 +35,20 @@ class FedSGDTrainer(Trainer):
         self.accumulated_error = None
         self.config = config
 
-        # abstract attributes 
+        # abstract attributes
         self.loss_fn = None
-        self.dataset_size = None 
+        self.dataset_size = None
         self.model = model_trainer.model
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         self.model.to(self.device)
-        logging.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}")
+        logging.info(
+            f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+            f"{time.time()}"
+        )
 
     def update_model(self, weights):
         # logging.info(f"NRL: Updated model weights: {weights}")
@@ -47,9 +61,11 @@ class FedSGDTrainer(Trainer):
         self.local_sample_number = self.train_data_local_num_dict[client_index[0]]
         self.test_local = self.test_data_local_dict[client_index[0]]
 
-        self.train_local_list = [[data for data in self.train_local[i]] for i in range(len(self.train_local))]
+        self.train_local_list = [
+            [data for data in self.train_local[i]] for i in range(len(self.train_local))
+        ]
 
-    def train(self, round_idx = None):
+    def train(self, round_idx=None):
         logging.info("entered train where weights = params and not grad")
         self.args.round_idx = round_idx
         self.trainer.train(self.train_local, self.device, self.args)
@@ -57,12 +73,18 @@ class FedSGDTrainer(Trainer):
         weights = self.trainer.get_model_params()
 
         return weights, self.local_sample_number
-    
-    def train_with_data_id(self, round_idx = None, data_id = 0):
+
+    def train_with_data_id(self, round_idx=None, data_id=0):
         self.args.round_idx = round_idx
         logging.info(f"aaaaaaaaaaaaaaaaaaaaaaaaa{data_id}")
-        logging.info(f"train_local_list[0]: {len(self.train_local_list[1])}, {len(self.train_local_list)}" )
-        self.trainer.train([train_local[data_id] for train_local in self.train_local_list], self.device, self.args)
+        logging.info(
+            f"train_local_list[0]: {len(self.train_local_list[1])}, {len(self.train_local_list)}"
+        )
+        self.trainer.train(
+            [train_local[data_id] for train_local in self.train_local_list],
+            self.device,
+            self.args,
+        )
 
         # weights = self.trainer.get_model_params()
         weights = [para.detach().cpu() for para in self.trainer.model_trainer.grad]
@@ -72,27 +94,37 @@ class FedSGDTrainer(Trainer):
     def test(self):
         # train data
         train_metrics = self.trainer.test(self.train_local, self.device, self.args)
-        train_tot_correct, train_num_sample, train_loss = train_metrics['test_correct'], \
-                                                          train_metrics['test_total'], train_metrics['test_loss']
+        train_tot_correct, train_num_sample, train_loss = (
+            train_metrics["test_correct"],
+            train_metrics["test_total"],
+            train_metrics["test_loss"],
+        )
 
         # test data
         test_metrics = self.trainer.test(self.test_local, self.device, self.args)
-        test_tot_correct, test_num_sample, test_loss = test_metrics['test_correct'], \
-                                                          test_metrics['test_total'], test_metrics['test_loss']
+        test_tot_correct, test_num_sample, test_loss = (
+            test_metrics["test_correct"],
+            test_metrics["test_total"],
+            test_metrics["test_loss"],
+        )
 
-        return train_tot_correct, train_loss, train_num_sample, test_tot_correct, test_loss, test_num_sample
+        return (
+            train_tot_correct,
+            train_loss,
+            train_num_sample,
+            test_tot_correct,
+            test_loss,
+            test_num_sample,
+        )
 
     def load_data(self) -> None:
         pass
 
-
     def train(self) -> None:
         pass
 
-
     def evaluate(self) -> None:
         pass
-    
 
     def check_and_sleep(self) -> None:
         pass

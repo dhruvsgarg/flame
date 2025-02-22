@@ -36,10 +36,11 @@ from flame.proto import backend_msg_pb2 as msg_pb2
 logger = logging.getLogger(__name__)
 
 # We set environment variable to use multiprocessing.Lock
-# on write operations of shared memory  
+# on write operations of shared memory
 os.environ["SHARED_MEMORY_USE_LOCK"] = "1"
 
 SHM_DICT_SIZE = 1024
+
 
 class LIFLSharedMemoryBackend(AbstractBackend):
     """SharedMemoryBackend class.
@@ -69,10 +70,10 @@ class LIFLSharedMemoryBackend(AbstractBackend):
         self._is_shm_buf_created = dict()
 
         # TODO: make them configurable
-        self.sockmap_server_ip   = "127.0.0.1"
+        self.sockmap_server_ip = "127.0.0.1"
         self.sockmap_server_port = 10105
-        self.rpc_server_ip     = "127.0.0.1"
-        self.rpc_server_port   = 10106
+        self.rpc_server_ip = "127.0.0.1"
+        self.rpc_server_port = 10106
 
         with background_thread_loop() as loop:
             self._loop = loop
@@ -108,17 +109,27 @@ class LIFLSharedMemoryBackend(AbstractBackend):
 
     def _setup_ebpf(self):
         """Register to sockmap manager."""
-        self.sockmap_sock = self._sockmap_client(self.sockmap_server_ip, self.sockmap_server_port)
+        self.sockmap_sock = self._sockmap_client(
+            self.sockmap_server_ip, self.sockmap_server_port
+        )
         self.rpc_sock = self._rpc_client(self.rpc_server_ip, self.rpc_server_port)
 
         self.pid = os.getpid()
-        self.sock_fd = self.sockmap_sock.fileno()        
+        self.sock_fd = self.sockmap_sock.fileno()
         self.fn_id = bytes.fromhex(self._id)[-2:]
 
         skmsg_md = [self.pid, self.sock_fd, self.fn_id]
-        skmsg_md_bytes = b''.join([skmsg_md[0].to_bytes(4, byteorder = 'little'), skmsg_md[1].to_bytes(4, byteorder = 'little'), skmsg_md[2]])
+        skmsg_md_bytes = b"".join(
+            [
+                skmsg_md[0].to_bytes(4, byteorder="little"),
+                skmsg_md[1].to_bytes(4, byteorder="little"),
+                skmsg_md[2],
+            ]
+        )
 
-        logger.debug(f"skmsg_md: PID {self.pid}; socket FD {self.sock_fd}; end ID {self.fn_id}")
+        logger.debug(
+            f"skmsg_md: PID {self.pid}; socket FD {self.sock_fd}; end ID {self.fn_id}"
+        )
         logger.debug(f"skmsg_md_bytes: {skmsg_md_bytes}")
 
         self.rpc_sock.send(skmsg_md_bytes)
@@ -128,7 +139,9 @@ class LIFLSharedMemoryBackend(AbstractBackend):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         except socket.error as msg:
-            logger.info(f"Failed to create socket. Error code: {str(msg[0])}, Error message: {msg[1]}")
+            logger.info(
+                f"Failed to create socket. Error code: {str(msg[0])}, Error message: {msg[1]}"
+            )
             sys.exit()
 
         return sock
@@ -161,16 +174,22 @@ class LIFLSharedMemoryBackend(AbstractBackend):
     def join(self, channel) -> None:
         """Join a channel."""
 
-        shm_ends = SharedMemoryDict(name = channel.name() + "-" + channel.my_role(), size = SHM_DICT_SIZE)
+        shm_ends = SharedMemoryDict(
+            name=channel.name() + "-" + channel.my_role(), size=SHM_DICT_SIZE
+        )
         shm_ends[self._id] = 1
 
-        logger.debug(f"{len(shm_ends)} {channel.name()}-{channel.my_role()} shm ends: {shm_ends}")
+        logger.debug(
+            f"{len(shm_ends)} {channel.name()}-{channel.my_role()} shm ends: {shm_ends}"
+        )
 
         async def _join_inner():
             while True:
                 await asyncio.sleep(0.5)
 
-                peer_shm_ends = SharedMemoryDict(name = channel.name() + "-" + channel.other_role(), size = SHM_DICT_SIZE)
+                peer_shm_ends = SharedMemoryDict(
+                    name=channel.name() + "-" + channel.other_role(), size=SHM_DICT_SIZE
+                )
                 logger.debug(f"{len(peer_shm_ends)} peer shm ends: {peer_shm_ends}")
 
                 for peer_end_id in peer_shm_ends.keys():
@@ -188,19 +207,21 @@ class LIFLSharedMemoryBackend(AbstractBackend):
 
     def leave(self, channel) -> None:
         """Leave a given channel.
-        
+
         TODO: notify the sockmap manager to remove the entry from eBPF map
         """
         logger.info("Clean up shared memory buffers.")
 
         for end in channel.all_ends():
-            shm_buf = shared_memory.SharedMemory(name = end)
+            shm_buf = shared_memory.SharedMemory(name=end)
             shm_buf.close()
             if end == self._id:
                 shm_buf.unlink()
 
         # NOTE: this method may recreate the shm dict.
-        shm_ends = SharedMemoryDict(name = channel.name() + "-" + channel.my_role(), size = SHM_DICT_SIZE)
+        shm_ends = SharedMemoryDict(
+            name=channel.name() + "-" + channel.my_role(), size=SHM_DICT_SIZE
+        )
         del shm_ends[self._id]
 
         if len(shm_ends) == 0:
@@ -209,7 +230,9 @@ class LIFLSharedMemoryBackend(AbstractBackend):
             del shm_ends
 
         # NOTE: this method may recreate the shm dict.
-        other_ends = SharedMemoryDict(name = channel.name() + "-" + channel.other_role(), size = SHM_DICT_SIZE)
+        other_ends = SharedMemoryDict(
+            name=channel.name() + "-" + channel.other_role(), size=SHM_DICT_SIZE
+        )
         other_ends.shm.close()
 
     def create_tx_task(
@@ -304,20 +327,24 @@ class LIFLSharedMemoryBackend(AbstractBackend):
         msg = self._generate_data_messages(ch_name, other, data)
 
         next_fn_id = bytes.fromhex(other)[-2:]
-        next_fn_id_int = int.from_bytes(next_fn_id, byteorder = 'little')
+        next_fn_id_int = int.from_bytes(next_fn_id, byteorder="little")
 
-        skmsg_md_bytes = b"".join([next_fn_id_int.to_bytes(4, byteorder = 'little'), msg.SerializeToString()])
+        skmsg_md_bytes = b"".join(
+            [next_fn_id_int.to_bytes(4, byteorder="little"), msg.SerializeToString()]
+        )
 
         self.sockmap_sock.sendall(skmsg_md_bytes)
 
-    def _generate_data_messages(self, ch_name: str, other: str, data: bytes) -> msg_pb2.Data:
+    def _generate_data_messages(
+        self, ch_name: str, other: str, data: bytes
+    ) -> msg_pb2.Data:
         self.set_data(data, other)
 
         msg = msg_pb2.Data(
-            end_id=self._id, # end_id == buf_id in shm backend
+            end_id=self._id,  # end_id == buf_id in shm backend
             channel_name=ch_name,
             payload=b"",
-            seqno=len(data), # Length of data instead of seq no.
+            seqno=len(data),  # Length of data instead of seq no.
             eom=True,
         )
 
@@ -335,10 +362,14 @@ class LIFLSharedMemoryBackend(AbstractBackend):
 
             # NOTE: Parse SK_MSG; Check if SK_MSG is allowed or not
             truncated_target_end_id = int.from_bytes(skmsg_md[0:3], "little")
-            truncated_self_id = int.from_bytes(bytes.fromhex(self._id)[-2:], byteorder = 'little')
+            truncated_self_id = int.from_bytes(
+                bytes.fromhex(self._id)[-2:], byteorder="little"
+            )
 
             if truncated_target_end_id != truncated_self_id:
-                logger.warning(f"{self._id} (truncated_self_id) received unexpected msg! target_end_id: {truncated_target_end_id}")
+                logger.warning(
+                    f"{self._id} (truncated_self_id) received unexpected msg! target_end_id: {truncated_target_end_id}"
+                )
 
             _, _ = run_async(self._rx_queue.put(msg), self._loop)
 
@@ -395,12 +426,14 @@ class LIFLSharedMemoryBackend(AbstractBackend):
         key = self._id + "-" + other
 
         if key not in self._is_shm_buf_created:
-            wrt_buf = shared_memory.SharedMemory(name = self._id + "-" + other, create = True, size = len(data))
+            wrt_buf = shared_memory.SharedMemory(
+                name=self._id + "-" + other, create=True, size=len(data)
+            )
             self._is_shm_buf_created[self._id + "-" + other] = True
         else:
-            wrt_buf = shared_memory.SharedMemory(name = self._id + "-" + other)
+            wrt_buf = shared_memory.SharedMemory(name=self._id + "-" + other)
 
-        wrt_buf.buf[:len(data)] = data
+        wrt_buf.buf[: len(data)] = data
 
     async def handle(self, msg: msg_pb2.Data, channel: Channel) -> None:
         """Process msg."""

@@ -19,9 +19,7 @@ import os
 import sys
 
 logging.basicConfig(
-    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
-    format=
-    '%(asctime)s | %(filename)s:%(lineno)d | %(levelname)s | %(threadName)s | %(funcName)s | %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ])
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
+    format="%(asctime)s | %(filename)s:%(lineno)d | %(levelname)s | %(threadName)s | %(funcName)s | %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)

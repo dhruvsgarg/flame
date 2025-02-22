@@ -46,7 +46,7 @@ setup(
         "numpy",
         "pathlib",
         "fedscale",
-        "shared-memory-dict==0.7.2"    
+        "shared-memory-dict==0.7.2",
     ],
     extras_require={
         "dev": [

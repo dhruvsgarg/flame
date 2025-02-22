@@ -22,8 +22,10 @@ from .fedopt import FedOPT
 
 logger = logging.getLogger(__name__)
 
+
 class FedYogi(FedOPT):
     """FedYogi class."""
+
     logger.debug("Initializing fedyogi")
 
     def __init__(self, beta_1=0.9, beta_2=0.99, eta=1e-2, tau=1e-3):
@@ -33,10 +35,24 @@ class FedYogi(FedOPT):
 
     def _delta_v_pytorch(self):
         import torch
-        self.v_t = {k: self.v_t[k] - (1 - self.beta_2) * self.d_t[k]**2 * torch.sign(self.v_t[k] - self.d_t[k]**2) for k in self.v_t.keys()}
+
+        self.v_t = {
+            k: self.v_t[k]
+            - (1 - self.beta_2)
+            * self.d_t[k] ** 2
+            * torch.sign(self.v_t[k] - self.d_t[k] ** 2)
+            for k in self.v_t.keys()
+        }
         return
 
     def _delta_v_tensorflow(self):
         import tensorflow as tf
-        self.v_t = [self.v_t[idx] - (1 - self.beta_2) * self.d_t[idx]**2 * tf.sign(self.v_t[idx] - self.d_t[idx]**2) for idx in range(len(self.v_t))]
+
+        self.v_t = [
+            self.v_t[idx]
+            - (1 - self.beta_2)
+            * self.d_t[idx] ** 2
+            * tf.sign(self.v_t[idx] - self.d_t[idx] ** 2)
+            for idx in range(len(self.v_t))
+        ]
         return

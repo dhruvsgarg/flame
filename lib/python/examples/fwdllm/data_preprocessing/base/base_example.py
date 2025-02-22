@@ -2,10 +2,13 @@ class InputExample(object):
     def __init__(self, guid):
         self.guid = guid
 
+
 class TextClassificationInputExample(InputExample):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, guid, text_a, text_b=None, label=None, x0=None, y0=None, x1=None, y1=None):
+    def __init__(
+        self, guid, text_a, text_b=None, label=None, x0=None, y0=None, x1=None, y1=None
+    ):
         """
         Constructs a InputExample.
 
@@ -27,6 +30,7 @@ class TextClassificationInputExample(InputExample):
             self.bboxes = None
         else:
             self.bboxes = [[a, b, c, d] for a, b, c, d in zip(x0, y0, x1, y1)]
+
 
 class SeqTaggingInputExample(InputExample):
     """A single training/test example for simple sequence tagging."""
@@ -51,12 +55,22 @@ class SeqTaggingInputExample(InputExample):
         else:
             self.bboxes = [[a, b, c, d] for a, b, c, d in zip(x0, y0, x1, y1)]
 
+
 class SpanExtractionInputExample(InputExample):
     """A single training/test example for simple span extraction."""
 
-    def __init__(self, guid, qas_id, question_text, context_text, answer_text, start_position_character, title, 
-                answers=[], 
-                is_impossible=False):
+    def __init__(
+        self,
+        guid,
+        qas_id,
+        question_text,
+        context_text,
+        answer_text,
+        start_position_character,
+        title,
+        answers=[],
+        is_impossible=False,
+    ):
         """
         Constructs a InputExample.
         """
@@ -99,7 +113,10 @@ class SpanExtractionInputExample(InputExample):
         if start_position_character is not None and not is_impossible:
             self.start_position = char_to_word_offset[start_position_character]
             self.end_position = char_to_word_offset[
-                min(start_position_character + len(answer_text) - 1, len(char_to_word_offset) - 1)
+                min(
+                    start_position_character + len(answer_text) - 1,
+                    len(char_to_word_offset) - 1,
+                )
             ]
 
 

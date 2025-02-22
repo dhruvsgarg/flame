@@ -75,10 +75,10 @@ class ChunkStore(object):
             return None, -1, False
 
         if self.cidx < data_len:
-            data = self.data[self.pidx:self.cidx]
+            data = self.data[self.pidx : self.cidx]
             eom = False
         else:
-            data = self.data[self.pidx:]
+            data = self.data[self.pidx :]
             eom = True
 
         seqno = self.seqno + 1
@@ -97,7 +97,7 @@ class ChunkStore(object):
         """
         # out of order delivery
         if self.seqno + 1 != msg.seqno:
-            logger.warning(f'out-of-order seqno from {msg.end_id}')
+            logger.warning(f"out-of-order seqno from {msg.end_id}")
             return False
 
         logger.debug(f"chunk {msg.seqno}: {len(msg.payload)}")

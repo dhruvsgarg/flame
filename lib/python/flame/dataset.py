@@ -22,10 +22,7 @@ from numpy import ndarray
 class Dataset(object):
     """Dataset class."""
 
-    def __init__(self,
-                 x: ndarray = None,
-                 y: ndarray = None,
-                 dataloader=None) -> None:
+    def __init__(self, x: ndarray = None, y: ndarray = None, dataloader=None) -> None:
         """Initialize Dataset.
 
         A dataset is created either by using x and y or by using dataloader.

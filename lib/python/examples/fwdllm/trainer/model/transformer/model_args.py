@@ -91,7 +91,11 @@ class ModelArgs:
             raise (TypeError(f"{new_values} is not a Python dict."))
 
     def get_args_for_saving(self):
-        args_for_saving = {key: value for key, value in asdict(self).items() if key not in self.not_saved_args}
+        args_for_saving = {
+            key: value
+            for key, value in asdict(self).items()
+            if key not in self.not_saved_args
+        }
         return args_for_saving
 
     def save(self, output_dir):

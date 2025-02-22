@@ -121,9 +121,9 @@ class PyTorchMedMNistTrainer(Trainer):
 
     def load_data(self) -> None:
         """MedMNIST Pathology Dataset
-        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper 
+        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper
         "Predicting survival from colorectal cancer histology slides using deep learning: A retrospective multicenter study",
-        and made available through Yang et al. (2021) in 
+        and made available through Yang et al. (2021) in
         "MedMNIST Classification Decathlon: A Lightweight AutoML Benchmark for Medical Image Analysis".
         Dataset Repo: https://github.com/MedMNIST/MedMNIST
         """

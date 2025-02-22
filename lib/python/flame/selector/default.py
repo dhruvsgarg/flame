@@ -32,12 +32,13 @@ class DefaultSelector(AbstractSelector):
         super().__init__()
         self.round = 0
 
-    def select(self, ends: dict[str, End],
-               channel_props: dict[str, Scalar]) -> SelectorReturnType:
+    def select(
+        self, ends: dict[str, End], channel_props: dict[str, Scalar]
+    ) -> SelectorReturnType:
         """Return all ends from the given ends."""
         logger.debug("calling default select")
 
-        round = channel_props['round'] if 'round' in channel_props else 0
+        round = channel_props["round"] if "round" in channel_props else 0
 
         if len(self.selected_ends) == 0 or round > self.round:
             logger.debug(f"let's select the whole ends for new round {round}")

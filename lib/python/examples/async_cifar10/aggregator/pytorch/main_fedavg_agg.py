@@ -42,12 +42,9 @@ wandb.init(
     config={
         # fedbuff "server_learning_rate": 40.9,
         # "client_learning_rate": 0.000195,
-        
         # oort "client_learning_rate": 0.04,
-
         # fedavg
         "client_learning_rate": 0.25,
-
         "architecture": "CNN",
         "dataset": "CIFAR-10",
         "fl-type": "sync, fedavg",
@@ -57,9 +54,7 @@ wandb.init(
         "alpha": 100,
         "failures": "No failure",
         "total clients N": 100,
-
         # fedbuff "client-concurrency C": 20,
-
         "client agg goal K": 10,
         "server_batch_size": 32,
         "client_batch_size": 32,
@@ -171,8 +166,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         test_loss /= total
         test_accuracy = correct / total
 
-        logger.info(f"Test loss: {test_loss}, test accuracy: "
-                    f"{correct}/{total} ({test_accuracy})")
+        logger.info(
+            f"Test loss: {test_loss}, test accuracy: "
+            f"{correct}/{total} ({test_accuracy})"
+        )
 
         # update metrics after each evaluation so that the metrics can
         # be logged in a model registry.

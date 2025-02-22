@@ -58,5 +58,5 @@ class MessageType(Enum):
 
     CONTROL_WEIGHTS = 21  # control variate weights used in SCAFFOLD
     CLIENT_WEIGHT = 22  # client-side control variate weight used in SCAFFOLD
-    TASK_TO_PERFORM = 23 
+    TASK_TO_PERFORM = 23
     AVL_STATE = 24

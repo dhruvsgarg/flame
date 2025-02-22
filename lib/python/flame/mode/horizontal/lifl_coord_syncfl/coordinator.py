@@ -152,7 +152,9 @@ class Coordinator(Role):
             self.leaf_agg_to_trainer[agg_end] = list()
 
         # TODO: making pairing scheme configurable
-        self._round_robin_pair(trainer_ends, agg_ends, self.trainer_to_leaf_agg, self.leaf_agg_to_trainer)
+        self._round_robin_pair(
+            trainer_ends, agg_ends, self.trainer_to_leaf_agg, self.leaf_agg_to_trainer
+        )
 
         logger.debug(f"trainer to leaf agg mapping: {self.trainer_to_leaf_agg}")
         logger.debug(f"leaf agg to trainer mapping: {self.leaf_agg_to_trainer}")
@@ -190,11 +192,16 @@ class Coordinator(Role):
                 continue
 
             leaf_aggs_w_trainer.append(leaf_agg)
-        
+
         leaf_agg_ends = [agg for agg in leaf_agg_ends if agg in leaf_aggs_w_trainer]
 
         # TODO: making pairing scheme configurable
-        self._round_robin_pair(leaf_agg_ends, mid_agg_ends, self.leaf_agg_to_mid_agg, self.mid_agg_to_leaf_agg)
+        self._round_robin_pair(
+            leaf_agg_ends,
+            mid_agg_ends,
+            self.leaf_agg_to_mid_agg,
+            self.mid_agg_to_leaf_agg,
+        )
 
         logger.debug(f"mid agg to leaf agg mapping: {self.mid_agg_to_leaf_agg}")
         logger.debug(f"leaf agg to mid agg mapping: {self.leaf_agg_to_mid_agg}")
@@ -253,7 +260,10 @@ class Coordinator(Role):
         trainer_channel = self.get_channel(TAG_COORDINATE_WITH_TRAINER)
 
         for trainer, leaf_agg in self.trainer_to_leaf_agg.items():
-            msg = {MessageType.COORDINATED_ENDS: leaf_agg, MessageType.EOT: self._work_done}
+            msg = {
+                MessageType.COORDINATED_ENDS: leaf_agg,
+                MessageType.EOT: self._work_done,
+            }
             trainer_channel.send(trainer, msg)
         logger.debug("exited send_selected_leaf_aggregator()")
 
@@ -263,7 +273,10 @@ class Coordinator(Role):
         leaf_agg_channel = self.get_channel(TAG_COORDINATE_WITH_LEAF_AGG)
 
         for leaf_agg, mid_agg in self.leaf_agg_to_mid_agg.items():
-            msg = {MessageType.COORDINATED_ENDS: mid_agg, MessageType.EOT: self._work_done}
+            msg = {
+                MessageType.COORDINATED_ENDS: mid_agg,
+                MessageType.EOT: self._work_done,
+            }
             leaf_agg_channel.send(leaf_agg, msg)
         logger.debug("exited send_selected_middle_aggregator()")
 
@@ -332,7 +345,8 @@ class Coordinator(Role):
             self.composer = composer
 
             task_await = Tasklet(
-                "await_mid_leaf_aggs_and_trainers", self.await_mid_leaf_aggs_and_trainers
+                "await_mid_leaf_aggs_and_trainers",
+                self.await_mid_leaf_aggs_and_trainers,
             )
 
             task_pairing_leaf_aggs_and_trainers = Tasklet(

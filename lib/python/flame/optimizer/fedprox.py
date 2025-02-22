@@ -18,7 +18,7 @@
 """https://arxiv.org/abs/1812.06127"""
 
 import logging
-from ..common.util import (MLFramework, get_ml_framework_in_use)
+from ..common.util import MLFramework, get_ml_framework_in_use
 from .regularizer.fedprox import FedProxRegularizer
 from .fedavg import FedAvg
 
@@ -36,10 +36,11 @@ class FedProx(FedAvg):
         if ml_framework_in_use != MLFramework.PYTORCH:
             raise NotImplementedError(
                 "supported ml framework not found; "
-                f"supported frameworks (for fedprox) are: {[MLFramework.PYTORCH.name.lower()]}")
-        
+                f"supported frameworks (for fedprox) are: {[MLFramework.PYTORCH.name.lower()]}"
+            )
+
         super().__init__()
-        
+
         self.mu = mu
         # override parent's self.regularizer
         self.regularizer = FedProxRegularizer(self.mu)

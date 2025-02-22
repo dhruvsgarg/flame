@@ -18,8 +18,8 @@
 import logging
 
 from flame.config import Config
-from flame.mode.horizontal.coord_asyncfl.middle_aggregator import \
-    MiddleAggregator
+from flame.mode.horizontal.coord_asyncfl.middle_aggregator import MiddleAggregator
+
 # the following needs to be imported to let the flame know
 # this aggregator works on tensorflow model
 from tensorflow import keras

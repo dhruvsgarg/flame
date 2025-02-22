@@ -16,7 +16,12 @@
 """horizontal FL trainer."""
 
 # pylint: disable=unused-import
-from flame.mode.horizontal.syncfl.fwdllmtrainer import TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT, Trainer
+from flame.mode.horizontal.syncfl.fwdllmtrainer import (
+    TAG_FETCH,
+    TAG_UPLOAD,
+    TAG_HEARTBEAT,
+    Trainer,
+)
 
 # Redirect `flame.mode.horizontal.trainer.Trainer` to
 # `flame.mode.horizontal.syncfl.trainer.Trainer

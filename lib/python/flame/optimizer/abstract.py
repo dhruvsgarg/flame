@@ -31,11 +31,13 @@ class AbstractOptimizer(ABC):
             setattr(self, key, value)
 
     @abstractmethod
-    def do(self,
-           base_weights: ModelWeights,
-           cache: Cache,
-           *,
-           total: int = 0,
-           version: int = 0,
-           **kwargs) -> ModelWeights:
+    def do(
+        self,
+        base_weights: ModelWeights,
+        cache: Cache,
+        *,
+        total: int = 0,
+        version: int = 0,
+        **kwargs
+    ) -> ModelWeights:
         """Abstract method to conduct optimization."""

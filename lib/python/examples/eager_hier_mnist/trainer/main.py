@@ -33,10 +33,13 @@ from torchvision import datasets, transforms
 logger = logging.getLogger(__name__)
 
 import time
+
 global sleep_time
+
 
 class Net(nn.Module):
     """Net class."""
+
     def __init__(self):
         """Initialize."""
         super(Net, self).__init__()
@@ -66,6 +69,7 @@ class Net(nn.Module):
 
 class PyTorchMnistTrainer(Trainer):
     """PyTorch Mnist Trainer."""
+
     def __init__(self, config: Config) -> None:
         """Initialize a class instance."""
         self.config = config
@@ -80,35 +84,30 @@ class PyTorchMnistTrainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
 
     def load_data(self) -> None:
         """Load data."""
         transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.1307, ), (0.3081, ))
-            ]
+            [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
         )
 
         dataset = datasets.MNIST(
-            './data', train=True, download=True, transform=transform
+            "./data", train=True, download=True, transform=transform
         )
 
         indices = torch.arange(2000)
         dataset = data_utils.Subset(dataset, indices)
-        train_kwargs = {'batch_size': self.batch_size}
+        train_kwargs = {"batch_size": self.batch_size}
 
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
     def train(self) -> None:
         """Train a model."""
-        # NOTE: Have trainers sleep for varying lengths of time 
-        # before training as a way to control when updates are 
+        # NOTE: Have trainers sleep for varying lengths of time
+        # before training as a way to control when updates are
         # sent to the aggregator to test eager aggregation
         time.sleep(sleep_time)
 
@@ -133,7 +132,7 @@ class PyTorchMnistTrainer(Trainer):
             if batch_idx % 10 == 0:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
-                percent = 100. * batch_idx / len(self.train_loader)
+                percent = 100.0 * batch_idx / len(self.train_loader)
                 logger.info(
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
@@ -148,9 +147,11 @@ class PyTorchMnistTrainer(Trainer):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
-    parser.add_argument('-s', '--sleep-time', help='Sleep time before returning updates', default = 0)
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
+    parser.add_argument(
+        "-s", "--sleep-time", help="Sleep time before returning updates", default=0
+    )
 
     args = parser.parse_args()
     config = Config(args.config)

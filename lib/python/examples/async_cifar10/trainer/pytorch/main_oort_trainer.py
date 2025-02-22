@@ -104,11 +104,10 @@ class PyTorchCifar10Trainer(Trainer):
             self.timestamp_next_sleep_s = (
                 self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
             )
-        
 
     def check_and_sleep(self):
         curr_time = time.time()
-        
+
         if (curr_time >= self.timestamp_next_sleep_s) and (
             len(self.two_state_unavl_durations_s) > 0
         ):
@@ -117,34 +116,53 @@ class PyTorchCifar10Trainer(Trainer):
 
             # get the duration of sleep and set the params for next
             # sleep
-            sleep_start_ts_from_trainer_init = self.trainer_start_ts + sleep_config_tuple[0]
+            sleep_start_ts_from_trainer_init = (
+                self.trainer_start_ts + sleep_config_tuple[0]
+            )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
-            # + actual_sleep_duration - current_ts 
-            remaining_sleep_duration_s = sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}")
-            
-            if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}")
+            # + actual_sleep_duration - current_ts
+            remaining_sleep_duration_s = (
+                sleep_start_ts_from_trainer_init + sleep_duration_s - curr_time
+            )
+            logger.debug(
+                f"Task_id: {self.trainer_id} given_sleep_duration_s: {sleep_duration_s} with remaining_sleep_duration_s: {remaining_sleep_duration_s} at timestamp: {curr_time}"
+            )
+
+            if remaining_sleep_duration_s <= 0:
+                logger.info(
+                    f"Task_id: {self.trainer_id} got -ve remaining sleep at timestamp: {curr_time}"
+                )
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = curr_time - self.trainer_start_ts
-                while time_elapsed_from_start > (self.two_state_unavl_durations_s[0][0] + self.two_state_unavl_durations_s[0][1]):
+                while time_elapsed_from_start > (
+                    self.two_state_unavl_durations_s[0][0]
+                    + self.two_state_unavl_durations_s[0][1]
+                ):
                     self.two_state_unavl_durations_s.pop(0)
                     if len(self.two_state_unavl_durations_s) == 0:
                         break
-            else: 
-                logger.info(f"Task_id: {self.trainer_id} going to sleep up at timestamp: {time.time()}")
+            else:
+                logger.info(
+                    f"Task_id: {self.trainer_id} going to sleep up at timestamp: {time.time()}"
+                )
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} woke up at timestamp: {time.time()}"
+                )
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.two_state_unavl_durations_s) > 0:
-                self.timestamp_next_sleep_s = self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
-                if(self.timestamp_next_sleep_s < time.time()):
-                    logger.info(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time")
+                self.timestamp_next_sleep_s = (
+                    self.trainer_start_ts + self.two_state_unavl_durations_s[0][0]
+                )
+                if self.timestamp_next_sleep_s < time.time():
+                    logger.info(
+                        f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT self.timestamp_next_sleep_s < curr_time"
+                    )
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -153,14 +171,18 @@ class PyTorchCifar10Trainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} check_and_sleep completed at timestamp: {time.time()}"
+        )
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
-        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} initialize completed at timestamp: {time.time()}"
+        )
 
     def load_data(self) -> None:
         """Load data."""
@@ -192,14 +214,14 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
-        logger.debug(f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}"
+        )
 
     def train(self) -> None:
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(
-            self.model.parameters(), lr=self.learning_rate
-        )
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate)
 
         self.reset_stat_utility()
         for epoch in range(1, self.epochs + 1):
@@ -230,7 +252,7 @@ class PyTorchCifar10Trainer(Trainer):
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
                     f"\tloss: {loss.item():.6f}"
                 )
-            
+
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)

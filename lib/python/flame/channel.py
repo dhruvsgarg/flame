@@ -137,8 +137,10 @@ class Channel(object):
             self._ends[end_id].set_property(key, value)
             logger.debug(f"SET property {key} with val {value} for end_id {end_id}")
         else:
-            logger.debug(f"Failed to SET property {key} with {value} as end_id {end_id}"
-                         f" not found")
+            logger.debug(
+                f"Failed to SET property {key} with {value} as end_id {end_id}"
+                f" not found"
+            )
 
     def get_end_property(self, end_id, key) -> Scalar:
         """Get property of an end."""
@@ -147,8 +149,9 @@ class Channel(object):
             logger.debug(f"GOT property {key} with val {val} for end_id {end_id}")
             return val
         else:
-            logger.debug(f"Failed to GET property {key} as end_id {end_id}"
-                         f" not found")
+            logger.debug(
+                f"Failed to GET property {key} as end_id {end_id}" f" not found"
+            )
             return None
 
     """
@@ -174,10 +177,14 @@ class Channel(object):
         end_list = self.ends(state)
         return end_list[0] if len(end_list) > 0 else None
 
-    def ends(self, state: Union[None, str] = None, task_to_perform: str = "train") -> list[str]:
+    def ends(
+        self, state: Union[None, str] = None, task_to_perform: str = "train"
+    ) -> list[str]:
         """Return a list of end ids."""
-        logger.debug(f"ends() for channel name: {self._name}, "
-                    f"current self._ends: {self._ends}")
+        logger.debug(
+            f"ends() for channel name: {self._name}, "
+            f"current self._ends: {self._ends}"
+        )
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
@@ -189,16 +196,16 @@ class Channel(object):
                     self._ends,
                     self.properties,
                     self.trainer_unavail_list,
-                    task_to_perform
-                    )
+                    task_to_perform,
+                )
             else:
                 selected = self._selector.select(
-                    self._ends,
-                    self.properties,
-                    task_to_perform
-                    )
-            logger.debug(f"selected for task {task_to_perform} and returned from select(): {selected}")
-            
+                    self._ends, self.properties, task_to_perform
+                )
+            logger.debug(
+                f"selected for task {task_to_perform} and returned from select(): {selected}"
+            )
+
             id_list = list()
             for end_id, kv in selected.items():
                 id_list.append(end_id)
@@ -207,11 +214,15 @@ class Channel(object):
                     continue
 
                 (key, value) = kv
-                logger.debug(f"Setting property for end_id {end_id} "
-                            f"using (key,val) = ({key},{value})")
+                logger.debug(
+                    f"Setting property for end_id {end_id} "
+                    f"using (key,val) = ({key},{value})"
+                )
                 self._ends[end_id].set_property(key, value)
-                logger.debug(f"Updated end_id {end_id} property to key: {key}, "
-                            f"value: {value} in self._ends")
+                logger.debug(
+                    f"Updated end_id {end_id} property to key: {key}, "
+                    f"value: {value} in self._ends"
+                )
             logger.debug(f"Going to return id_list: {id_list}")
             return id_list
 
@@ -223,7 +234,7 @@ class Channel(object):
         """Return a list of all end ids (needed in FedDyn to compute
         alpha values)."""
         return list(self._ends.keys())
-    
+
     def cleanup_recvd_ends(self):
         """Performs cleanup of end states in the selector. Usually
         only performed after aggregation of a round completes"""
@@ -347,7 +358,9 @@ class Channel(object):
         -------
         The function yields a pair: end id and message
         """
-        logger.debug(f"Receive fifo: first_k = {first_k}, len(end_ids) = {len(end_ids)}")
+        logger.debug(
+            f"Receive fifo: first_k = {first_k}, len(end_ids) = {len(end_ids)}"
+        )
 
         first_k = min(first_k, len(end_ids))
         if first_k <= 0:
@@ -413,7 +426,9 @@ class Channel(object):
                 # TODO: (DG) It comes here even for channel leave
                 # notifications. Need a cleaner processing for it
                 # later
-                logger.warning(f"Tried to populate None message (maybe leave notification) from end_id {end_id}. Will not yield msg and metadata until it gets a valid MODEL_VERSION msg")
+                logger.warning(
+                    f"Tried to populate None message (maybe leave notification) from end_id {end_id}. Will not yield msg and metadata until it gets a valid MODEL_VERSION msg"
+                )
 
             # set cleanup ready event
             self._backend.set_cleanup_ready(end_id)
@@ -437,7 +452,9 @@ class Channel(object):
 
             payload = None
             try:
-                logger.debug(f"channel {self._name} awaiting get() on end_id {end_id} in self.ends")
+                logger.debug(
+                    f"channel {self._name} awaiting get() on end_id {end_id} in self.ends"
+                )
                 payload = await self._ends[end_id].get()
                 if payload:
                     # ignore timestamp for measuring bytes received
@@ -456,8 +473,12 @@ class Channel(object):
                 runs.append(_get_inner(end_id))
                 self._active_recv_fifo_tasks.add(end_id)
 
-                logger.debug(f"active task added for {end_id}, runs length: {len(runs)}")
-                logger.debug(f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}")
+                logger.debug(
+                    f"active task added for {end_id}, runs length: {len(runs)}"
+                )
+                logger.debug(
+                    f"self._active_recv_fifo_tasks: {str(self._active_recv_fifo_tasks)}"
+                )
 
         merged = stream.merge(*runs)
         async with merged.stream() as streamer:
@@ -520,7 +541,7 @@ class Channel(object):
         self._backend.leave(self)
 
         logger.debug(f" channel leave done for {self._name}")
-        
+
     def update_trainer_state(self, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
         logger.debug(f"calling channel update state for {self._name}")
@@ -574,7 +595,7 @@ class Channel(object):
             return
 
         self._ends[end_id] = End(end_id)
-        
+
         logger.info(f"Adding end {end_id} to channel {self._name}")
 
         # create tx task in the backend for the channel
@@ -586,23 +607,18 @@ class Channel(object):
 
         # Set END_LAST_AVAIL_TS to current timestamp.
         current_ts = datetime.now()
-        self.set_end_property(
-                end_id=end_id,
-                key=END_LAST_AVAIL_TS,
-                value=current_ts
-            )
+        self.set_end_property(end_id=end_id, key=END_LAST_AVAIL_TS, value=current_ts)
 
         # NOTE: Also set in end_state_info for further use
         if end_id not in self._end_state_info.keys():
             self._end_state_info[end_id] = {}
         self._end_state_info[end_id][END_LAST_AVAIL_TS] = current_ts
 
-        end_last_avail_ts = self.get_end_property(
-            end_id=end_id,
-            key=END_LAST_AVAIL_TS
+        end_last_avail_ts = self.get_end_property(end_id=end_id, key=END_LAST_AVAIL_TS)
+        logger.debug(
+            f"Get after setting END_LAST_AVAIL_TS was {end_last_avail_ts} "
+            f"for end_id {end_id}"
         )
-        logger.debug(f"Get after setting END_LAST_AVAIL_TS was {end_last_avail_ts} "
-                     f"for end_id {end_id}")
 
         # Check if END_LAST_UNAVAIL_TS is None. If it is, skip adding
         # TOTAL_UNAVAIL_DURATION. If its not None, update the
@@ -615,58 +631,61 @@ class Channel(object):
             end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
         else:
             end_last_unavail_ts = None
-        logger.debug(f"Got END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
-                     f"for end_id {end_id}")
-        
+        logger.debug(
+            f"Got END_LAST_UNAVAIL_TS: {end_last_unavail_ts} " f"for end_id {end_id}"
+        )
+
         if end_last_unavail_ts is not None:
             logger.debug(f"END_LAST_UNAVAIL_TS was not None for end_id {end_id}")
             # subtraction of two datetime objects returns a timedelta
-            last_time_unavail_duration = (
-                datetime.now()-end_last_unavail_ts)
+            last_time_unavail_duration = datetime.now() - end_last_unavail_ts
 
             # Get total unavail duration from end_state_info
             if PROP_TOTAL_UNAVAIL_DURATION in self._end_state_info[end_id].keys():
-                elapsed_end_unavail_duration = (
-                    self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION]
-                    )
+                elapsed_end_unavail_duration = self._end_state_info[end_id][
+                    PROP_TOTAL_UNAVAIL_DURATION
+                ]
             else:
                 elapsed_end_unavail_duration = None
-            
+
             if elapsed_end_unavail_duration is None:
                 elapsed_end_unavail_duration = timedelta(
-                    hours=0,
-                    minutes=0,
-                    seconds=0,
-                    microseconds=0
-                    )
+                    hours=0, minutes=0, seconds=0, microseconds=0
+                )
             total_end_unavail_duration = (
                 elapsed_end_unavail_duration + last_time_unavail_duration
-                )
+            )
 
             # set as end_id property here to be used in asyncoort
             # selector later.
             self.set_end_property(
                 end_id=end_id,
                 key=PROP_TOTAL_UNAVAIL_DURATION,
-                value=total_end_unavail_duration
-                )
-            # NOTE: Also keeping it updated in end_node_info
-            self._end_state_info[end_id][PROP_TOTAL_UNAVAIL_DURATION] = (
-                total_end_unavail_duration
+                value=total_end_unavail_duration,
             )
-            logger.debug(f"Updated total unavail duration to "
-                         f"{total_end_unavail_duration} for end_id {end_id}. Added "
-                         f"{last_time_unavail_duration} to elapsed unavail duration "
-                         f"{elapsed_end_unavail_duration}")
+            # NOTE: Also keeping it updated in end_node_info
+            self._end_state_info[end_id][
+                PROP_TOTAL_UNAVAIL_DURATION
+            ] = total_end_unavail_duration
+            logger.debug(
+                f"Updated total unavail duration to "
+                f"{total_end_unavail_duration} for end_id {end_id}. Added "
+                f"{last_time_unavail_duration} to elapsed unavail duration "
+                f"{elapsed_end_unavail_duration}"
+            )
         else:
-            logger.debug(f"None got as END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
-                         f"for end_id {end_id}")
+            logger.debug(
+                f"None got as END_LAST_UNAVAIL_TS: {end_last_unavail_ts} "
+                f"for end_id {end_id}"
+            )
 
     async def remove(self, end_id):
         """Remove an end from the channel."""
         logger.info(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
-            logger.debug(f"Noting to remove since end {end_id} not in channel {self._name}")
+            logger.debug(
+                f"Noting to remove since end {end_id} not in channel {self._name}"
+            )
             return
 
         rxq = self._ends[end_id].get_rxq()
@@ -689,54 +708,61 @@ class Channel(object):
         # Set END_LAST_UNAVAIL_TS to current timestamp.
         self._end_state_info[end_id][END_LAST_UNAVAIL_TS] = datetime.now()
         end_last_unavail_ts = self._end_state_info[end_id][END_LAST_UNAVAIL_TS]
-        logger.debug(f"Updated END_LAST_UNAVAIL_TS to {end_last_unavail_ts} "
-                     f"for end_id {end_id} in end_state_info")
+        logger.debug(
+            f"Updated END_LAST_UNAVAIL_TS to {end_last_unavail_ts} "
+            f"for end_id {end_id} in end_state_info"
+        )
 
         # Check if END_LAST_AVAIL_TS is None. If it is, skip adding
         # TOTAL_AVAIL_DURATION. If its not None, update the
         # TOTAL_AVAIL_DURATION.
         end_last_avail_ts = self._end_state_info[end_id][END_LAST_AVAIL_TS]
-        logger.debug(f"Got END_LAST_AVAIL_TS: {end_last_avail_ts} "
-                     f"for end_id {end_id} in end_state_info")
+        logger.debug(
+            f"Got END_LAST_AVAIL_TS: {end_last_avail_ts} "
+            f"for end_id {end_id} in end_state_info"
+        )
         if end_last_avail_ts is not None:
             logger.debug(f"END_LAST_AVAIL_TS was not None for end_id {end_id}")
-            last_time_avail_duration = (
-                datetime.now()-end_last_avail_ts
-                )
+            last_time_avail_duration = datetime.now() - end_last_avail_ts
             if PROP_TOTAL_AVAIL_DURATION in self._end_state_info[end_id].keys():
-                elapsed_end_avail_duration = (
-                    self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION]
-                    )
+                elapsed_end_avail_duration = self._end_state_info[end_id][
+                    PROP_TOTAL_AVAIL_DURATION
+                ]
             else:
                 elapsed_end_avail_duration = None
-            
+
             if elapsed_end_avail_duration is None:
                 elapsed_end_avail_duration = timedelta(
-                    hours=0,
-                    minutes=0,
-                    seconds=0,
-                    microseconds=0
-                    )
+                    hours=0, minutes=0, seconds=0, microseconds=0
+                )
             total_end_avail_duration = (
                 elapsed_end_avail_duration + last_time_avail_duration
             )
-            self._end_state_info[end_id][PROP_TOTAL_AVAIL_DURATION] = (
-                total_end_avail_duration
-                )
-            logger.debug(f"Updated total unavail duration to "
-                         f"{total_end_avail_duration} for end_id {end_id}. Added "
-                         f"{last_time_avail_duration} to elapsed unavail duration "
-                         f"{elapsed_end_avail_duration}")
+            self._end_state_info[end_id][
+                PROP_TOTAL_AVAIL_DURATION
+            ] = total_end_avail_duration
+            logger.debug(
+                f"Updated total unavail duration to "
+                f"{total_end_avail_duration} for end_id {end_id}. Added "
+                f"{last_time_avail_duration} to elapsed unavail duration "
+                f"{elapsed_end_avail_duration}"
+            )
         else:
-            logger.debug(f"None got as END_LAST_AVAIL_TS: {end_last_avail_ts} "
-                         f"for end_id {end_id}")
+            logger.debug(
+                f"None got as END_LAST_AVAIL_TS: {end_last_avail_ts} "
+                f"for end_id {end_id}"
+            )
 
         # inform selector to cleanup its send/recieve state to allow
         # quicker addition next time it joins
-        logger.debug("Also removing existing trainer update send/recv state from selector")
+        logger.debug(
+            "Also removing existing trainer update send/recv state from selector"
+        )
         self._selector._cleanup_removed_ends(end_id)
-    
-    async def update_state(self, end_id: str, new_state: TrainerAvailState, timestamp: str):
+
+    async def update_state(
+        self, end_id: str, new_state: TrainerAvailState, timestamp: str
+    ):
         """Update the state of an end in the channel."""
         if not self.has(end_id):
             logger.info(f"End {end_id} not in channel {self._name}")
@@ -744,19 +770,28 @@ class Channel(object):
 
         old_end_state = self._ends[end_id].get_property(PROP_END_AVL_STATE)
         self._ends[end_id].set_property(PROP_END_AVL_STATE, new_state)
-        logger.info(f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}")
-        
+        logger.info(
+            f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
+        )
+
         # If new updated_state is UN_AVL, reset end state to unblock
         # any train or eval tasks sent to that trainer
         if new_state == TrainerAvailState.UN_AVL:
-            logger.info(f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected")
+            logger.info(
+                f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected"
+            )
             self._selector.remove_from_selected_ends(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
-        elif old_end_state == TrainerAvailState.AVL_TRAIN and new_state == TrainerAvailState.AVL_EVAL:
+        elif (
+            old_end_state == TrainerAvailState.AVL_TRAIN
+            and new_state == TrainerAvailState.AVL_EVAL
+        ):
             # TODO: (DG) This is a temporary fix to reset the state of
             # a trainer from AVL_TRAIN to AVL_EVAL. Check actual last
             # task sent before resetting.
-            logger.info(f"Trainer {end_id} moved from state {old_end_state} to {new_state}, removing the end from selected and all_selected. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now.")
+            logger.info(
+                f"Trainer {end_id} moved from state {old_end_state} to {new_state}, removing the end from selected and all_selected. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now."
+            )
             self._selector.remove_from_selected_ends(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
 
@@ -788,6 +823,6 @@ class Channel(object):
     def get_backend_id(self) -> str:
         """Return backend id."""
         return self._backend.uid()
-    
+
     def set_curr_unavailable_trainers(self, trainer_unavail_list: list):
         self.trainer_unavail_list = trainer_unavail_list

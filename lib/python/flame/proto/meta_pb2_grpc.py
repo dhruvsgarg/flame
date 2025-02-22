@@ -22,8 +22,7 @@ from . import meta_pb2 as meta__pb2
 
 
 class MetaRouteStub(object):
-    """Meta info related route
-    """
+    """Meta info related route"""
 
     def __init__(self, channel):
         """Constructor.
@@ -32,87 +31,110 @@ class MetaRouteStub(object):
             channel: A grpc.Channel.
         """
         self.RegisterMetaInfo = channel.unary_unary(
-                '/grpcMeta.MetaRoute/RegisterMetaInfo',
-                request_serializer=meta__pb2.MetaInfo.SerializeToString,
-                response_deserializer=meta__pb2.MetaResponse.FromString,
-                )
+            "/grpcMeta.MetaRoute/RegisterMetaInfo",
+            request_serializer=meta__pb2.MetaInfo.SerializeToString,
+            response_deserializer=meta__pb2.MetaResponse.FromString,
+        )
         self.HeartBeat = channel.unary_unary(
-                '/grpcMeta.MetaRoute/HeartBeat',
-                request_serializer=meta__pb2.MetaInfo.SerializeToString,
-                response_deserializer=meta__pb2.MetaResponse.FromString,
-                )
+            "/grpcMeta.MetaRoute/HeartBeat",
+            request_serializer=meta__pb2.MetaInfo.SerializeToString,
+            response_deserializer=meta__pb2.MetaResponse.FromString,
+        )
 
 
 class MetaRouteServicer(object):
-    """Meta info related route
-    """
+    """Meta info related route"""
 
     def RegisterMetaInfo(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def HeartBeat(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_MetaRouteServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'RegisterMetaInfo': grpc.unary_unary_rpc_method_handler(
-                    servicer.RegisterMetaInfo,
-                    request_deserializer=meta__pb2.MetaInfo.FromString,
-                    response_serializer=meta__pb2.MetaResponse.SerializeToString,
-            ),
-            'HeartBeat': grpc.unary_unary_rpc_method_handler(
-                    servicer.HeartBeat,
-                    request_deserializer=meta__pb2.MetaInfo.FromString,
-                    response_serializer=meta__pb2.MetaResponse.SerializeToString,
-            ),
+        "RegisterMetaInfo": grpc.unary_unary_rpc_method_handler(
+            servicer.RegisterMetaInfo,
+            request_deserializer=meta__pb2.MetaInfo.FromString,
+            response_serializer=meta__pb2.MetaResponse.SerializeToString,
+        ),
+        "HeartBeat": grpc.unary_unary_rpc_method_handler(
+            servicer.HeartBeat,
+            request_deserializer=meta__pb2.MetaInfo.FromString,
+            response_serializer=meta__pb2.MetaResponse.SerializeToString,
+        ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'grpcMeta.MetaRoute', rpc_method_handlers)
+        "grpcMeta.MetaRoute", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class MetaRoute(object):
-    """Meta info related route
-    """
+    """Meta info related route"""
 
     @staticmethod
-    def RegisterMetaInfo(request,
+    def RegisterMetaInfo(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/grpcMeta.MetaRoute/RegisterMetaInfo',
+            "/grpcMeta.MetaRoute/RegisterMetaInfo",
             meta__pb2.MetaInfo.SerializeToString,
             meta__pb2.MetaResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def HeartBeat(request,
+    def HeartBeat(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/grpcMeta.MetaRoute/HeartBeat',
+            "/grpcMeta.MetaRoute/HeartBeat",
             meta__pb2.MetaInfo.SerializeToString,
             meta__pb2.MetaResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )

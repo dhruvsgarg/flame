@@ -19,11 +19,12 @@
 import logging
 
 from flame.config import Config
-from flame.dataset import Dataset # Not sure why we need this.
+from flame.dataset import Dataset  # Not sure why we need this.
 from flame.mode.horizontal.top_aggregator import TopAggregator
 import torch
 
 logger = logging.getLogger(__name__)
+
 
 class CNN(torch.nn.Module):
     """CNN Class"""
@@ -40,7 +41,7 @@ class CNN(torch.nn.Module):
             torch.nn.Conv2d(6, 16, kernel_size=3, padding=1),
             torch.nn.BatchNorm2d(16),
             torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size=2, stride=2)
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
         )
         self.fc = torch.nn.Linear(16 * 7 * 7, num_classes)
 
@@ -50,13 +51,14 @@ class CNN(torch.nn.Module):
         x = self.fc(x)
         return x
 
+
 class PyTorchMedMNistAggregator(TopAggregator):
     """PyTorch MedMNist Aggregator"""
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self.model = None
-        self.dataset: Dataset = None # Not sure why we need this.
+        self.dataset: Dataset = None  # Not sure why we need this.
 
     def initialize(self):
         """Initialize."""
@@ -77,11 +79,12 @@ class PyTorchMedMNistAggregator(TopAggregator):
         # Implement this if testing is needed in aggregator
         pass
 
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 
