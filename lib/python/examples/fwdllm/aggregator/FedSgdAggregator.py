@@ -9,6 +9,8 @@ import torch
 
 from flame.mode.horizontal.asyncfl.fwdllm_aggregator import TopAggregator
 
+logger = logging.getLogger(__name__)
+
 class FedSGDAggregator(TopAggregator):
 
     def __init__(self, train_global, test_global, all_train_data_num,
@@ -64,7 +66,7 @@ class FedSGDAggregator(TopAggregator):
         self.trainer.set_model_params(model_parameters)
 
     def add_local_trained_result(self, index, model_params, sample_num):
-        logging.info("add_model. index = %d" % index)
+        logger.info("add_model. index = %d" % index)
         self.model_dict[index] = model_params
         self.sample_num_dict[index] = sample_num
         self.flag_client_model_uploaded_dict[index] = True
@@ -90,7 +92,7 @@ class FedSGDAggregator(TopAggregator):
             0.0, float(self.args.comm_round - current_round) / float(max(1, self.args.comm_round - self.warmup_rounds))
         )
         learning_rate = self.args.learning_rate * ratio
-        logging.info(f"learning rate: {learning_rate}")
+        logger.info(f"learning rate: {learning_rate}")
 
         for idx in range(self.worker_num):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
@@ -102,18 +104,18 @@ class FedSGDAggregator(TopAggregator):
             origin_param = copy.deepcopy(self.get_global_model_params())
 
             # cached_v:  (num, params)
-            logging.info(f"len of cached v: {len(self.cached_v)}")
+            logger.info(f"len of cached v: {len(self.cached_v)}")
             for cached_v in self.cached_v:
                 model_list.append(cached_v)
                 training_num += cached_v[0]
-            logging.info(f"training_num : {training_num}")
+            logger.info(f"training_num : {training_num}")
 
-        logging.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
+        logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
         
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
         
-        # logging.info("################aggregate: %d" % len(model_list))
+        # logger.info("################aggregate: %d" % len(model_list))
         (num0, averaged_params) = model_list[0]
         for id,k in enumerate(averaged_params):
             for i in range(0, len(model_list)):
@@ -129,7 +131,7 @@ class FedSGDAggregator(TopAggregator):
                 # 方差满足要求
                 self.cached_v = []
             else:
-                logging.info("current model is not good enough, calculate more v")
+                logger.info("current model is not good enough, calculate more v")
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v
                 for idx in range(self.worker_num):
                     self.cached_v.append((self.sample_num_dict[idx], model_dict_cached[idx]))
@@ -139,7 +141,7 @@ class FedSGDAggregator(TopAggregator):
         old_param = self.get_global_model_params()
 
         end_time = time.time()
-        logging.info("aggregate time cost: %d" % (end_time - start_time))
+        logger.info("aggregate time cost: %d" % (end_time - start_time))
         return old_param
 
     def client_sampling(self, round_idx, client_num_in_total, client_num_per_round):
@@ -157,7 +159,7 @@ class FedSGDAggregator(TopAggregator):
 
         client_indexes = index_list
 
-        logging.info("client_indexes = %s" % str(client_indexes))
+        logger.info("client_indexes = %s" % str(client_indexes))
         return client_indexes
 
     def _generate_validation_set(self, num_samples=10000):
@@ -176,7 +178,7 @@ class FedSGDAggregator(TopAggregator):
                 return
 
         if round_idx % self.args.frequency_of_the_test == 0 or round_idx == self.args.comm_round - 1:
-            logging.info("################test_on_server_for_all_clients : {}".format(round_idx))
+            logger.info("################test_on_server_for_all_clients : {}".format(round_idx))
             train_num_samples = []
             train_tot_corrects = []
             train_losses = []
@@ -201,7 +203,7 @@ class FedSGDAggregator(TopAggregator):
             # wandb.log({"Train/Acc": train_acc, "round": round_idx})
             # wandb.log({"Train/Loss": train_loss, "round": round_idx})
             stats = {'training_acc': train_acc, 'training_loss': train_loss}
-            logging.info(stats)
+            logger.info(stats)
 
             # test data
             test_num_samples = []
@@ -223,7 +225,7 @@ class FedSGDAggregator(TopAggregator):
             test_acc = sum(test_tot_corrects) / sum(test_num_samples)
             test_loss = sum(test_losses) / sum(test_num_samples)
             stats = {'test_acc': test_acc, 'test_loss': test_loss}
-            logging.info(stats)
+            logger.info(stats)
 
     def load_data(self) -> None:
         pass
@@ -242,3 +244,5 @@ class FedSGDAggregator(TopAggregator):
     def initialize(self):
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # logger.info(f"model for agg is not None: {self.model}")
+        self.model.to(self.device)

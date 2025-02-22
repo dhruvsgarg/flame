@@ -845,6 +845,7 @@ class TopAggregator(SyncTopAgg):
 
             task_get_heartbeat = Tasklet("heartbeat", self.get,
             TAG_HEARTBEAT)
+            task_init = Tasklet("initialize", self.initialize)
 
         c = self.composer
         c.unlink()
@@ -857,6 +858,7 @@ class TopAggregator(SyncTopAgg):
         # chain them again with new tasklets introduced in this class
         (
             task_internal_init
+            >> task_init
             >> loop(
                 task_reset_agg_goal_vars
                 >> task_put_train

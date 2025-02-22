@@ -31,8 +31,8 @@ class FedSGDTrainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # self.model = Net().to(self.device)
+        
+        self.model.to(self.device)
         logging.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
                      f"{time.time()}")
 
