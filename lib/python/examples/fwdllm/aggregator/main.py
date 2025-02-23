@@ -32,7 +32,7 @@ from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator
 
 from flame.config import Config
 
-
+logger = logging.getLogger(__name__)
 def initialize_wandb(run_name=None):
     wandb.init(
         # set the wandb project where this run will be logged
@@ -63,9 +63,6 @@ def initialize_wandb(run_name=None):
     )
 
 
-logger = logging.getLogger(__name__)
-
-
 def post_complete_message(tc_args):
     pipe_path = "/tmp/fednlp_tc"
     if not os.path.exists(pipe_path):
@@ -91,7 +88,7 @@ if __name__ == "__main__":
         format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
         datefmt="%Y-%m-%d,%H:%M:%S",
     )
-    logging.info(config)
+    logger.info(config)
     set_seed(config.hyperparameters.manual_seed)
 
     # dataset attributes
@@ -170,11 +167,12 @@ if __name__ == "__main__":
     ) = dm.load_federated_data(
         process_id=process_id, client_idx=config.hyperparameters.client_idx
     )
-    logging.info(f"NRL Client idx: {config.hyperparameters.client_idx}")
-    logging.info(f"NRL train_data_local_dict: {train_data_local_dict}")
-    logging.info(f"NRL train_data_global: {train_data_global}")
-    logging.info(f"NRL test_data_local_dict: {test_data_local_dict}")
-    logging.info(f"NRL test_data_global: {test_data_global}")
+    logger.info(f"NRL Client idx: {config.hyperparameters.client_idx}")
+    logger.info(f"NRL train_data_local_dict: {train_data_local_dict}")
+    logger.info(f"NRL train_data_global: {train_data_global}")
+    logger.info(f"NRL test_data_local_dict: {test_data_local_dict}")
+    logger.info(f"NRL test_data_global: {test_data_global}")
+    logger.info(f"NRL fed_trainer: {fed_trainer}")
     config.hyperparameters.client_num_in_total = num_clients
     config.hyperparameters.warmup_ratio = model_args.warmup_ratio
 

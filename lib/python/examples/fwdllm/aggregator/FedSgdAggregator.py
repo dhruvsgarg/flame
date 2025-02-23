@@ -28,7 +28,7 @@ class FedSGDAggregator(TopAggregator):
         model_trainer,
     ):
         self.trainer = model_trainer
-
+        logger.info(f"self.trainer = {self.trainer}")
         self.args = args.hyperparameters
         self.train_global = train_global
         self.test_global = test_global

@@ -60,3 +60,7 @@ class MessageType(Enum):
     CLIENT_WEIGHT = 22  # client-side control variate weight used in SCAFFOLD
     TASK_TO_PERFORM = 23
     AVL_STATE = 24
+    GRADIENTS = 25
+    VAR = 27
+    DATA_ID = 28
+    TOTAL_DATA_BINS = 29

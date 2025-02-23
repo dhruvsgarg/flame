@@ -20,6 +20,8 @@ from functools import partial
 import functorch as fc
 from torch.cuda.amp import autocast
 
+logger = logging.getLogger(__name__)
+
 
 class ForwardTextClassificationTrainer:
     def __init__(
@@ -127,9 +129,10 @@ class ForwardTextClassificationTrainer:
                 for batch_idx, batch in enumerate(self.train_dl):
 
                     batch = tuple(t for t in batch)
-                    # TODO: See why .to(device) was called here
-                    x = batch[1]  # .to(device)
-                    labels = batch[4]  # .to(device)
+                    # NRL already sent data to gpu during init inside FedSgdTrainer
+                    logger.info(f"batch device: {device}")
+                    x = batch[1].to(device)
+                    labels = batch[4].to(device)
 
                     # 优化函数
                     f = partial(
@@ -192,12 +195,12 @@ class ForwardTextClassificationTrainer:
                         break
 
         if self.args.var_control:
-            self.var = calculate_var(
-                self.grad_for_var_check_list,
-            )
-            logging.info(
-                f"num of fwdgrad: {len(self.grad_for_var_check_list)}, var: {self.var}"
-            )
+            # self.var = calculate_var(
+            #     self.grad_for_var_check_list,
+            # )
+            # logging.info(
+            #     f"num of fwdgrad: {len(self.grad_for_var_check_list)}, var: {self.var}"
+            # )
             if self.args.perturbation_sampling:
                 self.grad_pool.append(self.grad)
         return global_step, tr_loss / global_step

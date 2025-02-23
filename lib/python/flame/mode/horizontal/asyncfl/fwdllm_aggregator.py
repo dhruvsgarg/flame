@@ -74,6 +74,8 @@ class TopAggregator(SyncTopAgg):
         # check if distribute_weights was successful
         self._prev_distribute_weights_success = False
 
+        self.data_id = 0
+
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -858,6 +860,7 @@ class TopAggregator(SyncTopAgg):
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
+                    MessageType.DATA_ID: self.data_id
                 },
             )
 

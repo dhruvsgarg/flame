@@ -3,6 +3,8 @@ from flame.mode.horizontal.fwdllmtrainer import Trainer
 import torch
 import time
 
+logger = logging.getLogger(__name__)
+
 
 class FedSGDTrainer(Trainer):
 
@@ -23,14 +25,28 @@ class FedSGDTrainer(Trainer):
         self.trainer_id = trainer_id
         self.client_index = client_index
         self.train_data_local_dict = train_data_local_dict
-        self.train_data_local_num_dict = train_data_local_num_dict
         self.test_data_local_dict = test_data_local_dict
-        self.all_train_data_num = train_data_num
-        self.train_local = None
-        self.local_sample_number = None
-        self.test_local = None
+        # NRL most of this is reduntant since our dict is of size=1. But keeping this code for consistency
+        logger.info(
+            f"train_data_local_dict keys: {train_data_local_dict.keys()}, client idx: {args.client_idx}, {type(args.client_idx)}"
+        )
 
-        self.device = device
+        self.train_local = [self.train_data_local_dict[args.client_idx]]
+
+        # this will return -1
+        self.test_local = self.test_data_local_dict[args.client_idx]
+
+        self.train_local_list = [
+            [data for data in self.train_local[i]] for i in range(len(self.train_local))
+        ]
+        self.train_data_local_num_dict = train_data_local_num_dict
+        self.all_train_data_num = train_data_num
+
+        self.local_sample_number = None
+        # logger.info(f"self.device: {self.device}, torch.cuda.device_count(): {torch.cuda.device_count()}")
+
+        # self.train_data_local_dict.to(self.device)
+
         self.args = args
         self.accumulated_error = None
         self.config = config
@@ -39,26 +55,40 @@ class FedSGDTrainer(Trainer):
         self.loss_fn = None
         self.dataset_size = None
         self.model = model_trainer.model
+        # NRL adding new variables
+        self.data_id = None
+        self.grad = None
+        self.total_data_bins = None
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model.to(self.device)
-        logging.info(
+        logger.info(f"self.device: {self.device}")
+        self.total_data_bins = len(self.train_local[0])
+        # loading data to gpu
+        # NRL TODO: This didnt work. Error: expected all tensors to be on the same device. Needed to load them on gpu again during train_model
+        for each_train_local in self.train_local[0]:
+            train_data = tuple(t for t in each_train_local)
+            # logger.info(f"train data: {len(train_data)}")
+            train_data[1].to(self.device)
+            train_data[4].to(self.device)
+        logger.info(
             f"Task_id: {self.trainer_id} initialize completed at timestamp: "
             f"{time.time()}"
         )
 
     def update_model(self, weights):
-        # logging.info(f"NRL: Updated model weights: {weights}")
+        # logger.info(f"NRL: Updated model weights: {weights}")
         self.trainer.set_model_params(weights)
 
     def update_dataset(self, client_index):
-        logging.info(f"NRL: Updated client index: {client_index}")
+        logger.info(f"NRL: Updated client index: {client_index}")
         self.client_index = client_index
         self.train_local = [self.train_data_local_dict[id] for id in client_index]
         self.local_sample_number = self.train_data_local_num_dict[client_index[0]]
+
         self.test_local = self.test_data_local_dict[client_index[0]]
 
         self.train_local_list = [
@@ -66,7 +96,7 @@ class FedSGDTrainer(Trainer):
         ]
 
     def train(self, round_idx=None):
-        logging.info("entered train where weights = params and not grad")
+        logger.info("entered train where weights = params and not grad")
         self.args.round_idx = round_idx
         self.trainer.train(self.train_local, self.device, self.args)
 
@@ -74,22 +104,20 @@ class FedSGDTrainer(Trainer):
 
         return weights, self.local_sample_number
 
-    def train_with_data_id(self, round_idx=None, data_id=0):
-        self.args.round_idx = round_idx
-        logging.info(f"aaaaaaaaaaaaaaaaaaaaaaaaa{data_id}")
-        logging.info(
-            f"train_local_list[0]: {len(self.train_local_list[1])}, {len(self.train_local_list)}"
+    def train_with_data_id(self):
+        logger.info(
+            f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
+        )
+        logger.info(
+            f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
         self.trainer.train(
-            [train_local[data_id] for train_local in self.train_local_list],
-            self.device,
-            self.args,
+            [self.train_local_list[0][self.data_id]], self.device, self.args
         )
-
-        # weights = self.trainer.get_model_params()
-        weights = [para.detach().cpu() for para in self.trainer.model_trainer.grad]
-
-        return weights, len(self.train_local)
+      
+        # NRL - dont think we need to do the below
+        self.grads = [para.detach().cpu() for para in self.trainer.model_trainer.grad]
+        # self.grads = self.trainer.model_trainer.grad
 
     def test(self):
         # train data

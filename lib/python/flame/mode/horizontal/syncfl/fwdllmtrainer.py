@@ -82,6 +82,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.cm = ChannelManager()
         self.cm(self.config)
         self.cm.join_all()
+        logger.info(f"self.cm._config.selector.sort: {self.cm._config.selector.sort}, self.config.selector.sort: {self.config.selector.sort}")
 
         self.registry_client = registry_provider.get(self.config.registry.sort)
         # initialize registry client
@@ -223,6 +224,14 @@ class Trainer(Role, metaclass=ABCMeta):
             # self.weights = msg[MessageType.WEIGHTS]
 
             self._update_model()
+        elif MessageType.VAR in msg:
+            logger.info ("Calc more variance received for trainer id: {self.trainer_id}. Not updating weights")
+        else:
+            logger.info("Invalid message received from agg for trainer id: {self.trainer_id} - skipping ")
+
+        if MessageType.DATA_ID in msg:
+            logger.info(f"Received data id for training : {msg[MessageType.DATA_ID]}")
+            self.data_id = msg[MessageType.DATA_ID]
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
@@ -261,7 +270,7 @@ class Trainer(Role, metaclass=ABCMeta):
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
         if tag == TAG_UPLOAD:
-            self._send_weights(tag)
+            self._send_grads(tag)
         elif tag == TAG_HEARTBEAT:
             logger.info("calling send heartbeat")
             self._send_heartbeat_to_agg(tag)
@@ -385,6 +394,86 @@ class Trainer(Role, metaclass=ABCMeta):
         # self._evict_model_from_gpu()
 
         channel._selector._cleanup_send_ends()
+
+    def _send_grads(self, tag: str) -> None:
+        logger.debug(
+            f"### SEND GRADS for tag: {tag} "
+            f"and trainer_id: {self.trainer_id}"
+        )
+       
+
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"[_send_grads] channel not found with {tag}")
+            return
+
+        # this call waits for at least one peer to join this channel
+        logger.debug(
+            f"_send_grads: waiting for someone to join channel: {channel} "
+            f"for trainer_id: {self.trainer_id}"
+        )
+        channel.await_join()
+
+        # one aggregator is sufficient
+        end = channel.one_end(VAL_CH_STATE_SEND)
+
+        if self.task_to_perform == "train":
+            # trainer is expected to train and it is also available to
+            # train - best case
+            # self._update_weights()
+
+            # delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
+
+            # delta_weights = self.privacy.apply_dp_fn(delta_weights)
+
+            # self.regularizer.update()
+
+            # NOTE: Also sending stat_utility for OORT
+            # logger.info(f"self.grads is: {self.grads}")
+            msg = {
+                # MessageType.GRADIENTS: weights_to_device(self.grads, DeviceType.CPU), # NRL TODO: this didnt work. I had to detach the grads after training was completed 
+                MessageType.GRADIENTS: self.grads,
+                MessageType.DATASET_SIZE: self.dataset_size,
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+                # MessageType.STAT_UTILITY: self._stat_utility, #uncomment later - rn FedSgdTrainer has no utility
+                MessageType.TOTAL_DATA_BINS: self.total_data_bins
+
+            }
+        else:
+            msg = {
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.STAT_UTILITY: self._stat_utility,
+            }
+
+        channel.send(end, msg)
+
+        if self.task_to_perform == "train":
+            # To allow the trainer to participate in eval AND train in
+            # the same round, we set _updates_returned_upto_round only
+            # over here.
+            self._updates_returned_upto_round = self._round
+
+            logger.info(
+                f"sending grads done for trainer_id: {self.trainer_id} "
+                f"and _updates_returned_upto_round "
+                f"{self._updates_returned_upto_round}"
+            )
+        elif self.task_to_perform == "eval":
+            logger.info(
+                f"sending eval stat utility done for trainer_id: {self.trainer_id} "
+                f"for model version: {self._round}"
+            )
+        else:
+            logger.error(
+                f"Task to perform is not defined for trainer_id: {self.trainer_id}"
+            )
+
+        # Evict model from gpu to free up space
+        # self._evict_model_from_gpu()
+
+        channel._selector._cleanup_send_ends()
+
 
     def _perform_channel_leave(self, tag: str) -> None:
         logger.debug(
@@ -627,11 +716,11 @@ class Trainer(Role, metaclass=ABCMeta):
             # task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics",
             #                                         self.check_and_sleep)
 
-            # task_train = Tasklet("train", self.train)
+            task_train = Tasklet("train", self.train_with_data_id)
 
             # task_eval = Tasklet("evaluate", self.evaluate)
 
-            # task_put_weight = Tasklet("upload", self.put, TAG_UPLOAD)
+            task_put_grad = Tasklet("upload", self.put, TAG_UPLOAD)
             task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 
             # task_save_metrics = Tasklet("save_metrics", self.save_metrics)
@@ -646,6 +735,9 @@ class Trainer(Role, metaclass=ABCMeta):
                 >> task_internal_init
                 >> loop(
                     task_get
+                    >> task_train
+                    # >> task_pause_exec
+                    >> task_put_grad
                     # >> asyncfl_loop(task_put >> task_get_weights >>
                     # >> task_get_heartbeat
                     >> task_pause_exec
