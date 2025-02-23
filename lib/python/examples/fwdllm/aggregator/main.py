@@ -33,6 +33,8 @@ from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator
 from flame.config import Config
 
 logger = logging.getLogger(__name__)
+
+
 def initialize_wandb(run_name=None):
     wandb.init(
         # set the wandb project where this run will be logged

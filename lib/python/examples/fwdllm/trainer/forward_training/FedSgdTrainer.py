@@ -114,7 +114,7 @@ class FedSGDTrainer(Trainer):
         self.trainer.train(
             [self.train_local_list[0][self.data_id]], self.device, self.args
         )
-      
+
         # NRL - dont think we need to do the below
         self.grads = [para.detach().cpu() for para in self.trainer.model_trainer.grad]
         # self.grads = self.trainer.model_trainer.grad

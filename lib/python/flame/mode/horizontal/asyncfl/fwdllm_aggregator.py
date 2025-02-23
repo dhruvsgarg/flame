@@ -860,7 +860,7 @@ class TopAggregator(SyncTopAgg):
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
-                    MessageType.DATA_ID: self.data_id
+                    MessageType.DATA_ID: self.data_id,
                 },
             )
 

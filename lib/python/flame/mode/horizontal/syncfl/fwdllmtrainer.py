@@ -82,7 +82,9 @@ class Trainer(Role, metaclass=ABCMeta):
         self.cm = ChannelManager()
         self.cm(self.config)
         self.cm.join_all()
-        logger.info(f"self.cm._config.selector.sort: {self.cm._config.selector.sort}, self.config.selector.sort: {self.config.selector.sort}")
+        logger.info(
+            f"self.cm._config.selector.sort: {self.cm._config.selector.sort}, self.config.selector.sort: {self.config.selector.sort}"
+        )
 
         self.registry_client = registry_provider.get(self.config.registry.sort)
         # initialize registry client
@@ -225,9 +227,13 @@ class Trainer(Role, metaclass=ABCMeta):
 
             self._update_model()
         elif MessageType.VAR in msg:
-            logger.info ("Calc more variance received for trainer id: {self.trainer_id}. Not updating weights")
+            logger.info(
+                "Calc more variance received for trainer id: {self.trainer_id}. Not updating weights"
+            )
         else:
-            logger.info("Invalid message received from agg for trainer id: {self.trainer_id} - skipping ")
+            logger.info(
+                "Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
+            )
 
         if MessageType.DATA_ID in msg:
             logger.info(f"Received data id for training : {msg[MessageType.DATA_ID]}")
@@ -397,10 +403,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _send_grads(self, tag: str) -> None:
         logger.debug(
-            f"### SEND GRADS for tag: {tag} "
-            f"and trainer_id: {self.trainer_id}"
+            f"### SEND GRADS for tag: {tag} " f"and trainer_id: {self.trainer_id}"
         )
-       
 
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -431,14 +435,13 @@ class Trainer(Role, metaclass=ABCMeta):
             # NOTE: Also sending stat_utility for OORT
             # logger.info(f"self.grads is: {self.grads}")
             msg = {
-                # MessageType.GRADIENTS: weights_to_device(self.grads, DeviceType.CPU), # NRL TODO: this didnt work. I had to detach the grads after training was completed 
+                # MessageType.GRADIENTS: weights_to_device(self.grads, DeviceType.CPU), # NRL TODO: this didnt work. I had to detach the grads after training was completed
                 MessageType.GRADIENTS: self.grads,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                 # MessageType.STAT_UTILITY: self._stat_utility, #uncomment later - rn FedSgdTrainer has no utility
-                MessageType.TOTAL_DATA_BINS: self.total_data_bins
-
+                MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
         else:
             msg = {
@@ -473,7 +476,6 @@ class Trainer(Role, metaclass=ABCMeta):
         # self._evict_model_from_gpu()
 
         channel._selector._cleanup_send_ends()
-
 
     def _perform_channel_leave(self, tag: str) -> None:
         logger.debug(
