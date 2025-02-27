@@ -7,7 +7,7 @@ import math
 import numpy as np
 import torch
 
-from flame.mode.horizontal.asyncfl.fwdllm_aggregator import TopAggregator
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 
 logger = logging.getLogger(__name__)
 

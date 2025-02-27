@@ -13,7 +13,7 @@
 # permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""horizontal FL trainer."""
+"""horizontal FwdLLM FL trainer."""
 import gc
 import inspect
 import logging
@@ -433,10 +433,25 @@ class Trainer(Role, metaclass=ABCMeta):
             # self.regularizer.update()
 
             # NOTE: Also sending stat_utility for OORT
-            # logger.info(f"self.grads is: {self.grads}")
+
+            # Retrieve forward gradients before sending it from trainer to
+            # aggregator
+            # Collect gradients into a list, ensuring they are flattened
+            grad_list = [
+                p.grad.view(-1) for p in self.model.parameters() if p.grad is not None
+            ]
+
+            # Concatenate all gradients into a single tensor
+            if grad_list:
+                all_grads = torch.cat(grad_list)  # Shape: (total_number_of_parameters,)
+            else:
+                all_grads = torch.tensor([])  # Handle case where no gradients exist
+
+            # all_grads now contains all gradients in a single tensor
+            logger.info(f"Going to send gradients tensor of shape: {all_grads.shape}")
+
             msg = {
-                # MessageType.GRADIENTS: weights_to_device(self.grads, DeviceType.CPU), # NRL TODO: this didnt work. I had to detach the grads after training was completed
-                MessageType.GRADIENTS: self.grads,
+                MessageType.GRADIENTS: all_grads,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),

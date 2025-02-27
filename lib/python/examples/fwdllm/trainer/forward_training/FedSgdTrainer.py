@@ -1,7 +1,8 @@
 import logging
-from flame.mode.horizontal.fwdllmtrainer import Trainer
+from flame.mode.horizontal.syncfl.fwdllm_trainer import Trainer
 import torch
 import time
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class FedSGDTrainer(Trainer):
         self.args = args
         self.accumulated_error = None
         self.config = config
+        self.device = device
 
         # abstract attributes
         self.loss_fn = None
@@ -57,7 +59,6 @@ class FedSGDTrainer(Trainer):
         self.model = model_trainer.model
         # NRL adding new variables
         self.data_id = None
-        self.grad = None
         self.total_data_bins = None
 
     def initialize(self) -> None:
@@ -115,9 +116,9 @@ class FedSGDTrainer(Trainer):
             [self.train_local_list[0][self.data_id]], self.device, self.args
         )
 
-        # NRL - dont think we need to do the below
-        self.grads = [para.detach().cpu() for para in self.trainer.model_trainer.grad]
-        # self.grads = self.trainer.model_trainer.grad
+        logger.info(
+            f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
+        )
 
     def test(self):
         # train data

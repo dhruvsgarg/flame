@@ -103,7 +103,7 @@ class TopAggregator(SyncTopAgg):
         logger.info("finished init for sync agg")
 
     def pause_execution(self):
-        time.sleep(0.1)
+        time.sleep(1)
         return
 
     def _reset_agg_goal_variables(self):
@@ -779,12 +779,12 @@ class TopAggregator(SyncTopAgg):
         return picked_trainer_is_available
 
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
-        """Distribute a global model in asynchronous FL fashion.
+        """Distribute a global model in synchronous FL fashion - for FwdLLM.
 
         This method is overridden from one in synchronous top
         aggregator (..top_aggregator).
         """
-        logger.info(f"Device for agg: {next(self.model.parameters()).device}")
+        logger.debug(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"channel not found for tag {tag}")

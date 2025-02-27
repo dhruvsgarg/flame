@@ -59,10 +59,21 @@ class RandomSelector(AbstractSelector):
         round = channel_props["round"] if "round" in channel_props else 0
 
         if len(self.selected_ends) == 0 or round > self.round:
-            logger.debug(f"let's select {k} ends for new round {round}")
-            random.seed(
-                round
-            )  # make sure for each comparison, we are selecting the same clients each round-->adopted from FwdLLM
+            logger.debug(
+                f"let's select {k} ends for new round {round}, task: {task_to_perform}"
+            )
+
+            # Return existing selected end_ids if the round did not proceed
+            if round <= self.round and len(self.selected_ends) != 0:
+                return {key: None for key in self.selected_ends}
+
+            # Adopted from FwdLLM: For each variance comparison, we are
+            # selecting the same clients each round
+            # TODO (DG/NRL): Seeding needs to be put behind a config param
+            # incase another selector doesnt need this?
+            # TODO (DG/NRL): How will this work with Unavailability? Will be
+            # severly disadvantaged with unavl. Naive solution for this?
+            random.seed(round)
             self.selected_ends = set(random.sample(list(ends), k))
             self.round = round
 

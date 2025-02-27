@@ -114,7 +114,7 @@ elif [ $FL_ALG = FedSgd ];then
     > ./log/new/fedsgd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_full.log 2>&1
 else
   # Run aggregator/main.py once with logging
-  python $REPO_PATH/lib/python/examples/fwdllm/aggregator/main.py \
+  python $REPO_PATH/lib/python/examples/fwdllm/aggregator/fl_main.py \
     --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
     > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
 
@@ -131,7 +131,7 @@ else
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
-    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/main.py \
+    CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
   done

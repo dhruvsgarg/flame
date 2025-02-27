@@ -177,6 +177,12 @@ class ForwardTextClassificationTrainer:
                         if self.args.var_control and j == self.layer_id_for_check:
                             self.grad_for_var_check_list.append(jvp * v_params[j])
 
+                    # Assigning gradients back so that torch can pick it up
+                    # later. It is always on CPU so no need to move it to GPU.
+                    for p, g in zip(self.model.parameters(), self.grad):
+                        if p.requires_grad:
+                            p.grad = g.clone()
+
                     current_loss = loss.item()
                     logging.info(
                         "epoch = %d, batch_idx = %d/%d, loss = %s"
@@ -203,6 +209,27 @@ class ForwardTextClassificationTrainer:
             # )
             if self.args.perturbation_sampling:
                 self.grad_pool.append(self.grad)
+
+        # Compute trainable parameter size
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        total_params = [p for p in self.model.parameters()]
+        trainable_size = get_size_in_bytes(trainable_params)
+        total_params_size = get_size_in_bytes(total_params)
+
+        # Compute gradient size (only non-None gradients)
+        gradients = [p.grad for p in trainable_params if p.grad is not None]
+        gradient_size = get_size_in_bytes(gradients)
+
+        logging.info(
+            f"Trainable parameters count: {len(trainable_params)} of size: {human_readable_size(trainable_size)}"
+        )
+        logging.info(
+            f"Total parameters count: {len(total_params)} of size: {human_readable_size(total_params_size)}"
+        )
+        logging.info(
+            f"Gradients count: {len(gradients)} of size: {human_readable_size(gradient_size)}"
+        )
+
         return global_step, tr_loss / global_step
 
     def eval_model(self, epoch=0, global_step=0, device=None):
@@ -291,3 +318,16 @@ def get_parameter_number(net):
     total_num = sum(p.numel() for p in net.parameters())
     trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
     return {"Total": total_num, "Trainable": trainable_num}
+
+
+# Convert to human-readable format
+def human_readable_size(size_in_bytes):
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_in_bytes < 1024:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024
+    return f"{size_in_bytes:.2f} TB"
+
+
+def get_size_in_bytes(tensors):
+    return sum(t.numel() * t.element_size() for t in tensors)
