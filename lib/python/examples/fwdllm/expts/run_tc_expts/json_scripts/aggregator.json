@@ -79,7 +79,12 @@
         "freeze_layers":"",
         "manual_seed":42,
         "client_num_in_total":0,
-        "warmup_ratio":1
+        "warmup_ratio":1,
+        "trackTrainerAvail": {
+            "enabled": "False",
+            "type": "NA"
+        },
+        "aggGoal": 2
     },
     "baseModel": {
         "name": "",
@@ -96,7 +101,7 @@
     "selector": {
         "sort": "random",
         "kwargs": {
-            "k":5
+            "k":2
         }
     },
     "optimizer": {

@@ -452,6 +452,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
             msg = {
                 MessageType.GRADIENTS: all_grads,
+                MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
@@ -699,7 +700,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self._stat_utility = 0
 
     def pause_execution(self):
-        time.sleep(0.1)
+        time.sleep(1)
         return
 
     def compose(self) -> None:

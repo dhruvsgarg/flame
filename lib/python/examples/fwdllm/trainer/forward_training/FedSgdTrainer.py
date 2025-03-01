@@ -60,6 +60,7 @@ class FedSGDTrainer(Trainer):
         # NRL adding new variables
         self.data_id = None
         self.total_data_bins = None
+        self.grad_for_var_check = None
 
     def initialize(self) -> None:
         """Initialize role."""
@@ -115,6 +116,8 @@ class FedSGDTrainer(Trainer):
         self.trainer.train(
             [self.train_local_list[0][self.data_id]], self.device, self.args
         )
+        self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
+        logger.info(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"

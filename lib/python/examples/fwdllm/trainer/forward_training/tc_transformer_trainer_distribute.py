@@ -175,7 +175,10 @@ class ForwardTextClassificationTrainer:
                     for j, fg in enumerate(self.grad):
                         fg.add_(jvp * v_params[j])
                         if self.args.var_control and j == self.layer_id_for_check:
-                            self.grad_for_var_check_list.append(jvp * v_params[j])
+                            self.grad_for_var_check_list.append(jvp * v_params[j]) # to be removed
+                            self.grad_for_var_check = jvp * v_params[j]
+                            logging.info(f"human readable size for grad_for_var_check: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
+
 
                     # Assigning gradients back so that torch can pick it up
                     # later. It is always on CPU so no need to move it to GPU.
