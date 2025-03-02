@@ -54,7 +54,8 @@ class ForwardTextClassificationTrainer:
             self.old_grad = None
             self.grad_pool = []
 
-        # var control
+        # var control TODO: It is not layer id it is param id. Distilbert for eg
+        # has only 6 layers.
         self.grad_for_var_check_list = []
         if self.args.model_type == "distilbert":
             self.layer_id_for_check = 20
@@ -66,13 +67,12 @@ class ForwardTextClassificationTrainer:
             self.layer_id_for_check = 22
         self.var = 0
 
-    # def initialize(self) -> None:
-    #     """Initialize role."""
-    #     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # def initialize(self) -> None: """Initialize role.""" self.device =
+    #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     #     # self.model = Net().to(self.device)
-    #     logging.info(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-    #                  f"{time.time()}")
+    #     logging.info(f"Task_id: {self.trainer_id} initialize completed at
+    #                  timestamp: " f"{time.time()}")
 
     def set_data(self, train_dl=None, test_dl=None):
         # Used for fedtrainer
@@ -129,7 +129,8 @@ class ForwardTextClassificationTrainer:
                 for batch_idx, batch in enumerate(self.train_dl):
 
                     batch = tuple(t for t in batch)
-                    # NRL already sent data to gpu during init inside FedSgdTrainer
+                    # NRL already sent data to gpu during init inside
+                    # FedSgdTrainer
                     logger.info(f"batch device: {device}")
                     x = batch[1].to(device)
                     labels = batch[4].to(device)
@@ -175,10 +176,10 @@ class ForwardTextClassificationTrainer:
                     for j, fg in enumerate(self.grad):
                         fg.add_(jvp * v_params[j])
                         if self.args.var_control and j == self.layer_id_for_check:
-                            self.grad_for_var_check_list.append(jvp * v_params[j]) # to be removed
+                            # Each model has a specific layer whose gradients
+                            # are used for var check
                             self.grad_for_var_check = jvp * v_params[j]
-                            logging.info(f"human readable size for grad_for_var_check: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
-
+                            logging.info(f"self.grad_var_shape: {[tensor.shape for tensor in self.grad_for_var_check]}, total tensors: {len(self.grad_for_var_check)} for trainer {self.trainer_id} of size: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
 
                     # Assigning gradients back so that torch can pick it up
                     # later. It is always on CPU so no need to move it to GPU.
@@ -204,12 +205,9 @@ class ForwardTextClassificationTrainer:
                         break
 
         if self.args.var_control:
-            # self.var = calculate_var(
-            #     self.grad_for_var_check_list,
-            # )
-            # logging.info(
-            #     f"num of fwdgrad: {len(self.grad_for_var_check_list)}, var: {self.var}"
-            # )
+            # self.var = calculate_var( self.grad_for_var_check_list, )
+            #     logging.info( f"num of fwdgrad:
+            # {len(self.grad_for_var_check_list)}, var: {self.var}" )
             if self.args.perturbation_sampling:
                 self.grad_pool.append(self.grad)
 

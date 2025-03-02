@@ -436,22 +436,22 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Retrieve forward gradients before sending it from trainer to
             # aggregator
-            # Collect gradients into a list, ensuring they are flattened
-            grad_list = [
-                p.grad.view(-1) for p in self.model.parameters() if p.grad is not None
-            ]
+            # Collect gradients into a dictionary where keys are layer names and values are tensors
+            grad_dict = {
+                name: p.grad.clone()
+                for i, (name, p) in enumerate(self.model.named_parameters())
+                if p.grad is not None
+            }
 
-            # Concatenate all gradients into a single tensor
-            if grad_list:
-                all_grads = torch.cat(grad_list)  # Shape: (total_number_of_parameters,)
+            # Log the gradient dictionary details
+            if grad_dict:
+                logger.info(f"Going to send gradients dictionary with {len(grad_dict)} entries: "
+                            f"{ {k: v.shape for k, v in grad_dict.items()} }")
             else:
-                all_grads = torch.tensor([])  # Handle case where no gradients exist
-
-            # all_grads now contains all gradients in a single tensor
-            logger.info(f"Going to send gradients tensor of shape: {all_grads.shape}")
+                logger.info("No gradients exist; sending an empty dictionary.")
 
             msg = {
-                MessageType.GRADIENTS: all_grads,
+                MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
