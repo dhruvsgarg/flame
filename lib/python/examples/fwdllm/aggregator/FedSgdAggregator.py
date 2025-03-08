@@ -10,7 +10,7 @@ import torch
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var
 logger = logging.getLogger(__name__)
-
+import functorch as fc
 
 class FedSGDAggregator(TopAggregator):
 
@@ -47,6 +47,7 @@ class FedSGDAggregator(TopAggregator):
         self.model_dict = dict()
         self.sample_num_dict = dict()
         self.flag_client_model_uploaded_dict = dict()
+        
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
 
@@ -56,7 +57,7 @@ class FedSGDAggregator(TopAggregator):
         self.cached_v = []
         if self.args.model_type == "distilbert":
             # self.var_threshold = 0.25
-            self.var_threshold = 0 # temporarily setting this to 0
+            self.var_threshold = 1 # temporarily setting this to 1
         elif self.args.model_type == "bert":
             # self.var_threshold = 0.6
             self.var_threshold = 0.2
@@ -82,8 +83,10 @@ class FedSGDAggregator(TopAggregator):
             print("self.trainer_event_dict: ", self.trainer_event_dict)
 
         self.loss_list = []
-        self.grads_for_var_check_list = []
+        self.grad_for_var_check_list = []
         self.var_good_enough = True
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
+        self.grad = [torch.zeros_like(p) for p in self.params]
 
     def get_global_model_params(self):
         return self.trainer.get_model_params()
@@ -107,83 +110,86 @@ class FedSGDAggregator(TopAggregator):
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
         return True
+        
 
     def aggregate(self, current_round):
-        self.var = calculate_var(self.grads_for_var_check_list)
+        self.var = calculate_var(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")
-        if self.var>=self.var_threshold:
-            logger.info("var isn't good enough, train again")
-            self.var_good_enough = False
+        # if self.var>=self.var_threshold:
+        #     logger.info("var isn't good enough, train again")
+        #     self.var_good_enough = False
         
-        # start_time = time.time()
-        # model_list = []
-        # training_num = 0
+        start_time = time.time()
+        model_list = []
+        training_num = 0
 
-        # # self.warmup_rounds = 20
-        # if current_round < self.warmup_rounds:
-        #     ratio = float(current_round + 1) / float(max(1, self.warmup_rounds))
-        # else:
-        #     ratio = max(
-        #         0.0,
-        #         float(self.args.comm_round - current_round)
-        #         / float(max(1, self.args.comm_round - self.warmup_rounds)),
-        #     )
-        # learning_rate = self.args.learning_rate * ratio
-        # logger.info(f"learning rate: {learning_rate}")
+        # self.warmup_rounds = 20
+        if current_round < self.warmup_rounds:
+            ratio = float(current_round + 1) / float(max(1, self.warmup_rounds))
+        else:
+            ratio = max(
+                0.0,
+                float(self.args.comm_round - current_round)
+                / float(max(1, self.args.comm_round - self.warmup_rounds)),
+            )
+        learning_rate = self.args.learning_rate * ratio
+        logger.info(f"learning rate: {learning_rate}")
 
-        # for idx in range(self.worker_num):
-        #     model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
-        #     training_num += self.sample_num_dict[idx]
+        for idx in range(self.worker_num):
+            model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
+            training_num += self.sample_num_dict[idx]
 
-        # # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，用于后面cache_v
-        # if self.args.var_control:
-        #     model_dict_cached = copy.deepcopy(self.model_dict)
-        #     origin_param = copy.deepcopy(self.get_global_model_params())
+        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，用于后面cache_v
+        if self.args.var_control:
+            model_dict_cached = copy.deepcopy(self.model_dict)
+            origin_param = copy.deepcopy(self.get_global_model_params())
 
-        #     # cached_v:  (num, params)
-        #     logger.info(f"len of cached v: {len(self.cached_v)}")
-        #     for cached_v in self.cached_v:
-        #         model_list.append(cached_v)
-        #         training_num += cached_v[0]
-        #     logger.info(f"training_num : {training_num}")
+            # cached_v:  (num, params)
+            logger.info(f"len of cached v: {len(self.cached_v)}")
+            for cached_v in self.cached_v:
+                model_list.append(cached_v)
+                training_num += cached_v[0]
+            logger.info(f"training_num : {training_num}")
 
-        # logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
-
-        # # old_param = self.get_global_model_params()
-        # old_param = self.trainer.model.parameters()
-
-        # # logger.info("################aggregate: %d" % len(model_list))
-        # (num0, averaged_params) = model_list[0]
-        # for id, k in enumerate(averaged_params):
-        #     for i in range(0, len(model_list)):
-        #         local_sample_number, local_model_params = model_list[i]
-        #         # w = local_sample_number / training_num
-        #         if i == 0:
-        #             averaged_params[id] = local_model_params[id]
-        #         else:
-        #             averaged_params[id] += local_model_params[id]
-        #     next(old_param).detach().to("cpu").sub_(
-        #         learning_rate * averaged_params[id] / training_num
-        #     )
-        # if self.args.var_control:
-        #     if self.var <= self.var_threshold:
-        #         # 方差满足要求
-        #         self.cached_v = []
-        #     else:
-        #         logger.info("current model is not good enough, calculate more v")
-        #         # 当前模型不行，v不够，暂存起来，后面再计算更多的v
-        #         for idx in range(self.worker_num):
-        #             self.cached_v.append(
-        #                 (self.sample_num_dict[idx], model_dict_cached[idx])
-        #             )
-        #         # 模型改回去
-        #         self.set_global_model_params(origin_param)
+        logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
 
         # old_param = self.get_global_model_params()
+        old_param = self.trainer.model.parameters()
 
-        # end_time = time.time()
-        # logger.info("aggregate time cost: %d" % (end_time - start_time))
-        # return old_param
+        # logger.info("################aggregate: %d" % len(model_list))
+        (num0, averaged_params) = model_list[0]
+        for id, k in enumerate(averaged_params):
+            for i in range(0, len(model_list)):
+                local_sample_number, local_model_params = model_list[i]
+                # w = local_sample_number / training_num
+                if i == 0:
+                    averaged_params[id] = local_model_params[id]
+                else:
+                    averaged_params[id] += local_model_params[id]
+            next(old_param).detach().to("cpu").sub_(
+                learning_rate * averaged_params[id] / training_num
+            )
+        if self.args.var_control:
+            if self.var <= self.var_threshold:
+                self.var_good_enough = True
+                # 方差满足要求
+                self.cached_v = []
+            else:
+                self.var_good_enough = False
+                logger.info("current model is not good enough, calculate more v")
+                # 当前模型不行，v不够，暂存起来，后面再计算更多的v
+                for idx in range(self.worker_num):
+                    self.cached_v.append(
+                        (self.sample_num_dict[idx], model_dict_cached[idx])
+                    )
+                # 模型改回去
+                self.set_global_model_params(origin_param)
+
+        old_param = self.get_global_model_params()
+
+        end_time = time.time()
+        logger.info("aggregate time cost: %d" % (end_time - start_time))
+        return old_param
 
     def client_sampling(self, round_idx, client_num_in_total, client_num_per_round):
         if client_num_in_total == client_num_per_round:

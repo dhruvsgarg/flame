@@ -224,8 +224,19 @@ class Trainer(Role, metaclass=ABCMeta):
             # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             # self.weights = msg[MessageType.WEIGHTS]
+            
 
             self._update_model()
+            if MessageType.DATA_ID in msg:
+                logger.info(f"Received data id for training : {msg[MessageType.DATA_ID]}")
+                self.data_id = msg[MessageType.DATA_ID]
+                if MessageType.GRAD_POOL in msg:
+                    if self.args.var_control:
+                        if self.args.perturbation_sampling:
+                            if self.data_id % 2:
+                                self.trainer.model_trainer.old_grad = msg[MessageType.GRAD_POOL]
+                            else:
+                                self.trainer.model_trainer.old_grad = None
         elif MessageType.VAR in msg:
             logger.info(
                 "Calc more variance received for trainer id: {self.trainer_id}. Not updating weights"
@@ -235,9 +246,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 "Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
             )
 
-        if MessageType.DATA_ID in msg:
-            logger.info(f"Received data id for training : {msg[MessageType.DATA_ID]}")
-            self.data_id = msg[MessageType.DATA_ID]
+        
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]

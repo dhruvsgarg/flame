@@ -42,6 +42,8 @@ from flame.selector.oort import (
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
 )
+import functorch as fc
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +77,9 @@ class TopAggregator(SyncTopAgg):
         self._prev_distribute_weights_success = False
 
         self.data_id = 0
-
+        self.total_data_bins = 2
+        
+        self.grad_pool = []
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -664,6 +668,36 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
+    def aggregate_grads_from_trainers(self, trainer_grad):
+        # logger.info(f"len(self.model.named_parameters()): {len(self.model.named_parameters())}, len(self.params): {len(self.params)}")
+        # self.grad.to(DeviceType.CPU)
+        # trainer_grad.to(DeviceType.CPU)
+        np = self.model.named_parameters()
+        for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
+            if param.requires_grad:
+                if name in trainer_grad:
+                    grad_device = self.grad[i].device
+                    trainer_grad[name] = trainer_grad[name].to(grad_device)                    
+                    # Ensure the layer name exists in trainer_grad
+                    self.grad[i].add_(trainer_grad[name])  
+                else:
+                    logger.warn(f"Gradient for {name} not found in trainer_grad.")
+
+    def aggregate_grad_pool(self, grad_list):
+        if len(grad_list) == 0:
+            return None
+        if len(grad_list) == 1:
+            return grad_list[0]
+        else:
+            grad = grad_list[0]
+            for id,k in enumerate(grad):
+                for i in range(0, len(grad_list)):
+                    if i == 0:
+                        grad[id] = grad_list[i][id]
+                    else:
+                        grad[id] += grad_list[i][id]
+            return grad
+
     def _aggregate_grads(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -899,10 +933,11 @@ class TopAggregator(SyncTopAgg):
         if MessageType.GRADIENTS in msg:
             # weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             all_gradients = msg[MessageType.GRADIENTS]
+            self.aggregate_grads_from_trainers(all_gradients)
         
         if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
             logger.info(f"received GRADIENTS_FOR_VAR_CHECK, {len(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])}")
-            self.grads_for_var_check_list.append(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])
+            self.grad_for_var_check_list.append(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]
@@ -1057,14 +1092,26 @@ class TopAggregator(SyncTopAgg):
         # self._update_model()
 
             logger.info("calling aggregate for fwdllm")
+            self.grad_pool.append(self.grad)
+            self.add_local_trained_result(0,self.grad,self._agg_goal_cnt)
+            self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
+            self.grad = [torch.zeros_like(p) for p in self.params]
+            
             self.aggregate(self._round)
             self._agg_goal_cnt = 0
             # decrement counter since updates consumed from queue
             self._updates_in_queue -= self._agg_goal
+            if self.var_good_enough:
+                self.data_id += 1
+                # need to replace it with per end property
+                if self.data_id == self.total_data_bins:
+                    logger.info("incrementing round number now ")
+                    self._round += 1
+                    self.data_id = 0
 
         logger.debug(f"aggregation finished for round {self._round}")
         logger.info(
-            f"====== aggregation finished for round {self._round}, "
+            f"====== aggregation finished for round {self._round-1}, new data id now: {self.data_id}"
             f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
             f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
             f"{self._trainer_participation_in_round_count}"
@@ -1112,7 +1159,8 @@ class TopAggregator(SyncTopAgg):
         #     f"Avg training time {avg_training_time} across "
         #     f"{len(self._track_trainer_version_duration_s)} trainers"
         # )
-        
+        if self.var_good_enough: 
+            channel._selector.remove_from_selected_ends(channel._ends, end)
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
@@ -1284,7 +1332,9 @@ class TopAggregator(SyncTopAgg):
                 f"move to get() for fetch weights from trainers"
             )
             return
-
+        if self.var_good_enough == True:
+            logger.info("Sending weights to ends because variance is good enough")
+            
         # send out global model parameters to trainers
         for end in ends:
             # Send shouldn't be allowed if already sent to a trainer
@@ -1305,19 +1355,22 @@ class TopAggregator(SyncTopAgg):
 
             # we use _round to indicate a model version
             if self.var_good_enough == True:
-                logger.info("Sending weights to ends because variance is good enough")
                 channel.send(
                     end,
                     {
                         MessageType.WEIGHTS: weights_to_device(
                             self.weights, DeviceType.CPU
                         ),
+                        MessageType.GRAD_POOL: self.aggregate_grad_pool(self.grad_pool),
                         MessageType.ROUND: self._round,
                         MessageType.MODEL_VERSION: self._round,
                         MessageType.TASK_TO_PERFORM: task_to_perform,
                         MessageType.DATA_ID: self.data_id,
                     },
                 )
+                self.grad_pool = []
+                
+
             else:
                 logger.info("Not sending weights to ends because variance isn't good enough")
                 channel.send(
@@ -1330,7 +1383,6 @@ class TopAggregator(SyncTopAgg):
                         MessageType.DATA_ID: self.data_id,
                     },
                 )
-
             # Update send_time in training_duration_s
             if end not in self._track_trainer_version_duration_s.keys():
                 logger.debug(
