@@ -83,7 +83,7 @@ class TopAggregator(SyncTopAgg):
         self._prev_distribute_weights_success = False
 
         self.data_id = 0
-        self.total_data_bins = 2
+        self.total_data_bins = 150
         
         self.grad_pool = []
         self.var = None

@@ -47,7 +47,7 @@
         "gpu_mapping_file": "gpu_mapping.yaml",
         "gpu_mapping_key": "mapping_myMap",
         "client_num_per_round": 5,
-        "comm_round": 30,
+        "comm_round": 3000,
         "ci": 0,
         "dataset": "agnews",
         "data_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/data_files/agnews_data.h5",
@@ -85,7 +85,7 @@
             "type": "NA"
         },
         "aggGoal": 5,
-        "rounds":3000
+        "rounds":300
     },
     "baseModel": {
         "name": "",
