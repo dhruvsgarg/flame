@@ -190,6 +190,7 @@ if __name__ == "__main__":
         device,
         config,
         fed_trainer,
+        num_labels
     )
 
     aggregator.compose()

@@ -2,7 +2,7 @@ client_num_per_round=$1
 LR=$2
 FL_ALG=$3
 
-pkill -f main.py
+pkill -f fl_main.py
 sleep 10  # Wait for the system to stabilize
 C_LR=0.01
 S_LR=0.1
@@ -118,14 +118,14 @@ else
     --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
     > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
 
-  # Sleep for 5 seconds so that agg sets everything up before trainer starts
-  sleep 5
+  # Sleep for 10 seconds so that agg sets everything up before trainer starts
+  sleep 10
   
   # Run trainer/main.py 100 times, each with a unique log file
   NUM_AVAIL_GPUS=8
 
   # Run trainer/main.py 100 times, each with a unique log file
-  for X in $(seq 0 1)
+  for X in $(seq 0 19)
   do
     # Assign GPUs in a round-robin fashion
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
@@ -134,6 +134,7 @@ else
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
+    sleep 1
   done
 
   # Wait for all processes to finish

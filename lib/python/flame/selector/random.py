@@ -21,15 +21,15 @@ import random
 from ..common.typing import Scalar
 from ..end import End
 from . import AbstractSelector, SelectorReturnType
-# from flame.channel import (
-#     KEY_CH_SELECT_REQUESTER,
-#     KEY_CH_STATE,
-#     VAL_CH_STATE_HTBT_RECV,
-#     VAL_CH_STATE_HTBT_SEND,
-#     VAL_CH_STATE_RECV,
-#     VAL_CH_STATE_SEND,
-# )
-
+from flame.channel import (
+    KEY_CH_SELECT_REQUESTER,
+    KEY_CH_STATE,
+    VAL_CH_STATE_HTBT_RECV,
+    VAL_CH_STATE_HTBT_SEND,
+    VAL_CH_STATE_RECV,
+    VAL_CH_STATE_SEND,
+)
+from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 logger = logging.getLogger(__name__)
 
 
@@ -67,9 +67,7 @@ class RandomSelector(AbstractSelector):
         # between
         self.track_selected_trainers_which_left = dict()
 
-        # self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
-        # if self.requester not in self.selected_ends:
-        #     self.selected_ends[self.requester] = set()
+        
     def select(
         self,
         ends: dict[str, End],
@@ -78,15 +76,18 @@ class RandomSelector(AbstractSelector):
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
         logger.debug("calling random select")
+        # self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
+        # if self.requester not in self.selected_ends:
+        #     self.selected_ends[self.requester] = set()
 
         # default, availability unaware way of using ends
         eligible_ends = ends
-
+        logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         k = min(len(ends), self.k)
         if k == 0:
             logger.debug("ends is empty")
             return {}
-
+        logger.info(f"new k = {k}")
         round = channel_props["round"] if "round" in channel_props else 0
 
         if len(self.selected_ends) == 0 or round > self.round:
@@ -125,7 +126,11 @@ class RandomSelector(AbstractSelector):
         logger.debug(f"ends: {ends.keys()}")
         logger.debug(f"selected ends: {self.selected_ends}")
 
-        selected_ends = self.selected_ends
+        selected_ends = self.selected_ends #[self.requester]
+        # logger.debug(
+        #     f"self.requester: {self.requester} and selected_ends: "
+        #     f"{selected_ends} before processing"
+        # )
 
         num_ends_to_remove = min(len(self.ordered_updates_recv_ends), self.k)
         logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
@@ -241,62 +246,63 @@ class RandomSelector(AbstractSelector):
 
 
     def _cleanup_removed_ends(self, end_id):
-        logger.debug(
-            f"Going to cleanup selector state for "
-            f"end_id {end_id} since it has left the channel"
-        )
-        if (end_id in self.all_selected) and (
-            end_id not in self.ordered_updates_recv_ends
-        ):
-            # remove end from all_selected if we havent got an update
-            # from it yet. It would have flushed the agg-weights after
-            # initiating channel.leave().
-            # logger.debug(
-            #     f"Removing end_id {end_id} from all_selected"
-            #     f" since no update received before it left the channel."
-            # )
-            # selected_ends = self.selected_ends[self.requester]
-            # if end_id in selected_ends:
-            #     selected_ends.remove(end_id)
-            #     logger.debug(f"Also removing end_id {end_id} from selected_ends")
-            #     self.selected_ends[self.requester] = selected_ends
+        pass
+        # logger.debug(
+        #     f"Going to cleanup selector state for "
+        #     f"end_id {end_id} since it has left the channel"
+        # )
+        # if (end_id in self.all_selected) and (
+        #     end_id not in self.ordered_updates_recv_ends
+        # ):
+        #     # remove end from all_selected if we havent got an update
+        #     # from it yet. It would have flushed the agg-weights after
+        #     # initiating channel.leave().
+        #     logger.debug(
+        #         f"Removing end_id {end_id} from all_selected"
+        #         f" since no update received before it left the channel."
+        #     )
+        #     selected_ends = self.selected_ends[self.requester]
+        #     if end_id in selected_ends:
+        #         selected_ends.remove(end_id)
+        #         logger.debug(f"Also removing end_id {end_id} from selected_ends")
+        #         self.selected_ends[self.requester] = selected_ends
 
-            # Track trainers that were sent weights but dropped off
-            # before sending back an update
-            if end_id in self.track_selected_trainers_which_left:
-                self.track_selected_trainers_which_left[end_id] += 1
-            else:
-                self.track_selected_trainers_which_left[end_id] = 1
+        #     # Track trainers that were sent weights but dropped off
+        #     # before sending back an update
+        #     if end_id in self.track_selected_trainers_which_left:
+        #         self.track_selected_trainers_which_left[end_id] += 1
+        #     else:
+        #         self.track_selected_trainers_which_left[end_id] = 1
 
-            total_trainers_dropped_off = 0
-            for k, v in self.track_selected_trainers_which_left.items():
-                total_trainers_dropped_off += v
+        #     total_trainers_dropped_off = 0
+        #     for k, v in self.track_selected_trainers_which_left.items():
+        #         total_trainers_dropped_off += v
 
-            logger.info(
-                f"Trainer: {end_id} with count "
-                f"{self.track_selected_trainers_which_left[end_id]}, left "
-                f"before returning update. "
-                f"total_trainers_dropped_off: {total_trainers_dropped_off} "
-                f"self.track_selected_trainers_which_left: "
-                f"{self.track_selected_trainers_which_left}"
-            )
-            if end_id in self.all_selected.keys():
-                del self.all_selected[end_id]
-        elif (end_id in self.all_selected) and (
-            end_id in self.ordered_updates_recv_ends
-        ):
-            # Dont remove it if it was in all_selected and we have got
-            # an update from it before it did channel.leave(). It has
-            # completed its participation for this round.
-            logger.debug(
-                f"Update was alreacy received from {end_id} before it left "
-                f"the channel. Not deleting from all_ends now."
-            )
-        else:
-            logger.warn(
-                f"End_id {end_id} remove check from all_selected failed. "
-                f"Need to check"
-            )
+        #     logger.info(
+        #         f"Trainer: {end_id} with count "
+        #         f"{self.track_selected_trainers_which_left[end_id]}, left "
+        #         f"before returning update. "
+        #         f"total_trainers_dropped_off: {total_trainers_dropped_off} "
+        #         f"self.track_selected_trainers_which_left: "
+        #         f"{self.track_selected_trainers_which_left}"
+        #     )
+        #     if end_id in self.all_selected.keys():
+        #         del self.all_selected[end_id]
+        # elif (end_id in self.all_selected) and (
+        #     end_id in self.ordered_updates_recv_ends
+        # ):
+        #     # Dont remove it if it was in all_selected and we have got
+        #     # an update from it before it did channel.leave(). It has
+        #     # completed its participation for this round.
+        #     logger.debug(
+        #         f"Update was alreacy received from {end_id} before it left "
+        #         f"the channel. Not deleting from all_ends now."
+        #     )
+        # else:
+        #     logger.warn(
+        #         f"End_id {end_id} remove check from all_selected failed. "
+        #         f"Need to check"
+        #     )
 
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from selected ends"""

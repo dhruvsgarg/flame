@@ -26,6 +26,7 @@ class FedSGDAggregator(TopAggregator):
         device,
         args,
         model_trainer,
+        num_labels
     ):
         self.trainer = model_trainer
         logger.info(f"self.trainer = {self.trainer}")
@@ -37,6 +38,7 @@ class FedSGDAggregator(TopAggregator):
         self.config = args
         self.model = model_trainer.model
         self.dataset = None
+        self.num_labels = num_labels
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -50,7 +52,7 @@ class FedSGDAggregator(TopAggregator):
         
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
-
+        # ratio is one and the comm_round is 30 rn 
         self.warmup_rounds = math.ceil(self.args.comm_round * self.args.warmup_ratio)
 
         # 之前的v不够，暂存在cached_v

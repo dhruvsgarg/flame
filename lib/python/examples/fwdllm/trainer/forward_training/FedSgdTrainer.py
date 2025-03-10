@@ -24,7 +24,8 @@ class FedSGDTrainer(Trainer):
     ):
         self.trainer = model_trainer
         self.trainer_id = trainer_id
-        self.client_index = client_index
+        self.client_index = client_index # this variable is diff from client_idx because it contains a list of clients. we dont need it. was used by fwdllm
+
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
         # NRL most of this is reduntant since our dict is of size=1. But keeping this code for consistency

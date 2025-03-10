@@ -43,7 +43,7 @@
         }
     ],
     "hyperparameters": {
-        "client_idx": 0,
+        "client_idx": 1,
         "gpu_mapping_file": "gpu_mapping.yaml",
         "gpu_mapping_key": "mapping_myMap",
         "client_num_per_round": 5,
@@ -51,7 +51,8 @@
         "ci": 0,
         "dataset": "agnews",
         "data_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/data_files/agnews_data.h5",
-        "partition_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/partition_files/agnews_partition.h5",        "partition_method": "uniform",
+        "partition_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/partition_files/agnews_partition.h5",
+        "partition_method": "uniform",
         "fl_algorithm": "FedFwd",
         "model_type": "distilbert",
         "model_name": "distilbert-base-uncased",
@@ -77,9 +78,11 @@
         "use_adapter":false,
         "gradient_accumulation_steps":1,
         "freeze_layers":"",
-        "manual_seed":42, 
+        "manual_seed":42,
         "client_num_in_total":0,
         "warmup_ratio":1
+
+
     },
     "baseModel": {
         "name": "",

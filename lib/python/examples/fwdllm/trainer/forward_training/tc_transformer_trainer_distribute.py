@@ -189,8 +189,8 @@ class ForwardTextClassificationTrainer:
 
                     current_loss = loss.item()
                     logging.info(
-                        "epoch = %d, batch_idx = %d/%d, loss = %s"
-                        % (epoch, batch_idx, len(self.train_dl), current_loss)
+                        "epoch = %d, trainer_id = %s, loss = %s"
+                        % (epoch, self.trainer_id, current_loss)
                     )
 
                     global_step += 1

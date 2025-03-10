@@ -18,7 +18,7 @@
 import logging
 import time
 from datetime import datetime
-
+import sklearn
 import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
@@ -28,6 +28,10 @@ from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
     TAG_HEARTBEAT,
+)
+from sklearn.metrics import (
+    confusion_matrix,
+    matthews_corrcoef,
 )
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
@@ -44,6 +48,8 @@ from flame.selector.oort import (
 )
 import functorch as fc
 import torch
+
+from torch.nn import CrossEntropyLoss
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +86,7 @@ class TopAggregator(SyncTopAgg):
         self.total_data_bins = 2
         
         self.grad_pool = []
+        self.var = None
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -914,7 +921,7 @@ class TopAggregator(SyncTopAgg):
 
         # NRL temporarily removing this 
         # capture telemetry on trainer participation in rounds
-        # channel._selector.ordered_updates_recv_ends.append(end)
+        channel._selector.ordered_updates_recv_ends.append(end)
         # logger.debug(
         #     f"After appending {end} to ordered_updates_recv_ends: "
         #     f"{channel._selector.ordered_updates_recv_ends}"
@@ -1028,6 +1035,7 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_UPDATE_COUNT, self._updates_recevied[end]
             )
+            channel.cleanup_recvd_ends()
             return
 
         # if self._agg_goal_weights is None:
@@ -1101,7 +1109,15 @@ class TopAggregator(SyncTopAgg):
             self._agg_goal_cnt = 0
             # decrement counter since updates consumed from queue
             self._updates_in_queue -= self._agg_goal
+
+            round_to_print = self._round
+            data_id_to_print = self.data_id
+
             if self.var_good_enough:
+
+                # evaluate model to calculate loss
+                result,_,_ = self.eval_model()
+                logger.info(f"eval loss = {result['eval_loss']}")
                 self.data_id += 1
                 # need to replace it with per end property
                 if self.data_id == self.total_data_bins:
@@ -1109,15 +1125,17 @@ class TopAggregator(SyncTopAgg):
                     self._round += 1
                     self.data_id = 0
 
-        logger.debug(f"aggregation finished for round {self._round}")
+        logger.debug(f"aggregation finished for round {round_to_print}")
         logger.info(
-            f"====== aggregation finished for round {self._round-1}, new data id now: {self.data_id}"
+            f"====== aggregation finished for round {round_to_print}, data id: {data_id_to_print}, "
             f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
             f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
             f"{self._trainer_participation_in_round_count}"
         )
+
+
         logger.info(
-            f"After round: {self._round}, remaining _updates_in_queue: "
+            f"After round: {round_to_print}, remaining _updates_in_queue: "
             f"{self._updates_in_queue}"
         )
          # NRL commenting for now 
@@ -1164,7 +1182,86 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
+    def eval_model(self, epoch=0, global_step=0, device=None):
+        if not device:
+            device = self.device
 
+        results = {}
+
+        eval_loss = 0.0
+        nb_eval_steps = 0
+        n_batches = len(self.test_global)
+        test_sample_len = len(self.test_global.dataset)
+        preds = np.empty((test_sample_len, self.num_labels))
+
+        out_label_ids = np.empty(test_sample_len)
+        # TODO: See why .to(device) was called here
+        self.model  # .to(device)
+        self.model.eval()
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
+        logging.info(
+            "len(test_global) = %d, n_batches = %d" % (len(self.test_global), n_batches)
+        )
+        for i, batch in enumerate(self.test_global):
+            with torch.no_grad():
+                batch = tuple(t for t in batch)
+                x = batch[1]
+                labels = batch[4]
+
+                output = self.model(x)
+                logits = output[0]
+
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                eval_loss += loss.item()
+
+            nb_eval_steps += 1
+            start_index = self.args.eval_batch_size * i
+
+            end_index = (
+                start_index + self.args.eval_batch_size
+                if i != (n_batches - 1)
+                else test_sample_len
+            )
+            preds[start_index:end_index] = logits.detach().cpu().numpy()
+            out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
+
+        eval_loss = eval_loss / nb_eval_steps
+
+        model_outputs = preds
+        preds = np.argmax(preds, axis=1)
+        result, wrong = self.compute_metrics(
+            preds, out_label_ids, self.test_global.examples
+        )
+        result["eval_loss"] = eval_loss
+        results.update(result)
+
+        # self.results.update(result)
+        logging.info(results)
+
+        return result, model_outputs, wrong
+    
+    def compute_metrics(self, preds, labels, eval_examples=None):
+        assert len(preds) == len(labels)
+
+        extra_metrics = {}
+        extra_metrics["acc"] = sklearn.metrics.accuracy_score(labels, preds)
+        mismatched = labels != preds
+
+        if eval_examples:
+            wrong = [i for (i, v) in zip(eval_examples, mismatched) if v.any()]
+        else:
+            wrong = ["NA"]
+
+        mcc = matthews_corrcoef(labels, preds)
+
+        tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+        return (
+            {**{"mcc": mcc, "tp": tp, "tn": tn, "fp": fp, "fn": fn}, **extra_metrics},
+            wrong,
+        )
     def oracular_trainer_avail_check(self, end: str) -> bool:
         logger.debug("In oracular_trainer_avail_check")
 
@@ -1332,9 +1429,13 @@ class TopAggregator(SyncTopAgg):
                 f"move to get() for fetch weights from trainers"
             )
             return
+        if self.var:
+            logger.info(f"self.var = {self.var}, self.var_threshold = {self.var_threshold}")
         if self.var_good_enough == True:
-            logger.info("Sending weights to ends because variance is good enough")
-            
+            logger.info("Sending weights to ends because variance is less than threshold")
+        else:
+            logger.info("Not sending weights to ends because variance is greater than threshold")
+
         # send out global model parameters to trainers
         for end in ends:
             # Send shouldn't be allowed if already sent to a trainer
@@ -1372,7 +1473,7 @@ class TopAggregator(SyncTopAgg):
                 
 
             else:
-                logger.info("Not sending weights to ends because variance isn't good enough")
+                # logger.info("Not sending weights to ends because variance isn't good enough")
                 channel.send(
                     end,
                     {
