@@ -184,8 +184,13 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
-
-        if MessageType.WEIGHTS in msg:
+            
+        if MessageType.VAR in msg:
+            logger.info(
+                f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}. Not updating weights"
+            )
+            
+        elif MessageType.WEIGHTS in msg:
             # Before proceeding, check if this model version is newer
             # than previously processed NOTE: The condition could have
             # been round <= updates_retuned. But there are scenarios
@@ -237,10 +242,6 @@ class Trainer(Role, metaclass=ABCMeta):
                                 self.trainer.model_trainer.old_grad = msg[MessageType.GRAD_POOL]
                             else:
                                 self.trainer.model_trainer.old_grad = None
-        elif MessageType.VAR in msg:
-            logger.info(
-                "Calc more variance received for trainer id: {self.trainer_id}. Not updating weights"
-            )
         else:
             logger.info(
                 "Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
