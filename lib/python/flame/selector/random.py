@@ -17,7 +17,6 @@
 
 import logging
 import random
-import time
 from ..common.typing import Scalar
 from ..end import End
 from . import AbstractSelector, SelectorReturnType
