@@ -87,6 +87,7 @@ class TopAggregator(SyncTopAgg):
         
         self.grad_pool = []
         self.var = None
+        self.ends_not_selected_yet = False
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -706,11 +707,16 @@ class TopAggregator(SyncTopAgg):
             return grad
 
     def _aggregate_grads(self, tag: str) -> None:
+        
         """Aggregate local model weights asynchronously.
 
         This method is overriden from one in synchronous top
         aggregator (..top_aggregator).
         """
+        logger.info('starting aggregate_grads')
+        if self.ends_not_selected_yet:
+            logger.info("no ends selected yet")
+            return
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info("No channel found")
@@ -721,6 +727,9 @@ class TopAggregator(SyncTopAgg):
         # first NOTE: (DG) Right now, the leave notifications also
         # cause a message to be processed and yield (None,None) from
         # recv_fifo().
+        if channel.ends(VAL_CH_STATE_RECV) is None:
+            logger.info("no ends yet")
+            return
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
         end, _ = metadata
         if not msg:
@@ -1382,6 +1391,7 @@ class TopAggregator(SyncTopAgg):
         This method is overridden from one in synchronous top
         aggregator (..top_aggregator).
         """
+
         logger.debug(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -1418,10 +1428,15 @@ class TopAggregator(SyncTopAgg):
 
         # check if there are any ends to send weights to
 
-        logger.info(
-            f"Sending weights to trainers with task_to_perform = {task_to_perform}"
-        )
+        # logger.info(
+        #     f"Sending weights to trainers with task_to_perform = {task_to_perform}"
+        # )
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        logger.info(f"ends: {ends}")
+        if ends is None:
+            self.ends_not_selected_yet = True
+        else:
+            self.ends_not_selected_yet = False
         # NRL TODO: else will take care of randomly selecting x trainers for "eval only" operation
         if not ends:
             logger.debug(
@@ -1455,6 +1470,7 @@ class TopAggregator(SyncTopAgg):
             )
 
             # we use _round to indicate a model version
+            logger.info(f"sending data id: {self.data_id}")
             if self.var_good_enough == True:
                 channel.send(
                     end,

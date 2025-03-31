@@ -77,7 +77,7 @@ if __name__ == "__main__":
         format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
         datefmt="%Y-%m-%d,%H:%M:%S",
     )
-    logging.info(config)
+    logging.debug(config)
     set_seed(config.hyperparameters.manual_seed)
 
     # # initialize distributed computing (MPI)
@@ -193,11 +193,11 @@ if __name__ == "__main__":
     ) = dm.load_federated_data(
         process_id=process_id, client_idx=config.hyperparameters.client_idx
     )
-    logging.info(f"NRL Client idx: {config.hyperparameters.client_idx}")
-    logging.info(f"NRL train_data_local_dict: {train_data_local_dict}")
-    logging.info(f"NRL train_data_global: {train_data_global}")
-    logging.info(f"NRL test_data_local_dict: {test_data_local_dict}")
-    logging.info(f"NRL test_data_global: {test_data_global}")
+    logging.debug(f"NRL Client idx: {config.hyperparameters.client_idx}")
+    logging.debug(f"NRL train_data_local_dict: {train_data_local_dict}")
+    logging.debug(f"NRL train_data_global: {train_data_global}")
+    logging.debug(f"NRL test_data_local_dict: {test_data_local_dict}")
+    logging.debug(f"NRL test_data_global: {test_data_global}")
     client_trainer = ForwardTextClassificationTrainer(
         model_args,
         config.hyperparameters.client_idx % 8,

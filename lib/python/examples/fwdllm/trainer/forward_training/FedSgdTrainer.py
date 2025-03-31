@@ -29,7 +29,7 @@ class FedSGDTrainer(Trainer):
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
         # NRL most of this is reduntant since our dict is of size=1. But keeping this code for consistency
-        logger.info(
+        logger.debug(
             f"train_data_local_dict keys: {train_data_local_dict.keys()}, client idx: {args.client_idx}, {type(args.client_idx)}"
         )
 
@@ -68,7 +68,7 @@ class FedSGDTrainer(Trainer):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model.to(self.device)
-        logger.info(f"self.device: {self.device}")
+        logger.debug(f"self.device: {self.device}")
         self.total_data_bins = len(self.train_local[0])
         # loading data to gpu
         # NRL TODO: This didnt work. Error: expected all tensors to be on the same device. Needed to load them on gpu again during train_model
@@ -111,14 +111,14 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
-        logger.info(
+        logger.debug(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
         self.trainer.train(
             [self.train_local_list[0][self.data_id]], self.device, self.args
         )
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
-        logger.info(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
+        logger.debug(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"

@@ -43,7 +43,7 @@
         }
     ],
     "hyperparameters": {
-        "client_idx": 0,
+        "client_idx": 4,
         "gpu_mapping_file": "gpu_mapping.yaml",
         "gpu_mapping_key": "mapping_myMap",
         "client_num_per_round": 5,

@@ -17,7 +17,7 @@
 
 import logging
 import random
-
+import time
 from ..common.typing import Scalar
 from ..end import End
 from . import AbstractSelector, SelectorReturnType
@@ -82,6 +82,16 @@ class RandomSelector(AbstractSelector):
 
         # default, availability unaware way of using ends
         eligible_ends = ends
+
+        logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
+        # TODO: remove hard coded number of trainers
+        if len(ends) < 20:
+            logger.info('not enough ends')
+            time.sleep(0.1)
+            return {}
+        # while len(ends)< self.k:
+        #     logger.info('sleeping')
+        #     time.sleep(5)
         logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         k = min(len(ends), self.k)
         if k == 0:
@@ -136,7 +146,7 @@ class RandomSelector(AbstractSelector):
         logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
         if num_ends_to_remove != 0:
             ends_to_remove = self.ordered_updates_recv_ends[:num_ends_to_remove]
-            logger.debug(
+            logger.info(
                 f"Will remove these ends from "
                 f"ordered_updates_recv_ends: {ends_to_remove}"
                 f" and selected_ends and all_selected"
@@ -147,7 +157,7 @@ class RandomSelector(AbstractSelector):
             self.ordered_updates_recv_ends = self.ordered_updates_recv_ends[
                 num_ends_to_remove:
             ]
-            logger.debug(
+            logger.info(
                 f"self.ordered_updates_recv_ends after removing first "
                 f"num_ends_to_remove: {num_ends_to_remove} "
                 f"elements: {self.ordered_updates_recv_ends}"
@@ -158,7 +168,7 @@ class RandomSelector(AbstractSelector):
                     # something happened to end of end_id (e.g.,
                     # connection loss) let's remove it from
                     # selected_ends
-                    logger.debug(
+                    logger.info(
                         f"no end id {end_id} in ends, removing "
                         f"from selected_ends and all_selected"
                     )
@@ -168,41 +178,41 @@ class RandomSelector(AbstractSelector):
                     # middle of a round
                     if end_id in selected_ends:
                         selected_ends.remove(end_id)
-                        logger.debug(
+                        logger.info(
                             f"No end id {end_id} in ends, removed from "
                             f"selected_ends: "
                             f"{selected_ends}"
                         )
                     if end_id in self.all_selected:
                         del self.all_selected[end_id]
-                        logger.debug(
+                        logger.info(
                             f"No end id {end_id} in ends, removed from "
                             f"self.all_selected: {self.all_selected}"
                         )
                 else:
                     state = ends[end_id].get_property(KEY_END_STATE)
-                    logger.debug(
+                    logger.info(
                         f"End_id {end_id} found in selected_ends in state: {state}, "
                         f"selected_ends: {selected_ends} and self.all_selected: "
                         f"{self.all_selected}"
                     )
                     if state == VAL_END_STATE_RECVD:
                         ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                        logger.debug(
+                        logger.info(
                             f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
                             f"and removing from selected_ends "
                             f"and all_selected"
                         )
                         if end_id in selected_ends:
                             selected_ends.remove(end_id)
-                            logger.debug(
+                            logger.info(
                                 f"FOUND end id {end_id} in state: {state}.. "
                                 f"removed from "
                                 f"selected_ends: {selected_ends}"
                             )
                         if end_id in self.all_selected:
                             del self.all_selected[end_id]
-                            logger.debug(
+                            logger.info(
                                 f"FOUND end id {end_id} in state: {state}.. "
                                 f"removed from "
                                 f"self.all_selected: "
@@ -215,7 +225,7 @@ class RandomSelector(AbstractSelector):
                         # contributes, fails and then comes back
                         # within the same round. TODO: (DG) Need a
                         # diagram in the paper to explain this?
-                        logger.debug(
+                        logger.info(
                             f"Found end {end_id} in state {VAL_END_STATE_NONE}. Might have "
                             f"left/rejoined. Need to remove it from "
                             f"selected_ends and self.all_selected if it "
@@ -223,21 +233,21 @@ class RandomSelector(AbstractSelector):
                         )
                         if end_id in selected_ends:
                             selected_ends.remove(end_id)
-                            logger.debug(
+                            logger.info(
                                 f"FOUND end id {end_id} in state: {state}.. "
                                 f"removed from "
                                 f"selected_ends: {selected_ends}"
                             )
                         if end_id in self.all_selected:
                             del self.all_selected[end_id]
-                            logger.debug(
+                            logger.info(
                                 f"FOUND end id {end_id} in state: {state}.. "
                                 f"removed from "
                                 f"self.all_selected: "
                                 f"{self.all_selected} too"
                             )
                     else:
-                        logger.debug(
+                        logger.info(
                             f"FOUND end id {end_id} in state: {state}. "
                             f"Not doing anything"
                         )

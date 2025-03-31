@@ -19,7 +19,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Union
-
+import time
 import cloudpickle
 from aiostream import stream
 from flame.common.constants import EMPTY_PAYLOAD, CommType
@@ -191,6 +191,10 @@ class Channel(object):
         self.properties[KEY_CH_SELECT_REQUESTER] = self.get_backend_id()
 
         async def inner():
+            # while hasattr(self._selector, "k") and len(self._ends) < self._selector.k:
+
+            #     logger.info(f"sleeping till ends enough, current ends: {len(self._ends)}")
+            #     time.sleep(5)
             if self.trainer_unavail_list is not None:
                 selected = self._selector.select(
                     self._ends,
@@ -198,10 +202,16 @@ class Channel(object):
                     self.trainer_unavail_list,
                     task_to_perform,
                 )
+                logger.info(f"selected: {selected}")
+                if len(selected) is 0:
+                    return
             else:
                 selected = self._selector.select(
                     self._ends, self.properties, task_to_perform
                 )
+                logger.info(f"selected: {selected}")
+                if len(selected) is 0:
+                    return
             logger.debug(
                 f"selected for task {task_to_perform} and returned from select(): {selected}"
             )

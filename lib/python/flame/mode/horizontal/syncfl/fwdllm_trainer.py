@@ -82,7 +82,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.cm = ChannelManager()
         self.cm(self.config)
         self.cm.join_all()
-        logger.info(
+        logger.debug(
             f"self.cm._config.selector.sort: {self.cm._config.selector.sort}, self.config.selector.sort: {self.config.selector.sort}"
         )
 
@@ -199,6 +199,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # the trainer would never make progress. We allow to
             # trainer to re-train for == round condition if the
             # message was dropped.
+            logger.info('message type weights received')
             if self._round <= self._updates_returned_upto_round:
                 logger.info(
                     f"Fetch weights aborted for given model version "
@@ -233,7 +234,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
             self._update_model()
             if MessageType.DATA_ID in msg:
-                logger.info(f"Received data id for training : {msg[MessageType.DATA_ID]}")
+                logger.info(f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}")
                 self.data_id = msg[MessageType.DATA_ID]
                 if MessageType.GRAD_POOL in msg:
                     if self.args.var_control:
@@ -241,10 +242,12 @@ class Trainer(Role, metaclass=ABCMeta):
                             if self.data_id % 2:
                                 self.trainer.model_trainer.old_grad = msg[MessageType.GRAD_POOL]
                             else:
-                                self.trainer.model_trainer.old_grad = None
+                                 self.trainer.model_trainer.old_grad = None
+            else:
+                logger.info(f"data id not found in msg")
         else:
             logger.info(
-                "Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
+                f"Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
             )
 
         
@@ -258,7 +261,7 @@ class Trainer(Role, metaclass=ABCMeta):
             )
         if MessageType.TASK_TO_PERFORM in msg:
             self.task_to_perform = msg[MessageType.TASK_TO_PERFORM]
-            logger.info(f"Found task_to_perform in msg: {self.task_to_perform}")
+            logger.debug(f"Found task_to_perform in msg: {self.task_to_perform}")
         else:
             logger.info(f"Didn't find TASK_TO_PERFORM in msg")
 
@@ -266,7 +269,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(
             f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
-            f"round: {self._round} and work_done: {self._work_done} ###"
+            f"round: {self._round}, data id: {self.data_id} and work_done: {self._work_done} ###"
         )
 
         logger.debug(
@@ -455,7 +458,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Log the gradient dictionary details
             if grad_dict:
-                logger.info(f"Going to send gradients dictionary with {len(grad_dict)} entries: "
+                logger.debug(f"Going to send gradients dictionary with {len(grad_dict)} entries: "
                             f"{ {k: v.shape for k, v in grad_dict.items()} }")
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")

@@ -83,7 +83,7 @@ class ForwardTextClassificationTrainer:
         if not device:
             device = self.device
 
-        logging.info("train_model self.device: " + str(device))
+        logging.debug("train_model self.device: " + str(device))
         # self.model.to(device)
 
         logging.info(get_parameter_number(self.model))
@@ -125,13 +125,13 @@ class ForwardTextClassificationTrainer:
 
         with torch.no_grad():
             for epoch in range(0, self.args.epochs):
-                logging.info(f"train_dl size: {len(self.train_dl)}")
+                logging.debug(f"train_dl size: {len(self.train_dl)}")
                 for batch_idx, batch in enumerate(self.train_dl):
 
                     batch = tuple(t for t in batch)
                     # NRL already sent data to gpu during init inside
                     # FedSgdTrainer
-                    logger.info(f"batch device: {device}")
+                    logger.debug(f"batch device: {device}")
                     x = batch[1].to(device)
                     labels = batch[4].to(device)
 
@@ -179,7 +179,7 @@ class ForwardTextClassificationTrainer:
                             # Each model has a specific layer whose gradients
                             # are used for var check
                             self.grad_for_var_check = jvp * v_params[j]
-                            logging.info(f"self.grad_var_shape: {[tensor.shape for tensor in self.grad_for_var_check]}, total tensors: {len(self.grad_for_var_check)} for trainer {self.trainer_id} of size: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
+                            logging.debug(f"self.grad_var_shape: {[tensor.shape for tensor in self.grad_for_var_check]}, total tensors: {len(self.grad_for_var_check)} for trainer {self.trainer_id} of size: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
 
                     # Assigning gradients back so that torch can pick it up
                     # later. It is always on CPU so no need to move it to GPU.
