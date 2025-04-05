@@ -1194,7 +1194,8 @@ class TopAggregator(SyncTopAgg):
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
-            logger.info(f"self.device inside eval_model(): {self.device}")
+        
+        logger.info(f"device inside eval_model() is set to: {device}")
 
         results = {}
 
@@ -1204,11 +1205,11 @@ class TopAggregator(SyncTopAgg):
         test_sample_len = len(self.test_global.dataset)
         preds = np.empty((test_sample_len, self.num_labels))
         
-        logger.info(f"Created len(n_batches): {len(n_batches)}, len(test_sample_len): {len(test_sample_len)} and shape(preds): {preds.shape}")
+        logger.info(f"Created n_batches: {n_batches}, test_sample_len: {test_sample_len} and preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}")
 
         out_label_ids = np.empty(test_sample_len)
-        # TODO: See why .to(device) was called here
-        self.model  # .to(device)
+        # Move model to device before performing the eval
+        self.model.to(device)
         self.model.eval()
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
@@ -1217,8 +1218,8 @@ class TopAggregator(SyncTopAgg):
         for i, batch in enumerate(self.test_global):
             with torch.no_grad():
                 batch = tuple(t for t in batch)
-                x = batch[1]
-                labels = batch[4]
+                x = batch[1].to(device)
+                labels = batch[4].to(device)
 
                 output = self.model(x)
                 logits = output[0]
@@ -1249,7 +1250,10 @@ class TopAggregator(SyncTopAgg):
         results.update(result)
 
         # self.results.update(result)
-        logging.info(f"results after eval are: {results}, wrong is: {wrong}")
+        logging.info(f"results after eval are: {results}, len(wrong) is: {len(wrong)}")
+        
+        # TODO: Check if model needs to be moved back to cpu? Do we need to keep
+        # moving the model between CPU and GPU repeatedly?
 
         return result, model_outputs, wrong
     
@@ -1393,7 +1397,7 @@ class TopAggregator(SyncTopAgg):
         aggregator (..top_aggregator).
         """
 
-        logger.debug(f"Device for agg: {next(self.model.parameters()).device}")
+        logger.info(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug(f"channel not found for tag {tag}")
