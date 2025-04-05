@@ -17,6 +17,8 @@
 
 import logging
 import random
+import time
+
 from ..common.typing import Scalar
 from ..end import End
 from . import AbstractSelector, SelectorReturnType
@@ -83,7 +85,7 @@ class RandomSelector(AbstractSelector):
         eligible_ends = ends
 
         logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
-        # TODO: remove hard coded number of trainers
+        # TODO (REMOVE HARDCODING): remove hard coded number of trainers
         if len(ends) < 20:
             logger.info('not enough ends')
             time.sleep(0.1)

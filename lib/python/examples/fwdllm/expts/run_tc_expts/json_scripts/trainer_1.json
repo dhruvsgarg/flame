@@ -50,8 +50,8 @@
         "comm_round": 3000,
         "ci": 0,
         "dataset": "agnews",
-        "data_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/data_files/agnews_data.h5",
-        "partition_file_path": "/home/dgarg39/flame_neha/flame/lib/python/examples/fwdllm/fednlp_data/partition_files/agnews_partition.h5",
+        "data_file_path": "/home/dgarg39/flame/lib/python/examples/fwdllm/fednlp_data/data_files/agnews_data.h5",
+        "partition_file_path": "/home/dgarg39/flame/lib/python/examples/fwdllm/fednlp_data/partition_files/agnews_partition.h5",
         "partition_method": "uniform",
         "fl_algorithm": "FedFwd",
         "model_type": "distilbert",
@@ -75,14 +75,12 @@
         "output_dir": "/tmp/",
         "is_debug_mode": 0,
         "fedprox_mu": 1,
-        "use_adapter":false,
-        "gradient_accumulation_steps":1,
-        "freeze_layers":"",
-        "manual_seed":42,
-        "client_num_in_total":0,
-        "warmup_ratio":1
-
-
+        "use_adapter": false,
+        "gradient_accumulation_steps": 1,
+        "freeze_layers": "",
+        "manual_seed": 42,
+        "client_num_in_total": 0,
+        "warmup_ratio": 1
     },
     "baseModel": {
         "name": "",

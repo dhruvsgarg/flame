@@ -1194,6 +1194,7 @@ class TopAggregator(SyncTopAgg):
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
+            logger.info(f"self.device inside eval_model(): {self.device}")
 
         results = {}
 
@@ -1202,6 +1203,8 @@ class TopAggregator(SyncTopAgg):
         n_batches = len(self.test_global)
         test_sample_len = len(self.test_global.dataset)
         preds = np.empty((test_sample_len, self.num_labels))
+        
+        logger.info(f"Created len(n_batches): {len(n_batches)}, len(test_sample_len): {len(test_sample_len)} and shape(preds): {preds.shape}")
 
         out_label_ids = np.empty(test_sample_len)
         # TODO: See why .to(device) was called here
@@ -1210,9 +1213,7 @@ class TopAggregator(SyncTopAgg):
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
-        logging.info(
-            "len(test_global) = %d, n_batches = %d" % (len(self.test_global), n_batches)
-        )
+        
         for i, batch in enumerate(self.test_global):
             with torch.no_grad():
                 batch = tuple(t for t in batch)
@@ -1248,7 +1249,7 @@ class TopAggregator(SyncTopAgg):
         results.update(result)
 
         # self.results.update(result)
-        logging.info(results)
+        logging.info(f"results after eval are: {results}, wrong is: {wrong}")
 
         return result, model_outputs, wrong
     

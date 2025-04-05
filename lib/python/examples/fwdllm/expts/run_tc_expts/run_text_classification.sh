@@ -134,7 +134,7 @@ else
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
-    sleep 1
+    sleep 2
   done
 
   # Wait for all processes to finish
