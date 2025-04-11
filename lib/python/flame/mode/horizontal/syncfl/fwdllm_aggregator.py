@@ -88,6 +88,7 @@ class TopAggregator(SyncTopAgg):
         self.grad_pool = []
         self.var = None
         self.ends_not_selected_yet = False
+        self.round_per_data_id = 0
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -706,6 +707,7 @@ class TopAggregator(SyncTopAgg):
                         grad[id] += grad_list[i][id]
             return grad
 
+
     def _aggregate_grads(self, tag: str) -> None:
         
         """Aggregate local model weights asynchronously.
@@ -1128,11 +1130,15 @@ class TopAggregator(SyncTopAgg):
                 result,_,_ = self.eval_model()
                 logger.info(f"eval loss = {result['eval_loss']}")
                 self.data_id += 1
-                # need to replace it with per end property
+                self.round_per_data_id = 0
+                # TODO: need to replace it with per end property
                 if self.data_id == self.total_data_bins:
                     logger.info("incrementing round number now ")
                     self._round += 1
                     self.data_id = 0
+
+            else:
+                self.round_per_data_id += 1
 
         logger.debug(f"aggregation finished for round {round_to_print}")
         logger.info(
@@ -1488,6 +1494,7 @@ class TopAggregator(SyncTopAgg):
                         MessageType.MODEL_VERSION: self._round,
                         MessageType.TASK_TO_PERFORM: task_to_perform,
                         MessageType.DATA_ID: self.data_id,
+                        MessageType.ROUND_PER_DATA_ID: self.round_per_data_id
                     },
                 )
                 self.grad_pool = []
@@ -1503,6 +1510,7 @@ class TopAggregator(SyncTopAgg):
                         MessageType.MODEL_VERSION: self._round,
                         MessageType.TASK_TO_PERFORM: task_to_perform,
                         MessageType.DATA_ID: self.data_id,
+                        MessageType.ROUND_PER_DATA_ID: self.round_per_data_id
                     },
                 )
             # Update send_time in training_duration_s

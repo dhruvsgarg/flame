@@ -66,6 +66,7 @@ class ForwardTextClassificationTrainer:
         elif self.args.model_type == "albert":
             self.layer_id_for_check = 22
         self.var = 0
+        logger.info(f"Client Trainer learning rate: {self.args.learning_rate}")
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -134,7 +135,11 @@ class ForwardTextClassificationTrainer:
                     logger.debug(f"batch device: {device}")
                     x = batch[1].to(device)
                     labels = batch[4].to(device)
-
+                    device = torch.device("cuda:0")
+                    # self.fmodel = self.fmodel.to(device)
+                    self.buffers = [b.to(device) for b in self.buffers]
+                    # x = x.to(device)
+                    # labels = labels.to(device)
                     # 优化函数
                     f = partial(
                         functional_get_loss,
@@ -173,6 +178,22 @@ class ForwardTextClassificationTrainer:
                     loss, jvp = calculate_jvp(f, self.params, v_params)
 
                     # 计算梯度
+                    # print(f"jvp type: {type(jvp)}, device: {getattr(jvp, 'device', 'no device')}")
+                    # print(f"v_params type: {type(v_params)}")
+                    # if isinstance(v_params, (list, tuple)):
+                    #     print(f"v_params[0] device: {v_params[0].device}")
+                    # print(f"self.grad type: {type(self.grad)}")
+                    # if isinstance(self.grad, (list, tuple)):
+                    #     print(f"self.grad[0] device: {self.grad[0].device}")
+                    device = torch.device("cuda:0")
+
+                    if isinstance(jvp, torch.Tensor):
+                        jvp = jvp.to(device)
+                    else:
+                        jvp = torch.tensor(jvp, device=device)
+
+                    v_params = [v.to(device) for v in v_params]
+                    self.grad = [g.to(device) for g in self.grad]
                     for j, fg in enumerate(self.grad):
                         fg.add_(jvp * v_params[j])
                         if self.args.var_control and j == self.layer_id_for_check:

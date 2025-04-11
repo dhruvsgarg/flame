@@ -134,6 +134,8 @@ class Trainer(Role, metaclass=ABCMeta):
         self._trainer_online_channel_status = True
 
         self.task_to_perform = "train"
+        self.round_per_data_id = None
+        self.abort_training = False
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -184,28 +186,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
-            
-        if MessageType.VAR in msg:
-            logger.info(
-                f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}. Not updating weights"
-            )
-            
-        elif MessageType.WEIGHTS in msg:
-            # Before proceeding, check if this model version is newer
-            # than previously processed NOTE: The condition could have
-            # been round <= updates_retuned. But there are scenarios
-            # where the channel.leave() executes before the aggregator
-            # processes the weight update. Hence, with <= condition,
-            # the trainer would never make progress. We allow to
-            # trainer to re-train for == round condition if the
-            # message was dropped.
-            logger.info('message type weights received')
-            if self._round <= self._updates_returned_upto_round:
+
+        if MessageType.DATA_ID in msg and MessageType.ROUND_PER_DATA_ID in msg:
+            if self.data_id is not None and self.data_id == msg[MessageType.DATA_ID] and self.round_per_data_id is not None and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]:
+                self.abort_training = True
                 logger.info(
                     f"Fetch weights aborted for given model version "
                     f"{self._round} while trainer_id {self.trainer_id} has "
                     f"already sent updates "
-                    f"upto round: {self._updates_returned_upto_round}"
+                    f"upto round_per_data_id: {self.round_per_data_id}"
                 )
 
                 # Received old data but still allow aggregator cleanup
@@ -222,6 +211,50 @@ class Trainer(Role, metaclass=ABCMeta):
                 )
                 channel.cleanup_recvd_ends()
                 return
+            else:
+                self.abort_training = False
+                self.round_per_data_id = msg[MessageType.ROUND_PER_DATA_ID]
+
+            
+        if MessageType.VAR in msg:
+            logger.info(
+                f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}. Not updating weights"
+            )
+            
+        elif MessageType.WEIGHTS in msg:
+            # Before proceeding, check if this model version is newer
+            # than previously processed NOTE: The condition could have
+            # been round <= updates_retuned. But there are scenarios
+            # where the channel.leave() executes before the aggregator
+            # processes the weight update. Hence, with <= condition,
+            # the trainer would never make progress. We allow to
+            # trainer to re-train for == round condition if the
+            # message was dropped.
+            logger.info('message type weights received')
+
+            # if self._round <= self._updates_returned_upto_round:
+            #     logger.info(
+            #         f"Fetch weights aborted for given model version "
+            #         f"{self._round} while trainer_id {self.trainer_id} has "
+            #         f"already sent updates "
+            #         f"upto round: {self._updates_returned_upto_round}"
+            #     )
+
+            #     # Received old data but still allow aggregator cleanup
+            #     # state to occur so as to receive the next update
+            #     logger.info(
+            #         f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
+            #         f" to allow fetch from aggregator "
+            #         "again and returning from function"
+            #     )
+            #     channel._selector.ordered_updates_recv_ends.append(end)
+            #     logger.debug(
+            #         f"After appending {end} to ordered_updates_recv_ends: "
+            #         f"{channel._selector.ordered_updates_recv_ends}"
+            #     )
+            #     channel.cleanup_recvd_ends()
+            #     return
+            
 
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
@@ -415,6 +448,9 @@ class Trainer(Role, metaclass=ABCMeta):
         channel._selector._cleanup_send_ends()
 
     def _send_grads(self, tag: str) -> None:
+        if self.abort_training == True:
+            logger.info(f"Aborting sending grads for trainer id: {self.trainer_id} because it has already sent updates for round_per_data_id: {self.round_per_data_id}")
+            return
         logger.debug(
             f"### SEND GRADS for tag: {tag} " f"and trainer_id: {self.trainer_id}"
         )

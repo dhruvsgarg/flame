@@ -4,8 +4,8 @@ import math
 from torch.nn import CrossEntropyLoss
 from typing import Callable, Tuple
 from torch.cuda.amp import autocast
-
-
+import logging
+logger = logging.getLogger(__name__)
 def _get_loss(x: torch.Tensor, t: torch.Tensor, num_classes: int = 10) -> torch.Tensor:
     """Compute cross-entropy loss.
 
@@ -72,6 +72,10 @@ def calculate_jvp(func, params, v):
     """
     h = 0.01
     with autocast():
+        # logger.info(f"params[0].device = {params[0].device}, v[0].device = {v[0].device}")
+        device = torch.device("cuda:0")
+        params = [p.to(device) for p in params]
+        v = [vi.to(device) for vi in v]
         loss = func(tuple([params[i] - h * v[i] for i in range(len(params))]))
         terbulence_loss = func(
             tuple([params[i] + h * v[i] for i in range(len(params))])
