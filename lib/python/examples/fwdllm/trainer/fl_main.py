@@ -5,6 +5,7 @@ import sys
 import psutil
 import setproctitle
 import torch
+import threading
 
 # this is a temporal import, we will refactor FedML as a package installation
 # import wandb
@@ -198,6 +199,7 @@ if __name__ == "__main__":
     logging.debug(f"NRL train_data_global: {train_data_global}")
     logging.debug(f"NRL test_data_local_dict: {test_data_local_dict}")
     logging.debug(f"NRL test_data_global: {test_data_global}")
+    logging.info(f"[Trainer {config.task_id}] PID: {os.getpid()}, Thread: {threading.get_ident()}")
     client_trainer = ForwardTextClassificationTrainer(
         model_args,
         config.hyperparameters.client_idx % 8,

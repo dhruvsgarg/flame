@@ -19,7 +19,7 @@ from transformers import (
 from functools import partial
 import functorch as fc
 from torch.cuda.amp import autocast
-
+import gc
 logger = logging.getLogger(__name__)
 
 
@@ -79,18 +79,31 @@ class ForwardTextClassificationTrainer:
         # Used for fedtrainer
         self.train_dl = train_dl
         self.test_dl = test_dl
+    
 
+
+    
     def train_model(self, device=None):
+        # self.log_active_gpu_tensors(tag="training start")
+        allocated_before = torch.cuda.memory_allocated(device)
+
         if not device:
             device = self.device
 
         logging.debug("train_model self.device: " + str(device))
         # self.model.to(device)
 
-        logging.info(get_parameter_number(self.model))
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+        # logging.info(get_parameter_number(self.model))
+        # self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+        #     self.model
+        # )
+        if not hasattr(self, "fmodel") or self.fmodel is None:
+            self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
+            # Move buffers to GPU just once
+            self.buffers = [b.to(device) for b in self.buffers]
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # training result
         global_step = 0
@@ -137,18 +150,18 @@ class ForwardTextClassificationTrainer:
                     labels = batch[4].to(device)
                     device = torch.device("cuda:0")
                     # self.fmodel = self.fmodel.to(device)
-                    self.buffers = [b.to(device) for b in self.buffers]
+                    # self.buffers = [b.to(device) for b in self.buffers]
                     # x = x.to(device)
                     # labels = labels.to(device)
                     # 优化函数
-                    f = partial(
-                        functional_get_loss,
-                        model=self.fmodel,
-                        buffers=self.buffers,
-                        num_classes=self.num_labels,
-                        x=x,
-                        t=labels,
-                    )
+                    # f = partial(
+                    #     functional_get_loss,
+                    #     model=self.fmodel,
+                    #     buffers=self.buffers,
+                    #     num_classes=self.num_labels,
+                    #     x=x,
+                    #     t=labels,
+                    # )
 
                     # 生成扰动
                     if self.args.perturbation_sampling and v_buffer != {}:
@@ -173,9 +186,17 @@ class ForwardTextClassificationTrainer:
                                 for p in self.params
                             ]
                         )
-
+                    def wrapped_func(p):
+                        return functional_get_loss(
+                            p,
+                            self.fmodel,
+                            x,
+                            labels,
+                            num_classes=self.num_labels,
+                            buffers=self.buffers
+                        )
                     # 计算方向导数
-                    loss, jvp = calculate_jvp(f, self.params, v_params)
+                    loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
 
                     # 计算梯度
                     # print(f"jvp type: {type(jvp)}, device: {getattr(jvp, 'device', 'no device')}")
@@ -224,7 +245,10 @@ class ForwardTextClassificationTrainer:
 
                     if self.args.is_debug_mode == 1 and global_step > 3:
                         break
-
+                # cleanup
+                # gc.collect()
+                # torch.cuda.empty_cache()
+                # self.log_active_gpu_tensors(tag="post-epoch cleanup")
         if self.args.var_control:
             # self.var = calculate_var( self.grad_for_var_check_list, )
             #     logging.info( f"num of fwdgrad:
@@ -251,6 +275,16 @@ class ForwardTextClassificationTrainer:
         logging.info(
             f"Gradients count: {len(gradients)} of size: {human_readable_size(gradient_size)}"
         )
+        del self.fmodel
+        del self.params
+        del self.buffers
+        gc.collect()
+        torch.cuda.empty_cache()
+        self.fmodel = None
+        self.params = None
+        self.buffers = None
+        allocated_after = torch.cuda.memory_allocated(device)
+        logging.info(f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB | trainer id: {self.trainer_id}, device: {device} ")
 
         return global_step, tr_loss / global_step
 

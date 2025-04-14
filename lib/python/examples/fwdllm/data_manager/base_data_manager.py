@@ -223,10 +223,10 @@ class BaseDataManager(ABC):
             test_index_list = test_index_list[:test_cut_off]
             if not test_only:
                 logging.info(
-                    f"NRL: len of train_index_list: {len(train_index_list)}; train_index_list: {train_index_list}"
+                    f"NRL: len of train_index_list: {len(train_index_list)};"
                 )
             logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)};test_index_list: {test_index_list}"
+                f"NRL: len of test_index_list: {len(test_index_list)}"
             )
             logging.info(
                 "caching test index size "
@@ -309,6 +309,8 @@ class BaseDataManager(ABC):
         data_file = h5py.File(self.args.data_file_path, "r", swmr=True)
         partition_file = h5py.File(self.args.partition_file_path, "r", swmr=True)
         partition_method = self.args.partition_method
+        original_client_idxs = [client_idx * 5 + i for i in range(5)]
+
 
         train_data_local_dict = {}
         test_data_local_dict = {}
@@ -327,17 +329,22 @@ class BaseDataManager(ABC):
                 test_dataset,
             ) = res
         else:
-            train_index_list = partition_file[partition_method]["partition_data"][
-                str(client_idx)
-            ]["train"][()]
-            test_index_list = partition_file[partition_method]["partition_data"][
-                str(client_idx)
-            ]["test"][()]
+            # train_index_list = partition_file[partition_method]["partition_data"][
+            #     str(client_idx)
+            # ]["train"][()]
+            # test_index_list = partition_file[partition_method]["partition_data"][
+            #     str(client_idx)
+            # ]["test"][()]
+            train_index_list = []
+            test_index_list = []
+            for orig_idx in original_client_idxs:
+                train_index_list.extend(partition_file[partition_method]["partition_data"][str(orig_idx)]["train"][()])
+                test_index_list.extend(partition_file[partition_method]["partition_data"][str(orig_idx)]["test"][()])
             logging.info(
-                f"NRL: len of train_index_list: {len(train_index_list)}; train_index_list: {train_index_list}"
+                f"NRL: len of train_index_list: {len(train_index_list)};"
             )
             logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)};test_index_list: {test_index_list}"
+                f"NRL: len of test_index_list: {len(test_index_list)};"
             )
             train_data = self.read_instance_from_h5(
                 data_file,
@@ -439,10 +446,10 @@ class BaseDataManager(ABC):
                 str(client_idx)
             ]["test"][()]
             logging.info(
-                f"NRL: len of train_index_list: {len(train_index_list)}; train_index_list: {train_index_list}"
+                f"NRL: len of train_index_list: {len(train_index_list)}"
             )
             logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)};test_index_list: {test_index_list}"
+                f"NRL: len of test_index_list: {len(test_index_list)}"
             )
             train_data = self.read_instance_from_h5(
                 data_file,
