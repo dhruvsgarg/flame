@@ -20,6 +20,7 @@ from functools import partial
 import functorch as fc
 from torch.cuda.amp import autocast
 import gc
+import os
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +30,27 @@ class ForwardTextClassificationTrainer:
     ):
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        gpu_id = torch.cuda.current_device()
+        
+        # Get free and total memory on the selected CUDA device
+        free_mem, total_mem = torch.cuda.mem_get_info(gpu_id)
+
+        # Convert to MB for easier reading
+        free_mb = free_mem / (1024 * 1024)
+        total_mb = total_mem / (1024 * 1024)
+
+        print(f"[GPU Memory Info] Device: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB")
+        
+        device_name = torch.cuda.get_device_name(gpu_id)
+
+        real_index = visible_devices.split(',')[gpu_id] if visible_devices else str(gpu_id)
+
+        logging.info(f"[Device Init] CUDA_VISIBLE_DEVICES={visible_devices}, "
+                    f"torch.device={self.device}, torch.cuda.current_device={gpu_id}, "
+                    f"Real GPU Index (Global) = {real_index}, Device Name: {device_name}")
+
         self.loss_fn = None
         self.dataset_size = 0
         self.trainer_id = trainer_id
@@ -79,33 +101,31 @@ class ForwardTextClassificationTrainer:
         # Used for fedtrainer
         self.train_dl = train_dl
         self.test_dl = test_dl
-    
 
+    def log_gpu_memory(self, tag, device):
+        allocated = torch.cuda.memory_allocated(device)
+        reserved = torch.cuda.memory_reserved(device)
+        logging.info(f"[MEM:{tag}] Allocated: {allocated/1e6:.2f} MB | Reserved: {reserved/1e6:.2f} MB | Device: {device}")
+        # Optionally dump summary
+        # logging.debug(torch.cuda.memory_summary(device=device,
+        # abbreviated=True))
 
-    
     def train_model(self, device=None):
-        # self.log_active_gpu_tensors(tag="training start")
-        allocated_before = torch.cuda.memory_allocated(device)
-
         if not device:
             device = self.device
 
-        logging.debug("train_model self.device: " + str(device))
-        # self.model.to(device)
+        self.log_gpu_memory("start", device)
+        allocated_before = torch.cuda.memory_allocated(device)
 
-        # logging.info(get_parameter_number(self.model))
-        # self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-        #     self.model
-        # )
         if not hasattr(self, "fmodel") or self.fmodel is None:
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
-            # Move buffers to GPU just once
             self.buffers = [b.to(device) for b in self.buffers]
+            self.log_gpu_memory("after_make_functional_with_buffers", device)
 
         gc.collect()
         torch.cuda.empty_cache()
+        self.log_gpu_memory("after_initial_gc", device)
 
-        # training result
         global_step = 0
         tr_loss, logging_loss = 0.0, 0.0
 
@@ -116,20 +136,13 @@ class ForwardTextClassificationTrainer:
             if self.args.var_control:
                 self.grad = self.old_grad
             for k, v in self.model.named_parameters():
-                # logging.info(index)
                 if self.grad != None and v.requires_grad:
-                    # logging.info("generate v")
                     shape = v.shape
                     candidate_v = torch.randn((v_num * 10, *shape), device="cpu")
-                    target_grad = self.grad[index]
-
-                    # logging.info("flatten")
-                    target_grad = torch.flatten(target_grad)
-                    candidate_v = torch.flatten(candidate_v, start_dim=1)
-
+                    target_grad = self.grad[index].flatten()
+                    candidate_v = candidate_v.flatten(start_dim=1)
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-
                     v_buffer[index] = [
                         candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
                     ]
@@ -141,35 +154,19 @@ class ForwardTextClassificationTrainer:
             for epoch in range(0, self.args.epochs):
                 logging.debug(f"train_dl size: {len(self.train_dl)}")
                 for batch_idx, batch in enumerate(self.train_dl):
+                    self.log_gpu_memory(f"epoch{epoch}_batch{batch_idx}_start", device)
 
                     batch = tuple(t for t in batch)
-                    # NRL already sent data to gpu during init inside
-                    # FedSgdTrainer
-                    logger.debug(f"batch device: {device}")
                     x = batch[1].to(device)
                     labels = batch[4].to(device)
-                    device = torch.device("cuda:0")
-                    # self.fmodel = self.fmodel.to(device)
-                    # self.buffers = [b.to(device) for b in self.buffers]
-                    # x = x.to(device)
-                    # labels = labels.to(device)
-                    # 优化函数
-                    # f = partial(
-                    #     functional_get_loss,
-                    #     model=self.fmodel,
-                    #     buffers=self.buffers,
-                    #     num_classes=self.num_labels,
-                    #     x=x,
-                    #     t=labels,
-                    # )
+                    self.log_gpu_memory(f"epoch{epoch}_batch{batch_idx}_after_data_move", device)
 
-                    # 生成扰动
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = tuple(
                             [
                                 (
                                     v_buffer[i][batch_idx]
-                                    if p.requires_grad == True
+                                    if p.requires_grad
                                     else torch.zeros_like(p)
                                 )
                                 for i, p in enumerate(self.params)
@@ -178,14 +175,11 @@ class ForwardTextClassificationTrainer:
                     else:
                         v_params = tuple(
                             [
-                                (
-                                    torch.randn_like(p)
-                                    if p.requires_grad == True
-                                    else torch.zeros_like(p)
-                                )
+                                torch.randn_like(p) if p.requires_grad else torch.zeros_like(p)
                                 for p in self.params
                             ]
                         )
+
                     def wrapped_func(p):
                         return functional_get_loss(
                             p,
@@ -195,18 +189,9 @@ class ForwardTextClassificationTrainer:
                             num_classes=self.num_labels,
                             buffers=self.buffers
                         )
-                    # 计算方向导数
-                    loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
 
-                    # 计算梯度
-                    # print(f"jvp type: {type(jvp)}, device: {getattr(jvp, 'device', 'no device')}")
-                    # print(f"v_params type: {type(v_params)}")
-                    # if isinstance(v_params, (list, tuple)):
-                    #     print(f"v_params[0] device: {v_params[0].device}")
-                    # print(f"self.grad type: {type(self.grad)}")
-                    # if isinstance(self.grad, (list, tuple)):
-                    #     print(f"self.grad[0] device: {self.grad[0].device}")
-                    device = torch.device("cuda:0")
+                    loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
+                    self.log_gpu_memory(f"epoch{epoch}_batch{batch_idx}_after_jvp", device)
 
                     if isinstance(jvp, torch.Tensor):
                         jvp = jvp.to(device)
@@ -215,76 +200,57 @@ class ForwardTextClassificationTrainer:
 
                     v_params = [v.to(device) for v in v_params]
                     self.grad = [g.to(device) for g in self.grad]
+
                     for j, fg in enumerate(self.grad):
                         fg.add_(jvp * v_params[j])
                         if self.args.var_control and j == self.layer_id_for_check:
-                            # Each model has a specific layer whose gradients
-                            # are used for var check
                             self.grad_for_var_check = jvp * v_params[j]
-                            logging.debug(f"self.grad_var_shape: {[tensor.shape for tensor in self.grad_for_var_check]}, total tensors: {len(self.grad_for_var_check)} for trainer {self.trainer_id} of size: {human_readable_size(get_size_in_bytes(self.grad_for_var_check))}")
 
-                    # Assigning gradients back so that torch can pick it up
-                    # later. It is always on CPU so no need to move it to GPU.
                     for p, g in zip(self.model.parameters(), self.grad):
                         if p.requires_grad:
                             p.grad = g.clone()
 
                     current_loss = loss.item()
-                    logging.info(
-                        "epoch = %d, trainer_id = %s, loss = %s"
-                        % (epoch, self.trainer_id, current_loss)
-                    )
-
+                    logging.info(f"epoch = {epoch}, trainer_id = {self.trainer_id}, loss = {current_loss}")
                     global_step += 1
+
                     if self.args.evaluate_during_training and (
                         self.args.evaluate_during_training_steps > 0
-                        and global_step != 0
                         and global_step % self.args.evaluate_during_training_steps == 0
                     ):
                         results, _, _ = self.eval_model(epoch, global_step)
 
                     if self.args.is_debug_mode == 1 and global_step > 3:
                         break
-                # cleanup
-                # gc.collect()
-                # torch.cuda.empty_cache()
-                # self.log_active_gpu_tensors(tag="post-epoch cleanup")
-        if self.args.var_control:
-            # self.var = calculate_var( self.grad_for_var_check_list, )
-            #     logging.info( f"num of fwdgrad:
-            # {len(self.grad_for_var_check_list)}, var: {self.var}" )
-            if self.args.perturbation_sampling:
-                self.grad_pool.append(self.grad)
 
-        # Compute trainable parameter size
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    self.log_gpu_memory(f"epoch{epoch}_batch{batch_idx}_after_cleanup", device)
+
+        if self.args.var_control and self.args.perturbation_sampling:
+            self.grad_pool.append(self.grad)
+
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         total_params = [p for p in self.model.parameters()]
+        gradients = [p.grad for p in trainable_params if p.grad is not None]
+
         trainable_size = get_size_in_bytes(trainable_params)
         total_params_size = get_size_in_bytes(total_params)
-
-        # Compute gradient size (only non-None gradients)
-        gradients = [p.grad for p in trainable_params if p.grad is not None]
         gradient_size = get_size_in_bytes(gradients)
 
-        logging.info(
-            f"Trainable parameters count: {len(trainable_params)} of size: {human_readable_size(trainable_size)}"
-        )
-        logging.info(
-            f"Total parameters count: {len(total_params)} of size: {human_readable_size(total_params_size)}"
-        )
-        logging.info(
-            f"Gradients count: {len(gradients)} of size: {human_readable_size(gradient_size)}"
-        )
-        del self.fmodel
-        del self.params
-        del self.buffers
+        logging.info(f"Trainable parameters: {len(trainable_params)} | Size: {human_readable_size(trainable_size)}")
+        logging.info(f"Total parameters: {len(total_params)} | Size: {human_readable_size(total_params_size)}")
+        logging.info(f"Gradients: {len(gradients)} | Size: {human_readable_size(gradient_size)}")
+
+        del self.fmodel, self.params, self.buffers
+        self.fmodel, self.params, self.buffers = None, None, None
         gc.collect()
         torch.cuda.empty_cache()
-        self.fmodel = None
-        self.params = None
-        self.buffers = None
+
         allocated_after = torch.cuda.memory_allocated(device)
-        logging.info(f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB | trainer id: {self.trainer_id}, device: {device} ")
+        self.log_gpu_memory("end", device)
+
+        logging.info(f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB | trainer id: {self.trainer_id}")
 
         return global_step, tr_loss / global_step
 
