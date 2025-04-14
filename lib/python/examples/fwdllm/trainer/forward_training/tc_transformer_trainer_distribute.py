@@ -41,7 +41,7 @@ class ForwardTextClassificationTrainer:
         free_mb = free_mem / (1024 * 1024)
         total_mb = total_mem / (1024 * 1024)
 
-        print(f"[GPU Memory Info] Device: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB")
+        print(f"[GPU Memory Info] Device: {self.device}, logical_device_id: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB, Occupied: {(total_mb-free_mb):.2f} MB")
         
         device_name = torch.cuda.get_device_name(gpu_id)
 
@@ -105,10 +105,7 @@ class ForwardTextClassificationTrainer:
     def log_gpu_memory(self, tag, device):
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
-        logging.info(f"[MEM:{tag}] Allocated: {allocated/1e6:.2f} MB | Reserved: {reserved/1e6:.2f} MB | Device: {device}")
-        # Optionally dump summary
-        # logging.debug(torch.cuda.memory_summary(device=device,
-        # abbreviated=True))
+        logging.info(f"[MEM:{tag}] Allocated: {allocated/1e6:.2f} MB | Reserved: {reserved/1e6:.2f} MB | Device: {device}, trainer_id: {self.trainer_id}")
 
     def train_model(self, device=None):
         if not device:
@@ -250,7 +247,7 @@ class ForwardTextClassificationTrainer:
         allocated_after = torch.cuda.memory_allocated(device)
         self.log_gpu_memory("end", device)
 
-        logging.info(f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB | trainer id: {self.trainer_id}")
+        logging.info(f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB, Added/Removed: {(allocated_after-allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}")
 
         return global_step, tr_loss / global_step
 

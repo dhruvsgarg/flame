@@ -1498,8 +1498,6 @@ class TopAggregator(SyncTopAgg):
                     },
                 )
                 self.grad_pool = []
-                
-
             else:
                 # logger.info("Not sending weights to ends because variance isn't good enough")
                 channel.send(

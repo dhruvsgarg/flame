@@ -125,7 +125,7 @@ else
   NUM_AVAIL_GPUS=8
 
   # Run trainer/main.py 100 times, each with a unique log file
-  for X in $(seq 0 19)
+  for X in $(seq 1 7)
   do
     # Assign GPUs in a round-robin fashion
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))

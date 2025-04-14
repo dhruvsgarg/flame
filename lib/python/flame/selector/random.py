@@ -86,7 +86,7 @@ class RandomSelector(AbstractSelector):
 
         logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         # TODO (REMOVE HARDCODING): remove hard coded number of trainers
-        if len(ends) < 20:
+        if len(ends) < 7:
             logger.info('not enough ends')
             time.sleep(0.1)
             return {}
