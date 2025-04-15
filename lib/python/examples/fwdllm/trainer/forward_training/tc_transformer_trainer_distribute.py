@@ -219,7 +219,9 @@ class ForwardTextClassificationTrainer:
 
                     if self.args.is_debug_mode == 1 and global_step > 3:
                         break
-
+                    del jvp, v_params, loss, x, labels
+                    
+                    
                     gc.collect()
                     torch.cuda.empty_cache()
                     self.log_gpu_memory(f"epoch{epoch}_batch{batch_idx}_after_cleanup", device)
@@ -240,7 +242,13 @@ class ForwardTextClassificationTrainer:
         logging.info(f"Gradients: {len(gradients)} | Size: {human_readable_size(gradient_size)}")
 
         del self.fmodel, self.params, self.buffers
+        if self.args.perturbation_sampling:
+            del v_buffer
         self.fmodel, self.params, self.buffers = None, None, None
+        self.grad = [g.detach().cpu() for g in self.grad]
+        if hasattr(self, "grad_for_var_check"):
+            self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
+        
         gc.collect()
         torch.cuda.empty_cache()
 
