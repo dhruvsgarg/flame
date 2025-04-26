@@ -309,8 +309,7 @@ class BaseDataManager(ABC):
         data_file = h5py.File(self.args.data_file_path, "r", swmr=True)
         partition_file = h5py.File(self.args.partition_file_path, "r", swmr=True)
         partition_method = self.args.partition_method
-        original_client_idxs = [client_idx * 5 + i for i in range(5)]
-
+        original_client_idxs = [client_idx]
 
         train_data_local_dict = {}
         test_data_local_dict = {}

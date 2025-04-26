@@ -86,8 +86,9 @@ class RandomSelector(AbstractSelector):
 
         logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         # TODO (REMOVE HARDCODING): remove hard coded number of trainers
-        if len(ends) < 7:
-            logger.info('not enough ends')
+        hardcoded_init_ends_needed = 10
+        if len(ends) < hardcoded_init_ends_needed:
+            logger.info(f'not enough ends, need atleast {hardcoded_init_ends_needed}')
             time.sleep(0.1)
             return {}
         # while len(ends)< self.k:
@@ -124,6 +125,7 @@ class RandomSelector(AbstractSelector):
         logger.info(f"selected ends: {self.selected_ends}")
 
         return {key: None for key in self.selected_ends}
+    
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Clean up ends whose a message was received, from selected
         ends.

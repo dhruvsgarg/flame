@@ -370,7 +370,8 @@ class ForwardTextClassificationTrainer:
 
         return global_step, tr_loss / global_step if global_step > 0 else 0.0
 
-
+    ###### DG Commented out old function for eval_model()
+    ###### Will be deprecated after testing
     # def eval_model(self, epoch=0, global_step=0, device=None):
     #     if not device:
     #         device = self.device
@@ -431,6 +432,7 @@ class ForwardTextClassificationTrainer:
     #     logging.info(self.results)
 
     #     return result, model_outputs, wrong
+    
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device

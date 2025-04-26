@@ -41,6 +41,7 @@ class FedSGDTrainer(Trainer):
         self.train_local_list = [
             [data for data in self.train_local[i]] for i in range(len(self.train_local))
         ]
+        self.dataset_size = len(self.train_local_list)
         self.train_data_local_num_dict = train_data_local_num_dict
         self.all_train_data_num = train_data_num
 
@@ -117,6 +118,7 @@ class FedSGDTrainer(Trainer):
         logger.debug(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
+        
         self.trainer.train(
             [self.train_local_list[0][self.data_id]], self.device, self.args
         )

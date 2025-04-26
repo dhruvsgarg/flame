@@ -6,7 +6,7 @@ pkill -f fl_main.py
 sleep 10  # Wait for the system to stabilize
 C_LR=0.01
 S_LR=0.1
-ROUND=3
+ROUND=10
 WORKER_NUM=1
 model_type=distilbert
 model_name=distilbert-base-uncased
@@ -113,30 +113,34 @@ elif [ $FL_ALG = FedSgd ];then
     --learning_rate $LR \
     > ./log/new/fedsgd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_full.log 2>&1
 else
+  LOG_DIR=./log/new
+  mkdir -p "$LOG_DIR"
+
+  # Generate timestamp once
+  RUN_TIMESTAMP=$(date +%d_%m_%H_%M)
+  LOG_SUFFIX="fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_${RUN_TIMESTAMP}"
+  AGG_LOG_FILE="$LOG_DIR/test_agg_${LOG_SUFFIX}.log"
+  TRAINER_LOG_FILE="$LOG_DIR/test_trainer_${LOG_SUFFIX}.log"
+
   # Run aggregator/main.py once with logging
   python $REPO_PATH/lib/python/examples/fwdllm/aggregator/fl_main.py \
     --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
-    > ./log/new/test_agg_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
+    > "$AGG_LOG_FILE" 2>&1 &
 
-  # Sleep for 10 seconds so that agg sets everything up before trainer starts
-  sleep 10
-  
-  # Run trainer/main.py 100 times, each with a unique log file
+  sleep 10  # Give aggregator time to set up
+
   NUM_AVAIL_GPUS=8
 
-  # Run trainer/main.py 100 times, each with a unique log file
-  for X in $(seq 1 7)
+  for X in $(seq 0 9)
   do
-    # Assign GPUs in a round-robin fashion
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
-      >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
-    sleep 2
+      >> "$TRAINER_LOG_FILE" 2>&1 &
+    sleep 4
   done
 
-  # Wait for all processes to finish
   wait
 fi
