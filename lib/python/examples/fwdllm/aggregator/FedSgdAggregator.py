@@ -9,8 +9,10 @@ import torch
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var
+
 logger = logging.getLogger(__name__)
 import functorch as fc
+
 
 class FedSGDAggregator(TopAggregator):
 
@@ -26,7 +28,7 @@ class FedSGDAggregator(TopAggregator):
         device,
         args,
         model_trainer,
-        num_labels
+        num_labels,
     ):
         self.trainer = model_trainer
         logger.info(f"self.trainer = {self.trainer}")
@@ -49,17 +51,17 @@ class FedSGDAggregator(TopAggregator):
         self.model_dict = dict()
         self.sample_num_dict = dict()
         self.flag_client_model_uploaded_dict = dict()
-        
+
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
-        # ratio is one and the comm_round is 30 rn 
+        # ratio is one and the comm_round is 30 rn
         self.warmup_rounds = math.ceil(self.args.comm_round * self.args.warmup_ratio)
 
         # 之前的v不够，暂存在cached_v
         self.cached_v = []
         if self.args.model_type == "distilbert":
-            # self.var_threshold = 0.25
-            self.var_threshold = 0.5 # temporarily setting this to 1
+            # self.var_threshold = 0.25 ## commented out by them, not used
+            self.var_threshold = 0.1
         elif self.args.model_type == "bert":
             # self.var_threshold = 0.6
             self.var_threshold = 0.2
@@ -87,7 +89,9 @@ class FedSGDAggregator(TopAggregator):
         self.loss_list = []
         self.grad_for_var_check_list = []
         self.var_good_enough = True
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
     def get_global_model_params(self):
@@ -112,16 +116,23 @@ class FedSGDAggregator(TopAggregator):
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
         return True
-        
 
     def aggregate(self, current_round):
+        start_time = time.time()
         self.var = calculate_var(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")
-        # if self.var>=self.var_threshold:
-        #     logger.info("var isn't good enough, train again")
-        #     self.var_good_enough = False
-        
-        start_time = time.time()
+        if self.var >= self.var_threshold:
+            logger.info(
+                f"var {self.var} >= threshold {self.var_threshold}. Returning from aggregate, need to try again."
+            )
+            self.var_good_enough = False
+
+            old_param = self.get_global_model_params()
+
+            end_time = time.time()
+            logger.info("aggregate time cost: %d" % (end_time - start_time))
+            return old_param
+
         model_list = []
         training_num = 0
 
@@ -141,7 +152,10 @@ class FedSGDAggregator(TopAggregator):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
             training_num += self.sample_num_dict[idx]
 
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，用于后面cache_v
+        logger.info(f"len(model_list): {model_list}")
+
+        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
+        # 用于后面cache_v
         if self.args.var_control:
             model_dict_cached = copy.deepcopy(self.model_dict)
             origin_param = copy.deepcopy(self.get_global_model_params())
@@ -269,8 +283,9 @@ class FedSGDAggregator(TopAggregator):
                 train_losses.append(copy.deepcopy(train_loss))
 
                 """
-                Note: CI environment is CPU-based computing. 
-                The training speed for RNN training is to slow in this setting, so we only test a client to make sure there is no programming error.
+                Note: CI environment is CPU-based computing. The training speed
+                for RNN training is to slow in this setting, so we only test a
+                client to make sure there is no programming error.
                 """
                 if self.args.ci == 1:
                     break

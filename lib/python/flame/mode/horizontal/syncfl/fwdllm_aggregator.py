@@ -665,17 +665,22 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
     def aggregate_grads_from_trainers(self, trainer_grad):
+        all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
+        logger.info(f"Are all grads zero initially? {all_zero}")
         # logger.info(f"len(self.model.named_parameters()):
         # {len(self.model.named_parameters())}, len(self.params):
         # {len(self.params)}") self.grad.to(DeviceType.CPU)
         # trainer_grad.to(DeviceType.CPU)
         np = self.model.named_parameters()
+
         for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
+
             if param.requires_grad:
                 if name in trainer_grad:
                     grad_device = self.grad[i].device
                     trainer_grad[name] = trainer_grad[name].to(grad_device)
                     # Ensure the layer name exists in trainer_grad
+
                     self.grad[i].add_(trainer_grad[name])
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
@@ -1017,9 +1022,6 @@ class TopAggregator(SyncTopAgg):
             # self._update_model()
 
             logger.info("calling aggregate for fwdllm (Async)")
-            # TODO: (DG) Resume here. Need to add a local_trained_result to each
-            # corresponding trainer value, not just on behalf of a single
-            # worker_num
             self.grad_pool.append(self.grad)
             self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
@@ -1121,6 +1123,7 @@ class TopAggregator(SyncTopAgg):
 
         # receive local model parameters from trainers
         for msg, metadata in channel.recv_fifo(channel.ends()):
+
             end, timestamp = metadata
             if not msg:
                 logger.info(f"No data from {end}; skipping it")
@@ -1134,6 +1137,7 @@ class TopAggregator(SyncTopAgg):
                     f"received gradients from {end} "
                     f"with model version {msg[MessageType.MODEL_VERSION]}"
                 )
+                self._agg_goal_cnt += 1
 
                 # For OORT selector NOTE: (DG) Last selected round should have
                 # ideally been set in distribute weights. But it was here in the
@@ -1177,7 +1181,7 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
-            logger.debug(f"received message in agg_grads_sync {msg} from {end}")
+            # logger.debug(f"received message in agg_grads_sync {msg} from {end}")
             # capture telemetry on trainer participation in rounds
             channel._selector.ordered_updates_recv_ends.append(end)
             self._updates_in_queue += 1
@@ -1270,70 +1274,73 @@ class TopAggregator(SyncTopAgg):
             f"{self._updates_in_queue}"
         )
 
-    def eval_model(self, device=None):
-        if device is None:
+    def eval_model(self, epoch=0, global_step=0, device=None):
+        if not device:
             device = self.device
 
         logger.info(f"device inside eval_model() is set to: {device}")
 
-        self.model.to(device)
-        self.model.eval()
+        results = {}
 
-        total_loss = 0.0
-        n_batches = 0
+        eval_loss = 0.0
+        nb_eval_steps = 0
+        n_batches = len(self.test_global)
         test_sample_len = len(self.test_global.dataset)
         preds = np.empty((test_sample_len, self.num_labels))
+
+        logger.info(
+            f"Created n_batches: {n_batches}, test_sample_len: {test_sample_len} and preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}"
+        )
+
         out_label_ids = np.empty(test_sample_len)
+        # Move model to device before performing the eval
+        self.model.to(device)
+        self.model.eval()
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
 
-        loss_func = torch.nn.CrossEntropyLoss()
-
-        with torch.no_grad():
-            for i, batch in enumerate(self.test_global):
-                x = batch[1]
-                y = batch[4]
-
-                if x.size(0) == 0:
-                    continue
-
-                input_ids = batch[1].to(device)
-                attention_mask = batch[2].to(device)
+        for i, batch in enumerate(self.test_global):
+            with torch.no_grad():
+                batch = tuple(t for t in batch)
+                x = batch[1].to(device)
                 labels = batch[4].to(device)
 
-                if input_ids.size(0) == 0:
-                    continue
+                output = self.model(x)
+                logits = output[0]
 
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                logits = outputs.logits
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                eval_loss += loss.item()
 
-                loss = loss_func(logits, labels)
-                total_loss += loss.item()
+            nb_eval_steps += 1
+            start_index = self.args.eval_batch_size * i
 
-                start_index = self.args.eval_batch_size * i
-                end_index = (
-                    start_index + self.args.eval_batch_size
-                    if i != (len(self.test_global) - 1)
-                    else test_sample_len
-                )
+            end_index = (
+                start_index + self.args.eval_batch_size
+                if i != (n_batches - 1)
+                else test_sample_len
+            )
+            preds[start_index:end_index] = logits.detach().cpu().numpy()
+            out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
 
-                preds[start_index:end_index] = logits.detach().cpu().numpy()
-                out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
+        eval_loss = eval_loss / nb_eval_steps
 
-                n_batches += 1
-
-        if n_batches == 0:
-            logger.warning("No batches were processed during eval.")
-            return {"eval_loss": None, "eval_accuracy": None}, None, []
-
-        avg_loss = total_loss / n_batches
-
-        final_preds = np.argmax(preds, axis=1)
+        model_outputs = preds
+        preds = np.argmax(preds, axis=1)
         result, wrong = self.compute_metrics(
-            final_preds, out_label_ids, self.test_global.examples
+            preds, out_label_ids, self.test_global.examples
         )
-        result["eval_loss"] = avg_loss
+        result["eval_loss"] = eval_loss
+        results.update(result)
 
-        logger.info(f"Eval results: {result}")
-        return result, preds, wrong
+        # self.results.update(result)
+        logging.info(f"results after eval are: {results}, len(wrong) is: {len(wrong)}")
+
+        # TODO: Check if model needs to be moved back to cpu? Do we need to keep
+        # moving the model between CPU and GPU repeatedly?
+
+        return result, model_outputs, wrong
 
     def compute_metrics(self, preds, labels, eval_examples=None):
         assert len(preds) == len(labels)
@@ -1538,6 +1545,7 @@ class TopAggregator(SyncTopAgg):
 
         # send out global model parameters to trainers
         for end in ends:
+
             # setting start time for OORT TODO: (DG) round_start_time for all
             # trainers in the same round may not be the same
             logger.debug(
@@ -1551,6 +1559,9 @@ class TopAggregator(SyncTopAgg):
             # we use _round to indicate a model version
             logger.info(f"sending data id: {self.data_id}")
             if self.var_good_enough == True:
+                # Added a 0.5 second sleep so as to not overwhelm mqtt
+                time.sleep(0.5)
+
                 logger.info(
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
@@ -1570,6 +1581,9 @@ class TopAggregator(SyncTopAgg):
                 )
                 self.grad_pool = []
             else:
+                # Added a 0.1 second sleep so as to not overwhelm mqtt
+                time.sleep(0.1)
+
                 logger.info(
                     f"sending var = bad to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )

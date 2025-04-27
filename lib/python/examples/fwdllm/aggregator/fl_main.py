@@ -175,6 +175,7 @@ if __name__ == "__main__":
     logger.info(f"NRL test_data_local_dict: {test_data_local_dict}")
     logger.info(f"NRL test_data_global: {test_data_global}")
     logger.info(f"NRL fed_trainer: {fed_trainer}")
+    logger.info(f"NRL num_clients: {num_clients}")
     config.hyperparameters.client_num_in_total = num_clients
     config.hyperparameters.warmup_ratio = model_args.warmup_ratio
 
@@ -190,7 +191,7 @@ if __name__ == "__main__":
         device,
         config,
         fed_trainer,
-        num_labels
+        num_labels,
     )
 
     aggregator.compose()
