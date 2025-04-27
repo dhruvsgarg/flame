@@ -143,7 +143,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._fetch_weights(tag)
 
     def _fetch_weights(self, tag: str) -> None:
-        logger.debug(
+        logger.info(
             f"### FETCH WEIGHTS start for tag: {tag} "
             f"and trainer_id {self.trainer_id}"
         )
@@ -161,7 +161,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer joins this channel
-        logger.debug(
+        logger.info(
             f"_fetch_weights: waiting for someone to join channel: {channel} "
             f"for trainer_id {self.trainer_id}"
         )
@@ -172,7 +172,7 @@ class Trainer(Role, metaclass=ABCMeta):
         msg, _ = channel.recv(end)
 
         if not msg:
-            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
+            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition
                 # (i.e., we set fetch_success to True)

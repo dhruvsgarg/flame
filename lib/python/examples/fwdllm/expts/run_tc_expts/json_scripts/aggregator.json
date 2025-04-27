@@ -85,7 +85,7 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 7,
+        "aggGoal": 10,
         "rounds": 300
     },
     "baseModel": {
@@ -103,7 +103,7 @@
     "selector": {
         "sort": "random",
         "kwargs": {
-            "k": 7
+            "k": 10
         }
     },
     "optimizer": {

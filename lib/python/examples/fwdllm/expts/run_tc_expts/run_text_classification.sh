@@ -53,7 +53,7 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/flame
+REPO_PATH=/home/dgarg39/flame_neha/flame
 DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
@@ -125,7 +125,7 @@ else
   NUM_AVAIL_GPUS=8
 
   # Run trainer/main.py 100 times, each with a unique log file
-  for X in $(seq 1 7)
+  for X in $(seq 0 19)
   do
     # Assign GPUs in a round-robin fashion
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
@@ -134,7 +134,7 @@ else
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> ./log/new/test_trainer_fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_$(date +%d_%m_%H_%M).log 2>&1 &
-    sleep 2
+    sleep 8
   done
 
   # Wait for all processes to finish

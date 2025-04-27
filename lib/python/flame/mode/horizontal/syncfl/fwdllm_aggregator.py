@@ -53,6 +53,8 @@ from torch.nn import CrossEntropyLoss
 
 logger = logging.getLogger(__name__)
 
+PROP_ROUND_END_TIME = "round_end_time"
+
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
 
@@ -678,16 +680,21 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
     def aggregate_grads_from_trainers(self, trainer_grad):
+        all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
+        logger.info(f"Are all grads zero initially? {all_zero}")
         # logger.info(f"len(self.model.named_parameters()): {len(self.model.named_parameters())}, len(self.params): {len(self.params)}")
         # self.grad.to(DeviceType.CPU)
         # trainer_grad.to(DeviceType.CPU)
         np = self.model.named_parameters()
+
         for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
+
             if param.requires_grad:
                 if name in trainer_grad:
                     grad_device = self.grad[i].device
                     trainer_grad[name] = trainer_grad[name].to(grad_device)                    
                     # Ensure the layer name exists in trainer_grad
+                    
                     self.grad[i].add_(trainer_grad[name])  
                 else:
                     logger.warn(f"Gradient for {name} not found in trainer_grad.")
@@ -1197,6 +1204,181 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
+    def _aggregate_grads_sync(self, tag: str) -> None:
+        """Aggregate trainer gradients synchronously."""
+        logger.info("starting aggregate_grads_sync")
+        if self.ends_not_selected_yet:
+            logger.info("no ends selected yet")
+            return
+
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+
+        logger.info(f"Channel {channel} found for tag {tag}")
+        # receive local model parameters from a trainer who arrives first NOTE:
+        # (DG) Right now, the leave notifications also cause a message to be
+        # processed and yield (None,None) from recv_fifo().
+        if channel.ends(VAL_CH_STATE_RECV) is None:
+            logger.info("no ends yet")
+            return
+
+        total = 0
+
+        # receive local model parameters from trainers
+        for msg, metadata in channel.recv_fifo(channel.ends()):
+            
+            end, timestamp = metadata
+            if not msg:
+                logger.info(f"No data from {end}; skipping it")
+                continue
+
+            if (
+                MessageType.GRADIENTS in msg
+                and MessageType.GRADIENTS_FOR_VAR_CHECK in msg
+            ):
+                logger.info(
+                    f"received gradients from {end} "
+                    f"with model version {msg[MessageType.MODEL_VERSION]}"
+                )
+                self._agg_goal_cnt += 1
+
+                # For OORT selector NOTE: (DG) Last selected round should have
+                # ideally been set in distribute weights. But it was here in the
+                # old oort code and ive kept it. Instead of
+                # PROP_LAST_SELECTED_ROUND, it should have been
+                # PROP_LAST_UPDATE_RECVD_ROUND.
+                channel.set_end_property(
+                    end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
+                )
+
+                # Set last eval round for the trainer since training also means
+                # that eval was done for the same round.
+                channel.set_end_property(
+                    end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
+                )
+                # calculate round duration for this end, if the round number
+                # information is identical with round_start_time
+                logger.debug(
+                    f"Getting channel property {PROP_ROUND_START_TIME} for "
+                    f"end {end}"
+                )
+                round_start_time_tup = channel.get_end_property(
+                    end, PROP_ROUND_START_TIME
+                )
+                end = metadata[0]
+                timestamp = metadata[1]
+                logger.debug(
+                    f"Returned round_start_time_tup: {round_start_time_tup} for "
+                    f"end {end} and timestamp {timestamp}"
+                )
+
+                # TODO: (DG) Also set the end property for task=eval done at
+                # timestamp=current.
+
+            else:
+                logger.error(
+                    f"Invalid message received from {end} in aggregate_weights: {msg}"
+                )
+                return
+
+            logger.debug(f"received data from {end}")
+            channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
+
+            # logger.info(f"received message in agg_grads_sync {msg} from {end}")
+            # capture telemetry on trainer participation in rounds
+            channel._selector.ordered_updates_recv_ends.append(end)
+            self._updates_in_queue += 1
+            self._per_round_update_list.append(end)
+
+            if end not in self._updates_recevied.keys():
+                self._updates_recevied[end] = 1
+            else:
+                self._updates_recevied[end] += 1
+
+            # Process the gradients
+            if MessageType.GRADIENTS in msg:
+                # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
+                # self.model)
+                all_gradients = msg[MessageType.GRADIENTS]
+                self.aggregate_grads_from_trainers(all_gradients)
+
+            if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
+                logger.info(
+                    f"received GRADIENTS_FOR_VAR_CHECK, {len(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])}"
+                )
+                self.grad_for_var_check_list.append(
+                    msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
+                )
+
+            if MessageType.DATASET_SIZE in msg:
+                count = msg[MessageType.DATASET_SIZE]
+                channel.set_end_property(
+                    end, PROP_DATASET_SIZE, msg[MessageType.DATASET_SIZE]
+                )
+
+            if MessageType.MODEL_VERSION in msg:
+                version = msg[MessageType.MODEL_VERSION]
+
+            if MessageType.STAT_UTILITY in msg:
+                channel.set_end_property(
+                    end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+                )
+                stat_utility = msg[MessageType.STAT_UTILITY]
+
+            logger.info(
+                f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
+            )
+
+        # logger.debug(f"received {len(self.cache)} trainer updates in cache")
+
+        # Proceed to aggregating gradients
+        logger.info("calling aggregate for fwdllm (Sync)")
+        self.grad_pool.append(self.grad)
+        self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
+        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
+            self.model
+        )
+
+        self.grad = [torch.zeros_like(p) for p in self.params]
+
+        self.aggregate(self._round)
+        self._agg_goal_cnt = 0
+        # decrement counter since updates consumed from queue
+        self._updates_in_queue -= self._agg_goal
+
+        round_to_print = self._round
+        data_id_to_print = self.data_id
+
+        if self.var_good_enough:
+
+            # evaluate model to calculate loss
+            result, _, _ = self.eval_model()
+            logger.info(f"eval loss = {result['eval_loss']}")
+            self.data_id += 1
+            self.round_per_data_id = 0
+            # TODO: need to replace it with per end property
+            if self.data_id == self.total_data_bins:
+                logger.info("incrementing round number now ")
+                self._round += 1
+                self.data_id = 0
+
+        else:
+            self.round_per_data_id += 1
+
+        logger.debug(f"aggregation finished for round {round_to_print}")
+        logger.info(
+            f"====== aggregation finished for round {round_to_print}, data id: {data_id_to_print}, "
+            f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
+            f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
+            f"{self._trainer_participation_in_round_count}"
+        )
+
+        logger.info(
+            f"After round: {round_to_print}, remaining _updates_in_queue: "
+            f"{self._updates_in_queue}"
+        )
+
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
@@ -1565,7 +1747,7 @@ class TopAggregator(SyncTopAgg):
             task_get_heartbeat = Tasklet("heartbeat", self.get, TAG_HEARTBEAT)
             task_init = Tasklet("initialize", self.initialize)
 
-            task_aggregate_grads = Tasklet("aggregate", self._aggregate_grads, TAG_AGGREGATE)
+            task_aggregate_grads = Tasklet("aggregate", self._aggregate_grads_sync, TAG_AGGREGATE)
 
         c = self.composer
         c.unlink()
@@ -1581,10 +1763,11 @@ class TopAggregator(SyncTopAgg):
             >> task_init
             >> loop(
                 # task_reset_agg_goal_vars
+                
                 task_put_train
                 # >> asyncfl_loop(task_put >> task_get_weights >>
                 # >> task_get_heartbeat
-                >> task_pause_exec
+                # >> task_pause_exec
                 >> task_aggregate_grads
             )
             # >> c.tasklet("load_data")
