@@ -53,7 +53,7 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/flame_neha/flame
+REPO_PATH=/home/dgarg39/flame
 DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
