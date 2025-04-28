@@ -152,7 +152,7 @@ class FedSGDAggregator(TopAggregator):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
             training_num += self.sample_num_dict[idx]
 
-        logger.info(f"len(model_list): {model_list}")
+        # logger.info(f"len(model_list): {model_list}")
 
         # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
         # 用于后面cache_v

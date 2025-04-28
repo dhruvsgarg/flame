@@ -188,7 +188,12 @@ class Trainer(Role, metaclass=ABCMeta):
             self._round = msg[MessageType.ROUND]
 
         if MessageType.DATA_ID in msg and MessageType.ROUND_PER_DATA_ID in msg:
-            if self.data_id is not None and self.data_id == msg[MessageType.DATA_ID] and self.round_per_data_id is not None and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]:
+            if (
+                self.data_id is not None
+                and self.data_id == msg[MessageType.DATA_ID]
+                and self.round_per_data_id is not None
+                and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]
+            ):
                 self.abort_training = True
                 logger.info(
                     f"Fetch weights aborted for given model version "
@@ -215,12 +220,11 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.abort_training = False
                 self.round_per_data_id = msg[MessageType.ROUND_PER_DATA_ID]
 
-            
         if MessageType.VAR in msg:
             logger.info(
                 f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}. Not updating weights"
             )
-            
+
         elif MessageType.WEIGHTS in msg:
             # Before proceeding, check if this model version is newer
             # than previously processed NOTE: The condition could have
@@ -230,7 +234,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # the trainer would never make progress. We allow to
             # trainer to re-train for == round condition if the
             # message was dropped.
-            logger.info('message type weights received')
+            logger.info("message type weights received")
 
             # if self._round <= self._updates_returned_upto_round:
             #     logger.info(
@@ -254,7 +258,6 @@ class Trainer(Role, metaclass=ABCMeta):
             #     )
             #     channel.cleanup_recvd_ends()
             #     return
-            
 
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
@@ -263,27 +266,28 @@ class Trainer(Role, metaclass=ABCMeta):
             # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             # self.weights = msg[MessageType.WEIGHTS]
-            
 
             self._update_model()
             if MessageType.DATA_ID in msg:
-                logger.info(f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}")
+                logger.info(
+                    f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
+                )
                 self.data_id = msg[MessageType.DATA_ID]
                 if MessageType.GRAD_POOL in msg:
                     if self.args.var_control:
                         if self.args.perturbation_sampling:
                             if self.data_id % 2:
-                                self.trainer.model_trainer.old_grad = msg[MessageType.GRAD_POOL]
+                                self.trainer.model_trainer.old_grad = msg[
+                                    MessageType.GRAD_POOL
+                                ]
                             else:
-                                 self.trainer.model_trainer.old_grad = None
+                                self.trainer.model_trainer.old_grad = None
             else:
                 logger.info(f"data id not found in msg")
         else:
             logger.info(
                 f"Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
             )
-
-        
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
@@ -448,8 +452,13 @@ class Trainer(Role, metaclass=ABCMeta):
         channel._selector._cleanup_send_ends()
 
     def _send_grads(self, tag: str) -> None:
+        # Added a 1 second sleep so as to not overwhelm mqtt
+        time.sleep(1)
+
         if self.abort_training == True:
-            logger.info(f"Aborting sending grads for trainer id: {self.trainer_id} because it has already sent updates for round_per_data_id: {self.round_per_data_id}")
+            logger.info(
+                f"Aborting sending grads for trainer id: {self.trainer_id} because it has already sent updates for round_per_data_id: {self.round_per_data_id}"
+            )
             return
         logger.debug(
             f"### SEND GRADS for tag: {tag} " f"and trainer_id: {self.trainer_id}"
@@ -494,8 +503,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Log the gradient dictionary details
             if grad_dict:
-                logger.debug(f"Going to send gradients dictionary with {len(grad_dict)} entries: "
-                            f"{ {k: v.shape for k, v in grad_dict.items()} }")
+                logger.debug(
+                    f"Going to send gradients dictionary with {len(grad_dict)} entries: "
+                    f"{ {k: v.shape for k, v in grad_dict.items()} }"
+                )
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
 

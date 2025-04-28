@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """SyncFL horizontal FL top level aggregator for FwdLLM."""
 
+import gc
 import logging
 import time
 from datetime import datetime
@@ -119,6 +120,13 @@ class TopAggregator(SyncTopAgg):
     def pause_execution(self):
         time.sleep(1)
         return
+
+    def log_gpu_memory(self, tag, device):
+        allocated = torch.cuda.memory_allocated(device)
+        reserved = torch.cuda.memory_reserved(device)
+        logging.info(
+            f"[MEM:{tag}] Allocated: {allocated/1e6:.2f} MB | Reserved: {reserved/1e6:.2f} MB | Device: {device}, aggregator"
+        )
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -667,6 +675,9 @@ class TopAggregator(SyncTopAgg):
     def aggregate_grads_from_trainers(self, trainer_grad):
         all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
         logger.info(f"Are all grads zero initially? {all_zero}")
+
+        self.log_gpu_memory("start aggregate_grads_from_trainers", self.device)
+
         # logger.info(f"len(self.model.named_parameters()):
         # {len(self.model.named_parameters())}, len(self.params):
         # {len(self.params)}") self.grad.to(DeviceType.CPU)
@@ -674,7 +685,6 @@ class TopAggregator(SyncTopAgg):
         np = self.model.named_parameters()
 
         for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
-
             if param.requires_grad:
                 if name in trainer_grad:
                     grad_device = self.grad[i].device
@@ -684,6 +694,8 @@ class TopAggregator(SyncTopAgg):
                     self.grad[i].add_(trainer_grad[name])
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
+
+        self.log_gpu_memory("end aggregate_grads_from_trainers", self.device)
 
     def aggregate_grad_pool(self, grad_list):
         if len(grad_list) == 0:
@@ -1103,6 +1115,7 @@ class TopAggregator(SyncTopAgg):
     def _aggregate_grads_sync(self, tag: str) -> None:
         """Aggregate trainer gradients synchronously."""
         logger.info("starting aggregate_grads_sync")
+        self.log_gpu_memory("start _aggregate_grads_sync", self.device)
         if self.ends_not_selected_yet:
             logger.info("no ends selected yet")
             return
@@ -1123,7 +1136,6 @@ class TopAggregator(SyncTopAgg):
 
         # receive local model parameters from trainers
         for msg, metadata in channel.recv_fifo(channel.ends()):
-
             end, timestamp = metadata
             if not msg:
                 logger.info(f"No data from {end}; skipping it")
@@ -1226,6 +1238,12 @@ class TopAggregator(SyncTopAgg):
                 f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
             )
 
+            if self._agg_goal_cnt == self._agg_goal:
+                logger.info(
+                    f"Reached agg_goal of {self._agg_goal} since agg_goal_count is {self._agg_goal_cnt}. Breaking from for loop, proceeding to aggregate."
+                )
+                break
+
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
@@ -1274,11 +1292,14 @@ class TopAggregator(SyncTopAgg):
             f"{self._updates_in_queue}"
         )
 
+        self.log_gpu_memory("end _aggregate_grads_sync", self.device)
+
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
 
         logger.info(f"device inside eval_model() is set to: {device}")
+        self.log_gpu_memory("start eval_model", self.device)
 
         results = {}
 
@@ -1339,11 +1360,17 @@ class TopAggregator(SyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
+        del x, labels, output, logits, loss
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        self.log_gpu_memory("end eval_model", self.device)
 
         return result, model_outputs, wrong
 
     def compute_metrics(self, preds, labels, eval_examples=None):
         assert len(preds) == len(labels)
+        self.log_gpu_memory("start compute_metrics", self.device)
 
         extra_metrics = {}
         extra_metrics["acc"] = sklearn.metrics.accuracy_score(labels, preds)
@@ -1357,6 +1384,9 @@ class TopAggregator(SyncTopAgg):
         mcc = matthews_corrcoef(labels, preds)
 
         tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+
+        self.log_gpu_memory("end compute_metrics", self.device)
+
         return (
             {**{"mcc": mcc, "tp": tp, "tn": tn, "fp": fp, "fn": fn}, **extra_metrics},
             wrong,
@@ -1545,7 +1575,6 @@ class TopAggregator(SyncTopAgg):
 
         # send out global model parameters to trainers
         for end in ends:
-
             # setting start time for OORT TODO: (DG) round_start_time for all
             # trainers in the same round may not be the same
             logger.debug(
@@ -1557,11 +1586,8 @@ class TopAggregator(SyncTopAgg):
             )
 
             # we use _round to indicate a model version
-            logger.info(f"sending data id: {self.data_id}")
+            # logger.info(f"sending data id: {self.data_id}")
             if self.var_good_enough == True:
-                # Added a 0.5 second sleep so as to not overwhelm mqtt
-                time.sleep(0.5)
-
                 logger.info(
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
@@ -1579,11 +1605,11 @@ class TopAggregator(SyncTopAgg):
                         MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                     },
                 )
+                # Added a 1 second sleep so as to not overwhelm mqtt
+                time.sleep(1)
+
                 self.grad_pool = []
             else:
-                # Added a 0.1 second sleep so as to not overwhelm mqtt
-                time.sleep(0.1)
-
                 logger.info(
                     f"sending var = bad to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
@@ -1598,6 +1624,9 @@ class TopAggregator(SyncTopAgg):
                         MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                     },
                 )
+                # Added a 0.5 second sleep so as to not overwhelm mqtt
+                time.sleep(0.5)
+
             # Update send_time in training_duration_s
             if end not in self._track_trainer_version_duration_s.keys():
                 logger.debug(

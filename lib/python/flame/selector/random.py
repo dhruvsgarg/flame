@@ -31,6 +31,7 @@ from flame.channel import (
     VAL_CH_STATE_SEND,
 )
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +69,6 @@ class RandomSelector(AbstractSelector):
         # between
         self.track_selected_trainers_which_left = dict()
 
-        
     def select(
         self,
         ends: dict[str, End],
@@ -86,9 +86,9 @@ class RandomSelector(AbstractSelector):
 
         logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         # TODO (REMOVE HARDCODING): remove hard coded number of trainers
-        hardcoded_init_ends_needed = 10
+        hardcoded_init_ends_needed = 95
         if len(ends) < hardcoded_init_ends_needed:
-            logger.info(f'not enough ends, need atleast {hardcoded_init_ends_needed}')
+            logger.info(f"not enough ends, need atleast {hardcoded_init_ends_needed}")
             time.sleep(0.1)
             return {}
         # while len(ends)< self.k:
@@ -125,7 +125,7 @@ class RandomSelector(AbstractSelector):
         logger.info(f"selected ends: {self.selected_ends}")
 
         return {key: None for key in self.selected_ends}
-    
+
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Clean up ends whose a message was received, from selected
         ends.
@@ -139,7 +139,7 @@ class RandomSelector(AbstractSelector):
         logger.debug(f"ends: {ends.keys()}")
         logger.debug(f"selected ends: {self.selected_ends}")
 
-        selected_ends = self.selected_ends #[self.requester]
+        selected_ends = self.selected_ends  # [self.requester]
         # logger.debug(
         #     f"self.requester: {self.requester} and selected_ends: "
         #     f"{selected_ends} before processing"
@@ -256,7 +256,6 @@ class RandomSelector(AbstractSelector):
                         )
         else:
             logger.debug("No ends to remove so far")
-
 
     def _cleanup_removed_ends(self, end_id):
         pass
