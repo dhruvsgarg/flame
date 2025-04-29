@@ -17,6 +17,7 @@
 
 import gc
 import logging
+import psutil
 import time
 from datetime import datetime
 import sklearn
@@ -121,11 +122,21 @@ class TopAggregator(SyncTopAgg):
         time.sleep(1)
         return
 
-    def log_gpu_memory(self, tag, device):
+    def log_memory(self, tag, device):
+        # GPU memory
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
+
+        # CPU memory
+        process = psutil.Process()
+        cpu_memory = process.memory_info().rss  # in bytes
+
         logging.info(
-            f"[MEM:{tag}] Allocated: {allocated/1e6:.2f} MB | Reserved: {reserved/1e6:.2f} MB | Device: {device}, aggregator"
+            f"[MEM:{tag}] "
+            f"GPU Allocated: {allocated/1e6:.2f} MB | "
+            f"GPU Reserved: {reserved/1e6:.2f} MB | "
+            f"CPU Memory: {cpu_memory/1e6:.2f} MB | "
+            f"Device: {device}, aggregator"
         )
 
     def _reset_agg_goal_variables(self):
@@ -676,7 +687,7 @@ class TopAggregator(SyncTopAgg):
         all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
         logger.info(f"Are all grads zero initially? {all_zero}")
 
-        self.log_gpu_memory("start aggregate_grads_from_trainers", self.device)
+        self.log_memory("start aggregate_grads_from_trainers", self.device)
 
         # logger.info(f"len(self.model.named_parameters()):
         # {len(self.model.named_parameters())}, len(self.params):
@@ -695,7 +706,7 @@ class TopAggregator(SyncTopAgg):
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
 
-        self.log_gpu_memory("end aggregate_grads_from_trainers", self.device)
+        self.log_memory("end aggregate_grads_from_trainers", self.device)
 
     def aggregate_grad_pool(self, grad_list):
         if len(grad_list) == 0:
@@ -1115,7 +1126,7 @@ class TopAggregator(SyncTopAgg):
     def _aggregate_grads_sync(self, tag: str) -> None:
         """Aggregate trainer gradients synchronously."""
         logger.info("starting aggregate_grads_sync")
-        self.log_gpu_memory("start _aggregate_grads_sync", self.device)
+        self.log_memory("start _aggregate_grads_sync", self.device)
         if self.ends_not_selected_yet:
             logger.info("no ends selected yet")
             return
@@ -1292,14 +1303,14 @@ class TopAggregator(SyncTopAgg):
             f"{self._updates_in_queue}"
         )
 
-        self.log_gpu_memory("end _aggregate_grads_sync", self.device)
+        self.log_memory("end _aggregate_grads_sync", self.device)
 
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
 
         logger.info(f"device inside eval_model() is set to: {device}")
-        self.log_gpu_memory("start eval_model", self.device)
+        self.log_memory("start eval_model", self.device)
 
         results = {}
 
@@ -1364,13 +1375,13 @@ class TopAggregator(SyncTopAgg):
         torch.cuda.empty_cache()
         gc.collect()
 
-        self.log_gpu_memory("end eval_model", self.device)
+        self.log_memory("end eval_model", self.device)
 
         return result, model_outputs, wrong
 
     def compute_metrics(self, preds, labels, eval_examples=None):
         assert len(preds) == len(labels)
-        self.log_gpu_memory("start compute_metrics", self.device)
+        self.log_memory("start compute_metrics", self.device)
 
         extra_metrics = {}
         extra_metrics["acc"] = sklearn.metrics.accuracy_score(labels, preds)
@@ -1385,7 +1396,7 @@ class TopAggregator(SyncTopAgg):
 
         tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
 
-        self.log_gpu_memory("end compute_metrics", self.device)
+        self.log_memory("end compute_metrics", self.device)
 
         return (
             {**{"mcc": mcc, "tp": tp, "tn": tn, "fp": fp, "fn": fn}, **extra_metrics},
