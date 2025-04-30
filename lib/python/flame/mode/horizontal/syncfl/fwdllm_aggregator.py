@@ -26,7 +26,7 @@ from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STAT
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
-import pickle 
+import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
@@ -1607,16 +1607,18 @@ class TopAggregator(SyncTopAgg):
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 payload = {
-                        MessageType.WEIGHTS: shared_weights,
-                        MessageType.GRAD_POOL: shared_grad_pool,
-                        MessageType.ROUND: self._round,
-                        MessageType.MODEL_VERSION: self._round,
-                        MessageType.TASK_TO_PERFORM: task_to_perform,
-                        MessageType.DATA_ID: self.data_id,
-                        MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                    MessageType.WEIGHTS: shared_weights,
+                    MessageType.GRAD_POOL: shared_grad_pool,
+                    MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
+                    MessageType.DATA_ID: self.data_id,
+                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                 }
                 msg_bytes = pickle.dumps(payload)
-                logger.info(f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB")
+                logger.info(
+                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
+                )
                 channel.send(end, payload)
                 # Added a 1 second sleep so as to not overwhelm mqtt
                 time.sleep(1)
@@ -1627,15 +1629,17 @@ class TopAggregator(SyncTopAgg):
                     f"sending var = bad to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 payload = {
-                        MessageType.VAR: "bad",
-                        MessageType.ROUND: self._round,
-                        MessageType.MODEL_VERSION: self._round,
-                        MessageType.TASK_TO_PERFORM: task_to_perform,
-                        MessageType.DATA_ID: self.data_id,
-                        MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                    MessageType.VAR: "bad",
+                    MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
+                    MessageType.DATA_ID: self.data_id,
+                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                 }
                 msg_bytes = pickle.dumps(payload)
-                logger.info(f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB")
+                logger.info(
+                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
+                )
                 channel.send(end, payload)
                 # Added a 0.5 second sleep so as to not overwhelm mqtt
                 time.sleep(0.5)
@@ -1665,6 +1669,106 @@ class TopAggregator(SyncTopAgg):
                 ] = -1
 
             # Update sent_wts_version_ts with version and timestamp
+            self._track_trainer_version_duration_s[end]["sent_wts_version_ts"][
+                self._round
+            ] = datetime.now()
+
+    ## TODO: Placeholder, chatgpt code. Logic needs to be checked.
+    def _distribute_grads(self, tag: str, task_to_perform: str = "train") -> None:
+        """Send only gradients (not full weights) to trainers - for FwdLLM."""
+
+        logger.info(f"Device for agg: {next(self.model.parameters()).device}")
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.debug(f"channel not found for tag {tag}")
+            return
+
+        channel.await_join()
+
+        logger.debug(f"Starting busy wait at time {time.time()}")
+        time.sleep(0.1)
+        logger.debug(f"Ended busy wait at time {time.time()}")
+
+        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        logger.info(f"ends: {ends}")
+        if ends is None:
+            self.ends_not_selected_yet = True
+        else:
+            self.ends_not_selected_yet = False
+        if not ends:
+            logger.debug(f"No trainers found for tag {tag}, skipping send_grads")
+            return
+
+        if self.var:
+            logger.info(
+                f"self.var = {self.var}, self.var_threshold = {self.var_threshold}"
+            )
+        if self.var_good_enough:
+            logger.info(
+                "Sending gradients to trainers since variance is below threshold"
+            )
+        else:
+            logger.info(
+                "Sending variance = bad to trainers since variance is above threshold"
+            )
+
+        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+
+        for end in ends:
+            logger.debug(
+                f"Setting channel property {PROP_ROUND_START_TIME} for "
+                f"end {end}. For round {self._round} at time: {datetime.now()}"
+            )
+            channel.set_end_property(
+                end, PROP_ROUND_START_TIME, (self._round, datetime.now())
+            )
+
+            payload = None
+            if self.var_good_enough:
+                payload = {
+                    MessageType.GRAD_POOL: shared_grad_pool,
+                    MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
+                    MessageType.DATA_ID: self.data_id,
+                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                }
+                msg_bytes = pickle.dumps(payload)
+                logger.info(
+                    f"[DEBUG] Gradients payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
+                )
+                channel.send(end, payload)
+                time.sleep(1)
+                self.grad_pool = []
+            else:
+                payload = {
+                    MessageType.VAR: "bad",
+                    MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
+                    MessageType.DATA_ID: self.data_id,
+                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                }
+                msg_bytes = pickle.dumps(payload)
+                logger.info(
+                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
+                )
+                channel.send(end, payload)
+                time.sleep(0.5)
+            del payload
+            gc.collect()
+
+            if end not in self._track_trainer_version_duration_s:
+                logger.debug(
+                    f"{end} not in _track_trainer_version_duration_s, adding it"
+                )
+                self._track_trainer_version_duration_s[end] = {
+                    "last_send_wts_ts": -1,
+                    "sent_wts_version_ts": {},
+                    "recv_wts_version_ts": {},
+                    "total_training_time_s": -1,
+                }
+
             self._track_trainer_version_duration_s[end]["sent_wts_version_ts"][
                 self._round
             ] = datetime.now()

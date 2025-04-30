@@ -322,6 +322,92 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel.cleanup_recvd_ends()
 
+    ### TODO: Need to have a _fetch_grads() method to interact with the aggregator. Later, remove the _fetch_weights() method.
+    def _fetch_grads(self, tag: str) -> None:
+        logger.debug(
+            f"### FETCH GRADS start for tag: {tag} and trainer_id {self.trainer_id}"
+        )
+
+        self.fetch_success = False
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            logger.info(
+                f"fetch grads, channel not found with tag {tag} for trainer_id {self.trainer_id}"
+            )
+            time.sleep(1)
+            return
+
+        logger.debug(
+            f"_fetch_grads: waiting for someone to join channel: {channel} for trainer_id {self.trainer_id}"
+        )
+        channel.await_join()
+
+        end = channel.one_end(VAL_CH_STATE_RECV)
+        msg, _ = channel.recv(end)
+
+        if not msg:
+            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
+            if self._work_done:
+                self.fetch_success = True
+            time.sleep(1)
+            return
+
+        logger.info(f"New gradient message received for trainer_id {self.trainer_id}")
+
+        if MessageType.ROUND in msg:
+            self._round = msg[MessageType.ROUND]
+
+        if MessageType.DATA_ID in msg and MessageType.ROUND_PER_DATA_ID in msg:
+            if (
+                self.data_id is not None
+                and self.data_id == msg[MessageType.DATA_ID]
+                and self.round_per_data_id is not None
+                and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]
+            ):
+                self.abort_training = True
+                logger.info(
+                    f"Fetch grads aborted due to stale model version for trainer_id {self.trainer_id}"
+                )
+                channel._selector.ordered_updates_recv_ends.append(end)
+                channel.cleanup_recvd_ends()
+                return
+            else:
+                self.abort_training = False
+                self.round_per_data_id = msg[MessageType.ROUND_PER_DATA_ID]
+
+        if MessageType.GRAD_POOL in msg:
+            logger.info(f"Applying received gradients for trainer_id {self.trainer_id}")
+            self.received_grads = msg[MessageType.GRADS]
+
+            if self.args.var_control:
+                self.trainer.model_trainer.old_grad = self.received_grads
+            else:
+                # Optional: apply gradients to model or keep for later
+                logger.debug(
+                    "Gradient application skipped as var_control is not enabled"
+                )
+        else:
+            logger.info(
+                f"Invalid or missing gradient message type for trainer_id {self.trainer_id}"
+            )
+            time.sleep(1)
+            return
+
+        if MessageType.EOT in msg:
+            self._work_done = msg[MessageType.EOT]
+
+        self.fetch_success = True
+
+        logger.info(
+            f"### FETCH GRADS complete for trainer_id {self.trainer_id}, round: {self._round}, data id: {self.data_id} and work_done: {self._work_done} ###"
+        )
+
+        channel._selector.ordered_updates_recv_ends.append(end)
+        logger.debug(
+            f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}"
+        )
+        channel.cleanup_recvd_ends()
+
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -680,6 +766,7 @@ class Trainer(Role, metaclass=ABCMeta):
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
 
+    ## TODO: This function isn't currently being used. Need to use this so that even first _send_grads() from aggregator need not send 250MB weights. Should only send grads.
     def _load_model_onto_gpu(self):
         self.model = self.model_arch().to(self.device)
         logger.debug(f"Loaded model on gpu for trainer_id: {self.trainer_id}")
