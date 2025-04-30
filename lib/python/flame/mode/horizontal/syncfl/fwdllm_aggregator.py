@@ -26,6 +26,7 @@ from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STAT
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
+import pickle 
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
@@ -1585,6 +1586,8 @@ class TopAggregator(SyncTopAgg):
             )
 
         # send out global model parameters to trainers
+        shared_weights = weights_to_device(self.weights, DeviceType.CPU)
+        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
             # trainers in the same round may not be the same
@@ -1598,24 +1601,23 @@ class TopAggregator(SyncTopAgg):
 
             # we use _round to indicate a model version
             # logger.info(f"sending data id: {self.data_id}")
+            payload = None
             if self.var_good_enough == True:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
-                channel.send(
-                    end,
-                    {
-                        MessageType.WEIGHTS: weights_to_device(
-                            self.weights, DeviceType.CPU
-                        ),
-                        MessageType.GRAD_POOL: self.aggregate_grad_pool(self.grad_pool),
+                payload = {
+                        MessageType.WEIGHTS: shared_weights,
+                        MessageType.GRAD_POOL: shared_grad_pool,
                         MessageType.ROUND: self._round,
                         MessageType.MODEL_VERSION: self._round,
                         MessageType.TASK_TO_PERFORM: task_to_perform,
                         MessageType.DATA_ID: self.data_id,
                         MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
-                    },
-                )
+                }
+                msg_bytes = pickle.dumps(payload)
+                logger.info(f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB")
+                channel.send(end, payload)
                 # Added a 1 second sleep so as to not overwhelm mqtt
                 time.sleep(1)
 
@@ -1624,19 +1626,21 @@ class TopAggregator(SyncTopAgg):
                 logger.info(
                     f"sending var = bad to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
-                channel.send(
-                    end,
-                    {
+                payload = {
                         MessageType.VAR: "bad",
                         MessageType.ROUND: self._round,
                         MessageType.MODEL_VERSION: self._round,
                         MessageType.TASK_TO_PERFORM: task_to_perform,
                         MessageType.DATA_ID: self.data_id,
                         MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
-                    },
-                )
+                }
+                msg_bytes = pickle.dumps(payload)
+                logger.info(f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB")
+                channel.send(end, payload)
                 # Added a 0.5 second sleep so as to not overwhelm mqtt
                 time.sleep(0.5)
+            del payload
+            gc.collect()
 
             # Update send_time in training_duration_s
             if end not in self._track_trainer_version_duration_s.keys():
