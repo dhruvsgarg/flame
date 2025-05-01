@@ -1859,8 +1859,8 @@ class TopAggregator(SyncTopAgg):
                     + f", Total: {total_size_mb:.2f} MB"
                 )
                 channel.send(end, payload)
-                # Added a 1 second sleep so as to not overwhelm mqtt
-                # time.sleep(1)
+                # Added a 1 second sleep so as to not overwhelm mqtt and cuda
+                time.sleep(1)
 
                 self.grad_pool = []
             else:

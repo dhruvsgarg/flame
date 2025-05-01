@@ -85,7 +85,7 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 90,
+        "aggGoal": 95,
         "rounds": 300
     },
     "baseModel": {
