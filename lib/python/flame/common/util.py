@@ -192,7 +192,19 @@ def weights_to_device(weights, dtype: DeviceType):
         return weights
     elif framework == MLFramework.PYTORCH:
         torch_device = get_pytorch_device(dtype)
-        return {name: weights[name].to(torch_device) for name in weights}
+        weights_dict = {name: weights[name].to(torch_device) for name in weights}
+
+        num_keys = len(weights_dict)
+        total_elems = sum(t.numel() for t in weights_dict.values())
+        total_size_MB = (
+            sum(t.numel() * t.element_size() for t in weights_dict.values()) / 1e6
+        )
+
+        print(
+            f"[weights_to_device] Keys: {num_keys}, Total elements: {total_elems:,}, Size: {total_size_MB:.2f} MB"
+        )
+
+        return weights_dict
 
     return None
 

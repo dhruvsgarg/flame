@@ -140,6 +140,54 @@ class TopAggregator(SyncTopAgg):
             f"Device: {device}, aggregator"
         )
 
+    def print_trainable_params_stats(self, location=""):
+        total_params = 0
+        trainable_params = 0
+        total_size = 0.0
+        trainable_size = 0.0
+
+        for param in self.model.parameters():
+            numel = param.numel()
+            size_MB = numel * param.element_size() / 1e6
+
+            total_params += numel
+            total_size += size_MB
+
+            if param.requires_grad:
+                trainable_params += numel
+                trainable_size += size_MB
+
+        fraction = trainable_params / total_params if total_params > 0 else 0
+        loc_str = f"[{location}] " if location else ""
+
+        print(
+            f"{loc_str}Trainable params: {trainable_params:,} / {total_params:,} "
+            f"({fraction:.2%}), Size: {trainable_size:.2f} MB / {total_size:.2f} MB"
+        )
+
+    def get_trainable_param_state_dict(self):
+        return {
+            name: param.detach().cpu()
+            for name, param in self.model.named_parameters()
+            if param.requires_grad
+        }
+
+    def print_param_dict_stats(self, param_dict, location=""):
+        total_params = 0
+        total_size = 0.0
+
+        for tensor in param_dict.values():
+            numel = tensor.numel()
+            size_MB = numel * tensor.element_size() / 1e6
+
+            total_params += numel
+            total_size += size_MB
+
+        loc_str = f"[{location}] " if location else ""
+        print(
+            f"{loc_str}Param dict stats — Total params: {total_params:,}, Size: {total_size:.2f} MB"
+        )
+
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
@@ -685,6 +733,9 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
     def aggregate_grads_from_trainers(self, trainer_grad):
+        self.print_trainable_params_stats(
+            location="[start,aggregate_grads_from_trainers()]"
+        )
         all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
         logger.info(f"Are all grads zero initially? {all_zero}")
 
@@ -708,11 +759,17 @@ class TopAggregator(SyncTopAgg):
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
 
         self.log_memory("end aggregate_grads_from_trainers", self.device)
+        self.print_trainable_params_stats(
+            location="[end,aggregate_grads_from_trainers()]"
+        )
 
     def aggregate_grad_pool(self, grad_list):
+        self.print_trainable_params_stats(location="[start,aggregate_grad_pool()]")
         if len(grad_list) == 0:
+            self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return None
         if len(grad_list) == 1:
+            self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return grad_list[0]
         else:
             grad = grad_list[0]
@@ -722,6 +779,7 @@ class TopAggregator(SyncTopAgg):
                         grad[id] = grad_list[i][id]
                     else:
                         grad[id] += grad_list[i][id]
+            self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return grad
 
     def _aggregate_grads_async(self, tag: str) -> None:
@@ -1128,6 +1186,7 @@ class TopAggregator(SyncTopAgg):
         """Aggregate trainer gradients synchronously."""
         logger.info("starting aggregate_grads_sync")
         self.log_memory("start _aggregate_grads_sync", self.device)
+        self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
         if self.ends_not_selected_yet:
             logger.info("no ends selected yet")
             return
@@ -1261,13 +1320,22 @@ class TopAggregator(SyncTopAgg):
         # Proceed to aggregating gradients
         logger.info("calling aggregate for fwdllm (Sync)")
         self.grad_pool.append(self.grad)
+        self.print_trainable_params_stats(
+            location="[agg_start,_aggregate_grads_sync()]"
+        )
         self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
+        self.print_trainable_params_stats(
+            location="[after_add_local,_aggregate_grads_sync()]"
+        )
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
         self.aggregate(self._round)
+        self.print_trainable_params_stats(
+            location="[after_aggregate(),_aggregate_grads_sync()]"
+        )
         self._agg_goal_cnt = 0
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
@@ -1517,7 +1585,9 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
-    def _distribute_weights_copy(self, tag: str, task_to_perform: str = "train") -> None:
+    def _distribute_weights_copy(
+        self, tag: str, task_to_perform: str = "train"
+    ) -> None:
         """Distribute a global model in synchronous FL fashion - for FwdLLM.
 
         This method is overridden from one in synchronous top aggregator
@@ -1615,10 +1685,6 @@ class TopAggregator(SyncTopAgg):
                     MessageType.DATA_ID: self.data_id,
                     MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                 }
-                msg_bytes = pickle.dumps(payload)
-                logger.info(
-                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
-                )
                 channel.send(end, payload)
                 # Added a 1 second sleep so as to not overwhelm mqtt
                 time.sleep(1)
@@ -1696,7 +1762,7 @@ class TopAggregator(SyncTopAgg):
         # busy wait for 0.1 seconds before proceeding. This is to wait on
         # distribute_weights to let the system state get updated before selector
         # is invoked again
-        
+
         logger.debug(f"Starting busy wait at time {time.time()}")
         time.sleep(0.1)
         logger.debug(f"Ended busy wait at time {time.time()}")
@@ -1743,12 +1809,13 @@ class TopAggregator(SyncTopAgg):
             )
 
         # send out global model parameters to trainers
-        trainable_keys = {name for name, param in self.model.named_parameters() if param.requires_grad}
-        trainable_params = {
-            k: v for k, v in self.model.state_dict().items() if k in trainable_keys
-        }
+        self.print_trainable_params_stats(location="[populate_params, _distr_weights]")
+        trainable_params = self.get_trainable_param_state_dict()
+        self.print_param_dict_stats(trainable_params, location="After filtering")
         shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
-        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+
+        # shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
             # trainers in the same round may not be the same
@@ -1767,22 +1834,33 @@ class TopAggregator(SyncTopAgg):
                 logger.info(
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
+                # Removed GRAD_POOL from payload as it was adding bloat and not
+                # being used on the trainer.
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
-                    MessageType.GRAD_POOL: shared_grad_pool,
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
                     MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
                 }
-                msg_bytes = pickle.dumps(payload)
+                sizes_mb = {
+                    key.name if hasattr(key, "name") else str(key): len(
+                        pickle.dumps(value)
+                    )
+                    / (1024 * 1024)
+                    for key, value in payload.items()
+                }
+                total_size_mb = sum(sizes_mb.values())
+
                 logger.info(
-                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
+                    f"[DEBUG] Payload size breakdown for {end}: "
+                    + ", ".join([f"{k}: {v:.2f} MB" for k, v in sizes_mb.items()])
+                    + f", Total: {total_size_mb:.2f} MB"
                 )
                 channel.send(end, payload)
                 # Added a 1 second sleep so as to not overwhelm mqtt
-                time.sleep(1)
+                # time.sleep(1)
 
                 self.grad_pool = []
             else:
@@ -1803,7 +1881,7 @@ class TopAggregator(SyncTopAgg):
                 )
                 channel.send(end, payload)
                 # Added a 0.5 second sleep so as to not overwhelm mqtt
-                time.sleep(0.5)
+                # time.sleep(0.5)
             del payload
             gc.collect()
 

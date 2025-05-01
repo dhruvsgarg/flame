@@ -265,7 +265,9 @@ class Trainer(Role, metaclass=ABCMeta):
             # Update the model
             # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
             # self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            trainable_weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            trainable_weights = weights_to_model_device(
+                msg[MessageType.WEIGHTS], self.model
+            )
             full_state_dict = self.model.state_dict()
             full_state_dict.update(trainable_weights)
             self.weights = full_state_dict
@@ -277,15 +279,22 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
                 )
                 self.data_id = msg[MessageType.DATA_ID]
-                if MessageType.GRAD_POOL in msg:
-                    if self.args.var_control:
-                        if self.args.perturbation_sampling:
-                            if self.data_id % 2:
-                                self.trainer.model_trainer.old_grad = msg[
-                                    MessageType.GRAD_POOL
-                                ]
-                            else:
-                                self.trainer.model_trainer.old_grad = None
+
+                # DG: not using right now since grad_pool is not used anywhere.
+                # So even aggregator is not sending it.
+
+                # if MessageType.GRAD_POOL in msg:
+                #     if self.args.var_control:
+                #         if self.args.perturbation_sampling:
+                #             logger.info(
+                #                 f"Trainer id {self.trainer_id} using grad_pool from message"
+                #             )
+                #             if self.data_id % 2:
+                #                 self.trainer.model_trainer.old_grad = msg[
+                #                     MessageType.GRAD_POOL
+                #                 ]
+                #             else:
+                #                 self.trainer.model_trainer.old_grad = None
             else:
                 logger.info(f"data id not found in msg")
         else:
@@ -543,7 +552,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt
-        time.sleep(1)
+        # time.sleep(1)
 
         if self.abort_training == True:
             logger.info(
