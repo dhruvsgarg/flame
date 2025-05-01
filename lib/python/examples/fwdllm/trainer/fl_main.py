@@ -157,6 +157,36 @@ if __name__ == "__main__":
     model_config, client_model, tokenizer = create_model(
         model_args, formulation="classification"
     )
+    def bytes_to_mb(num_bytes):
+        return num_bytes / (1024 * 1024)
+
+    total_params = trainable_params = frozen_params = 0
+    zero_trainable = zero_frozen = 0
+    trainable_bytes = frozen_bytes = 0
+
+    for name, param in client_model.named_parameters():
+        numel = param.numel()
+        param_bytes = numel * param.element_size()
+        total_params += numel
+
+        if param.requires_grad:
+            trainable_params += numel
+            trainable_bytes += param_bytes
+            if torch.all(param == 0):
+                print(f"[Trainable] {name} is all zeros")
+                zero_trainable += numel
+        else:
+            frozen_params += numel
+            frozen_bytes += param_bytes
+            if torch.all(param == 0):
+                print(f"[Frozen] {name} is all zeros")
+                zero_frozen += numel
+
+    logging.info(f"Total parameters: {total_params}")
+    logging.info(f"  Trainable: {trainable_params} | Zeroed: {zero_trainable} | Size: {bytes_to_mb(trainable_bytes):.2f} MB")
+    logging.info(f"  Frozen:    {frozen_params} | Zeroed: {zero_frozen} | Size: {bytes_to_mb(frozen_bytes):.2f} MB")
+    logging.info(f"Total size: {bytes_to_mb(trainable_bytes + frozen_bytes):.2f} MB")
+    logging.info(f"Total zero-weighted: {zero_trainable + zero_frozen} ({100 * (zero_trainable + zero_frozen) / total_params:.2f}%)")
 
     # trainer
 

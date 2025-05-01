@@ -264,7 +264,11 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Update the model
             # logger.info(f"Weights received: {msg[MessageType.WEIGHTS]}")
-            self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            # self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            trainable_weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            full_state_dict = self.model.state_dict()
+            full_state_dict.update(trainable_weights)
+            self.weights = full_state_dict
             # self.weights = msg[MessageType.WEIGHTS]
 
             self._update_model()
