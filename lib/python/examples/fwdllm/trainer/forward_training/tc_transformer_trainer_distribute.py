@@ -132,7 +132,7 @@ class ForwardTextClassificationTrainer:
         if not device:
             device = self.device
 
-        self.log_memory("start", device)
+        self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
         gc.collect()
@@ -164,7 +164,18 @@ class ForwardTextClassificationTrainer:
                         candidate_v[i].reshape(v.shape) for i in sorted_indices
                     ]
                     del candidate_v, target_grad, cos_sim, sorted_indices
-        self.grad = [torch.zeros_like(p, device="cpu") for p in self.params]
+
+        # Efficient grad allocation / zeroing
+        if (
+            not hasattr(self, "grad")
+            or self.grad is None
+            or len(self.grad) != len(self.params)
+        ):
+            self.grad = [torch.zeros_like(p, device="cpu") for p in self.params]
+        else:
+            for g in self.grad:
+                g.zero_()
+
         with torch.no_grad():
             for epoch in range(self.args.epochs):
                 for batch_idx, batch in enumerate(self.train_dl):
@@ -230,14 +241,16 @@ class ForwardTextClassificationTrainer:
 
                     if self.args.is_debug_mode == 1 and global_step > 3:
                         break
-                        
+
                     del x, labels, jvp, v_params, loss
                     gc.collect()
                     torch.cuda.empty_cache()
                     self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
 
-        if self.args.var_control and self.args.perturbation_sampling:
-            self.grad_pool.append(self.grad)
+        # DG: Commenting this out because it is being appended to but never
+        # used. Need to check why it exists?
+        # if self.args.var_control and self.args.perturbation_sampling:
+        #     self.grad_pool.append(self.grad)
 
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]
@@ -272,171 +285,6 @@ class ForwardTextClassificationTrainer:
         )
 
         return global_step, tr_loss / global_step if global_step > 0 else 0.0
-
-    ## TODO: Needs checking. Newer main memory optimized version of train_model().
-    # def train_model(self, device=None):
-    #     if not device:
-    #         device = self.device
-
-    #     self.log_memory("start", device)
-    #     allocated_before = torch.cuda.memory_allocated(device)
-
-    #     gc.collect()
-    #     torch.cuda.empty_cache()
-
-    #     self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-    #         self.model
-    #     )
-    #     self.buffers = [b.to(device) for b in self.buffers]
-    #     self.log_memory("after_fmodel_setup", device)
-
-    #     global_step, tr_loss = 0, 0.0
-    #     v_buffer = {}
-
-    #     if self.args.perturbation_sampling:
-    #         v_num = len(self.train_dl)
-    #         if self.args.var_control:
-    #             self.grad = self.old_grad
-
-    #         for idx, (k, v) in enumerate(self.model.named_parameters()):
-    #             if self.grad is not None and v.requires_grad:
-    #                 candidate_v = torch.randn(
-    #                     (v_num * 10, *v.shape), device="cpu"
-    #                 ).flatten(start_dim=1)
-    #                 target_grad = self.grad[idx].flatten()
-    #                 cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-    #                 sorted_indices = torch.topk(cos_sim, v_num).indices
-    #                 v_buffer[idx] = [
-    #                     candidate_v[i].reshape(v.shape) for i in sorted_indices
-    #                 ]
-    #                 del candidate_v, target_grad, cos_sim, sorted_indices
-    #         gc.collect()
-
-    #     # Initialize grad and reuse it across batches
-    #     if not hasattr(self, "grad") or self.grad is None:
-    #         self.grad = [torch.zeros_like(p, device="cpu") for p in self.params]
-    #     else:
-    #         for g in self.grad:
-    #             g.zero_()
-
-    #     with torch.no_grad():
-    #         for epoch in range(self.args.epochs):
-    #             for batch_idx, batch in enumerate(self.train_dl):
-    #                 self.log_memory(f"epoch{epoch}_batch{batch_idx}_start", device)
-
-    #                 x = batch[1].to(device, non_blocking=True)
-    #                 labels = batch[4].to(device, non_blocking=True)
-
-    #                 if self.args.perturbation_sampling and v_buffer:
-    #                     v_params = [
-    #                         (
-    #                             v_buffer[i][batch_idx].to(device)
-    #                             if p.requires_grad
-    #                             else torch.zeros_like(p, device=device)
-    #                         )
-    #                         for i, p in enumerate(self.params)
-    #                     ]
-    #                 else:
-    #                     v_params = [
-    #                         (
-    #                             torch.randn_like(p, device=device)
-    #                             if p.requires_grad
-    #                             else torch.zeros_like(p, device=device)
-    #                         )
-    #                         for p in self.params
-    #                     ]
-
-    #                 def wrapped_func(p):
-    #                     return functional_get_loss(
-    #                         p,
-    #                         self.fmodel,
-    #                         x,
-    #                         labels,
-    #                         num_classes=self.num_labels,
-    #                         buffers=self.buffers,
-    #                     )
-
-    #                 loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
-    #                 jvp = jvp.to(device)
-
-    #                 for j, g in enumerate(self.grad):
-    #                     if self.params[j].requires_grad:
-    #                         updated = (jvp * v_params[j]).detach().cpu()
-    #                         g.add_(updated)
-    #                         if self.args.var_control and j == self.layer_id_for_check:
-    #                             self.grad_for_var_check = updated.clone()
-    #                         del updated  # explicitly release
-
-    #                 for p, g in zip(self.model.parameters(), self.grad):
-    #                     if p.requires_grad:
-    #                         if p.grad is None:
-    #                             p.grad = g.to(device)
-    #                         else:
-    #                             p.grad.copy_(g.to(device))
-
-    #                 current_loss = loss.item()
-    #                 tr_loss += current_loss
-    #                 global_step += 1
-    #                 logging.info(
-    #                     f"epoch = {epoch}, trainer_id = {self.trainer_id}, loss = {current_loss}"
-    #                 )
-
-    #                 if (
-    #                     self.args.evaluate_during_training
-    #                     and global_step % self.args.evaluate_during_training_steps == 0
-    #                 ):
-    #                     self.eval_model(epoch, global_step)
-
-    #                 if self.args.is_debug_mode == 1 and global_step > 3:
-    #                     break
-
-    #                 # Clear gradients explicitly and release memory
-    #                 for p in self.model.parameters():
-    #                     p.grad = None
-
-    #                 del x, labels, jvp, v_params, loss
-    #                 gc.collect()
-    #                 torch.cuda.empty_cache()
-    #                 self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
-
-    #     if self.args.var_control and self.args.perturbation_sampling:
-    #         self.grad_pool.append(
-    #             [g.clone() for g in self.grad]
-    #         )  # Deepcopy to avoid side effects
-
-    #     trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-    #     gradients = [p.grad for p in trainable_params if p.grad is not None]
-    #     logging.info(
-    #         f"Trainable parameters: {len(trainable_params)} | Size: {human_readable_size(get_size_in_bytes(trainable_params))}"
-    #     )
-    #     logging.info(
-    #         f"Total parameters: {len(list(self.model.parameters()))} | Size: {human_readable_size(get_size_in_bytes(list(self.model.parameters())))}"
-    #     )
-    #     logging.info(
-    #         f"Gradients: {len(gradients)} | Size: {human_readable_size(get_size_in_bytes(gradients))}"
-    #     )
-
-    #     # Final cleanup
-    #     del self.fmodel, self.params, self.buffers
-    #     self.fmodel, self.params, self.buffers = None, None, None
-    #     if self.args.perturbation_sampling:
-    #         del v_buffer
-
-    #     # Move gradients to CPU and detach
-    #     self.grad = [g.detach().cpu() for g in self.grad]
-    #     if hasattr(self, "grad_for_var_check"):
-    #         self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
-
-    #     gc.collect()
-    #     torch.cuda.empty_cache()
-
-    #     allocated_after = torch.cuda.memory_allocated(device)
-    #     self.log_memory("end", device)
-    #     logging.info(
-    #         f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB, Δ: {(allocated_after - allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
-    #     )
-
-    #     return global_step, tr_loss / global_step if global_step > 0 else 0.0
 
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
