@@ -86,7 +86,6 @@ class ForwardTextClassificationTrainer:
 
         # var control TODO: It is not layer id it is param id. Distilbert for eg
         # has only 6 layers.
-        self.grad_for_var_check_list = []
         if self.args.model_type == "distilbert":
             self.layer_id_for_check = 20
         elif self.args.model_type == "bert":
@@ -247,8 +246,6 @@ class ForwardTextClassificationTrainer:
                     torch.cuda.empty_cache()
                     self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
 
-        # DG: Commenting this out because it is being appended to but never
-        # used. Need to check why it exists?
         # if self.args.var_control and self.args.perturbation_sampling:
         #     self.grad_pool.append(self.grad)
 

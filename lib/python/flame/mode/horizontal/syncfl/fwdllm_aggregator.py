@@ -1318,7 +1318,7 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
-        logger.info("calling aggregate for fwdllm (Sync)")
+        # logger.info("calling aggregate for fwdllm (Sync)")
         self.grad_pool.append(self.grad)
         self.print_trainable_params_stats(
             location="[agg_start,_aggregate_grads_sync()]"
@@ -1662,7 +1662,17 @@ class TopAggregator(SyncTopAgg):
         self.print_param_dict_stats(trainable_params, location="After filtering")
         shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
 
-        # shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+
+        shared_grad_pool_trainable = []
+        idx = 0
+        if shared_grad_pool == None:
+            shared_grad_pool_trainable = None
+        else:
+            for param in self.model.parameters():
+                if param.requires_grad:
+                    shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
+                idx += 1
 
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
@@ -1686,6 +1696,7 @@ class TopAggregator(SyncTopAgg):
                 # being used on the trainer.
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
+                    MessageType.GRAD_POOL: shared_grad_pool_trainable,
                     MessageType.ROUND: self._round,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
@@ -1711,6 +1722,7 @@ class TopAggregator(SyncTopAgg):
                 time.sleep(1)
 
                 self.grad_pool = []
+                self.grad_for_var_check_list = []
             else:
                 logger.info(
                     f"sending var = bad to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"

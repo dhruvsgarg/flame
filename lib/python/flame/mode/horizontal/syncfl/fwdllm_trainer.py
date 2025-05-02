@@ -283,18 +283,29 @@ class Trainer(Role, metaclass=ABCMeta):
                 # DG: not using right now since grad_pool is not used anywhere.
                 # So even aggregator is not sending it.
 
-                # if MessageType.GRAD_POOL in msg:
-                #     if self.args.var_control:
-                #         if self.args.perturbation_sampling:
-                #             logger.info(
-                #                 f"Trainer id {self.trainer_id} using grad_pool from message"
-                #             )
-                #             if self.data_id % 2:
-                #                 self.trainer.model_trainer.old_grad = msg[
-                #                     MessageType.GRAD_POOL
-                #                 ]
-                #             else:
-                #                 self.trainer.model_trainer.old_grad = None
+                if MessageType.GRAD_POOL in msg:
+                    partial_grad = msg[MessageType.GRAD_POOL]
+                    full_grad = []
+                    if self.args.var_control:
+                        if self.args.perturbation_sampling:
+                            logger.info(
+                                f"Trainer id {self.trainer_id} using grad_pool from message"
+                            )
+                            trainable_idx = 0
+                            if partial_grad == None:
+                                full_grad = None
+                            else:
+                                for param in self.model.parameters():
+                                    if param.requires_grad:
+                                        full_grad.append(partial_grad[trainable_idx])
+                                        trainable_idx += 1
+                                    else:
+                                        full_grad.append(None)
+                            if self.data_id % 2:
+                                self.trainer.model_trainer.old_grad = full_grad
+                            else:
+                                self.trainer.model_trainer.old_grad = None
+                    del full_grad
             else:
                 logger.info(f"data id not found in msg")
         else:
@@ -391,7 +402,7 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.GRAD_POOL in msg:
             logger.info(f"Applying received gradients for trainer_id {self.trainer_id}")
             self.received_grads = msg[MessageType.GRADS]
-
+            
             if self.args.var_control:
                 self.trainer.model_trainer.old_grad = self.received_grads
             else:
