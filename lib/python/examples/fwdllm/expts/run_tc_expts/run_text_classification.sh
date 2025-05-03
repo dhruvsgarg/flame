@@ -139,7 +139,7 @@ else
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
       >> "$TRAINER_LOG_FILE" 2>&1 &
-    sleep 4
+    sleep 8
   done
 
   wait
