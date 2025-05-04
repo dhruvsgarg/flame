@@ -121,6 +121,8 @@ if __name__ == "__main__":
     model_args.model_type = config.hyperparameters.model_type
     model_args.load(model_args.model_name)
     model_args.num_labels = num_labels
+    model_args.client_num_per_round = config.hyperparameters.client_num_per_round
+    model_args.client_idx = config.hyperparameters.client_idx
     model_args.update_from_dict(
         {
             "fl_algorithm": config.hyperparameters.fl_algorithm,

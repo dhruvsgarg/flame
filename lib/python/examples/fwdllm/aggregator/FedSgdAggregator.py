@@ -121,17 +121,6 @@ class FedSGDAggregator(TopAggregator):
         start_time = time.time()
         self.var = calculate_var(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")
-        if self.var >= self.var_threshold:
-            logger.info(
-                f"var {self.var} >= threshold {self.var_threshold}. Returning from aggregate, need to try again."
-            )
-            self.var_good_enough = False
-
-            old_param = self.get_global_model_params()
-
-            end_time = time.time()
-            logger.info("aggregate time cost: %d" % (end_time - start_time))
-            return old_param
 
         model_list = []
         training_num = 0
@@ -148,6 +137,7 @@ class FedSGDAggregator(TopAggregator):
         learning_rate = self.args.learning_rate * ratio
         logger.info(f"learning rate: {learning_rate}")
 
+        # Will use 0th grads from model_dict since worker_num = 1
         for idx in range(self.worker_num):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
             training_num += self.sample_num_dict[idx]

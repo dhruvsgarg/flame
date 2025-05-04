@@ -110,7 +110,7 @@ class FedSGDTrainer(Trainer):
 
     def train_with_data_id(self):
         if self.abort_training == True:
-            logger.info(f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for round_per_data_id: {self.round_per_data_id}")
+            logger.info(f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}")
             return
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"

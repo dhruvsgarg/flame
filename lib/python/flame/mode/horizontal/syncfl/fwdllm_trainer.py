@@ -133,7 +133,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self._trainer_online_channel_status = True
 
         self.task_to_perform = "train"
-        self.round_per_data_id = None
+        self.iteration_per_data_id = None
         self.abort_training = False
 
     def get(self, tag: str) -> None:
@@ -186,19 +186,19 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
 
-        if MessageType.DATA_ID in msg and MessageType.ROUND_PER_DATA_ID in msg:
+        if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
                 self.data_id is not None
                 and self.data_id == msg[MessageType.DATA_ID]
-                and self.round_per_data_id is not None
-                and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]
+                and self.iteration_per_data_id is not None
+                and self.iteration_per_data_id == msg[MessageType.ITERATION_PER_DATA_ID]
             ):
                 self.abort_training = True
                 logger.info(
                     f"Fetch weights aborted for given model version "
                     f"{self._round} while trainer_id {self.trainer_id} has "
                     f"already sent updates "
-                    f"upto round_per_data_id: {self.round_per_data_id}"
+                    f"upto iteration_per_data_id: {self.iteration_per_data_id}"
                 )
 
                 # Received old data but still allow aggregator cleanup state to
@@ -217,7 +217,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 return
             else:
                 self.abort_training = False
-                self.round_per_data_id = msg[MessageType.ROUND_PER_DATA_ID]
+                self.iteration_per_data_id = msg[MessageType.ITERATION_PER_DATA_ID]
 
         if MessageType.VAR in msg:
             logger.info(
@@ -263,47 +263,41 @@ class Trainer(Role, metaclass=ABCMeta):
             full_state_dict = self.model.state_dict()
             full_state_dict.update(trainable_weights)
             self.weights = full_state_dict
-            # self.weights = msg[MessageType.WEIGHTS]
-
             self._update_model()
+            
             if MessageType.DATA_ID in msg:
                 logger.info(
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
                 )
                 self.data_id = msg[MessageType.DATA_ID]
 
-                # DG: not using right now since grad_pool is not used anywhere.
-                # So even aggregator is not sending it.
-
-                if MessageType.GRAD_POOL in msg:
-                    partial_grad = msg[MessageType.GRAD_POOL]
-                    full_grad = []
-                    if self.args.var_control:
-                        if self.args.perturbation_sampling:
-                            logger.info(
-                                f"Trainer id {self.trainer_id} using grad_pool from message"
-                            )
-                            trainable_idx = 0
-                            if partial_grad == None:
-                                full_grad = None
-                            else:
-                                for param in self.model.parameters():
-                                    if param.requires_grad:
-                                        full_grad.append(partial_grad[trainable_idx])
-                                        trainable_idx += 1
-                                    else:
-                                        # Append a zero tensor of same shape as
-                                        # param instead of None
-                                        full_grad.append(
-                                            torch.zeros_like(param, device="cpu")
-                                        )
-                            if self.data_id % 2:
-                                self.trainer.model_trainer.old_grad = full_grad
-                            else:
-                                self.trainer.model_trainer.old_grad = None
-                    del full_grad
-            else:
-                logger.info(f"data id not found in msg")
+            if MessageType.GRAD_POOL in msg:
+                partial_grad = msg[MessageType.GRAD_POOL]
+                full_grad = []
+                if self.args.var_control:
+                    if self.args.perturbation_sampling:
+                        logger.info(
+                            f"Trainer id {self.trainer_id} using grad_pool from message"
+                        )
+                        trainable_idx = 0
+                        if partial_grad == None:
+                            full_grad = None
+                        else:
+                            for param in self.model.parameters():
+                                if param.requires_grad:
+                                    full_grad.append(partial_grad[trainable_idx])
+                                    trainable_idx += 1
+                                else:
+                                    # Append a zero tensor of same shape as
+                                    # param instead of None
+                                    full_grad.append(
+                                        torch.zeros_like(param, device="cpu")
+                                    )
+                        if self.data_id % 2:
+                            self.trainer.model_trainer.old_grad = full_grad
+                        else:
+                            self.trainer.model_trainer.old_grad = None
+                del full_grad
         else:
             logger.info(
                 f"Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
@@ -342,92 +336,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel.cleanup_recvd_ends()
 
-    ### TODO: Need to have a _fetch_grads() method to interact with the aggregator. Later, remove the _fetch_weights() method.
-    def _fetch_grads(self, tag: str) -> None:
-        logger.debug(
-            f"### FETCH GRADS start for tag: {tag} and trainer_id {self.trainer_id}"
-        )
-
-        self.fetch_success = False
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.info(
-                f"fetch grads, channel not found with tag {tag} for trainer_id {self.trainer_id}"
-            )
-            time.sleep(1)
-            return
-
-        logger.debug(
-            f"_fetch_grads: waiting for someone to join channel: {channel} for trainer_id {self.trainer_id}"
-        )
-        channel.await_join()
-
-        end = channel.one_end(VAL_CH_STATE_RECV)
-        msg, _ = channel.recv(end)
-
-        if not msg:
-            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
-            if self._work_done:
-                self.fetch_success = True
-            time.sleep(1)
-            return
-
-        logger.info(f"New gradient message received for trainer_id {self.trainer_id}")
-
-        if MessageType.ROUND in msg:
-            self._round = msg[MessageType.ROUND]
-
-        if MessageType.DATA_ID in msg and MessageType.ROUND_PER_DATA_ID in msg:
-            if (
-                self.data_id is not None
-                and self.data_id == msg[MessageType.DATA_ID]
-                and self.round_per_data_id is not None
-                and self.round_per_data_id == msg[MessageType.ROUND_PER_DATA_ID]
-            ):
-                self.abort_training = True
-                logger.info(
-                    f"Fetch grads aborted due to stale model version for trainer_id {self.trainer_id}"
-                )
-                channel._selector.ordered_updates_recv_ends.append(end)
-                channel.cleanup_recvd_ends()
-                return
-            else:
-                self.abort_training = False
-                self.round_per_data_id = msg[MessageType.ROUND_PER_DATA_ID]
-
-        if MessageType.GRAD_POOL in msg:
-            logger.info(f"Applying received gradients for trainer_id {self.trainer_id}")
-            self.received_grads = msg[MessageType.GRADS]
-
-            if self.args.var_control:
-                self.trainer.model_trainer.old_grad = self.received_grads
-            else:
-                # Optional: apply gradients to model or keep for later
-                logger.debug(
-                    "Gradient application skipped as var_control is not enabled"
-                )
-        else:
-            logger.info(
-                f"Invalid or missing gradient message type for trainer_id {self.trainer_id}"
-            )
-            time.sleep(1)
-            return
-
-        if MessageType.EOT in msg:
-            self._work_done = msg[MessageType.EOT]
-
-        self.fetch_success = True
-
-        logger.info(
-            f"### FETCH GRADS complete for trainer_id {self.trainer_id}, round: {self._round}, data id: {self.data_id} and work_done: {self._work_done} ###"
-        )
-
-        channel._selector.ordered_updates_recv_ends.append(end)
-        logger.debug(
-            f"After appending {end} to ordered_updates_recv_ends: {channel._selector.ordered_updates_recv_ends}"
-        )
-        channel.cleanup_recvd_ends()
-
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -464,102 +372,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         return
 
-    def _send_weights(self, tag: str) -> None:
-        logger.debug(
-            f"### SEND WEIGHTS for tag: {tag} "
-            f"and trainer_id: {self.trainer_id} and avl_state = {self.avl_state}"
-        )
-        # if switch to do three_state_avl is on and the trainer is unavailable -
-        # check the wait_to_become_avl switch depending on the switch we decide
-        # whether to wait for availability or exit
-        if (
-            self.client_notify["enabled"] == "True"
-            and self.avl_state == TrainerAvailState.UN_AVL
-        ):
-            if self.wait_until_next_avl == "True":
-                logger.warning(
-                    f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
-                )
-                while self.avl_state == TrainerAvailState.UN_AVL:
-                    time.sleep(1)
-            else:
-                logger.warning(
-                    f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights."
-                )
-                return
-
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug(f"[_send_weights] channel not found with {tag}")
-            return
-
-        # this call waits for at least one peer to join this channel
-        logger.debug(
-            f"_send_weights: waiting for someone to join channel: {channel} "
-            f"for trainer_id: {self.trainer_id}"
-        )
-        channel.await_join()
-
-        # one aggregator is sufficient
-        end = channel.one_end(VAL_CH_STATE_SEND)
-
-        if self.task_to_perform == "train":
-            # trainer is expected to train and it is also available to train -
-            # best case
-            self._update_weights()
-
-            delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
-
-            delta_weights = self.privacy.apply_dp_fn(delta_weights)
-
-            self.regularizer.update()
-
-            # NOTE: Also sending stat_utility for OORT
-            msg = {
-                MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
-                MessageType.DATASET_SIZE: self.dataset_size,
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.STAT_UTILITY: self._stat_utility,
-            }
-        else:
-            msg = {
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.STAT_UTILITY: self._stat_utility,
-            }
-
-        channel.send(end, msg)
-
-        if self.task_to_perform == "train":
-            # To allow the trainer to participate in eval AND train in the same
-            # round, we set _updates_returned_upto_round only over here.
-            self._updates_returned_upto_round = self._round
-
-            logger.info(
-                f"sending weights done for trainer_id: {self.trainer_id} "
-                f"and _updates_returned_upto_round "
-                f"{self._updates_returned_upto_round}"
-            )
-        elif self.task_to_perform == "eval":
-            logger.info(
-                f"sending eval stat utility done for trainer_id: {self.trainer_id} "
-                f"for model version: {self._round}"
-            )
-        else:
-            logger.error(
-                f"Task to perform is not defined for trainer_id: {self.trainer_id}"
-            )
-
-        # Evict model from gpu to free up space self._evict_model_from_gpu()
-
-        channel._selector._cleanup_send_ends()
-
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt time.sleep(1)
 
         if self.abort_training == True:
             logger.info(
-                f"Aborting sending grads for trainer id: {self.trainer_id} because it has already sent updates for round_per_data_id: {self.round_per_data_id}"
+                f"Aborting sending grads for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}"
             )
             return
         logger.debug(
@@ -605,9 +423,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Log the gradient dictionary details
             if grad_dict:
-                logger.debug(
-                    f"Going to send gradients dictionary with {len(grad_dict)} entries: "
-                    f"{ {k: v.shape for k, v in grad_dict.items()} }"
+                total_bytes = sum(v.element_size() * v.nelement() for v in grad_dict.values())
+                size_mb = total_bytes / (1024 * 1024)
+
+                logger.info(
+                    f"Going to send gradients dictionary with {len(grad_dict)} entries "
+                    f"({size_mb:.2f} MB)."
                 )
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")

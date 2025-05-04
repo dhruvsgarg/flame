@@ -82,7 +82,6 @@ class ForwardTextClassificationTrainer:
         self.grad = None
         if self.args.perturbation_sampling and self.args.var_control:
             self.old_grad = None
-            self.grad_pool = []
 
         # var control TODO: It is not layer id it is param id. Distilbert for eg
         # has only 6 layers.
@@ -96,6 +95,11 @@ class ForwardTextClassificationTrainer:
             self.layer_id_for_check = 22
         self.var = 0
         logger.info(f"Client Trainer learning rate: {self.args.learning_rate}")
+        
+        self.torch_rng = torch.Generator(device="cpu")
+        self.torch_rng.manual_seed(42)
+        
+        self.total_rng_iter = 0
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -126,7 +130,6 @@ class ForwardTextClassificationTrainer:
             f"Device: {device}, trainer_id: {self.trainer_id}"
         )
 
-    ### Old train_model(), works but bloats the CPU Mem
     def train_model(self, device=None):
         if not device:
             device = self.device
@@ -145,25 +148,38 @@ class ForwardTextClassificationTrainer:
 
         global_step, tr_loss = 0, 0.0
 
-        v_buffer = {}
         if self.args.perturbation_sampling:
-            v_num = len(self.train_dl)
+            v_num = self.args.client_num_per_round
+
             if self.args.var_control:
                 self.grad = self.old_grad
 
-            for idx, (k, v) in enumerate(self.model.named_parameters()):
+            v_buffer = {}
+            index = 0
+            for k, v in self.model.named_parameters():
                 if self.grad is not None and v.requires_grad:
-                    candidate_v = torch.randn(
-                        (v_num * 10, *v.shape), device="cpu"
-                    ).flatten(start_dim=1)
-                    target_grad = self.grad[idx].flatten()
-                    cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-                    sorted_indices = torch.topk(cos_sim, v_num).indices
-                    v_buffer[idx] = [
-                        candidate_v[i].reshape(v.shape) for i in sorted_indices
-                    ]
-                    del candidate_v, target_grad, cos_sim, sorted_indices
+                    self.total_rng_iter += 1
+                    shape = v.shape
+                    candidate_v = torch.randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng)
+                    target_grad = self.grad[index]
+                    # if self.args.client_idx == 0 or self.args.client_idx == 1:
+                    #     logging.info(f"target_grad for client_idx {self.args.client_idx} is {target_grad}")
 
+                    target_grad = torch.flatten(target_grad)
+                    candidate_v = torch.flatten(candidate_v, start_dim=1)
+
+                    cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
+                    sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                    v_buffer[index] = [
+                        candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
+                    ]
+                    
+                    del candidate_v, target_grad, cos_sim, sorted_indices, shape
+                index += 1
+                
+        # if self.args.client_idx == 0 or self.args.client_idx == 1:
+        #     logging.info(f"v_buffer for client_idx {self.args.client_idx} after total_rng_iter {self.total_rng_iter} is {v_buffer}")
+                    
         # Efficient grad allocation / zeroing
         if (
             not hasattr(self, "grad")
@@ -172,21 +188,24 @@ class ForwardTextClassificationTrainer:
         ):
             self.grad = [torch.zeros_like(p, device="cpu") for p in self.params]
         else:
-            for g in self.grad:
-                g.zero_()
+            for fg in self.grad:
+                fg.zero_()
 
         with torch.no_grad():
             for epoch in range(self.args.epochs):
                 for batch_idx, batch in enumerate(self.train_dl):
-                    self.log_memory(f"epoch{epoch}_batch{batch_idx}_start", device)
+                    curr_client_idx = self.args.client_idx
+                    self.log_memory(
+                        f"epoch{epoch}_batch{curr_client_idx}_start", device
+                    )
 
                     x = batch[1].to(device, non_blocking=True)
                     labels = batch[4].to(device, non_blocking=True)
 
-                    if self.args.perturbation_sampling and v_buffer:
+                    if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
                             (
-                                v_buffer[i][batch_idx].to(device)
+                                v_buffer[i][curr_client_idx].to(device)
                                 if p.requires_grad
                                 else torch.zeros_like(p)
                             )
@@ -215,15 +234,15 @@ class ForwardTextClassificationTrainer:
                     loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
                     jvp = jvp.to(device)
 
-                    for j, g in enumerate(self.grad):
+                    for j, fg in enumerate(self.grad):
                         updated = (jvp * v_params[j]).detach().cpu()
-                        g.add_(updated)
+                        fg.add_(updated)
                         if self.args.var_control and j == self.layer_id_for_check:
                             self.grad_for_var_check = updated.clone()
 
-                    for p, g in zip(self.model.parameters(), self.grad):
+                    for p, fg in zip(self.model.parameters(), self.grad):
                         if p.requires_grad:
-                            p.grad = g.clone().to(device)
+                            p.grad = fg.clone().to(device)
 
                     current_loss = loss.item()
                     tr_loss += current_loss
@@ -246,9 +265,6 @@ class ForwardTextClassificationTrainer:
                     torch.cuda.empty_cache()
                     self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
 
-        # if self.args.var_control and self.args.perturbation_sampling:
-        #     self.grad_pool.append(self.grad)
-
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]
         logging.info(
@@ -268,7 +284,7 @@ class ForwardTextClassificationTrainer:
         if self.args.perturbation_sampling:
             del v_buffer
 
-        self.grad = [g.detach().cpu() for g in self.grad]
+        self.grad = [fg.detach().cpu() for fg in self.grad]
         if hasattr(self, "grad_for_var_check"):
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
 

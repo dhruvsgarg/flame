@@ -93,7 +93,7 @@ class TopAggregator(SyncTopAgg):
         self.grad_pool = []
         self.var = None
         self.ends_not_selected_yet = False
-        self.round_per_data_id = 0
+        self.iteration_per_data_id = 0
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -1004,8 +1004,8 @@ class TopAggregator(SyncTopAgg):
         if MessageType.GRADIENTS in msg:
             # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
             # self.model)
-            all_gradients = msg[MessageType.GRADIENTS]
-            self.aggregate_grads_from_trainers(all_gradients)
+            trainer_gradients = msg[MessageType.GRADIENTS]
+            self.aggregate_grads_from_trainers(trainer_gradients)
 
         if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
             logger.info(
@@ -1125,7 +1125,7 @@ class TopAggregator(SyncTopAgg):
                 result, _, _ = self.eval_model()
                 logger.info(f"eval loss = {result['eval_loss']}")
                 self.data_id += 1
-                self.round_per_data_id = 0
+                self.iteration_per_data_id = 0
                 # TODO: need to replace it with per end property
                 if self.data_id == self.total_data_bins:
                     logger.info("incrementing round number now ")
@@ -1133,7 +1133,7 @@ class TopAggregator(SyncTopAgg):
                     self.data_id = 0
 
             else:
-                self.round_per_data_id += 1
+                self.iteration_per_data_id += 1
 
         logger.debug(f"aggregation finished for round {round_to_print}")
         logger.info(
@@ -1279,8 +1279,8 @@ class TopAggregator(SyncTopAgg):
             if MessageType.GRADIENTS in msg:
                 # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
                 # self.model)
-                all_gradients = msg[MessageType.GRADIENTS]
-                self.aggregate_grads_from_trainers(all_gradients)
+                trainer_gradients = msg[MessageType.GRADIENTS]
+                self.aggregate_grads_from_trainers(trainer_gradients)
 
             if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
                 logger.info(
@@ -1344,20 +1344,18 @@ class TopAggregator(SyncTopAgg):
         data_id_to_print = self.data_id
 
         if self.var_good_enough:
-
             # evaluate model to calculate loss
             result, _, _ = self.eval_model()
             logger.info(f"eval loss = {result['eval_loss']}")
             self.data_id += 1
-            self.round_per_data_id = 0
+            self.iteration_per_data_id = 0
             # TODO: need to replace it with per end property
             if self.data_id == self.total_data_bins:
                 logger.info("incrementing round number now ")
                 self._round += 1
                 self.data_id = 0
-
         else:
-            self.round_per_data_id += 1
+            self.iteration_per_data_id += 1
 
         logger.debug(f"aggregation finished for round {round_to_print}")
         logger.info(
@@ -1665,10 +1663,10 @@ class TopAggregator(SyncTopAgg):
         shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
 
         shared_grad_pool_trainable = []
-        idx = 0
         if shared_grad_pool == None:
             shared_grad_pool_trainable = None
         else:
+            idx = 0
             for param in self.model.parameters():
                 if param.requires_grad:
                     shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
@@ -1676,7 +1674,7 @@ class TopAggregator(SyncTopAgg):
 
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
-            # trainers in the same round may not be the same
+            # trainers in the same round may not be the same            
             logger.debug(
                 f"Setting channel property {PROP_ROUND_START_TIME} for "
                 f"end {end}. For round {self._round} at time: {datetime.now()}"
@@ -1692,8 +1690,7 @@ class TopAggregator(SyncTopAgg):
                 logger.info(
                     f"sending weights to {end} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
-                # Removed GRAD_POOL from payload as it was adding bloat and not
-                # being used on the trainer.
+                
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
                     MessageType.GRAD_POOL: shared_grad_pool_trainable,
@@ -1701,7 +1698,7 @@ class TopAggregator(SyncTopAgg):
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
-                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                    MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 }
                 sizes_mb = {
                     key.name if hasattr(key, "name") else str(key): len(
@@ -1717,6 +1714,7 @@ class TopAggregator(SyncTopAgg):
                     + ", ".join([f"{k}: {v:.2f} MB" for k, v in sizes_mb.items()])
                     + f", Total: {total_size_mb:.2f} MB"
                 )
+                
                 channel.send(end, payload)
                 # Added a 1 second sleep so as to not overwhelm mqtt and cuda
                 time.sleep(1)
@@ -1733,7 +1731,7 @@ class TopAggregator(SyncTopAgg):
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
-                    MessageType.ROUND_PER_DATA_ID: self.round_per_data_id,
+                    MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 }
                 msg_bytes = pickle.dumps(payload)
                 logger.info(
