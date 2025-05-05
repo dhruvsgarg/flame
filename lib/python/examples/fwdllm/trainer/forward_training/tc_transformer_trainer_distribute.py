@@ -152,7 +152,9 @@ class ForwardTextClassificationTrainer:
             v_num = self.args.client_num_per_round
 
             if self.args.var_control:
-                self.grad = self.old_grad
+                # self.grad = self.old_grad
+                self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
+                # logging.info(f"self.grad for client_idx {self.args.client_idx} is {self.grad}")
 
             v_buffer = {}
             index = 0
@@ -167,8 +169,14 @@ class ForwardTextClassificationTrainer:
 
                     target_grad = torch.flatten(target_grad)
                     candidate_v = torch.flatten(candidate_v, start_dim=1)
+                    # if (self.args.client_idx == 0 or self.args.client_idx == 1) and flag == True:
+                        # logging.info(f"self.grad for client_idx {self.args.client_idx} is {self.grad}")
+                        # logging.info(f"target_grad for client_idx {self.args.client_idx} is {target_grad}")
+                        # logging.info(f"candidate_v for client_idx {self.args.client_idx} is {candidate_v}")
+                        # flag = False
 
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
+
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
                     v_buffer[index] = [
                         candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
@@ -178,6 +186,7 @@ class ForwardTextClassificationTrainer:
                 index += 1
                 
         # if self.args.client_idx == 0 or self.args.client_idx == 1:
+        #     logging.info(f"v_buffer shapes for client_idx {self.args.client_idx}: " + str({k: [v.shape for v in v_list] for k, v_list in v_buffer.items()}))
         #     logging.info(f"v_buffer for client_idx {self.args.client_idx} after total_rng_iter {self.total_rng_iter} is {v_buffer}")
                     
         # Efficient grad allocation / zeroing

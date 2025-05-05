@@ -297,6 +297,9 @@ class Trainer(Role, metaclass=ABCMeta):
                             self.trainer.model_trainer.old_grad = full_grad
                         else:
                             self.trainer.model_trainer.old_grad = None
+                        # logger.info(
+                        #     f"Trainer id {self.trainer_id} using grad_pool from message {self.trainer.model_trainer.old_grad}"
+                        # )
                 del full_grad
         else:
             logger.info(
