@@ -58,7 +58,7 @@ class MiddleAggregator(BaseMiddleAggregator):
 
         if self._work_done:
             logger.debug("work is done")
-            self.no_leaf_agg = True # stop mid agg
+            self.no_leaf_agg = True  # stop mid agg
             return
 
         if MessageType.META_INFO_REQ not in msg:

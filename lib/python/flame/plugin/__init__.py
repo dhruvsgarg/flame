@@ -44,7 +44,7 @@ class Plugin(ABC):
 class PluginManager(object):
     """plugin manager class."""
 
-    def __init__(self, plugins_path: str = '/etc/flame/plugin') -> None:
+    def __init__(self, plugins_path: str = "/etc/flame/plugin") -> None:
         """Initialize instance."""
         self.filter: set[str] = set()
         self.plugins: dict[PluginType, list[Plugin]] = dict()
@@ -60,16 +60,16 @@ class PluginManager(object):
 
     def parse_plugin(self, filepath: str) -> Tuple[str, str, PluginType]:
         """Parse plugin configuration."""
-        with open(filepath, 'r') as stream:
+        with open(filepath, "r") as stream:
             data = yaml.safe_load(stream)
 
-        for key in ['class', 'package', 'type']:
+        for key in ["class", "package", "type"]:
             if key not in data:
                 raise KeyError(f"{key} not found")
 
-        class_name = data['class']
-        package = data['package']
-        ptype_string = data['type'].upper()
+        class_name = data["class"]
+        package = data["package"]
+        ptype_string = data["type"].upper()
 
         try:
             ptype = PluginType[ptype_string]
@@ -78,8 +78,7 @@ class PluginManager(object):
 
         return class_name, package, ptype
 
-    def register_plugin(self, cls_name: str, package: str,
-                        ptype: PluginType) -> None:
+    def register_plugin(self, cls_name: str, package: str, ptype: PluginType) -> None:
         """Register a plugin."""
         plugin_key = package + "." + cls_name
         if plugin_key in self.filter:
@@ -93,7 +92,7 @@ class PluginManager(object):
         try:
             cls_obj = getattr(module, cls_name)
         except AttributeError:
-            raise AttributeError(f'class {cls_name} not found')
+            raise AttributeError(f"class {cls_name} not found")
 
         plugin_instance = cls_obj()
         if not isinstance(plugin_instance, Plugin):

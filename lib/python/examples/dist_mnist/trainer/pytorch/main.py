@@ -80,29 +80,25 @@ class PyTorchMnistTrainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
 
     def load_data(self) -> None:
         """Load data."""
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307, ), (0.3081, ))
-        ])
+        transform = transforms.Compose(
+            [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+        )
 
-        dataset = datasets.MNIST('./data',
-                                 train=True,
-                                 download=True,
-                                 transform=transform)
+        dataset = datasets.MNIST(
+            "./data", train=True, download=True, transform=transform
+        )
 
         indices = torch.arange(400)
         dataset = data_utils.Subset(dataset, indices)
-        train_kwargs = {'batch_size': self.batch_size}
+        train_kwargs = {"batch_size": self.batch_size}
 
-        self.train_loader = torch.utils.data.DataLoader(
-            dataset, **train_kwargs)
+        self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
     def train(self) -> None:
         """Train a model."""
@@ -127,9 +123,11 @@ class PyTorchMnistTrainer(Trainer):
             if batch_idx % 10 == 0:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
-                percent = 100. * batch_idx / len(self.train_loader)
-                logger.info(f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                            f"\tloss: {loss.item():.6f}")
+                percent = 100.0 * batch_idx / len(self.train_loader)
+                logger.info(
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                    f"\tloss: {loss.item():.6f}"
+                )
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -140,8 +138,8 @@ class PyTorchMnistTrainer(Trainer):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

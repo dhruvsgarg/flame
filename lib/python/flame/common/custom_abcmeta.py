@@ -30,7 +30,7 @@ class DummyAttribute:
     pass
 
 
-R = TypeVar('R')
+R = TypeVar("R")
 
 
 def abstract_attribute(obj: Callable[[Any], R] = None) -> R:
@@ -54,13 +54,12 @@ class ABCMeta(NativeABCMeta):
         instance = NativeABCMeta.__call__(cls, *args, **kwargs)
         abstract_attributes = {
             name
-            for name in dir(instance) if getattr(
-                getattr(instance, name), '__is_abstract_attribute__', False
-            )
+            for name in dir(instance)
+            if getattr(getattr(instance, name), "__is_abstract_attribute__", False)
         }
 
         if abstract_attributes:
-            missing_attributes = ', '.join(abstract_attributes)
+            missing_attributes = ", ".join(abstract_attributes)
             raise NotImplementedError(
                 f"Can't instantiate abstract class {cls.__name__} with"
                 f" abstract attributes: {missing_attributes}"

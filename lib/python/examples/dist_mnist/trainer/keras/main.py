@@ -51,20 +51,22 @@ class KerasMnistTrainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        model = keras.Sequential([
-            keras.Input(shape=self.input_shape),
-            layers.Conv2D(32, kernel_size=(3, 3), activation="relu"),
-            layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Conv2D(64, kernel_size=(3, 3), activation="relu"),
-            layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Flatten(),
-            layers.Dropout(0.5),
-            layers.Dense(self.num_classes, activation="softmax"),
-        ])
+        model = keras.Sequential(
+            [
+                keras.Input(shape=self.input_shape),
+                layers.Conv2D(32, kernel_size=(3, 3), activation="relu"),
+                layers.MaxPooling2D(pool_size=(2, 2)),
+                layers.Conv2D(64, kernel_size=(3, 3), activation="relu"),
+                layers.MaxPooling2D(pool_size=(2, 2)),
+                layers.Flatten(),
+                layers.Dropout(0.5),
+                layers.Dense(self.num_classes, activation="softmax"),
+            ]
+        )
 
-        model.compile(loss="categorical_crossentropy",
-                      optimizer="adam",
-                      metrics=["accuracy"])
+        model.compile(
+            loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"]
+        )
 
         self.model = model
 
@@ -99,18 +101,20 @@ class KerasMnistTrainer(Trainer):
 
     def train(self) -> None:
         """Train a model."""
-        history = self.model.fit(self._x_train,
-                                 self._y_train,
-                                 batch_size=self.batch_size,
-                                 epochs=self.epochs,
-                                 validation_split=0.1)
+        history = self.model.fit(
+            self._x_train,
+            self._y_train,
+            batch_size=self.batch_size,
+            epochs=self.epochs,
+            validation_split=0.1,
+        )
 
         # save dataset size so that the info can be shared with aggregator
         self.dataset_size = len(self._x_train)
 
-        loss = mean(history.history['loss'])
-        accuracy = mean(history.history['accuracy'])
-        self.update_metrics({'loss': loss, 'accuracy': accuracy})
+        loss = mean(history.history["loss"])
+        accuracy = mean(history.history["accuracy"])
+        self.update_metrics({"loss": loss, "accuracy": accuracy})
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -121,14 +125,14 @@ class KerasMnistTrainer(Trainer):
 
         # update metrics after each evaluation so that the metrics can be
         # logged in a model registry.
-        self.update_metrics({'test-loss': score[0], 'test-accuracy': score[1]})
+        self.update_metrics({"test-loss": score[0], "test-accuracy": score[1]})
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

@@ -58,5 +58,14 @@ class MessageType(Enum):
 
     CONTROL_WEIGHTS = 21  # control variate weights used in SCAFFOLD
     CLIENT_WEIGHT = 22  # client-side control variate weight used in SCAFFOLD
-    TASK_TO_PERFORM = 23 
-    AVL_STATE = 24
+
+    TASK_TO_PERFORM = 23  # assign between train and eval task
+    AVL_STATE = 24  # tracks the states of trainers
+
+    GRADIENTS = 25  # for paradigms that need to send gradients instead of weights
+    VAR = 26  # variance of a group of updates
+    DATA_ID = 27  # tracks specific data id to train on
+    TOTAL_DATA_BINS = 28  # tracks per-client max data bins
+    GRADIENTS_FOR_VAR_CHECK = 29 # for sending only the gradients to be used for var check 
+    GRAD_POOL = 30 # stores all gradients until var isn't good enough
+    ITERATION_PER_DATA_ID = 31 #stores round within a data id

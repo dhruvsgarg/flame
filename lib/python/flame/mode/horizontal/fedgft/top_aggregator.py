@@ -22,8 +22,7 @@ from flame.common.constants import PROP_ROUND_END_TIME, PROP_ROUND_START_TIME
 from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.mode.composer import Composer
 from flame.mode.horizontal.top_aggregator import TAG_AGGREGATE, TAG_DISTRIBUTE
-from flame.mode.horizontal.top_aggregator import \
-    TopAggregator as BaseTopAggregator
+from flame.mode.horizontal.top_aggregator import TopAggregator as BaseTopAggregator
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 

@@ -64,6 +64,7 @@ class TorchFemnistMiddleAggregator(MiddleAggregator):
         # set necessary properties to help channel decide how to select ends
         channel.set_property("round", self._round)
 
+
 if __name__ == "__main__":
     import argparse
 

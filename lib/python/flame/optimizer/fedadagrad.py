@@ -22,8 +22,10 @@ from .fedopt import FedOPT
 
 logger = logging.getLogger(__name__)
 
+
 class FedAdaGrad(FedOPT):
     """FedAdam class."""
+
     logger.debug("Initializing fedadagrad")
 
     def __init__(self, beta_1=0.9, beta_2=0.99, eta=1e-2, tau=1e-3):
@@ -31,9 +33,9 @@ class FedAdaGrad(FedOPT):
         super().__init__(beta_1, beta_2, eta, tau)
 
     def _delta_v_pytorch(self):
-        self.v_t = {k: self.v_t[k] + self.d_t[k]**2 for k in self.v_t.keys()}
+        self.v_t = {k: self.v_t[k] + self.d_t[k] ** 2 for k in self.v_t.keys()}
         return
 
     def _delta_v_tensorflow(self):
-        self.v_t = [self.v_t[idx] + self.d_t[idx]**2 for idx in range(len(self.v_t))]
+        self.v_t = [self.v_t[idx] + self.d_t[idx] ** 2 for idx in range(len(self.v_t))]
         return

@@ -42,7 +42,8 @@ from torch.autograd import Variable
 
 logger = logging.getLogger(__name__)
 
-class FEMNIST():
+
+class FEMNIST:
     """
     FEMNIST dataloader. The implementation is based on FedScale
 
@@ -82,7 +83,16 @@ class FEMNIST():
         warnings.warn("test_data has been renamed data")
         return self.data
 
-    def __init__(self, root, meta_dir, partition_id, dataset='train', transform=None, target_transform=None, imgview=False):
+    def __init__(
+        self,
+        root,
+        meta_dir,
+        partition_id,
+        dataset="train",
+        transform=None,
+        target_transform=None,
+        imgview=False,
+    ):
 
         self.data_file = dataset  # 'train', 'test', 'validation'
         self.root = root
@@ -94,7 +104,7 @@ class FEMNIST():
 
         # load data and targets
         self.data, self.targets = self.load_file(self.path)
-        #self.mapping = {idx:file for idx, file in enumerate(raw_data)}
+        # self.mapping = {idx:file for idx, file in enumerate(raw_data)}
 
         self.imgview = imgview
 
@@ -114,8 +124,8 @@ class FEMNIST():
         img = Image.open(os.path.join(self.root, imgName))
 
         # avoid channel error
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+        if img.mode != "RGB":
+            img = img.convert("RGB")
 
         if self.transform is not None:
             img = self.transform(img)
@@ -137,14 +147,13 @@ class FEMNIST():
         return self.root
 
     def _check_exists(self):
-        return (os.path.exists(os.path.join(self.processed_folder,
-                                            self.data_file)))
+        return os.path.exists(os.path.join(self.processed_folder, self.data_file))
 
     def load_meta_data(self, path):
         datas, labels = [], []
 
         with open(path) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',')
+            csv_reader = csv.reader(csv_file, delimiter=",")
             line_count = 0
             for row in csv_reader:
                 if line_count != 0:
@@ -155,13 +164,20 @@ class FEMNIST():
         return datas, labels
 
     def load_file(self, path):
-        datas, labels = self.load_meta_data(os.path.join(
-            self.meta_dir, self.data_file, 'client-'+str(self.partition_id)+'-'+self.data_file+'.csv'))
+        datas, labels = self.load_meta_data(
+            os.path.join(
+                self.meta_dir,
+                self.data_file,
+                "client-" + str(self.partition_id) + "-" + self.data_file + ".csv",
+            )
+        )
 
         return datas, labels
 
+
 def override(method):
     return method
+
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
@@ -179,14 +195,15 @@ def accuracy(output, target, topk=(1,)):
 
         return res
 
-def test_pytorch_model(model, test_data, device='cpu'):
+
+def test_pytorch_model(model, test_data, device="cpu"):
 
     test_loss = 0
     correct = 0
     top_5 = 0
 
     test_len = 0
-    perplexity_loss = 0.
+    perplexity_loss = 0.0
 
     model = model.to(device=device)  # load by pickle
     model.eval()
@@ -196,7 +213,9 @@ def test_pytorch_model(model, test_data, device='cpu'):
     with torch.no_grad():
         for data, target in test_data:
             try:
-                data, target = Variable(data).to(device=device), Variable(target).to(device=device)
+                data, target = Variable(data).to(device=device), Variable(target).to(
+                    device=device
+                )
 
                 output = model(data)
 
@@ -224,10 +243,15 @@ def test_pytorch_model(model, test_data, device='cpu'):
     acc_5 = round(top_5 / test_len, 4)
     test_loss = round(test_loss, 4)
 
-    testRes = {'top_1': correct, 'top_5': top_5,
-               'test_loss': sum_loss, 'test_len': test_len}
+    testRes = {
+        "top_1": correct,
+        "top_5": top_5,
+        "test_loss": sum_loss,
+        "test_len": test_len,
+    }
 
     return test_loss, acc, acc_5, testRes
+
 
 class PyTorchFemnistAggregator(TopAggregator):
     """PyTorch Femnist Aggregator."""
@@ -250,23 +274,35 @@ class PyTorchFemnistAggregator(TopAggregator):
 
     def initialize(self):
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = tormodels.__dict__["resnet18"](num_classes=62).to(device=self.device)
+        self.model = tormodels.__dict__["resnet18"](num_classes=62).to(
+            device=self.device
+        )
 
     def load_data(self) -> None:
         """Load a test dataset."""
         # Generate a random parition ID
         self.partition_id = random.randint(1, 67)
 
-        train_transform, test_transform = get_data_transform('mnist')
-        test_dataset = FEMNIST(self.data_dir, self.meta_dir, self.partition_id,
-                            dataset='test', transform=test_transform)
+        train_transform, test_transform = get_data_transform("mnist")
+        test_dataset = FEMNIST(
+            self.data_dir,
+            self.meta_dir,
+            self.partition_id,
+            dataset="test",
+            transform=test_transform,
+        )
 
-        self.test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=16,
-                shuffle=True, pin_memory=True, timeout=0,
-                num_workers=0, drop_last=False)
+        self.test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=16,
+            shuffle=True,
+            pin_memory=True,
+            timeout=0,
+            num_workers=0,
+            drop_last=False,
+        )
 
         self.dataset = Dataset(dataloader=self.test_loader)
 
@@ -277,14 +313,13 @@ class PyTorchFemnistAggregator(TopAggregator):
 
     def evaluate(self) -> None:
         """Evaluate (test) a model."""
-        test_loss, test_accuray, acc_5, testRes = test_pytorch_model(self.model, self.test_loader, device=self.device)
+        test_loss, test_accuray, acc_5, testRes = test_pytorch_model(
+            self.model, self.test_loader, device=self.device
+        )
 
         logger.info(f"Loss: {test_loss}, Accuracy: {test_accuray}")
 
-        self.update_metrics({
-            'test-loss': test_loss,
-            'test-accuracy': test_accuray
-        })
+        self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuray})
 
     @override
     def compose(self) -> None:
@@ -338,11 +373,12 @@ class PyTorchFemnistAggregator(TopAggregator):
             >> task_save_model
         )
 
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

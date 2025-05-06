@@ -19,9 +19,13 @@ import logging
 from copy import deepcopy
 import time
 
-from flame.common.util import (MLFramework, get_ml_framework_in_use,
-                            weights_to_device, weights_to_model_device)
-from flame.common.constants import (DeviceType, TrainState)
+from flame.common.util import (
+    MLFramework,
+    get_ml_framework_in_use,
+    weights_to_device,
+    weights_to_model_device,
+)
+from flame.common.constants import DeviceType, TrainState
 from flame.optimizer.train_result import TrainResult
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
@@ -30,11 +34,12 @@ from flame.mode.horizontal.top_aggregator import TopAggregator as BaseTopAggrega
 
 logger = logging.getLogger(__name__)
 
-TAG_DISTRIBUTE = 'distribute'
-TAG_AGGREGATE = 'aggregate'
-TAG_GET_DATATSET_SIZE = 'getDatasetSize'
+TAG_DISTRIBUTE = "distribute"
+TAG_AGGREGATE = "aggregate"
+TAG_GET_DATATSET_SIZE = "getDatasetSize"
 
 PROP_ROUND_END_TIME = "round_end_time"
+
 
 class TopAggregator(BaseTopAggregator):
     """FedDyn Top level Aggregator implements an ML aggregation role."""
@@ -42,13 +47,14 @@ class TopAggregator(BaseTopAggregator):
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         ml_framework_in_use = get_ml_framework_in_use()
-        
+
         # only support pytorch
         if ml_framework_in_use != MLFramework.PYTORCH:
             raise NotImplementedError(
                 "supported ml framework not found; "
-                f"supported frameworks (for feddyn) are: {[MLFramework.PYTORCH.name.lower()]}")
-        
+                f"supported frameworks (for feddyn) are: {[MLFramework.PYTORCH.name.lower()]}"
+            )
+
         super().internal_init()
 
     def get(self, tag: str) -> None:
@@ -57,7 +63,7 @@ class TopAggregator(BaseTopAggregator):
             self._aggregate_weights(tag)
         elif tag == TAG_GET_DATATSET_SIZE:
             self.get_dataset_size(tag)
-    
+
     def _aggregate_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -123,7 +129,7 @@ class TopAggregator(BaseTopAggregator):
             return
 
         self.dataset_sizes = dict()
-        
+
         # receive dataset size from all trainers
         all_ends = channel.all_ends()
         for msg, metadata in channel.recv_fifo(all_ends):
@@ -135,9 +141,9 @@ class TopAggregator(BaseTopAggregator):
             logger.debug(f"received data from {end}")
             if MessageType.DATASET_SIZE in msg:
                 self.dataset_sizes[end] = msg[MessageType.DATASET_SIZE]
-        
+
         # record all active trainers
-        self.optimizer.save_state(TrainState.PRE, active_ends = all_ends)
+        self.optimizer.save_state(TrainState.PRE, active_ends=all_ends)
         logger.debug(f"dataset sizes: {self.dataset_sizes}")
         logger.debug("exiting get_dataset_size")
 
@@ -153,13 +159,16 @@ class TopAggregator(BaseTopAggregator):
 
         # before distributing weights, update it from global model
         self._update_weights()
-        
+
         total_samples = sum(self.dataset_sizes.values())
         num_trainers = len(self.dataset_sizes)
-        weight_dict = {end:(self.dataset_sizes[end]/total_samples) * num_trainers for end in self.dataset_sizes}
-        
+        weight_dict = {
+            end: (self.dataset_sizes[end] / total_samples) * num_trainers
+            for end in self.dataset_sizes
+        }
+
         logger.debug(f"weight_dict: {weight_dict}")
-        
+
         self.cld_weights = self.optimizer.cld_model
         if self.cld_weights == None:
             self.cld_weights = self.weights
@@ -167,11 +176,17 @@ class TopAggregator(BaseTopAggregator):
         # send out global model parameters to trainers
         for end in channel.ends():
             logger.debug(f"sending weights to {end}")
-            channel.send(end, {
-                MessageType.WEIGHTS: weights_to_device(self.cld_weights, DeviceType.CPU),
-                MessageType.ROUND: self._round,
-                MessageType.ALPHA_ADPT: self.optimizer.alpha / weight_dict.get(end, 1)
-            })
+            channel.send(
+                end,
+                {
+                    MessageType.WEIGHTS: weights_to_device(
+                        self.cld_weights, DeviceType.CPU
+                    ),
+                    MessageType.ROUND: self._round,
+                    MessageType.ALPHA_ADPT: self.optimizer.alpha
+                    / weight_dict.get(end, 1),
+                },
+            )
 
     def compose(self) -> None:
         """Compose role with tasklets."""
@@ -184,7 +199,9 @@ class TopAggregator(BaseTopAggregator):
 
             task_load_data = Tasklet("load_data", self.load_data)
 
-            task_get_dataset = Tasklet("get_dataset_size", self.get, TAG_GET_DATATSET_SIZE)
+            task_get_dataset = Tasklet(
+                "get_dataset_size", self.get, TAG_GET_DATATSET_SIZE
+            )
 
             task_put = Tasklet("distribute", self.put, TAG_DISTRIBUTE)
 
@@ -210,11 +227,24 @@ class TopAggregator(BaseTopAggregator):
 
         # create a loop object with loop exit condition function
         loop = Loop(loop_check_fn=lambda: self._work_done)
-        task_internal_init >> task_load_data >> task_init >> loop(
-            task_get_dataset >> task_put >> task_get >> task_train >> 
-            task_eval >> task_analysis >> task_save_metrics >> 
-            task_increment_round
-        ) >> task_end_of_training >> task_save_params >> task_save_model
+        (
+            task_internal_init
+            >> task_load_data
+            >> task_init
+            >> loop(
+                task_get_dataset
+                >> task_put
+                >> task_get
+                >> task_train
+                >> task_eval
+                >> task_analysis
+                >> task_save_metrics
+                >> task_increment_round
+            )
+            >> task_end_of_training
+            >> task_save_params
+            >> task_save_model
+        )
 
     @classmethod
     def get_func_tags(cls) -> list[str]:

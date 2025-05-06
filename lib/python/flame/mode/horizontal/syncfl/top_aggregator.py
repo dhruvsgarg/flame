@@ -118,22 +118,26 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 "supported ml framework not found; "
                 f"supported frameworks are: {valid_frameworks}"
             )
-        
+
         self._trainers_used_in_curr_round = []
         self.agg_start_time_ts = time.time()
-        
+
         self._updates_recevied = {}
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         logger.debug(f"Invoking get() with tag {tag}")
         if tag == TAG_AGGREGATE:
-            logger.debug(f"In get(), got message for tag {tag},"
-                        f"invoking _aggregate_weights({tag})")
+            logger.debug(
+                f"In get(), got message for tag {tag},"
+                f"invoking _aggregate_weights({tag})"
+            )
             self._aggregate_weights(tag)
         elif tag == TAG_HEARTBEAT:
-            logger.debug(f"In get(), got message for tag {tag},"
-                        f" will invoke _read_heartbeat({tag})")
+            logger.debug(
+                f"In get(), got message for tag {tag},"
+                f" will invoke _read_heartbeat({tag})"
+            )
             self._read_heartbeat(tag)
 
     def _read_heartbeat(self, tag: str) -> None:
@@ -142,7 +146,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if not channel:
             logger.info("No channel found for read_heartbeat")
             return
-        
+
         logger.debug(f"Channel {channel} found for _read_heartbeat and tag {tag}")
         logger.debug(f"channel.ends(): {channel.ends()}")
         # receive heartbeat message from trainers TODO: (DG) Check if
@@ -159,12 +163,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 logger.debug(
                     f"received heartbeat from {end} "
                     f"at timestamp {heartbeat_timestamp}"
-                    )
+                )
             else:
                 logger.warm(
                     f"Tried to read message in _read_heartbeat()"
                     f"but got message of type {msg}"
-                    )
+                )
 
     def _aggregate_weights(self, tag: str) -> None:
         channel = self.cm.get_by_tag(tag)
@@ -193,7 +197,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             if MessageType.DATASAMPLER_METADATA in msg:
                 self.datasampler.handle_metadata_from_trainer(
-                    msg[MessageType.DATASAMPLER_METADATA], end, channel,
+                    msg[MessageType.DATASAMPLER_METADATA],
+                    end,
+                    channel,
                 )
 
             logger.debug(f"{end}'s parameters trained with {count} samples")
@@ -243,13 +249,17 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        logger.info(f"Sending weights to trainers with task_to_perform = {task_to_perform}")
+        logger.info(
+            f"Sending weights to trainers with task_to_perform = {task_to_perform}"
+        )
         selected_ends = channel.ends()
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # send out global model parameters to trainers
         for end in selected_ends:
-            logger.debug(f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}")
+            logger.debug(
+                f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
+            )
             channel.send(
                 end,
                 {
@@ -259,7 +269,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     MessageType.ROUND: self._round,
                     MessageType.DATASAMPLER_METADATA: datasampler_metadata,
                     MessageType.MODEL_VERSION: self._round,
-                    MessageType.TASK_TO_PERFORM: task_to_perform
+                    MessageType.TASK_TO_PERFORM: task_to_perform,
                 },
             )
             # register round start time on each end for round duration
@@ -310,7 +320,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             f"Incrementing current round: {self._round} and "
             f"cleared self._trainers_used_in_curr_round "
             f"{self._trainers_used_in_curr_round}"
-            )
+        )
         logger.debug(f"Total rounds: {self._rounds}")
         self._round += 1
         self._work_done = self._round > self._rounds
@@ -361,7 +371,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
             agg_time_since_start_s = time.time() - self.agg_start_time_ts
 
             for trainer_id, event_dict in list(self.trainer_event_dict.items()):
-                logger.debug(f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}")
+                logger.debug(
+                    f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}"
+                )
 
                 if not event_dict:
                     continue  # Skip if no events for trainer
@@ -372,24 +384,34 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
                 if idx >= 0:
                     most_recent_event = event_dict.peekitem(idx)
-                    logger.debug(f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}")
-                    
+                    logger.debug(
+                        f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}"
+                    )
+
                     most_recent_event_ts = most_recent_event[0]
                     most_recent_event_state = most_recent_event[1]
 
                     if most_recent_event_state == "UN_AVL":
-                        logger.debug(f"Trainer {trainer_id} is unavailable since time {most_recent_event_ts}.")
+                        logger.debug(
+                            f"Trainer {trainer_id} is unavailable since time {most_recent_event_ts}."
+                        )
                         curr_unavail_trainer_list.append(trainer_id)
                     elif most_recent_event_state == "AVL_TRAIN":
-                        logger.debug(f"Trainer {trainer_id} is available since time {most_recent_event_ts}.")
+                        logger.debug(
+                            f"Trainer {trainer_id} is available since time {most_recent_event_ts}."
+                        )
                     else:
-                        logger.warning(f"Trainer {trainer_id} was in state {most_recent_event_state} since time {most_recent_event_ts}, needs to be handled.")
+                        logger.warning(
+                            f"Trainer {trainer_id} was in state {most_recent_event_state} since time {most_recent_event_ts}, needs to be handled."
+                        )
 
                 # TODO: To be more memory efficient, we can delete events that
                 # are way past their time and already used
 
         # Return the list of currently unavailable trainers
-        logger.debug(f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list} has {len(curr_unavail_trainer_list)} ends out of total {len(self.trainer_event_dict)} ends dict")
+        logger.debug(
+            f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list} has {len(curr_unavail_trainer_list)} ends out of total {len(self.trainer_event_dict)} ends dict"
+        )
 
         return curr_unavail_trainer_list
 

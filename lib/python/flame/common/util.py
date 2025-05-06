@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from enum import Enum
 from threading import Thread
 from typing import List, Union
-
+import logging
 from pip._internal.cli.main import main as pipmain
 
 from flame.common.constants import DeviceType
@@ -30,6 +30,8 @@ from flame.common.typing import ModelWeights
 
 PYTORCH = "torch"
 TENSORFLOW = "tensorflow"
+
+logger = logging.getLogger(__name__)
 
 
 class MLFramework(Enum):
@@ -190,7 +192,19 @@ def weights_to_device(weights, dtype: DeviceType):
         return weights
     elif framework == MLFramework.PYTORCH:
         torch_device = get_pytorch_device(dtype)
-        return {name: weights[name].to(torch_device) for name in weights}
+        weights_dict = {name: weights[name].to(torch_device) for name in weights}
+
+        num_keys = len(weights_dict)
+        total_elems = sum(t.numel() for t in weights_dict.values())
+        total_size_MB = (
+            sum(t.numel() * t.element_size() for t in weights_dict.values()) / 1e6
+        )
+
+        print(
+            f"[weights_to_device] Keys: {num_keys}, Total elements: {total_elems:,}, Size: {total_size_MB:.2f} MB"
+        )
+
+        return weights_dict
 
     return None
 
@@ -202,7 +216,9 @@ def weights_to_model_device(weights, model):
         return weights
     elif framework == MLFramework.PYTORCH:
         # make assumption all tensors are on same device
+        # TODO: NRL add this to the code
         torch_device = next(model.parameters()).device
+        logger.info(f"NRL: device for this is: {torch_device}")
         return {name: weights[name].to(torch_device) for name in weights}
 
     return None

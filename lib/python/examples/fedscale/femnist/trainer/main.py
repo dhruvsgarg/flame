@@ -27,6 +27,7 @@ from PIL import Image
 
 from flame.mode.composer import Composer
 from flame.mode.tasklet import Loop, Tasklet
+
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 
@@ -40,7 +41,8 @@ from fedscale.dataloaders.utils_data import get_data_transform
 
 logger = logging.getLogger(__name__)
 
-class FEMNIST():
+
+class FEMNIST:
     """
     FEMNIST dataloader. The implementation is based on FedScale
 
@@ -80,7 +82,16 @@ class FEMNIST():
         warnings.warn("test_data has been renamed data")
         return self.data
 
-    def __init__(self, root, meta_dir, partition_id, dataset='train', transform=None, target_transform=None, imgview=False):
+    def __init__(
+        self,
+        root,
+        meta_dir,
+        partition_id,
+        dataset="train",
+        transform=None,
+        target_transform=None,
+        imgview=False,
+    ):
 
         self.data_file = dataset  # 'train', 'test', 'validation'
         self.root = root
@@ -92,7 +103,7 @@ class FEMNIST():
 
         # load data and targets
         self.data, self.targets = self.load_file(self.path)
-        #self.mapping = {idx:file for idx, file in enumerate(raw_data)}
+        # self.mapping = {idx:file for idx, file in enumerate(raw_data)}
 
         self.imgview = imgview
 
@@ -112,8 +123,8 @@ class FEMNIST():
         img = Image.open(os.path.join(self.root, imgName))
 
         # avoid channel error
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+        if img.mode != "RGB":
+            img = img.convert("RGB")
 
         if self.transform is not None:
             img = self.transform(img)
@@ -135,14 +146,13 @@ class FEMNIST():
         return self.root
 
     def _check_exists(self):
-        return (os.path.exists(os.path.join(self.processed_folder,
-                                            self.data_file)))
+        return os.path.exists(os.path.join(self.processed_folder, self.data_file))
 
     def load_meta_data(self, path):
         datas, labels = [], []
 
         with open(path) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',')
+            csv_reader = csv.reader(csv_file, delimiter=",")
             line_count = 0
             for row in csv_reader:
                 if line_count != 0:
@@ -153,10 +163,16 @@ class FEMNIST():
         return datas, labels
 
     def load_file(self, path):
-        datas, labels = self.load_meta_data(os.path.join(
-            self.meta_dir, self.data_file, 'client-'+str(self.partition_id)+'-'+self.data_file+'.csv'))
+        datas, labels = self.load_meta_data(
+            os.path.join(
+                self.meta_dir,
+                self.data_file,
+                "client-" + str(self.partition_id) + "-" + self.data_file + ".csv",
+            )
+        )
 
         return datas, labels
+
 
 class PyTorchFemnistTrainer(Trainer):
     """PyTorch Femnist Trainer."""
@@ -184,8 +200,7 @@ class PyTorchFemnistTrainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = tormodels.__dict__["resnet152"](num_classes=62).to(self.device)
 
@@ -195,13 +210,24 @@ class PyTorchFemnistTrainer(Trainer):
         # Generate a random parition ID
         self.partition_id = random.randint(1, 2798)
 
-        train_transform, test_transform = get_data_transform('mnist')
-        train_dataset = FEMNIST(self.data_dir, self.meta_dir, self.partition_id,
-                                dataset='train', transform=train_transform)
+        train_transform, test_transform = get_data_transform("mnist")
+        train_dataset = FEMNIST(
+            self.data_dir,
+            self.meta_dir,
+            self.partition_id,
+            dataset="train",
+            transform=train_transform,
+        )
 
-        self.train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=self.batch_size,
-                shuffle=True, pin_memory=True, timeout=0,
-                num_workers=0, drop_last=True)
+        self.train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            pin_memory=True,
+            timeout=0,
+            num_workers=0,
+            drop_last=True,
+        )
 
     def train(self) -> None:
         """Train a model."""
@@ -215,7 +241,7 @@ class PyTorchFemnistTrainer(Trainer):
 
     def _train_epoch(self, epoch):
         self.model.train()
-        criterion = torch.nn.CrossEntropyLoss(reduction='none').to(device=self.device)
+        criterion = torch.nn.CrossEntropyLoss(reduction="none").to(device=self.device)
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
             data, target = data.to(self.device), target.to(self.device)
@@ -226,14 +252,16 @@ class PyTorchFemnistTrainer(Trainer):
             loss = loss.mean()
 
             temp_loss = sum(loss_list) / float(len(loss_list))
-            self.loss_squared = sum([l ** 2 for l in loss_list]) / float(len(loss_list))
+            self.loss_squared = sum([l**2 for l in loss_list]) / float(len(loss_list))
 
             # only measure the loss of the first epoch
             if self.completed_steps < len(self.train_loader):
                 if self.epoch_train_loss == 1e-4:
                     self.epoch_train_loss = temp_loss
                 else:
-                    self.epoch_train_loss = (1. - self.loss_decay) * self.epoch_train_loss + self.loss_decay * temp_loss
+                    self.epoch_train_loss = (
+                        1.0 - self.loss_decay
+                    ) * self.epoch_train_loss + self.loss_decay * temp_loss
 
             # Define the backward loss
             self.optimizer.zero_grad()
@@ -280,15 +308,21 @@ class PyTorchFemnistTrainer(Trainer):
                 task_internal_init
                 >> task_init
                 >> loop(
-                    task_load_data >> task_get >> task_train >> task_eval >> task_put >> task_save_metrics
+                    task_load_data
+                    >> task_get
+                    >> task_train
+                    >> task_eval
+                    >> task_put
+                    >> task_save_metrics
                 )
             )
+
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
     config = Config(args.config)

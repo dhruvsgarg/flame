@@ -122,9 +122,11 @@ class PyTorchMnistAggregator(TopAggregator):
         test_loss /= total
         test_accuracy = correct / total
 
-        logger.info(f"Test loss: {test_loss}, test accuracy: "
-                    f"{correct}/{total} ({test_accuracy})")
-        
+        logger.info(
+            f"Test loss: {test_loss}, test accuracy: "
+            f"{correct}/{total} ({test_accuracy})"
+        )
+
         # update metrics after each evaluation so that the metrics can
         # be logged in a model registry.
         self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})

@@ -22,8 +22,12 @@ from math import ceil
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType, TrainState
 from flame.common.custom_abcmeta import abstract_attribute
-from flame.common.util import (MLFramework, get_ml_framework_in_use,
-                               weights_to_device, weights_to_model_device)
+from flame.common.util import (
+    MLFramework,
+    get_ml_framework_in_use,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.mode.composer import Composer
 from flame.mode.horizontal.syncfl.trainer import TAG_FETCH, TAG_UPLOAD
 from flame.mode.horizontal.syncfl.trainer import Trainer as BaseTrainer

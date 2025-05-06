@@ -37,11 +37,14 @@ class CNN(torch.nn.Module):
         self.num_classes = num_classes
         self.features = torch.nn.Sequential(
             torch.nn.Conv2d(3, 6, kernel_size=3, padding=1),
-            torch.nn.BatchNorm2d(6), torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(6),
+            torch.nn.ReLU(),
             torch.nn.MaxPool2d(kernel_size=2, stride=2),
             torch.nn.Conv2d(6, 16, kernel_size=3, padding=1),
-            torch.nn.BatchNorm2d(16), torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size=2, stride=2))
+            torch.nn.BatchNorm2d(16),
+            torch.nn.ReLU(),
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
+        )
         self.fc = torch.nn.Linear(16 * 7 * 7, num_classes)
 
     def forward(self, x):
@@ -59,15 +62,15 @@ class PathMNISTDataset(torch.utils.data.Dataset):
         self.transform = transform
         self.as_rgb = as_rgb
 
-        if self.split == 'train':
-            self.imgs = npz_file['train_images']
-            self.labels = npz_file['train_labels']
-        elif self.split == 'val':
-            self.imgs = npz_file['val_images']
-            self.labels = npz_file['val_labels']
-        elif self.split == 'test':
-            self.imgs = npz_file['test_images']
-            self.labels = npz_file['test_labels']
+        if self.split == "train":
+            self.imgs = npz_file["train_images"]
+            self.labels = npz_file["train_labels"]
+        elif self.split == "val":
+            self.imgs = npz_file["val_images"]
+            self.labels = npz_file["val_labels"]
+        elif self.split == "test":
+            self.imgs = npz_file["test_images"]
+            self.labels = npz_file["test_labels"]
         else:
             raise ValueError
 
@@ -79,7 +82,7 @@ class PathMNISTDataset(torch.utils.data.Dataset):
         img = Image.fromarray(img)
 
         if self.as_rgb:
-            img = img.convert('RGB')
+            img = img.convert("RGB")
 
         if self.transform is not None:
             img = self.transform(img)
@@ -98,7 +101,7 @@ class PyTorchMedMNistTrainer(Trainer):
         # Oort requires its loss function to have 'reduction' parameter
         self.loss_fn = torch.nn.CrossEntropyLoss
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.train_loader = None
 
@@ -108,45 +111,49 @@ class PyTorchMedMNistTrainer(Trainer):
         self._round = 1
         self._rounds = self.config.hyperparameters.rounds
 
-
     def initialize(self) -> None:
         """Initialize role."""
 
         self.model = CNN(num_classes=9)
         self.model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=1e-5)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.learning_rate, weight_decay=1e-5
+        )
 
     def load_data(self) -> None:
         """MedMNIST Pathology Dataset
-        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper 
+        The dataset is kindly released by Jakob Nikolas Kather, Johannes Krisam, et al. (2019) in their paper
         "Predicting survival from colorectal cancer histology slides using deep learning: A retrospective multicenter study",
-        and made available through Yang et al. (2021) in 
+        and made available through Yang et al. (2021) in
         "MedMNIST Classification Decathlon: A Lightweight AutoML Benchmark for Medical Image Analysis".
         Dataset Repo: https://github.com/MedMNIST/MedMNIST
         """
 
         self._download()
- 
-        data_transform = torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ])
 
-        train_dataset = PathMNISTDataset(split='train', transform=data_transform)
+        data_transform = torchvision.transforms.Compose(
+            [
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Normalize(
+                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+                ),
+            ]
+        )
+
+        train_dataset = PathMNISTDataset(split="train", transform=data_transform)
 
         self.train_loader = torch.utils.data.DataLoader(
-            train_dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True
+            train_dataset, batch_size=self.batch_size, shuffle=True
         )
 
         self.dataset_size = len(train_dataset)
 
     def _download(self) -> None:
         import requests
+
         r = requests.get(self.config.dataset, allow_redirects=True)
-        open('pathmnist.npz', 'wb').write(r.content)
-    
+        open("pathmnist.npz", "wb").write(r.content)
+
     def train(self) -> None:
         """Train a model."""
         self.model.load_state_dict(self.weights)
@@ -176,17 +183,16 @@ class PyTorchMedMNistTrainer(Trainer):
         # normalize statistical utility of a trainer based on the size of the dataset
         self.normalize_stat_utility(epoch)
 
-
     def evaluate(self) -> None:
         """Evaluate a model."""
         pass
-            
+
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

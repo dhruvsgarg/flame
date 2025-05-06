@@ -49,7 +49,9 @@ class Trainer(BaseTrainer):
         This method is overriden from one in horizontal trainer
         (..trainer).
         """
-        logger.debug(f"### SEND WEIGHTS for tag: {tag} and trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"### SEND WEIGHTS for tag: {tag} and trainer_id: {self.trainer_id}"
+        )
         logger.debug("calling _send_weights")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -57,7 +59,9 @@ class Trainer(BaseTrainer):
             return
 
         # this call waits for at least one peer to join this channel
-        logger.debug(f"_send_weights: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}")
+        logger.debug(
+            f"_send_weights: waiting for someone to join channel: {channel} for trainer_id: {self.trainer_id}"
+        )
         channel.await_join()
 
         # one aggregator is sufficient
@@ -145,7 +149,9 @@ class Trainer(BaseTrainer):
 
             task_internal_init = Tasklet("internal_init", self.internal_init)
 
-            task_init_oort_variables = Tasklet("init_oort_variables", self.init_oort_variables)
+            task_init_oort_variables = Tasklet(
+                "init_oort_variables", self.init_oort_variables
+            )
 
             task_load_data = Tasklet("load_data", self.load_data)
 
@@ -161,7 +167,9 @@ class Trainer(BaseTrainer):
 
             task_sleep_after_put = Tasklet("sleep_after_put", self.check_and_sleep)
 
-            task_sleep_after_save_metrics = Tasklet("sleep_after_save_metrics", self.check_and_sleep)
+            task_sleep_after_save_metrics = Tasklet(
+                "sleep_after_save_metrics", self.check_and_sleep
+            )
 
             task_train = Tasklet("train", self.train)
 
@@ -179,6 +187,15 @@ class Trainer(BaseTrainer):
                 >> task_load_data
                 >> task_init
                 >> loop(
-                    task_get >> task_sleep_after_get >> task_train >> task_sleep_after_train >> task_eval >> task_sleep_after_eval >> task_put >> task_sleep_after_put >> task_save_metrics >> task_sleep_after_save_metrics
+                    task_get
+                    >> task_sleep_after_get
+                    >> task_train
+                    >> task_sleep_after_train
+                    >> task_eval
+                    >> task_sleep_after_eval
+                    >> task_put
+                    >> task_sleep_after_put
+                    >> task_save_metrics
+                    >> task_sleep_after_save_metrics
                 )
             )

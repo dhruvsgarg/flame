@@ -73,12 +73,9 @@ class MyAdultDataset(torch.utils.data.Dataset):
 class Feature:
     """Feature class."""
 
-    def __init__(self,
-                 name,
-                 dtype,
-                 description,
-                 categorical=False,
-                 values=None) -> None:
+    def __init__(
+        self, name, dtype, description, categorical=False, values=None
+    ) -> None:
         """Initialize."""
         self.name = name
         self.dtype = dtype
@@ -97,7 +94,7 @@ def clean_dataframe(df: pd.DataFrame, clear_nans=True, extra_symbols="?"):
         return
 
     for i in df:
-        df[i].replace('nan', np.nan, inplace=True)
+        df[i].replace("nan", np.nan, inplace=True)
 
         for s in extra_symbols:
             df[i].replace(s, np.nan, inplace=True)
@@ -105,12 +102,10 @@ def clean_dataframe(df: pd.DataFrame, clear_nans=True, extra_symbols="?"):
     df.dropna(inplace=True)
 
 
-def process_dataframe(df: pd.DataFrame,
-                      target_column=None,
-                      normalize="Scalar"):
+def process_dataframe(df: pd.DataFrame, target_column=None, normalize="Scalar"):
     """Process dataframe and return numpy datasets and feature info."""
     if normalize and normalize == "Scalar":
-        num_d = df.select_dtypes(exclude=['object', 'category'])
+        num_d = df.select_dtypes(exclude=["object", "category"])
         df[num_d.columns] = StandardScaler().fit_transform(num_d)
 
     y = None
@@ -132,6 +127,6 @@ def process_dataframe(df: pd.DataFrame,
             f = Feature(c, "float32", c)
         features.append(f)
 
-    X = df.to_numpy().astype('float32')
+    X = df.to_numpy().astype("float32")
 
     return X, y, features

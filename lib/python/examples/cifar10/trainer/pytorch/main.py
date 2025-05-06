@@ -43,8 +43,8 @@ class Net(nn.Module):
     def __init__(self):
         """Initialize."""
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3,   64,  3)
-        self.conv2 = nn.Conv2d(64,  128, 3)
+        self.conv1 = nn.Conv2d(3, 64, 3)
+        self.conv2 = nn.Conv2d(64, 128, 3)
         self.conv3 = nn.Conv2d(128, 256, 3)
         self.pool = nn.MaxPool2d(2, 2)
         self.fc1 = nn.Linear(64 * 4 * 4, 128)
@@ -83,39 +83,47 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
 
     def load_data(self) -> None:
         """Load data."""
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
+        transform_train = transforms.Compose(
+            [
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+                ),
+            ]
+        )
 
-        dataset = CIFAR10('./data',
-                                 train=True,
-                                 download=True,
-                                 transform=transform_train)
+        dataset = CIFAR10(
+            "./data", train=True, download=True, transform=transform_train
+        )
 
         # create indices into a list and convert to tensor
         indices = torch.tensor(self.trainer_indices_list)
 
         print("indices: ", indices)
         dataset = data_utils.Subset(dataset, indices)
-        train_kwargs = {'batch_size': self.batch_size, 'drop_last': True, 'shuffle': True, 'num_workers': 2}
+        train_kwargs = {
+            "batch_size": self.batch_size,
+            "drop_last": True,
+            "shuffle": True,
+            "num_workers": 2,
+        }
 
-        self.train_loader = torch.utils.data.DataLoader(
-            dataset, **train_kwargs)
+        self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
     def train(self) -> None:
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
+        self.optimizer = torch.optim.SGD(
+            self.model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
+        )
 
         for epoch in range(1, self.epochs + 1):
             self._train_epoch(epoch)
@@ -136,9 +144,11 @@ class PyTorchCifar10Trainer(Trainer):
             if batch_idx % 100 == 0:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
-                percent = 100. * batch_idx / len(self.train_loader)
-                logger.info(f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                            f"\tloss: {loss.item():.6f}")
+                percent = 100.0 * batch_idx / len(self.train_loader)
+                logger.info(
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                    f"\tloss: {loss.item():.6f}"
+                )
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -149,8 +159,8 @@ class PyTorchCifar10Trainer(Trainer):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
     config = Config(args.config)

@@ -32,7 +32,7 @@ class AbstractAnalyzer(Plugin):
         return self.run
 
     @abstractmethod
-    def run(self,
-            model: Any = None,
-            dataset: Union[None, Dataset] = None) -> Union[None, Metrics]:
+    def run(
+        self, model: Any = None, dataset: Union[None, Dataset] = None
+    ) -> Union[None, Metrics]:
         """Run analysis and return results."""

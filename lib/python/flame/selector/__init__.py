@@ -34,8 +34,9 @@ class AbstractSelector(ABC):
         self.selected_ends = set()
 
     @abstractmethod
-    def select(self, ends: dict[str, End],
-               channel_props: dict[str, Scalar]) -> SelectorReturnType:
+    def select(
+        self, ends: dict[str, End], channel_props: dict[str, Scalar]
+    ) -> SelectorReturnType:
         """Abstract method to select ends.
 
         Parameters

@@ -38,9 +38,9 @@ class DummyAnalyzer(AbstractAnalyzer):
     type: analyzer
     """
 
-    def run(self,
-            model: Any = None,
-            dataset: Union[None, Dataset] = None) -> Union[None, Metrics]:
+    def run(
+        self, model: Any = None, dataset: Union[None, Dataset] = None
+    ) -> Union[None, Metrics]:
         """Run analysis and return results."""
         logger.info("dummy analyzer: doing nothing")
 

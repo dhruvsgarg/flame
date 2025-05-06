@@ -58,7 +58,9 @@ class TopAggregator(BaseTopAggregator):
 
             if MessageType.DATASAMPLER_METADATA in msg:
                 self.datasampler.handle_metadata_from_trainer(
-                    msg[MessageType.DATASAMPLER_METADATA], end, channel,
+                    msg[MessageType.DATASAMPLER_METADATA],
+                    end,
+                    channel,
                 )
 
             logger.debug(f"{end}'s parameters trained with {count} samples")

@@ -51,7 +51,7 @@ class Net(nn.Module):
         """Forward."""
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
+        x = torch.flatten(x, 1)  # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -72,21 +72,20 @@ class PyTorchCifar10Aggregator(SlowTopAggregator):
 
     def initialize(self):
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
 
     def load_data(self) -> None:
         """Load a test dataset."""
         transform = transforms.Compose(
-            [transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
 
-        dataset = CIFAR10('./data',
-                                 train=False,
-                                 download=True,
-                                 transform=transform)
+        dataset = CIFAR10("./data", train=False, download=True, transform=transform)
 
         self.test_loader = torch.utils.data.DataLoader(dataset)
 
@@ -108,33 +107,32 @@ class PyTorchCifar10Aggregator(SlowTopAggregator):
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
                 test_loss += F.nll_loss(
-                    output, target,
-                    reduction='sum').item()  # sum up batch loss                
+                    output, target, reduction="sum"
+                ).item()  # sum up batch loss
                 pred = output.argmax(
-                    dim=1,
-                    keepdim=True)  # get the index of the max log-probability
+                    dim=1, keepdim=True
+                )  # get the index of the max log-probability
                 correct += pred.eq(target.view_as(pred)).sum().item()
 
         total = len(self.test_loader.dataset)
         test_loss /= total
         test_accuray = correct / total
 
-        logger.info(f"Test loss: {test_loss}, test accuracy: "
-                    f"{correct}/{total} ({test_accuracy})")
+        logger.info(
+            f"Test loss: {test_loss}, test accuracy: "
+            f"{correct}/{total} ({test_accuracy})"
+        )
 
         # update metrics after each evaluation so that the metrics can
         # be logged in a model registry.
-        self.update_metrics({
-            'test-loss': test_loss,
-            'test-accuracy': test_accuray
-        })
+        self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuray})
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

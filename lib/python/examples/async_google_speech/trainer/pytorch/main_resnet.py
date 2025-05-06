@@ -35,41 +35,41 @@ from torch.utils.data import DataLoader
 from torchaudio.datasets import SPEECHCOMMANDS
 
 LABEL_MAP = {
-    'backward': 0,
-    'bed': 1,
-    'bird': 2,
-    'cat': 3,
-    'dog': 4,
-    'down': 5,
-    'eight': 6,
-    'five': 7,
-    'follow': 8,
-    'forward': 9,
-    'four': 10,
-    'go': 11,
-    'happy': 12,
-    'house': 13,
-    'learn': 14,
-    'left': 15,
-    'marvin': 16,
-    'nine': 17,
-    'no': 18,
-    'off': 19,
-    'on': 20,
-    'one': 21,
-    'right': 22,
-    'seven': 23,
-    'sheila': 24,
-    'six': 25,
-    'stop': 26,
-    'three': 27,
-    'tree': 28,
-    'two': 29,
-    'up': 30,
-    'visual': 31,
-    'wow': 32,
-    'yes': 33,
-    'zero': 34
+    "backward": 0,
+    "bed": 1,
+    "bird": 2,
+    "cat": 3,
+    "dog": 4,
+    "down": 5,
+    "eight": 6,
+    "five": 7,
+    "follow": 8,
+    "forward": 9,
+    "four": 10,
+    "go": 11,
+    "happy": 12,
+    "house": 13,
+    "learn": 14,
+    "left": 15,
+    "marvin": 16,
+    "nine": 17,
+    "no": 18,
+    "off": 19,
+    "on": 20,
+    "one": 21,
+    "right": 22,
+    "seven": 23,
+    "sheila": 24,
+    "six": 25,
+    "stop": 26,
+    "three": 27,
+    "tree": 28,
+    "two": 29,
+    "up": 30,
+    "visual": 31,
+    "wow": 32,
+    "yes": 33,
+    "zero": 34,
 }
 
 
@@ -79,10 +79,19 @@ logger = logging.getLogger(__name__)
 class BasicBlock1D(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1, downsample=None):
         super(BasicBlock1D, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv1d(
+            out_channels, out_channels, kernel_size=3, padding=1, bias=False
+        )
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.downsample = downsample
 
@@ -110,7 +119,9 @@ class ResNet34_1D(nn.Module):
         super(ResNet34_1D, self).__init__()
         self.in_channels = 64
 
-        self.conv1 = nn.Conv1d(n_input, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv1d(
+            n_input, 64, kernel_size=7, stride=2, padding=3, bias=False
+        )
         self.bn1 = nn.BatchNorm1d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
@@ -125,7 +136,13 @@ class ResNet34_1D(nn.Module):
         downsample = None
         if stride != 1 or self.in_channels != out_channels:
             downsample = nn.Sequential(
-                nn.Conv1d(self.in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.Conv1d(
+                    self.in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
                 nn.BatchNorm1d(out_channels),
             )
 
@@ -180,8 +197,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         # Enable/disable use of oort_loss fromt he config. Needed for
         # oort and asyncOORT.
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
-        logger.info(f"Trainer: {self.trainer_id} has "
-                    f"use_oort_loss_fn: {self.use_oort_loss_fn}")
+        logger.info(
+            f"Trainer: {self.trainer_id} has "
+            f"use_oort_loss_fn: {self.use_oort_loss_fn}"
+        )
 
         # TODO: (DG) Remove the hard requirement for config to include
         # trainer_indices_list and failure_durations_s Setting the
@@ -196,13 +215,15 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             self.timestamp_next_sleep_s = (
                 self.trainer_start_ts + self.failure_durations_s[0][0]
             )
-            print(f"# Trainer id: {self.trainer_id}, self.failure_durations_s: "
-                  f"{self.failure_durations_s}")
+            print(
+                f"# Trainer id: {self.trainer_id}, self.failure_durations_s: "
+                f"{self.failure_durations_s}"
+            )
         else:
             self.timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
-                )
-            
+            )
+
         # TODO: (DG) Fix the hack later. Creating duplicate data
         # struct for dup_check_and_sleep() which is used by heartbeat
         # thread
@@ -213,23 +234,25 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             self.dup_timestamp_next_sleep_s = (
                 self.trainer_start_ts + self.dup_failure_durations_s[0][0]
             )
-            print(f"# Trainer id: {self.trainer_id}, self.dup_failure_durations_s: "
-                  f"{self.dup_failure_durations_s}")
+            print(
+                f"# Trainer id: {self.trainer_id}, self.dup_failure_durations_s: "
+                f"{self.dup_failure_durations_s}"
+            )
         else:
             self.dup_timestamp_next_sleep_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
-                )
+            )
 
         # sending heartbeats to aggregator
         if "enabled" in self.config.hyperparameters.heartbeats.keys():
             self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
         else:
             self.heartbeats_enabled = False
-        
+
         if "frequency_s" in self.config.hyperparameters.heartbeats.keys():
-            self.heartbeats_second_freq = (
-                self.config.hyperparameters.heartbeats["frequency_s"]
-                )
+            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
+                "frequency_s"
+            ]
         else:
             self.heartbeats_second_freq = 99999
 
@@ -243,8 +266,8 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         else:
             self.timestamp_next_heartbeat_s = calendar.timegm(
                 time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
-                )
-            
+            )
+
         # Check if client will notify aggregator of its availability
         self.client_avail_aware_notify = (
             self.config.hyperparameters.client_avail_aware_notify
@@ -253,12 +276,12 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
-    
+
     def check_and_sleep(self):
         """Induce transient unavailability"""
         # Implement this if transient unavailability need to be
         # emulated in the trainer
-        
+
         if (time.time() >= self.timestamp_next_sleep_s) and (
             len(self.failure_durations_s) > 0
         ):
@@ -277,42 +300,51 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             remaining_sleep_duration_s = (
                 sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
             )
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
-                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
-                         f"{remaining_sleep_duration_s} at timestamp: {time.time()}")
-            
-            if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
-                            f"at timestamp: {time.time()}")
+            logger.debug(
+                f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                f"{remaining_sleep_duration_s} at timestamp: {time.time()}"
+            )
+
+            if remaining_sleep_duration_s <= 0:
+                logger.info(
+                    f"Task_id: {self.trainer_id} got -ve remaining sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = time.time() - self.trainer_start_ts
                 while len(self.failure_durations_s) > 0 and (
-                    time_elapsed_from_start > (
-                        self.failure_durations_s[0][0] + self.failure_durations_s[0][1]
-                        )
+                    time_elapsed_from_start
+                    > (self.failure_durations_s[0][0] + self.failure_durations_s[0][1])
                 ):
                     self.failure_durations_s.pop(0)
                     if len(self.failure_durations_s) == 0:
                         break
             else:
                 # sleep for remaining time
-                logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} going to sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} woke up at timestamp: "
+                    f"{time.time()}"
+                )
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.failure_durations_s) > 0:
-                self.timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.failure_durations_s[0][0]),
-                    time.time()+1
-                    )
+                self.timestamp_next_sleep_s = max(
+                    (self.trainer_start_ts + self.failure_durations_s[0][0]),
+                    time.time() + 1,
+                )
                 if self.timestamp_next_sleep_s < time.time():
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
-                                 f"self.timestamp_next_sleep_s < time.time()")
+                    logger.error(
+                        f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                        f"self.timestamp_next_sleep_s < time.time()"
+                    )
             else:
                 self.timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -321,11 +353,13 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} check_and_sleep completed at "
-                     f"timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} check_and_sleep completed at "
+            f"timestamp: {time.time()}"
+        )
 
     def dup_check_and_sleep(self):
-        
+
         if (time.time() >= self.dup_timestamp_next_sleep_s) and (
             len(self.dup_failure_durations_s) > 0
         ):
@@ -340,47 +374,58 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
-            # + actual_sleep_duration - current_ts 
+            # + actual_sleep_duration - current_ts
             remaining_sleep_duration_s = (
                 sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
             )
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
-                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
-                         f"{remaining_sleep_duration_s} at timestamp: {time.time()}")
-            
-            if (remaining_sleep_duration_s <= 0):
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep at "
-                            f"timestamp: {time.time()}")
+            logger.debug(
+                f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                f"{remaining_sleep_duration_s} at timestamp: {time.time()}"
+            )
+
+            if remaining_sleep_duration_s <= 0:
+                logger.info(
+                    f"Task_id: {self.trainer_id} got -ve remaining sleep at "
+                    f"timestamp: {time.time()}"
+                )
                 # Need to pop out failure intervals that occur in the
                 # past
                 time_elapsed_from_start = time.time() - self.trainer_start_ts
                 while len(self.dup_failure_durations_s) > 0 and (
-                    time_elapsed_from_start > (
-                        self.dup_failure_durations_s[0][0] +
-                        self.dup_failure_durations_s[0][1]
-                        )
+                    time_elapsed_from_start
+                    > (
+                        self.dup_failure_durations_s[0][0]
+                        + self.dup_failure_durations_s[0][1]
+                    )
                 ):
                     self.dup_failure_durations_s.pop(0)
                     if len(self.dup_failure_durations_s) == 0:
                         break
             else:
                 # sleep for remaining time
-                logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} going to sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} woke up at timestamp: "
+                    f"{time.time()}"
+                )
 
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
-                self.dup_timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
-                    time.time()+1
+                self.dup_timestamp_next_sleep_s = max(
+                    (self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    time.time() + 1,
+                )
+                if self.dup_timestamp_next_sleep_s < time.time():
+                    logger.error(
+                        f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                        f"self.dup_timestamp_next_sleep_s < time.time()"
                     )
-                if (self.dup_timestamp_next_sleep_s < time.time()):
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
-                                 f"self.dup_timestamp_next_sleep_s < time.time()")
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
@@ -389,8 +434,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                 )
                 logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer")
 
-        logger.debug(f"Task_id: {self.trainer_id} dup_check_and_sleep completed at "
-                     f"timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} dup_check_and_sleep completed at "
+            f"timestamp: {time.time()}"
+        )
 
     def check_leave_sleep_join(self):
         """Indicate transient unavailability to aggregator"""
@@ -409,7 +456,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             # sleep
             sleep_start_ts_from_trainer_init = (
                 self.trainer_start_ts + sleep_config_tuple[0]
-                )
+            )
             sleep_duration_s = sleep_config_tuple[1]
 
             # remaining sleep = trainer_start_ts + actual_sleep_start
@@ -417,22 +464,26 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             remaining_sleep_duration_s = (
                 sleep_start_ts_from_trainer_init + sleep_duration_s - time.time()
             )
-            logger.debug(f"Task_id: {self.trainer_id} given_sleep_duration_s: "
-                         f"{sleep_duration_s} with remaining_sleep_duration_s: "
-                         f"{remaining_sleep_duration_s}"
-                         f" at timestamp: {time.time()}"
-                         )
-            
+            logger.debug(
+                f"Task_id: {self.trainer_id} given_sleep_duration_s: "
+                f"{sleep_duration_s} with remaining_sleep_duration_s: "
+                f"{remaining_sleep_duration_s}"
+                f" at timestamp: {time.time()}"
+            )
+
             if remaining_sleep_duration_s < 0:
-                logger.info(f"Task_id: {self.trainer_id} got -ve remaining sleep "
-                            f"at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} got -ve remaining sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 # Need to pop out failure intervals that occur in the
                 # past
                 while len(self.dup_failure_durations_s) > 0 and (
-                    (time.time() - self.trainer_start_ts) > (
-                        self.dup_failure_durations_s[0][0] +
-                        self.dup_failure_durations_s[0][1]
-                        )
+                    (time.time() - self.trainer_start_ts)
+                    > (
+                        self.dup_failure_durations_s[0][0]
+                        + self.dup_failure_durations_s[0][1]
+                    )
                 ):
                     self.dup_failure_durations_s.pop(0)
                     if len(self.dup_failure_durations_s) == 0:
@@ -443,11 +494,15 @@ class PyTorchSpeechCommandsTrainer(Trainer):
                     self._perform_channel_leave(tag="upload")
 
                 # sleep for remaining time
-                logger.info(f"Task_id: {self.trainer_id} going to sleep "
-                            f"at timestamp: {time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} going to sleep "
+                    f"at timestamp: {time.time()}"
+                )
                 time.sleep(remaining_sleep_duration_s)
-                logger.info(f"Task_id: {self.trainer_id} woke up at timestamp: "
-                            f"{time.time()}")
+                logger.info(
+                    f"Task_id: {self.trainer_id} woke up at timestamp: "
+                    f"{time.time()}"
+                )
 
                 # join channel, if notify is enabled
                 if self.client_avail_aware_notify == "True":
@@ -456,85 +511,103 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             # check if failure_list is now empty, if yes, reset
             # ts_next_sleep_s if not empty, set it to the next value
             if len(self.dup_failure_durations_s) > 0:
-                self.dup_timestamp_next_sleep_s = max((
-                    self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
-                    time.time()+1
+                self.dup_timestamp_next_sleep_s = max(
+                    (self.trainer_start_ts + self.dup_failure_durations_s[0][0]),
+                    time.time() + 1,
+                )
+                if self.dup_timestamp_next_sleep_s < time.time():
+                    logger.error(
+                        f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
+                        f"self.dup_timestamp_next_sleep_s < time.time()"
                     )
-                if (self.dup_timestamp_next_sleep_s < time.time()):
-                    logger.error(f"Task_id: {self.trainer_id} ERROR - JUST SET NEXT "
-                                 f"self.dup_timestamp_next_sleep_s < time.time()")
                 else:
                     # We have a next time for unavailability. To
                     # reduce system load, thread can go to sleep until
                     # then and wake up just before the next
                     # unavailability needs to be announced.
-                    logger.info(f"Trainer {self.trainer_id} at time {time.time()} set "
-                                f"next dup_timestamp_next_sleep_s for "
-                                f"{self.dup_timestamp_next_sleep_s}.")
+                    logger.info(
+                        f"Trainer {self.trainer_id} at time {time.time()} set "
+                        f"next dup_timestamp_next_sleep_s for "
+                        f"{self.dup_timestamp_next_sleep_s}."
+                    )
                     self.remaining_time_before_next_unavail_s = (
-                        self.dup_timestamp_next_sleep_s - time.time())
-                    logger.debug(f"Trainer {self.trainer_id} will go to sleep for "
-                                 f"{self.remaining_time_before_next_unavail_s-1} since "
-                                 f"remaining time before next unavail is "
-                                 f"{self.remaining_time_before_next_unavail_s}")
+                        self.dup_timestamp_next_sleep_s - time.time()
+                    )
+                    logger.debug(
+                        f"Trainer {self.trainer_id} will go to sleep for "
+                        f"{self.remaining_time_before_next_unavail_s-1} since "
+                        f"remaining time before next unavail is "
+                        f"{self.remaining_time_before_next_unavail_s}"
+                    )
                     thread_rest_duration_s = max(
-                        0,
-                        (self.remaining_time_before_next_unavail_s-1)
-                        )
+                        0, (self.remaining_time_before_next_unavail_s - 1)
+                    )
                     time.sleep(thread_rest_duration_s)
-                    logger.debug(f"Trainer {self.trainer_id} got up from rest at "
-                                 f"time {time.time()}")
+                    logger.debug(
+                        f"Trainer {self.trainer_id} got up from rest at "
+                        f"time {time.time()}"
+                    )
             else:
                 self.dup_timestamp_next_sleep_s = calendar.timegm(
                     time.strptime(
                         "Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC"
                     )
                 )
-                logger.info(f"Task_id: {self.trainer_id} no more sleep for trainer. "
-                            f"Thread will be put to rest for 7 days.")
-                thread_rest_duration_s = 7*24*60*60
+                logger.info(
+                    f"Task_id: {self.trainer_id} no more sleep for trainer. "
+                    f"Thread will be put to rest for 7 days."
+                )
+                thread_rest_duration_s = 7 * 24 * 60 * 60
                 time.sleep(thread_rest_duration_s)
-                logger.debug(f"Trainer {self.trainer_id} got up from rest at "
-                             f"time {time.time()}")
+                logger.debug(
+                    f"Trainer {self.trainer_id} got up from rest at "
+                    f"time {time.time()}"
+                )
 
         # Condition 2: If current time < time for next
         # unavailability, put the thread to rest
-        elif (self.dup_timestamp_next_sleep_s > (time.time()+1)):
+        elif self.dup_timestamp_next_sleep_s > (time.time() + 1):
             self.remaining_time_before_next_unavail_s = (
-                        self.dup_timestamp_next_sleep_s - time.time())
+                self.dup_timestamp_next_sleep_s - time.time()
+            )
             thread_rest_duration_s = max(
-                        0,
-                        min(
-                            (self.remaining_time_before_next_unavail_s-1), 7*24*60*60)
-                        )
-            logger.info(f"Outer check_leave_sleep_join check for trainer "
-                        f"{self.trainer_id}. Next sleep ts is "
-                        f"{self.dup_timestamp_next_sleep_s}, will "
-                        f"rest for {thread_rest_duration_s}")
+                0,
+                min((self.remaining_time_before_next_unavail_s - 1), 7 * 24 * 60 * 60),
+            )
+            logger.info(
+                f"Outer check_leave_sleep_join check for trainer "
+                f"{self.trainer_id}. Next sleep ts is "
+                f"{self.dup_timestamp_next_sleep_s}, will "
+                f"rest for {thread_rest_duration_s}"
+            )
             time.sleep(thread_rest_duration_s)
 
-        logger.debug(f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
-                     f"timestamp: {time.time()}")
+        logger.debug(
+            f"Task_id: {self.trainer_id} check_leave_sleep_join completed at "
+            f"timestamp: {time.time()}"
+        )
 
     def initialize(self) -> None:
         """Initialize role."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.model_arch().to(self.device)
-        logger.debug(f"Task_id: {self.trainer_id} initialize completed at timestamp: "
-                     f"{time.time()}. Skipped model load.")
+        logger.debug(
+            f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+            f"{time.time()}. Skipped model load."
+        )
 
     def load_data(self) -> None:
         """Load data."""
         data_dir = "./data"
         os.makedirs(data_dir, exist_ok=True)
 
-        dataset = SPEECHCOMMANDS(
-            data_dir, download=True, subset='training'
-        )
+        dataset = SPEECHCOMMANDS(data_dir, download=True, subset="training")
 
         def custom_collate_fn(batch):
             # Extract sequences and labels
-            sequences = [item[0].squeeze(0) for item in batch]  # Remove the extra dimension
+            sequences = [
+                item[0].squeeze(0) for item in batch
+            ]  # Remove the extra dimension
             labels = [item[2] for item in batch]  # Assuming item[2] is the label
 
             # Convert string labels to integers using the label map
@@ -544,9 +617,11 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             max_length = max(sequence.size(0) for sequence in sequences)
 
             # Pad sequences to the maximum length
-            padded_sequences = torch.zeros((len(sequences), 1, max_length))  # Add channel dimension
+            padded_sequences = torch.zeros(
+                (len(sequences), 1, max_length)
+            )  # Add channel dimension
             for i, sequence in enumerate(sequences):
-                padded_sequences[i, 0, :sequence.size(0)] = sequence
+                padded_sequences[i, 0, : sequence.size(0)] = sequence
 
             # Convert labels to tensor
             labels = torch.tensor(labels)
@@ -555,7 +630,9 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
         # Check if trainer_indices_list is empty
         if self.trainer_indices_list:
-            logger.debug(f"Value of self.trainer_indices_list: {self.trainer_indices_list}")
+            logger.debug(
+                f"Value of self.trainer_indices_list: {self.trainer_indices_list}"
+            )
             # Create indices into a list and convert to tensor
             indices = torch.tensor(self.trainer_indices_list)
             dataset = data_utils.Subset(dataset, indices)
@@ -577,8 +654,10 @@ class PyTorchSpeechCommandsTrainer(Trainer):
         del dataset
         gc.collect()
 
-        logger.info(f"Task_id: {self.trainer_id} load_data completed at timestamp: "
-                    f"{time.time()}, with {len(self.train_loader)} samples")
+        logger.info(
+            f"Task_id: {self.trainer_id} load_data completed at timestamp: "
+            f"{time.time()}, with {len(self.train_loader)} samples"
+        )
 
     def train(self) -> None:
         """Train a model."""
@@ -605,24 +684,29 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
         gpu_train_end_time = time.time()
         actual_gpu_train_time_s = gpu_train_end_time - gpu_train_start_time
-        logger.info(f"Actual GPU training time for trainer "
-                    f"{self.trainer_id} is {actual_gpu_train_time_s}s")
+        logger.info(
+            f"Actual GPU training time for trainer "
+            f"{self.trainer_id} is {actual_gpu_train_time_s}s"
+        )
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency) if enabled
         if self.training_delay_enabled == "True":
-            remaining_time_delay_s = (
-                self.training_delay_s - actual_gpu_train_time_s)
+            remaining_time_delay_s = self.training_delay_s - actual_gpu_train_time_s
             if remaining_time_delay_s > 0:
                 time.sleep(remaining_time_delay_s)
-                logger.debug(f"Delayed training time for trainer "
-                             f"{self.trainer_id} by {remaining_time_delay_s} to get "
-                             f"total delay of {self.training_delay_s}s")
+                logger.debug(
+                    f"Delayed training time for trainer "
+                    f"{self.trainer_id} by {remaining_time_delay_s} to get "
+                    f"total delay of {self.training_delay_s}s"
+                )
             else:
-                logger.warning(f"GPU training time for "
-                               f"{self.trainer_id} was {actual_gpu_train_time_s}. It "
-                               f"exceedes the designated delay of "
-                               f"{self.training_delay_s}s")
+                logger.warning(
+                    f"GPU training time for "
+                    f"{self.trainer_id} was {actual_gpu_train_time_s}. It "
+                    f"exceedes the designated delay of "
+                    f"{self.training_delay_s}s"
+                )
 
     def _train_epoch(self, epoch):
         if self.model is None:
@@ -635,15 +719,14 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            
+
             if self.use_oort_loss_fn == "False":
                 # Loss function to use with Fedbuff
                 loss = F.nll_loss(output, target)
             elif self.use_oort_loss_fn == "True":
                 # Calculate statistical utility of a trainer while
                 # calculating loss
-                loss = self.oort_loss(
-                    output, target.squeeze(), epoch, batch_idx)
+                loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
 
             loss.backward()
 
@@ -684,7 +767,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
             # modify existing data struct HACK: duplicate
             # check_and_sleep as dup_check_and_sleep and operate on a
             # duplicate data structure
-            
+
             # TODO: DG Need to fix that arg isnt being used to
             # enable/disable this
             time.sleep(self.heartbeats_second_freq)
@@ -695,8 +778,8 @@ class PyTorchSpeechCommandsTrainer(Trainer):
     def notify_trainer_avail(self) -> None:
         while True:
             # Adopted from initiate heartbeats
-            
-            time.sleep(0.1)             # Will check every 0.1 second
+
+            time.sleep(0.1)  # Will check every 0.1 second
             self.check_leave_sleep_join()
 
 
@@ -710,21 +793,26 @@ def main():
     config = Config(args.config)
 
     t = PyTorchSpeechCommandsTrainer(config)
-    print(f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
-          f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
-          f"{t.client_avail_aware_notify}, has "
-          f"training_delay_enabled: {t.training_delay_enabled}, "
-          f"with training_delay_s: {t.training_delay_s}")
+    print(
+        f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
+        f"{t.heartbeats_enabled}, has client_avail_aware_notify: "
+        f"{t.client_avail_aware_notify}, has "
+        f"training_delay_enabled: {t.training_delay_enabled}, "
+        f"with training_delay_s: {t.training_delay_s}"
+    )
 
     if t.heartbeats_enabled == "True":
-        logger.info(f"Will initiate thread to send heartbeats for "
-                    f"trainer {t.trainer_id}")
+        logger.info(
+            f"Will initiate thread to send heartbeats for " f"trainer {t.trainer_id}"
+        )
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
     elif t.client_avail_aware_notify == "True":
-        logger.info(f"Will initiate thread to send avail notifications for "
-                    f"trainer {t.trainer_id}")
+        logger.info(
+            f"Will initiate thread to send avail notifications for "
+            f"trainer {t.trainer_id}"
+        )
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True
         avail_notify_thread.start()

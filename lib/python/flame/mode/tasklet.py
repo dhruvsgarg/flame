@@ -28,7 +28,6 @@ from flame.monitor.runtime import time_tasklet
 logger = logging.getLogger(__name__)
 
 
-
 class Tasklet(object):
     """Tasklet is a class for defining a unit of work."""
 
@@ -68,18 +67,18 @@ class Tasklet(object):
         )
 
     def __rshift__(self, other: Tasklet) -> Tasklet:
-    
+
         # case: t1 >> [t2, t3]
         # make list[0] (e.g. t2) the next tasklet and asign the rest of the list as siblings (e.g. [t3])
         if isinstance(other, list):
-            if (len(other) == 0):
+            if len(other) == 0:
                 raise ValueError(f"empry list is not permitted")
-            elif (len(other) == 1):
+            elif len(other) == 1:
                 other = other[0]
             else:
                 firstTasklet = other[0]
                 firstTasklet.set_siblings(other[1:])
-                other = firstTasklet            
+                other = firstTasklet
 
         """Set up connection."""
         if self not in self.composer.chain:
@@ -131,7 +130,7 @@ class Tasklet(object):
     def get_composer(self):
         """Return composer object."""
         return self.composer
-    
+
     def set_siblings(self, siblings):
         self.siblings = siblings
 
@@ -191,7 +190,7 @@ class Tasklet(object):
             return False
 
         return self.cont_fn()
-    
+
     def update_loop_attrs(self, check_fn=None, state=None, starter=None, ender=None):
         if check_fn:
             self.loop_check_fn = check_fn

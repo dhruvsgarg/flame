@@ -87,20 +87,25 @@ class ChannelManager(object):
         atexit.register(self.cleanup)
 
     def _setup_backends(self):
-        distinct_backends = {} 
+        logger.info("setting up backend")
+        distinct_backends = {}
 
         for ch_name, channel in self._config.channels.items():
             # rename backend in channel config as sort to avoid
             # confusion
             sort = channel.backend
             if not sort:
+                logger.info("backend not found")
                 # channel doesn't have its own backend, nothing to do
                 continue
 
             if sort not in distinct_backends:
+                logger.info("backend found")
                 # Create a new backend instance if it doesn't exist
                 backend = backend_provider.get(sort)
-                broker_host = channel.broker_host or self._config.brokers.sort_to_host[sort]
+                broker_host = (
+                    channel.broker_host or self._config.brokers.sort_to_host[sort]
+                )
 
                 backend.configure(broker_host, self._job_id, self._task_id)
 
@@ -125,6 +130,7 @@ class ChannelManager(object):
 
     def join_all(self) -> None:
         """join_all ensures that a role joins all of its channels."""
+        logger.info(f"join_all: {self._config.channels.keys}")
         for ch_name in self._config.channels.keys():
             self.join(ch_name)
 
@@ -159,6 +165,7 @@ class ChannelManager(object):
         self._channels[name] = Channel(
             backend, selector, self._job_id, name, me, other, groupby
         )
+        logger.info(f"calling join on channel: {self._channels[name].name}")
         self._channels[name].join()
 
     def leave(self, name):

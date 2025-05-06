@@ -27,7 +27,7 @@ from flame.common.util import install_packages
 from flame.config import Config
 from flame.mode.horizontal.trainer import Trainer
 
-install_packages(['scikit-learn'])
+install_packages(["scikit-learn"])
 
 from sklearn.model_selection import train_test_split
 
@@ -42,14 +42,16 @@ class Net(nn.Module):
     def __init__(self, input_size=30, scale=4):
         """Initialize."""
         super().__init__()
-        self.ff = nn.Sequential(*[
-            nn.Linear(input_size, 10 * scale),
-            nn.ReLU(),
-            # nn.Linear(10*scale, 10*scale),
-            # nn.ReLU(),
-            nn.Linear(10 * scale, 1),
-            nn.Sigmoid()
-        ])
+        self.ff = nn.Sequential(
+            *[
+                nn.Linear(input_size, 10 * scale),
+                nn.ReLU(),
+                # nn.Linear(10*scale, 10*scale),
+                # nn.ReLU(),
+                nn.Linear(10 * scale, 1),
+                nn.Sigmoid(),
+            ]
+        )
 
     def forward(self, x):
         """Forward."""
@@ -74,8 +76,7 @@ class PyTorchAdultTrainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net(self.input_dim).to(self.device)
         self.criterion = nn.BCELoss().to(self.device)
@@ -83,34 +84,26 @@ class PyTorchAdultTrainer(Trainer):
     def load_data(self) -> None:
         """Load data."""
         data_path = os.path.join(DATA_FOLDER_PATH, "train.csv")
-        data = pd.read_csv(data_path,
-                           header=0,
-                           skipinitialspace=True,
-                           na_values="?")
+        data = pd.read_csv(data_path, header=0, skipinitialspace=True, na_values="?")
 
         clean_dataframe(data)
 
-        X, y, features = process_dataframe(data,
-                                           target_column="income-per-year")
+        X, y, features = process_dataframe(data, target_column="income-per-year")
 
-        xTrain, xTest, yTrain, yTest = train_test_split(X,
-                                                        y,
-                                                        random_state=1,
-                                                        stratify=y)
+        xTrain, xTest, yTrain, yTest = train_test_split(
+            X, y, random_state=1, stratify=y
+        )
 
         dataset = MyAdultDataset(xTrain, yTrain, features)
-        self.train_loader = torch.utils.data.DataLoader(dataset,
-                                                        batch_size=20,
-                                                        shuffle=True,
-                                                        num_workers=4)
+        self.train_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=20, shuffle=True, num_workers=4
+        )
 
         self.input_dim = next(iter(self.train_loader))[0].shape[1]
 
     def train(self) -> None:
         """Train a model."""
-        self.optimizer = optim.Adam(self.model.parameters(),
-                                    lr=1e-3,
-                                    weight_decay=1e-4)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=1e-4)
 
         for epoch in range(1, self.epochs + 1):
             self._train_epoch(epoch)
@@ -131,9 +124,11 @@ class PyTorchAdultTrainer(Trainer):
             if batch_idx % 10 == 0:
                 done = batch_idx * len(x)
                 total = len(self.train_loader.dataset)
-                percent = 100. * batch_idx / len(self.train_loader)
-                logger.info(f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                            f"\tloss: {loss.item():.6f}")
+                percent = 100.0 * batch_idx / len(self.train_loader)
+                logger.info(
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                    f"\tloss: {loss.item():.6f}"
+                )
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -144,8 +139,8 @@ class PyTorchAdultTrainer(Trainer):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
 

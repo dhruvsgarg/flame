@@ -83,7 +83,9 @@ class ChunkThread(Thread):
                     # in mqtt.py. Downgraded log from error to warning
                     # since it no longer blocks the training from that
                     # client.
-                    logger.warning(f"set_cleanup_ready_async returned None for end_id: {end_id}")
+                    logger.warning(
+                        f"set_cleanup_ready_async returned None for end_id: {end_id}"
+                    )
                 return
             logger.debug(f"rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
@@ -100,6 +102,8 @@ class ChunkThread(Thread):
 
             # assemble is done in a chunk thread so that it won't
             # block asyncio task
+            if self.chunk_store.seqno + 1 != msg.seqno:
+                logger.info(f"about to assemble message for end id: {msg.end_id}. Might get out-of-order")
             status = self.chunk_store.assemble(msg)
             logger.debug("Assemble attempted for chunkstore")
             if not status:
@@ -108,7 +112,9 @@ class ChunkThread(Thread):
 
                 # set cleanup ready event for a given end id
                 self._backend.set_cleanup_ready(msg.end_id)
-                logger.debug(f"EOM was set, put a cleanup ready for end_id: {msg.end_id}")
+                logger.debug(
+                    f"EOM was set, put a cleanup ready for end_id: {msg.end_id}"
+                )
             else:
                 logger.debug(f"Status is {status}")
                 if not self.chunk_store.eom:
@@ -121,7 +127,9 @@ class ChunkThread(Thread):
                     continue
 
                 payload = self.chunk_store.get_data()
-                logger.debug(f"Payload will now be pushed to target receive queue for end: {msg.end_id}")
+                logger.debug(
+                    f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
+                )
                 # now push payload to a target receive queue.
                 _, status = run_async(
                     inner(msg.end_id, payload, timestamp), self._backend.loop()
@@ -157,7 +165,9 @@ class ChunkManager(object):
         chunk_thd = self._chunk_threads[msg.end_id]
         logger.debug(f"adding message to chunk thd for end: {msg.end_id}")
         chunk_thd.insert(msg)
-        logger.debug(f"len of chunk thd for end: {msg.end_id} is {chunk_thd.queue.qsize()}")
+        logger.debug(
+            f"len of chunk thd for end: {msg.end_id} is {chunk_thd.queue.qsize()}"
+        )
 
     def stop(self, end_id):
         """Stop chunk thread associated with end id."""

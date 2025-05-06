@@ -54,7 +54,7 @@ class Net(nn.Module):
         """Forward."""
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
+        x = torch.flatten(x, 1)  # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -81,21 +81,20 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
 
     def load_data(self) -> None:
         """Load data."""
         transform = transforms.Compose(
-            [transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
 
-        dataset = CIFAR10('./data',
-                                 train=True,
-                                 download=True,
-                                 transform=transform)
+        dataset = CIFAR10("./data", train=True, download=True, transform=transform)
 
         # indices = torch.arange(20000)
 
@@ -105,10 +104,9 @@ class PyTorchCifar10Trainer(Trainer):
 
         print("indices: ", indices)
         dataset = data_utils.Subset(dataset, indices)
-        train_kwargs = {'batch_size': self.batch_size}
+        train_kwargs = {"batch_size": self.batch_size}
 
-        self.train_loader = torch.utils.data.DataLoader(
-            dataset, **train_kwargs)
+        self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
 
     def train(self) -> None:
         """Train a model."""
@@ -150,9 +148,11 @@ class PyTorchCifar10Trainer(Trainer):
             if batch_idx % 10 == 0:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
-                percent = 100. * batch_idx / len(self.train_loader)
-                logger.info(f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                            f"\tloss: {loss.item():.6f}")
+                percent = 100.0 * batch_idx / len(self.train_loader)
+                logger.info(
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                    f"\tloss: {loss.item():.6f}"
+                )
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -163,8 +163,8 @@ class PyTorchCifar10Trainer(Trainer):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='')
-    parser.add_argument('config', nargs='?', default="./config.json")
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("config", nargs="?", default="./config.json")
 
     args = parser.parse_args()
     config = Config(args.config)

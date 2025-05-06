@@ -459,12 +459,12 @@ class FedBalancerDataSampler(AbstractDataSampler):
             # https://github.com/jaemin-shin/FedBalancer,
             # Commit 1d187c88de9b5b43e28c988b2423e9f616c80610
             self._round_duration_history[end] = self._round_duration_history[end][-5:]
-            self._round_epoch_train_duration_history[
-                end
-            ] = self._round_epoch_train_duration_history[end][-5:]
-            self._round_communication_duration_history[
-                end
-            ] = self._round_communication_duration_history[end][-5:]
+            self._round_epoch_train_duration_history[end] = (
+                self._round_epoch_train_duration_history[end][-5:]
+            )
+            self._round_communication_duration_history[end] = (
+                self._round_communication_duration_history[end][-5:]
+            )
 
         def _update_fb_ratio(self, round: int) -> None:
             """

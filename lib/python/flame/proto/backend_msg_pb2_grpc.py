@@ -6,8 +6,7 @@ from . import backend_msg_pb2 as backend__msg__pb2
 
 
 class BackendRouteStub(object):
-    """route for backend
-    """
+    """route for backend"""
 
     def __init__(self, channel):
         """Constructor.
@@ -16,120 +15,155 @@ class BackendRouteStub(object):
             channel: A grpc.Channel.
         """
         self.notify_end = channel.unary_unary(
-                '/backend.BackendRoute/notify_end',
-                request_serializer=backend__msg__pb2.Notify.SerializeToString,
-                response_deserializer=backend__msg__pb2.Notify.FromString,
-                )
+            "/backend.BackendRoute/notify_end",
+            request_serializer=backend__msg__pb2.Notify.SerializeToString,
+            response_deserializer=backend__msg__pb2.Notify.FromString,
+        )
         self.send_data = channel.stream_unary(
-                '/backend.BackendRoute/send_data',
-                request_serializer=backend__msg__pb2.Data.SerializeToString,
-                response_deserializer=backend__msg__pb2.BackendID.FromString,
-                )
+            "/backend.BackendRoute/send_data",
+            request_serializer=backend__msg__pb2.Data.SerializeToString,
+            response_deserializer=backend__msg__pb2.BackendID.FromString,
+        )
         self.recv_data = channel.unary_stream(
-                '/backend.BackendRoute/recv_data',
-                request_serializer=backend__msg__pb2.BackendID.SerializeToString,
-                response_deserializer=backend__msg__pb2.Data.FromString,
-                )
+            "/backend.BackendRoute/recv_data",
+            request_serializer=backend__msg__pb2.BackendID.SerializeToString,
+            response_deserializer=backend__msg__pb2.Data.FromString,
+        )
 
 
 class BackendRouteServicer(object):
-    """route for backend
-    """
+    """route for backend"""
 
     def notify_end(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def send_data(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def recv_data(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_BackendRouteServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'notify_end': grpc.unary_unary_rpc_method_handler(
-                    servicer.notify_end,
-                    request_deserializer=backend__msg__pb2.Notify.FromString,
-                    response_serializer=backend__msg__pb2.Notify.SerializeToString,
-            ),
-            'send_data': grpc.stream_unary_rpc_method_handler(
-                    servicer.send_data,
-                    request_deserializer=backend__msg__pb2.Data.FromString,
-                    response_serializer=backend__msg__pb2.BackendID.SerializeToString,
-            ),
-            'recv_data': grpc.unary_stream_rpc_method_handler(
-                    servicer.recv_data,
-                    request_deserializer=backend__msg__pb2.BackendID.FromString,
-                    response_serializer=backend__msg__pb2.Data.SerializeToString,
-            ),
+        "notify_end": grpc.unary_unary_rpc_method_handler(
+            servicer.notify_end,
+            request_deserializer=backend__msg__pb2.Notify.FromString,
+            response_serializer=backend__msg__pb2.Notify.SerializeToString,
+        ),
+        "send_data": grpc.stream_unary_rpc_method_handler(
+            servicer.send_data,
+            request_deserializer=backend__msg__pb2.Data.FromString,
+            response_serializer=backend__msg__pb2.BackendID.SerializeToString,
+        ),
+        "recv_data": grpc.unary_stream_rpc_method_handler(
+            servicer.recv_data,
+            request_deserializer=backend__msg__pb2.BackendID.FromString,
+            response_serializer=backend__msg__pb2.Data.SerializeToString,
+        ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'backend.BackendRoute', rpc_method_handlers)
+        "backend.BackendRoute", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class BackendRoute(object):
-    """route for backend
-    """
+    """route for backend"""
 
     @staticmethod
-    def notify_end(request,
+    def notify_end(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/backend.BackendRoute/notify_end',
+            "/backend.BackendRoute/notify_end",
             backend__msg__pb2.Notify.SerializeToString,
             backend__msg__pb2.Notify.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def send_data(request_iterator,
+    def send_data(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.stream_unary(
+            request_iterator,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_unary(request_iterator, target, '/backend.BackendRoute/send_data',
+            "/backend.BackendRoute/send_data",
             backend__msg__pb2.Data.SerializeToString,
             backend__msg__pb2.BackendID.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def recv_data(request,
+    def recv_data(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_stream(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(request, target, '/backend.BackendRoute/recv_data',
+            "/backend.BackendRoute/recv_data",
             backend__msg__pb2.BackendID.SerializeToString,
             backend__msg__pb2.Data.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )

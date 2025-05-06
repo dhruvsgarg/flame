@@ -23,45 +23,53 @@ from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import message as _message
 from google.protobuf import reflection as _reflection
 from google.protobuf import symbol_database as _symbol_database
+
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n\nmeta.proto\x12\x08grpcMeta"g\n\x08MetaInfo\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63h_name\x18\x02 \x01(\t\x12\n\n\x02me\x18\x03 \x01(\t\x12\r\n\x05other\x18\x04 \x01(\t\x12\r\n\x05group\x18\x05 \x01(\t\x12\x10\n\x08\x65ndpoint\x18\x06 \x01(\t"r\n\x0cMetaResponse\x12-\n\x06status\x18\x01 \x01(\x0e\x32\x1d.grpcMeta.MetaResponse.Status\x12\x11\n\tendpoints\x18\x02 \x03(\t" \n\x06Status\x12\t\n\x05\x45RROR\x10\x00\x12\x0b\n\x07SUCCESS\x10\x01\x32\x88\x01\n\tMetaRoute\x12@\n\x10RegisterMetaInfo\x12\x12.grpcMeta.MetaInfo\x1a\x16.grpcMeta.MetaResponse"\x00\x12\x39\n\tHeartBeat\x12\x12.grpcMeta.MetaInfo\x1a\x16.grpcMeta.MetaResponse"\x00\x42,Z*github.com/cisco-open/flame/pkg/proto/metab\x06proto3'
+)
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nmeta.proto\x12\x08grpcMeta\"g\n\x08MetaInfo\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63h_name\x18\x02 \x01(\t\x12\n\n\x02me\x18\x03 \x01(\t\x12\r\n\x05other\x18\x04 \x01(\t\x12\r\n\x05group\x18\x05 \x01(\t\x12\x10\n\x08\x65ndpoint\x18\x06 \x01(\t\"r\n\x0cMetaResponse\x12-\n\x06status\x18\x01 \x01(\x0e\x32\x1d.grpcMeta.MetaResponse.Status\x12\x11\n\tendpoints\x18\x02 \x03(\t\" \n\x06Status\x12\t\n\x05\x45RROR\x10\x00\x12\x0b\n\x07SUCCESS\x10\x01\x32\x88\x01\n\tMetaRoute\x12@\n\x10RegisterMetaInfo\x12\x12.grpcMeta.MetaInfo\x1a\x16.grpcMeta.MetaResponse\"\x00\x12\x39\n\tHeartBeat\x12\x12.grpcMeta.MetaInfo\x1a\x16.grpcMeta.MetaResponse\"\x00\x42,Z*github.com/cisco-open/flame/pkg/proto/metab\x06proto3')
-
-
-
-_METAINFO = DESCRIPTOR.message_types_by_name['MetaInfo']
-_METARESPONSE = DESCRIPTOR.message_types_by_name['MetaResponse']
-_METARESPONSE_STATUS = _METARESPONSE.enum_types_by_name['Status']
-MetaInfo = _reflection.GeneratedProtocolMessageType('MetaInfo', (_message.Message,), {
-  'DESCRIPTOR' : _METAINFO,
-  '__module__' : 'meta_pb2'
-  # @@protoc_insertion_point(class_scope:grpcMeta.MetaInfo)
-  })
+_METAINFO = DESCRIPTOR.message_types_by_name["MetaInfo"]
+_METARESPONSE = DESCRIPTOR.message_types_by_name["MetaResponse"]
+_METARESPONSE_STATUS = _METARESPONSE.enum_types_by_name["Status"]
+MetaInfo = _reflection.GeneratedProtocolMessageType(
+    "MetaInfo",
+    (_message.Message,),
+    {
+        "DESCRIPTOR": _METAINFO,
+        "__module__": "meta_pb2",
+        # @@protoc_insertion_point(class_scope:grpcMeta.MetaInfo)
+    },
+)
 _sym_db.RegisterMessage(MetaInfo)
 
-MetaResponse = _reflection.GeneratedProtocolMessageType('MetaResponse', (_message.Message,), {
-  'DESCRIPTOR' : _METARESPONSE,
-  '__module__' : 'meta_pb2'
-  # @@protoc_insertion_point(class_scope:grpcMeta.MetaResponse)
-  })
+MetaResponse = _reflection.GeneratedProtocolMessageType(
+    "MetaResponse",
+    (_message.Message,),
+    {
+        "DESCRIPTOR": _METARESPONSE,
+        "__module__": "meta_pb2",
+        # @@protoc_insertion_point(class_scope:grpcMeta.MetaResponse)
+    },
+)
 _sym_db.RegisterMessage(MetaResponse)
 
-_METAROUTE = DESCRIPTOR.services_by_name['MetaRoute']
+_METAROUTE = DESCRIPTOR.services_by_name["MetaRoute"]
 if _descriptor._USE_C_DESCRIPTORS == False:
 
-  DESCRIPTOR._options = None
-  DESCRIPTOR._serialized_options = b'Z*github.com/cisco-open/flame/pkg/proto/meta'
-  _METAINFO._serialized_start=24
-  _METAINFO._serialized_end=127
-  _METARESPONSE._serialized_start=129
-  _METARESPONSE._serialized_end=243
-  _METARESPONSE_STATUS._serialized_start=211
-  _METARESPONSE_STATUS._serialized_end=243
-  _METAROUTE._serialized_start=246
-  _METAROUTE._serialized_end=382
+    DESCRIPTOR._options = None
+    DESCRIPTOR._serialized_options = b"Z*github.com/cisco-open/flame/pkg/proto/meta"
+    _METAINFO._serialized_start = 24
+    _METAINFO._serialized_end = 127
+    _METARESPONSE._serialized_start = 129
+    _METARESPONSE._serialized_end = 243
+    _METARESPONSE_STATUS._serialized_start = 211
+    _METARESPONSE_STATUS._serialized_end = 243
+    _METAROUTE._serialized_start = 246
+    _METAROUTE._serialized_end = 382
 # @@protoc_insertion_point(module_scope)
