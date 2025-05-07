@@ -3,7 +3,7 @@ import json
 
 dir1 = "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir10_num300_traceFail_6d_3state_oort"
 dir2 = "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
-properties_to_copy = ["avl_events_syn_0", "avl_events_syn_20", "avl_events_syn_40"]
+properties_to_copy = ["avl_events_syn_0", "avl_events_syn_20", "avl_events_syn_50"]
 
 for i in range(1, 301):
     file_name = f"trainer_{i}.json"
