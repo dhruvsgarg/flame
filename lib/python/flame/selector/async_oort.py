@@ -423,7 +423,7 @@ class AsyncOortSelector(AbstractSelector):
                     # But it might break other code, so leaving it for
                     # later.
                     sorted_round_duration.append(timedelta(seconds=60))
-            logger.info(
+            logger.debug(
                 f"after for loop, sorted_round_duration: {sorted_round_duration}"
             )
             round_preferred_duration = timedelta(
@@ -617,7 +617,7 @@ class AsyncOortSelector(AbstractSelector):
                 ends, curr_end_id, round
             )
             curr_end_utility += temporal_uncertainty
-            logger.info(
+            logger.debug(
                 f"end_id: {curr_end_id}, adding temporal_uncertainty: {temporal_uncertainty} to get curr_end_utility: {curr_end_utility}"
             )
 
@@ -626,7 +626,7 @@ class AsyncOortSelector(AbstractSelector):
                 ends, curr_end_id
             )
             curr_end_utility *= global_system_utility
-            logger.info(
+            logger.debug(
                 f"end_id: {curr_end_id}, curr_end_utility: {curr_end_utility} after multiplying global_system_utility: {global_system_utility}"
             )
 
@@ -677,19 +677,19 @@ class AsyncOortSelector(AbstractSelector):
                 f"elements: {self.ordered_updates_recv_ends}"
             )
 
-            logger.info(
+            logger.debug(
                 f"Ends to remove based on trainer updates received: {ends_to_remove}"
             )
 
             # Adding trainer_eval_recv_ends to accoount for trainers
             # that have finished eval updates. These trainers also
             # need to be freed up to participate in the next round.
-            logger.info(
+            logger.debug(
                 f"Ends to remove based on eval updates received: {self.trainer_eval_recv_ends}"
             )
             ends_to_remove = ends_to_remove + self.trainer_eval_recv_ends
 
-            logger.info(f"All ends to remove (train + eval): {ends_to_remove}")
+            logger.debug(f"All ends to remove (train + eval): {ends_to_remove}")
 
             self.trainer_eval_recv_ends = []
             logger.debug(
@@ -697,7 +697,7 @@ class AsyncOortSelector(AbstractSelector):
             )
 
             self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
-            logger.info(
+            logger.debug(
                 f"Reset curr_round_eval_slots_left: {self.curr_round_eval_slots_left}"
             )
 
@@ -823,7 +823,7 @@ class AsyncOortSelector(AbstractSelector):
             for k, v in self.track_selected_trainers_which_left.items():
                 total_trainers_dropped_off += v
 
-            logger.info(
+            logger.debug(
                 f"Trainer: {end_id} with count "
                 f"{self.track_selected_trainers_which_left[end_id]}, left "
                 f"before returning update. "
@@ -1107,7 +1107,7 @@ class AsyncOortSelector(AbstractSelector):
                 # something happened to end of end_id (e.g.,
                 # connection loss) let's remove it from selected_ends
                 # so that you can fill that spot with another trainer
-                logger.debug(
+                logger.info(
                     f"Removing invalid prior selection! "
                     f"No end id {end_id} in ends, "
                     f"removing from selected_ends. "
@@ -1173,7 +1173,7 @@ class AsyncOortSelector(AbstractSelector):
                     # SEND_TIMEOUT_WAIT_S delete it from
                     # self.all_selected so that it is eligible to be
                     # sampled again
-                    logger.debug(
+                    logger.info(
                         f"Removing end {end} from self.all_selected "
                         f"since havent "
                         f"got its update in {SEND_TIMEOUT_WAIT_S}. "
@@ -1199,7 +1199,7 @@ class AsyncOortSelector(AbstractSelector):
                         num_of_timeouts_occured * SEND_TIMEOUT_WAIT_S
                     )
 
-                    logger.info(
+                    logger.debug(
                         f"Timeout for trainer: {end} with count "
                         f"{self.track_trainer_timeouts[end]}. "
                         f"num_of_timeouts_occured : "
@@ -1333,7 +1333,7 @@ class AsyncOortSelector(AbstractSelector):
             # TODO: (DG) Move trainer unavail list to inside select()
             # instead? Make a filter of unavailable ends
             if trainer_unavail_list != []:
-                logger.info(
+                logger.debug(
                     "### Oort select got non-empty trainer_unavail_list, will "
                     "remove unavail trainers from round"
                 )
@@ -1420,7 +1420,7 @@ class AsyncOortSelector(AbstractSelector):
                 utility_list, filtered_ends, round
             )
 
-            logger.info(f"After calculate_total_utility, utility_list: {utility_list}")
+            logger.debug(f"After calculate_total_utility, utility_list: {utility_list}")
 
             # cutOfUtil from Oort algorithm
             logger.debug(
@@ -1428,7 +1428,7 @@ class AsyncOortSelector(AbstractSelector):
                 f"num_of_ends: {feasible_extra}"
             )
             cutoff_utility = self.cutoff_util(utility_list, num_of_ends=feasible_extra)
-            logger.info(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
+            logger.debug(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
 
             # perform random if cutoff_utility == 0 TODO: (DG) Check.
             # Removed "and len(self.selected_ends) == 0 from the if
@@ -1537,7 +1537,7 @@ class AsyncOortSelector(AbstractSelector):
             # in this round for eval.
             original_feasible_extra = feasible_extra
             feasible_extra = min(feasible_extra, self.curr_round_eval_slots_left)
-            logger.info(
+            logger.debug(
                 f"feasible_extra: {feasible_extra} after min with original_feasible_extra: {original_feasible_extra} and curr_round_eval_slots_left: {self.curr_round_eval_slots_left}"
             )
 
@@ -1555,7 +1555,7 @@ class AsyncOortSelector(AbstractSelector):
             # Adjust eval slots left based on candidate list chosen
             self.curr_round_eval_slots_left -= len(candidates)
 
-            logger.info(
+            logger.debug(
                 f"Selected candidates with last_eval_rounds for eval: {[(end_id, end_id_to_last_eval_round[end_id]) for end_id in candidates]}, curr_round_eval_slots_left: {self.curr_round_eval_slots_left} for round {round}"
             )
 
@@ -1568,7 +1568,7 @@ class AsyncOortSelector(AbstractSelector):
                 candidates_dict=candidates_dict, selected_ends=selected_ends
             )
 
-        logger.info(
+        logger.debug(
             f"handle_send_state returning candidates_dict: {candidates_dict} for task_to_perform: {task_to_perform}"
         )
 

@@ -144,7 +144,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         logger.debug("In syncfl _read_heartbeat()")
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info("No channel found for read_heartbeat")
+            logger.debug("No channel found for read_heartbeat")
             return
 
         logger.debug(f"Channel {channel} found for _read_heartbeat and tag {tag}")
@@ -155,7 +155,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
-                logger.info(f"No data from {end}; skipping it")
+                logger.debug(f"No data from {end}; skipping it")
                 continue
 
             if MessageType.HEARTBEAT in msg:
@@ -181,10 +181,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
-                logger.info(f"No data from {end}; skipping it")
+                logger.debug(f"No data from {end}; skipping it")
                 continue
 
-            logger.debug(f"received data from {end}")
+            logger.info(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
             logger.debug(f"received message in agg_weights {msg} from {end}")
@@ -232,7 +232,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def put(self, tag: str, task_to_perform: str = "train") -> None:
         """Set data to remote role(s)."""
-        logger.info(f"distributing weights with task_to_perform = {task_to_perform}")
+        logger.debug(f"distributing weights with task_to_perform = {task_to_perform}")
         if tag == TAG_DISTRIBUTE:
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
@@ -249,7 +249,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        logger.info(
+        logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
         selected_ends = channel.ends()
@@ -257,7 +257,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         # send out global model parameters to trainers
         for end in selected_ends:
-            logger.debug(
+            logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
             channel.send(
@@ -321,7 +321,6 @@ class TopAggregator(Role, metaclass=ABCMeta):
             f"cleared self._trainers_used_in_curr_round "
             f"{self._trainers_used_in_curr_round}"
         )
-        logger.debug(f"Total rounds: {self._rounds}")
         self._round += 1
         self._work_done = self._round > self._rounds
 
@@ -405,8 +404,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
                             f"Trainer {trainer_id} was in state {most_recent_event_state} since time {most_recent_event_ts}, needs to be handled."
                         )
 
-                # TODO: To be more memory efficient, we can delete events that
-                # are way past their time and already used
+                # TODO: To be more memory efficient, we can delete
+                # events that are way past their time and already used
 
         # Return the list of currently unavailable trainers
         logger.debug(

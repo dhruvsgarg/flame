@@ -45,6 +45,6 @@ class DefaultSelector(AbstractSelector):
             self.selected_ends = set(ends.keys())
             self.round = round
 
-        logger.debug(f"selected ends: {self.selected_ends}")
+        logger.info(f"selected ends: {self.selected_ends}")
 
         return {key: None for key in self.selected_ends}

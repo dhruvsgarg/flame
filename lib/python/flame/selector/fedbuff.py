@@ -91,7 +91,7 @@ class FedBuffSelector(AbstractSelector):
         logger.debug("calling fedbuff select")
 
         concurrency = min(len(ends), self.c)
-        logger.debug(f"len(ends): {len(ends)}, c: {self.c}, concurrency: {concurrency}")
+        logger.info(f"len(ends): {len(ends)}, c: {self.c}, concurrency: {concurrency}")
 
         if concurrency == 0:
             logger.debug("ends is empty")
@@ -195,7 +195,7 @@ class FedBuffSelector(AbstractSelector):
                     # something happened to end of end_id (e.g.,
                     # connection loss) let's remove it from
                     # selected_ends
-                    logger.debug(
+                    logger.info(
                         f"no end id {end_id} in ends, removing "
                         f"from selected_ends and all_selected"
                     )
@@ -205,7 +205,7 @@ class FedBuffSelector(AbstractSelector):
                     # middle of a round
                     if end_id in selected_ends:
                         selected_ends.remove(end_id)
-                        logger.debug(
+                        logger.info(
                             f"No end id {end_id} in ends, removed from "
                             f"selected_ends: "
                             f"{selected_ends}"
@@ -313,7 +313,7 @@ class FedBuffSelector(AbstractSelector):
             for k, v in self.track_selected_trainers_which_left.items():
                 total_trainers_dropped_off += v
 
-            logger.info(
+            logger.debug(
                 f"Trainer: {end_id} with count "
                 f"{self.track_selected_trainers_which_left[end_id]}, left "
                 f"before returning update. "
@@ -371,7 +371,7 @@ class FedBuffSelector(AbstractSelector):
                 # something happened to end of end_id (e.g.,
                 # connection loss) let's remove it from selected_ends
                 # so that you can fill that spot with another trainer
-                logger.debug(
+                logger.info(
                     f"Removing invalid prior selection! "
                     f"No end id {end_id} in ends, "
                     f"removing from selected_ends. "
@@ -423,7 +423,7 @@ class FedBuffSelector(AbstractSelector):
                     # SEND_TIMEOUT_WAIT_S delete it from
                     # self.all_selected so that it is eligible to be
                     # sampled again
-                    logger.debug(
+                    logger.info(
                         f"Removing end {end} from self.all_selected "
                         f"since havent "
                         f"got its update in {SEND_TIMEOUT_WAIT_S}"

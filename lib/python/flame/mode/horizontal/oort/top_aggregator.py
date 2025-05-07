@@ -1,16 +1,16 @@
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """Oort horizontal FL top level aggregator."""
@@ -42,9 +42,10 @@ class TopAggregator(BaseTopAggregator):
 
     def _aggregate_weights(self, tag: str) -> None:
         """
-        Aggregate local model weights, accepting K trainers out of 1.3K clients
-        selected from selector. Moreover, trainers' round duration is measured,
-        which determine the system utility of trainers for Oort algorithm.
+        Aggregate local model weights, accepting K trainers out of
+        1.3K clients selected from selector. Moreover, trainers' round
+        duration is measured, which determine the system utility of
+        trainers for Oort algorithm.
 
         This method is overriden from one in horizontal top aggregator
         (..top_aggregator).
@@ -55,9 +56,9 @@ class TopAggregator(BaseTopAggregator):
 
         total = 0
 
-        # receive local model parameters from trainers
-        # terminate aggregating when received weights from k ends
-        # (k * overcommitment is selected for training with Oort)
+        # receive local model parameters from trainers terminate
+        # aggregating when received weights from k ends (k *
+        # overcommitment is selected for training with Oort)
 
         end_ids = channel.ends()
         aggr_num = min(self.config.selector.kwargs["aggr_num"], len(end_ids))
@@ -82,14 +83,15 @@ class TopAggregator(BaseTopAggregator):
             else:
                 self._updates_recevied[end] += 1
 
-            # remove end_id if it sends a valid message with correct round info
-            # break the for loop if k valid messages arrive
+            # remove end_id if it sends a valid message with correct
+            # round info break the for loop if k valid messages arrive
             received_end_count += 1
             end_ids.remove(end)
             if received_end_count == aggr_num:
                 break
 
-        # running the second loop to aggregate up to aggr_num updates from trainers
+        # running the second loop to aggregate up to aggr_num updates
+        # from trainers
         while received_end_count < aggr_num:
             for msg, metadata in channel.recv_fifo(end_ids, 1):
                 end, _ = metadata
@@ -99,13 +101,14 @@ class TopAggregator(BaseTopAggregator):
                     continue
 
                 if self._round != msg[MessageType.MODEL_VERSION]:
-                    logger.debug(f"Stale message from {end}; skipping it")
+                    logger.info(f"Stale message from {end}; skipping it")
                     continue
 
                 total = self._handle_weights_msg(msg, metadata, channel, total)
 
-                # remove end_id if it sends a valid message with correct round info
-                # break the for loop if k valid messages arrive
+                # remove end_id if it sends a valid message with
+                # correct round info break the for loop if k valid
+                # messages arrive
                 received_end_count += 1
                 end_ids.remove(end)
                 if received_end_count == aggr_num:
@@ -136,10 +139,11 @@ class TopAggregator(BaseTopAggregator):
 
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """
-        Distribute local model weights to 1.3K clients, where K is the number
-        of desired trainers to select. Moreover, measure the start time of
-        a round to for round duration measurement on each trainers for
-        measuring their system utility that is required for Oort algorithm.
+        Distribute local model weights to 1.3K clients, where K is the
+        number of desired trainers to select. Moreover, measure the
+        start time of a round to for round duration measurement on
+        each trainers for measuring their system utility that is
+        required for Oort algorithm.
 
         This method is overriden from one in horizontal top aggregator
         (..top_aggregator).
@@ -155,18 +159,19 @@ class TopAggregator(BaseTopAggregator):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        # before invoking channel.ends() to select,
-        # set the trainer_unavail if it isn't None
+        # before invoking channel.ends() to select, set the
+        # trainer_unavail if it isn't None
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
                 trainer_unavail_list=curr_unavail_trainer_list
             )
         else:
-            # Handling the case for oort's selector since it expects 3 arguments
+            # Handling the case for oort's selector since it expects 3
+            # arguments
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
-        logger.info(
+        logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
 
@@ -203,8 +208,8 @@ class TopAggregator(BaseTopAggregator):
 
         logger.debug(f"received data from {end}")
 
-        # calculate round duration for this end, if the round number information
-        # is identical with round_start_time
+        # calculate round duration for this end, if the round number
+        # information is identical with round_start_time
         round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
         if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
             channel.set_end_property(

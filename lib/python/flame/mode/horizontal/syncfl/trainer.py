@@ -146,7 +146,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
-            logger.info(
+            logger.debug(
                 f"fetch weights, channel not found with tag {tag} "
                 f"for trainer_id {self.trainer_id}"
             )
@@ -177,7 +177,7 @@ class Trainer(Role, metaclass=ABCMeta):
             time.sleep(1)
             return
 
-        logger.info(f"New message received for trainer_id {self.trainer_id}")
+        logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
@@ -201,7 +201,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
                 # Received old data but still allow aggregator cleanup
                 # state to occur so as to receive the next update
-                logger.info(
+                logger.debug(
                     f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
                     f" to allow fetch from aggregator "
                     "again and returning from function"
@@ -230,15 +230,15 @@ class Trainer(Role, metaclass=ABCMeta):
             )
         if MessageType.TASK_TO_PERFORM in msg:
             self.task_to_perform = msg[MessageType.TASK_TO_PERFORM]
-            logger.info(f"Found task_to_perform in msg: {self.task_to_perform}")
+            logger.debug(f"Found task_to_perform in msg: {self.task_to_perform}")
         else:
-            logger.info(f"Didn't find TASK_TO_PERFORM in msg")
+            logger.debug(f"Didn't find TASK_TO_PERFORM in msg")
 
         self.fetch_success = True
 
         logger.info(
             f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
-            f"round: {self._round} and work_done: {self._work_done} ###"
+            f"round: {self._round}, task_to_perform (can be default): {self.task_to_perform}, work_done: {self._work_done} ###"
         )
 
         logger.debug(
@@ -256,7 +256,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
-        logger.info(
+        logger.debug(
             f"avl_state of trainer {self.trainer_id} when put is invoked, is: {self.avl_state}"
         )
         if tag == TAG_UPLOAD:
@@ -287,7 +287,7 @@ class Trainer(Role, metaclass=ABCMeta):
             MessageType.HEARTBEAT: time.time(),
         }
         channel.send(end, msg)
-        logger.info(f"sending heartbeat done for trainer_id: {self.trainer_id}")
+        logger.debug(f"sending heartbeat done for trainer_id: {self.trainer_id}")
 
         return
 
@@ -365,14 +365,15 @@ class Trainer(Role, metaclass=ABCMeta):
             self._updates_returned_upto_round = self._round
 
             logger.info(
-                f"sending weights done for trainer_id: {self.trainer_id} "
-                f"and _updates_returned_upto_round "
-                f"{self._updates_returned_upto_round}"
+                f"Sent weights for trainer_id: {self.trainer_id}, "
+                f"_updates_returned_upto_round "
+                f"{self._updates_returned_upto_round}, "
+                f", stat_utility: {self._stat_utility}, dataset_size: {self.dataset_size}"
             )
         elif self.task_to_perform == "eval":
             logger.info(
-                f"sending eval stat utility done for trainer_id: {self.trainer_id} "
-                f"for model version: {self._round}"
+                f"Sent stat utility of {self._stat_utility} for trainer_id: {self.trainer_id} "
+                f"at round: {self._round}"
             )
         else:
             logger.error(
@@ -469,7 +470,7 @@ class Trainer(Role, metaclass=ABCMeta):
         channel.update_trainer_state(state, timestamp)
         logger.info(
             f"Sent channel state update message for channel: "
-            f"{channel._name} and trainer: {self.trainer_id}, with state: {state} from timestamp: {timestamp}"
+            f"{channel._name} and trainer: {self.trainer_id}, new state: {state} at timestamp: {timestamp}"
         )
 
     def save_metrics(self):
