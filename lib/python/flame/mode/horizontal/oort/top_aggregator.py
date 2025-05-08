@@ -125,6 +125,11 @@ class TopAggregator(BaseTopAggregator):
             time.sleep(1)
             return
 
+        self._compute_aggregator_stats()
+        if self._round % 10 == 0:
+            logger.info(f"_agg_training_stats: {self._agg_training_stats}")
+        self._reset_aggregator_stats()
+        
         # set global weights
         self.weights = global_weights
 
@@ -236,6 +241,13 @@ class TopAggregator(BaseTopAggregator):
             logger.info(
                 f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}"
             )
+            
+        stat_utility = 0        # default
+        if MessageType.STAT_UTILITY in msg:
+            channel.set_end_property(
+                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+            )
+            stat_utility = msg[MessageType.STAT_UTILITY]
 
         logger.debug(f"{end}'s parameters trained with {count} samples")
 
@@ -244,5 +256,12 @@ class TopAggregator(BaseTopAggregator):
             tres = TrainResult(weights, count)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
+            
+            update_staleness_val = self._round - tres.version
+                
+            # Populate round statistics vars
+            self._round_update_values["staleness"].append(update_staleness_val)
+            self._round_update_values["stat_utility"].append(stat_utility)
+            self._round_update_values["trainer_speed"].append(channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION).total_seconds())
 
         return total

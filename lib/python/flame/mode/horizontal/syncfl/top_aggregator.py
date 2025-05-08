@@ -19,6 +19,7 @@ import logging
 import time
 from copy import deepcopy
 from datetime import datetime
+import numpy as np
 
 from diskcache import Cache
 from flame.channel_manager import ChannelManager
@@ -49,6 +50,8 @@ TAG_AGGREGATE = "aggregate"
 TAG_HEARTBEAT = "heartbeat_recv"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_END_TIME = "round_end_time"
+PROP_STAT_UTILITY = "stat_utility"
+PROP_ROUND_DURATION = "round_duration"
 
 
 class TopAggregator(Role, metaclass=ABCMeta):
@@ -123,7 +126,34 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self.agg_start_time_ts = time.time()
 
         self._updates_recevied = {}
+        
+        self._agg_training_stats = {}
+        self._round_update_stat_keys = [
+            "staleness",
+            "stat_utility",
+            "trainer_speed",
+        ]
+        self._round_update_values = {key: [] for key in self._round_update_stat_keys}
+        # TODO Add "wt_contrib_stats" as a key later but cannot
+        # directly populate it here since it is only in the optimizer.
+        # For now, do it in post-proc script.
 
+    def _compute_aggregator_stats(self) -> None:
+        for key in self._round_update_stat_keys:
+            values = np.array(self._round_update_values[key])
+            self._agg_training_stats[key] = {
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+                "p25": float(np.percentile(values, 25)),
+                "p50": float(np.percentile(values, 50)),
+                "p75": float(np.percentile(values, 75)),
+            }
+    
+    def _reset_aggregator_stats(self) -> None:
+        self._per_round_update_list = []
+        for key in self._round_update_stat_keys:
+            self._round_update_values[key] = []
+    
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         logger.debug(f"Invoking get() with tag {tag}")
@@ -201,6 +231,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     end,
                     channel,
                 )
+                
+            stat_utility = 0        # default
+            if MessageType.STAT_UTILITY in msg:
+                channel.set_end_property(
+                    end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+                )
+                stat_utility = msg[MessageType.STAT_UTILITY]
 
             logger.debug(f"{end}'s parameters trained with {count} samples")
 
@@ -209,8 +246,20 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 tres = TrainResult(weights, count)
                 # save training result from trainer in a disk cache
                 self.cache[end] = tres
+                
+                update_staleness_val = self._round - tres.version
+                
+                # Populate round statistics vars
+                self._round_update_values["staleness"].append(update_staleness_val)
+                self._round_update_values["stat_utility"].append(stat_utility)
+                self._round_update_values["trainer_speed"].append(channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION).total_seconds())
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
+        
+        self._compute_aggregator_stats()
+        if self._round % 10 == 0:
+            logger.info(f"_agg_training_stats: {self._agg_training_stats}")
+        self._reset_aggregator_stats()
 
         # optimizer conducts optimization (in this case, aggregation)
         global_weights = self.optimizer.do(

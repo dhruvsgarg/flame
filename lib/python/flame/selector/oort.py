@@ -19,6 +19,8 @@ import logging
 import math
 import random
 from datetime import timedelta
+from collections import deque
+import numpy as np
 
 import numpy as np
 from flame.common.typing import Scalar
@@ -87,7 +89,42 @@ class OortSelector(AbstractSelector):
         # available to select again NOTE: Not used in sync but just
         # present there
         self.ordered_updates_recv_ends = list()
+        
+        # Track sliding window statistics for the selector
+        self._selector_stats = {}
+        for task in ["train", "eval"]:
+            self._selector_stats[task] = {"data": {}, "summary": {}}
+            for metric in ["util", "speed", "round"]:
+                for window in [50, 100, 200]:
+                    key = f"{metric}_last_{window}"
+                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
 
+    def compute_trainer_stat_summary(self):
+        def compute_summary(values):
+            return {
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+                "p25": float(np.percentile(values, 25)),
+                "p50": float(np.percentile(values, 50)),
+                "p75": float(np.percentile(values, 75)),
+            }
+
+        tasks = ["train", "eval"]
+        metrics = [
+            "util_last_50", "util_last_100", "util_last_200",
+            "speed_last_50", "speed_last_100", "speed_last_200",
+            "round_last_50", "round_last_100", "round_last_200"
+        ]
+
+        for task in tasks:
+            for metric in metrics:
+                values = np.array(self._selector_stats[task]["data"][metric])
+                key = f"stat_{metric}" if "util" in metric else metric
+                self._selector_stats[task]["summary"][key] = compute_summary(values)
+        
+    def _reset_selector_stats(self) -> None:
+        self._selector_stats = {}
+    
     def select(
         self,
         ends: dict[str, End],

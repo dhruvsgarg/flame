@@ -20,6 +20,7 @@ import math
 import random
 import time
 from datetime import timedelta
+from collections import deque
 
 from flame.config import TrainerAvailState
 import numpy as np
@@ -147,6 +148,43 @@ class AsyncOortSelector(AbstractSelector):
         # between
         self.track_selected_trainers_which_left = dict()
         self.check_three_state_avl = True
+        
+        # Track sliding window statistics for the selector
+        self._selector_stats = {}
+        for task in ["train", "eval"]:
+            self._selector_stats[task] = {"data": {}, "summary": {}}
+            for metric in ["util", "speed", "round"]:
+                for window in [50, 100, 200]:
+                    key = f"{metric}_last_{window}"
+                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
+        
+        self._select_run_counter = 0
+        
+    def compute_trainer_stat_summary(self):
+        def compute_summary(values):
+            return {
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+                "p25": float(np.percentile(values, 25)),
+                "p50": float(np.percentile(values, 50)),
+                "p75": float(np.percentile(values, 75)),
+            }
+
+        tasks = ["train", "eval"]
+        metrics = [
+            "util_last_50", "util_last_100", "util_last_200",
+            "speed_last_50", "speed_last_100", "speed_last_200",
+            "round_last_50", "round_last_100", "round_last_200"
+        ]
+
+        for task in tasks:
+            for metric in metrics:
+                values = np.array(self._selector_stats[task]["data"][metric])
+                key = f"stat_{metric}" if "util" in metric else metric
+                self._selector_stats[task]["summary"][key] = compute_summary(values)
+        
+    def _reset_selector_stats(self) -> None:
+        self._selector_stats = {}     
 
     def select(
         self,
@@ -232,6 +270,34 @@ class AsyncOortSelector(AbstractSelector):
                 trainer_unavail_list,
                 task_to_perform,
             )
+            if len(results) is not 0:
+                self._select_run_counter += 1
+                
+            for selected_end_id in results.keys():
+                end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
+                end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
+                end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
+                # Insert to queues tracking statistical utility data
+                self._selector_stats[task_to_perform]["data"]["util_last_50"] = end_stat_util
+                self._selector_stats[task_to_perform]["data"]["util_last_100"] = end_stat_util
+                self._selector_stats[task_to_perform]["data"]["util_last_200"] = end_stat_util
+                
+                # Insert to queues tracking speed data
+                self._selector_stats[task_to_perform]["data"]["speed_last_50"] = end_speed
+                self._selector_stats[task_to_perform]["data"]["speed_last_100"] = end_speed
+                self._selector_stats[task_to_perform]["data"]["speed_last_200"] = end_speed
+                
+                # Insert to queues tracking round data
+                self._selector_stats[task_to_perform]["data"]["round_last_50"] = end_last_round
+                self._selector_stats[task_to_perform]["data"]["round_last_100"] = end_last_round
+                self._selector_stats[task_to_perform]["data"]["round_last_200"] = end_last_round
+            
+            if self._select_run_counter % 100 == 0:
+                self.compute_trainer_stat_summary()
+                logger.info(f"Train selector stats summary: {self._selector_stats["train"]["summary"]}")
+                logger.info(f"Eval selector stats summary: {self._selector_stats["eval"]["summary"]}")
+                self._select_run_counter = 0                
+                
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
             # TODO: (DG) See if eligible_ends should be passed here
@@ -248,6 +314,8 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(
             f"channel state: {channel_props[KEY_CH_STATE]}, results: {results}"
         )
+        
+        
 
         return results
 
@@ -435,7 +503,8 @@ class AsyncOortSelector(AbstractSelector):
                 ].total_seconds()
             )
         else:
-            # Assuming a max round duration of 99999 seconds (~1.2 days)
+            # Assuming a max round duration of 99999 seconds (~1.2
+            # days)
             round_preferred_duration = timedelta(seconds=99999)
 
         logger.debug(f"returning round_preferred_duration: {round_preferred_duration}")
@@ -1231,9 +1300,10 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
 
-        # Check the eligible set first. Out of the ends, how many are not in
-        # all_selected? Only those are eligible since the rest have weights
-        # already sent to them for either train/eval task.
+        # Check the eligible set first. Out of the ends, how many are
+        # not in all_selected? Only those are eligible since the rest
+        # have weights already sent to them for either train/eval
+        # task.
         count_eligible_set_to_check = [
             end for end in ends if end not in self.all_selected
         ]

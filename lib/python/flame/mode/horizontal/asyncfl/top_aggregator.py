@@ -65,7 +65,6 @@ class TopAggregator(SyncTopAgg):
         self._trainer_participation_in_round_count = {}
         self._trainer_participation_in_round = {}
         self._per_round_update_list = []
-        self._per_round_staleness_list = []
         self._aggregator_staleness_track_rounds = []
         self._aggregator_round_avg_staleness = []
         self._per_trainer_staleness_track = {}
@@ -460,6 +459,7 @@ class TopAggregator(SyncTopAgg):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
 
+        stat_utility = 0        # default
         if MessageType.STAT_UTILITY in msg:
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
@@ -477,7 +477,11 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             update_staleness_val = self._round - tres.version
             logger.info(f"Received update from {end}. agg_version: {self._round}, trainer version: {tres.version}, update_staleness_val: {update_staleness_val}")
-            self._per_round_staleness_list.append(update_staleness_val)
+            
+            # Populate round statistics vars
+            self._round_update_values["staleness"].append(update_staleness_val)
+            self._round_update_values["stat_utility"].append(stat_utility)
+            self._round_update_values["trainer_speed"].append(channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION).total_seconds())
 
             # capture per trainer staleness
             if end in self._per_trainer_staleness_track.keys():
@@ -574,15 +578,12 @@ class TopAggregator(SyncTopAgg):
 
             # update staleness list for aggregator
             self._aggregator_staleness_track_rounds.append(
-                self._per_round_staleness_list
+                self._round_update_stale_vals
             )
 
             self._aggregator_round_avg_staleness.append(
-                np.mean(np.array(self._per_round_staleness_list))
+                np.mean(np.array(self._round_update_stale_vals))
             )
-
-            self._per_round_update_list = []
-            self._per_round_staleness_list = []
 
         # Computing rate: Not used anywhere right now rate = 1 /
         # math.sqrt(1 + self._round - tres.version) logger.debug(f"
@@ -618,6 +619,11 @@ class TopAggregator(SyncTopAgg):
                 f"top agg trainer participation in rounds, after round "
                 f"{self._round} is {self._trainer_participation_in_round}"
             )
+        
+        self._compute_aggregator_stats()
+        if self._round % 10 == 0:
+            logger.info(f"_agg_training_stats: {self._agg_training_stats}")
+        self._reset_aggregator_stats()
 
         # print out data on staleness for aggregator, per round unroll
         # the list of lists into a numpy array, get the avg
