@@ -542,7 +542,7 @@ class PyTorchSpeechCommandsTrainer(Trainer):
 
     def load_data(self) -> None:
         """Load data."""
-        data_dir = "./data"
+        data_dir = "/home/dgarg39/flame/lib/python/examples/async_google_speech/data"
         os.makedirs(data_dir, exist_ok=True)
 
         dataset = SPEECHCOMMANDS(data_dir, download=True, subset="training")

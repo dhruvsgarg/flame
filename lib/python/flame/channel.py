@@ -193,7 +193,7 @@ class Channel(object):
         async def inner():
             # while hasattr(self._selector, "k") and len(self._ends) < self._selector.k:
 
-            #     logger.info(f"sleeping till ends enough, current ends: {len(self._ends)}")
+            #     logger.debug(f"sleeping till ends enough, current ends: {len(self._ends)}")
             #     time.sleep(5)
             if self.trainer_unavail_list is not None:
                 selected = self._selector.select(
@@ -202,14 +202,14 @@ class Channel(object):
                     self.trainer_unavail_list,
                     task_to_perform,
                 )
-                logger.info(f"selected: {selected}")
+                logger.debug(f"selected: {selected}")
                 if len(selected) is 0:
                     return
             else:
                 selected = self._selector.select(
                     self._ends, self.properties, task_to_perform
                 )
-                logger.info(f"selected: {selected}")
+                logger.debug(f"selected: {selected}")
                 if len(selected) is 0:
                     return
             logger.debug(
@@ -457,7 +457,7 @@ class Channel(object):
         async def _get_inner(end_id) -> tuple[str, Any]:
             if not self.has(end_id):
                 # can't receive message from end_id
-                logger.info(f"Cannot receive message from end_id {end_id}")
+                logger.debug(f"Cannot receive message from end_id {end_id}")
                 yield end_id, None
 
             payload = None
@@ -537,7 +537,7 @@ class Channel(object):
 
     def join(self):
         """Join the channel."""
-        logger.debug(f"calling channel join for {self._name}")
+        logger.info(f"calling channel join for {self._name}")
 
         self._backend.join(self)
 
@@ -550,11 +550,11 @@ class Channel(object):
 
         self._backend.leave(self)
 
-        logger.debug(f" channel leave done for {self._name}")
+        logger.info(f"channel leave done for {self._name}")
 
     def update_trainer_state(self, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
-        logger.debug(f"calling channel update state for {self._name}")
+        logger.info(f"calling channel update state for {self._name}")
 
         self._backend.update_trainer_state(self, state, timestamp)
 
@@ -582,7 +582,7 @@ class Channel(object):
             return False
 
         timeouted, _ = run_async(_inner(), self._backend.loop())
-        logger.debug(f"timeouted = {timeouted}")
+        logger.info(f"timeouted = {timeouted}")
         return timeouted
 
     def is_rxq_empty(self, end_id: str) -> bool:
@@ -606,7 +606,7 @@ class Channel(object):
 
         self._ends[end_id] = End(end_id)
 
-        logger.info(f"Adding end {end_id} to channel {self._name}")
+        logger.debug(f"Adding end {end_id} to channel {self._name}")
 
         # create tx task in the backend for the channel
         self._backend.create_tx_task(self._name, end_id)
@@ -691,7 +691,7 @@ class Channel(object):
 
     async def remove(self, end_id):
         """Remove an end from the channel."""
-        logger.info(f"Removing end {end_id} from channel {self._name}")
+        logger.debug(f"Removing end {end_id} from channel {self._name}")
         if not self.has(end_id):
             logger.debug(
                 f"Noting to remove since end {end_id} not in channel {self._name}"
@@ -780,14 +780,14 @@ class Channel(object):
 
         old_end_state = self._ends[end_id].get_property(PROP_END_AVL_STATE)
         self._ends[end_id].set_property(PROP_END_AVL_STATE, new_state)
-        logger.info(
+        logger.debug(
             f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
         )
 
         # If new updated_state is UN_AVL, reset end state to unblock
         # any train or eval tasks sent to that trainer
         if new_state == TrainerAvailState.UN_AVL:
-            logger.info(
+            logger.debug(
                 f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected"
             )
             self._selector.remove_from_selected_ends(self._ends, end_id)
@@ -799,7 +799,7 @@ class Channel(object):
             # TODO: (DG) This is a temporary fix to reset the state of
             # a trainer from AVL_TRAIN to AVL_EVAL. Check actual last
             # task sent before resetting.
-            logger.info(
+            logger.debug(
                 f"Trainer {end_id} moved from state {old_end_state} to {new_state}, removing the end from selected and all_selected. If any train tasks are pending, they should be re-set, but not needed for pending eval tasks. Doing it anyway for now."
             )
             self._selector.remove_from_selected_ends(self._ends, end_id)
