@@ -172,21 +172,21 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.avl_events_syn_50
         )
 
-        if self.client_notify["type"] == "three_state":
+        if self.client_notify['trace'] == "three_state":
             self.state_avl_event_ts = self.avl_events_3_state
             logger.info(
                 f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
             )
-        elif self.client_notify["type"] == "two_state":
+        elif self.client_notify['trace'] == "two_state":
             self.state_avl_event_ts = self.avl_events_mobiperf_2st
             logger.info(f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}.")
-        elif self.client_notify["type"] == "syn_0":
+        elif self.client_notify['trace'] == "syn_0":
             self.state_avl_event_ts = self.avl_events_syn_0
             logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
-        elif self.client_notify["type"] == "syn_20":
+        elif self.client_notify['trace'] == "syn_20":
             self.state_avl_event_ts = self.avl_events_syn_20
             logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
-        elif self.client_notify["type"] == "syn_50":
+        elif self.client_notify['trace'] == "syn_50":
             self.state_avl_event_ts = self.avl_events_syn_50
             logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
         else:
@@ -376,7 +376,7 @@ class PyTorchCifar10Trainer(Trainer):
         # 3. Trainer is unavailable and we don't want it to wait for availability
         if (
             self.task_to_perform != "eval"
-            or self.client_notify["type"] == "two_state"
+            or self.client_notify['trace'] == "two_state"
             or (
                 self.avl_state == TrainerAvailState.UN_AVL
                 and self.wait_until_next_avl == "False"
