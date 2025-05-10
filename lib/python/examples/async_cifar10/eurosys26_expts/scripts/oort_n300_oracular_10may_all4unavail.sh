@@ -55,71 +55,69 @@ if [ "$#" -ne 1 ]; then
 fi
 
 node_name=$1
+
+# Fixed alpha value
+alpha=0.1
 threshold=0.70
 
-baseline_names=("syncfl_oort")
 aggType="fedavg"
 selType="oort"
-aware_modes=("syn0" "syn20" "syn50" "mobiperf" "unaware")
-alpha=0.1
-trainer_dir_suffix="_6d_3state_oort"
+awareMode="oracular"
 
-for baseline_name in "${baseline_names[@]}"; do
-  for awareType in "${aware_modes[@]}"; do
-    echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment with alpha=${alpha}, awareType=${awareType}, node=${node_name}"
-    start_time=$(date +%s)
+# Availability traces to run in oracular mode
+availability_traces=("syn0" "syn20" "syn50" "mobiperf")
 
-    conda activate dg_flame
-    terminate_main_py
-    sleep 10
+for trace in "${availability_traces[@]}"; do
+  echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment for trace=${trace}, mode=${awareMode}, alpha=${alpha} on node=${node_name}..."
+  start_time=$(date +%s)
 
-    # Aggregator
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
-    timestamp=$(date +%d_%m_%H_%M)
-    config_file="oort_n300_oracular_9may25_${awareType}.json"
-    agg_log_dir="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
-    agg_log_file="${agg_log_dir}/agg_${node_name}_${timestamp}_alpha${alpha}_${aggType}_${selType}_${awareType}.log"
-    wandb_run_name="agg_${node_name}_${timestamp}_alpha${alpha}_${aggType}_${selType}_${awareType}_c13_1.3k"
+  conda activate dg_flame
+  pkill -f main.py
+  pkill -f main_oort_agg.py
+  sleep 10
+  echo "$(date +'%Y-%m-%d %H:%M:%S') Waited for cleanup to complete"
 
-    echo "Created aggregator log file: ${agg_log_file}"
-    python pytorch/main_oort_agg.py "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/configs/${config_file}" \
-      --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
-    agg_pid=$!
-    echo "Aggregator PID: $agg_pid"
-    sleep 15
+  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
+  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
 
-    # Trainer
-    conda activate dg_flame
-    cd "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail${trainer_dir_suffix}/"
-    echo "Going inside trainer folder: config_dir0.1_num300_traceFail${trainer_dir_suffix}"
-    trainer_log_dir="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs"
-    trainer_log_file="${trainer_log_dir}/log_trainer_${node_name}_${timestamp}_${alpha}_${aggType}_${selType}_${awareType}.log"
-    echo "Created trainer log file: ${trainer_log_file}"
-    bash exec_300_trainers_2state.sh > "$trainer_log_file" 2>&1 &
-    trainer_pid=$!
-    echo "Trainer PID: $trainer_pid"
-    echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
+  timestamp=$(date +%d_%m_%H_%M)
+  agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}.log"
+  config_file="oort_n300_oracular_9may25_${trace}.json"
+  wandb_run_name="agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}_c13_1.3k"
 
-    # Monitor the log file
-    while true; do
-      if check_accuracy "$agg_log_file" "$threshold"; then
-        # If condition is met, terminate main.py and wait for 30 seconds
-        terminate_main_py
-        sleep 30  # Wait for all trainers and aggregator to stop
-        break
-      else
-        # If not, check again after a minute
-        sleep 60
-      fi
-    done
+  echo "Created aggregator log file: ${agg_log_file}"
+  python pytorch/main_oort_agg.py "$config_file" --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
+  agg_pid=$!
+  echo "Aggregator PID: $agg_pid"
+  sleep 15
+  echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
 
-    end_time=$(date +%s)
-    elapsed_time=$((end_time - start_time))
-    elapsed_human=$(printf '%02dh:%02dm:%02ds\n' $((elapsed_time/3600)) $((elapsed_time%3600/60)) $((elapsed_time%60)))
+  conda activate dg_flame
+  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
+  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort/
+  echo "Inside trainer folder for trace=${trace}"
 
-    echo "$(date +'%Y-%m-%d %H:%M:%S') Finished experiment with alpha=${alpha}, awareType=${awareType}, baseline=${baseline_name}. Time taken: ${elapsed_human}"
-    echo "$(date +'%Y-%m-%d %H:%M:%S') Sleeping for a minute before next experiment"
-    sleep 60
+  trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs/log_trainer_${node_name}_${timestamp}_${alpha}_${aggType}_${selType}_${awareMode}_${trace}.log"
+  echo "Created trainer log file: ${trainer_log_file}"
+  bash exec_300_trainers_2state.sh > "$trainer_log_file" 2>&1 &
+  trainer_pid=$!
+  echo "Trainer PID: $trainer_pid"
+  echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
+
+  while true; do
+    if check_accuracy "$agg_log_file" "$threshold"; then
+      terminate_main_py
+      sleep 30
+      break
+    else
+      sleep 60
+    fi
   done
+
+  end_time=$(date +%s)
+  elapsed_time=$((end_time - start_time))
+  elapsed_human=$(printf '%02dh:%02dm:%02ds\n' $((elapsed_time/3600)) $((elapsed_time%3600/60)) $((elapsed_time%60)))
+  echo "$(date +'%Y-%m-%d %H:%M:%S') Finished experiment for trace=${trace} in ${awareMode} mode on node=${node_name}. Time taken: ${elapsed_human}"
+  echo "$(date +'%Y-%m-%d %H:%M:%S') Sleeping for a minute before next experiment"
+  sleep 60
 done
