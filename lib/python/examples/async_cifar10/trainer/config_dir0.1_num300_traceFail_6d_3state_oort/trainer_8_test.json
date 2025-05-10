@@ -210,9 +210,9 @@
         "use_oort_loss_fn": "True",
         "training_delay_enabled": "True",
         "training_delay_s": "17.0",
-        "avl_events_3_state_50": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN')]",
-        "avl_events_3_state_75": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN'), (80, 'AVL_EVAL')]",
-        "avl_events_2_state": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN')]",
+        "avl_events_mobiperf_3st_50": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN')]",
+        "avl_events_mobiperf_3st_75": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN'), (80, 'AVL_EVAL')]",
+        "avl_events_mobiperf_2st": "[(0, 'AVL_TRAIN'), (30, 'UN_AVL'), (60, 'AVL_TRAIN')]",
         "client_notify": {
             "enabled": "True",
             "type": "three_state"

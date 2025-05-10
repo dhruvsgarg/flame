@@ -361,9 +361,9 @@
         "use_oort_loss_fn": "True",
         "training_delay_enabled": "True",
         "training_delay_s": "21.0",
-        "avl_events_3_state_50": "[(0, 'AVL_TRAIN'), (300, 'AVL_EVAL'), (44154, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'AVL_EVAL'), (138512, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'AVL_EVAL'), (163051, 'AVL_TRAIN'), (163162, 'AVL_EVAL'), (185967, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'AVL_EVAL'), (266498, 'UN_AVL')]",
-        "avl_events_3_state_75": "[(0, 'AVL_TRAIN'), (300, 'AVL_EVAL'), (4167, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'AVL_EVAL'), (96018, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'AVL_EVAL'), (163051, 'AVL_TRAIN'), (163162, 'AVL_EVAL'), (174377, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'AVL_EVAL'), (259340, 'UN_AVL')]",
-        "avl_events_2_state": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'UN_AVL'), (163051, 'AVL_TRAIN'), (163162, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_50": "[(0, 'AVL_TRAIN'), (300, 'AVL_EVAL'), (44154, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'AVL_EVAL'), (138512, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'AVL_EVAL'), (163051, 'AVL_TRAIN'), (163162, 'AVL_EVAL'), (185967, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'AVL_EVAL'), (266498, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_75": "[(0, 'AVL_TRAIN'), (300, 'AVL_EVAL'), (4167, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'AVL_EVAL'), (96018, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'AVL_EVAL'), (163051, 'AVL_TRAIN'), (163162, 'AVL_EVAL'), (174377, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'AVL_EVAL'), (259340, 'UN_AVL')]",
+        "avl_events_mobiperf_2st": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (80604, 'AVL_TRAIN'), (86390, 'UN_AVL'), (153815, 'AVL_TRAIN'), (159369, 'UN_AVL'), (163051, 'AVL_TRAIN'), (163162, 'UN_AVL'), (232745, 'AVL_TRAIN'), (241563, 'UN_AVL')]",
         "client_notify": {
             "enabled": "False",
             "type": "three_state"

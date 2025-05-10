@@ -168,8 +168,8 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.avl_events_syn_20
         )
 
-        self.avl_events_syn_40 = ast.literal_eval(
-            self.config.hyperparameters.avl_events_syn_40
+        self.avl_events_syn_50 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_50
         )
 
         if self.client_notify["type"] == "three_state":
@@ -186,9 +186,9 @@ class PyTorchCifar10Trainer(Trainer):
         elif self.client_notify["type"] == "syn_20":
             self.state_avl_event_ts = self.avl_events_syn_20
             logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
-        elif self.client_notify["type"] == "syn_40":
-            self.state_avl_event_ts = self.avl_events_syn_40
-            logger.info(f"Set avl_events_syn_40 for trainer id {self.trainer_id}.")
+        elif self.client_notify["type"] == "syn_50":
+            self.state_avl_event_ts = self.avl_events_syn_50
+            logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
         else:
             logger.info(
                 f"No avl_events set for trainer id {self.trainer_id} since state not specified."

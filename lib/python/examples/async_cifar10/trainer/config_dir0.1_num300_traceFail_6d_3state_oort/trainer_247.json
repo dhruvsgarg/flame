@@ -123,9 +123,9 @@
         "use_oort_loss_fn": "True",
         "training_delay_enabled": "True",
         "training_delay_s": "23.0",
-        "avl_events_3_state_50": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (106106, 'AVL_EVAL'), (140357, 'UN_AVL'), (192199, 'AVL_EVAL'), (206356, 'UN_AVL'), (219683, 'AVL_EVAL'), (219683, 'AVL_TRAIN'), (244022, 'AVL_EVAL'), (246532, 'UN_AVL')]",
-        "avl_events_3_state_75": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (106106, 'AVL_EVAL'), (135432, 'UN_AVL'), (192199, 'AVL_EVAL'), (197577, 'UN_AVL'), (219683, 'AVL_EVAL'), (219683, 'AVL_TRAIN'), (244022, 'AVL_EVAL'), (246532, 'UN_AVL')]",
-        "avl_events_2_state": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (219683, 'AVL_TRAIN'), (244022, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_50": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (106106, 'AVL_EVAL'), (140357, 'UN_AVL'), (192199, 'AVL_EVAL'), (206356, 'UN_AVL'), (219683, 'AVL_EVAL'), (219683, 'AVL_TRAIN'), (244022, 'AVL_EVAL'), (246532, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_75": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (106106, 'AVL_EVAL'), (135432, 'UN_AVL'), (192199, 'AVL_EVAL'), (197577, 'UN_AVL'), (219683, 'AVL_EVAL'), (219683, 'AVL_TRAIN'), (244022, 'AVL_EVAL'), (246532, 'UN_AVL')]",
+        "avl_events_mobiperf_2st": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (219683, 'AVL_TRAIN'), (244022, 'UN_AVL')]",
         "client_notify": {
             "enabled": "False",
             "type": "three_state"

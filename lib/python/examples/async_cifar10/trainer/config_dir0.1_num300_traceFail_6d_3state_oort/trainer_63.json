@@ -375,9 +375,9 @@
         "use_oort_loss_fn": "True",
         "training_delay_enabled": "True",
         "training_delay_s": "10.0",
-        "avl_events_3_state_50": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (318747, 'AVL_EVAL'), (323496, 'AVL_TRAIN'), (323512, 'AVL_EVAL'), (323513, 'AVL_TRAIN'), (323547, 'AVL_EVAL'), (323548, 'AVL_TRAIN'), (323549, 'AVL_EVAL'), (325422, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'AVL_EVAL'), (336906, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'AVL_EVAL'), (390350, 'UN_AVL')]",
-        "avl_events_3_state_75": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (323496, 'AVL_TRAIN'), (323512, 'UN_AVL'), (323513, 'AVL_TRAIN'), (323547, 'UN_AVL'), (323548, 'AVL_TRAIN'), (323549, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'AVL_EVAL'), (390350, 'UN_AVL')]",
-        "avl_events_2_state": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (323496, 'AVL_TRAIN'), (323512, 'UN_AVL'), (323513, 'AVL_TRAIN'), (323547, 'UN_AVL'), (323548, 'AVL_TRAIN'), (323549, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_50": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (318747, 'AVL_EVAL'), (323496, 'AVL_TRAIN'), (323512, 'AVL_EVAL'), (323513, 'AVL_TRAIN'), (323547, 'AVL_EVAL'), (323548, 'AVL_TRAIN'), (323549, 'AVL_EVAL'), (325422, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'AVL_EVAL'), (336906, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'AVL_EVAL'), (390350, 'UN_AVL')]",
+        "avl_events_mobiperf_3st_75": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (323496, 'AVL_TRAIN'), (323512, 'UN_AVL'), (323513, 'AVL_TRAIN'), (323547, 'UN_AVL'), (323548, 'AVL_TRAIN'), (323549, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'AVL_EVAL'), (390350, 'UN_AVL')]",
+        "avl_events_mobiperf_2st": "[(0, 'AVL_TRAIN'), (300, 'UN_AVL'), (323496, 'AVL_TRAIN'), (323512, 'UN_AVL'), (323513, 'AVL_TRAIN'), (323547, 'UN_AVL'), (323548, 'AVL_TRAIN'), (323549, 'UN_AVL'), (325422, 'AVL_TRAIN'), (326320, 'UN_AVL'), (336927, 'AVL_TRAIN'), (344882, 'UN_AVL')]",
         "client_notify": {
             "enabled": "False",
             "type": "three_state"

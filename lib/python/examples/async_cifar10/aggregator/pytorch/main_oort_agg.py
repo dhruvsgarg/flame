@@ -123,8 +123,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
             self.track_trainer_avail["enabled"]
             and self.track_trainer_avail["type"] == "ORACULAR"
         ):
-            self.trainer_event_dict = self.read_trainer_unavailability()
-            print("self.trainer_event_dict: ", self.trainer_event_dict)
+            self.trainer_event_dict = self.read_trainer_unavailability(self.track_trainer_avail["trace"])
+        else:
+            print(f"Did not read oracular trainer jsons. Enabled value: {self.track_trainer_avail['enabled']}, type: {self.track_trainer_avail['type']}, trace: {self.track_trainer_avail['trace']}")
+        print("self.trainer_event_dict: ", self.trainer_event_dict)
 
         self.loss_list = []
 
@@ -139,12 +141,12 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
         self.model = Net().to(self.device)
 
-    def read_trainer_unavailability(self) -> dict:
-        print("Came to read_trainer_unavailability")
+    def read_trainer_unavailability(self, trace=None) -> dict:
+        print(f"Came to read_trainer_unavailability, trace: {trace}")
         trainer_events_dict = {}
 
         # Set path to read JSON files from (TODO: Remove hardcoding later)
-        files_path = "../../trainer/config_dir10_num300_traceFail_6d_3state_oort"
+        files_path = "../../trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
 
         # Set range of trainer IDs to read from
         trainer_start_num = 1
@@ -158,7 +160,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
                 event_list = ast.literal_eval(
-                    trainer_json["hyperparameters"]["avl_events_syn_0"]
+                    trainer_json["hyperparameters"][trace]
                 )
 
                 # SortedDict for efficient timestamp lookup
