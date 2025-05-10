@@ -576,15 +576,6 @@ class TopAggregator(SyncTopAgg):
                         self._round - 1
                     ] = 1
 
-            # update staleness list for aggregator
-            self._aggregator_staleness_track_rounds.append(
-                self._round_update_stale_vals
-            )
-
-            self._aggregator_round_avg_staleness.append(
-                np.mean(np.array(self._round_update_stale_vals))
-            )
-
         # Computing rate: Not used anywhere right now rate = 1 /
         # math.sqrt(1 + self._round - tres.version) logger.debug(f"
         # rate at top_agg: {rate}")
@@ -624,11 +615,6 @@ class TopAggregator(SyncTopAgg):
         if self._round % 10 == 0:
             logger.info(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
-
-        # print out data on staleness for aggregator, per round unroll
-        # the list of lists into a numpy array, get the avg
-        agg_staleness_arr = np.hstack(self._aggregator_staleness_track_rounds)
-        logger.debug(f"==== aggregator avg staleness: {np.mean(agg_staleness_arr)}")
 
         # per trainer analytics
         if self._round % 100 == 0:

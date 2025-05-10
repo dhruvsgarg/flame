@@ -125,7 +125,7 @@ class MqttBackend(AbstractBackend):
             await asyncio.sleep(period)
 
     def configure(self, broker: str, job_id: str, task_id: str):
-        logger.info(f"Inside configure {task_id}")
+        logger.debug(f"Inside configure {task_id}")
         """Configure the backend."""
         self._broker = broker
         self._job_id = job_id
@@ -208,7 +208,7 @@ class MqttBackend(AbstractBackend):
 
         # unsubscribe from topics after notify is finished
         for topic in self._topics_for_notify(channel):
-            logger.debug(
+            logger.info(
                 f"Initiating unsubscribe for topic {topic} "
                 f"on channel {channel.name()}"
             )
@@ -219,7 +219,7 @@ class MqttBackend(AbstractBackend):
         self, channel: Channel, state: str, timestamp: str
     ) -> None:
         """Update a trainer state in the backend."""
-        logger.debug(
+        logger.info(
             f"Sending notification of type STATE_UPDATE from "
             f"channel {channel.name()} for state {state} at timestamp {timestamp}"
         )
@@ -267,7 +267,7 @@ class MqttBackend(AbstractBackend):
             logger.debug(f"Got channel leave message from {msg.end_id}")
             await channel.remove(msg.end_id)
         elif msg.type == msg_pb2.NotifyType.STATE_UPDATE:
-            logger.debug(f"Got state update message from {msg.end_id}")
+            logger.info(f"Got state update message from {msg.end_id}")
             await channel.update_state(msg.end_id, msg.info.state, msg.info.timestamp)
 
     async def _handle_data(self, any_msg: Any) -> None:
@@ -293,13 +293,13 @@ class MqttBackend(AbstractBackend):
     async def _rx_task(self):
         self._rx_deque = deque()
         self._rx_deque.append(self._loop.create_future())
-        logger.info("inside _rx_task")
+        logger.debug("inside _rx_task")
         while True:
             message = await self._rx_deque[0]
             self._rx_deque.popleft()
 
             if message.topic == self._health_check_topic:
-                logger.info("topic same")
+                logger.debug("topic same")
                 self._handle_health_message(message)
                 continue
 
@@ -333,7 +333,7 @@ class MqttBackend(AbstractBackend):
             qos=MqttQoS.EXACTLY_ONCE,
         )
         if temp:
-            logger.info(f"on_connect temp: {temp}")
+            logger.debug(f"on_connect temp: {temp}")
 
     def on_message(self, client, userdata, message):
         """on_message receives message."""

@@ -9,62 +9,48 @@ check_accuracy() {
   local accuracy_values
   accuracy_values=$(grep -oP 'test accuracy: [0-9]+/[0-9]+ \(\K[0-9]+\.[0-9]+' "$log_file" | tail -n 20)
 
-  # Check if we have at least 20 accuracy values
   if [ $(echo "$accuracy_values" | wc -l) -lt 20 ]; then
     echo "Less than 20 accuracy values found."
-    return 1  # Condition not met
+    return 1
   fi
 
-  # Initialize total and count
   local total=0
   local count=0
 
-  # Calculate the total of the last 20 accuracy values
   for value in $accuracy_values; do
     total=$(python -c "print($total + $value)")
     count=$((count + 1))
   done
 
-  # Calculate the average
   local average=$(python -c "print($total / $count)")
-
-  # Get the last accuracy value
   local last_value=$(echo "$accuracy_values" | tail -n 1)
 
-  # Perform the comparison using Python
   result=$(python -c "print(float($average) >= float($threshold) and float($last_value) >= float($threshold))")
 
-  # Check the result of the comparison
   if [ "$result" == "True" ]; then
-    return 0  # Condition met
+    return 0
   else
-    return 1  # Condition not met
+    return 1
   fi
 }
 
-# Function to terminate main.py
 terminate_main_py() {
   pkill -f main.py
   pkill -f main_oort_agg.py
 }
 
-# Check for the correct number of arguments
 if [ "$#" -ne 1 ]; then
   echo "$(date +'%Y-%m-%d %H:%M:%S') Usage: $0 <node-name>"
   exit 1
 fi
 
 node_name=$1
-
-# Fixed alpha value
 alpha=0.1
 threshold=0.70
-
-aggType="fedavg"
-selType="oort"
+aggType="fedbuff"
+selType="oortAsync"
 awareMode="oracular"
 
-# Availability traces to run in oracular mode
 availability_traces=("syn0" "syn20" "syn50" "mobiperf")
 
 for trace in "${availability_traces[@]}"; do
@@ -80,17 +66,16 @@ for trace in "${availability_traces[@]}"; do
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
   cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
 
-  # Ensure log directories exist
   mkdir -p /home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs
   mkdir -p /home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs
 
   timestamp=$(date +%d_%m_%H_%M)
   agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}.log"
-  config_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/configs/oort_n300_oracular_9may25_${trace}.json"
+  config_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/configs/oortAsync_n300_oracular_9may25_${trace}.json"
   wandb_run_name="agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}_c13_1.3k"
 
   echo "Created aggregator log file: ${agg_log_file}"
-  python pytorch/main_oort_agg.py "$config_file" --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
+  python pytorch/main.py "$config_file" --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
   agg_pid=$!
   echo "Aggregator PID: $agg_pid"
   sleep 15

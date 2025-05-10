@@ -140,14 +140,39 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def _compute_aggregator_stats(self) -> None:
         for key in self._round_update_stat_keys:
-            values = np.array(self._round_update_values[key])
+            raw_values = self._round_update_values.get(key, [])
+            if raw_values is None:
+                self._agg_training_stats[key] = {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+                continue
+            
+            # Filter out None values
+            values = [v for v in raw_values if v is not None]
+            
+            if not values:
+                self._agg_training_stats[key] = {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+                continue
+
+            arr = np.array(values, dtype=float)
             self._agg_training_stats[key] = {
-                "min": float(np.min(values)),
-                "max": float(np.max(values)),
-                "p25": float(np.percentile(values, 25)),
-                "p50": float(np.percentile(values, 50)),
-                "p75": float(np.percentile(values, 75)),
+                "min": float(np.min(arr)),
+                "max": float(np.max(arr)),
+                "p25": float(np.percentile(arr, 25)),
+                "p50": float(np.percentile(arr, 50)),
+                "p75": float(np.percentile(arr, 75)),
             }
+
     
     def _reset_aggregator_stats(self) -> None:
         self._per_round_update_list = []

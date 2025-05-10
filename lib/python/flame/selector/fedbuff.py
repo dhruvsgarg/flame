@@ -83,6 +83,26 @@ class FedBuffSelector(AbstractSelector):
 
     def compute_trainer_stat_summary(self):
         def compute_summary(values):
+            # Filter out None values
+            if values is None:
+                return {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+            values = [v for v in values if v is not None]
+            if not values:
+                return {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+
+            values = np.array(values, dtype=float)
             return {
                 "min": float(np.min(values)),
                 "max": float(np.max(values)),
@@ -100,7 +120,7 @@ class FedBuffSelector(AbstractSelector):
 
         for task in tasks:
             for metric in metrics:
-                values = np.array(self._selector_stats[task]["data"][metric])
+                values = self._selector_stats[task]['data'].get(metric, [])
                 key = f"stat_{metric}" if "util" in metric else metric
                 self._selector_stats[task]["summary"][key] = compute_summary(values)
         

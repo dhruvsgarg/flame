@@ -156,12 +156,32 @@ class AsyncOortSelector(AbstractSelector):
             for metric in ["util", "speed", "round"]:
                 for window in [50, 100, 200]:
                     key = f"{metric}_last_{window}"
-                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
+                    self._selector_stats[task]['data'][key] = deque(maxlen=window)
         
         self._select_run_counter = 0
         
     def compute_trainer_stat_summary(self):
         def compute_summary(values):
+            # Filter out None values
+            if values is None:
+                return {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+            values = [v for v in values if v is not None]
+            if not values:
+                return {
+                    "min": None,
+                    "max": None,
+                    "p25": None,
+                    "p50": None,
+                    "p75": None,
+                }
+
+            values = np.array(values, dtype=float)
             return {
                 "min": float(np.min(values)),
                 "max": float(np.max(values)),
@@ -179,9 +199,10 @@ class AsyncOortSelector(AbstractSelector):
 
         for task in tasks:
             for metric in metrics:
-                values = np.array(self._selector_stats[task]["data"][metric])
+                values = self._selector_stats[task]['data'].get(metric, [])
                 key = f"stat_{metric}" if "util" in metric else metric
                 self._selector_stats[task]["summary"][key] = compute_summary(values)
+
         
     def _reset_selector_stats(self) -> None:
         self._selector_stats = {}     
@@ -277,25 +298,19 @@ class AsyncOortSelector(AbstractSelector):
                 end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
                 end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
                 end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
-                # Insert to queues tracking statistical utility data
-                self._selector_stats[task_to_perform]["data"]["util_last_50"] = end_stat_util
-                self._selector_stats[task_to_perform]["data"]["util_last_100"] = end_stat_util
-                self._selector_stats[task_to_perform]["data"]["util_last_200"] = end_stat_util
-                
-                # Insert to queues tracking speed data
-                self._selector_stats[task_to_perform]["data"]["speed_last_50"] = end_speed
-                self._selector_stats[task_to_perform]["data"]["speed_last_100"] = end_speed
-                self._selector_stats[task_to_perform]["data"]["speed_last_200"] = end_speed
-                
-                # Insert to queues tracking round data
-                self._selector_stats[task_to_perform]["data"]["round_last_50"] = end_last_round
-                self._selector_stats[task_to_perform]["data"]["round_last_100"] = end_last_round
-                self._selector_stats[task_to_perform]["data"]["round_last_200"] = end_last_round
+                # Insert to queues tracking stat_util, speed, round data
+                for window in [50, 100, 200]:
+                    if end_stat_util is not None:
+                        self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
+                    if end_speed is not None:
+                        self._selector_stats[task_to_perform]['data'][f'speed_last_{window}'].append(end_speed.total_seconds())
+                    if end_last_round is not None:
+                        self._selector_stats[task_to_perform]['data'][f'round_last_{window}'].append(end_last_round)
             
             if self._select_run_counter % 100 == 0:
                 self.compute_trainer_stat_summary()
-                logger.info(f"Train selector stats summary: {self._selector_stats["train"]["summary"]}")
-                logger.info(f"Eval selector stats summary: {self._selector_stats["eval"]["summary"]}")
+                logger.info(f"Train selector stats summary: {self._selector_stats['train']['summary']}")
+                logger.info(f"Eval selector stats summary: {self._selector_stats['eval']['summary']}")
                 self._select_run_counter = 0                
                 
 

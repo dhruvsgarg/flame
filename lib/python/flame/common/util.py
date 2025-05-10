@@ -200,7 +200,7 @@ def weights_to_device(weights, dtype: DeviceType):
             sum(t.numel() * t.element_size() for t in weights_dict.values()) / 1e6
         )
 
-        print(
+        logger.debug(
             f"[weights_to_device] Keys: {num_keys}, Total elements: {total_elems:,}, Size: {total_size_MB:.2f} MB"
         )
 
@@ -218,7 +218,7 @@ def weights_to_model_device(weights, model):
         # make assumption all tensors are on same device
         # TODO: NRL add this to the code
         torch_device = next(model.parameters()).device
-        logger.info(f"NRL: device for this is: {torch_device}")
+        logger.debug(f"Device for this is: {torch_device}")
         return {name: weights[name].to(torch_device) for name in weights}
 
     return None
