@@ -148,15 +148,15 @@ class PyTorchCifar10Trainer(Trainer):
         )
         if self.event_battery_threshold == 50:
             self.avl_events_3_state = ast.literal_eval(
-                self.config.hyperparameters.avl_events_3_state_50
+                self.config.hyperparameters.avl_events_mobiperf_3st_50
             )
         elif self.event_battery_threshold == 75:
             self.avl_events_3_state = ast.literal_eval(
-                self.config.hyperparameters.avl_events_3_state_75
+                self.config.hyperparameters.avl_events_mobiperf_3st_75
             )
 
-        self.avl_events_2_state = ast.literal_eval(
-            self.config.hyperparameters.avl_events_2_state
+        self.avl_events_mobiperf_2st = ast.literal_eval(
+            self.config.hyperparameters.avl_events_mobiperf_2st
         )
 
         # Storing synthetic avail traces
@@ -178,8 +178,8 @@ class PyTorchCifar10Trainer(Trainer):
                 f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
             )
         elif self.client_notify["type"] == "two_state":
-            self.state_avl_event_ts = self.avl_events_2_state
-            logger.info(f"Set avl_events_2_state for trainer id {self.trainer_id}.")
+            self.state_avl_event_ts = self.avl_events_mobiperf_2st
+            logger.info(f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}.")
         elif self.client_notify["type"] == "syn_0":
             self.state_avl_event_ts = self.avl_events_syn_0
             logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
