@@ -30,6 +30,7 @@ from flame.selector.oort import (
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
+    PROP_LAST_EVAL_ROUND
 )
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
@@ -126,7 +127,7 @@ class TopAggregator(BaseTopAggregator):
             return
 
         self._compute_aggregator_stats()
-        if self._round % 10 == 0:
+        if self._round % 5 == 0:
             logger.info(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
         
@@ -234,13 +235,22 @@ class TopAggregator(BaseTopAggregator):
             logger.info(
                 f"End {end} sent a message with utility {msg[MessageType.STAT_UTILITY]}"
             )
+        
+        trainer_model_version = 0 # default
         if MessageType.MODEL_VERSION in msg:
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            trainer_model_version = msg[MessageType.MODEL_VERSION]
             logger.info(
                 f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}"
             )
+            
+        # Set last eval round for the trainer since training also
+        # means that eval was done for the same round.
+        channel.set_end_property(
+            end, PROP_LAST_EVAL_ROUND, trainer_model_version
+        )
             
         stat_utility = 0        # default
         if MessageType.STAT_UTILITY in msg:
@@ -253,7 +263,7 @@ class TopAggregator(BaseTopAggregator):
 
         if weights is not None and count > 0:
             total += count
-            tres = TrainResult(weights, count)
+            tres = TrainResult(weights, count, trainer_model_version)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
             

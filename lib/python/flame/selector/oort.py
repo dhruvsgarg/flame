@@ -97,7 +97,9 @@ class OortSelector(AbstractSelector):
             for metric in ["util", "speed", "round"]:
                 for window in [50, 100, 200]:
                     key = f"{metric}_last_{window}"
-                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
+                    self._selector_stats[task]['data'][key] = deque(maxlen=window)
+        
+        self._select_run_counter = 0
 
     def compute_trainer_stat_summary(self):
         def compute_summary(values):
@@ -251,7 +253,29 @@ class OortSelector(AbstractSelector):
 
         logger.info(f"selected ends: {self.selected_ends}")
         self.round = round
-
+        
+        # Computations for selector statistics
+        self._select_run_counter += 1
+        
+        for selected_end_id in self.selected_ends:
+            end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
+            end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
+            end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
+            # Insert to queues tracking stat_util, speed, round data
+            for window in [50, 100, 200]:
+                if end_stat_util is not None:
+                    self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
+                if end_speed is not None:
+                    self._selector_stats[task_to_perform]['data'][f'speed_last_{window}'].append(end_speed.total_seconds())
+                if end_last_round is not None:
+                    self._selector_stats[task_to_perform]['data'][f'round_last_{window}'].append(end_last_round)
+            
+        if self._select_run_counter % 5 == 0:
+            self.compute_trainer_stat_summary()
+            logger.info(f"Train selector stats summary: {self._selector_stats['train']['summary']}")
+            logger.info(f"Eval selector stats summary: {self._selector_stats['eval']['summary']}")
+            self._select_run_counter = 0
+                
         return {key: None for key in self.selected_ends}
 
     def cutoff_util(

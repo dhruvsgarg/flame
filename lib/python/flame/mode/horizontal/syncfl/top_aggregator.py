@@ -282,7 +282,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
         
         self._compute_aggregator_stats()
-        if self._round % 10 == 0:
+        if self._round % 5 == 0:
             logger.info(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
 

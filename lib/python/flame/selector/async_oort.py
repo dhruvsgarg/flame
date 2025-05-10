@@ -202,7 +202,6 @@ class AsyncOortSelector(AbstractSelector):
                 values = self._selector_stats[task]['data'].get(metric, [])
                 key = f"stat_{metric}" if "util" in metric else metric
                 self._selector_stats[task]["summary"][key] = compute_summary(values)
-
         
     def _reset_selector_stats(self) -> None:
         self._selector_stats = {}     
@@ -307,12 +306,11 @@ class AsyncOortSelector(AbstractSelector):
                     if end_last_round is not None:
                         self._selector_stats[task_to_perform]['data'][f'round_last_{window}'].append(end_last_round)
             
-            if self._select_run_counter % 100 == 0:
+            if self._select_run_counter % 5 == 0:
                 self.compute_trainer_stat_summary()
                 logger.info(f"Train selector stats summary: {self._selector_stats['train']['summary']}")
                 logger.info(f"Eval selector stats summary: {self._selector_stats['eval']['summary']}")
-                self._select_run_counter = 0                
-                
+                self._select_run_counter = 0
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
             # TODO: (DG) See if eligible_ends should be passed here
@@ -330,8 +328,6 @@ class AsyncOortSelector(AbstractSelector):
             f"channel state: {channel_props[KEY_CH_STATE]}, results: {results}"
         )
         
-        
-
         return results
 
     def cutoff_util(

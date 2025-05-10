@@ -499,7 +499,7 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
-    elif t.client_notify["type"] is not None:
+    elif t.client_notify['trace'] is not None:
         logger.info(
             f"Will initiate thread to update state of " f"trainer {t.trainer_id}"
         )
