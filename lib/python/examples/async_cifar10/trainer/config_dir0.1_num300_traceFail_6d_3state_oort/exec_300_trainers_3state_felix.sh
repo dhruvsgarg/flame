@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Source the bashrc file to ensure conda is set up
+source /serenity/scratch/dgarg/anaconda3/etc/profile.d/conda.sh
+
+conda activate dg_flame
+
 # Default values
 NUM_AVAIL_GPUS=8
 NOTIFY_ENABLED="False"
