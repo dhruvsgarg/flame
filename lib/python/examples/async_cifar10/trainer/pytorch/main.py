@@ -172,12 +172,12 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.avl_events_syn_50
         )
 
-        if self.client_notify['trace'] == "three_state":
+        if self.client_notify['trace'] == "mobiperf_3st":
             self.state_avl_event_ts = self.avl_events_3_state
             logger.info(
                 f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
             )
-        elif self.client_notify['trace'] == "two_state":
+        elif self.client_notify['trace'] == "mobiperf_2st":
             self.state_avl_event_ts = self.avl_events_mobiperf_2st
             logger.info(f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}.")
         elif self.client_notify['trace'] == "syn_0":

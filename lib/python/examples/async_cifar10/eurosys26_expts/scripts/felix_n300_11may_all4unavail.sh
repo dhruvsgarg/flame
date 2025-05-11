@@ -51,7 +51,7 @@ aggType="TierFuse"
 selType="TierSelect"
 awareMode="TierTrack"
 
-availability_traces=("syn0" "syn20" "syn50" "mobiperf")
+availability_traces=("syn_0" "syn_20" "syn_50" "mobiperf_3st")
 
 for trace in "${availability_traces[@]}"; do
   echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment for trace=${trace}, mode=${awareMode}, alpha=${alpha} on node=${node_name}..."
