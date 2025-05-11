@@ -49,7 +49,7 @@
         "learningRate": 0.3,
         "rounds": 20000,
         "//": "aggGoal is aggregation goal for fedbuff",
-        "aggGoal": 13,
+        "aggGoal": 10,
         "trackTrainerAvail": {
             "enabled": "False",
             "type": "None",
@@ -71,7 +71,7 @@
     "selector": {
         "sort": "oort",
         "kwargs": {
-            "aggr_num": 13
+            "aggr_num": 10
         }
     },
     "optimizer": {
