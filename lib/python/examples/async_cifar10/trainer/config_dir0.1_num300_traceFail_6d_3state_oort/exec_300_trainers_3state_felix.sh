@@ -4,6 +4,8 @@
 source /serenity/scratch/dgarg/anaconda3/etc/profile.d/conda.sh
 
 conda activate dg_flame
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
+export PATH="/serenity/scratch/dgarg/anaconda3/envs/dg_flame/bin:$PATH"
 
 # Default values
 NUM_AVAIL_GPUS=8
@@ -21,12 +23,21 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-# Update all trainer_*.json files
+# Update all trainer_*.json files using Python
 for json_file in trainer_*.json; do
-    jq --arg enabled "$NOTIFY_ENABLED" \
-       --arg trace "$NOTIFY_TRACE" \
-       '.hyperparameters.client_notify.enabled = $enabled | .hyperparameters.client_notify.trace = $trace' \
-       "$json_file" > tmp.json && mv tmp.json "$json_file"
+    python3 - <<EOF
+import json
+
+fname = "$json_file"
+with open(fname) as f:
+    data = json.load(f)
+
+data["hyperparameters"]["client_notify"]["enabled"] = "$NOTIFY_ENABLED"
+data["hyperparameters"]["client_notify"]["trace"] = "$NOTIFY_TRACE"
+
+with open(fname, "w") as f:
+    json.dump(data, f, indent=4)
+EOF
 done
 
 # Start trainers
