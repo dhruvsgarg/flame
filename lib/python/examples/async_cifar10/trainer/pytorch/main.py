@@ -204,34 +204,31 @@ class PyTorchCifar10Trainer(Trainer):
         pass
 
     def check_and_update_state_avl(self):
-        # NOTE: due to slow gpu model load in initialize(), it is
-        # possible that the channel manager is not yet setup. The
-        # sending of update will fail in that case. Thus, simply
-        # return in case channel manager is not set. Events will start
-        # getting sent after the channel is setup.
         if hasattr(self, "cm") and self.cm is not None:
-            next_event_ts = self.trainer_start_ts + (
-                self.state_avl_event_ts[0][0] / self.speedup_factor
-            )
-            if len(self.state_avl_event_ts) > 0 and time.time() >= next_event_ts:
-                state_to_set = self.state_avl_event_ts.pop(0)[1]
-                old_status = self.avl_state.value
-                try:
-                    self.avl_state = TrainerAvailState(state_to_set)
-                except ValueError:
-                    logger.error(
-                        f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
-                    )
-                    return
-                new_status = self.avl_state.value
-                logger.info(
-                    f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
+            if len(self.state_avl_event_ts) > 0:
+                next_event_ts = self.trainer_start_ts + (
+                    self.state_avl_event_ts[0][0] / self.speedup_factor
                 )
-                #    self.send_availability_status("upload")
-                if self.client_notify["enabled"] == "True":
-                    self._perform_channel_state_update(
-                        tag="upload", state=self.avl_state, timestamp=str(time.time())
+                if time.time() >= next_event_ts:
+                    state_to_set = self.state_avl_event_ts.pop(0)[1]
+                    old_status = self.avl_state.value
+                    try:
+                        self.avl_state = TrainerAvailState(state_to_set)
+                    except ValueError:
+                        logger.error(
+                            f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
+                        )
+                        return
+                    new_status = self.avl_state.value
+                    logger.info(
+                        f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
                     )
+                    if self.client_notify["enabled"] == "True":
+                        self._perform_channel_state_update(
+                            tag="upload", state=self.avl_state, timestamp=str(time.time())
+                        )
+            else:
+                logger.debug(f"No availability events pending for trainer {self.trainer_id}")
         else:
             logger.info(
                 f"Channel manager not set yet for trainer {self.trainer_id}. "
@@ -423,7 +420,10 @@ class PyTorchCifar10Trainer(Trainer):
             # Updated eval duration to be one-third of training
             # duration since it is evidenced on text and through
             # profiling
-            eval_delay = math.floor(self.training_delay_s / 3.0)
+            # Eval is 3X faster than training on CPU
+            # Eval is 10-50X faster than training on CPUs due to NPUs
+            # not supporting training. We take 20X
+            eval_delay = math.floor(self.training_delay_s / 20.0)
             time.sleep(eval_delay / self.speedup_factor)
             logger.debug(
                 f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
