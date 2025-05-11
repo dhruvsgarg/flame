@@ -52,7 +52,8 @@
         "aggGoal": 10,
         "trackTrainerAvail": {
             "enabled": "False",
-            "type": "NA"
+            "type": "NA",
+            "trace": "NA"
         }
     },
     "baseModel": {
