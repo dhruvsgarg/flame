@@ -606,7 +606,7 @@ class TopAggregator(SyncTopAgg):
                 f"top agg staleness list after round {self._round} is "
                 f"{self._aggregator_round_avg_staleness}"
             )
-            logger.info(
+            logger.debug(
                 f"top agg trainer participation in rounds, after round "
                 f"{self._round} is {self._trainer_participation_in_round}"
             )

@@ -1365,11 +1365,11 @@ class AsyncOortSelector(AbstractSelector):
                     # PROP_LAST_EVAL_ROUND is None i.e the trainer has
                     # not trained yet.
                     and ends[end_id].get_property(PROP_LAST_EVAL_ROUND) is not None
-                    # Last eval for the trainer should be atleast 20
+                    # Last eval for the trainer should be atleast 5
                     # rounds old to be considered. This is to limit
                     # comm overhead and assumes that the model hasn't
                     # diverged a lot in this time
-                    and ends[end_id].get_property(PROP_LAST_EVAL_ROUND) - round >= 20
+                    and round - ends[end_id].get_property(PROP_LAST_EVAL_ROUND) >= 35
                 ):
                     # NOTE: Picking from avl_train as well since it
                     # gave us better results. But need to set to low
