@@ -297,7 +297,8 @@ class AsyncOortSelector(AbstractSelector):
                 end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
                 end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
                 end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
-                # Insert to queues tracking stat_util, speed, round data
+                # Insert to queues tracking stat_util, speed, round
+                # data
                 for window in [50, 100, 200]:
                     if end_stat_util is not None:
                         self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
@@ -1360,6 +1361,15 @@ class AsyncOortSelector(AbstractSelector):
                             None,
                         )
                     )
+                    # Disable adding of end to filtered_end if
+                    # PROP_LAST_EVAL_ROUND is None i.e the trainer has
+                    # not trained yet.
+                    and ends[end_id].get_property(PROP_LAST_EVAL_ROUND) is not None
+                    # Last eval for the trainer should be atleast 20
+                    # rounds old to be considered. This is to limit
+                    # comm overhead and assumes that the model hasn't
+                    # diverged a lot in this time
+                    and ends[end_id].get_property(PROP_LAST_EVAL_ROUND) - round >= 20
                 ):
                     # NOTE: Picking from avl_train as well since it
                     # gave us better results. But need to set to low
