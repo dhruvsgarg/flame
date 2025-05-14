@@ -103,7 +103,7 @@ for trace in "${availability_traces[@]}"; do
 
   trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs/log_trainer_${node_name}_${timestamp}_${alpha}_${aggType}_${selType}_${awareMode}_${trace}.log"
   echo "Created trainer log file: ${trainer_log_file}"
-  bash exec_300_trainers_2state.sh > "$trainer_log_file" 2>&1 &
+  bash exec_300_trainers_3state_felix.sh --notify_enabled False --notify_trace "$trace" > "$trainer_log_file" 2>&1 &
   trainer_pid=$!
   echo "Trainer PID: $trainer_pid"
   echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"
