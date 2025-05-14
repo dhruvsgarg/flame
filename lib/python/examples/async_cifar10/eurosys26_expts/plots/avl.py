@@ -62,7 +62,7 @@ colors = {
 }
 labels = {
     "avl_events_syn_0": "UNAVL (0%)",
-    "avl_events_syn_20": "UNAVL (20%)",
+    "avl_events_syn_20": "UNAVL (10%)",
     "avl_events_syn_50": "UNAVL (50%)"
 }
 
