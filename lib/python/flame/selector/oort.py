@@ -607,3 +607,29 @@ class OortSelector(AbstractSelector):
             f"Going to cleanup selector state for "
             f"end_id {end_id} since it has left the channel"
         )
+        
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        """Remove an end from selected ends"""
+        selected_ends = self.selected_ends[self.requester]
+        if end_id in ends.keys():
+            if end_id in selected_ends:
+                logger.debug(
+                    f"Going to remove end_id {end_id} from selected_ends "
+                    f"{selected_ends}"
+                )
+                selected_ends.remove(end_id)
+                self.selected_ends[self.requester] = selected_ends
+                logger.debug(
+                    f"self.selected_ends: {self.selected_ends} after "
+                    f"removing end_id: {end_id}"
+                )
+            else:
+                logger.debug(
+                    f"Attempted to remove end {end_id} from "
+                    f"self.selected_ends {self.selected_ends}, but it wasnt present"
+                )
+        else:
+            logger.debug(
+                f"Attempted to remove end {end_id} from "
+                f"self.selected_ends {self.selected_ends}, but it wasnt in ends"
+            )
