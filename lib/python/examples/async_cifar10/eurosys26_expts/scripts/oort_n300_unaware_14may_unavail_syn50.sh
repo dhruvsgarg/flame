@@ -65,7 +65,7 @@ selType="oort"
 awareMode="unaware"
 
 # Availability traces to run in oracular mode
-availability_traces=("syn50")
+availability_traces=("syn_50")
 
 for trace in "${availability_traces[@]}"; do
   echo "$(date +'%Y-%m-%d %H:%M:%S') Starting experiment for trace=${trace}, mode=${awareMode}, alpha=${alpha} on node=${node_name}..."
