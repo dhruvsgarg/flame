@@ -56,9 +56,9 @@ for key in keys:
 
 # Plot
 colors = {
-    "avl_events_syn_0": "red",
-    "avl_events_syn_20": "blue",
-    "avl_events_syn_50": "green"
+    "avl_events_syn_0": "darkorange",
+    "avl_events_syn_20": "crimson",
+    "avl_events_syn_50": "teal"
 }
 labels = {
     "avl_events_syn_0": "UNAVL (0%)",
