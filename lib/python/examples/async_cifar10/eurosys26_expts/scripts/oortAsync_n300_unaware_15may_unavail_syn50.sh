@@ -90,7 +90,7 @@ for trace in "${availability_traces[@]}"; do
   wandb_run_name="agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}"
 
   echo "Created aggregator log file: ${agg_log_file}"
-  python pytorch/main_oort_agg.py "$config_file" --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
+  python pytorch/main.py "$config_file" --log_to_wandb --wandb_run_name "$wandb_run_name" > "$agg_log_file" 2>&1 &
   agg_pid=$!
   echo "Aggregator PID: $agg_pid"
   sleep 15
