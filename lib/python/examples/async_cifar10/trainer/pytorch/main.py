@@ -505,9 +505,12 @@ def main():
         )
         if t.client_notify["enabled"] == "True":
             logger.info(f"Will send avail notifications for trainer {t.trainer_id}")
-            avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
-            avail_notify_thread.daemon = True
-            avail_notify_thread.start()
+        # Note that even though trainer sends notifications, only
+        # async_oort will use it. Other selectors will not use it so
+        # it can remain enabled.
+        avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
+        avail_notify_thread.daemon = True
+        avail_notify_thread.start()
 
     t.compose()
     t.run()
