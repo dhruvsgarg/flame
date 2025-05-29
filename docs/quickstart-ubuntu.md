@@ -72,10 +72,7 @@ cd lib/python/flame
 conda create -n flame python=3.9
 conda activate flame
 
-pip install google
-pip install tensorflow
-pip install torch
-pip install torchvision
+pip install ../../../requirements.txt
 
 cd ..
 make install
@@ -88,29 +85,30 @@ python -m pip install -e .
 
 ### Running an Example
 
-We will run the MNIST example with one aggregator and one trainer.
+We will run the Async CIFAR10 example with one aggregator and two trainers.
 
 Open two terminal windows.
 
-In the first terminal, once you are in `flame/lib/python/examples/mnist/trainer`, run:
+In the first terminal, once you are in `flame/lib/python/examples/async_cifar10/aggregator`, run:
 
 ```bash
 conda activate flame
 
-python keras/main.py config.json
+python pytorch/main.py default_config.json
 ```
 
-Open another terminal in `flame/lib/python/examples/mnist/aggregator` and run:
+Open two other terminals in `flame/lib/python/examples/async_cifar10/trainer` and run:
 
 ```bash
 conda activate flame
 
-python keras/main.py config.json
+python pytorch/main.py config_dir0.1_num300_traceFail_6d_3state_oort/trainer_100.json
+python pytorch/main.py config_dir0.1_num300_traceFail_6d_3state_oort/trainer_101.json
 ```
 
-In this example, we have one aggregator and one trainer that runs with the same job ID and different task IDs.
-After running, you will see the aggregator (second terminal) sending a global model to the trainer (first terminal), and the trainer sending the updated local model back to the aggregator.
+In this example, we have one aggregator and two trainers that runs with the same job ID and different task IDs.
+After running, you will see the aggregator (first terminal) sending a global model to the trainers (other terminals), and the trainer sending the updated local model back to the aggregator.
 
 This completes one round of communication between the aggregator and trainer.
 
-The current example is set to 20 rounds (see the `hyperparameters` section of the `flame/lib/python/examples/mnist/aggregator/config.json` file), meaning the communication protocol described earlier will repeat 20 times.
+The current example is set to 50 rounds (see the `hyperparameters` section of the `flame/lib/python/examples/mnist/aggregator/config.json` file), meaning the communication protocol described earlier will repeat 50 times.
