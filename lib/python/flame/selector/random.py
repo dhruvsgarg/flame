@@ -141,6 +141,12 @@ class RandomSelector(AbstractSelector):
         # default, availability unaware way of using ends
         eligible_ends = ends
 
+        if len(ends) < self.k:
+            not select & proceed
+        else:
+            select & proceed
+            # Needs a min set of K selectors to move ahead
+
         logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # TODO (REMOVE HARDCODING): remove hard coded number of
         # trainers
