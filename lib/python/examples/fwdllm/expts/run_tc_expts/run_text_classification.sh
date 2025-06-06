@@ -115,6 +115,7 @@ elif [ $FL_ALG = FedSgd ];then
 else
   LOG_DIR=./log/new
   mkdir -p "$LOG_DIR"
+  echo "Did not run with either FedSGD or FedAVG"
 
   # Generate timestamp once
   RUN_TIMESTAMP=$(date +%d_%m_%H_%M)
