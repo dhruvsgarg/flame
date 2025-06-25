@@ -1183,7 +1183,35 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
     def _aggregate_grads_sync(self, tag: str) -> None:
-        """Aggregate trainer gradients synchronously."""
+        """
+        Aggregate trainer gradients synchronously.
+
+        This method is responsible for collecting gradient updates from all selected trainers
+        for the current round, performing aggregation, and updating the global model state.
+        It also manages bookkeeping for round and trainer participation, and triggers evaluation
+        if the variance condition is met.
+
+        High-level flow:
+        1. Wait for and receive gradient messages from trainers via the communication channel.
+        2. For each valid message, update trainer/round metadata and accumulate gradients.
+        3. Once the aggregation goal (number of required updates) is reached, perform aggregation.
+        4. Optionally, evaluate the model if the variance condition is satisfied.
+        5. Update round/data_id counters and log relevant statistics.
+
+        The actual aggregation of gradients is performed by the self.aggregate(self._round) call,
+        which typically averages or otherwise combines the collected gradients and updates the model parameters.
+
+        The self.var_good_enough variable (sometimes referred to as self.var or self.var_good_enough)
+        is a boolean flag that determines whether the variance of the collected gradients is below a certain threshold,
+        indicating that the aggregated gradients are "good enough" for updating the model and possibly for evaluation.
+        This variable is usually set during or after aggregation, often inside the aggregate() method,
+        where the variance of the gradients is computed and compared to a configured threshold.
+        If the variance is low enough, self.var_good_enough is set to True, triggering evaluation and round advancement.
+        Otherwise, more iterations may be performed to collect additional gradients.
+
+        Args:
+            tag (str): The tag identifying the communication channel to use.
+        """
         logger.info("starting aggregate_grads_sync")
         self.log_memory("start _aggregate_grads_sync", self.device)
         self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
@@ -1196,22 +1224,20 @@ class TopAggregator(SyncTopAgg):
             return
 
         logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives first NOTE:
-        # (DG) Right now, the leave notifications also cause a message to be
-        # processed and yield (None,None) from recv_fifo().
         if channel.ends(VAL_CH_STATE_RECV) is None:
             logger.info("no ends yet")
             return
 
         total = 0
 
-        # receive local model parameters from trainers
+        # Receive local model parameters (gradients) from trainers
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
                 logger.info(f"No data from {end}; skipping it")
                 continue
 
+            # Only process messages that contain both gradients and variance check gradients
             if (
                 MessageType.GRADIENTS in msg
                 and MessageType.GRADIENTS_FOR_VAR_CHECK in msg
@@ -1222,22 +1248,13 @@ class TopAggregator(SyncTopAgg):
                 )
                 self._agg_goal_cnt += 1
 
-                # For OORT selector NOTE: (DG) Last selected round should have
-                # ideally been set in distribute weights. But it was here in the
-                # old oort code and ive kept it. Instead of
-                # PROP_LAST_SELECTED_ROUND, it should have been
-                # PROP_LAST_UPDATE_RECVD_ROUND.
+                # Update trainer properties for tracking
                 channel.set_end_property(
                     end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
                 )
-
-                # Set last eval round for the trainer since training also means
-                # that eval was done for the same round.
                 channel.set_end_property(
                     end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
                 )
-                # calculate round duration for this end, if the round number
-                # information is identical with round_start_time
                 logger.debug(
                     f"Getting channel property {PROP_ROUND_START_TIME} for "
                     f"end {end}"
@@ -1251,9 +1268,7 @@ class TopAggregator(SyncTopAgg):
                     f"Returned round_start_time_tup: {round_start_time_tup} for "
                     f"end {end} and timestamp {timestamp}"
                 )
-
-                # TODO: (DG) Also set the end property for task=eval done at
-                # timestamp=current.
+                # (Optional) Set additional properties as needed
 
             else:
                 logger.error(
@@ -1264,8 +1279,7 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
-            # logger.debug(f"received message in agg_grads_sync {msg} from {end}")
-            # capture telemetry on trainer participation in rounds
+            # Bookkeeping for trainer participation
             channel._selector.ordered_updates_recv_ends.append(end)
             self._updates_in_queue += 1
             self._per_round_update_list.append(end)
@@ -1277,8 +1291,6 @@ class TopAggregator(SyncTopAgg):
 
             # Process the gradients
             if MessageType.GRADIENTS in msg:
-                # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
-                # self.model)
                 trainer_gradients = msg[MessageType.GRADIENTS]
                 self.aggregate_grads_from_trainers(trainer_gradients)
 
@@ -1309,6 +1321,7 @@ class TopAggregator(SyncTopAgg):
                 f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
             )
 
+            # Stop collecting if aggregation goal is reached
             if self._agg_goal_cnt == self._agg_goal:
                 logger.info(
                     f"Reached agg_goal of {self._agg_goal} since agg_goal_count is {self._agg_goal_cnt}. Breaking from for loop, proceeding to aggregate."
@@ -1318,7 +1331,6 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
-        # logger.info("calling aggregate for fwdllm (Sync)")
         self.grad_pool.append(self.grad)
         self.print_trainable_params_stats(
             location="[agg_start,_aggregate_grads_sync()]"
@@ -1332,29 +1344,34 @@ class TopAggregator(SyncTopAgg):
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
+        # The aggregate() method is responsible for combining the collected gradients
+        # (e.g., by averaging them) and updating the model parameters accordingly.
+        # It may also compute the variance of the gradients and set self.var_good_enough
+        # (or self.var) to True if the variance is below a configured threshold.
+        # This flag is then used to determine whether to proceed to evaluation and round advancement.
         self.aggregate(self._round)
         self.print_trainable_params_stats(
             location="[after_aggregate(),_aggregate_grads_sync()]"
         )
         self._agg_goal_cnt = 0
-        # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
 
         round_to_print = self._round
         data_id_to_print = self.data_id
 
+        # If the variance of the gradients is good enough (as determined by aggregate()),
+        # evaluate the model and advance to the next round/data bin.
         if self.var_good_enough:
-            # evaluate model to calculate loss
             result, _, _ = self.eval_model()
             logger.info(f"eval loss = {result['eval_loss']}")
             self.data_id += 1
             self.iteration_per_data_id = 0
-            # TODO: need to replace it with per end property
             if self.data_id == self.total_data_bins:
                 logger.info("incrementing round number now ")
                 self._round += 1
                 self.data_id = 0
         else:
+            # Otherwise, increment the iteration counter for the current data bin.
             self.iteration_per_data_id += 1
 
         logger.debug(f"aggregation finished for round {round_to_print}")
@@ -1371,7 +1388,6 @@ class TopAggregator(SyncTopAgg):
         )
 
         self.log_memory("end _aggregate_grads_sync", self.device)
-
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
@@ -1403,7 +1419,7 @@ class TopAggregator(SyncTopAgg):
             with torch.no_grad():
                 batch = tuple(t for t in batch)
                 x = batch[1].to(device)
-                labels = batch[4].to(device)
+                labels = batch[4].to(device)        # moved to GPU
 
                 output = self.model(x)
                 logits = output[0]
@@ -1420,6 +1436,7 @@ class TopAggregator(SyncTopAgg):
                 if i != (n_batches - 1)
                 else test_sample_len
             )
+            # todo(gaurav): figure out if it moved the tensor from GPU to CPU
             preds[start_index:end_index] = logits.detach().cpu().numpy()
             out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
 
@@ -1583,6 +1600,7 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
+    @override
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """Distribute a global model in synchronous FL fashion - for FwdLLM.
         This method actually sends either gradients or calc_more_var to

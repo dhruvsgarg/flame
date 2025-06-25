@@ -49,7 +49,7 @@ class FedSGDAggregator(TopAggregator):
         self.worker_num = worker_num
         self.device = device
         self.model_dict = dict()
-        self.sample_num_dict = dict()
+        self.sample_num_dict = dict()               # ?
         self.flag_client_model_uploaded_dict = dict()
 
         for idx in range(self.worker_num):
