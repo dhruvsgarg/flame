@@ -76,6 +76,7 @@ class Trainer(Role, metaclass=ABCMeta):
     @abstract_attribute
     def dataset_size(self):
         """Abstract attribute for size of dataset used to train."""
+        
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
@@ -293,7 +294,7 @@ class Trainer(Role, metaclass=ABCMeta):
                                     full_grad.append(
                                         torch.zeros_like(param, device="cpu")
                                     )
-                        if self.data_id % 2:
+                        if self.data_id % 2:            # FwdLLM logic
                             self.trainer.model_trainer.old_grad = full_grad
                         else:
                             self.trainer.model_trainer.old_grad = None

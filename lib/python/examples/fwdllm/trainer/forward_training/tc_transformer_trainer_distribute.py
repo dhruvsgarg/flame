@@ -280,7 +280,7 @@ class ForwardTextClassificationTrainer:
             f"Trainable parameters: {len(trainable_params)} | Size: {human_readable_size(get_size_in_bytes(trainable_params))}"
         )
         logging.info(
-            f"Total parameters: {len(list(self.model.parameters()))} | Size: {human_readable_size(get_size_in_bytes(list(self.model.parameters())))}"
+            f"Total parameters: {len(list(self.model.parameters()))} | Size: {human_readable_size(get_size_in_bytes(list(self.model.parameters())))}"       # .shape()
         )
         logging.info(
             f"Gradients: {len(gradients)} | Size: {human_readable_size(get_size_in_bytes(gradients))}"

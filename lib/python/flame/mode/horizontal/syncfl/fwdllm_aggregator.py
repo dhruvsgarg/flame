@@ -1331,7 +1331,7 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
-        self.grad_pool.append(self.grad)
+        self.grad_pool.append(self.grad)          # appended to grad_pool
         self.print_trainable_params_stats(
             location="[agg_start,_aggregate_grads_sync()]"
         )
