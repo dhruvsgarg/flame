@@ -155,6 +155,7 @@ class FedSGDTrainer(Trainer):
         self.data_id = None
         self.total_data_bins = None
         self.grad_for_var_check = None
+        self.data_written_to_file = False  # Flag to prevent writing data multiple times
 
     def _write_client_data_to_file(self, client_id, train_data, round_idx=None):
         """Write all training data for a client to a JSON file"""
@@ -222,6 +223,24 @@ class FedSGDTrainer(Trainer):
         self.model.to(self.device)
         logger.debug(f"self.device: {self.device}")
         self.total_data_bins = len(self.train_local[0])
+        
+        # Write training data to files during initialization (data doesn't change across rounds)
+        # Use args.client_idx since that's what's used to set up the training data
+        if not self.data_written_to_file and hasattr(self.args, 'client_idx') and self.train_local is not None:
+            logger.info(f"Writing training data to files during initialization for client {self.args.client_idx}")
+            client_id = self.args.client_idx
+            if len(self.train_local) > 0:
+                # Use None for round_idx since this is initialization, not a specific round
+                self._write_client_data_to_file(client_id, self.train_local[0], round_idx=None)
+                self.data_written_to_file = True  # Mark as written
+                logger.info(f"Successfully wrote training data for client {client_id} during initialization")
+            else:
+                logger.warning(f"No training data available for client {client_id} during initialization")
+        elif self.data_written_to_file:
+            logger.info("Training data already written to files, skipping initialization write")
+        else:
+            logger.warning("Cannot write training data during initialization: missing client_idx or train_local")
+        
         # loading data to gpu
         # NRL TODO: This didnt work. Error: expected all tensors to be on the same device. Needed to load them on gpu again during train_model
         for each_train_local in self.train_local[0]:
@@ -251,13 +270,21 @@ class FedSGDTrainer(Trainer):
         ]
 
         # Write all training data for each client to separate files
-        for i, client_id in enumerate(client_index):
-            if i < len(self.train_local):
-                self._write_client_data_to_file(client_id, self.train_local[i], round_idx)
+        # Only write if we haven't written during initialization
+        if not self.data_written_to_file:
+            logger.info(f"Writing training data to files during update_dataset for clients {client_index}")
+            for i, client_id in enumerate(client_index):
+                if i < len(self.train_local):
+                    self._write_client_data_to_file(client_id, self.train_local[i], round_idx)
+            self.data_written_to_file = True
+            logger.info("Successfully wrote training data for all clients during update_dataset")
+        else:
+            logger.info("Training data already written to files during initialization, skipping update_dataset write")
 
     def train(self, round_idx=None):
         logger.info("entered train where weights = params and not grad")
         self.args.round_idx = round_idx
+        
         self.trainer.train(self.train_local, self.device, self.args)
 
         weights = self.trainer.get_model_params()
