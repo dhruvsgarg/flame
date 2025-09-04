@@ -25,6 +25,55 @@ import os
 
 logger = logging.getLogger(__name__)
 
+import hashlib
+
+def _rng_state_hash(gen: torch.Generator, device=None):
+        """Return a short hash of RNG state for logging."""
+        state = gen.get_state()
+        return hashlib.sha256(state.numpy().tobytes()).hexdigest()
+
+def logged_randn(*size, device=None, generator=None, label="randn", train_meta=None, **kwargs):
+    """Wrapper for torch.randn that logs device + RNG info."""
+    if device is None:
+        device = torch.device("cpu")
+    else:
+        device = torch.device(device)
+
+    # Pick generator: provided or default one for this device
+    if generator is None:
+        if device.type == "cpu":
+            gen = torch.default_generator
+        else:
+            gen = torch.cuda.default_generators[device.index]
+    else:
+        gen = generator
+
+    pre_state = _rng_state_hash(gen)
+
+    res = torch.randn(*size, device=device, generator=gen, **kwargs)
+
+    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, size={size}, kwargs={kwargs}, pre_state={pre_state}")
+    return res
+
+# todo: add generator support
+def logged_randn_like(input_tensor, generator=None, label="randn_like", train_meta=None, **kwargs):
+    """Wrapper for torch.randn_like that logs device + RNG info."""
+    device = input_tensor.device
+
+    if generator is None:
+        if device.type == "cpu":
+            gen = torch.default_generator
+        else:
+            gen = torch.cuda.default_generators[device.index]
+    else:
+        gen = generator
+
+    pre_state = _rng_state_hash(gen)
+
+    res = torch.randn_like(input_tensor, **kwargs)
+
+    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, input_shape={input_tensor.shape}, kwargs={kwargs}, pre_state={pre_state}")
+    return res
 
 class ForwardTextClassificationTrainer:
     def __init__(
@@ -130,7 +179,7 @@ class ForwardTextClassificationTrainer:
             f"Device: {device}, trainer_id: {self.trainer_id}"
         )
 
-    def train_model(self, device=None):
+    def train_model(self, device=None, train_meta=None):
         if not device:
             device = self.device
 
@@ -162,7 +211,9 @@ class ForwardTextClassificationTrainer:
                 if self.grad is not None and v.requires_grad:
                     self.total_rng_iter += 1
                     shape = v.shape
-                    candidate_v = torch.randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng)
+
+                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, train_meta=train_meta)
+                    
                     target_grad = self.grad[index]
                     # if self.args.client_idx == 0 or self.args.client_idx == 1:
                     #     logging.info(f"target_grad for client_idx {self.args.client_idx} is {target_grad}")
@@ -202,10 +253,11 @@ class ForwardTextClassificationTrainer:
 
         with torch.no_grad():
             for epoch in range(self.args.epochs):
+                logging.info(f"train_dl size: {len(self.train_dl)}")
                 for batch_idx, batch in enumerate(self.train_dl):
                     curr_client_idx = self.args.client_idx
                     self.log_memory(
-                        f"epoch{epoch}_batch{curr_client_idx}_start", device
+                        f"epoch{epoch}_batch{batch_idx}_client{curr_client_idx}_start", device
                     )
 
                     x = batch[1].to(device, non_blocking=True)
@@ -215,6 +267,7 @@ class ForwardTextClassificationTrainer:
                         v_params = [
                             (
                                 v_buffer[i][curr_client_idx].to(device)
+                                # v_buffer[i][batch_idx].to(device)
                                 if p.requires_grad
                                 else torch.zeros_like(p)
                             )
@@ -223,7 +276,7 @@ class ForwardTextClassificationTrainer:
                     else:
                         v_params = [
                             (
-                                torch.randn_like(p, device=device)
+                                logged_randn_like(p, device=device, train_meta=train_meta)
                                 if p.requires_grad
                                 else torch.zeros_like(p, device=device)
                             )
