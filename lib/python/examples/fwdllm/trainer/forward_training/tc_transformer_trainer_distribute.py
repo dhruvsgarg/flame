@@ -32,7 +32,7 @@ def _rng_state_hash(gen: torch.Generator, device=None):
         state = gen.get_state()
         return hashlib.sha256(state.numpy().tobytes()).hexdigest()
 
-def logged_randn(*size, device=None, generator=None, label="randn", train_meta=None, **kwargs):
+def logged_randn(*size, device=None, generator=None, label="randn", train_meta=None, param_name=None, **kwargs):
     """Wrapper for torch.randn that logs device + RNG info."""
     if device is None:
         device = torch.device("cpu")
@@ -52,11 +52,11 @@ def logged_randn(*size, device=None, generator=None, label="randn", train_meta=N
 
     res = torch.randn(*size, device=device, generator=gen, **kwargs)
 
-    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, size={size}, kwargs={kwargs}, pre_state={pre_state}")
+    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
     return res
 
 # todo: add generator support
-def logged_randn_like(input_tensor, generator=None, label="randn_like", train_meta=None, **kwargs):
+def logged_randn_like(input_tensor, generator=None, label="randn_like", train_meta=None, param_name=None, **kwargs):
     """Wrapper for torch.randn_like that logs device + RNG info."""
     device = input_tensor.device
 
@@ -72,7 +72,7 @@ def logged_randn_like(input_tensor, generator=None, label="randn_like", train_me
 
     res = torch.randn_like(input_tensor, **kwargs)
 
-    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, input_shape={input_tensor.shape}, kwargs={kwargs}, pre_state={pre_state}")
+    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, input_shape={input_tensor.shape}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
     return res
 
 class ForwardTextClassificationTrainer:
@@ -199,6 +199,7 @@ class ForwardTextClassificationTrainer:
 
         if self.args.perturbation_sampling:
             v_num = self.args.client_num_per_round
+            # todo(Gaurav): Shouldn't v_num be 1?
 
             if self.args.var_control:
                 # self.grad = self.old_grad
@@ -212,7 +213,7 @@ class ForwardTextClassificationTrainer:
                     self.total_rng_iter += 1
                     shape = v.shape
 
-                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, train_meta=train_meta)
+                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, train_meta=train_meta, param_name=k)
                     
                     target_grad = self.grad[index]
                     # if self.args.client_idx == 0 or self.args.client_idx == 1:
