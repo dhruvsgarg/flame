@@ -183,6 +183,9 @@ class ForwardTextClassificationTrainer:
         if not device:
             device = self.device
 
+        if train_meta:
+            train_meta["client_idx"] = self.args.client_idx
+
         self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
@@ -230,8 +233,10 @@ class ForwardTextClassificationTrainer:
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
 
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                    # Select only one index based on client_idx to ensure different trainers choose different perturbations
+                    selected_idx = sorted_indices[:v_num][self.args.client_idx]
                     v_buffer[index] = [
-                        candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
+                        candidate_v[selected_idx].reshape(v.shape)
                     ]
                     
                     del candidate_v, target_grad, cos_sim, sorted_indices, shape
@@ -267,8 +272,9 @@ class ForwardTextClassificationTrainer:
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
                             (
-                                v_buffer[i][curr_client_idx].to(device)
+                                # v_buffer[i][curr_client_idx].to(device)
                                 # v_buffer[i][batch_idx].to(device)
+                                v_buffer[i][0].to(device)
                                 if p.requires_grad
                                 else torch.zeros_like(p)
                             )
