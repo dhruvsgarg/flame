@@ -32,6 +32,15 @@ def _rng_state_hash(gen: torch.Generator, device=None):
         state = gen.get_state()
         return hashlib.sha256(state.numpy().tobytes()).hexdigest()
 
+def _calculate_hash(tensor):
+    """Calculate a hash for a tensor for logging."""
+    return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
+
+def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
+    """Calculate a rolling hash for a tensor for logging."""
+    # Encode the string to bytes before concatenating
+    return hashlib.sha256(tensor.detach().cpu().numpy().tobytes() + hash_str.encode('utf-8')).hexdigest()
+
 def logged_randn(*size, device=None, generator=None, label="randn", train_meta=None, param_name=None, **kwargs):
     """Wrapper for torch.randn that logs device + RNG info."""
     if device is None:
@@ -183,9 +192,6 @@ class ForwardTextClassificationTrainer:
         if not device:
             device = self.device
 
-        if train_meta:
-            train_meta["client_idx"] = self.args.client_idx
-
         self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
@@ -210,6 +216,8 @@ class ForwardTextClassificationTrainer:
                 # logging.info(f"self.grad for client_idx {self.args.client_idx} is {self.grad}")
 
             v_buffer = {}
+            all_perturbations_hash = ""
+            selected_perturbation_hash = ""
             index = 0
             for k, v in self.model.named_parameters():
                 if self.grad is not None and v.requires_grad:
@@ -230,17 +238,23 @@ class ForwardTextClassificationTrainer:
                         # logging.info(f"candidate_v for client_idx {self.args.client_idx} is {candidate_v}")
                         # flag = False
 
+                    logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
+                    all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
+
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
 
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-                    # Select only one index based on client_idx to ensure different trainers choose different perturbations
-                    selected_idx = sorted_indices[:v_num][self.args.client_idx]
                     v_buffer[index] = [
-                        candidate_v[selected_idx].reshape(v.shape)
+                        candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
                     ]
                     
+                    selected_idx = sorted_indices[:v_num][self.args.client_idx]
+                    perturbation_hash = _calculate_rolling_hash(v_buffer[selected_idx], perturbation_hash)
+
                     del candidate_v, target_grad, cos_sim, sorted_indices, shape
                 index += 1
+
+            logging.info(f"Selected perturbation for client_idx {self.args.client_idx} is {perturbation_hash}. All perturbations hash is {all_perturbations_hash}")
                 
         # if self.args.client_idx == 0 or self.args.client_idx == 1:
         #     logging.info(f"v_buffer shapes for client_idx {self.args.client_idx}: " + str({k: [v.shape for v in v_list] for k, v_list in v_buffer.items()}))
@@ -272,9 +286,8 @@ class ForwardTextClassificationTrainer:
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
                             (
-                                # v_buffer[i][curr_client_idx].to(device)
+                                v_buffer[i][curr_client_idx].to(device)
                                 # v_buffer[i][batch_idx].to(device)
-                                v_buffer[i][0].to(device)
                                 if p.requires_grad
                                 else torch.zeros_like(p)
                             )
