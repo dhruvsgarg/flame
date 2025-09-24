@@ -141,11 +141,15 @@ class RandomSelector(AbstractSelector):
         # default, availability unaware way of using ends
         eligible_ends = ends
 
-        logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
+        logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
         if len(ends) < self.k:
             logger.debug(f"not enough ends, need atleast {self.k}")
-            time.sleep(8*4)
+            time.sleep(0.1)
+            return {}
+
+        # Enforce global min-start if configured (via kwargs/hyperparameters)
+        if self.enforce_min_start(len(ends)):
             return {}
 
         k = min(len(ends), self.k)
@@ -157,7 +161,7 @@ class RandomSelector(AbstractSelector):
             round = channel_props["round"]
         else:
             round = 0
-            logger.warning(f"round not found in channel_props: {channel_props}")
+            logger.warning(f"round not found in channel_props: {channel_props}. Defaulting to 0")
         
 
         if len(self.selected_ends) == 0 or round > self.round:
