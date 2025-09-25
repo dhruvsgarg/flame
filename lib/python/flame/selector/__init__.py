@@ -35,17 +35,6 @@ class AbstractSelector(ABC):
             setattr(self, key, value)
         self.selected_ends = set()
 
-    def _get_min_start_threshold(self) -> Union[None, int]:
-        """Return min-start threshold if configured.
-        Values are expected in selector kwargs (merged with hyperparameters).
-        """
-        
-            try:
-                return int(self.minInitialTrainers)
-            except Exception:
-                pass
-        return None
-
     def enforce_min_start(self, ends_count: int) -> bool:
         """Return True if selection should wait due to min-start threshold.
         """
@@ -53,7 +42,7 @@ class AbstractSelector(ABC):
         if threshold is None:
             return False
         if ends_count < threshold:
-            logging.getLogger(__name__).info(
+            logging.getLogger(__name__).debug(
                 f"Not enough ends to start selection, need at least {threshold}"
             )
             time.sleep(0.1)
