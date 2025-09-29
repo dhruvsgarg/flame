@@ -50,7 +50,7 @@ def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
     # Encode the string to bytes before concatenating
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes() + hash_str.encode('utf-8')).hexdigest()
 
-def logged_randn(*size, device=None, generator=None, label="randn", train_meta=None, param_name=None, **kwargs):
+def _randn_wrapper(*size, device=None, generator=None, label="randn", logging_state=None, param_name=None, **kwargs):
     """Wrapper for torch.randn that logs device + RNG info."""
     if device is None:
         device = torch.device("cpu")
@@ -70,10 +70,10 @@ def logged_randn(*size, device=None, generator=None, label="randn", train_meta=N
 
     res = torch.randn(*size, device=device, generator=gen, **kwargs)
 
-    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, train_meta={train_meta}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
+    logging.debug(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
     return res
 
-def logged_randn_like(input_tensor, generator=None, label="randn_like", train_meta=None, param_name=None, device=None, **kwargs):
+def _randn_like_wrapper(input_tensor, generator=None, label="randn_like", logging_state=None, param_name=None, device=None, **kwargs):
     """Wrapper for torch.randn_like that logs device + RNG info (older PyTorch, no generator kwarg)."""
     if not device:
         device = input_tensor.device
@@ -104,11 +104,11 @@ def logged_randn_like(input_tensor, generator=None, label="randn_like", train_me
         torch.cuda.synchronize(device)
     post_state = _rng_state_hash(gen)
 
-    logging.info(
+    logging.debug(
         f"[{label}] device={device}, generator={gen}, "
         f"input_shape={input_tensor.shape}, "
         f"post_state={post_state}, pre_state={pre_state}, "
-        f"train_meta={train_meta}, "
+        f"logging_state={logging_state}, "
         f"kwargs={kwargs}, param_name={param_name}"
     )
     return res
@@ -220,7 +220,7 @@ class ForwardTextClassificationTrainer:
             f"Device: {device}, trainer_id: {self.trainer_id}"
         )
 
-    def train_model(self, device=None, train_meta=None):
+    def train_model(self, device=None, logging_state=None):
         if not device:
             device = self.device
 
@@ -259,7 +259,7 @@ class ForwardTextClassificationTrainer:
                     self.total_rng_iter += 1
                     shape = v.shape
 
-                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, train_meta=train_meta, param_name=k)
+                    candidate_v = _randn_wrapper((v_num * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
                     
                     target_grad = self.grad[index]
                     # if self.args.client_idx == 0 or self.args.client_idx == 1:
@@ -340,7 +340,7 @@ class ForwardTextClassificationTrainer:
                     else:
                         v_params = [
                             (
-                                logged_randn_like(p, generator=self.torch_cuda_rng, train_meta=train_meta)
+                                _randn_like_wrapper(p, generator=self.torch_cuda_rng, logging_state=logging_state)
                                 if p.requires_grad
                                 else torch.zeros_like(p, device=device)
                             )

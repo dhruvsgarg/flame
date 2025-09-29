@@ -140,8 +140,8 @@ def create_model(args, formulation="classification"):
         for n, p in model.named_parameters():
             if not ("bias" in n or "classifier" in n):
                 p.requires_grad = False
-    print("after lora after lora after lora after lora after lora")
-    print(model)
+    # print("after lora after lora after lora after lora after lora")
+    # print(model)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     return config, model, tokenizer
 
