@@ -230,6 +230,7 @@ class ForwardTextClassificationTrainer:
         gc.collect()
         torch.cuda.empty_cache()
 
+        self.model.eval()
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
@@ -433,6 +434,7 @@ class ForwardTextClassificationTrainer:
             f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB, Δ: {(allocated_after-allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
         )
 
+        self.model.train()
         return global_step, tr_loss / global_step if global_step > 0 else 0.0
 
     def eval_model(self, epoch=0, global_step=0, device=None):
