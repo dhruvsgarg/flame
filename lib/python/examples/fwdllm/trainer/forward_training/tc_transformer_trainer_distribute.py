@@ -50,11 +50,7 @@ def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
     # Encode the string to bytes before concatenating
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes() + hash_str.encode('utf-8')).hexdigest()
 
-<<<<<<< Updated upstream
 def _randn_wrapper(*size, device=None, generator=None, label="randn", logging_state=None, param_name=None, **kwargs):
-=======
-def logged_randn(*size, device=None, generator=None, label="randn", logging_state=None, param_name=None, **kwargs):
->>>>>>> Stashed changes
     """Wrapper for torch.randn that logs device + RNG info."""
     if device is None:
         device = torch.device("cpu")
@@ -74,17 +70,10 @@ def logged_randn(*size, device=None, generator=None, label="randn", logging_stat
 
     res = torch.randn(*size, device=device, generator=gen, **kwargs)
 
-<<<<<<< Updated upstream
     logging.debug(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
     return res
 
 def _randn_like_wrapper(input_tensor, generator=None, label="randn_like", logging_state=None, param_name=None, device=None, **kwargs):
-=======
-    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
-    return res
-
-def logged_randn_like(input_tensor, generator=None, label="randn_like", logging_state=None, param_name=None, device=None, **kwargs):
->>>>>>> Stashed changes
     """Wrapper for torch.randn_like that logs device + RNG info (older PyTorch, no generator kwarg)."""
     if not device:
         device = input_tensor.device
@@ -269,11 +258,7 @@ class ForwardTextClassificationTrainer:
                     self.total_rng_iter += 1
                     shape = v.shape
 
-<<<<<<< Updated upstream
                     candidate_v = _randn_wrapper((v_num * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-=======
-                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
->>>>>>> Stashed changes
                     
                     target_grad = self.grad[index]
                     # if self.args.client_idx == 0 or self.args.client_idx == 1:
@@ -350,11 +335,7 @@ class ForwardTextClassificationTrainer:
                     else:
                         v_params = [
                             (
-<<<<<<< Updated upstream
                                 _randn_like_wrapper(p, generator=self.torch_cuda_rng, logging_state=logging_state)
-=======
-                                logged_randn_like(p, generator=self.torch_cuda_rng, logging_state=logging_state)
->>>>>>> Stashed changes
                                 if p.requires_grad
                                 else torch.zeros_like(p, device=device)
                             )
