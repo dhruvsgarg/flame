@@ -50,7 +50,11 @@ def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
     # Encode the string to bytes before concatenating
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes() + hash_str.encode('utf-8')).hexdigest()
 
+<<<<<<< Updated upstream
 def _randn_wrapper(*size, device=None, generator=None, label="randn", logging_state=None, param_name=None, **kwargs):
+=======
+def logged_randn(*size, device=None, generator=None, label="randn", logging_state=None, param_name=None, **kwargs):
+>>>>>>> Stashed changes
     """Wrapper for torch.randn that logs device + RNG info."""
     if device is None:
         device = torch.device("cpu")
@@ -70,10 +74,17 @@ def _randn_wrapper(*size, device=None, generator=None, label="randn", logging_st
 
     res = torch.randn(*size, device=device, generator=gen, **kwargs)
 
+<<<<<<< Updated upstream
     logging.debug(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
     return res
 
 def _randn_like_wrapper(input_tensor, generator=None, label="randn_like", logging_state=None, param_name=None, device=None, **kwargs):
+=======
+    logging.info(f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}")
+    return res
+
+def logged_randn_like(input_tensor, generator=None, label="randn_like", logging_state=None, param_name=None, device=None, **kwargs):
+>>>>>>> Stashed changes
     """Wrapper for torch.randn_like that logs device + RNG info (older PyTorch, no generator kwarg)."""
     if not device:
         device = input_tensor.device
@@ -183,7 +194,7 @@ class ForwardTextClassificationTrainer:
         self.var = 0
         logger.info(f"Client Trainer learning rate: {self.args.learning_rate}")
         
-        # Initialize RNGs with client_ids and a non-static seed like 42, to avoid all trainers generating the same sequence of perturbations, which was stalling the accuracy increase
+        # Initialized RNGs with client_ids and the exact same static seed (42), to avoid all trainers generating the same sequence of perturbations, which was stalling the accuracy increase
         self.torch_rng = torch.Generator(device="cpu")
         self.torch_rng.manual_seed(self.args.client_idx)
         self.torch_cuda_rng = torch.Generator(device="cuda")
@@ -230,7 +241,6 @@ class ForwardTextClassificationTrainer:
         gc.collect()
         torch.cuda.empty_cache()
 
-        self.model.eval()
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
@@ -259,7 +269,11 @@ class ForwardTextClassificationTrainer:
                     self.total_rng_iter += 1
                     shape = v.shape
 
+<<<<<<< Updated upstream
                     candidate_v = _randn_wrapper((v_num * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+=======
+                    candidate_v = logged_randn((v_num * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+>>>>>>> Stashed changes
                     
                     target_grad = self.grad[index]
                     # if self.args.client_idx == 0 or self.args.client_idx == 1:
@@ -282,10 +296,6 @@ class ForwardTextClassificationTrainer:
                     v_buffer[index] = [
                         candidate_v[i].reshape(v.shape) for i in sorted_indices[:v_num]
                     ]
-                    
-                    # selected_idx = sorted_indices[:v_num][self.args.client_idx]
-                    # logging.info(f"sorted_indices[:v_num] is {sorted_indices[:v_num]}, filtered selected_idx for client_idx {self.args.client_idx} is {selected_idx}, cos_sim[selected_idx] is {cos_sim[selected_idx]}")
-                    # selected_perturbation_hash = _calculate_rolling_hash(v_buffer[index][self.args.client_idx], selected_perturbation_hash)
 
                     selected_perturbation_hash = None
                     if not self.args.generate_extra_perturbations:
@@ -295,7 +305,7 @@ class ForwardTextClassificationTrainer:
                 index += 1
 
             if self.grad is not None:
-                logging.info(f"Selected perturbation for client_idx {self.args.client_idx} is {selected_perturbation_hash}. All perturbations hash is {all_perturbations_hash}")
+                logging.debug(f"Selected perturbation for client_idx {self.args.client_idx} is {selected_perturbation_hash}. All perturbations hash is {all_perturbations_hash}")
                 
         # if self.args.client_idx == 0 or self.args.client_idx == 1:
         #     logging.info(f"v_buffer shapes for client_idx {self.args.client_idx}: " + str({k: [v.shape for v in v_list] for k, v_list in v_buffer.items()}))
@@ -340,39 +350,43 @@ class ForwardTextClassificationTrainer:
                     else:
                         v_params = [
                             (
+<<<<<<< Updated upstream
                                 _randn_like_wrapper(p, generator=self.torch_cuda_rng, logging_state=logging_state)
+=======
+                                logged_randn_like(p, generator=self.torch_cuda_rng, logging_state=logging_state)
+>>>>>>> Stashed changes
                                 if p.requires_grad
                                 else torch.zeros_like(p, device=device)
                             )
                             for p in self.params
                         ]
-                    logging.info(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
-                    logging.info(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
+                    logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
+                    logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
                     torch.backends.cudnn.deterministic = True
                     torch.backends.cudnn.benchmark = False
-                    # def wrapped_func(p):
-                    #     return functional_get_loss(
-                    #         p,
-                    #         self.fmodel,
-                    #         x,
-                    #         labels,
-                    #         num_classes=self.num_labels,
-                    #         buffers=self.buffers,
-                    #     )
-                    # loss, jvp = calculate_jvp_flame(wrapped_func, self.params, v_params)
+                    def wrapped_func(p):
+                        return functional_get_loss(
+                            p,
+                            self.fmodel,
+                            x,
+                            labels,
+                            num_classes=self.num_labels,
+                            buffers=self.buffers,
+                        )
+                    loss, jvp = calculate_jvp(wrapped_func, self.params, v_params)
                     
 
-                    f = partial(
-                        functional_get_loss,
-                        model=self.fmodel,
-                        buffers = self.buffers,
-                        num_classes = self.num_labels,
-                        x=x,
-                        t=labels,
-                    )
+                    # f = partial(
+                    #     functional_get_loss,
+                    #     model=self.fmodel,
+                    #     buffers = self.buffers,
+                    #     num_classes = self.num_labels,
+                    #     x=x,
+                    #     t=labels,
+                    # )
 
-                    loss, jvp = calculate_jvp(f, self.params, v_params)
+                    # loss, jvp = calculate_jvp_original(f, self.params, v_params)
                     jvp = jvp.to(device)
 
                     for j, fg in enumerate(self.grad):
@@ -438,7 +452,6 @@ class ForwardTextClassificationTrainer:
             f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB, Δ: {(allocated_after-allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
         )
 
-        self.model.train()
         return global_step, tr_loss / global_step if global_step > 0 else 0.0
 
     def eval_model(self, epoch=0, global_step=0, device=None):

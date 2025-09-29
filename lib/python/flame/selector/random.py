@@ -141,14 +141,13 @@ class RandomSelector(AbstractSelector):
         # default, availability unaware way of using ends
         eligible_ends = ends
 
-        logger.info(f"len(ends), self.k: {len(ends)}, {self.k}")
+        logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
         if len(ends) < self.k:
             logger.debug(f"not enough ends, need atleast {self.k}")
             time.sleep(0.1)
             return {}
 
-        # Enforce global min-start if configured (via kwargs/hyperparameters)
         if self.enforce_min_start(len(ends)):
             return {}
 

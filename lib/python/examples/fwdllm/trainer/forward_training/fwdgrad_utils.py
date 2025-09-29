@@ -66,7 +66,7 @@ def functional_get_loss(
     return _get_loss(y, t, num_classes)
 
 
-def calculate_jvp(func, params, v):
+def calculate_jvp_original(func, params, v):
     """
     Calculations Jacobian-vector product using numerical differentiation
     """
@@ -78,7 +78,7 @@ def calculate_jvp(func, params, v):
     jvp = (terbulence_loss - loss)/(2*h)
     return avg_loss, jvp
 
-def calculate_jvp_flame(func, params, v):
+def calculate_jvp(func, params, v):
     """
     Calculations Jacobian-vector product using numerical differentiation
     """
@@ -86,10 +86,12 @@ def calculate_jvp_flame(func, params, v):
     # logger.info(f"[MEM] Before: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
     with torch.no_grad(), autocast():
         # logger.info(f"params[0].device = {params[0].device}, v[0].device = {v[0].device}")
+        # todo: Verify if moving to cuda:0 is always optimal
         device = torch.device("cuda:0")
         params = [p.to(device) for p in params]
         v = [vi.to(device) for vi in v]
         loss = func(tuple([params[i] - h * v[i] for i in range(len(params))]))
+        # todo: Verify if this adds overhead
         torch.cuda.empty_cache()  # optional, but can help with fragmentation
         # logger.info(f"[MEM] After loss: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
 

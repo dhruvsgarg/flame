@@ -117,7 +117,11 @@ class TopAggregator(SyncTopAgg):
 
         # maintain a set of all trainers that have sent heartbeats previously
         self.all_trainers = set()
-        self.minInitialTrainers = self.config.hyperparameters["minInitialTrainers"]
+        self.minInitialTrainers = (
+            self.config.selector.kwargs.get("minInitialTrainers")
+            if self.config.selector and self.config.selector.kwargs
+            else None
+        )
         logger.info("finished init for sync agg")
 
     def pause_execution(self):
