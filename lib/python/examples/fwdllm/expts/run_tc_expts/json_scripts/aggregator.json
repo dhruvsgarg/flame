@@ -104,7 +104,7 @@
         "sort": "random",
         "kwargs": {
             "k": 5,
-            "minInitialTrainers": 50
+            "minInitialTrainers": 5
         }
     },
     "optimizer": {
