@@ -117,6 +117,11 @@ class TopAggregator(SyncTopAgg):
 
         # maintain a set of all trainers that have sent heartbeats previously
         self.all_trainers = set()
+        try:
+            self.minInitialTrainers = self.config.selector.kwargs.get("minInitialTrainers")
+            assert self.minInitialTrainers is not None
+        except (KeyError, AssertionError):
+            raise KeyError("minInitialTrainers must be specified in selector config & must not be None for determinism")
         logger.info("finished init for sync agg")
 
     def pause_execution(self):

@@ -148,6 +148,9 @@ class RandomSelector(AbstractSelector):
             time.sleep(0.1)
             return {}
 
+        if self.enforce_min_start(len(ends)):
+            return {}
+
         k = min(len(ends), self.k)
         if k == 0:
             logger.debug("ends is empty")
@@ -157,7 +160,7 @@ class RandomSelector(AbstractSelector):
             round = channel_props["round"]
         else:
             round = 0
-            logger.warning(f"round not found in channel_props: {channel_props}")
+            logger.warning(f"round not found in channel_props: {channel_props}. Defaulting to 0")
         
 
         if len(self.selected_ends) == 0 or round > self.round:
