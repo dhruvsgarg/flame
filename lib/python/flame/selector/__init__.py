@@ -42,7 +42,7 @@ class AbstractSelector(ABC):
         if threshold is None:
             return False
         if ends_count < threshold:
-            logging.getLogger(__name__).info(
+            logging.getLogger(__name__).debug(
                 f"Not enough ends to start selection, need at least {threshold}"
             )
             time.sleep(0.1)
