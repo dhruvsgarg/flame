@@ -273,6 +273,8 @@ class TopAggregator(SyncTopAgg):
         This method is overriden from one in synchronous top aggregator
         (..top_aggregator).
         """
+
+        logger.info("twisha: calling _aggregate_weights from fwdllm_aggregator")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info("No channel found")
@@ -1193,6 +1195,7 @@ class TopAggregator(SyncTopAgg):
     def _aggregate_grads_sync(self, tag: str) -> None:
         """Aggregate trainer gradients synchronously."""
         logger.info("starting aggregate_grads_sync")
+        logger.info("twisha: checking stat util")
         self.log_memory("start _aggregate_grads_sync", self.device)
         self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
         if self.ends_not_selected_yet:
@@ -1219,7 +1222,12 @@ class TopAggregator(SyncTopAgg):
             if not msg:
                 logger.info(f"No data from {end}; skipping it")
                 continue
-
+            
+             # Twisha -- Need to see how client is sending other info!
+            if(MessageType.STAT_UTILITY in msg):
+                logger.info("twisha: msg[MessageType.STAT_UTILITY]: %s", msg[MessageType.STAT_UTILITY])
+            else:
+                logger.info("twisha: STAT_UTILITY not in msg")
             if (
                 MessageType.GRADIENTS in msg
                 and MessageType.GRADIENTS_FOR_VAR_CHECK in msg
