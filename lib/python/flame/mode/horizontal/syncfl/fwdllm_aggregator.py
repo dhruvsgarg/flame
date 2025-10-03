@@ -122,6 +122,7 @@ class TopAggregator(SyncTopAgg):
             assert self.minInitialTrainers is not None
         except (KeyError, AssertionError):
             raise KeyError("minInitialTrainers must be specified in selector config & must not be None for determinism")
+        logger.info(f"shreya: agg_goal propogated from CLI params K: {self._agg_goal}")
         logger.info("finished init for sync agg")
 
     def pause_execution(self):

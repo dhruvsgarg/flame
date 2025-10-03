@@ -80,6 +80,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # parser = add_federated_args(parser) args = parser.parse_args()
     parser.add_argument("--config", type=str, default="./config.json", required=True)
+    parser.add_argument("--client_agg_goal", type=int, help="CLI param for client agg goal K")
+    parser.add_argument("--concurrent_clients", type=int, help="CLI param for client concurrency C")
+    parser.add_argument("--num_clients", type=int, help="CLI param for total number of clients N")
     args = parser.parse_args()
     config = Config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -170,6 +173,20 @@ if __name__ == "__main__":
     ) = dm.load_federated_data(
         process_id=process_id, client_idx=config.hyperparameters.client_idx
     )
+
+    # --- Override config with CLI values ---
+    if args.client_agg_goal is not None:
+        config.hyperparameters.aggregation_goal = args.client_agg_goal
+    if args.concurrent_clients is not None:
+        config.hyperparameters.concurrent_clients = args.concurrent_clients
+    if args.num_clients is not None:
+        num_clients = args.num_clients
+    
+    config.hyperparameters.client_num_in_total = num_clients
+    logger.info(f"shreya: client_agg_goal (K): {config.hyperparameters.aggregation_goal}")
+    logger.info(f"shreya: concurrent_clients (C): {config.hyperparameters.concurrent_clients}")
+    logger.info(f"shreya: num_clients (N): {config.hyperparameters.client_num_in_total}")
+
     logger.info(f"NRL Client idx: {config.hyperparameters.client_idx}")
     logger.info(f"NRL train_data_local_dict: {train_data_local_dict}")
     logger.info(f"NRL train_data_global: {train_data_global}")
@@ -177,7 +194,6 @@ if __name__ == "__main__":
     logger.info(f"NRL test_data_global: {test_data_global}")
     logger.info(f"NRL fed_trainer: {fed_trainer}")
     logger.info(f"NRL num_clients: {num_clients}")
-    config.hyperparameters.client_num_in_total = num_clients
     config.hyperparameters.warmup_ratio = model_args.warmup_ratio
 
     worker_num = 1

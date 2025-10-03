@@ -1,6 +1,9 @@
 client_num_per_round=$1
 LR=$2
 FL_ALG=$3
+client_agg_goal=$4        # K
+concurrent_clients=$5     # C
+num_clients=$6            # N
 
 pkill -f fl_main.py
 sleep 10  # Wait for the system to stabilize
@@ -126,19 +129,25 @@ else
   # Run aggregator/main.py once with logging
   python $REPO_PATH/lib/python/examples/fwdllm/aggregator/fl_main.py \
     --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/aggregator.json" \
+     --client_agg_goal $client_agg_goal \
+      --concurrent_clients $concurrent_clients \
+      --num_clients $num_clients \
     > "$AGG_LOG_FILE" 2>&1 &
 
   sleep 10  # Give aggregator time to set up
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 4)    # End value is inclusive
+  for X in $(seq 0 $((concurrent_clients - 1)))   # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
+      --client_agg_goal $client_agg_goal \
+      --concurrent_clients $concurrent_clients \
+      --num_clients $num_clients \
       >> "$TRAINER_LOG_FILE" 2>&1 &
     sleep 8
   done
