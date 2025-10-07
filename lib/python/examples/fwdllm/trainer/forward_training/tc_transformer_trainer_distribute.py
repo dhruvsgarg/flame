@@ -262,7 +262,6 @@ class ForwardTextClassificationTrainer:
                     self.total_rng_iter += 1
                     shape = v.shape
                     candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                    #torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
                     target_grad = self.grad[index]
 
                     target_grad = torch.flatten(target_grad)
