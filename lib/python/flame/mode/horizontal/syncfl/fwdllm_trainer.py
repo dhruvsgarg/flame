@@ -135,9 +135,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.task_to_perform = "train"
         self.iteration_per_data_id = None
         self.abort_training = False
-        logger.info("twisha: Inside fwdllm_trainer.py internal_init() - checking if stat_utility is even getting initialized")
-        self._stat_utility = 0    #TODO: (Twisha) Need to come up with a function to calculate this
-        logger.info(f"twisha: Initialized self._stat_utility to: {self._stat_utility}")
+        self._stat_utility = 0  #fwdllm
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -439,15 +437,14 @@ class Trainer(Role, metaclass=ABCMeta):
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
 
-            logger.info("twisha: STAT_UTILITY: ", self._stat_utility)
-
+            logger.info(f"sending stat_utility={self._stat_utility} for trainerId: {self.trainer_id}")
             msg = {
                 MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.STAT_UTILITY: self._stat_utility, #uncomment later
+                MessageType.STAT_UTILITY: self._stat_utility,  #fwdllm
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }

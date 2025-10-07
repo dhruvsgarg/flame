@@ -249,7 +249,6 @@ class ForwardTextClassificationTrainer:
         # perturbations based on cosine similarity. This is not the same as generating 10 candidate perturbations per client & selecting the top 1. We did not 
         # observe any significant changes in accuracy, after assigning clients distinct RNG seeds, & hence we chose the later approach.
         if self.args.perturbation_sampling:
-
             if self.args.var_control:
                 self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
 
@@ -303,6 +302,17 @@ class ForwardTextClassificationTrainer:
                     x = batch[1].to(device, non_blocking=True)
                     labels = batch[4].to(device, non_blocking=True)
 
+                    if epoch == 0 and batch_idx == 0 and hasattr(self, "base_trainer"):
+                        with torch.no_grad():
+                            pred = self.model(x)
+                            if hasattr(pred, "logits"):
+                                logits = pred.logits
+                            elif isinstance(pred, (tuple, list)):
+                                logits = pred[0]
+                            else:
+                                logits = pred
+                            loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=1, batch_idx=0, reduction="mean")
+                        logging.info(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
                             (
@@ -378,7 +388,12 @@ class ForwardTextClassificationTrainer:
                     gc.collect()
                     torch.cuda.empty_cache()
                     self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
-
+                
+                # self.normalize_stat_utility(epoch) #fwdllm
+                if epoch == 0 and hasattr(self, "base_trainer"):
+                    self.base_trainer.normalize_stat_utility(epoch)
+                    logging.info(f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}")
+            
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]
         logging.info(
