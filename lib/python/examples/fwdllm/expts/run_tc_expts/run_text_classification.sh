@@ -56,10 +56,9 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/shreya/flame/
+REPO_PATH=/home/dgarg39/gaurav/flame/
 # todo: Use pwd here
-#DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
-DATA_DIR=/home/dgarg39/shreya/fednlp_data/
+DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
 
