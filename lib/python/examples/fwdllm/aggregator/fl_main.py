@@ -178,14 +178,14 @@ if __name__ == "__main__":
     if args.client_agg_goal is not None:
         config.hyperparameters.aggregation_goal = args.client_agg_goal
     if args.concurrent_clients is not None:
-        config.hyperparameters.concurrent_clients = args.concurrent_clients
+        config.hyperparameters.c = args.concurrent_clients
     if args.num_clients is not None:
         num_clients = args.num_clients
     
     config.hyperparameters.client_num_in_total = num_clients
-    logger.info(f"shreya: client_agg_goal (K): {config.hyperparameters.aggregation_goal}")
-    logger.info(f"shreya: concurrent_clients (C): {config.hyperparameters.concurrent_clients}")
-    logger.info(f"shreya: num_clients (N): {config.hyperparameters.client_num_in_total}")
+    logger.info(f"Client_agg_goal (K): {config.hyperparameters.aggregation_goal}")
+    logger.info(f"Concurrent_clients (C): {config.hyperparameters.c}")
+    logger.info(f"num_clients (N): {config.hyperparameters.client_num_in_total}")
 
     logger.info(f"NRL Client idx: {config.hyperparameters.client_idx}")
     logger.info(f"NRL train_data_local_dict: {train_data_local_dict}")

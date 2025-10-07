@@ -72,6 +72,7 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
+        self.c = self.config.hyperparameters.c or 1
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -118,11 +119,12 @@ class TopAggregator(SyncTopAgg):
         # maintain a set of all trainers that have sent heartbeats previously
         self.all_trainers = set()
         try:
-            self.minInitialTrainers = self.config.selector.kwargs.get("minTrainersToStart")
+            self.minInitialTrainers = self.config.selector.kwargs.get("minInitialTrainers")
             assert self.minInitialTrainers is not None
         except (KeyError, AssertionError):
             raise KeyError("minInitialTrainers must be specified in selector config & must not be None for determinism")
-        logger.info(f"shreya: agg_goal propogated from CLI params K: {self._agg_goal}")
+        logger.info(f"Agg Goal propogated from CLI params K: {self._agg_goal}")
+        logger.info(f"Concurrent clients number propogated from CLI Params C: {self.c}")
         logger.info("finished init for sync agg")
 
     def pause_execution(self):

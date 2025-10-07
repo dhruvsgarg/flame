@@ -138,7 +138,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 $((concurrent_clients - 1)))   # End value is inclusive
+  for X in $(seq 0 $((num_clients - 1)))   # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

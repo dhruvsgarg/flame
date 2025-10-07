@@ -33,6 +33,7 @@ class FedSGDAggregator(TopAggregator):
         self.trainer = model_trainer
         logger.info(f"self.trainer = {self.trainer}")
         self.args = args.hyperparameters
+    
         self.train_global = train_global
         self.test_global = test_global
         self.val_global = self._generate_validation_set()
