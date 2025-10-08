@@ -311,7 +311,7 @@ class ForwardTextClassificationTrainer:
                                 logits = pred[0]
                             else:
                                 logits = pred
-                            loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=1, batch_idx=0, reduction="mean")
+                            loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
                         logging.info(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
@@ -389,7 +389,6 @@ class ForwardTextClassificationTrainer:
                     torch.cuda.empty_cache()
                     self.log_memory(f"epoch{epoch}_batch{batch_idx}_end", device)
                 
-                # self.normalize_stat_utility(epoch) #fwdllm
                 if epoch == 0 and hasattr(self, "base_trainer"):
                     self.base_trainer.normalize_stat_utility(epoch)
                     logging.info(f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}")

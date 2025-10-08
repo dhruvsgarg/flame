@@ -135,7 +135,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.task_to_perform = "train"
         self.iteration_per_data_id = None
         self.abort_training = False
-        self._stat_utility = 0  #fwdllm
+        self._stat_utility = 0 
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -438,13 +438,14 @@ class Trainer(Role, metaclass=ABCMeta):
                 logger.info("No gradients exist; sending an empty dictionary.")
 
             logger.info(f"sending stat_utility={self._stat_utility} for trainerId: {self.trainer_id}")
+            logger.info(f"sending total databin={self.total_data_bins} for trainerId: {self.trainer_id}")
             msg = {
                 MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.STAT_UTILITY: self._stat_utility,  #fwdllm
+                MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
@@ -626,6 +627,7 @@ class Trainer(Role, metaclass=ABCMeta):
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
         self._stat_utility = 0
+        self._batch_size = 0
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
             msg = "Parameter 'reduction' not found in loss function "
@@ -646,7 +648,7 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's statistical
         utility is measured at epoch 1.
         """
-        if epoch == 1 and batch_idx == 0:
+        if epoch == 0 and batch_idx == 0:
             if "reduction" in kwargs.keys():
                 reduction = kwargs["reduction"]
             else:
@@ -657,6 +659,8 @@ class Trainer(Role, metaclass=ABCMeta):
 
             criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
             loss_list = criterion(output, target)
+            self._batch_size = len(loss_list)
+            logger.info(f"batch size: {len(loss_list)}")
             self._stat_utility += torch.square(loss_list).sum()
 
             if reduction == "mean":
@@ -674,9 +678,9 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size of the
         trainer's datset, at epoch 1.
         """
-        if epoch == 1:
-            self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
-                self._stat_utility / len(self.train_loader.dataset)
+        if epoch == 0:
+            self._stat_utility = self._batch_size * math.sqrt(
+                self._stat_utility / self._batch_size
             )
         else:
             return
