@@ -69,9 +69,6 @@ if __name__ == "__main__":
     # parser = add_federated_args(parser)
     # args = parser.parse_args()
     parser.add_argument("--config", type=str, default="./config.json", required=True)
-    parser.add_argument("--client_agg_goal", type=int, help="Override client agg goal K")
-    parser.add_argument("--concurrent_clients", type=int, help="Override client concurrency C")
-    parser.add_argument("--num_clients", type=int, help="Override total number of clients N")
     args = parser.parse_args()
     config = Config(args.config)
 

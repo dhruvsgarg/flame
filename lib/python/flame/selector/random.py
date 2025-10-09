@@ -45,7 +45,8 @@ class RandomSelector(AbstractSelector):
         super().__init__(**kwargs)
 
         try:
-            self.k = kwargs["k"]
+            self.k =  kwargs["c"]
+            logger.info(f"Select c clients: {self.k}")
         except KeyError:
             raise KeyError("k is not specified in config")
 

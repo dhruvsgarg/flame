@@ -144,9 +144,6 @@ else
     echo "Running client $X on GPU $ASSIGN_TO_GPU"
     CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
       --config "$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json" \
-      --client_agg_goal $client_agg_goal \
-      --concurrent_clients $concurrent_clients \
-      --num_clients $num_clients \
       >> "$TRAINER_LOG_FILE" 2>&1 &
     sleep 8
   done

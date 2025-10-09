@@ -67,12 +67,13 @@ class TopAggregator(SyncTopAgg):
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
+        self.c = self.config.hyperparameters.c or 1
+        self.config.selector.kwargs["c"] = self.c
         super().internal_init()
 
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
-        self.c = self.config.hyperparameters.c or 1
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
