@@ -67,8 +67,6 @@ class TopAggregator(SyncTopAgg):
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
-        self.c = self.config.hyperparameters.c or 1
-        self.config.selector.kwargs["c"] = self.c
         super().internal_init()
 
         self._agg_goal_cnt = 0
@@ -125,7 +123,6 @@ class TopAggregator(SyncTopAgg):
         except (KeyError, AssertionError):
             raise KeyError("minInitialTrainers must be specified in selector config & must not be None for determinism")
         logger.info(f"Agg Goal propogated from CLI params K: {self._agg_goal}")
-        logger.info(f"Concurrent clients number propogated from CLI Params C: {self.c}")
         logger.info("finished init for sync agg")
 
     def pause_execution(self):

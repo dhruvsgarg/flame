@@ -179,6 +179,8 @@ if __name__ == "__main__":
         config.hyperparameters.aggregation_goal = args.client_agg_goal
     if args.concurrent_clients is not None:
         config.hyperparameters.c = args.concurrent_clients
+        config.selector.kwargs["c"] = config.hyperparameters.c
+
     if args.num_clients is not None:
         num_clients = args.num_clients
     
