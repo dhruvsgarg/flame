@@ -53,12 +53,24 @@ import functorch as fc
 import torch
 
 from torch.nn import CrossEntropyLoss
+from flame.monitor.runtime import agg_timer
+
 
 logger = logging.getLogger(__name__)
 
 PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
+
+class FwdLLMStage:
+    """Lightweight metadata object for each federated round of FwdLLM."""
+    def __init__(self, round_id, data_id, iteration):
+        self.round_id = round_id
+        self.data_id = data_id
+        self.iteration = iteration
+
+    def __repr__(self):
+        return f"FwdLLMStage(round={self.round_id}, data_id={self.data_id}, iter={self.iteration})"
 
 
 class TopAggregator(SyncTopAgg):
@@ -1190,30 +1202,10 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
-    def _aggregate_grads_sync(self, tag: str) -> None:
-        """Aggregate trainer gradients synchronously."""
-        logger.info("starting aggregate_grads_sync")
-        self.log_memory("start _aggregate_grads_sync", self.device)
-        self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
-        if self.ends_not_selected_yet:
-            logger.info("no ends selected yet")
-            return
-
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives first NOTE:
-        # (DG) Right now, the leave notifications also cause a message to be
-        # processed and yield (None,None) from recv_fifo().
-        if channel.ends(VAL_CH_STATE_RECV) is None:
-            logger.info("no ends yet")
-            return
-
-        total = 0
-
-        # receive local model parameters from trainers
+    @agg_timer
+    def aggregate_and_collect(self, tag, channel):
+        """Aggregate trainer gradients synchronously, with timing and stage metadata."""
+        
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
@@ -1323,6 +1315,47 @@ class TopAggregator(SyncTopAgg):
                 )
                 break
 
+                #end the timer here                                                                                  
+
+    def _aggregate_grads_sync(self, tag: str) -> None:
+        """Aggregate trainer gradients synchronously."""
+        logger.info("starting aggregate_grads_sync")
+        self.log_memory("start _aggregate_grads_sync", self.device)
+        self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
+        if self.ends_not_selected_yet:
+            logger.info("no ends selected yet")
+            return
+
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+
+        logger.debug(f"Channel {channel} found for tag {tag}")
+        # receive local model parameters from a trainer who arrives first NOTE:
+        # (DG) Right now, the leave notifications also cause a message to be
+        # processed and yield (None,None) from recv_fifo().
+        if channel.ends(VAL_CH_STATE_RECV) is None:
+            logger.info("no ends yet")
+            return
+
+        total = 0
+
+        # Capture snapshot of current identifiers before aggregation
+        round_to_print = self._round
+        data_id_to_print = self.data_id
+        iteration_to_print = self.iteration_per_data_id
+
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(
+            round_id=round_to_print,
+            data_id=data_id_to_print,
+            iteration=iteration_to_print
+        )
+        logger.info(f"Created stage context: {self.fwd_llm_stage}")
+
+        # receive local model parameters from trainers
+        self.aggregate_and_collect(tag, channel)
+        
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
@@ -1347,9 +1380,6 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_cnt = 0
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
-
-        round_to_print = self._round
-        data_id_to_print = self.data_id
 
         if self.var_good_enough:
             # evaluate model to calculate loss

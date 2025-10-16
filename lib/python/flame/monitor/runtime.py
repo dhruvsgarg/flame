@@ -21,6 +21,35 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def agg_timer(func):
+    """Decorator to time TopAggregator function and log round/data info."""
+    def wrapper(*args, **kwargs):
+        self = args[0]  # TopAggregator
+        mc = getattr(self.composer, "mc", None)
+        stage = getattr(self, "fwd_llm_stage", None)
+
+        if mc:
+            start = time.time()
+            result = func(*args, **kwargs)
+            end = time.time()
+            duration = end - start
+
+            if stage:
+                mc.save("runtime", f"Round_{stage.round_id}", duration)
+                mc.save("starttime", f"Round_{stage.round_id}", start)
+                logger.info(
+                    f"Runtime of {func.__name__}: {duration:.3f}s "
+                    f"(Round={stage.round_id}, DataID={stage.data_id}, Iter={stage.iteration})"
+                )
+            else:
+                logger.info(f"Runtime of {func.__name__}: {duration:.3f}s (no stage info)")
+            return result
+        else:
+            logger.debug("No MetricCollector; won't record runtime")
+            return func(*args, **kwargs)
+    return wrapper
+
+
 def time_tasklet(func):
     """Decorator to time Tasklet.do() function"""
 
