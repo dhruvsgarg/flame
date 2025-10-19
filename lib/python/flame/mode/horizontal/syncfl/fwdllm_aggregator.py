@@ -53,7 +53,8 @@ import functorch as fc
 import torch
 
 from torch.nn import CrossEntropyLoss
-from flame.monitor.runtime import agg_timer
+import flame.monitor.runtime
+from flame.monitor.runtime import FwdLLMStage, timer_decorator
 
 
 logger = logging.getLogger(__name__)
@@ -62,16 +63,13 @@ PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
-class FwdLLMStage:
-    """Lightweight metadata object for each federated round of FwdLLM."""
-    def __init__(self, round_id, data_id, iteration):
-        self.round_id = round_id
-        self.data_id = data_id
-        self.iteration = iteration
-
-    def __repr__(self):
-        return f"FwdLLMStage(round={self.round_id}, data_id={self.data_id}, iter={self.iteration})"
-
+@timer_decorator
+def recv_fifo_wrapper(channel, ends):
+    logger.info("[GJD] Entering recv_fifo_wrapper generator loop")
+    for msg, metadata in channel.recv_fifo(ends):
+        logger.info(f"[GJD] Yielding msg from {metadata}")
+        yield msg, metadata
+    logger.info("[GJD] Exiting recv_fifo_wrapper")
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -1202,9 +1200,10 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
-    @agg_timer
     def aggregate_and_collect(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
         
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
@@ -1317,6 +1316,7 @@ class TopAggregator(SyncTopAgg):
 
                 #end the timer here                                                                                  
 
+    @timer_decorator
     def _aggregate_grads_sync(self, tag: str) -> None:
         """Aggregate trainer gradients synchronously."""
         logger.info("starting aggregate_grads_sync")
@@ -1337,21 +1337,6 @@ class TopAggregator(SyncTopAgg):
         if channel.ends(VAL_CH_STATE_RECV) is None:
             logger.info("no ends yet")
             return
-
-        total = 0
-
-        # Capture snapshot of current identifiers before aggregation
-        round_to_print = self._round
-        data_id_to_print = self.data_id
-        iteration_to_print = self.iteration_per_data_id
-
-        # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(
-            round_id=round_to_print,
-            data_id=data_id_to_print,
-            iteration=iteration_to_print
-        )
-        logger.info(f"Created stage context: {self.fwd_llm_stage}")
 
         # receive local model parameters from trainers
         self.aggregate_and_collect(tag, channel)
@@ -1381,6 +1366,9 @@ class TopAggregator(SyncTopAgg):
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
 
+        round_to_print = self._round
+        data_id_to_print = self.data_id
+        
         if self.var_good_enough:
             # evaluate model to calculate loss
             result, _, _ = self.eval_model()
@@ -1409,6 +1397,7 @@ class TopAggregator(SyncTopAgg):
             f"{self._updates_in_queue}"
         )
 
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
         self.log_memory("end _aggregate_grads_sync", self.device)
 
     def eval_model(self, epoch=0, global_step=0, device=None):
