@@ -720,10 +720,15 @@ class Trainer(Role, metaclass=ABCMeta):
             #                                         Tasklet("sleep_after_save_metrics",
             #                                         self.check_and_sleep)
 
+            # todo: add time
+            start_time = time.time()
             task_train = Tasklet("train", self.train_with_data_id)
+            end_time = time.time()
+            logger.info(f"Training time for trainerId: {self.trainer_id} is {end_time - start_time} | Round: {self._round} | DataId: {self.data_id} | Iteration: {self.iteration}")
+            # todo: end time and log!
 
             # task_eval = Tasklet("evaluate", self.evaluate)
-
+            
             task_put_grad = Tasklet("upload", self.put, TAG_UPLOAD)
             task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 

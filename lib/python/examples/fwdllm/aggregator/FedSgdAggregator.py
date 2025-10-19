@@ -118,6 +118,9 @@ class FedSGDAggregator(TopAggregator):
         return True
 
     def aggregate(self, current_round):
+        # logger.info("aggregate - fedsgd aggregator")
+        # logger.info(f"grad_for_var_check_list length: {len(self.grad_for_var_check_list)}")
+        # logger.info(f"ele0: grad_for_var_check_list length: {len(self.grad_for_var_check_list[0])}")
         start_time = time.time()
         self.var = calculate_var(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")

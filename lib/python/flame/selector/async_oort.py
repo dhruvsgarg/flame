@@ -70,31 +70,36 @@ class AsyncOortSelector(AbstractSelector):
 
         # CONFIG CHANGES FOR ASYNCFL WITH OORT
         try:
-            self.c = kwargs["c"]
+            # self.c = kwargs["c"]
+            self.c = 2
         except KeyError:
             raise KeyError("c (concurrency level) is not specified in config")
 
         try:
-            self.agg_goal = kwargs["aggGoal"]
+            # self.agg_goal = kwargs["aggGoal"]
+            self.agg_goal = 2
         except KeyError:
             raise KeyError("aggGoal is not specified in config")
 
         try:
-            self.eval_goal_factor = kwargs["evalGoalFactor"]
+            # self.eval_goal_factor = kwargs["evalGoalFactor"]
+            self.eval_goal_factor = 0.5
         except KeyError:
             raise KeyError(
                 "evalGoalFactor is not specified in config. It is the decimal multiplicative factor wrt agg goal for eval"
             )
 
         try:
-            self.round_nudge_type = kwargs["roundNudgeType"]
+            # self.round_nudge_type = kwargs["roundNudgeType"]
+            self.round_nudge_type = 'last_eval'
         except KeyError:
             raise KeyError(
                 "roundNudgeType is not specified in config. It is last_train or last_eval based on the selector nudging critera"
             )
 
         try:
-            self.select_type = kwargs["selectType"]
+            # self.select_type = kwargs["selectType"]
+            self.select_type = "default"
         except KeyError:
             raise KeyError(
                 "selectType is not specified in config. Can be default, "

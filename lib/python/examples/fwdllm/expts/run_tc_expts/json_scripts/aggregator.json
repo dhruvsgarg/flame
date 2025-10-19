@@ -50,8 +50,8 @@
         "comm_round": 3000,
         "ci": 0,
         "dataset": "agnews",
-        "data_file_path": "/home/dgarg39/gaurav/fednlp_data/data_files/agnews_data.h5",
-        "partition_file_path": "/home/dgarg39/gaurav/fednlp_data/partition_files/agnews_partition.h5",
+        "data_file_path": "/home/dgarg39/twisha/fednlp_data/data_files/agnews_data.h5",
+        "partition_file_path": "/home/dgarg39/twisha/fednlp_data/partition_files/agnews_partition.h5",
         "partition_method": "uniform",
         "fl_algorithm": "FedFwd",
         "model_type": "distilbert",
@@ -85,7 +85,7 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 10 ,
+        "aggGoal": 5 ,
         "rounds": 300
     },
     "baseModel": {
@@ -101,10 +101,10 @@
         "uri": ""
     },
     "selector": {
-        "sort": "random",
+        "sort": "async_oort",
         "kwargs": {
-            "k": 10,
-            "minTrainersToStart": 50
+            "k": 5,
+            "minInitialTrainers": 5
         }
     },
     "optimizer": {

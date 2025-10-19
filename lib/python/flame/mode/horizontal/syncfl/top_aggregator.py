@@ -77,7 +77,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         """Initialize internal state for role."""
         # global variable for plugin manager
         self.plugin_manager = PluginManager()
-
+        logger.info("Intializing Channel Manager in Top Aggregator for SYNC")
         self.cm = ChannelManager()
         self.cm(self.config)
         self.cm.join_all()
@@ -226,6 +226,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 )
 
     def _aggregate_weights(self, tag: str) -> None:
+        logger.info("Agg weights inside top_aggregator syncfl")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return

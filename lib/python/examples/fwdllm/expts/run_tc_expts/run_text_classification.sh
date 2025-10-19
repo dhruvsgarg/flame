@@ -53,9 +53,9 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/gaurav/flame/
+REPO_PATH=/home/dgarg39/twisha/flame/
 # todo: Use pwd here
-DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
+DATA_DIR=/home/dgarg39/twisha/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
@@ -115,6 +115,9 @@ elif [ $FL_ALG = FedSgd ];then
     > ./log/new/fedsgd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_full.log 2>&1
 else
   LOG_DIR=./log/new
+  # if [ -d "$LOG_DIR" ]; then
+  #   rm -rf "$LOG_DIR"
+  # fi
   mkdir -p "$LOG_DIR"
 
   # Generate timestamp once
@@ -132,7 +135,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 99)    # End value is inclusive
+  for X in $(seq 0 30)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
