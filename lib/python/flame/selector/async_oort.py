@@ -71,7 +71,7 @@ class AsyncOortSelector(AbstractSelector):
         # CONFIG CHANGES FOR ASYNCFL WITH OORT
         try:
             # self.c = kwargs["c"]
-            self.c = 2
+            self.c = 3
         except KeyError:
             raise KeyError("c (concurrency level) is not specified in config")
 
@@ -270,6 +270,7 @@ class AsyncOortSelector(AbstractSelector):
 
         # default, availability unaware way of using ends
         eligible_ends = ends
+        logger.info(f"SC_TS: Eligible ends: {eligible_ends}")
 
         # Make a filter of unavailable ends, update eligible_ends
         # given trainer_unavail_list
@@ -286,7 +287,10 @@ class AsyncOortSelector(AbstractSelector):
                 f"populated eligible_ends: {eligible_ends}"
             )
 
-        results = {}
+        # results = {}
+        # return self.select_random(
+        #     eligible_ends, num_of_ends=2
+        # )
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
             results = self._handle_send_state(
                 eligible_ends,
@@ -305,8 +309,8 @@ class AsyncOortSelector(AbstractSelector):
                 # Insert to queues tracking stat_util, speed, round
                 # data
                 for window in [50, 100, 200]:
-                    if end_stat_util is not None:
-                        self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
+                    # if end_stat_util is not None:
+                    #     self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
                     if end_speed is not None:
                         self._selector_stats[task_to_perform]['data'][f'speed_last_{window}'].append(end_speed.total_seconds())
                     if end_last_round is not None:
@@ -322,6 +326,7 @@ class AsyncOortSelector(AbstractSelector):
             # TODO: (DG) See if eligible_ends should be passed here
             # too in place of ends
             results = self._handle_recv_state(ends, concurrency)
+            # results =ends[:1]
 
         else:
             state = channel_props[KEY_CH_STATE]
@@ -1221,7 +1226,7 @@ class AsyncOortSelector(AbstractSelector):
         # num_of_ends = min(len(ends), self.num_of_ends) if
         # num_of_ends == 0: logger.debug("ends is empty") return {}
         if extra == 0:
-            logger.debug(f"extra: {extra}, nothing to select")
+            logger.info(f"extra: {extra}, nothing to select")
             return {}
 
         round = channel_props["round"] if "round" in channel_props else 0
@@ -1698,7 +1703,7 @@ class AsyncOortSelector(AbstractSelector):
             else:
                 # TODO: (DG) Should we not remove it from selected
                 # ends here?
-                logger.debug(
+                logger.info(
                     f"Tried to check state of end {end_id} but it is no "
                     f"longer in self._ends"
                 )
@@ -1709,15 +1714,16 @@ class AsyncOortSelector(AbstractSelector):
             candidates = dict()
             for end_id, end in ends.items():
                 curr_end_state = end.get_property(KEY_END_STATE)
+                # candidates[end_id] = end
                 if end_id not in self.all_selected.keys():
                     if curr_end_state != VAL_END_STATE_NONE:
-                        logging.debug(
+                        logging.info(
                             f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                             f"to candidates: key {end_id}, val: {end}"
                         )
                         candidates[end_id] = end
                     else:
-                        logging.debug(
+                        logging.info(
                             f"end_id {end_id} not in all_selected but in state: {curr_end_state}, not adding "
                             f"to candidates"
                         )

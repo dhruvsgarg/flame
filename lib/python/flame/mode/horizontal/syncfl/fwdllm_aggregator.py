@@ -37,7 +37,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
 )
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator as AsyncTopAgg
-from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
+# from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
@@ -62,7 +62,7 @@ PROP_ROUND_END_TIME = "round_end_time"
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
 
-class TopAggregator(SyncTopAgg):
+class TopAggregator(AsyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
     role."""
 
@@ -330,19 +330,15 @@ class TopAggregator(SyncTopAgg):
             )
             return
             
-        # 3. Staleness and Duration Tracking (from AsyncTopAgg)
-        # (This block is optional but good to keep from AsyncTopAgg)
-        # ... (Copy the entire _track_trainer_version_duration_s logic from AsyncAgg) ...
-        # ... (This includes the staleness check `if ((recv_wts_ts - sent_wts_ts)...`) ...
 
-        # 4. Process FWDLLM Gradients
+        # Process FWDLLM Gradients
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         
         if MessageType.GRADIENTS in msg:
             trainer_gradients = msg[MessageType.GRADIENTS]
             self.aggregate_grads_from_trainers(trainer_gradients)
-            del trainer_gradients # Free memory
+            # del trainer_gradients # Free memory
         
         if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
             self.grad_for_var_check_list.append(
@@ -381,13 +377,12 @@ class TopAggregator(SyncTopAgg):
             )
             self.grad = [torch.zeros_like(p) for p in self.params]
             
-            # *** THIS IS THE FWDLLM CORE LOGIC ***
-            self.aggregate(self._round) 
+            self.aggregate(self._round) # SC_TS: should set var_good_enough
             
             # FWDLLM: Update data_id and round based on variance
             if self.var_good_enough:
                 logger.info(f"Variance check PASSED. Evaluating model and advancing data_id.")
-                self.iteration_per_data_id += 1 # This is iter 1 for the new data_id
+                self.iteration_per_data_id += 1 # This is iter 1 for the new data_id. #SC_TS: needed? since we are setting to 0 anyways!
                 
                 # Evaluate model
                 result, _, _ = self.eval_model()
@@ -1108,6 +1103,25 @@ class TopAggregator(SyncTopAgg):
         logger.debug(f"Starting busy wait at time {time.time()}")
         time.sleep(0.1)
         logger.debug(f"Ended busy wait at time {time.time()}")
+        if self.trainer_event_dict is not None:
+            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            channel.set_curr_unavailable_trainers(
+                trainer_unavail_list=curr_unavail_trainer_list
+            )
+            logger.debug(
+                f"Passed curr_unavail_trainer_list: "
+                f"{curr_unavail_trainer_list} to channel"
+            )
+        else:
+            # Handling the case for oort's selector since it expects 3
+            # arguments
+            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+
+        # check if there are any ends to send weights to
+
+        logger.debug(
+            f"Sending weights to trainers with task_to_perform = {task_to_perform}"
+        )
         
         # check if there are any ends to send weights to
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
@@ -1222,7 +1236,6 @@ class TopAggregator(SyncTopAgg):
     def compose(self) -> None:
         """Compose role with tasklets."""
         super().compose()
-
         with CloneComposer(self.composer) as _:
             task_internal_init = Tasklet("internal_init", self.internal_init)
 
@@ -1256,22 +1269,22 @@ class TopAggregator(SyncTopAgg):
         (
             task_internal_init
             >> task_init #sync
-            >> c.tasklet("load_data") #SC_TS todo: check
-            >> c.tasklet("initialize")  #SC_TS todo: check
+            # >> c.tasklet("load_data") #SC_TS todo: check
+            # >> c.tasklet("initialize")  #SC_TS todo: check
             >> loop(
                 task_reset_agg_goal_vars # SC_TS present in async, not in sync
                 # >> asyncfl_loop(task_put >> task_get_weights >>
                 # >> task_get_heartbeat)
                 >> asyncfl_loop(task_put_train >> task_get_weights)
-                >> c.tasklet("train")
-                >> c.tasklet("evaluate")
-                >> c.tasklet("analysis")
-                >> c.tasklet("save_metrics")
-                >> c.tasklet("inc_round")
+                # >> c.tasklet("train")
+                # >> c.tasklet("evaluate")
+                # >> c.tasklet("analysis")
+                # >> c.tasklet("save_metrics")
+                # >> c.tasklet("inc_round")
             )
-            >> c.tasklet("inform_end_of_training")
-            >> c.tasklet("save_params")
-            >> c.tasklet("save_model")
+            # >> c.tasklet("inform_end_of_training")
+            # >> c.tasklet("save_params")
+            # >> c.tasklet("save_model")
         )
 
 
