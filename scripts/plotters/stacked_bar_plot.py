@@ -7,8 +7,10 @@ import numpy as np
 csv_files = [
     # 'output/sync_1hr_train_times.csv',
     # 'output/sync_stagglers_1hr_train_times.csv',
-    'output/train_times_noDelay_2_5hrs.csv',
-    'output/train_times_delayBy20_3hrs.csv',
+    # 'output/train_times_noDelay_2_5hrs.csv',
+    # 'output/train_times_delayBy20_3hrs.csv',
+    'output/train_times_noDelay_slow_4hr.csv',
+    'output/train_times_delay_slow_6hr.csv',
     'async_with_stragglers.csv',
     'async_no_stragglers.csv',
 ]

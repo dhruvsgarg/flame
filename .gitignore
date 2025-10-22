@@ -76,3 +76,6 @@ fednlp_data*
 cache_dir
 
 lib/python/examples/fwdllm/expts/run_tc_expts/mpi_host_file
+scripts/logs/*
+scripts/plotters/output/*
+scripts/plotters/plots/*

@@ -9,6 +9,19 @@ INTERP_RATIO = 1
 DEFAULT_X_TICK_COUNT = 10
 DEFAULT_Y_TICK_COUNT = 5
 BATCHES_PER_EPOCH = 150
+LINE_WIDTH = 1.5
+
+MIN_MAX_DISABLED = True
+
+# SYSTEM1_FILES = ["flame_run1.csv", "flame_run2.csv", "flame_run3.csv"]
+# SYSTEM1_NAME = "Flame"
+# SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
+# SYSTEM2_NAMES = "FwdLLM"
+
+SYSTEM1_FILES = ["output/21Sept_evaluation_metrics.csv"]
+SYSTEM1_NAME = "SyncFL (no stagglers)"
+SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
+SYSTEM2_NAMES = "SyncFL (with stagglers)"
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
@@ -89,30 +102,56 @@ def parse_time_string(time_str):
 
 def load_and_preprocess_data(file_list):
     """
-    Loads all files, converts time to seconds, and accuracy to float.
-    Extracts Mini_Batch_ID (col 1), Accuracy (col 2), and Time_Since_Start (col 3).
-    Returns a list of DataFrames (one per run).
+    Loads all files, handling two CSV formats by using headers for data access.
+    1. New Format: Uses the header from the CSV file.
+    2. Old Format: Programmatically assigns headers before processing.
+    
+    It standardizes the data into a DataFrame with 'Accuracy', 'Time_Since_Start',
+    and 'Unique_Mini_Batch_ID' columns.
     """
     all_runs_dfs = []
     for file_path in file_list:
         try:
-            # Read the file. Assuming columns are: ..., Mini_Batch_ID, Accuracy, Time, ...
-            # Mini_Batch_ID: index 1, Accuracy: index 2, Time: index 3 (0-indexed)
-            df = pd.read_csv(file_path, header=None, skipinitialspace=True)
-            df.columns = [f'col_{i}' for i in range(df.shape[1])]
-
-            # 1. Convert Accuracy (col_2) to float (stripping '%')
-            df['Accuracy'] = df.iloc[:, 2].astype(str).str.rstrip('%').astype(float) / 100
-
-            # 2. Convert Time (col_3) to Total Seconds
-            df['Time_Since_Start'] = df.iloc[:, 3].astype(str).apply(parse_time_string)
+            # --- Format Detection: Peek at the header line ---
+            with open(file_path, 'r') as f:
+                header = f.readline().strip().lower()
             
-            # 3. Extract Mini-batch ID
-            epoch_id = df.iloc[:, 0].astype(int)
-            mini_batch_id = df.iloc[:, 1].astype(int)
-            df['Unique_Mini_Batch_ID'] = epoch_id * BATCHES_PER_EPOCH + mini_batch_id
+            # Check for column names from the new format
+            is_new_format = 'time_since_start' in header and 'round_id' in header
+
+            if is_new_format:
+                print(f"Detected new format (with header) for: {file_path}")
+                df = pd.read_csv(file_path)
+                # Standardize column names to lowercase for consistency
+                df.columns = map(str.lower, df.columns) 
+
+                # 1. Process Accuracy (already a float, needs scaling)
+                df['Accuracy'] = df['accuracy'] / 100.0
+
+                # 2. Use Time_Since_Start directly (already in seconds)
+                df['Time_Since_Start'] = df['time_since_start']
+
+                # 3. Create Unique_Mini_Batch_ID from round_id and data_id
+                df['Unique_Mini_Batch_ID'] = df['round_id'] * BATCHES_PER_EPOCH + df['data_id']
             
-            print(f"Data loaded from file {file_path}")
+            else:
+                print(f"Detected old format (no header) for: {file_path}")
+                df = pd.read_csv(file_path, header=None, skipinitialspace=True)
+                # Programmatically assign headers for old format
+                # Assumes structure: Epoch, Mini_Batch_ID, Accuracy%, Time_String, ...
+                base_headers = ['epoch_id', 'mini_batch_id', 'accuracy_str', 'time_str']
+                # Create remaining column names to avoid errors
+                extra_headers = [f'col_{i}' for i in range(len(base_headers), df.shape[1])]
+                df.columns = base_headers + extra_headers
+
+                # 1. Convert Accuracy from string 'XX%' to float using its new name
+                df['Accuracy'] = df['accuracy_str'].astype(str).str.rstrip('%').astype(float) / 100
+
+                # 2. Convert Time string to Total Seconds using its new name
+                df['Time_Since_Start'] = df['time_str'].astype(str).apply(parse_time_string)
+                
+                # 3. Create Unique_Mini_Batch_ID from named columns
+                df['Unique_Mini_Batch_ID'] = df['epoch_id'].astype(int) * BATCHES_PER_EPOCH + df['mini_batch_id'].astype(int)
 
             all_runs_dfs.append(df)
         except Exception as e:
@@ -125,7 +164,7 @@ def plot_comparison_chart(
     system1_label,
     system2_files,
     system2_label,
-    plot_type='time', # 'time' or 'batch'
+    plot_type='time', # 'time', 'batch', or 'time_vs_batch'
     x_tick_count=None,
     y_tick_count=None,
     explicit_interpolation_points=None
@@ -147,27 +186,25 @@ def plot_comparison_chart(
         return
     print('Data loaded successfully')
 
-    # 2. Determine X-Axis and Interpolation Settings
+    # 2. Determine Axis Keys, Labels, and Interpolation Settings
     if plot_type == 'time':
-        x_data_key = 'Time_Since_Start'
-        x_label = 'Time Since Start (Minutes)'
-        # Combine all time data for max_x
-        all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
-        # Interpolation is required for 'time' plot
-        interpolate = True 
-        
+        x_data_key, y_data_key = 'Time_Since_Start', 'Accuracy'
+        x_label, y_label = 'Time Since Start (Minutes)', 'Test Accuracy'
+        interpolate = True
     elif plot_type == 'batch':
-        x_data_key = 'Unique_Mini_Batch_ID'
-        x_label = 'Mini-Batch ID'
-        # Combine all batch IDs for max_x
-        all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
-        # No interpolation for 'batch' plot
-        interpolate = False 
+        x_data_key, y_data_key = 'Unique_Mini_Batch_ID', 'Accuracy'
+        x_label, y_label = 'Mini-Batch ID/ Model Version', 'Test Accuracy'
+        interpolate = False
+    elif plot_type == 'time_vs_batch':
+        x_data_key, y_data_key = 'Time_Since_Start', 'Unique_Mini_Batch_ID'
+        x_label, y_label = 'Time Since Start (Minutes)', 'Mini-Batch ID/ Model Version'
+        interpolate = True
     else:
-        raise ValueError("plot_type must be 'time' or 'batch'.")
+        raise ValueError("plot_type must be 'time', 'batch', or 'time_vs_batch'.")
 
-    # Max value of the common X-axis
-    max_x = np.max(all_x_data)
+    # Combine all x-axis data to determine the plot range
+    all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
+    max_x = np.max(all_x_data) if all_x_data else 0
     
     # Determine interpolation points (if required)
     if interpolate:
@@ -182,70 +219,65 @@ def plot_comparison_chart(
         all_batches = sorted(list(set(all_x_data)))
         common_x_grid = np.array(all_batches)
 
-
-    # 3. Interpolate runs or align points
+    # 3. Process runs to get Y-values corresponding to the common X-grid
     def process_runs(runs_list):
-        processed_accuracies = []
+        processed_y_values = []
         for df in runs_list:
             if df[x_data_key].empty:
                 continue
 
             if interpolate:
-                # Interpolate onto the dense time grid
-                # Sort by Time_Since_Start for interpolation
-                sorted_df = df.sort_values(by='Time_Since_Start').reset_index(drop=True)
-                
-                accuracy_processed = np.interp(
+                # Interpolate Y-values onto the dense time grid
+                # Sort by the x-axis key for correct interpolation
+                sorted_df = df.sort_values(by=x_data_key).reset_index(drop=True)
+                y_processed = np.interp(
                     common_x_grid,
                     sorted_df[x_data_key].values,
-                    sorted_df['Accuracy'].values
+                    sorted_df[y_data_key].values
                 )
             else:
                 # Align data to the common batch ID set (using previous value if missing)
-                df_temp = df.set_index(x_data_key)['Accuracy'].reindex(common_x_grid).ffill()
-                accuracy_processed = df_temp.values
+                df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid).ffill()
+                y_processed = df_temp.values
             
-            processed_accuracies.append(accuracy_processed)
-        return np.array(processed_accuracies)
+            processed_y_values.append(y_processed)
+        return np.array(processed_y_values)
 
-    # 4. Calculate Mean and Min/Max
-    s1_interp_acc = process_runs(system1_runs)
-    s1_mean = np.mean(s1_interp_acc, axis=0)
-    s1_std = np.std(s1_interp_acc, axis=0)
-    # s1_upper_bound = s1_mean + s1_std
-    # s1_lower_bound = s1_mean - s1_std
-    s1_upper_bound = np.max(s1_interp_acc, axis=0)
-    s1_lower_bound = np.min(s1_interp_acc, axis=0)
+    # 4. Calculate Mean and Min/Max for the Y-axis data
+    s1_processed_y = process_runs(system1_runs)
+    s1_mean = np.mean(s1_processed_y, axis=0)
+    s1_upper_bound = np.max(s1_processed_y, axis=0)
+    s1_lower_bound = np.min(s1_processed_y, axis=0)
 
     # System 2
-    s2_interp_acc = process_runs(system2_runs)
-    s2_mean = np.mean(s2_interp_acc, axis=0)
-    s2_std = np.std(s2_interp_acc, axis=0)
-    # s2_upper_bound = s2_mean + s2_std
-    # s2_lower_bound = s2_mean - s2_std
-    s2_upper_bound = np.max(s2_interp_acc, axis=0)
-    s2_lower_bound = np.min(s2_interp_acc, axis=0)
+    s2_processed_y = process_runs(system2_runs)
+    s2_mean = np.mean(s2_processed_y, axis=0)
+    s2_upper_bound = np.max(s2_processed_y, axis=0)
+    s2_lower_bound = np.min(s2_processed_y, axis=0)
 
-    # 4. Plotting (Using default style for better custom axis control)
+    # 5. Plotting (Using default style for better custom axis control)
     plt.style.use('default')
     fig, axes = plt.subplots(figsize=(10, 6))
 
+    
     # System 1: Line (Mean) and Fill (Min/Max)
-    axes.plot(common_x_grid, s1_mean, label=system1_label, color=color1, linewidth=1)
-    axes.fill_between(
-        common_x_grid, s1_lower_bound, s1_upper_bound,
-        color=color1, alpha=0.25,
-        label=f'Min/Max of {system1_label}'
-        # label=f'$\\pm 1$ StdDev ({system1_label})'
-    )
+    axes.plot(common_x_grid, s1_mean, label=system1_label, color=color1, linewidth=LINE_WIDTH)
+    if not MIN_MAX_DISABLED:
+        axes.fill_between(
+            common_x_grid, s1_lower_bound, s1_upper_bound,
+            color=color1, alpha=0.25,
+            label=f'Min/Max of {system1_label}'
+            # label=f'$\\pm 1$ StdDev ({system1_label})'
+        )
 
     # System 2: Line (Mean) and Fill (Min/Max)
-    axes.plot(common_x_grid, s2_mean, label=system2_label, color=color2, linewidth=1)
-    axes.fill_between(
-        common_x_grid, s2_lower_bound, s2_upper_bound,
-        color=color2, alpha=0.25,
-        label=f'Min/Max of {system2_label}'
-    )
+    axes.plot(common_x_grid, s2_mean, label=system2_label, color=color2, linewidth=LINE_WIDTH)
+    if not MIN_MAX_DISABLED:
+        axes.fill_between(
+            common_x_grid, s2_lower_bound, s2_upper_bound,
+            color=color2, alpha=0.25,
+            label=f'Min/Max of {system2_label}'
+        )
 
     # 6. Dynamic and Human-Readable Ticks
     
@@ -254,14 +286,14 @@ def plot_comparison_chart(
     y_tick_count = y_tick_count if y_tick_count is not None else DEFAULT_Y_TICK_COUNT
     
     # Y-axis range (find global min/max across all runs/systems)
-    global_min_acc = min(np.min(s1_lower_bound), np.min(s2_lower_bound))
-    global_max_acc = max(np.max(s1_upper_bound), np.max(s2_upper_bound))
+    global_min_y = min(np.min(s1_lower_bound), np.min(s2_lower_bound))
+    global_max_y = max(np.max(s1_upper_bound), np.max(s2_upper_bound))
 
     # Add a small buffer (5% padding) to the Y range
-    y_range = global_max_acc - global_min_acc
-    buffer = y_range * 0.05
-    min_y = max(0, global_min_acc - buffer)
-    max_y = global_max_acc + buffer
+    y_range = global_max_y - global_min_y
+    buffer = y_range * 0.05 if y_range > 0 else 1
+    min_y = max(0, global_min_y - buffer)
+    max_y = global_max_y + buffer
     
     # Calculate round number ticks using the fixed nice tick logic
     x_ticks = round_nice_ticks(0, max_x, x_tick_count)
@@ -274,7 +306,7 @@ def plot_comparison_chart(
     axes.set_yticks(y_ticks)
 
     # Format tick labels
-    if plot_type == 'time':
+    if x_data_key == 'Time_Since_Start':
         # Time axis label format (seconds -> minutes)
         x_ticks_min = [f'{int(t/60)}m' for t in x_ticks]
         axes.set_xticklabels(x_ticks_min)
@@ -282,9 +314,13 @@ def plot_comparison_chart(
         # Mini-batch ID axis label (integer format)
         axes.set_xticklabels([f'{int(t)}' for t in x_ticks])
         
-    # Accuracy axis label format (float -> %)
-    y_ticks_percent = [f'${y*100:.0f}\\%$' for y in y_ticks] # Round to nearest integer percent for 'nice' label
-    axes.set_yticklabels(y_ticks_percent)
+    if y_data_key == 'Accuracy':
+        # Accuracy axis label format (float -> %)
+        y_ticks_formatted = [f'${y*100:.0f}\\%$' for y in y_ticks] 
+    else:
+        # Other y-axis labels (integer format)
+        y_ticks_formatted = [f'{int(t)}' for t in y_ticks]
+    axes.set_yticklabels(y_ticks_formatted)
     
     # 7. Apply Solid Black Axis Lines and styling
     for spine in ['bottom', 'left']:
@@ -299,37 +335,46 @@ def plot_comparison_chart(
 
     axes.set_title(f'Performance Comparison: {system1_label} vs {system2_label}')
     axes.set_xlabel(x_label)
-    axes.set_ylabel('Test Accuracy')
-    axes.legend(loc='lower right')
+    axes.set_ylabel(y_label)
+    axes.legend(loc='upper right')
     plt.tight_layout()
 
-    file_name = f'{plot_type}_accuracy_comparison.png'
+    file_name = f'{plot_type}_comparison.png'
     plt.savefig(file_name)
     # plt.show() # Disabled for production environment
 
     print(f'Plot saved to {file_name}')
 
 if __name__ == "__main__":
-    # --- Example Execution (Demonstrating new arguments and 'batch' mode) ---
-    # NOTE: Replace the file paths with your actual data.
-
+    
     # Example usage for the original 'time' plot:
     plot_comparison_chart(
-        system1_files=["flame_run1.csv", "flame_run2.csv", "flame_run3.csv"],
-        system1_label="Flame",
-        system2_files=["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"],
-        system2_label="FwdLLM",
+        system1_files=SYSTEM1_FILES,
+        system1_label=SYSTEM1_NAME,
+        system2_files=SYSTEM2_FILES,
+        system2_label=SYSTEM2_NAMES,
         plot_type='time',
-        x_tick_count=12,
+        x_tick_count=10,
         y_tick_count=5
     )
 
     # Example usage for the new 'batch' plot (no interpolation):
     plot_comparison_chart(
-        system1_files=["flame_run1.csv", "flame_run2.csv", "flame_run3.csv"],
-        system1_label="Flame",
-        system2_files=["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"],
-        system2_label="FwdLLM",
+        system1_files=SYSTEM1_FILES,
+        system1_label=SYSTEM1_NAME,
+        system2_files=SYSTEM2_FILES,
+        system2_label=SYSTEM2_NAMES,
         plot_type='batch',
         x_tick_count=10
+    )
+
+    # Example usage for the new 'time_vs_batch' plot:
+    plot_comparison_chart(
+        system1_files=SYSTEM1_FILES,
+        system1_label=SYSTEM1_NAME,
+        system2_files=SYSTEM2_FILES,
+        system2_label=SYSTEM2_NAMES,
+        plot_type='time_vs_batch',
+        x_tick_count=10,
+        y_tick_count=5
     )

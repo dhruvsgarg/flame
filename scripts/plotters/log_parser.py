@@ -405,19 +405,20 @@ LOG_CONFIG = {
 EXPORT_CONFIG = {
     'flame_fwdllm_aggregator': {
         'evaluation_metrics': {
-            'output_filename': 'evaluation_metrics.csv',
+            'output_filename': '19Oct_slow_straggler_evaluation_metrics.csv',
             'log_names': ['eval_model'],
             'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
         },
-        'trainer_performance': {
-            'output_filename': 'trainer_performance.csv',
+        # 'trainer_performance': {
+        #     'output_filename': 'trainer_performance.csv',
         #     'log_names': ['extract_stat_utility'],
         #     'columns': ['timestamp', 'trainer_id', 'trainer_num', 'loss', 'stat_utility']
-        },
+        # },
     },
     'flame_fwdllm_trainer': {
         'train_times': {
-            'output_filename': 'train_times_noDelay_2_5hrs.csv',
+            # 'output_filename': 'train_times_delay_slow_6hr.csv',
+            'output_filename': 'train_times_noDelay_slow_4hr.csv',
             # 'output_filename': 'train_times_delayBy20_3hrs.csv',
             'log_names': ['recv_weights_time'],
             'columns': ['timestamp', 'round_id', 'data_id', 'iteration_id', 'train_time_sec',
@@ -459,6 +460,8 @@ if __name__ == '__main__':
     #     # lambda row, state: row.assign(accuracy_plus_one=row['accuracy'] + 1 if pd.notna(row['accuracy']) else pd.NA)
     # ]
 
+    ################# Aggregator
+
     ################# 1 hour runs
     # log_file_type = "flame_fwdllm_trainer"
     # log_file = Path(
@@ -473,8 +476,10 @@ if __name__ == '__main__':
 
     ################# 2.5-3 hour runs
     log_file_type = "flame_fwdllm_trainer"
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
     log_file = Path(
-        "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_08_29.log")
+        "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")
     # log_file = Path(
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
     row_proc_steps = [
@@ -508,6 +513,34 @@ if __name__ == '__main__':
             }
         )
     ]
+
+    # Define DataFrame Processors (Whole-dataframe, group-wise operations)
+    df_proc_steps = [
+        create_broadcast_aggregator(
+            group_by_cols=['round_id', 'data_id', 'iteration_id'],
+            aggregations={
+                'train_time_sec': ['mean', 'sum'],
+                'cumulative_recv_weights_time': ['mean', 'sum'],
+            }
+        )
+    ]
+
+    ################### Aggregator
+    log_file_type = "flame_fwdllm_aggregator"
+    log_file = Path(
+        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_21_09_04_04.log")
+
+    log_file = Path(
+        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
+
+    log_file = Path(
+        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
+    row_proc_steps = [
+        create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
+        create_time_calculator_processor(start_log_name='first_distribute_weights'),
+    ]
+
+    df_proc_steps = []
 
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],
