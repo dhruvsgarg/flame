@@ -1,4 +1,4 @@
-import re
+import re, os
 import pandas as pd
 from pathlib import Path
 from collections import defaultdict
@@ -132,6 +132,10 @@ def create_broadcast_aggregator(group_by_cols: List[str], aggregations: Dict[str
                 continue
 
             for agg_func in agg_funcs:
+                if agg_func not in ['mean', 'sum', 'max', 'min', 'count']:
+                    print(f"  - Warning: Aggregation '{agg_func}' not supported for broadcasting. Skipping.")
+                    continue
+                
                 new_col_name = f"{agg_func}:{col}"
                 print(f"  - Calculating '{new_col_name}'...")
 
@@ -140,6 +144,90 @@ def create_broadcast_aggregator(group_by_cols: List[str], aggregations: Dict[str
 
         return df_out
     return process
+
+
+def create_summarization_processor(group_by_col: str, aggregations: Dict[str, Any]) -> Callable:
+    """
+    Factory for a DataFrame-processor that performs groupby 'log_name'
+    and appends the results as new summary rows with new log_names.
+    """
+    def process(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or group_by_col not in df.columns:
+            return df
+        
+        print(f"\nApplying summarization grouped by '{group_by_col}'...")
+        
+        # --- START CHANGE ---
+        # Perform the aggregation. This creates a new, small DataFrame.
+        # e.g., df.groupby('log_name').agg({'timestamp': 'count'})
+        summary_df = df.groupby(group_by_col).agg(aggregations)
+        
+        # Rename columns for clarity, e.g., 'timestamp' -> 'count:timestamp'
+        summary_df.columns = [f"{agg_func}:{col}" for col, agg_func_list in aggregations.items() for agg_func in (agg_func_list if isinstance(agg_func_list, list) else [agg_func_list])]
+
+        # Reset the index so the group_by column (e.g., 'log_name') becomes a regular column
+        summary_df.reset_index(inplace=True)
+        
+        # This is your requested fix:
+        # Create a new log_name based on the grouping key
+        # e.g., 'agg_train_sent' -> 'summary:agg_train_sent'
+        summary_df['log_name'] = summary_df['log_name'].apply(lambda x: f'{x}')
+        
+        print(f"  - Generated {len(summary_df)} summary rows with 'summary:' prefix.")
+        print(summary_df)
+        # print(df)
+        # --- END CHANGE ---
+
+        # Concatenate the original DataFrame with the new summary rows
+        # return pd.concat([df, summary_df], ignore_index=True)             # todo: deug why this was returning 4 rows instead of 2
+        return summary_df
+    
+    return process
+
+
+def apply_oort_comm_fix(group_by_col: str, concurrency: int = 13) -> Callable:
+    """
+    Factory for a DataFrame-processor that applies the special OORT
+    communication counting logic.
+    """
+    def process(df: pd.DataFrame) -> pd.DataFrame:
+        print(f"\nApplying OORT communication fix...")
+        
+        # --- START CHANGE ---
+        # Reconstruct the names based on the convention from create_summarization_processor
+        summary_log_name = group_by_col
+        # group_key_col = f'{group_key_col_base}:{group_by_col}'
+        
+        # Extract the summary rows
+        summary_rows = df[df['log_name'] == summary_log_name].copy()
+        if summary_rows.empty:
+            print(f"  - Warning: No summary rows found ('{summary_log_name}'). Skipping fix.")
+            return df
+            
+        # Find the counts for train_sent and weight_recv
+        try:
+            train_sent_count = summary_rows.loc[summary_rows['log_name'] == 'agg_train_sent', 'count:timestamp'].iloc[0]
+            weight_recv_count = summary_rows.loc[summary_rows['log_name'] == 'agg_weight_recv', 'count:timestamp'].iloc[0]
+
+            # Apply the logic ONLY if weight_recv_count is 0
+            if weight_recv_count == 0:
+                print(f"  - Found agg_weight_recv=0. Applying fix...")
+                new_weight_recv_count = train_sent_count - concurrency
+                
+                # Update the count in the main DataFrame
+                df.loc[
+                    (df['log_name'] == summary_log_name) & (df['log_name'] == 'agg_weight_recv'),
+                    'count:timestamp'
+                ] = new_weight_recv_count
+            else:
+                print("  - agg_weight_recv is non-zero. No fix needed.")
+
+        except (IndexError, KeyError):
+            print("  - Warning: Could not find 'agg_train_sent' or 'agg_weight_recv' rows in summary. Skipping fix.")
+        
+        return df
+    return process
+
 
 # --- Handlers & Config ---
 
@@ -230,6 +318,7 @@ class LogParser:
         """Applies a chain of processors that operate on the entire DataFrame."""
         if not self.dataframe_processors or df.empty:
             return df
+        # Processors are applied sequentially
         for func in self.dataframe_processors:
             df = func(df)
         return df
@@ -258,21 +347,27 @@ class LogParser:
 
         for name, config in self.export_configs.items():
             try:
+                # Filter rows based on log_name
                 df_filtered = main_df[main_df['log_name'].isin(
                     config['log_names'])].copy()
                 if df_filtered.empty:
                     print(f"⚠️ No records found for '{name}'. Skipping.")
                     continue
-
+                
+                # Get list of columns that actually exist in the filtered df
+                existing_cols = [col for col in config['columns'] if col in df_filtered.columns]
+                
+                # todo (Gaurav): understand why we even need this
                 # Drop duplicates for summary CSVs
-                if name == 'iteration_timing':
-                    df_filtered.drop_duplicates(
-                        subset=config['columns'], inplace=True)
+                if name == 'iteration_timing' or name == 'communication_summary':
+                    df_filtered.drop_duplicates(subset=existing_cols, inplace=True)
 
                 output_path = output_dir / config['output_filename']
-                df_filtered[config['columns']].to_csv(output_path, index=False)
+                
+                # Select only the requested (and existing) columns
+                df_filtered[existing_cols].to_csv(output_path, index=False)
                 print(
-                    f"✅ Successfully wrote {len(df_filtered)} records for '{name}' to {output_path}")
+                    f"✅ Successfully wrote {len(df_filtered)} records for '{name}' to {os.path.abspath(output_path)}")
 
             except KeyError as e:
                 print(f"❌ Error in export config '{name}': Missing key {e}")
@@ -399,6 +494,49 @@ LOG_CONFIG = {
                 'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
             }
         },
+    ],
+    # --- NEW CONFIG GROUP ---
+    'Async-Cifar-10': [
+        {
+            'name': 'agg_train_sent',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*sending weights.*task: train"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+            }
+        },
+        {
+            'name': 'agg_eval_sent',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*sending weights.*task: eval"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+            }
+        },
+        {
+            'name': 'agg_weight_recv',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*Received weights.*trained on model version"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+            }
+        },
+        {
+            'name': 'agg_eval_recv',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*received eval message"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+            }
+        },
     ]
 }
 
@@ -444,9 +582,22 @@ EXPORT_CONFIG = {
                         ]
         }
     },
+    'Async-Cifar-10': {
+        'communication_raw': {
+            'output_filename': 'communication_raw.csv',
+            'log_names': ['agg_train_sent', 'agg_eval_sent', 'agg_weight_recv', 'agg_eval_recv'],
+            'columns': ['log_name', 'timestamp']
+        },
+        'communication_summary': {
+            'output_filename': f'communication_summary.csv',                # todo: make it easier to declartively add suffix here
+            'log_names': ['agg_train_sent', 'agg_eval_sent', 'agg_weight_recv', 'agg_eval_recv'],
+            'columns': ['log_name', 'count:timestamp']
+        }
+    },
 }
 
 if __name__ == '__main__':
+    # global EXPORT_CONFIG
     output_dir = Path("output/")
 
     # log_file_type = 'flame_fwdllm_aggregator'
@@ -541,7 +692,40 @@ if __name__ == '__main__':
     ]
 
     df_proc_steps = []
+    
+    ############## Async-Cifar-10
+    log_file_type = "Async-Cifar-10"
 
+    log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
+
+    # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
+    # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
+    # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
+    oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
+    felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
+
+    oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
+    suffix = "oort_async_oracular"
+    EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
+
+    log_file = Path(oort_async_oracular_syn0_comm)
+    row_proc_steps = []
+    df_proc_steps = [
+        # Step 1: Generate the summary counts
+        create_summarization_processor(
+            group_by_col='log_name',
+            aggregations={
+                'timestamp': 'count',
+                # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
+            },
+        ),
+        # Step 2: Apply the custom OORT logic
+        apply_oort_comm_fix(
+            group_by_col='log_name', # <-- Pass the col that was grouped on
+            concurrency=13
+        ),
+    ]
+    
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],
         row_processors=row_proc_steps,
@@ -553,9 +737,9 @@ if __name__ == '__main__':
     # Export the data to multiple CSV files as configured
     parser.export_to_configured_csvs(output_dir)
 
-    df_result = parser.to_dataframe().iloc[:5]
+    # df_result = parser.to_dataframe().iloc[:5]
 
     # print("\n--- Parsed DataFrame with All Features ---")
-    print(df_result.to_string())
+    # print(df_result.to_string())
 
     # parser.to_csv(Path("agg_2000_parsed.csv"))
