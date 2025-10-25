@@ -2,8 +2,8 @@ client_num_per_round=$1
 LR=$2
 FL_ALG=$3
 
-pkill -f fl_main.py
-sleep 10  # Wait for the system to stabilize
+# pkill -f fl_main.py
+# sleep 10  # Wait for the system to stabilize
 C_LR=0.01
 S_LR=0.1
 ROUND=10
@@ -135,7 +135,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 4)    # End value is inclusive
+  for X in $(seq 0 14)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

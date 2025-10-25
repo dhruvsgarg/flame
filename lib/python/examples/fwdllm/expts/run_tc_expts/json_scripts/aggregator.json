@@ -101,11 +101,17 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_oort",
-        "kwargs": {
-            "k": 5,
-            "minInitialTrainers": 5
-        }
+    "sort": "async_oort",
+    "kwargs": {
+        "//": "c: concurrency level",
+        "c": 10,
+        "aggGoal": 5,
+        "evalGoalFactor": 0.5,
+        "selectType": "default",
+        "roundNudgeType": "last_eval",
+         "minInitialTrainers": 5,
+         "k": 5
+    }
     },
     "optimizer": {
         "sort": "fedbuff",
