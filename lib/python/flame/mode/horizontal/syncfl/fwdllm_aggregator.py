@@ -90,7 +90,7 @@ class TopAggregator(AsyncTopAgg):
 
         self.data_id = 0
         self.total_data_bins = 150
-
+        self._is_model_updated = False
         self.grad_pool = []
         self.var = None
         self.ends_not_selected_yet = False
@@ -268,7 +268,7 @@ class TopAggregator(AsyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
-    def _aggregate_weights(self, tag: str) -> None:
+    def _aggregate_grads_async(self, tag: str) -> None:
         """
         Aggregate local model GRADIENTS asynchronously for FwdLLM.
         
@@ -276,13 +276,11 @@ class TopAggregator(AsyncTopAgg):
         It receives gradients, aggregates them until _agg_goal is met,
         then performs FwdLLM variance check and model update.
         """
-        logger.info("starting aggregate_grads_async for FwdLLM within fwdllm_aggregator")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info("No channel found")
             return
         
-        # 1. Receive ONE message (async pattern)
         if(channel.ends(VAL_CH_STATE_RECV) is None):
             logger.info("no ends yet")
             return
@@ -294,21 +292,17 @@ class TopAggregator(AsyncTopAgg):
             logger.debug(f"No data from {end}; skipping it")
             return
 
-        # 2. Check for FWDLLM gradient messages
-        # This part is from SyncFwdAgg
         if MessageType.GRADIENTS in msg and MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
             logger.info(
                 f"Received gradients from {end} "
                 f"with model version {msg[MessageType.MODEL_VERSION]}"
             )
-            # Set OORT properties (from AsyncTopAgg)
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
-        # Handle EVAL-only messages (from AsyncTopAgg)
         elif MessageType.STAT_UTILITY in msg:
             logger.info(
                 f"Received eval-only message from {end}, "
@@ -331,7 +325,6 @@ class TopAggregator(AsyncTopAgg):
             return
             
 
-        # Process FWDLLM Gradients
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         
@@ -351,63 +344,57 @@ class TopAggregator(AsyncTopAgg):
         
         logger.info(f"Received and processed grads from {end}.")
         
-        # 5. Increment goal counter (from AsyncTopAgg)
         self._agg_goal_cnt += 1
 
         if self._agg_goal_cnt < self._agg_goal:
-            # Didn't reach the aggregation goal; return and wait for more
-            logger.debug(f"Agg goal not met. Have {self._agg_goal_cnt}/{self._agg_goal}")
+            logger.info(f"Agg goal not met. Have {self._agg_goal_cnt}/{self._agg_goal}")
             channel.set_end_property(
                 end, PROP_UPDATE_COUNT, self._updates_recevied.get(end, 0) + 1
             )
             return
 
-        # 6. AGGREGATION GOAL REACHED!
-        # This block contains the FWDLLM logic from the end of _aggregate_grads_sync
         if self._agg_goal_cnt == self._agg_goal:
             logger.info(f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation.")
             
-            # FWDLLM: Call aggregation and variance check
             self.grad_pool.append(self.grad)
             self.add_local_trained_result(0, self.grad, self._agg_goal_cnt) # Assuming 0 is ok
             
-            # Reset functional model and grad buffer
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
                 self.model
             )
             self.grad = [torch.zeros_like(p) for p in self.params]
             
-            self.aggregate(self._round) # SC_TS: should set var_good_enough
+            self.aggregate(self._round) # This sets self.var and self.var_good_enough
             
-            # FWDLLM: Update data_id and round based on variance
             if self.var_good_enough:
                 logger.info(f"Variance check PASSED. Evaluating model and advancing data_id.")
-                self.iteration_per_data_id += 1 # This is iter 1 for the new data_id. #SC_TS: needed? since we are setting to 0 anyways!
+                self.iteration_per_data_id += 1 # This is iter 1 for the new data_id. 
                 
-                # Evaluate model
                 result, _, _ = self.eval_model()
                 logger.info(f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}")
                 
-                # Advance data_id
                 self.data_id += 1
                 self.iteration_per_data_id = 0 # Reset iteration count
                 
                 if self.data_id == self.total_data_bins:
                     logger.info(f"All data bins complete. Incrementing round to {self._round + 1}")
                     self._round += 1
+                    self._is_model_updated = True
                     self.data_id = 0
                     channel.set_property("round", self._round) # Update channel property
             
             else:
                 logger.info(f"Variance check FAILED. Retrying on same data_id {self.data_id}.")
                 self.iteration_per_data_id += 1
+                self._is_model_updated = False
 
-            # ASYNC: Reset async counters
+
+
             self._updates_in_queue -= self._agg_goal
             self._agg_goal_cnt = 0 # Reset for the next batch
             
             # ASYNC: Clean up ends that just sent data
-            logger.debug("Agg goal reached, resetting received trainer states.")
+            logger.debug("Agg goal reached, so resetting trainer end states in the channel")
             channel.cleanup_recvd_ends()
 
     def aggregate_grads_from_trainers(self, trainer_grad):
@@ -460,416 +447,6 @@ class TopAggregator(AsyncTopAgg):
             self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return grad
 
-    def _aggregate_grads_async(self, tag: str) -> None:
-        """Aggregate trainer gradients asynchronously."""
-        logger.info("starting aggregate_grads_async")
-        if self.ends_not_selected_yet:
-            logger.info("no ends selected yet")
-            return
-        logger.info("found selected ends, proceeding to recv grads")
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.info("No channel found")
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives first NOTE:
-        # (DG) Right now, the leave notifications also cause a message to be
-        # processed and yield (None,None) from recv_fifo().
-        if channel.ends(VAL_CH_STATE_RECV) is None:
-            logger.info("no ends yet")
-            return
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
-        end, _ = metadata
-        if not msg:
-            logger.debug(f"No data from {end}; skipping it")
-            return
-
-        if MessageType.GRADIENTS in msg and MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
-            logger.info(
-                f"received gradients from {end} "
-                f"with model version {msg[MessageType.MODEL_VERSION]}"
-            )
-
-            # For OORT selector NOTE: (DG) Last selected round should have
-            # ideally been set in distribute weights. But it was here in the old
-            # oort code and ive kept it. Instead of PROP_LAST_SELECTED_ROUND, it
-            # should have been PROP_LAST_UPDATE_RECVD_ROUND.
-            channel.set_end_property(
-                end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
-            )
-
-            # Set last eval round for the trainer since training also means that
-            # eval was done for the same round.
-            channel.set_end_property(
-                end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
-            )
-            # calculate round duration for this end, if the round number
-            # information is identical with round_start_time
-            logger.debug(
-                f"Getting channel property {PROP_ROUND_START_TIME} for " f"end {end}"
-            )
-            round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
-            end = metadata[0]
-            timestamp = metadata[1]
-            logger.debug(
-                f"Returned round_start_time_tup: {round_start_time_tup} for "
-                f"end {end} and timestamp {timestamp}"
-            )
-
-            # TODO: (DG) Also set the end property for task=eval done at
-            # timestamp=current.
-
-        else:
-            logger.error(
-                f"Invalid message received from {end} in aggregate_weights: {msg}"
-            )
-            return
-
-        if self.reject_stale_updates == "True":
-            logger.debug("Check trainer model version, disallow stale updates")
-            if MessageType.MODEL_VERSION in msg:
-                version = msg[MessageType.MODEL_VERSION]
-
-            if version != self._round:
-                logger.info(
-                    f"Rejecting trainer update of version {version}, "
-                    f"agg self._round: {self._round}. Will return."
-                )
-                return
-
-        # update _track_trainer_version_duration_s to capture training time
-        if end not in self._track_trainer_version_duration_s.keys():
-            logger.error(
-                f"{end} not found in _track_trainer_version_duration_s "
-                f"during aggregation"
-            )
-        else:
-            recv_wts_ts = datetime.now()
-            recv_wts_version = msg[MessageType.MODEL_VERSION]
-
-            # check0- verify that this recvd version was sent to trainer
-            if (
-                recv_wts_version
-                in self._track_trainer_version_duration_s[end][
-                    "sent_wts_version_ts"
-                ].keys()
-            ):
-                sent_wts_ts = self._track_trainer_version_duration_s[end][
-                    "sent_wts_version_ts"
-                ][recv_wts_version]
-                # check1- sent_wts should have happened before current time.
-                # Else, handle error
-                if recv_wts_ts <= sent_wts_ts:
-                    logger.error(
-                        f"Trainer: {end}. Recv wts {recv_wts_ts} happened "
-                        f"before send wts: {sent_wts_ts} "
-                        f"for version {recv_wts_version}"
-                    )
-
-                # check2- recv_wts should not have happend for this version
-                # before. Else, handle error
-                if (
-                    recv_wts_version
-                    in self._track_trainer_version_duration_s[end][
-                        "recv_wts_version_ts"
-                    ].keys()
-                ):
-                    logger.error(
-                        f"Trainer: {end}. Recv wts {recv_wts_ts} has already "
-                        f"occured for version: {recv_wts_version}"
-                    )
-
-                # Process the recv_wts_ts and update training time
-                self._track_trainer_version_duration_s[end]["recv_wts_version_ts"][
-                    recv_wts_version
-                ] = recv_wts_ts
-
-            # TODO: (DG) Can pass a flag for this later.
-            allow_updates_more_than_timeout_old = True
-
-            if ((recv_wts_ts - sent_wts_ts).total_seconds() > SEND_TIMEOUT_WAIT_S) and (
-                not allow_updates_more_than_timeout_old
-            ):
-                # NOTE: (DG) Timeout means that an update returns with latency
-                # of [timeout, infinty). While some updates might be less stale,
-                # most could be very stale. Instead of cherry-picking which
-                # updates to keep and which to discard, we will discard all such
-                # delayed updates.
-                time_staleness_s = (
-                    recv_wts_ts - sent_wts_ts
-                ).total_seconds() - SEND_TIMEOUT_WAIT_S
-                logger.info(
-                    f"Update from end {end} arrived more "
-                    f"than {SEND_TIMEOUT_WAIT_S} seconds after last send. "
-                    f"Update is stale by time {time_staleness_s} over the "
-                    f"timeout and will be discarded."
-                )
-
-                # TODO: (DG) NEEDS TESTING. Sanity check is that it should not
-                # come here with ClientNotify enabled. But when it did come with
-                # ClientNotify and Train->Eval calling reset_end_state_to_none,
-                # it caused issues.
-
-                # Currently, the end is now in recvd state and will be removed
-                # from selected_ends in handle_recv_state in the next iteration.
-                # To add the getter through recv_fifo again, we will (i) remove
-                # the end from selected_ends, and (ii) set the end state to
-                # none.
-                logger.info(
-                    f"Attempting to remove end {end} from selected_ends and "
-                    f"re-setting its channel state"
-                )
-                channel._selector.remove_from_selected_ends(channel._ends, end)
-                channel._selector.reset_end_state_to_none(channel._ends, end)
-                channel._selector._cleanup_removed_ends(end)
-                return
-            # NOTE: (DG) Previously had a version equality check here for
-            # version sent and version received. It was supposed to be equal for
-            # syncfl and help discard incorrect round messages. For asyncfl too
-            # it should be equal. However it is possible that after leave/join
-            # of a trainer between two rounds, a new round version is sent to
-            # the trainer, while it sends back the previous version sent to it.
-            # This is also a valid update since it is just the previous one (and
-            # there are checks on the trainer side to avoid redundant updates).
-            else:
-                # NOTE: total_training_time_s is approximate. It only captures
-                # training time for those send_wt and recv_wt that complete.
-                # Timeouts are not included in this time and can be observed
-                # separately.
-                curr_cumulative_training_s = self._track_trainer_version_duration_s[
-                    end
-                ]["total_training_time_s"]
-                curr_round_time_s = (recv_wts_ts - sent_wts_ts).total_seconds()
-                new_cumulative_training_s = (
-                    curr_cumulative_training_s + curr_round_time_s
-                )
-                self._track_trainer_version_duration_s[end][
-                    "total_training_time_s"
-                ] = new_cumulative_training_s
-                logger.debug(
-                    f"Updated training time record for {end}, details: "
-                    f"{self._track_trainer_version_duration_s[end]}"
-                )
-
-                # Following the relaxation in asyncFL to not check for model
-                # version equality at the aggregator, we do the same for
-                # asyncoort too. We will set the end property without doing the
-                # equality check. Round duration can be calculated based on send
-                # and recv time for that version to that trainer.
-                logger.debug(
-                    f"Setting channel property {PROP_ROUND_DURATION} for "
-                    f"end {end} with duration "
-                    f"{recv_wts_ts - sent_wts_ts}"
-                )
-                channel.set_end_property(
-                    end, PROP_ROUND_DURATION, recv_wts_ts - sent_wts_ts
-                )
-
-        # capture telemetry on trainer participation in rounds
-        channel._selector.ordered_updates_recv_ends.append(end)
-
-        self._updates_in_queue += 1
-
-        self._per_round_update_list.append(end)
-
-        if end not in self._updates_recevied.keys():
-            self._updates_recevied[end] = 1
-        else:
-            self._updates_recevied[end] += 1
-
-        # Process the gradients
-        if MessageType.GRADIENTS in msg:
-            # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
-            # self.model)
-            trainer_gradients = msg[MessageType.GRADIENTS]
-            self.aggregate_grads_from_trainers(trainer_gradients)
-
-        if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
-            logger.info(
-                f"received GRADIENTS_FOR_VAR_CHECK, {len(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])}"
-            )
-            logger.info(f"LEN GRAD FOR VAR CHECK LIST: {len(self.grad_for_var_check_list)}")
-
-            self.grad_for_var_check_list.append(
-                msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
-            )
-            # print and see, progressively!
-            logger.info(f"AFTER LEN GRAD FOR VAR CHECK LIST: {len(self.grad_for_var_check_list)}")
-            logger.info(f"AFTER GRAD FOR VAR CHECK LIST: {self.grad_for_var_check_list[0]}")
-
-        if MessageType.DATASET_SIZE in msg:
-            count = msg[MessageType.DATASET_SIZE]
-            channel.set_end_property(
-                end, PROP_DATASET_SIZE, msg[MessageType.DATASET_SIZE]
-            )
-
-        if MessageType.MODEL_VERSION in msg:
-            version = msg[MessageType.MODEL_VERSION]
-
-        if MessageType.STAT_UTILITY in msg:
-            channel.set_end_property(
-                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
-            )
-            stat_utility = msg[MessageType.STAT_UTILITY]
-
-        logger.info(
-            f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
-        )
-
-        logger.info("proceeding to agg weights")
-
-        self._agg_goal_cnt += 1
-        logger.info(
-            f"self._agg_goal_cnt = {self._agg_goal_cnt}, self._agg_goal = {self._agg_goal}"
-        )
-
-        if self._agg_goal_cnt < self._agg_goal:
-            # didn't reach the aggregation goal; return
-            logger.info("didn't reach agg goal")
-            logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
-
-            # Set trainer participation count property here to be used later in
-            # selection.
-            channel.set_end_property(
-                end, PROP_UPDATE_COUNT, self._updates_recevied[end]
-            )
-            channel.cleanup_recvd_ends()
-            return
-
-        # if self._agg_goal_weights is None: logger.debug("failed model
-        #     aggregation") time.sleep(1) return
-
-        # set global weights, by adding scaled aggregated weights with
-        # aggregation goal
-
-        if self._agg_goal_cnt == self._agg_goal:
-            logger.info("reached agg goal")
-            logger.debug(f" current: {self._agg_goal_cnt}; agg goal: {self._agg_goal}")
-            logger.info(
-                f"Reached agg_goal {self._agg_goal}, "
-                f"current _updates_in_queue: {self._updates_in_queue}, "
-                f"current round before agg: {self._round}"
-            )
-            # NRL commenting for now update per-trainer participation in round
-            # agg for trainer_update in self._per_round_update_list: if (
-            # trainer_update not in
-            #     self._trainer_participation_in_round_count.keys() ):
-            #         self._trainer_participation_in_round_count[trainer_update]
-            #         = 1 self._trainer_participation_in_round[trainer_update] =
-            #     [ 0 ] * 20000  # assuming max 20K rounds
-            #         self._trainer_participation_in_round[trainer_update][
-            #         self._round - 1 ] = 1 else:
-            #             self._trainer_participation_in_round_count[trainer_update]
-            #         += 1 self._trainer_participation_in_round[trainer_update][
-            #         self._round - 1 ] = 1
-
-            # # update staleness list for aggregator
-            # self._aggregator_staleness_track_rounds.append(
-            #     self._per_round_staleness_list )
-
-            # self._aggregator_round_avg_staleness.append(
-            #     np.mean(np.array(self._per_round_staleness_list)) )
-
-            # self._per_round_update_list = [] self._per_round_staleness_list =
-            # []
-
-            # Computing rate: Not used anywhere right now rate = 1 / math.sqrt(1
-            # + self._round - tres.version) logger.debug(f" rate at top_agg:
-            # {rate}")
-
-            # NRL not aggregating for now
-
-            # self.weights = self.optimizer.scale_add_agg_weights( self.weights,
-            #     self._agg_goal_weights, self._agg_goal )
-
-            # # update model with global weights
-            # self._update_model()
-
-            logger.info("calling aggregate for fwdllm (Async)")
-            logger.info(f"grad_for_var_check_list: {self.grad_for_var_check_list}")
-            self.grad_pool.append(self.grad)
-            logger.info(f"grad_pool: {self.grad_pool}")
-            self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
-            self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-                self.model
-            )
-            self.grad = [torch.zeros_like(p) for p in self.params]
-            logger.info("self.grad reset to zero now")
-
-            self.aggregate(self._round)
-            self._agg_goal_cnt = 0
-            # decrement counter since updates consumed from queue
-            self._updates_in_queue -= self._agg_goal
-
-            round_to_print = self._round
-            data_id_to_print = self.data_id
-
-            if self.var_good_enough:
-
-                # evaluate model to calculate loss
-                self.iteration_per_data_id += 1
-                result, _, _ = self.eval_model()
-                
-                logger.info(f"eval loss = {result['eval_loss']}")
-                self.data_id += 1
-                self.iteration_per_data_id = 0
-                # TODO: need to replace it with per end property
-                if self.data_id == self.total_data_bins:
-                    logger.info("incrementing round number now ")
-                    self._round += 1
-                    self.data_id = 0
-                    channel.set_property("round", self._round)
-
-            else:
-                self.iteration_per_data_id += 1
-
-        logger.debug(f"aggregation finished for round {round_to_print}")
-        logger.info(
-            f"====== aggregation finished for round {round_to_print}, data id: {data_id_to_print}, "
-            f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
-            f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
-            f"{self._trainer_participation_in_round_count}"
-        )
-
-        logger.info(
-            f"After round: {round_to_print}, remaining _updates_in_queue: "
-            f"{self._updates_in_queue}"
-        )
-        # NRL commenting for now if self._round % 100 == 0: logger.debug( f"top
-        # agg staleness list after round {self._round} is "
-        #     f"{self._aggregator_round_avg_staleness}" ) logger.debug( f"top
-        #         agg trainer participation in rounds, after round "
-        #         f"{self._round} is {self._trainer_participation_in_round}" )
-
-        # # print out data on staleness for aggregator, per round unroll
-        # # the list of lists into a numpy array, get the avg
-        # agg_staleness_arr = np.hstack(self._aggregator_staleness_track_rounds)
-        # logger.info(f"==== aggregator avg staleness:
-        # {np.mean(agg_staleness_arr)}")
-
-        # # per trainer analytics
-        # if self._round % 100 == 0: for k, v in
-        #     self._per_trainer_staleness_track.items(): trainer_staleness_arr =
-        #         np.array(v) logger.info( f"Trainer {k} staleness info. Min
-        #         {np.min(trainer_staleness_arr)}, " f"Max
-        #             {np.max(trainer_staleness_arr)}, " f"Avg
-        #             {np.mean(trainer_staleness_arr)}, " f"P50
-        #             {np.median(trainer_staleness_arr)}, " f"P90
-        #             {np.percentile(trainer_staleness_arr, 90)}, " f"P99
-        #             {np.percentile(trainer_staleness_arr, 99)}" )
-
-        # total_training_time_all_trainers = 0 for k, v in
-        # self._track_trainer_version_duration_s.items():
-        #     total_training_time_all_trainers += v["total_training_time_s"]
-        # avg_training_time = total_training_time_all_trainers / len(
-        #     self._track_trainer_version_duration_s ) logger.info( f"Avg
-        # training time {avg_training_time} across "
-        # f"{len(self._track_trainer_version_duration_s)} trainers" )
-        if self.var_good_enough:
-            channel._selector.remove_from_selected_ends(channel._ends, end)
-        logger.debug("Agg goal reached, so resetting trainer end states in the channel")
-        channel.cleanup_recvd_ends()
 
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
@@ -1108,7 +685,7 @@ class TopAggregator(AsyncTopAgg):
             channel.set_curr_unavailable_trainers(
                 trainer_unavail_list=curr_unavail_trainer_list
             )
-            logger.debug(
+            logger.info(
                 f"Passed curr_unavail_trainer_list: "
                 f"{curr_unavail_trainer_list} to channel"
             )
@@ -1117,7 +694,6 @@ class TopAggregator(AsyncTopAgg):
             # arguments
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
-        # check if there are any ends to send weights to
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
@@ -1161,6 +737,7 @@ class TopAggregator(AsyncTopAgg):
             shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
             
             shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+
             shared_grad_pool_trainable = []
             if shared_grad_pool is None:
                 shared_grad_pool_trainable = None
@@ -1171,9 +748,11 @@ class TopAggregator(AsyncTopAgg):
                         shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
                     idx += 1
             
-            # Clear pools *once* after creating shared payload
-            self.grad_pool = []
-            self.grad_for_var_check_list = []
+            # Clear pools after model has been updated and we move to the next round!
+            if self._is_model_updated:
+                self.grad_pool = []  # update when model version is updated!
+                self.grad_for_var_check_list = []  # Update once agg goal met
+                self._is_model_updated = False
             
             payload = {
                 MessageType.WEIGHTS: shared_weights,
@@ -1201,6 +780,7 @@ class TopAggregator(AsyncTopAgg):
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
             }
+
 
         # ASYNC SEND LOOP (from AsyncTopAgg)
         for end in ends:
@@ -1246,12 +826,7 @@ class TopAggregator(AsyncTopAgg):
             # Created separate put tasklets for train and eval
             task_put_train = Tasklet("distribute", self.put, TAG_DISTRIBUTE, "train")
 
-            task_put_eval = Tasklet("distribute", self.put, TAG_DISTRIBUTE, "eval")
-
-            # TODO: (DG) Update later, task_get_weights gets both
-            # weights from train and eval tasks. Will create a cleaner
-            # separation later.
-            task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
+            task_get_weights = Tasklet("aggregate", self._aggregate_grads_async, TAG_AGGREGATE)
 
             # task_get_heartbeat = Tasklet("heartbeat", self.get,
             # TAG_HEARTBEAT)
@@ -1268,23 +843,15 @@ class TopAggregator(AsyncTopAgg):
         # chain them again with new tasklets introduced in this class
         (
             task_internal_init
-            >> task_init #sync
-            # >> c.tasklet("load_data") #SC_TS todo: check
-            # >> c.tasklet("initialize")  #SC_TS todo: check
+            >> task_init
             >> loop(
-                task_reset_agg_goal_vars # SC_TS present in async, not in sync
+                task_reset_agg_goal_vars 
                 # >> asyncfl_loop(task_put >> task_get_weights >>
-                # >> task_get_heartbeat)
                 >> asyncfl_loop(task_put_train >> task_get_weights)
-                # >> c.tasklet("train")
-                # >> c.tasklet("evaluate")
-                # >> c.tasklet("analysis")
-                # >> c.tasklet("save_metrics")
-                # >> c.tasklet("inc_round")
+                >> c.tasklet("analysis")
+                >> c.tasklet("save_metrics")
             )
-            # >> c.tasklet("inform_end_of_training")
-            # >> c.tasklet("save_params")
-            # >> c.tasklet("save_model")
+            >> c.tasklet("inform_end_of_training")
         )
 
 

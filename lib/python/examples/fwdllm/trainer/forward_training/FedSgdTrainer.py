@@ -298,7 +298,7 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
-        logger.debug(
+        logger.info(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
         

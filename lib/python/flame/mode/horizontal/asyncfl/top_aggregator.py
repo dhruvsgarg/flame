@@ -776,7 +776,7 @@ class TopAggregator(SyncTopAgg):
         channel.await_join()
 
         # before distributing weights, update it from global model
-        self._update_weights() #SC_TS: check!
+        self._update_weights()
 
         # busy wait for 0.1 seconds before proceeding. This is to wait
         # on distribute_weights to let the system state get updated

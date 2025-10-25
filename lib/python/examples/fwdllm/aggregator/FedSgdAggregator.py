@@ -84,8 +84,8 @@ class FedSGDAggregator(TopAggregator):
             and self.track_trainer_avail["type"] == "ORACULAR"
         ):
             self.trainer_event_dict = self.read_trainer_unavailability()
-            print("self.trainer_event_dict: ", self.trainer_event_dict)
-
+            logger.info(f"self.trainer_event_dict:{ self.trainer_event_dict}")
+      
         self.loss_list = []
         self.grad_for_var_check_list = []
         self.var_good_enough = True
@@ -118,9 +118,6 @@ class FedSGDAggregator(TopAggregator):
         return True
 
     def aggregate(self, current_round):
-        # logger.info("aggregate - fedsgd aggregator")
-        # logger.info(f"grad_for_var_check_list length: {len(self.grad_for_var_check_list)}")
-        # logger.info(f"ele0: grad_for_var_check_list length: {len(self.grad_for_var_check_list[0])}")
         start_time = time.time()
         self.var = calculate_var(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")

@@ -70,36 +70,36 @@ class AsyncOortSelector(AbstractSelector):
 
         # CONFIG CHANGES FOR ASYNCFL WITH OORT
         try:
-            # self.c = kwargs["c"]
-            self.c = 3
+            self.c = kwargs["c"]  #TODO: check where it is getting set and where it is getting used!
+            # self.c = 10
         except KeyError:
             raise KeyError("c (concurrency level) is not specified in config")
 
         try:
-            # self.agg_goal = kwargs["aggGoal"]
-            self.agg_goal = 2
+            self.agg_goal = kwargs["aggGoal"]
+            # self.agg_goal = 5
         except KeyError:
             raise KeyError("aggGoal is not specified in config")
 
         try:
-            # self.eval_goal_factor = kwargs["evalGoalFactor"]
-            self.eval_goal_factor = 0.5
+            self.eval_goal_factor = kwargs["evalGoalFactor"]
+            # self.eval_goal_factor = 0.5
         except KeyError:
             raise KeyError(
                 "evalGoalFactor is not specified in config. It is the decimal multiplicative factor wrt agg goal for eval"
             )
 
         try:
-            # self.round_nudge_type = kwargs["roundNudgeType"]
-            self.round_nudge_type = 'last_eval'
+            self.round_nudge_type = kwargs["roundNudgeType"]
+            # self.round_nudge_type = 'last_eval'
         except KeyError:
             raise KeyError(
                 "roundNudgeType is not specified in config. It is last_train or last_eval based on the selector nudging critera"
             )
 
         try:
-            # self.select_type = kwargs["selectType"]
-            self.select_type = "default"
+            self.select_type = kwargs["selectType"]
+            # self.select_type = "default"
         except KeyError:
             raise KeyError(
                 "selectType is not specified in config. Can be default, "
@@ -270,7 +270,6 @@ class AsyncOortSelector(AbstractSelector):
 
         # default, availability unaware way of using ends
         eligible_ends = ends
-        logger.info(f"SC_TS: Eligible ends: {eligible_ends}")
 
         # Make a filter of unavailable ends, update eligible_ends
         # given trainer_unavail_list
@@ -1679,7 +1678,6 @@ class AsyncOortSelector(AbstractSelector):
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
-        logger.debug(f"selected_ends: {selected_ends}")
 
         # from the selected ends, remove those that are in recv state
         # already This is done to avoid waiting on trainers that you
@@ -1729,14 +1727,14 @@ class AsyncOortSelector(AbstractSelector):
                         )
 
             cc = min(len(candidates), concurrency)
-            logger.debug(
+            logger.info(
                 f"Will pick cc: {cc} as min(candidates,concurrency) "
                 f"from candidates: {candidates}"
             )
             selected_ends = set(random.sample(list(candidates), cc))
 
             self.selected_ends[self.requester] = selected_ends
-            logger.debug(
+            logger.info(
                 f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
             )
 

@@ -195,9 +195,8 @@ class Channel(object):
 
             #     logger.info(f"sleeping till ends enough, current ends: {len(self._ends)}")
             #     time.sleep(5)
-            logger.info(f"SC_TS: self: {vars(self)}")
 
-            if self.trainer_unavail_list is not None:
+            if self.trainer_unavail_list is not None and self.trainer_unavail_list != []:
                 selected = self._selector.select(
                     self._ends,
                     self.properties,

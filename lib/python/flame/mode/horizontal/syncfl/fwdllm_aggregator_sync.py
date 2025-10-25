@@ -70,6 +70,7 @@ class TopAggregator(SyncTopAgg):
         super().internal_init()
 
         self._agg_goal_cnt = 0
+        logger.info(f"Agg goal cnt set to 0, {self._agg_goal_cnt}")
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
 
@@ -197,6 +198,7 @@ class TopAggregator(SyncTopAgg):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
+        logger.info(f"Agg goal cnt set to 0, {self._agg_goal_cnt}")
 
         # reset agg goal weights
         self._agg_goal_weights = None
@@ -1126,6 +1128,7 @@ class TopAggregator(SyncTopAgg):
 
             self.aggregate(self._round)
             self._agg_goal_cnt = 0
+            logger.info(f"Agg goal cnt set to 0, {self._agg_goal_cnt}")
             # decrement counter since updates consumed from queue
             self._updates_in_queue -= self._agg_goal
 
@@ -1355,6 +1358,7 @@ class TopAggregator(SyncTopAgg):
             location="[after_aggregate(),_aggregate_grads_sync()]"
         )
         self._agg_goal_cnt = 0
+        logger.info(f"Agg goal cnt set to 0, {self._agg_goal_cnt}")
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal #SC_TS: cancel's off with increment above! 
 
