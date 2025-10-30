@@ -53,7 +53,7 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/gaurav/flame/
+REPO_PATH=/home/dgarg39/aish_test/flame
 # todo: Use pwd here
 DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 
@@ -132,7 +132,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 99)    # End value is inclusive
+  for X in $(seq 0 12)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

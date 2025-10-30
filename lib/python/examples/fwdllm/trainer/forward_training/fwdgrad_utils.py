@@ -107,6 +107,7 @@ def calculate_jvp(func, params, v):
 
 def calculate_var(fwdgrad_list):
     n = len(fwdgrad_list)
+    logger.info(f"calculating var for {len(fwdgrad_list)}")
     # 计算前一半tensor的平均值
     first_half_mean = torch.mean(torch.stack(fwdgrad_list[: n // 2]), dim=0)
 

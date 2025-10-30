@@ -61,7 +61,7 @@ class FedSGDAggregator(TopAggregator):
         self.cached_v = []
         if self.args.model_type == "distilbert":
             # self.var_threshold = 0.25 ## commented out by them, not used
-            self.var_threshold = 0.1
+            self.var_threshold = 0.35
         elif self.args.model_type == "bert":
             # self.var_threshold = 0.6
             self.var_threshold = 0.2
@@ -161,6 +161,9 @@ class FedSGDAggregator(TopAggregator):
 
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
+        if (training_num == 0) :
+            logger.warning("Not updating the model, division by 0 error")
+            return old_param
 
         # logger.info("################aggregate: %d" % len(model_list))
         (num0, averaged_params) = model_list[0]
@@ -177,9 +180,12 @@ class FedSGDAggregator(TopAggregator):
             )
         if self.args.var_control:
             if self.var <= self.var_threshold:
+                logger.info("current model is good, variance under threshold")
                 self.var_good_enough = True
                 # 方差满足要求
                 self.cached_v = []
+                # tmp_updated_params = copy.deepcopy(self.get_global_model_params())
+                # logger.info(f"origin params - {origin_param} updated params - {tmp_updated_params}  ")
             else:
                 self.var_good_enough = False
                 logger.info("current model is not good enough, calculate more v")

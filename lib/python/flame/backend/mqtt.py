@@ -258,7 +258,7 @@ class MqttBackend(AbstractBackend):
         if msg.type == msg_pb2.NotifyType.JOIN and not channel.has(msg.end_id):
             # this is the first time to see this end, so let's notify
             # my presence to the end
-            logger.debug(f"Acknowledge join notification from {msg.end_id}")
+            logger.info(f"Acknowledge join notification from {msg.end_id}")
             self.notify(msg.channel_name, msg_pb2.NotifyType.JOIN)
 
             # add end to the channel
