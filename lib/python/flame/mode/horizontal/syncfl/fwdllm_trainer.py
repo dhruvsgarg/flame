@@ -25,6 +25,8 @@ from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STAT
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
+from flame.monitor.runtime import timer_decorator, FwdLLMStage
+
 from flame.common.util import (
     MLFramework,
     delta_weights_pytorch,
@@ -56,6 +58,14 @@ logger = logging.getLogger(__name__)
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 TAG_HEARTBEAT = "heartbeat_send"
+
+@timer_decorator
+def recv_wrapper(self, channel, end_id):
+    """Wrapper around recv to be used with timer_decorator."""
+    # Create FwdLLMStage for timing/metrics logging
+    self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, self.trainer_id)
+
+    return channel.recv(end_id)
 
 
 class Trainer(Role, metaclass=ABCMeta):
@@ -141,6 +151,7 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    @timer_decorator
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(
             f"### FETCH WEIGHTS start for tag: {tag} "
@@ -168,7 +179,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        msg, _ = channel.recv(end)
+        msg, _ = recv_wrapper(self, channel, end)
 
         if not msg:
             logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
@@ -186,6 +197,9 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
 
+        if MessageType.MODEL_VERSION in msg:
+            self._model_version = msg[MessageType.MODEL_VERSION]
+
         if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
                 self.data_id is not None
@@ -196,7 +210,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.abort_training = True
                 logger.info(
                     f"Fetch weights aborted for given model version "
-                    f"{self._round} while trainer_id {self.trainer_id} has "
+                    f"{self._model_version} while trainer_id {self.trainer_id} has "
                     f"already sent updates "
                     f"upto iteration_per_data_id: {self.iteration_per_data_id}"
                 )
@@ -338,6 +352,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         channel.cleanup_recvd_ends()
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
@@ -348,6 +364,7 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.info("calling send heartbeat")
             self._send_heartbeat_to_agg(tag)
 
+    @timer_decorator
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(
             f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
@@ -375,6 +392,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         return
 
+    @timer_decorator
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt time.sleep(1)
 
@@ -440,7 +458,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                 # MessageType.STAT_UTILITY: self._stat_utility, #uncomment later
                 # - rn FedSgdTrainer has no utility
@@ -448,7 +466,7 @@ class Trainer(Role, metaclass=ABCMeta):
             }
         else:
             msg = {
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
             }
 
@@ -467,7 +485,7 @@ class Trainer(Role, metaclass=ABCMeta):
         elif self.task_to_perform == "eval":
             logger.info(
                 f"sending eval stat utility done for trainer_id: {self.trainer_id} "
-                f"for model version: {self._round}"
+                f"for model version: {self._model_version}"
             )
         else:
             logger.error(
@@ -573,7 +591,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.mc.clear()
         logger.debug(f"saving metrics: {self.metrics}")
         if self.metrics:
-            self.registry_client.save_metrics(self._round - 1, self.metrics)
+            self.registry_client.save_metrics(self._model_version - 1, self.metrics)
             logger.debug("saving metrics done")
         self.metrics = dict()
 
@@ -683,6 +701,7 @@ class Trainer(Role, metaclass=ABCMeta):
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
 
+    @timer_decorator
     def pause_execution(self):
         time.sleep(1)
         return

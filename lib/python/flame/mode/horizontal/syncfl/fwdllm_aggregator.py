@@ -54,6 +54,8 @@ import functorch as fc
 import torch
 
 from torch.nn import CrossEntropyLoss
+import flame.monitor.runtime
+from flame.monitor.runtime import FwdLLMStage, timer_decorator
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,13 @@ PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
+@timer_decorator
+def recv_fifo_wrapper(channel, ends):
+    logger.info("[GJD] Entering recv_fifo_wrapper generator loop")
+    for msg, metadata in channel.recv_fifo(ends):
+        logger.info(f"[GJD] Yielding msg from {metadata}")
+        yield msg, metadata
+    logger.info("[GJD] Exiting recv_fifo_wrapper")
 
 class TopAggregator(AsyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -91,6 +100,7 @@ class TopAggregator(AsyncTopAgg):
         self.data_id = 0
         self.total_data_bins = 150
         self._is_model_updated = False
+        self._model_version = 0
         self.grad_pool = []
         self.var = None
         self.ends_not_selected_yet = False
@@ -268,6 +278,7 @@ class TopAggregator(AsyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
+    @timer_decorator
     def _aggregate_grads_async(self, tag: str) -> None:
         """
         Aggregate local model GRADIENTS asynchronously for FwdLLM.
@@ -323,10 +334,24 @@ class TopAggregator(AsyncTopAgg):
                 f"Invalid message received from {end} in aggregate_weights: {msg}"
             )
             return
-            
+        
+        #TODO: Check if we want to discard after putting in the queue  
+        if self.reject_stale_updates == True:
+            logger.info("Check trainer model version, disallow stale updates")
+            if MessageType.MODEL_VERSION in msg:
+                version = msg[MessageType.MODEL_VERSION]
+                logger.info(f"Model version aggregator: {self._model_version}, Model version trainer: {version}")
+
+            if version != self._model_version:
+                logger.info(
+                    f"Rejecting trainer update of version {version}, "
+                    f" self._model_version: {self._model_version}. Will return."
+                )
+                return
 
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
+
         
         if MessageType.GRADIENTS in msg:
             trainer_gradients = msg[MessageType.GRADIENTS]
@@ -367,19 +392,19 @@ class TopAggregator(AsyncTopAgg):
             self.aggregate(self._round) # This sets self.var and self.var_good_enough
             
             if self.var_good_enough:
+
                 logger.info(f"Variance check PASSED. Evaluating model and advancing data_id.")
                 self.iteration_per_data_id += 1 # This is iter 1 for the new data_id. 
-                
                 result, _, _ = self.eval_model()
                 logger.info(f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}")
-                
                 self.data_id += 1
                 self.iteration_per_data_id = 0 # Reset iteration count
-                
+                self._is_model_updated = True
+                self._model_version +=1
+
                 if self.data_id == self.total_data_bins:
                     logger.info(f"All data bins complete. Incrementing round to {self._round + 1}")
                     self._round += 1
-                    self._is_model_updated = True
                     self.data_id = 0
                     channel.set_property("round", self._round) # Update channel property
             
@@ -392,10 +417,11 @@ class TopAggregator(AsyncTopAgg):
 
             self._updates_in_queue -= self._agg_goal
             self._agg_goal_cnt = 0 # Reset for the next batch
-            
+            self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)            
             # ASYNC: Clean up ends that just sent data
             logger.debug("Agg goal reached, so resetting trainer end states in the channel")
             channel.cleanup_recvd_ends()
+
 
     def aggregate_grads_from_trainers(self, trainer_grad):
         self.print_trainable_params_stats(
@@ -758,7 +784,7 @@ class TopAggregator(AsyncTopAgg):
                 MessageType.WEIGHTS: shared_weights,
                 MessageType.GRAD_POOL: shared_grad_pool_trainable,
                 MessageType.ROUND: self._round,
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.TASK_TO_PERFORM: task_to_perform,
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
@@ -775,7 +801,7 @@ class TopAggregator(AsyncTopAgg):
             payload = {
                 MessageType.VAR: "bad",
                 MessageType.ROUND: self._round,
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.TASK_TO_PERFORM: task_to_perform,
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
@@ -785,7 +811,7 @@ class TopAggregator(AsyncTopAgg):
         # ASYNC SEND LOOP (from AsyncTopAgg)
         for end in ends:
             logger.info(
-                f"Sending payload to {end} with model_version: {self._round}, "
+                f"Sending payload to {end} with model_version: {self._model_version}, "
                 f"data_id: {self.data_id}, iter: {self.iteration_per_data_id}"
             )
             
@@ -806,7 +832,7 @@ class TopAggregator(AsyncTopAgg):
                     "total_training_time_s": 0, # Initialize to 0
                 }
             self._track_trainer_version_duration_s[end]["sent_wts_version_ts"][
-                self._round
+                self._model_version
             ] = datetime.now()
 
         # Clean up the large payload object
