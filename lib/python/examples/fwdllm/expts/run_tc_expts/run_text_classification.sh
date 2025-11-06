@@ -3,7 +3,8 @@ LR=$2
 FL_ALG=$3
 
 pkill -f gaurav.*fl_main.py
-# sleep 10  # Wait for the system to stabilize
+sleep 10  # Wait for the system to stabilize
+nvidia-smi
 C_LR=0.01
 S_LR=0.1
 ROUND=10

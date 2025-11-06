@@ -679,13 +679,10 @@ if __name__ == '__main__':
     ################### Aggregator
     log_file_type = "flame_fwdllm_aggregator"
     log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_21_09_04_04.log")
+        "/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_05_11_22_44.log")
+    suffix = "async"
+    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['output_filename'] = f'reject_stale_k5_c15_n100-{suffix}.csv'
 
-    log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
-
-    log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
     row_proc_steps = [
         create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
         create_time_calculator_processor(start_log_name='first_distribute_weights'),
@@ -694,37 +691,37 @@ if __name__ == '__main__':
     df_proc_steps = []
     
     ############## Async-Cifar-10
-    log_file_type = "Async-Cifar-10"
+    # log_file_type = "Async-Cifar-10"
 
-    log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
+    # log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
 
     # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
     # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
     # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
-    oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
-    felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
+    # oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
+    # felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
 
-    oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
-    suffix = "oort_async_oracular"
-    EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
+    # oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
+    # suffix = "oort_async_oracular"
+    # EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
 
-    log_file = Path(oort_async_oracular_syn0_comm)
-    row_proc_steps = []
-    df_proc_steps = [
-        # Step 1: Generate the summary counts
-        create_summarization_processor(
-            group_by_col='log_name',
-            aggregations={
-                'timestamp': 'count',
-                # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
-            },
-        ),
-        # Step 2: Apply the custom OORT logic
-        apply_oort_comm_fix(
-            group_by_col='log_name', # <-- Pass the col that was grouped on
-            concurrency=13
-        ),
-    ]
+    # log_file = Path(oort_async_oracular_syn0_comm)
+    # row_proc_steps = []
+    # df_proc_steps = [
+    #     # Step 1: Generate the summary counts
+    #     create_summarization_processor(
+    #         group_by_col='log_name',
+    #         aggregations={
+    #             'timestamp': 'count',
+    #             # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
+    #         },
+    #     ),
+    #     # Step 2: Apply the custom OORT logic
+    #     apply_oort_comm_fix(
+    #         group_by_col='log_name', # <-- Pass the col that was grouped on
+    #         concurrency=13
+    #     ),
+    # ]
     
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],

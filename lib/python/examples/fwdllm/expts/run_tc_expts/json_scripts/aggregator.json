@@ -85,7 +85,7 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 5,
+        "aggGoal": 10,
         "rounds": 300,
         "rejectStaleUpdates": true
     },
@@ -105,13 +105,13 @@
         "sort": "async_oort",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 15,
-            "aggGoal": 5,
+            "c": 30,
+            "aggGoal": 10,
             "evalGoalFactor": 0.5,
             "selectType": "default",
             "roundNudgeType": "last_eval",
-            "minInitialTrainers": 5,
-            "k": 5
+            "minInitialTrainers": 30,
+            "k": 10
         }
     },
     "optimizer": {

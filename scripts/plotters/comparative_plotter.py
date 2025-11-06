@@ -18,10 +18,10 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-SYSTEM1_FILES = ["output/21Sept_evaluation_metrics.csv"]
-SYSTEM1_NAME = "SyncFL (no stagglers)"
-SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
-SYSTEM2_NAMES = "SyncFL (with stagglers)"
+SYSTEM1_FILES = ["/home/dgarg39/gaurav/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
+SYSTEM1_NAME = "AsyncFL reject stale updates (no stragglers)"
+SYSTEM2_FILES = ["/home/dgarg39/gaurav/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
+SYSTEM2_NAMES = "AsyncFL aggregate stale updates (no stragglers)"
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
@@ -339,7 +339,7 @@ def plot_comparison_chart(
     axes.legend(loc='upper right')
     plt.tight_layout()
 
-    file_name = f'{plot_type}_comparison.png'
+    file_name = f'plots/{plot_type}_comparison.png'
     plt.savefig(file_name)
     # plt.show() # Disabled for production environment
 
