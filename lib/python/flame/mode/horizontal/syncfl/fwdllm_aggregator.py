@@ -1538,6 +1538,7 @@ class TopAggregator(SyncTopAgg):
             logger.warning("Effective sample-weight sum is zero or lower; skipping model update for this aggregation goal")
             # Clean up and return early without updating the model
             self.grad = [torch.zeros_like(g) for g in self.grad]
+            self._effective_sample_weight_sum = 0.0
             channel.cleanup_recvd_ends()
             return
 
