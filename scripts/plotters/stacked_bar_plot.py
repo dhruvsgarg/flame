@@ -232,6 +232,6 @@ ax.legend(title='Sections', bbox_to_anchor=(1.04, 1), loc='upper left')
 # Adjust layout to make room for legend
 plt.tight_layout(rect=[0, 0.03, 0.85, 0.95]) 
 
-plt.savefig("absolute_stacked_chart.png")
-print("Saved chart to 'absolute_stacked_chart.png'")
+plt.savefig("plots/absolute_stacked_chart.png")
+print("Saved chart to 'plots/absolute_stacked_chart.png'")
 # plt.show()

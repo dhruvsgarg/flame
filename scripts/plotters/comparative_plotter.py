@@ -5,7 +5,7 @@ import numpy as np
 # --- Global Constants for Dynamic Plot Configuration ---
 # Default ratio to determine interpolation points if not provided.
 # E.g., if there are 100 max unique data points, NUM_INTERPOLATION_POINTS = 100 * INTERP_RATIO (200)
-INTERP_RATIO = 1 
+INTERP_RATIO = 0.5
 DEFAULT_X_TICK_COUNT = 10
 DEFAULT_Y_TICK_COUNT = 5
 BATCHES_PER_EPOCH = 150
@@ -18,10 +18,17 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-SYSTEM1_FILES = ["output/21Sept_evaluation_metrics.csv"]
+# SYSTEM1_FILES = ["output/21Sept_evaluation_metrics.csv"]
+# SYSTEM1_FILES = ["output/test_agg_fedFwd_distilbert_agnews_lr_client_num__numerical_25_10_12_21.csv"]
+SYSTEM1_FILES = ["output/eval_agg_wash_rnds3.5_acc86_25_10_12_21_sample_iter142.csv"]
 SYSTEM1_NAME = "SyncFL (no stagglers)"
-SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
-SYSTEM2_NAMES = "SyncFL (with stagglers)"
+# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
+# SYSTEM2_FILES = ["output/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.csv"]
+SYSTEM2_FILES = ["output/eval_agg_rnd1_acc75_delayBy3_25_10_01_34.csv"]
+SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 3)"
+
+# SYSTEM2_FILES = ["output/eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv"]
+# SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 20)"
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
@@ -211,7 +218,8 @@ def plot_comparison_chart(
         # Use provided value or calculate dynamically based on max data points
         max_unique_points = len(np.unique(all_x_data))
         default_interp = max_unique_points * INTERP_RATIO
-        num_interpolation_points = explicit_interpolation_points if explicit_interpolation_points is not None else default_interp
+        num_interpolation_points = int(explicit_interpolation_points if explicit_interpolation_points is not None else default_interp)
+        print(f"Calculating {num_interpolation_points} interpolated points on X-axis")
         
         common_x_grid = np.linspace(0, max_x, num_interpolation_points)
     else:
@@ -230,11 +238,19 @@ def plot_comparison_chart(
                 # Interpolate Y-values onto the dense time grid
                 # Sort by the x-axis key for correct interpolation
                 sorted_df = df.sort_values(by=x_data_key).reset_index(drop=True)
-                y_processed = np.interp(
-                    common_x_grid,
-                    sorted_df[x_data_key].values,
-                    sorted_df[y_data_key].values
+                # Only interpolate within the range of observed x. Beyond that, forward fill
+                x_obs = sorted_df[x_data_key].values
+                y_obs = sorted_df[y_data_key].values
+
+                # print(f"x size: {len(x_obs)}, y size: {len(y_obs)}, y[-1]: {y_obs[-1]}")
+
+                y_interp = np.interp(
+                    common_x_grid, x_obs, y_obs,
+                    left=0, right = y_obs[-1]           # Forward filling values to the right
+                    # right=np.nan
                 )
+                y_processed = y_interp
+                # print(f"Interpolated points: {y_processed}")
             else:
                 # Align data to the common batch ID set (using previous value if missing)
                 df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid).ffill()
@@ -352,7 +368,7 @@ if __name__ == "__main__":
         system1_files=SYSTEM1_FILES,
         system1_label=SYSTEM1_NAME,
         system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
+        system2_label=SYSTEM2_NAME,
         plot_type='time',
         x_tick_count=10,
         y_tick_count=5
@@ -363,7 +379,7 @@ if __name__ == "__main__":
         system1_files=SYSTEM1_FILES,
         system1_label=SYSTEM1_NAME,
         system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
+        system2_label=SYSTEM2_NAME,
         plot_type='batch',
         x_tick_count=10
     )
@@ -373,7 +389,7 @@ if __name__ == "__main__":
         system1_files=SYSTEM1_FILES,
         system1_label=SYSTEM1_NAME,
         system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
+        system2_label=SYSTEM2_NAME,
         plot_type='time_vs_batch',
         x_tick_count=10,
         y_tick_count=5

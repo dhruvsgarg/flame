@@ -29,6 +29,9 @@ def create_numeric_id_processor(source_col: str, dest_col: str) -> Callable:
         return row
     return process
 
+def populate_model_version() -> Callable:
+    def process(row: pd.Series, state: dict) -> pd.Series:
+        row['_model_version'] = row['round_id'] * row['data_id']
 
 def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Callable:
     """Factory to create a row-processor for sequential and iterative IDs."""
@@ -41,22 +44,23 @@ def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Ca
         data_id = seq_counter % 150
 
         if row['log_name'] == eval_log_name:
-            row['round_id'], row['data_id'], row['iteration_id'] = round_id, data_id, iter_counter
+            row['round_id'], row['data_id'] = round_id, data_id
+            row['iteration_id'], row['_model_version'] = iter_counter, seq_counter
             state['sequential_id_counter'] += 1
             state['iteration_id_counter'] = 0
             state['current_round_id'], state['current_data_id'] = round_id, data_id
         elif row['log_name'] == iter_log_name:
             # Use the stored round/data ID from the last eval_log
-            row['round_id'] = round_id
-            row['data_id'] = data_id
+            row['round_id'], row['data_id'] = round_id, data_id
             # Assign current iteration count
-            row['iteration_id'] = iter_counter
+            row['iteration_id'], row['_model_version'] = iter_counter, seq_counter
 
             # Update state for the next 'var' log
             state['iteration_id_counter'] += 1
 
         else:
-            row['round_id'], row['data_id'], row['iteration_id'] = pd.NA, pd.NA, pd.NA
+            row['round_id'], row['data_id'] = pd.NA, pd.NA 
+            row['iteration_id'] = pd.NA, pd.NA
         return row
     return process
 
@@ -362,7 +366,7 @@ class LogParser:
                 if name == 'iteration_timing' or name == 'communication_summary':
                     df_filtered.drop_duplicates(subset=existing_cols, inplace=True)
 
-                output_path = output_dir / config['output_filename']
+                output_path = output_dir / config['default_output_filename']
                 
                 # Select only the requested (and existing) columns
                 df_filtered[existing_cols].to_csv(output_path, index=False)
@@ -543,34 +547,38 @@ LOG_CONFIG = {
 EXPORT_CONFIG = {
     'flame_fwdllm_aggregator': {
         'evaluation_metrics': {
-            'output_filename': '19Oct_slow_straggler_evaluation_metrics.csv',
+            # 'default_output_filename': '19Oct_slow_straggler_evaluation_metrics.csv',
+            'default_output_filename': 'eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv',
             'log_names': ['eval_model'],
             'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
         },
         # 'trainer_performance': {
-        #     'output_filename': 'trainer_performance.csv',
+        #     'default_output_filename': 'trainer_performance.csv',
         #     'log_names': ['extract_stat_utility'],
         #     'columns': ['timestamp', 'trainer_id', 'trainer_num', 'loss', 'stat_utility']
         # },
     },
     'flame_fwdllm_trainer': {
         'train_times': {
-            # 'output_filename': 'train_times_delay_slow_6hr.csv',
-            'output_filename': 'train_times_noDelay_slow_4hr.csv',
-            # 'output_filename': 'train_times_delayBy20_3hrs.csv',
+            # 'default_output_filename': 'train_times_delay_slow_6hr.csv',
+            # 'default_output_filename': 'train_times_noDelay_slow_4hr.csv',
+            # 'default_output_filename': 'train_times_delayBy20_3hrs.csv',
+            'default_output_filename': 'train_times_delayBy3_8hrs.csv',
             'log_names': ['recv_weights_time'],
             'columns': ['timestamp', 'round_id', 'data_id', 'iteration_id', 'train_time_sec',
                         # 'cumulative_train_time_sec', 'mean:cumulative_train_time_sec',
                         'cumulative_recv_weights_time', 'mean:cumulative_recv_weights_time', 
                         'time_since_start',
-                        'trainer_num',
+                        'trainer_num', '_model_version',
+                        # 'sum:recv_weights_time', 'mean:sum:recv_weights_time',
+                        # 'sum:train_time_sec', 'mean:sum:train_time_sec',
                         # 'trainer_id',
                         ]
         }
     },
     'flame_fwdllm_trainer_old': {
         'train_times': {
-            'output_filename': 'old_train_times.csv',
+            'default_output_filename': 'old_train_times.csv',
             'log_names': ['train_time', 'first_distribute_weights'],
             'columns': ['timestamp', 'round_id', 'data_id', 'iteration_id',
                         'train_time_sec',
@@ -629,16 +637,19 @@ if __name__ == '__main__':
     log_file_type = "flame_fwdllm_trainer"
     # log_file = Path(
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
-    log_file = Path(
-        "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")     # This is also delayed
     # log_file = Path(
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
+    log_file = Path(
+        "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.log")
     row_proc_steps = [
         create_time_calculator_processor(start_log_name='train_time'),
         create_numeric_id_processor(
             source_col='trainer_id', dest_col='trainer_num'),
         create_cumulative_sum_processor(
-            group_key_col='trainer_id', target_cols=['recv_weights_time'])
+            group_key_col='trainer_id', target_cols=['recv_weights_time']),
+        populate_model_version(),
     ]
 
     # log_file_type = "flame_fwdllm_trainer_old"
@@ -661,6 +672,14 @@ if __name__ == '__main__':
             aggregations={
                 'train_time_sec': ['mean', 'sum'],
                 'cumulative_recv_weights_time': ['mean', 'sum'],
+                'recv_weights_time': ['mean', 'sum'],
+            }
+        ),
+        create_broadcast_aggregator(
+            group_by_cols=['round_id'],     # todo: find a bigger granularity & selection be the first/ last one from an iteration
+            aggregations={
+                'sum:recv_weights_time': ['mean', 'sum'],
+                'sum:train_time_sec': ['mean', 'sum'],
             }
         )
     ]
@@ -679,13 +698,15 @@ if __name__ == '__main__':
     ################### Aggregator
     log_file_type = "flame_fwdllm_aggregator"
     log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_21_09_04_04.log")
+        "../logs/agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.log")
+    # log_file = Path(
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_21_09_04_04.log")
 
-    log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
+    # log_file = Path(
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
 
-    log_file = Path(
-        "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
+    # log_file = Path(
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
     row_proc_steps = [
         create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
         create_time_calculator_processor(start_log_name='first_distribute_weights'),
