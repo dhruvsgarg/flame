@@ -2,7 +2,7 @@ client_num_per_round=$1
 LR=$2
 FL_ALG=$3
 
-pkill -f shreya.*fl_main.py
+pkill -f gaurav.*fl_main.py
 # sleep 10  # Wait for the system to stabilize
 C_LR=0.01
 S_LR=0.1
@@ -53,9 +53,9 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/shreya/flame/
+REPO_PATH=/home/dgarg39/gaurav/flame/
 # todo: Use pwd here
-DATA_DIR=/home/dgarg39/shreya/fednlp_data/
+DATA_DIR=/home/dgarg39/gaurav/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
