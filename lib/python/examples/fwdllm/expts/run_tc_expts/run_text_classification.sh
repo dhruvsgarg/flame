@@ -4,6 +4,7 @@ FL_ALG=$3
 
 pkill -f fl_main.py
 sleep 10  # Wait for the system to stabilize
+nvidia-smi
 C_LR=0.01
 S_LR=0.1
 ROUND=10
@@ -53,7 +54,7 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/gaurav/gaurav_flame/flame
+REPO_PATH=/home/dgarg39/gaurav/flame
 # todo: Use pwd here
 DATA_DIR=$REPO_PATH/lib/python/examples/fwdllm/fednlp_data/
 
@@ -132,7 +133,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 12)    # End value is inclusive
+  for X in $(seq 0 49)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

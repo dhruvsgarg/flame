@@ -21,6 +21,8 @@ import time
 from collections import deque
 import numpy as np
 
+from flame.config import TrainerAvailState
+
 from ..common.typing import Scalar
 from ..end import End
 from . import AbstractSelector, SelectorReturnType
@@ -33,6 +35,8 @@ from flame.channel import (
     VAL_CH_STATE_SEND,
 )
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
+
+PROP_AVL_STATE = "avl_state"
 
 logger = logging.getLogger(__name__)
 
@@ -179,10 +183,17 @@ class RandomSelector(AbstractSelector):
                 new_selection = set()
                 for end_ in ends.keys():
                     if end_ not in already_in_use:
-                        new_selection.add(end_)
-                        req +=1
-                        if req == con:
-                            break
+                        curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
+                        logger.info(f"state of {end_} : {curr_end_id_avl_state}")
+                        if curr_end_id_avl_state in (TrainerAvailState.AVL_TRAIN.value, None):
+                            new_selection.add(end_)
+                            req +=1
+                            if req == con:
+                                break
+                        else:
+                            logger.info(f"state of {end_} is not avail, skipping ")
+                            continue
+                        
                 
                 logger.info(f"new_selection: {new_selection}")
 
