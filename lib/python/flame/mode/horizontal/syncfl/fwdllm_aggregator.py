@@ -742,7 +742,13 @@ class TopAggregator(SyncTopAgg):
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
 
-    def aggregate_grads_from_trainers(self, trainer_grad):
+    def aggregate_grads_from_trainers(self, trainer_grad, version_for_rate: int, stat_utility: float = 0.0, grad_for_var_check=None):
+        """Aggregate a single trainer's gradients into self.grad.
+
+        All incoming tensors are scaled by `rate` before accumulation.
+        If `grad_for_var_check` is provided (list of tensors), it is scaled by the
+        same `rate` and appended to `self.grad_for_var_check_list` for variance checks.
+        """
         # logger.info(f"trainer grad in {trainer_grad}")
         self.print_trainable_params_stats(
             location="[start,aggregate_grads_from_trainers()]"
@@ -758,6 +764,36 @@ class TopAggregator(SyncTopAgg):
         # trainer_grad.to(DeviceType.CPU)
         np = self.model.named_parameters()
 
+        # rate = scale * alpha(staleness) + (1 - scale) * beta(stat_utility)
+        # alpha: polynomial decay in staleness; beta: polynomial_upshift
+        if version_for_rate is None:
+            rate = 1.0
+        else:
+            staleness_val = self.model_version - version_for_rate
+            try:
+                scale_val = self.optimizer.agg_rate_conf["scale"]
+                a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
+                b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
+                rate = self.optimizer.weight_factor(
+                    scale=scale_val,
+                    staleness=staleness_val,
+                    a_exp=a_exp_val,
+                    loss=stat_utility,
+                    b_exp=b_exp_val,
+                    alpha_type="polynomial",
+                    beta_type="polynomial_upshift",
+                )
+                if rate != 1.0:
+                    logger.info(
+                        f"Weighting received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
+                    )
+            except Exception as e:
+                logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
+                rate = 1.0
+
+        # Accumulate denominator: sum of rates (kept in [0,1])
+        self._effective_sample_weight_sum += rate
+
         for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
             if param.requires_grad:
                 if name in trainer_grad:
@@ -765,9 +801,16 @@ class TopAggregator(SyncTopAgg):
                     trainer_grad[name] = trainer_grad[name].to(grad_device)
                     # Ensure the layer name exists in trainer_grad
 
-                    self.grad[i].add_(trainer_grad[name])
+                    # Apply scalar rate: g'_i = rate * g_i
+                    self.grad[i].add_(trainer_grad[name] * rate)
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
+
+        # Also accumulate var-check gradients with the same rate if provided.
+        # Assumption: grad_for_var_check is an iterable of tensors.
+        if grad_for_var_check is not None:
+            stacked = torch.stack(list(grad_for_var_check))
+            self.grad_for_var_check_list.append(stacked * rate)
 
         self.log_memory("end aggregate_grads_from_trainers", self.device)
         self.print_trainable_params_stats(
@@ -1314,51 +1357,20 @@ class TopAggregator(SyncTopAgg):
 
             # Process the gradients
             if MessageType.GRADIENTS in msg:
-                
-                # rate_i = scale * alpha(staleness_i) + (1 - scale) * beta(stat_utility_i)
-                # with alpha: polynomial decay in staleness; beta: polynomial_upshift in stat utility
                 trainer_gradients = msg[MessageType.GRADIENTS]
                 version_for_rate = msg[MessageType.MODEL_VERSION]
-                staleness_val = self.model_version - version_for_rate
                 stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
-
-                # Read FedBuff config knobs
-                scale_val = self.optimizer.agg_rate_conf["scale"]
-                a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
-                b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
-
-                rate = self.optimizer.weight_factor(
-                    scale=scale_val,
-                    staleness=staleness_val,
-                    a_exp=a_exp_val,
-                    loss=stat_utility_val,
-                    b_exp=b_exp_val,
-                    alpha_type="polynomial",
-                    beta_type="polynomial_upshift",
-                )
-
-                logger.info(f"Downweighting gradients with staleness: {staleness_val}, stat utility: {stat_utility_val} by rate: {rate}")
-
-                # Accumulate effective denominator as \sum_i rate_i (keep weights within [0,1])
-                # Note: We deliberately do NOT multiply by dataset size here to keep the
-                # weighting factor bounded in [0,1] per your requirement. This makes the
-                # normalization denom = sum of weights instead of sum of (weight * samples).
-                # Trade-off: this removes per-sample statistical weighting but preserves a pure
-                # staleness/utility-based reweighting.
-                self._effective_sample_weight_sum += rate
-
-                # Scale incoming gradients by the computed rate before accumulation
-                # g'_i = rate_i * g_i ensures stale or low-utility grads contribute less to the numerator
-                for name in trainer_gradients:
-                    trainer_gradients[name] = trainer_gradients[name] * rate
-                self.aggregate_grads_from_trainers(trainer_gradients)
-
-            if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
-                logger.info(
-                    f"received GRADIENTS_FOR_VAR_CHECK, {len(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])}"
-                )
-                self.grad_for_var_check_list.append(
+                grad_for_var_check = (
                     msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
+                    if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
+                    else None
+                )
+                
+                self.aggregate_grads_from_trainers(
+                    trainer_gradients,
+                    version_for_rate=version_for_rate,
+                    stat_utility=stat_utility_val,
+                    grad_for_var_check=grad_for_var_check,
                 )
 
             if MessageType.DATASET_SIZE in msg:
@@ -1472,17 +1484,20 @@ class TopAggregator(SyncTopAgg):
 
                 # Process the gradients
                 if MessageType.GRADIENTS in msg:
-                    # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
-                    # self.model)
                     trainer_gradients = msg[MessageType.GRADIENTS]
-                    self.aggregate_grads_from_trainers(trainer_gradients)
-
-                if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
-                    logger.info(
-                        f"received GRADIENTS_FOR_VAR_CHECK, {len(msg[MessageType.GRADIENTS_FOR_VAR_CHECK])}"
-                    )
-                    self.grad_for_var_check_list.append(
+                    version_for_rate = msg[MessageType.MODEL_VERSION]
+                    stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
+                    grad_for_var_check = (
                         msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
+                        if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
+                        else None
+                    )
+                    
+                    self.aggregate_grads_from_trainers(
+                        trainer_gradients,
+                        version_for_rate=version_for_rate,
+                        stat_utility=stat_utility_val,
+                        grad_for_var_check=grad_for_var_check,
                     )
 
                 if MessageType.DATASET_SIZE in msg:
