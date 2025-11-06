@@ -405,7 +405,7 @@ LOG_CONFIG = {
 EXPORT_CONFIG = {
     'flame_fwdllm_aggregator': {
         'evaluation_metrics': {
-            'output_filename': '19Oct_slow_straggler_evaluation_metrics_stalled.csv',
+            'output_filename': '5Nov_n_50_c_7_k_5_mid_round_reselect_baseline_1.csv',
             'log_names': ['eval_model'],
             'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
         },
@@ -480,8 +480,10 @@ if __name__ == '__main__':
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
     # log_file = Path(
     #     "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/full_expt_22_10_n_10_c_7_k_5_trainer.log")
-    log_file = Path(
-    "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_23_10_11_14.log")
+    # log_file = Path(
+    # "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_23_10_11_14.log")
+    log_file = Path("" \
+    "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_05_11_22_44.log")
     # log_file = Path(
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
     row_proc_steps = [
@@ -529,9 +531,14 @@ if __name__ == '__main__':
 
     ################### Aggregator
     log_file_type = "flame_fwdllm_aggregator"
-    log_file = Path(
-        "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_23_10_00_18.log")
+    # log_file = Path(
+    #     "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_23_10_00_18.log")
 
+    # log_file = Path(
+    # "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_13_numerical_30_10_16_04.log")
+
+    log_file = Path(
+    "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_13_numerical_31_10_15_31.log")
     # log_file = Path(
     #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
 

@@ -132,7 +132,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 12)    # End value is inclusive
+  for X in $(seq 0 49)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

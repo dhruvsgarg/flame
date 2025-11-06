@@ -18,10 +18,12 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-SYSTEM1_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
-SYSTEM1_NAME = "no reselection mid-round"
-SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
-SYSTEM2_NAMES = "client reselection for each model update"
+SYSTEM1_FILES = ["output/5Nov_n_50_c_7_k_5_mid_round_reselect_baseline_1.csv"]
+SYSTEM1_NAME = "5Nov_n_50_c_7_k_5_mid_round_reselect_baseline_1"
+# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
+# SYSTEM2_NAMES = "client reselection for each model update"
+SYSTEM2_FILES = ["output/30Oct_no_stall_n_13_c_7_k_5.csv"]
+SYSTEM2_NAMES = "client reselection for each model update maintaining C"
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
