@@ -1210,11 +1210,11 @@ class AsyncOortSelector(AbstractSelector):
                 # might have already participated in the same round
                 # (if it is still in all_ends)
 
-        logger.debug(f"Current selected_ends: {selected_ends}")
+        logger.info(f"Current selected_ends: {selected_ends}")
 
         extra = max(0, concurrency - len(selected_ends))
 
-        logger.debug(
+        logger.info(
             f"c: {concurrency}, "
             f"len(selected_ends): {len(selected_ends)}, extra: {extra}, selected_ends: {selected_ends},"
             f"len(ends): {len(ends)}"

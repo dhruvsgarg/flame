@@ -105,13 +105,13 @@
     "sort": "async_oort",
     "kwargs": {
         "//": "c: concurrency level",
-        "c": 10,
-        "aggGoal": 5,
+        "c": 30,
+        "aggGoal": 10,
         "evalGoalFactor": 0.5,
         "selectType": "default",
         "roundNudgeType": "last_eval",
          "minInitialTrainers": 5,
-         "k": 5
+         "k": 10
     }
     },
     "optimizer": {

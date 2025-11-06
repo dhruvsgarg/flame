@@ -347,6 +347,7 @@ class TopAggregator(AsyncTopAgg):
                     f"Rejecting trainer update of version {version}, "
                     f" self._model_version: {self._model_version}. Will return."
                 )
+                # channel.cleanup_recvd_end(end)
                 return
 
         channel._selector.ordered_updates_recv_ends.append(end)
@@ -756,6 +757,9 @@ class TopAggregator(AsyncTopAgg):
             )
         if self.var_good_enough:
             logger.info(
+                f"sending weights to {ends} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+            )
+            logger.info(
                 "Variance is GOOD. Preparing and sending new model weights and grad_pool."
             )
             self.print_trainable_params_stats(location="[populate_params, _distr_weights]")
@@ -795,6 +799,9 @@ class TopAggregator(AsyncTopAgg):
             # del shared_grad_pool_trainable
             
         else:
+            logger.info(
+                f"sending var = bad to {ends} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+            )
             logger.info(
                 "Variance is BAD. Sending request for more variance checks."
             )

@@ -153,7 +153,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def _fetch_weights(self, tag: str) -> None:
-        logger.debug(
+        logger.info(
             f"### FETCH WEIGHTS start for tag: {tag} "
             f"and trainer_id {self.trainer_id}"
         )
@@ -171,7 +171,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer joins this channel
-        logger.debug(
+        logger.info(
             f"_fetch_weights: waiting for someone to join channel: {channel} "
             f"for trainer_id {self.trainer_id}"
         )
@@ -182,7 +182,7 @@ class Trainer(Role, metaclass=ABCMeta):
         msg, _ = recv_wrapper(self, channel, end)
 
         if not msg:
-            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
+            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition (i.e., we
                 # set fetch_success to True)
@@ -200,6 +200,8 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.MODEL_VERSION in msg:
             self._model_version = msg[MessageType.MODEL_VERSION]
 
+        logger.info(f"TS: Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}")
+        logger.info(f"TS: isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
         if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
                 self.data_id is not None
@@ -247,6 +249,9 @@ class Trainer(Role, metaclass=ABCMeta):
             # to trainer to re-train for == round condition if the message was
             # dropped.
             logger.info("message type weights received")
+            logger.info(
+                f"TS: Trainer id: {self.trainer_id}|round: {self._round} |model version: {self._model_version} | weights: {list(msg[MessageType.WEIGHTS].keys())} |data id: {msg.get(MessageType.DATA_ID, 'N/A')} | iteration per data id: {msg.get(MessageType.ITERATION_PER_DATA_ID, 'N/A')}"
+            )
 
             # if self._round <= self._updates_returned_upto_round: logger.info(
             #     f"Fetch weights aborted for given model version "
@@ -284,11 +289,14 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
                 )
                 self.data_id = msg[MessageType.DATA_ID]
+                logger.info(f"[GJD] self.data_id is set to {self.data_id}")
 
             if MessageType.GRAD_POOL in msg:
+                logger.info("TS: Message type grad pool received")
                 partial_grad = msg[MessageType.GRAD_POOL]
                 full_grad = []
                 if self.args.var_control:
+                    logger.info("TS: Var control is enabled in trainer")
                     if self.args.perturbation_sampling:
                         logger.info(
                             f"Trainer id {self.trainer_id} using grad_pool from message"
@@ -340,13 +348,13 @@ class Trainer(Role, metaclass=ABCMeta):
             f"round: {self._round}, data id: {self.data_id} and work_done: {self._work_done} ###"
         )
 
-        logger.debug(
+        logger.info(
             "Model weights received, so resetting aggregator end states in "
             "the channel"
         )
 
         channel._selector.ordered_updates_recv_ends.append(end)
-        logger.debug(
+        logger.info(
             f"After appending {end} to ordered_updates_recv_ends: "
             f"{channel._selector.ordered_updates_recv_ends}"
         )

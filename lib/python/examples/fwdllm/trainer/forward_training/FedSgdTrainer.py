@@ -153,6 +153,7 @@ class FedSGDTrainer(Trainer):
         self.model = model_trainer.model
         # NRL adding new variables
         self.data_id = None
+        logger.info("[GJD] self.data_id is reset to None")
         self.total_data_bins = None
         self.grad_for_var_check = None
         self.data_written_to_file = False  # Flag to prevent writing data multiple times
@@ -303,7 +304,7 @@ class FedSGDTrainer(Trainer):
         )
         
         self.trainer.train(
-            [self.train_local_list[0][self.data_id]], self.device, self.args
+            [self.train_local_list[0][self._model_version % self._round]], self.device, self.args
         )
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
         logger.debug(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
