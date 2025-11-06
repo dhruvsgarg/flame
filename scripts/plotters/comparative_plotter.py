@@ -18,10 +18,19 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
+<<<<<<< HEAD
 SYSTEM1_FILES = ["/home/dgarg39/shreya/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
 SYSTEM1_NAME = "AsyncFL reject stale updates (no stragglers)"
 SYSTEM2_FILES = ["/home/dgarg39/shreya/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
 SYSTEM2_NAMES = "AsyncFL aggregate stale updates (no stragglers)"
+=======
+SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn20-reject_stale.csv"]
+SYSTEM1_NAME = "Reject stale"
+# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
+# SYSTEM2_NAMES = "client reselection for each model update"
+SYSTEM2_FILES = ["output/unavail_k5_c7_n50_syn20-keep_stale.csv"]
+SYSTEM2_NAMES = "Keep stale"
+>>>>>>> d4ae9917 (First attempt at weight aggregation)
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
