@@ -123,7 +123,7 @@ class FedSGDAggregator(TopAggregator):
         logger.info(f"self.var = {self.var}")
 
         model_list = []
-        training_num = 0
+        weighted_denominator = 0
 
         # self.warmup_rounds = 20
         if current_round < self.warmup_rounds:
@@ -140,7 +140,7 @@ class FedSGDAggregator(TopAggregator):
         # Will use 0th grads from model_dict since worker_num = 1
         for idx in range(self.worker_num):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
-            training_num += self.sample_num_dict[idx]
+            weighted_denominator += self.sample_num_dict[idx]
 
         # logger.info(f"len(model_list): {model_list}")
 
@@ -154,26 +154,32 @@ class FedSGDAggregator(TopAggregator):
             logger.info(f"len of cached v: {len(self.cached_v)}")
             for cached_v in self.cached_v:
                 model_list.append(cached_v)
-                training_num += cached_v[0]
-            logger.info(f"training_num : {training_num}")
+                weighted_denominator += cached_v[0]
+            logger.info(f"training_num : {weighted_denominator}")
 
         logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
 
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
+<<<<<<< HEAD
+=======
+        if (weighted_denominator == 0) :
+            logger.warning("Not updating the model, division by 0 error")
+            return old_param
+>>>>>>> 8c508d41 (Var for grad check is also weighted along with just the gradients)
 
         # logger.info("################aggregate: %d" % len(model_list))
-        (num0, averaged_params) = model_list[0]
-        for id, k in enumerate(averaged_params):
+        (_, weighted_gradient_sum) = model_list[0]
+        for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
                 # w = local_sample_number / training_num
                 if i == 0:
-                    averaged_params[id] = local_model_params[id]
+                    weighted_gradient_sum[id] = local_model_params[id]
                 else:
-                    averaged_params[id] += local_model_params[id]
+                    weighted_gradient_sum[id] += local_model_params[id]
             next(old_param).detach().to("cpu").sub_(
-                learning_rate * averaged_params[id] / training_num
+                learning_rate * weighted_gradient_sum[id] / weighted_denominator
             )
         if self.args.var_control:
             if self.var <= self.var_threshold:
