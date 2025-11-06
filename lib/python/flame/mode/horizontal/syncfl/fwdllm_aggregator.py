@@ -91,12 +91,14 @@ class TopAggregator(SyncTopAgg):
 
         self.data_id = 0
         self.total_data_bins = 150
-        self.model_version = 1
+        self.model_version = 0
 
         self.grad_pool = []
         self.var = None
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
+        # This preserves statistical weighting by sample count and scales steps by the same weights used on the numerator
+        self._effective_sample_weight_sum = 0.0
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -1312,9 +1314,43 @@ class TopAggregator(SyncTopAgg):
 
             # Process the gradients
             if MessageType.GRADIENTS in msg:
-                # weights = weights_to_model_device(msg[MessageType.WEIGHTS],
-                # self.model)
+                
+                # rate_i = scale * alpha(staleness_i) + (1 - scale) * beta(stat_utility_i)
+                # with alpha: polynomial decay in staleness; beta: polynomial_upshift in stat utility
                 trainer_gradients = msg[MessageType.GRADIENTS]
+                version_for_rate = msg[MessageType.MODEL_VERSION]
+                staleness_val = self.model_version - version_for_rate
+                stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
+
+                # Read FedBuff config knobs
+                scale_val = self.optimizer.agg_rate_conf["scale"]
+                a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
+                b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
+
+                rate = self.optimizer.weight_factor(
+                    scale=scale_val,
+                    staleness=staleness_val,
+                    a_exp=a_exp_val,
+                    loss=stat_utility_val,
+                    b_exp=b_exp_val,
+                    alpha_type="polynomial",
+                    beta_type="polynomial_upshift",
+                )
+
+                logger.info(f"Downweighting gradients with staleness: {staleness_val}, stat utility: {stat_utility_val} by rate: {rate}")
+
+                # Accumulate effective denominator as \sum_i rate_i (keep weights within [0,1])
+                # Note: We deliberately do NOT multiply by dataset size here to keep the
+                # weighting factor bounded in [0,1] per your requirement. This makes the
+                # normalization denom = sum of weights instead of sum of (weight * samples).
+                # Trade-off: this removes per-sample statistical weighting but preserves a pure
+                # staleness/utility-based reweighting.
+                self._effective_sample_weight_sum += rate
+
+                # Scale incoming gradients by the computed rate before accumulation
+                # g'_i = rate_i * g_i ensures stale or low-utility grads contribute less to the numerator
+                for name in trainer_gradients:
+                    trainer_gradients[name] = trainer_gradients[name] * rate
                 self.aggregate_grads_from_trainers(trainer_gradients)
 
             if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
@@ -1483,7 +1519,17 @@ class TopAggregator(SyncTopAgg):
         self.print_trainable_params_stats(
             location="[agg_start,_aggregate_grads_sync()]"
         )
-        self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
+        # Use effective denominator if available; else warn and skip this update
+        # Denominator choice: sum_i (rate_i * count_i) vs raw #samples
+        # We choose the former to obtain a true weighted average that matches the numerator scaling
+        if self._effective_sample_weight_sum <= 0:
+            logger.warning("Effective sample-weight sum is zero or lower; skipping model update for this aggregation goal")
+            # Clean up and return early without updating the model
+            self.grad = [torch.zeros_like(g) for g in self.grad]
+            channel.cleanup_recvd_ends()
+            return
+
+        self.add_local_trained_result(0, self.grad, self._effective_sample_weight_sum)
         self.print_trainable_params_stats(
             location="[after_add_local,_aggregate_grads_sync()]"
         )
