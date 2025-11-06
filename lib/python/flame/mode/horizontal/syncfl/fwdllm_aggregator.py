@@ -765,30 +765,27 @@ class TopAggregator(AsyncTopAgg):
 
         # rate = scale * alpha(staleness) + (1 - scale) * beta(stat_utility)
         # alpha: polynomial decay in staleness; beta: polynomial_upshift
-        if version_for_rate is None:
-            rate = 1.0
-        else:
-            staleness_val = self.model_version - version_for_rate
-            try:
-                scale_val = self.optimizer.agg_rate_conf["scale"]
-                a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
-                b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
-                rate = self.optimizer.weight_factor(
-                    scale=scale_val,
-                    staleness=staleness_val,
-                    a_exp=a_exp_val,
-                    loss=stat_utility,
-                    b_exp=b_exp_val,
-                    alpha_type="polynomial",
-                    beta_type="polynomial_upshift",
+        staleness_val = self.model_version - version_for_rate
+        try:
+            scale_val = self.optimizer.agg_rate_conf["scale"]
+            a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
+            b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
+            rate = self.optimizer.weight_factor(
+                scale=scale_val,
+                staleness=staleness_val,
+                a_exp=a_exp_val,
+                loss=stat_utility,
+                b_exp=b_exp_val,
+                alpha_type="polynomial",
+                beta_type="polynomial_upshift",
+            )
+            if rate != 1.0:
+                logger.info(
+                    f"Weighted received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
                 )
-                if rate != 1.0:
-                    logger.info(
-                        f"Weighting received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
-                    )
-            except Exception as e:
-                logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
-                rate = 1.0
+        except Exception as e:
+            logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
+            rate = 1.0
 
         # Accumulate denominator: sum of rates (kept in [0,1])
         self._effective_sample_weight_sum += rate
@@ -1140,6 +1137,7 @@ class TopAggregator(AsyncTopAgg):
             self.model
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
+        self._effective_sample_weight_sum = 0.0
 
         self.aggregate(self._round)
         self.print_trainable_params_stats(
