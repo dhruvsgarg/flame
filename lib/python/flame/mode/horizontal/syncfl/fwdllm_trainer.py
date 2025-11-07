@@ -25,8 +25,6 @@ from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STAT
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
-from flame.monitor.runtime import timer_decorator, FwdLLMStage
-
 from flame.common.util import (
     MLFramework,
     delta_weights_pytorch,
@@ -58,14 +56,6 @@ logger = logging.getLogger(__name__)
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 TAG_HEARTBEAT = "heartbeat_send"
-
-@timer_decorator
-def recv_wrapper(self, channel, end_id):
-    """Wrapper around recv to be used with timer_decorator."""
-    # Create FwdLLMStage for timing/metrics logging
-    self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, self.trainer_id)
-
-    return channel.recv(end_id)
 
 
 class Trainer(Role, metaclass=ABCMeta):
@@ -151,7 +141,6 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
-    @timer_decorator
     def _fetch_weights(self, tag: str) -> None:
         logger.info(
             f"### FETCH WEIGHTS start for tag: {tag} "
@@ -179,7 +168,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        msg, _ = recv_wrapper(self, channel, end)
+        msg, _ = channel.recv(end)
 
         if not msg:
             logger.info(f"NO msg received for trainer_id {self.trainer_id}")
@@ -202,6 +191,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"TS: Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}")
         logger.info(f"TS: isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
+        
         if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
                 self.data_id is not None
@@ -216,7 +206,6 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"already sent updates "
                     f"upto iteration_per_data_id: {self.iteration_per_data_id}"
                 )
-
                 # Received old data but still allow aggregator cleanup state to
                 # occur so as to receive the next update
                 logger.info(
@@ -360,9 +349,7 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         channel.cleanup_recvd_ends()
-        # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
-
+        
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -372,7 +359,6 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.info("calling send heartbeat")
             self._send_heartbeat_to_agg(tag)
 
-    @timer_decorator
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(
             f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
@@ -400,7 +386,6 @@ class Trainer(Role, metaclass=ABCMeta):
 
         return
 
-    @timer_decorator
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt time.sleep(1)
 
@@ -461,7 +446,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 )
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
-
+               
             msg = {
                 MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
@@ -709,7 +694,6 @@ class Trainer(Role, metaclass=ABCMeta):
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
 
-    @timer_decorator
     def pause_execution(self):
         time.sleep(1)
         return
@@ -747,15 +731,10 @@ class Trainer(Role, metaclass=ABCMeta):
             #                                         Tasklet("sleep_after_save_metrics",
             #                                         self.check_and_sleep)
 
-            # todo: add time
-            # start_time = time.time()
             task_train = Tasklet("train", self.train_with_data_id)
-            # end_time = time.time()
-            # logger.info(f"Training time for trainerId: {self.trainer_id} is {end_time - start_time} | Round: {self._round} | DataId: {self.data_id} | Iteration: {self.iteration}")
-            # todo: end time and log!
 
             # task_eval = Tasklet("evaluate", self.evaluate)
-            
+
             task_put_grad = Tasklet("upload", self.put, TAG_UPLOAD)
             task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 

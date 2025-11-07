@@ -45,6 +45,11 @@ class RandomSelector(AbstractSelector):
         super().__init__(**kwargs)
 
         try:
+            self.is_async = kwargs["is_async"]  
+        except KeyError:
+            logger.info("is_async param isn't specified in config. Defaulting to sync version")
+            self.is_async = False
+        try:
             self.k = kwargs["k"]
         except KeyError:
             raise KeyError("k is not specified in config")

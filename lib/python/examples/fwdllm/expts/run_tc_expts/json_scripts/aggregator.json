@@ -85,9 +85,8 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 5 ,
-        "rounds": 300,
-        "rejectStaleUpdates": true
+        "aggGoal": 10 ,
+        "rounds": 300
     },
     "baseModel": {
         "name": "",
@@ -105,13 +104,14 @@
     "sort": "async_oort",
     "kwargs": {
         "//": "c: concurrency level",
-        "c": 30,
-        "aggGoal": 10,
+        "c": 7,
+        "aggGoal": 5,
         "evalGoalFactor": 0.5,
         "selectType": "default",
         "roundNudgeType": "last_eval",
          "minInitialTrainers": 5,
-         "k": 10
+         "k": 5,
+         "is_async": true
     }
     },
     "optimizer": {

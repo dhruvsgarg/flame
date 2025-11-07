@@ -303,9 +303,14 @@ class FedSGDTrainer(Trainer):
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
         
+        # List Index to be used in case of both sync and async version.
+        # In sync model version = round hence, Index = model version
+        # In async: Index = model version % round
+        list_index = self._model_version % self._round if self._model_version  > self._round else self._model_version
         self.trainer.train(
-            [self.train_local_list[0][self._model_version % self._round]], self.device, self.args
+            [self.train_local_list[0][list_index]], self.device, self.args
         )
+            
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
         logger.debug(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
 
