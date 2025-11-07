@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # === Paths ===
-LOG_FILE = Path("/home/dgarg39/shreya/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_08_10_09_07.log")
+LOG_FILE = Path("/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_08_10_09_07.log")
 OUTPUT_CSV = LOG_FILE.with_suffix(".parsed_v3.csv")
 
 # === Regex patterns ===
@@ -151,7 +151,7 @@ for t, num in trainer_to_num.items():
 # from pathlib import Path
 
 # # === Paths ===
-# LOG_FILE = Path("/home/dgarg39/shreya/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_10_18_14.log")
+# LOG_FILE = Path("/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_10_18_14.log")
 # OUTPUT_CSV = LOG_FILE.with_suffix(".parsed.csv")
 
 # # === Regex patterns ===
