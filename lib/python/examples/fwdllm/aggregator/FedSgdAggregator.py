@@ -165,7 +165,7 @@ class FedSGDAggregator(TopAggregator):
             logger.warning("Not updating the model, division by 0 error")
             return old_param
 
-        # logger.info("################aggregate: %d" % len(model_list))
+        logger.info("################aggregate: %d with weighted_denominator: %d" % (len(model_list), weighted_denominator))
         (_, weighted_gradient_sum) = model_list[0]
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
@@ -175,6 +175,8 @@ class FedSGDAggregator(TopAggregator):
                     weighted_gradient_sum[id] = local_model_params[id]
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
+            
+            # logger.info(f"The model made a step with magnitude: {weighted_gradient_sum[id]} / {weighted_denominator} for id: {id}")
             next(old_param).detach().to("cpu").sub_(
                 learning_rate * weighted_gradient_sum[id] / weighted_denominator
             )

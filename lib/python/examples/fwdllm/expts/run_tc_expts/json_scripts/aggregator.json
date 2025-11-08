@@ -116,7 +116,7 @@
             "agg_rate_conf": {
                 "type": "new",
                 "scale": 1.0,
-                "a_exp": 0.5,
+                "a_exp": 0.25,
                 "b_exp": 0.1
             }
         }

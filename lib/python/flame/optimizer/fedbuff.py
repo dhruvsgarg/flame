@@ -129,6 +129,7 @@ class FedBuff(AbstractOptimizer):
             raise ValueError("Invalid beta type")
 
         # weight_factor range is [0, 1]
+        # print(f"Computed weight: {((scale) * alpha) + ((1 - scale) * beta)}. scale is {scale}, alphas is {alpha}, beta is {beta}")
         return ((scale) * alpha) + ((1 - scale) * beta)
 
     def do(

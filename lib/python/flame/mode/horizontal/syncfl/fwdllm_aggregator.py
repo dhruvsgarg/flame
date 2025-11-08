@@ -1541,7 +1541,8 @@ class TopAggregator(SyncTopAgg):
             channel.cleanup_recvd_ends()
             return
 
-        self.add_local_trained_result(0, self.grad, self._effective_sample_weight_sum)
+        self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
+        # self.add_local_trained_result(0, self.grad, self._effective_sample_weight_sum)
         self.print_trainable_params_stats(
             location="[after_add_local,_aggregate_grads_sync()]"
         )
