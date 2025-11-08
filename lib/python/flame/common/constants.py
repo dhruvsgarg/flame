@@ -21,7 +21,7 @@ MSG_LEN_FIELD_SIZE = 4
 DEFAULT_RUN_ASYNC_WAIT_TIME = 10  # 10 seconds
 
 # backend related constants
-MQTT_TOPIC_PREFIX = "/flame_gaurav"
+MQTT_TOPIC_PREFIX = "/flame_shreya"
 UNIX_SOCKET_PATH = "/tmp/local_registry.socket"
 
 # default data folder

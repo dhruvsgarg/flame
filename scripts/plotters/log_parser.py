@@ -679,7 +679,7 @@ if __name__ == '__main__':
     ################### Aggregator
     log_file_type = "flame_fwdllm_aggregator"
     log_file = Path(
-        "/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_05_11_22_44.log")
+        "/home/dgarg39/shreya/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_05_11_22_44.log")
     suffix = "async"
     EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['output_filename'] = f'reject_stale_k5_c15_n100-{suffix}.csv'
 

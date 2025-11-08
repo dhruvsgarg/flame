@@ -18,9 +18,9 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-SYSTEM1_FILES = ["/home/dgarg39/gaurav/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
+SYSTEM1_FILES = ["/home/dgarg39/shreya/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
 SYSTEM1_NAME = "AsyncFL reject stale updates (no stragglers)"
-SYSTEM2_FILES = ["/home/dgarg39/gaurav/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
+SYSTEM2_FILES = ["/home/dgarg39/shreya/flame/scripts/plotters/output/reject_stale_k5_c15_n100-async.csv"]
 SYSTEM2_NAMES = "AsyncFL aggregate stale updates (no stragglers)"
 # -----------------------------------------------------
 

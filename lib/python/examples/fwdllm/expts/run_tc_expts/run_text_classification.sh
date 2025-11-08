@@ -54,9 +54,9 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/gaurav/flame/
+REPO_PATH=/home/dgarg39/shreya/flame/
 # todo: Use pwd here
-DATA_DIR=/home/dgarg39/gaurav/fednlp_data/
+DATA_DIR=/home/dgarg39/shreya/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
@@ -136,7 +136,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 49)    # End value is inclusive
+  for X in $(seq 0 99)    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 
