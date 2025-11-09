@@ -428,8 +428,7 @@ class TopAggregator(AsyncTopAgg):
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
                 self.model
             )
-            self.grad = [torch.zeros_like(p) for p in self.params]
-            
+            self.grad = [torch.zeros_like(p) for p in self.params]            
             self.aggregate(self._round) # This sets self.var and self.var_good_enough
             
             if self.var_good_enough:
@@ -631,6 +630,7 @@ class TopAggregator(AsyncTopAgg):
             self.iteration_per_data_id = 0
             self._is_model_updated = True
             self._model_version +=1
+            logger.info(f"Model version updated to: {self._model_version}")
             # TODO: need to replace it with per end property
             if self.data_id == self.total_data_bins:
                 logger.info("incrementing round number now ")
@@ -639,6 +639,7 @@ class TopAggregator(AsyncTopAgg):
                 channel.set_property("round", self._round)
         else:
             self.iteration_per_data_id += 1
+            self._is_model_updated = False
 
         logger.debug(f"aggregation finished for round {round_to_print}")
         logger.info(
@@ -972,12 +973,14 @@ class TopAggregator(AsyncTopAgg):
             if self.var_good_enough == True:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
+                    f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
                     MessageType.GRAD_POOL: shared_grad_pool_trainable,
                     MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1011,6 +1014,7 @@ class TopAggregator(AsyncTopAgg):
                 payload = {
                     MessageType.VAR: "bad",
                     MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1050,7 +1054,7 @@ class TopAggregator(AsyncTopAgg):
 
             # Update sent_wts_version_ts with version and timestamp
             self._track_trainer_version_duration_s[end]["sent_wts_version_ts"][
-                self._round
+                self._model_version
             ] = datetime.now()
 
     def _distribute_weights_async(self, tag: str, task_to_perform: str = "train") -> None:
@@ -1124,7 +1128,7 @@ class TopAggregator(AsyncTopAgg):
             )
         if self.var_good_enough:
             logger.info(
-                f"sending weights to {ends} with model_version: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+                f"sending weights to {ends} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
             )
             logger.info(
                 "Variance is GOOD. Preparing and sending new model weights and grad_pool."
