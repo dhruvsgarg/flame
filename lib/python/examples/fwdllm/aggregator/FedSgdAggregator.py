@@ -161,12 +161,9 @@ class FedSGDAggregator(TopAggregator):
 
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
-<<<<<<< HEAD
-=======
         if (weighted_denominator == 0) :
             logger.warning("Not updating the model, division by 0 error")
             return old_param
->>>>>>> 8c508d41 (Var for grad check is also weighted along with just the gradients)
 
         # logger.info("################aggregate: %d" % len(model_list))
         (_, weighted_gradient_sum) = model_list[0]
