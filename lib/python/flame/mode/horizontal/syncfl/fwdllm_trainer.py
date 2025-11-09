@@ -189,8 +189,8 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.MODEL_VERSION in msg:
             self._model_version = msg[MessageType.MODEL_VERSION]
 
-        logger.info(f"TS: Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}")
-        logger.info(f"TS: isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
+        logger.info(f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}")
+        logger.info(f"isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
         
         if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
@@ -239,7 +239,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # dropped.
             logger.info("message type weights received")
             logger.info(
-                f"TS: Trainer id: {self.trainer_id}|round: {self._round} |model version: {self._model_version} | weights: {list(msg[MessageType.WEIGHTS].keys())} |data id: {msg.get(MessageType.DATA_ID, 'N/A')} | iteration per data id: {msg.get(MessageType.ITERATION_PER_DATA_ID, 'N/A')}"
+                f"Trainer id: {self.trainer_id}|round: {self._round} |model version: {self._model_version} | weights: {list(msg[MessageType.WEIGHTS].keys())} |data id: {msg.get(MessageType.DATA_ID, 'N/A')} | iteration per data id: {msg.get(MessageType.ITERATION_PER_DATA_ID, 'N/A')}"
             )
 
             # if self._round <= self._updates_returned_upto_round: logger.info(
@@ -281,11 +281,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 logger.info(f"[GJD] self.data_id is set to {self.data_id}")
 
             if MessageType.GRAD_POOL in msg:
-                logger.info("TS: Message type grad pool received")
+                logger.info("Message type grad pool received")
                 partial_grad = msg[MessageType.GRAD_POOL]
                 full_grad = []
                 if self.args.var_control:
-                    logger.info("TS: Var control is enabled in trainer")
                     if self.args.perturbation_sampling:
                         logger.info(
                             f"Trainer id {self.trainer_id} using grad_pool from message"
