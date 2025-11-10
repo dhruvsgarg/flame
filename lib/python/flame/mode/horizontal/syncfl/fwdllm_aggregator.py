@@ -430,7 +430,7 @@ class TopAggregator(AsyncTopAgg):
                     f"Rejecting trainer update of version {version}, "
                     f" self._model_version: {self._model_version}. Will return."
                 )
-                # channel.cleanup_recvd_end(end)
+                channel.cleanup_recvd_ends_for_stale_updates(end)
                 return
 
         channel._selector.ordered_updates_recv_ends.append(end)
@@ -1030,12 +1030,14 @@ class TopAggregator(AsyncTopAgg):
             if self.var_good_enough == True:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
+                    f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
                     MessageType.GRAD_POOL: shared_grad_pool_trainable,
                     MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1064,11 +1066,12 @@ class TopAggregator(AsyncTopAgg):
                 self.grad_for_var_check_list = []
             else:
                 logger.info(
-                    f"sending var = bad to {end} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+                    f"sending var = bad to {end} with model_version: {self._model_version},round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 payload = {
                     MessageType.VAR: "bad",
                     MessageType.ROUND: self._round,
+                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1225,7 +1228,7 @@ class TopAggregator(AsyncTopAgg):
             
         else:
             logger.info(
-                f"sending var = bad to {ends} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+                f"sending var = bad to {ends} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
             )
             logger.info(
                 "Variance is BAD. Sending request for more variance checks."
