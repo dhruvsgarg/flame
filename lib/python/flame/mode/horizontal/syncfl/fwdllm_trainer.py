@@ -648,29 +648,27 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's statistical
         utility is measured at epoch 1.
         """
-        if epoch == 0 and batch_idx == 0:
-            if "reduction" in kwargs.keys():
-                reduction = kwargs["reduction"]
-            else:
-                reduction = "mean"  # default reduction policy is mean
-            kwargs_wo_reduction = {
-                key: value for key, value in kwargs.items() if key != "reduction"
-            }
-
-            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
-            loss_list = criterion(output, target)
-            self._batch_size = len(loss_list)
-            logger.info(f"batch size: {len(loss_list)}")
-            self._stat_utility += torch.square(loss_list).sum()
-
-            if reduction == "mean":
-                loss = loss_list.mean()
-            elif reduction == "sum":
-                loss = loss_list.sum()
+        
+        # TODO: after pulling updates from async impl, create a check to not compute it again for the same data bin?!!
+        if "reduction" in kwargs.keys():
+            reduction = kwargs["reduction"]
         else:
-            criterion = self.loss_fn(**kwargs)
-            loss = criterion(output, target)
+            reduction = "mean"  # default reduction policy is mean
+        kwargs_wo_reduction = {
+            key: value for key, value in kwargs.items() if key != "reduction"
+        }
 
+        criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
+        loss_list = criterion(output, target)
+        self._batch_size = len(loss_list)
+        logger.info(f"batch size: {len(loss_list)}")
+        self._stat_utility += torch.square(loss_list).sum()
+
+        if reduction == "mean":
+            loss = loss_list.mean()
+        elif reduction == "sum":
+            loss = loss_list.sum()
+        
         return loss
 
     def normalize_stat_utility(self, epoch) -> None:
@@ -678,12 +676,11 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size of the
         trainer's datset, at epoch 1.
         """
-        if epoch == 0:
-            self._stat_utility = self._batch_size * math.sqrt(
-                self._stat_utility / self._batch_size
-            )
-        else:
-            return
+        
+        self._stat_utility = self._batch_size * math.sqrt(
+            self._stat_utility / self._batch_size
+        )
+       
 
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""

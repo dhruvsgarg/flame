@@ -302,17 +302,17 @@ class ForwardTextClassificationTrainer:
                     x = batch[1].to(device, non_blocking=True)
                     labels = batch[4].to(device, non_blocking=True)
 
-                    if epoch == 0 and batch_idx == 0 and hasattr(self, "base_trainer"):
-                        with torch.no_grad():
-                            pred = self.model(x)
-                            if hasattr(pred, "logits"):
-                                logits = pred.logits
-                            elif isinstance(pred, (tuple, list)):
-                                logits = pred[0]
-                            else:
-                                logits = pred
-                            loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
-                        logging.info(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
+                    # Stat-utility calculation
+                    with torch.no_grad():
+                        pred = self.model(x)
+                        if hasattr(pred, "logits"):
+                            logits = pred.logits
+                        elif isinstance(pred, (tuple, list)):
+                            logits = pred[0]
+                        else:
+                            logits = pred
+                        loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
+                    logging.info(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
                             (
