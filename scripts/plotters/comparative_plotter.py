@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
 
 # --- Global Constants for Dynamic Plot Configuration ---
 # Default ratio to determine interpolation points if not provided.
@@ -18,12 +19,25 @@ MIN_MAX_DISABLED = True
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn20-reject_stale.csv"]
-SYSTEM1_NAME = "Reject stale"
+# SYSTEM1_FILES = ["output/7Nov_n_50_c_7_k_5_mid_round_reselect_100_avail.csv"]
+# SYSTEM1_NAME = "7Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1_syn10"
+SYSTEM1_FILES = ["output/8Nov_n_50_c_7_k_5_mid_round_reselect_50_unavail.csv"]
+SYSTEM1_NAME = "8Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1_syn50"
 # SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
 # SYSTEM2_NAMES = "client reselection for each model update"
-SYSTEM2_FILES = ["output/unavail_k5_c7_n50_syn20-keep_stale.csv"]
-SYSTEM2_NAMES = "Keep stale"
+SYSTEM2_FILES = ["output/5Nov_n_50_c_7_k_5_mid_round_reselect_100_avail.csv"]
+SYSTEM2_NAMES = "5Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1"
+
+
+ALL_FILES = [["output/5Nov_n_50_c_7_k_5_mid_round_reselect_100_avail.csv"],
+             ["output/7Nov_n_50_c_7_k_5_mid_round_reselect_100_avail.csv"],
+              ["output/8Nov_n_50_c_7_k_5_mid_round_reselect_50_unavail.csv"]  ]
+
+ALL_NAMES = ["5Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1",
+             "7Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1_syn10",
+             "8Nov_n_10_c_7_k_5_mid_round_reselect_client_notify_baseline_1_syn50"]
+
+COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c']
 # -----------------------------------------------------
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
@@ -347,36 +361,243 @@ def plot_comparison_chart(
 
     print(f'Plot saved to {file_name}')
 
+def plot_comparison_chart_list(
+    all_files, 
+    all_labels,
+    colors,
+    plot_type='time', # 'time', 'batch', or 'time_vs_batch'
+    x_tick_count=None,
+    y_tick_count=None,
+    explicit_interpolation_points=None
+):
+    """
+    Generates a comparative plot for two systems, handling interpolation 
+    and dynamic tick generation.
+    """
+    # 1. Load and Preprocess Data
+    system_runs = []
+    for file in all_files:
+        system_runs.append(load_and_preprocess_data(file))
+
+    
+    print('Data loaded successfully')
+
+    # 2. Determine Axis Keys, Labels, and Interpolation Settings
+    if plot_type == 'time':
+        x_data_key, y_data_key = 'Time_Since_Start', 'Accuracy'
+        x_label, y_label = 'Time Since Start (Minutes)', 'Test Accuracy'
+        interpolate = True
+    elif plot_type == 'batch':
+        x_data_key, y_data_key = 'Unique_Mini_Batch_ID', 'Accuracy'
+        x_label, y_label = 'Mini-Batch ID/ Model Version', 'Test Accuracy'
+        interpolate = False
+    elif plot_type == 'time_vs_batch':
+        x_data_key, y_data_key = 'Time_Since_Start', 'Unique_Mini_Batch_ID'
+        x_label, y_label = 'Time Since Start (Minutes)', 'Mini-Batch ID/ Model Version'
+        interpolate = True
+    else:
+        raise ValueError("plot_type must be 'time', 'batch', or 'time_vs_batch'.")
+
+    # Combine all x-axis data to determine the plot range
+    all_x_data = [t for df in sum(system_runs, []) for t in df[x_data_key].tolist()]
+    max_x = np.max(all_x_data) if all_x_data else 0
+    
+    # Determine interpolation points (if required)
+    if interpolate:
+        # Use provided value or calculate dynamically based on max data points
+        max_unique_points = len(np.unique(all_x_data))
+        default_interp = max_unique_points * INTERP_RATIO
+        num_interpolation_points = explicit_interpolation_points if explicit_interpolation_points is not None else default_interp
+        
+        common_x_grid = np.linspace(0, max_x, num_interpolation_points)
+    else:
+        # For 'batch' plot, use the union of all unique batch IDs
+        all_batches = sorted(list(set(all_x_data)))
+        common_x_grid = np.array(all_batches)
+
+    # 3. Process runs to get Y-values corresponding to the common X-grid
+    def process_runs(runs_list):
+        processed_y_values = []
+        for df in runs_list:
+            if df[x_data_key].empty:
+                continue
+
+            if interpolate:
+                # Interpolate Y-values onto the dense time grid
+                # Sort by the x-axis key for correct interpolation
+                sorted_df = df.sort_values(by=x_data_key).reset_index(drop=True)
+                y_processed = np.interp(
+                    common_x_grid,
+                    sorted_df[x_data_key].values,
+                    sorted_df[y_data_key].values
+                )
+            else:
+                # Align data to the common batch ID set (using previous value if missing)
+                df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid).ffill()
+                y_processed = df_temp.values
+            
+            processed_y_values.append(y_processed)
+        return np.array(processed_y_values)
+
+    # 4. Calculate Mean and Min/Max for the Y-axis data
+
+    global_min_y = sys.maxsize
+    global_max_y = 0
+    plt.style.use('default')
+    fig, axes = plt.subplots(figsize=(16, 10))
+    
+    for system_run, system_label, col in zip(system_runs, all_labels, colors):
+        s1_processed_y = process_runs(system_run)
+        s1_mean = np.mean(s1_processed_y, axis=0)
+        s1_upper_bound = np.max(s1_processed_y, axis=0)
+        s1_lower_bound = np.min(s1_processed_y, axis=0)
+
+
+        # 5. Plotting (Using default style for better custom axis control)
+        
+    
+        # System 1: Line (Mean) and Fill (Min/Max)
+        axes.plot(common_x_grid, s1_mean, label=system_label, color=col, linewidth=LINE_WIDTH)
+        if not MIN_MAX_DISABLED:
+            axes.fill_between(
+                common_x_grid, s1_lower_bound, s1_upper_bound,
+                color=col, alpha=0.25,
+                label=f'Min/Max of {system_label}'
+                # label=f'$\\pm 1$ StdDev ({system1_label})'
+            )
+
+        # plt.text(
+        #     0.05,  # 5% from the left edge of the plot area
+        #     0.95,  # 95% from the bottom (i.e., near the top)
+        #     f"{system_label}  max acc  {s1_upper_bound}", 
+        #     transform=plt.gca().transAxes, # Use axes coordinates
+        #     fontsize=12,
+        #     verticalalignment='top',
+        #     # Add a styled box
+        #     bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.7) 
+        # )
+
+        axes.plot([], [], ' ', label=f'Max Accuracy: {np.max(s1_upper_bound)}')
+
+
+        # Y-axis range (find global min/max across all runs/systems)
+        global_min_y = min((np.min(s1_lower_bound), global_min_y))
+        global_max_y = max((np.max(s1_upper_bound), global_max_y))
+
+
+    # 6. Dynamic and Human-Readable Ticks
+    
+    # Determine tick counts (use provided or default)
+    x_tick_count = x_tick_count if x_tick_count is not None else DEFAULT_X_TICK_COUNT
+    y_tick_count = y_tick_count if y_tick_count is not None else DEFAULT_Y_TICK_COUNT
+    
+    
+
+    # Add a small buffer (5% padding) to the Y range
+    y_range = global_max_y - global_min_y
+    buffer = y_range * 0.05 if y_range > 0 else 1
+    min_y = max(0, global_min_y - buffer)
+    max_y = global_max_y + buffer
+    
+    # Calculate round number ticks using the fixed nice tick logic
+    x_ticks = round_nice_ticks(0, max_x, x_tick_count)
+    y_ticks = round_nice_ticks(min_y, max_y, y_tick_count)
+
+    # Set axis limits and ticks
+    axes.set_xlim(x_ticks[0], x_ticks[-1])
+    axes.set_ylim(min_y, max_y)
+    axes.set_xticks(x_ticks)
+    axes.set_yticks(y_ticks)
+
+    # Format tick labels
+    if x_data_key == 'Time_Since_Start':
+        # Time axis label format (seconds -> minutes)
+        x_ticks_min = [f'{int(t/60)}m' for t in x_ticks]
+        axes.set_xticklabels(x_ticks_min)
+    else:
+        # Mini-batch ID axis label (integer format)
+        axes.set_xticklabels([f'{int(t)}' for t in x_ticks])
+        
+    if y_data_key == 'Accuracy':
+        # Accuracy axis label format (float -> %)
+        y_ticks_formatted = [f'${y*100:.0f}\\%$' for y in y_ticks] 
+    else:
+        # Other y-axis labels (integer format)
+        y_ticks_formatted = [f'{int(t)}' for t in y_ticks]
+    axes.set_yticklabels(y_ticks_formatted)
+    
+    # 7. Apply Solid Black Axis Lines and styling
+    for spine in ['bottom', 'left']:
+        axes.spines[spine].set_color('black')
+        axes.spines[spine].set_linewidth(1.5)
+    for spine in ['top', 'right']:
+        axes.spines[spine].set_visible(False)
+
+    # Configure major ticks (no negative X ticks because xlim starts at 0)
+    axes.tick_params(axis='both', which='major', length=6, width=1.5, color='black')
+    axes.grid(True, linestyle='--', alpha=0.6, color='lightgray')
+
+    axes.set_title(f'Performance Comparison:')
+    axes.set_xlabel(x_label)
+    axes.set_ylabel(y_label)
+    axes.legend(loc='upper right')
+    plt.tight_layout()
+
+    file_name = f'{plot_type}_comparison.png'
+    plt.savefig(file_name)
+    # plt.show() # Disabled for production environment
+
+    print(f'Plot saved to {file_name}')
+
+
+
 if __name__ == "__main__":
     
-    # Example usage for the original 'time' plot:
-    plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
-        plot_type='time',
-        x_tick_count=10,
-        y_tick_count=5
-    )
+    # # Example usage for the original 'time' plot:
+    # plot_comparison_chart(
+    #     system1_files=SYSTEM1_FILES,
+    #     system1_label=SYSTEM1_NAME,
+    #     system2_files=SYSTEM2_FILES,
+    #     system2_label=SYSTEM2_NAMES,
+    #     system3_files=SYSTEM3_FILES,
+    #     system3_label=SYSTEM3_NAMES,
+    #     plot_type='time',
+    #     x_tick_count=10,
+    #     y_tick_count=5
+    # )
 
-    # Example usage for the new 'batch' plot (no interpolation):
-    plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
-        plot_type='batch',
-        x_tick_count=10
-    )
-
-    # Example usage for the new 'time_vs_batch' plot:
-    plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAMES,
-        plot_type='time_vs_batch',
+    plot_comparison_chart_list(ALL_FILES, ALL_NAMES, COLORS, plot_type='time',
         x_tick_count=10,
-        y_tick_count=5
-    )
+        y_tick_count=5)
+
+    # # Example usage for the new 'batch' plot (no interpolation):
+    # plot_comparison_chart(
+    #     system1_files=SYSTEM1_FILES,
+    #     system1_label=SYSTEM1_NAME,
+    #     system2_files=SYSTEM2_FILES,
+    #     system2_label=SYSTEM2_NAMES,
+    #     system3_files=SYSTEM3_FILES,
+    #     system3_label=SYSTEM3_NAMES,
+    #     plot_type='batch',
+    #     x_tick_count=10
+    # )
+
+    plot_comparison_chart_list(ALL_FILES, ALL_NAMES, COLORS, plot_type='batch',
+        x_tick_count=10)
+
+    # # Example usage for the new 'time_vs_batch' plot:
+    # plot_comparison_chart(
+    #     system1_files=SYSTEM1_FILES,
+    #     system1_label=SYSTEM1_NAME,
+    #     system2_files=SYSTEM2_FILES,
+    #     system2_label=SYSTEM2_NAMES,
+    #     system3_files=SYSTEM3_FILES,
+    #     system3_label=SYSTEM3_NAMES,
+    #     plot_type='time_vs_batch',
+    #     x_tick_count=10,
+    #     y_tick_count=5
+    # )
+
+    plot_comparison_chart_list(ALL_FILES, ALL_NAMES, COLORS, plot_type='time_vs_batch',
+        x_tick_count=10,
+        y_tick_count=5)
