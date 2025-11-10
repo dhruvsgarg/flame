@@ -405,7 +405,7 @@ LOG_CONFIG = {
 EXPORT_CONFIG = {
     'flame_fwdllm_aggregator': {
         'evaluation_metrics': {
-            'output_filename': '5Nov_n_50_c_7_k_5_mid_round_reselect_100_avail.csv',
+            'output_filename': '8Nov_n_50_c_7_k_5_mid_round_reselect_50_unavail.csv',
             'log_names': ['eval_model'],
             'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
         },
@@ -548,8 +548,14 @@ if __name__ == '__main__':
     # log_file = Path(
     #     "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_06_11_01_14.log")
 
+    # log_file = Path(
+    # "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_06_11_06_25.log")
+
+    # log_file = Path(
+    # "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_07_11_13_01.log")
+
     log_file = Path(
-    "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_06_11_06_25.log")
+    "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/log/new/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_08_11_12_05.log")
     row_proc_steps = [
         create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
         create_time_calculator_processor(start_log_name='first_distribute_weights'),
