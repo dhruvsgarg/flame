@@ -379,7 +379,7 @@ class TopAggregator(SyncTopAgg):
             )
             return
 
-        if self.reject_stale_updates == "True":
+        if self.reject_stale_updates == True:
             logger.debug("Check trainer model version, disallow stale updates")
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]
@@ -857,7 +857,7 @@ class TopAggregator(SyncTopAgg):
             )
             return
 
-        if self.reject_stale_updates == "True":
+        if self.reject_stale_updates == True:
             logger.debug("Check trainer model version, disallow stale updates")
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]
@@ -1238,14 +1238,15 @@ class TopAggregator(SyncTopAgg):
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]
 
-            if version != self.model_version:
-                logger.info(
-                    f"Rejecting trainer update from {end} of version {version}, "
-                    f"agg self.model_version: {self.model_version}. Will return."
-                )
-                channel.cleanup_recvd_end(end)
-                # channel._selector.ordered_updates_recv_ends.append(end)
-                continue
+            if self.reject_stale_updates == True:
+                if version != self.model_version:
+                    logger.info(
+                        f"Rejecting trainer update from {end} of version {version}, "
+                        f"agg self.model_version: {self.model_version}. Will return."
+                    )
+                    channel.cleanup_recvd_end(end)
+                    # channel._selector.ordered_updates_recv_ends.append(end)
+                    continue
 
             if (
                 MessageType.GRADIENTS in msg
@@ -1359,15 +1360,16 @@ class TopAggregator(SyncTopAgg):
                 if MessageType.MODEL_VERSION in msg:
                     version = msg[MessageType.MODEL_VERSION]
 
-                if version != self.model_version:
-                    logger.info(
-                        f"Rejecting trainer update from {end} of version {version}, "
-                        f"agg self.model_version: {self.model_version}. Will return."
-                    )
-                    # num_freed += 1
-                    channel.cleanup_recvd_end(end)
-                    # channel._selector.ordered_updates_recv_ends.append(end)
-                    continue
+                if self.reject_stale_updates == True:
+                    if version != self.model_version:
+                        logger.info(
+                            f"Rejecting trainer update from {end} of version {version}, "
+                            f"agg self.model_version: {self.model_version}. Will return."
+                        )
+                        # num_freed += 1
+                        channel.cleanup_recvd_end(end)
+                        # channel._selector.ordered_updates_recv_ends.append(end)
+                        continue
 
                 if (
                     MessageType.GRADIENTS in msg

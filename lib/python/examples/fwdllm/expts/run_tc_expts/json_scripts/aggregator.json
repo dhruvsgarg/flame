@@ -86,6 +86,7 @@
             "type": "NA"
         },
         "aggGoal": 5 ,
+        "rejectStaleUpdates": true,
         "rounds": 300
     },
     "baseModel": {
