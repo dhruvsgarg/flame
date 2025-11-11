@@ -178,13 +178,16 @@ class Channel(object):
         return end_list[0] if len(end_list) > 0 else None
 
     def ends(
-        self, state: Union[None, str] = None, task_to_perform: str = "train"
+        self, state: Union[None, str] = None, task_to_perform: str = "train", 
+        curr_triplet: tuple[int, int, int] = None,
+        trainer_state_dict: dict[str, tuple[int, int, int]] = None,
     ) -> list[str]:
         """Return a list of end ids."""
         logger.info(
             f"ends() for channel name: {self._name}, "
             f"current self._ends: {self._ends}"
         )
+
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
@@ -198,17 +201,24 @@ class Channel(object):
 
             if self.trainer_unavail_list is not None and self.trainer_unavail_list != []:
                 selected = self._selector.select(
-                    self._ends,
-                    self.properties,
-                    self.trainer_unavail_list,
-                    task_to_perform,
+                    ends= self._ends,
+                    channel_props = self.properties,
+                    trainer_unavail_list = self.trainer_unavail_list,
+                    task_to_perform = task_to_perform,
+                    curr_triplet = curr_triplet, 
+                    trainer_state_dict = trainer_state_dict,
                 )
                 logger.info(f"selected: {selected}")
                 if len(selected) is 0:
                     return
             else:
                 selected = self._selector.select(
-                    self._ends, self.properties, task_to_perform
+                    ends= self._ends,
+                    channel_props = self.properties,
+                    trainer_unavail_list = [],
+                    task_to_perform = task_to_perform,
+                    curr_triplet = curr_triplet, 
+                    trainer_state_dict = trainer_state_dict,
                 )
                 logger.info(f"selected: {selected}")
                 if len(selected) is 0:

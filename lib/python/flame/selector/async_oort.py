@@ -223,6 +223,7 @@ class AsyncOortSelector(AbstractSelector):
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list,
         task_to_perform: str = "train",
+        **kwargs,        
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends.
 
@@ -238,7 +239,10 @@ class AsyncOortSelector(AbstractSelector):
         include it for recv in return.
         """
         logger.debug("calling async oort select")
-
+        curr_triplet = kwargs.get("curr_triplet")
+        trainer_state_dict = kwargs.get("trainer_state_dict")
+        logger.debug(f"Current triplet of model_version, data_id, iteration_id: {curr_triplet}")
+        logger.debug(f"Current trainer_state_dict {trainer_state_dict}")
         # TODO: (DG) Update later, currently setting eval concurrency
         # to be twice of training concurrency
         if task_to_perform == "train":
@@ -254,6 +258,7 @@ class AsyncOortSelector(AbstractSelector):
                 concurrency = min(len(ends), self.c + self.curr_round_eval_slots_left)
             else:
                 concurrency = 0
+        
         logger.info(
             f"Task: {task_to_perform}, len(ends): {len(ends)}, c: {self.c}, chosen concurrency: {concurrency}"
         )
@@ -297,13 +302,18 @@ class AsyncOortSelector(AbstractSelector):
         #     eligible_ends, num_of_ends=2
         # )
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
+            logger.debug(f"Inside send state: current triplet of model_version, data_id, iteration_id: {curr_triplet}")
+            logger.debug(f"Inside send state: current trainer_state_dict {trainer_state_dict}")
             results = self._handle_send_state(
-                eligible_ends,
-                concurrency,
-                channel_props,
-                trainer_unavail_list,
-                task_to_perform,
+                ends=eligible_ends,
+                concurrency=concurrency,
+                channel_props=channel_props,
+                trainer_unavail_list=trainer_unavail_list,
+                task_to_perform=task_to_perform,
+                curr_triplet=curr_triplet,
+                trainer_state_dict=trainer_state_dict,
             )
+
             if len(results) is not 0:
                 self._select_run_counter += 1
                 
@@ -1194,9 +1204,12 @@ class AsyncOortSelector(AbstractSelector):
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list = None,
         task_to_perform: str = "train",
+        curr_triplet=None,  
+        trainer_state_dict: dict[str, tuple[int, int, int]] = None,
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
-
+        logger.debug(f"Inside handle send state: current triplet {curr_triplet}")
+        logger.debug(f"Inside handle send state: current trainer_state_dict {trainer_state_dict}")
         # Check for invalid selections and remove them
         for end_id in list(selected_ends):
             if end_id not in ends:
@@ -1405,6 +1418,31 @@ class AsyncOortSelector(AbstractSelector):
         logger.info(
             f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}"
         )
+
+        if curr_triplet is not None and trainer_state_dict is not None:
+            curr_model_version, curr_data_id, curr_iteration_id = curr_triplet
+            logger.info(f"Trainer state dict: {trainer_state_dict}")
+            logger.info(f"Handle send state: current triplet {curr_triplet}")
+            # Filter out trainers who already received this same triplet
+            eligible_filtered_ends = {}
+            logger.debug(f"Filtered ends: {filtered_ends.items()}")
+            for end_id, end in filtered_ends.items():
+                prev_state = trainer_state_dict.get(end_id)
+                logger.debug(f"Prev triplet values: {prev_state}")
+
+                if prev_state != curr_triplet:
+                    logger.debug(
+                        f"Not skipping trainer: {end_id}"
+                    )
+                    eligible_filtered_ends[end_id] = end
+                else:
+                    logger.info(
+                        f"Skipping trainer: {end_id} already has same "
+                        f"(model_version={curr_model_version}, "
+                        f"iteration_id={curr_iteration_id}, data_id={curr_data_id})"
+                    )
+            filtered_ends = eligible_filtered_ends
+
         # extra informs about maximum possible available ends that can
         # be picked to meet the concurrency target. But it might count
         # infeasible ends too (ends that have already particpated in

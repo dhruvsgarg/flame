@@ -84,6 +84,9 @@ class TopAggregator(AsyncTopAgg):
         self._per_trainer_staleness_track = {}
         self._track_trainer_version_duration_s = {}
 
+        #Dictionary to store trainer state: Key = trainer_id, Value = model_version, data_id, iteration_id
+        self._trainer_state_dict = {}
+
         # check if distribute_weights was successful
         self._prev_distribute_weights_success = False
 
@@ -1095,7 +1098,9 @@ class TopAggregator(AsyncTopAgg):
         )
         
         # check if there are any ends to send weights to
-        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        self._curr_agg_version = (self._model_version, self.data_id, self.iteration_per_data_id)
+        logger.debug(f"Current triplet of model_version, data_id, iteration_id set in aggregator: {self._curr_agg_version}")
+        ends = channel.ends(state = VAL_CH_STATE_SEND, task_to_perform = task_to_perform, curr_triplet=self._curr_agg_version, trainer_state_dict=self._trainer_state_dict)
         logger.info(f"ends: {ends}")
         # TODO: check in agg_weights if ends is None
         if ends is None:
@@ -1185,6 +1190,9 @@ class TopAggregator(AsyncTopAgg):
 
         # ASYNC SEND LOOP (from AsyncTopAgg)
         for end in ends:
+            #Updated the trainer state dict
+            self._trainer_state_dict[end] = (self._model_version, self.data_id, self.iteration_per_data_id)
+
             logger.info(
                 f"Sending payload to {end} with model_version: {self._model_version}, "
                 f"data_id: {self.data_id}, iter: {self.iteration_per_data_id}"
