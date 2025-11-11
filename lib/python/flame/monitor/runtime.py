@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def timer_decorator(func):
     """Decorator to time TopAggregator function and log round/data info."""
     def wrapper(*args, **kwargs):
-        logger.trace("Inside timer_decorator wrapper")
+        logger.debug("Inside timer_decorator wrapper")
         self = args[0]  # TopAggregator
 
         start = time.time()
