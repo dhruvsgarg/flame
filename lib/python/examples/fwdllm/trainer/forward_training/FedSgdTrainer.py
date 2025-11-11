@@ -311,7 +311,7 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
-        logger.info(
+        logger.debug(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
         
@@ -324,12 +324,12 @@ class FedSGDTrainer(Trainer):
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
         if self.training_delay_enabled == "True":
-            # Even though Eval is 3X faster than training on CPU, we consider NPUs for Eval (NPUs don't support training)
-            # Eval on NPUs is 10-50X is faster than training on CPUs. We take 20X
-            eval_delay = self.training_delay_s # / 20.0
+            # Eval is 3X faster than training on CPU
+            # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
+            eval_delay = self.training_delay_s / 3.0
             time.sleep(eval_delay / self.speedup_factor)
             logger.info(
-                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
+                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s. Sleeping for {eval_delay / self.speedup_factor}s."
             )
 
         logger.info(

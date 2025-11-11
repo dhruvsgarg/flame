@@ -1,11 +1,8 @@
 client_num_per_round=$1
 LR=$2
 FL_ALG=$3
+total_client_num=$4
 
-# PARTIAL_PATH=$(echo "$(pwd)" | cut -d'/' -f1-4)
-# PROCESS_PATTERN="python $PARTIAL_PATH.*/fl_main.py"
-# echo "Killing processes matching pattern: $PROCESS_PATTERN"
-# pkill -f "$PROCESS_PATTERN"
 pkill -f "gaurav.*/fl_main.py"
 if [ $? -eq 0 ]; then
     echo "Successfully killed some processes."
@@ -143,7 +140,7 @@ else
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 49)    # End value is inclusive
+  for X in $(seq 0 ($total_client_num-1))    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
 

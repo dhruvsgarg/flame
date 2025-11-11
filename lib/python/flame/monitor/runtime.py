@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def timer_decorator(func):
     """Decorator to time TopAggregator function and log round/data info."""
     def wrapper(*args, **kwargs):
-        logger.info("[GJD] In timer_decorator wrapper")
+        logger.trace("Inside timer_decorator wrapper")
         self = args[0]  # TopAggregator
 
         start = time.time()
@@ -44,7 +44,6 @@ def timer_decorator(func):
 
     return wrapper
 
-
 class FwdLLMStage:
     """Lightweight metadata object for each federated round of FwdLLM."""
 
@@ -56,37 +55,6 @@ class FwdLLMStage:
 
     def __repr__(self):
         return f"FwdLLMStage(round={self.round_id}, data_id={self.data_id}, iter={self.iteration})"
-
-
-def agg_timer(func):
-    """Decorator to time TopAggregator function and log round/data info."""
-    def wrapper(*args, **kwargs):
-        logger.info("[GJD] In agg_timer wrapper")
-        self = args[0]  # TopAggregator
-        mc = getattr(self.composer, "mc", None)
-        stage = getattr(self, "fwd_llm_stage", None)
-
-        if mc:
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
-            duration = end - start
-
-            if stage:
-                mc.save("runtime", f"Round_{stage.round_id}", duration)
-                mc.save("starttime", f"Round_{stage.round_id}", start)
-                logger.info(
-                    f"[wrapper] Runtime of {func.__name__}: {duration:.3f}s "
-                    f"(Round={stage.round_id}, DataId={stage.data_id}, Iter={stage.iteration})"
-                )
-            else:
-                logger.info(
-                    f"Runtime of {func.__name__}: {duration:.3f}s (no stage info)")
-            return result
-        else:
-            logger.warning("No MetricCollector; won't record runtime")
-            return func(*args, **kwargs)
-    return wrapper
 
 
 def time_tasklet(func):

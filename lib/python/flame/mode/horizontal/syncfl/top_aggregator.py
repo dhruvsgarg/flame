@@ -312,7 +312,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
 
-    # @timer_decorator
+    @timer_decorator
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
 

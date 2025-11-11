@@ -1,3 +1,20 @@
+"""
+Script to copy specific fields from JSON files in a source directory to 
+corresponding JSON files in a destination directory.
+
+Usage:
+- Edit SRC_DIR and DST_DIR to set the source and destination directories.
+- Edit FIELDS_TO_COPY to specify which fields (inside top-level 'hyperparameters')
+  you want copied from source to destination JSONs.
+- Run the script. For each JSON file in range, it copies the desired fields
+  (if present) from source to destination, updating the destination file.
+
+Typical use case: Keeping certain hyperparameter settings consistent across 
+multiple configuration files.
+
+Note: Adjust the filename pattern and indices as needed for your use case.
+"""
+
 import json
 import os
 
@@ -27,7 +44,6 @@ def update_json_fields(src_path, dst_path):
     # Write back destination JSON (minimal formatting change)
     with open(dst_path, "w") as f:
         json.dump(dst_data, f, indent=4)
-        # f.write("\n")  # preserve trailing newline
 
 def main():
     for i in range(1, 101):  # 1 → 100
