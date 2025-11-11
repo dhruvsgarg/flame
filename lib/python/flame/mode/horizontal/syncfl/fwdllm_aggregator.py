@@ -399,7 +399,7 @@ class TopAggregator(AsyncTopAgg):
                     f"Rejecting trainer update of version {version}, "
                     f" self._model_version: {self._model_version}. Will return."
                 )
-                channel.cleanup_recvd_ends_for_stale_updates(end)
+                channel.cleanup_provided_ends(end)
                 return
 
         channel._selector.ordered_updates_recv_ends.append(end)

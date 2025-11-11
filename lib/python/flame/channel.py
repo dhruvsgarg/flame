@@ -259,7 +259,7 @@ class Channel(object):
        
 
 
-    def cleanup_recvd_ends_for_stale_updates(self, end_ids_to_cleanup: list[str]):
+    def cleanup_provided_ends(self, end_ids_to_cleanup: list[str]):
         """Cleans up ends which have sent stale updates."""
         if isinstance(end_ids_to_cleanup, str):
             end_ids_to_cleanup = [end_ids_to_cleanup]
