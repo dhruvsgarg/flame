@@ -256,6 +256,29 @@ class Channel(object):
         alpha values)."""
         return list(self._ends.keys())
 
+       
+
+
+    def cleanup_recvd_ends_for_stale_updates(self, end_ids_to_cleanup: list[str]):
+        """Cleans up ends which have sent stale updates."""
+        if isinstance(end_ids_to_cleanup, str):
+            end_ids_to_cleanup = [end_ids_to_cleanup]
+
+        ends_to_cleanup = {
+            end_id: self._ends[end_id]
+            for end_id in end_ids_to_cleanup
+            if self.has(end_id)
+        }
+        # for end_id in ends_to_cleanup:
+        #     logger.debug(f"Cleaning up end: {end_id} | end state: {self._ends[end_id].get_property(KEY_END_STATE)}")
+
+        self._selector._cleanup_single_end(ends_to_cleanup, self._ends)
+        
+        # for end_id in ends_to_cleanup:
+        #     logger.debug(f"Cleanup end: {end_id} | end state: {self._ends[end_id].get_property(KEY_END_STATE)}")
+
+
+
     def cleanup_recvd_ends(self):
         """Performs cleanup of end states in the selector. Usually
         only performed after aggregation of a round completes"""
@@ -266,6 +289,7 @@ class Channel(object):
 
         self._selector._cleanup_recvd_ends(self._ends)
         logger.info("Cleaned up ends successfully")
+        
 
     def ends_digest(self) -> str:
         """Compute a digest of ends."""
