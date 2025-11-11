@@ -53,6 +53,9 @@ import functorch as fc
 import torch
 
 from torch.nn import CrossEntropyLoss
+import flame.monitor.runtime
+from flame.monitor.runtime import FwdLLMStage, timer_decorator
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,13 @@ PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
+@timer_decorator
+def recv_fifo_wrapper(channel, ends):
+    logger.debug("Entering recv_fifo_wrapper generator loop")
+    for msg, metadata in channel.recv_fifo(ends):
+        logger.debug(f"Yielding msg from {metadata}")
+        yield msg, metadata
+    logger.debug("Exiting recv_fifo_wrapper")
 
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
@@ -473,30 +483,11 @@ class TopAggregator(AsyncTopAgg):
             logger.debug("Agg goal reached, so resetting trainer end states in the channel")
             channel.cleanup_recvd_ends()
 
-    def _aggregate_grads_sync(self, tag: str) -> None:
-        """Aggregate trainer gradients synchronously."""
-        logger.info("starting aggregate_grads_sync")
-        self.log_memory("start _aggregate_grads_sync", self.device)
-        self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
-        if self.ends_not_selected_yet:
-            logger.info("no ends selected yet")
-            return
-
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives first NOTE:
-        # (DG) Right now, the leave notifications also cause a message to be
-        # processed and yield (None,None) from recv_fifo().
-        if channel.ends(VAL_CH_STATE_RECV) is None:
-            logger.info("no ends yet")
-            return
-
-        total = 0
-
-        # receive local model parameters from trainers
+    def aggregate_and_collect(self, tag, channel):
+        """Aggregate trainer gradients synchronously, with timing and stage metadata."""
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
+        
         for msg, metadata in channel.recv_fifo(channel.ends()):
             end, timestamp = metadata
             if not msg:
@@ -609,6 +600,33 @@ class TopAggregator(AsyncTopAgg):
                 )
                 break
 
+                #end the timer here                                                                                  
+
+    @timer_decorator
+    def _aggregate_grads_sync(self, tag: str) -> None:
+        """Aggregate trainer gradients synchronously."""
+        logger.info("starting aggregate_grads_sync")
+        self.log_memory("start _aggregate_grads_sync", self.device)
+        self.print_trainable_params_stats(location="[start,_aggregate_grads_sync()]")
+        if self.ends_not_selected_yet:
+            logger.info("no ends selected yet")
+            return
+
+        channel = self.cm.get_by_tag(tag)
+        if not channel:
+            return
+
+        logger.debug(f"Channel {channel} found for tag {tag}")
+        # receive local model parameters from a trainer who arrives first NOTE:
+        # (DG) Right now, the leave notifications also cause a message to be
+        # processed and yield (None,None) from recv_fifo().
+        if channel.ends(VAL_CH_STATE_RECV) is None:
+            logger.info("no ends yet")
+            return
+
+        # receive local model parameters from trainers
+        self.aggregate_and_collect(tag, channel)
+        
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Proceed to aggregating gradients
@@ -636,7 +654,7 @@ class TopAggregator(AsyncTopAgg):
 
         round_to_print = self._round
         data_id_to_print = self.data_id
-
+        
         if self.var_good_enough:
             # evaluate model to calculate loss
             result, _, _ = self.eval_model()
@@ -669,6 +687,7 @@ class TopAggregator(AsyncTopAgg):
             f"{self._updates_in_queue}"
         )
 
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
         self.log_memory("end _aggregate_grads_sync", self.device)
 
     def eval_model(self, epoch=0, global_step=0, device=None):

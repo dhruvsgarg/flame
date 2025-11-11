@@ -1,6 +1,13 @@
+# Ensure that you have set the FWDLLM_USER environment variable before running this script
+# Run to set as part of conda environment:
+# conda env config vars set FWDLLM_USER=<your-folder-name>
+
+
 client_num_per_round=$1
 LR=$2
 FL_ALG=$3
+total_client_num=$4
+LOG_LEVEL=$5
 
 pkill -f $FWDLLM_USER.*fl_main.py
 sleep 10  # Wait for the system to stabilize
@@ -148,11 +155,13 @@ else
     --config "$AGG_EXPANDED" \
     > "$AGG_LOG_FILE" 2>&1 &
 
+  echo "started agg"
+
   sleep 10  # Give aggregator time to set up
 
   NUM_AVAIL_GPUS=8
 
-  for X in $(seq 0 99)    # End value is inclusive
+  for X in $(seq 0 $(( total_client_num-1 )) )    # End value is inclusive
   do
     ASSIGN_TO_GPU=$(( X % NUM_AVAIL_GPUS ))
     TRAIN_SRC="$REPO_PATH/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_${X}.json"
@@ -164,7 +173,8 @@ else
       echo "Running client $X on GPU $ASSIGN_TO_GPU"
       CUDA_VISIBLE_DEVICES="${ASSIGN_TO_GPU}" python $REPO_PATH/lib/python/examples/fwdllm/trainer/fl_main.py \
         --config "$TRAIN_EXPANDED" \
-        >> "$TRAINER_LOG_FILE" 2>&1 &
+        >> "$TRAINER_LOG_FILE" \
+      --log_level $LOG_LEVEL 2>&1 &
       sleep 8
     else
       echo "Trainer config not found, skipping: $TRAIN_SRC"

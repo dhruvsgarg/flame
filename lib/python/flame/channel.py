@@ -29,6 +29,7 @@ from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
+from flame.monitor.runtime import timer_decorator
 import gzip
 import zstandard as zstd
 import sys

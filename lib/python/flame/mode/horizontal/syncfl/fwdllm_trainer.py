@@ -43,6 +43,7 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
+from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
 # TODO: (DG) torch is needed for asyncoort in oort_loss() function, but need to
 # comment / uncomment based on the backend used. If it is commented, Flame can
@@ -57,6 +58,13 @@ TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 TAG_HEARTBEAT = "heartbeat_send"
 
+@timer_decorator
+def recv_wrapper(self, channel, end_id):
+    """Wrapper around recv to be used with timer_decorator."""
+    # Create FwdLLMStage for timing/metrics logging
+    self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, self.trainer_id)
+
+    return channel.recv(end_id)
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -142,6 +150,7 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    @timer_decorator
     def _fetch_weights(self, tag: str) -> None:
         logger.info(
             f"### FETCH WEIGHTS start for tag: {tag} "
@@ -169,7 +178,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        msg, _ = channel.recv(end)
+        msg, _ = recv_wrapper(self, channel, end)
 
         if not msg:
             logger.info(f"NO msg received for trainer_id {self.trainer_id}")
@@ -349,7 +358,10 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         channel.cleanup_recvd_ends()
-        
+
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
+
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
         logging.info(f"Put is invoked for {self.trainer_id}")
@@ -359,6 +371,7 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.info("calling send heartbeat")
             self._send_heartbeat_to_agg(tag)
 
+    @timer_decorator
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(
             f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
@@ -386,6 +399,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         return
 
+    @timer_decorator
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt time.sleep(1)
 
@@ -691,6 +705,7 @@ class Trainer(Role, metaclass=ABCMeta):
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
 
+    @timer_decorator
     def pause_execution(self):
         time.sleep(1)
         return

@@ -80,7 +80,9 @@
         "freeze_layers": "",
         "manual_seed": 42,
         "client_num_in_total": 0,
-        "warmup_ratio": 1
+        "warmup_ratio": 1,
+        "training_delay_enabled": "True",
+        "training_delay_s": "19.0"
     },
     "baseModel": {
         "name": "",
