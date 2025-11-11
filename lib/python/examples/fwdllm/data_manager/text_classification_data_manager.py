@@ -4,6 +4,7 @@ import h5py
 import json
 import logging
 from tqdm import tqdm
+import os
 
 
 class TextClassificationDataManager(BaseDataManager):
@@ -16,7 +17,7 @@ class TextClassificationDataManager(BaseDataManager):
         super(TextClassificationDataManager, self).__init__(
             args, model_args, process_id, num_workers
         )
-        self.attributes = self.load_attributes(args.data_file_path)
+        self.attributes = self.load_attributes(os.path.expandvars(args.data_file_path))
         self.preprocessor = preprocessor
 
     def read_instance_from_h5(self, data_file, index_list, desc=""):

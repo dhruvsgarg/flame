@@ -112,7 +112,9 @@ if __name__ == "__main__":
     # logging.info("torch.cuda.device_count()=" + str(torch.cuda.device_count()))
 
     # dataset attributes
-    attributes = BaseDataManager.load_attributes(config.hyperparameters.data_file_path)
+    data_file_path = os.path.expandvars(config.hyperparameters.data_file_path)
+    partition_file_path = os.path.expandvars(config.hyperparameters.partition_file_path)
+    attributes = BaseDataManager.load_attributes(data_file_path)
     num_labels = len(attributes["label_vocab"])
 
     # create the model
@@ -141,8 +143,8 @@ if __name__ == "__main__":
             "evaluate_during_training": False,  # Disabled for FedAvg.
             "evaluate_during_training_steps": config.hyperparameters.evaluate_during_training_steps,
             "fp16": config.hyperparameters.fp16,
-            "data_file_path": config.hyperparameters.data_file_path,
-            "partition_file_path": config.hyperparameters.partition_file_path,
+            "data_file_path": data_file_path,
+            "partition_file_path": partition_file_path,
             "partition_method": config.hyperparameters.partition_method,
             "dataset": config.hyperparameters.dataset,
             "output_dir": config.hyperparameters.output_dir,

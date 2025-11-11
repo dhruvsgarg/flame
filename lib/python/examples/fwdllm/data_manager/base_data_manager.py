@@ -34,7 +34,7 @@ class BaseDataManager(ABC):
         self.attributes = None
 
         self.num_clients = self.load_num_clients(
-            self.args.partition_file_path, self.args.partition_method
+            os.path.expandvars(self.args.partition_file_path), self.args.partition_method
         )
         # TODO: sync to the same logic to sample index
         # self.client_index_list = self.sample_client_index(process_id, num_workers)
@@ -102,8 +102,8 @@ class BaseDataManager(ABC):
                 test_dataset,
             ) = res
         else:
-            data_file = h5py.File(self.args.data_file_path, "r", swmr=True)
-            partition_file = h5py.File(self.args.partition_file_path, "r", swmr=True)
+            data_file = h5py.File(os.path.expandvars(self.args.data_file_path), "r", swmr=True)
+            partition_file = h5py.File(os.path.expandvars(self.args.partition_file_path), "r", swmr=True)
             partition_method = self.args.partition_method
             train_index_list = []
             test_index_list = []
@@ -192,8 +192,8 @@ class BaseDataManager(ABC):
             else:
                 train_data_num = len(train_dataset)
         else:
-            data_file = h5py.File(self.args.data_file_path, "r", swmr=True)
-            partition_file = h5py.File(self.args.partition_file_path, "r", swmr=True)
+            data_file = h5py.File(os.path.expandvars(self.args.data_file_path), "r", swmr=True)
+            partition_file = h5py.File(os.path.expandvars(self.args.partition_file_path), "r", swmr=True)
             partition_method = self.args.partition_method
             train_index_list = []
             test_index_list = []
@@ -306,8 +306,8 @@ class BaseDataManager(ABC):
 
     def _load_federated_data_local(self, client_idx):
 
-        data_file = h5py.File(self.args.data_file_path, "r", swmr=True)
-        partition_file = h5py.File(self.args.partition_file_path, "r", swmr=True)
+        data_file = h5py.File(os.path.expandvars(self.args.data_file_path), "r", swmr=True)
+        partition_file = h5py.File(os.path.expandvars(self.args.partition_file_path), "r", swmr=True)
         partition_method = self.args.partition_method
         original_client_idxs = [client_idx]
 
