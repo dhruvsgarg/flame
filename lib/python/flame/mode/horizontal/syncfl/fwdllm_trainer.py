@@ -135,6 +135,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.task_to_perform = "train"
         self.iteration_per_data_id = None
         self.abort_training = False
+        self._stat_utility = 0
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -452,7 +453,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                # MessageType.STAT_UTILITY: self._stat_utility, #uncomment later
+                MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
@@ -654,27 +655,22 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's statistical
         utility is measured at epoch 1.
         """
-        if epoch == 1 and batch_idx == 0:
-            if "reduction" in kwargs.keys():
-                reduction = kwargs["reduction"]
-            else:
-                reduction = "mean"  # default reduction policy is mean
-            kwargs_wo_reduction = {
-                key: value for key, value in kwargs.items() if key != "reduction"
-            }
-
-            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
-            loss_list = criterion(output, target)
-            self._stat_utility += torch.square(loss_list).sum()
-
-            if reduction == "mean":
-                loss = loss_list.mean()
-            elif reduction == "sum":
-                loss = loss_list.sum()
+        
+        if "reduction" in kwargs.keys():
+            reduction = kwargs["reduction"]
         else:
-            criterion = self.loss_fn(**kwargs)
-            loss = criterion(output, target)
+            reduction = "mean"  # default reduction policy
+        kwargs_wo_reduction = {
+            key: value for key, value in kwargs.items() if key != "reduction"
+        }
+        criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
+        loss_list = criterion(output, target)
+        self._stat_utility += torch.square(loss_list).sum()
 
+        if reduction == "mean":
+            loss = loss_list.mean()
+        elif reduction == "sum":
+            loss = loss_list.sum()
         return loss
 
     def normalize_stat_utility(self, epoch) -> None:
@@ -682,13 +678,12 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size of the
         trainer's datset, at epoch 1.
         """
-        if epoch == 1:
-            self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
-                self._stat_utility / len(self.train_loader.dataset)
-            )
-        else:
-            return
-
+        # incase of oort - stat utility is calculated only at the beginning (epoch = 0, batch = 0)
+        # but in fwdllm, we want to calculate it with every update
+        self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
+            self._stat_utility / len(self.train_loader.dataset)
+        )
+        
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0

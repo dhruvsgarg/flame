@@ -148,7 +148,7 @@ class FedSGDTrainer(Trainer):
         self.device = device
 
         # abstract attributes
-        self.loss_fn = None
+        self.loss_fn = torch.nn.CrossEntropyLoss()
         self.dataset_size = None
         self.model = model_trainer.model
         # NRL adding new variables
@@ -157,6 +157,7 @@ class FedSGDTrainer(Trainer):
         self.total_data_bins = None
         self.grad_for_var_check = None
         self.data_written_to_file = False  # Flag to prevent writing data multiple times
+        setattr(self.trainer.model_trainer, "base_trainer", self) # for accessing FedSGDTrainer methods inside model_trainer - stat utility
 
     def _write_client_data_to_file(self, client_id, train_data, round_idx=None):
         """Write all training data for a client to a JSON file"""
@@ -253,6 +254,7 @@ class FedSGDTrainer(Trainer):
             f"Task_id: {self.trainer_id} initialize completed at timestamp: "
             f"{time.time()}"
         )
+        self.init_oort_variables() #initialize oort variables for stat_utility calculation (fwdllm)
 
     def update_model(self, weights):
         # logger.info(f"NRL: Updated model weights: {weights}")
@@ -302,6 +304,8 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
+
+        self.reset_stat_utility() #reset stat_utility for this databin (fwdllm)
         
         # List Index to be used in case of both sync and async version.
         # In sync model version = round hence, Index = model version

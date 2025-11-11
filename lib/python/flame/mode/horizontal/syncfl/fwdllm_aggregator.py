@@ -357,6 +357,15 @@ class TopAggregator(AsyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            # receiving stat_utility for every update from trainer
+            if MessageType.STAT_UTILITY in msg:
+                logger.info(
+                    f"received stat_utility from {end} "
+                    f"msg[MessageType.STAT_UTILITY] {msg[MessageType.STAT_UTILITY]}"
+                )
+                channel.set_end_property(
+                    end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+                )
         elif MessageType.STAT_UTILITY in msg:
             logger.info(
                 f"Received eval-only message from {end}, "
@@ -582,10 +591,13 @@ class TopAggregator(AsyncTopAgg):
                 version = msg[MessageType.MODEL_VERSION]
 
             if MessageType.STAT_UTILITY in msg:
+                logger.info(
+                    f"received stat_utility from {end} "
+                    f"msg[MessageType.STAT_UTILITY] {msg[MessageType.STAT_UTILITY]}"
+                )
                 channel.set_end_property(
                     end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
                 )
-                stat_utility = msg[MessageType.STAT_UTILITY]
 
             logger.info(
                 f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
