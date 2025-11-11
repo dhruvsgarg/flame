@@ -19,10 +19,11 @@ import json
 import os
 
 # ---- CONFIG ----
-SRC_DIR = "/home/dgarg39/gaurav/flame/lib/python/examples/async_cifar10/trainer/config_dir100_num300_traceFail_6d_3state"
-DST_DIR = "/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
+SRC_DIR = "../lib/python/examples/async_cifar10/trainer/config_dir100_num300_traceFail_6d_3state"
+DST_DIR = "../lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
 
 FIELDS_TO_COPY = ["training_delay_enabled", "training_delay_s"]
+FILE_INDICES = (0, 150)         # exclusive (0 -> 149)
 
 def update_json_fields(src_path, dst_path):
     # Read source JSON
@@ -46,7 +47,7 @@ def update_json_fields(src_path, dst_path):
         json.dump(dst_data, f, indent=4)
 
 def main():
-    for i in range(1, 101):  # 1 → 100
+    for i in range(FILE_INDICES[0], FILE_INDICES[1]+1):
         src_file = f"trainer_{i}.json"
         dst_file = f"trainer_{i-1}.json"
 
