@@ -76,20 +76,17 @@ class AsyncOortSelector(AbstractSelector):
             self.is_async = False
 
         try:
-            self.c = kwargs["c"]  #TODO: check where it is getting set and where it is getting used!
-            # self.c = 10
+            self.c = kwargs["c"]  
         except KeyError:
             raise KeyError("c (concurrency level) is not specified in config")
 
         try:
             self.agg_goal = kwargs["aggGoal"]
-            # self.agg_goal = 5
         except KeyError:
             raise KeyError("aggGoal is not specified in config")
 
         try:
             self.eval_goal_factor = kwargs["evalGoalFactor"]
-            # self.eval_goal_factor = 0.5
         except KeyError:
             raise KeyError(
                 "evalGoalFactor is not specified in config. It is the decimal multiplicative factor wrt agg goal for eval"
@@ -97,7 +94,6 @@ class AsyncOortSelector(AbstractSelector):
 
         try:
             self.round_nudge_type = kwargs["roundNudgeType"]
-            # self.round_nudge_type = 'last_eval'
         except KeyError:
             raise KeyError(
                 "roundNudgeType is not specified in config. It is last_train or last_eval based on the selector nudging critera"
@@ -105,7 +101,6 @@ class AsyncOortSelector(AbstractSelector):
 
         try:
             self.select_type = kwargs["selectType"]
-            # self.select_type = "default"
         except KeyError:
             raise KeyError(
                 "selectType is not specified in config. Can be default, "
@@ -297,10 +292,6 @@ class AsyncOortSelector(AbstractSelector):
                 f"populated eligible_ends: {eligible_ends}"
             )
 
-        # results = {}
-        # return self.select_random(
-        #     eligible_ends, num_of_ends=2
-        # )
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
             logger.debug(f"Inside send state: current triplet of model_version, data_id, iteration_id: {curr_triplet}")
             logger.debug(f"Inside send state: current trainer_state_dict {trainer_state_dict}")
@@ -341,7 +332,6 @@ class AsyncOortSelector(AbstractSelector):
             # TODO: (DG) See if eligible_ends should be passed here
             # too in place of ends
             results = self._handle_recv_state(ends, concurrency)
-            # results =ends[:1]
 
         else:
             state = channel_props[KEY_CH_STATE]
@@ -785,12 +775,12 @@ class AsyncOortSelector(AbstractSelector):
         same round. Thus, for aggregator, the _cleanup_recvd_ends
         should be triggered only after aggregation of weights succeeds
         on meeting agg_goal."""
-        logger.info(
+        logger.debug(
             f"clean up recvd ends. selected_ends: {self.selected_ends}, ends: {ends.keys()}"
         )
 
         selected_ends = self.selected_ends[self.requester]
-        logger.info(
+        logger.debug(
             f"self.requester: {self.requester} and selected_ends: "
             f"{selected_ends} before processing"
         )
@@ -1261,11 +1251,11 @@ class AsyncOortSelector(AbstractSelector):
                 # might have already participated in the same round
                 # (if it is still in all_ends)
 
-        logger.info(f"Current selected_ends: {selected_ends}")
+        logger.debug(f"Current selected_ends: {selected_ends}")
 
         extra = max(0, concurrency - len(selected_ends))
 
-        logger.info(
+        logger.debug(
             f"c: {concurrency}, "
             f"len(selected_ends): {len(selected_ends)}, extra: {extra}, selected_ends: {selected_ends},"
             f"len(ends): {len(ends)}"
@@ -1276,7 +1266,7 @@ class AsyncOortSelector(AbstractSelector):
         # num_of_ends = min(len(ends), self.num_of_ends) if
         # num_of_ends == 0: logger.debug("ends is empty") return {}
         if extra == 0:
-            logger.info(f"extra: {extra}, nothing to select")
+            logger.debug(f"extra: {extra}, nothing to select")
             return {}
 
         round = channel_props["round"] if "round" in channel_props else 0
@@ -1286,7 +1276,7 @@ class AsyncOortSelector(AbstractSelector):
             # Log to info level the property of LAST_EVAL_ROUND for
             # all the ends
             for end_id, end in ends.items():
-                logger.info(
+                logger.debug(
                     f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_STAT_UTILITY)}"
                 )
 
@@ -1777,7 +1767,7 @@ class AsyncOortSelector(AbstractSelector):
             else:
                 # TODO: (DG) Should we not remove it from selected
                 # ends here?
-                logger.info(
+                logger.debug(
                     f"Tried to check state of end {end_id} but it is no "
                     f"longer in self._ends"
                 )
@@ -1797,20 +1787,20 @@ class AsyncOortSelector(AbstractSelector):
                         )
                         candidates[end_id] = end
                     else:
-                        logging.info(
+                        logging.debug(
                             f"end_id {end_id} not in all_selected but in state: {curr_end_state}, not adding "
                             f"to candidates"
                         )
 
             cc = min(len(candidates), concurrency)
-            logger.info(
+            logger.debug(
                 f"Will pick cc: {cc} as min(candidates,concurrency) "
                 f"from candidates: {candidates}"
             )
             selected_ends = set(random.sample(list(candidates), cc))
 
             self.selected_ends[self.requester] = selected_ends
-            logger.info(
+            logger.debug(
                 f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
             )
 
