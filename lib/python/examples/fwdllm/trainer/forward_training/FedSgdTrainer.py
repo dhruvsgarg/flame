@@ -148,7 +148,7 @@ class FedSGDTrainer(Trainer):
         self.device = device
 
         # abstract attributes
-        self.loss_fn = torch.nn.CrossEntropyLoss()
+        self.loss_fn = torch.nn.CrossEntropyLoss
         self.dataset_size = None
         self.model = model_trainer.model
         # NRL adding new variables

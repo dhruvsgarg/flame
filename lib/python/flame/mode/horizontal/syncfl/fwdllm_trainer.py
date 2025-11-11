@@ -635,6 +635,7 @@ class Trainer(Role, metaclass=ABCMeta):
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
         self._stat_utility = 0
+        self._batch_size = 0
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
             msg = "Parameter 'reduction' not found in loss function "
@@ -665,6 +666,8 @@ class Trainer(Role, metaclass=ABCMeta):
         }
         criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
         loss_list = criterion(output, target)
+        self._batch_size = len(loss_list)
+        logger.info(f"batch size: {len(loss_list)}")
         self._stat_utility += torch.square(loss_list).sum()
 
         if reduction == "mean":
@@ -680,8 +683,8 @@ class Trainer(Role, metaclass=ABCMeta):
         """
         # incase of oort - stat utility is calculated only at the beginning (epoch = 0, batch = 0)
         # but in fwdllm, we want to calculate it with every update
-        self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
-            self._stat_utility / len(self.train_loader.dataset)
+        self._stat_utility = self._batch_size * math.sqrt(
+            self._stat_utility / self._batch_size
         )
         
     def reset_stat_utility(self) -> None:

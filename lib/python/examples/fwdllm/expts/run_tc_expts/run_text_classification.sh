@@ -2,7 +2,7 @@ client_num_per_round=$1
 LR=$2
 FL_ALG=$3
 
-pkill -f $USER.*fl_main.py
+pkill -f $FWDLLM_USER.*fl_main.py
 sleep 10  # Wait for the system to stabilize
 nvidia-smi
 C_LR=0.01
@@ -54,9 +54,9 @@ fi
 LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
-REPO_PATH=/home/dgarg39/$USER/flame/
+REPO_PATH=/home/dgarg39/$FWDLLM_USER/flame/
 # todo: Use pwd here
-DATA_DIR=/home/dgarg39/$USER/fednlp_data/
+DATA_DIR=/home/dgarg39/$FWDLLM_USER/fednlp_data/
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
