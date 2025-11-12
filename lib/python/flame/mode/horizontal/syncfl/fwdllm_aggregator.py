@@ -371,7 +371,7 @@ class TopAggregator(AsyncTopAgg):
             if MessageType.STAT_UTILITY in msg:
                 logger.info(
                     f"received stat_utility from {end} "
-                    f"msg[MessageType.STAT_UTILITY] {msg[MessageType.STAT_UTILITY]}"
+                    f"msg[MessageType.STAT_UTILITY] = {msg[MessageType.STAT_UTILITY]}"
                 )
                 channel.set_end_property(
                     end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]

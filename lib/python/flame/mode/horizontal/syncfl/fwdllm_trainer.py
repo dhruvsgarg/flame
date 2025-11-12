@@ -681,7 +681,7 @@ class Trainer(Role, metaclass=ABCMeta):
         criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
         loss_list = criterion(output, target)
         self._batch_size = len(loss_list)
-        logger.info(f"batch size: {len(loss_list)}")
+        logger.debug(f"batch size: {len(loss_list)}")
         self._stat_utility += torch.square(loss_list).sum()
 
         if reduction == "mean":
