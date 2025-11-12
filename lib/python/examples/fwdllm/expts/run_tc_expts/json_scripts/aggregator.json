@@ -83,8 +83,7 @@
         "warmup_ratio": 0,
         "trackTrainerAvail": {
             "enabled": "False",
-            "type": "ORACULAR",
-            "trace": "avl_events_syn_0"
+            "type": "NA"
         },
         "aggGoal": 5 ,
         "rounds": 300,
