@@ -295,7 +295,7 @@ class TopAggregator(AsyncTopAgg):
 
         # rate = scale * alpha(staleness) + (1 - scale) * beta(stat_utility)
         # alpha: polynomial decay in staleness; beta: polynomial_upshift
-        staleness_val = self.model_version - version_for_rate
+        staleness_val = self._model_version - version_for_rate
         try:
             scale_val = self.optimizer.agg_rate_conf["scale"]
             a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
@@ -439,7 +439,21 @@ class TopAggregator(AsyncTopAgg):
         
         if MessageType.GRADIENTS in msg:
             trainer_gradients = msg[MessageType.GRADIENTS]
-            self.aggregate_grads_from_trainers(trainer_gradients)
+            version_for_rate = msg[MessageType.MODEL_VERSION]
+            stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
+            grad_for_var_check = (
+                msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
+                if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
+                else None
+            )
+            
+            self.aggregate_grads_from_trainers(
+                trainer_gradients,
+                version_for_rate=version_for_rate,
+                stat_utility=stat_utility_val,
+                grad_for_var_check=grad_for_var_check,
+            )
+            
             # del trainer_gradients # Free memory
         
         if MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
@@ -467,11 +481,22 @@ class TopAggregator(AsyncTopAgg):
             
             self.grad_pool.append(self.grad)
             self.add_local_trained_result(0, self.grad, self._agg_goal_cnt) # Assuming 0 is ok
+            # Use effective denominator if available; else warn and skip this update
+            # Denominator choice: sum_i (rate_i * count_i) vs raw #samples
+            # We choose the former to obtain a true weighted average that matches the numerator scaling
+            if self._effective_sample_weight_sum <= 0:
+                logger.warning("Effective sample-weight sum is zero or lower; skipping model update for this aggregation goal")
+                # Clean up and return early without updating the model
+                self.grad = [torch.zeros_like(g) for g in self.grad]
+                channel.cleanup_recvd_ends()
+                return
             
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
                 self.model
             )
-            self.grad = [torch.zeros_like(p) for p in self.params]            
+            self.grad = [torch.zeros_like(p) for p in self.params]
+            self._effective_sample_weight_sum = 0.0
+
             self.aggregate(self._round) # This sets self.var and self.var_good_enough
             
             if self.var_good_enough:
@@ -1030,14 +1055,12 @@ class TopAggregator(AsyncTopAgg):
             if self.var_good_enough == True:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
-                    f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
                     MessageType.GRAD_POOL: shared_grad_pool_trainable,
                     MessageType.ROUND: self._round,
-                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1066,12 +1089,11 @@ class TopAggregator(AsyncTopAgg):
                 self.grad_for_var_check_list = []
             else:
                 logger.info(
-                    f"sending var = bad to {end} with model_version: {self._model_version},round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
+                    f"sending var = bad to {end} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 payload = {
                     MessageType.VAR: "bad",
                     MessageType.ROUND: self._round,
-                    MessageType.MODEL_VERSION: self._model_version,
                     MessageType.MODEL_VERSION: self._model_version,
                     MessageType.TASK_TO_PERFORM: task_to_perform,
                     MessageType.DATA_ID: self.data_id,
@@ -1228,7 +1250,7 @@ class TopAggregator(AsyncTopAgg):
             
         else:
             logger.info(
-                f"sending var = bad to {ends} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
+                f"sending var = bad to {ends} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
             )
             logger.info(
                 "Variance is BAD. Sending request for more variance checks."
