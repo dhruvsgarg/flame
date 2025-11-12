@@ -25,6 +25,7 @@ import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
+from flame.config import OptimizerType
 from flame.mode.composer import CloneComposer
 import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
@@ -110,6 +111,12 @@ class TopAggregator(AsyncTopAgg):
         self.iteration_per_data_id = 0
         # This preserves statistical weighting by sample count and scales steps by the same weights used on the numerator
         self._effective_sample_weight_sum = 0.0
+        # Enable weighted aggregation only if optimizer.sort is FEDBUFF; otherwise force neutral rate
+        self._optimizer_sort_value = self.config.optimizer.sort
+        OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF, )
+        self._weighted_aggregation_enabled = (self._optimizer_sort_value in OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION)
+        logger.info(f"Setting rate=1.0 for all updates because optimizer.sort is "
+                    f"{self._optimizer_sort_value}; weighted aggregation only supported by {OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION}.")
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
@@ -308,27 +315,30 @@ class TopAggregator(AsyncTopAgg):
 
         # rate = scale * alpha(staleness) + (1 - scale) * beta(stat_utility)
         # alpha: polynomial decay in staleness; beta: polynomial_upshift
-        staleness_val = self._model_version - version_for_rate
-        try:
-            scale_val = self.optimizer.agg_rate_conf["scale"]
-            a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
-            b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
-            rate = self.optimizer.weight_factor(
-                scale=scale_val,
-                staleness=staleness_val,
-                a_exp=a_exp_val,
-                loss=stat_utility,
-                b_exp=b_exp_val,
-                alpha_type="polynomial",
-                beta_type="polynomial_upshift",
-            )
-            if rate != 1.0:
-                logger.info(
-                    f"Weighted received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
-                )
-        except Exception as e:
-            logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
+        if not self._weighted_aggregation_enabled:
             rate = 1.0
+        else:
+            staleness_val = self._model_version - version_for_rate
+            try:
+                scale_val = self.optimizer.agg_rate_conf["scale"]
+                a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
+                b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
+                rate = self.optimizer.weight_factor(
+                    scale=scale_val,
+                    staleness=staleness_val,
+                    a_exp=a_exp_val,
+                    loss=stat_utility,
+                    b_exp=b_exp_val,
+                    alpha_type="polynomial",
+                    beta_type="polynomial_upshift",
+                )
+                if rate != 1.0:
+                    logger.info(
+                        f"Weighted received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
+                    )
+            except Exception as e:
+                logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
+                rate = 1.0
 
         # Accumulate denominator: sum of rates (kept in [0,1])
         self._effective_sample_weight_sum += rate
