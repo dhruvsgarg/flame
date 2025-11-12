@@ -160,7 +160,7 @@ class RandomSelector(AbstractSelector):
         # trainers
         blocked_trainers = len(set(self.selected_ends))
         con  = min(len(ends), self.c - blocked_trainers)
-        logger.info(f"Waiting on {blocked_trainers}, need {con} to maintain concurrency {self.c}")
+        logger.info(f"Waiting on {blocked_trainers}, need {con} more to maintain concurrency {self.c}")
         if len(ends) < con:
             logger.info(f"not enough ends, need atleast {con}")
             time.sleep(0.1)
@@ -235,20 +235,24 @@ class RandomSelector(AbstractSelector):
 
         if self.enforce_min_start(len(ends)):
             return {}
+        
+        k = min(len(ends), self.k)
+        if k == 0:
+            logger.debug("ends is empty")
+            return {}
 
         logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
-        if len(ends) < self.c:
-            logger.info(f"not enough ends, need atleast {self.c}")
+        blocked_trainers = len(set(self.selected_ends))
+        con  = min(len(ends), self.c - blocked_trainers)
+        logger.info(f"Waiting on {blocked_trainers}, need {con} more to maintain concurrency {self.c}")
+        if len(ends) < con:
+            logger.info(f"not enough ends, need atleast {con}")
             time.sleep(0.1)
             return {}
 
         logger.info(f"trainer_unavail_list : {trainer_unavail_list}")
 
-        k = min(len(ends), self.k)
-        if k == 0:
-            logger.debug("ends is empty")
-            return {}
         logger.debug(f"new k = {k}")
         if "round" in channel_props:
             round = channel_props["round"]
@@ -257,9 +261,7 @@ class RandomSelector(AbstractSelector):
             logger.warning(f"round not found in channel_props: {channel_props}. Defaulting to 0")
         
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-                con  = min(len(ends), self.c - len(set(self.selected_ends)) )
                 req = 0
-
                 already_in_use = self.selected_ends
                 logger.info(f"already_in_use: {already_in_use}")
                 new_selection = set()
@@ -280,10 +282,10 @@ class RandomSelector(AbstractSelector):
                 
                 logger.info(f"new_selection: {new_selection}")
 
-                if len(new_selection) < self.c:
+                if len(new_selection) < con:
                     time.sleep(0.1)
                     # cannot handle concurrency, wait further to clear and reselect
-                    logger.info(f" {len(new_selection)} new selection less than concurrency {self.c}")
+                    logger.info(f" {len(new_selection)} new selection less than concurrency {con}")
                     return {}
                 
                 self.selected_ends = set(self.selected_ends).union(new_selection)

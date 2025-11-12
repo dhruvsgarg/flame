@@ -86,7 +86,7 @@
             "type": "ORACULAR",
             "trace": "avl_events_syn_0"
         },
-        "aggGoal": 10 ,
+        "aggGoal": 5 ,
         "rounds": 300,
         "model_version_increment_per_update": true
     },
@@ -106,7 +106,8 @@
         "sort": "random",
         "kwargs": {
             "k": 10,
-            "minInitialTrainers": 50
+            "minInitialTrainers": 50,
+            "c": 13
         }
     },
     "optimizer": {
