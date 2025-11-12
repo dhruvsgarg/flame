@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# USER WARNING: Trainer 0 may not exist in the src directory!
+
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
