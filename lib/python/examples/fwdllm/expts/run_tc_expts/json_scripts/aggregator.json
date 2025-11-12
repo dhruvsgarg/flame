@@ -88,7 +88,7 @@
         },
         "aggGoal": 10 ,
         "rounds": 300,
-        "model_version_increment_per_update": true
+        "inc_model_version_per_data_id": true
     },
     "baseModel": {
         "name": "",

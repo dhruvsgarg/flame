@@ -55,6 +55,7 @@ from flame.selector.oort import (
 )
 import functorch as fc
 import torch
+import glob
 
 from torch.nn import CrossEntropyLoss
 
@@ -93,7 +94,7 @@ class TopAggregator(SyncTopAgg):
 
         self.data_id = 0
         self.total_data_bins = 150
-        self.model_version = 1
+        self.model_version = 0
 
         self.grad_pool = []
         self.var = None
@@ -279,17 +280,20 @@ class TopAggregator(SyncTopAgg):
         logger.info(f"Came to read_trainer_unavailability, trace: {trace}")
         trainer_events_dict = {}
 
-        # Set path to read JSON files from (TODO: Remove hardcoding later)
+        # TODO(Aishwwarya): Set path to read JSON files without 'aish_test' after Twisha's PR merge
         files_path = "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
 
-        # Set range of trainer IDs to read from
-        trainer_start_num = 0
-        trainer_end_num = 49
+        dirname = os.path.dirname(__file__)
+        search_pattern = os.path.join(dirname, files_path, "trainer_*.json")
+        json_files = glob.glob(search_pattern)
 
-        for i in range(trainer_start_num, trainer_end_num + 1):
-            dirname = os.path.dirname(__file__)
-            file_path = os.path.join(dirname, files_path, f"trainer_{i}.json")
+        if not json_files:
+            logger.warning(f"No JSON files found matching pattern: {search_pattern}")
+            return {}
 
+        logger.info(f"Found {len(json_files)} JSON files to process.")
+        
+        for file_path in json_files:
             with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
@@ -1262,14 +1266,18 @@ class TopAggregator(SyncTopAgg):
 
         total = 0
 
-        num_min_req = 5 # change hardcoding, set it to aggGoal
+        num_min_req = self._agg_goal # change hardcoding, set it to aggGoal
         logger.info(f"Total ends: {len(recv_ends)}, required : {num_min_req}")
         num_min_req = min(num_min_req, len(recv_ends))
         if self.ends_not_selected_yet:
             # this is inefficient, but it will work
             # can improve this by tracking how many clients need to be freed up
+            # If weights were not distributed in this iteration, async read messages from 
+            # one trainer until required trainers are available to distribute weights to
+            # while maintaining concurrency.
+            # This is best effort sync aggregation, if agg goal is not met, we default to async.
             logger.info(f"We are waiting to clear up queue")
-            num_min_req = min(num_min_req,1) # need min 2 for var to be calculated
+            num_min_req = min(num_min_req,1) 
 
         # receive local model parameters from trainers
         for msg, metadata in channel.recv_fifo(channel.ends(), num_min_req):
@@ -1281,15 +1289,15 @@ class TopAggregator(SyncTopAgg):
             if MessageType.MODEL_VERSION in msg:
                 version = msg[MessageType.MODEL_VERSION]
 
-            if self.reject_stale_updates == True:
-                if version != self.model_version:
-                    logger.info(
-                        f"Rejecting trainer update from {end} of version {version}, "
-                        f"agg self.model_version: {self.model_version}. Will return."
-                    )
-                    channel.cleanup_recvd_end(end)
-                    # channel._selector.ordered_updates_recv_ends.append(end)
-                    continue
+                if self.reject_stale_updates == True:
+                    if version != self.model_version:
+                        logger.info(
+                            f"Rejecting trainer update from {end} of version {version}, "
+                            f"agg self.model_version: {self.model_version}. Will return."
+                        )
+                        channel.cleanup_recvd_end(end)
+                        # channel._selector.ordered_updates_recv_ends.append(end)
+                        continue
 
             if (
                 MessageType.GRADIENTS in msg
@@ -1403,16 +1411,16 @@ class TopAggregator(SyncTopAgg):
                 if MessageType.MODEL_VERSION in msg:
                     version = msg[MessageType.MODEL_VERSION]
 
-                if self.reject_stale_updates == True:
-                    if version != self.model_version:
-                        logger.info(
-                            f"Rejecting trainer update from {end} of version {version}, "
-                            f"agg self.model_version: {self.model_version}. Will return."
-                        )
-                        # num_freed += 1
-                        channel.cleanup_recvd_end(end)
-                        # channel._selector.ordered_updates_recv_ends.append(end)
-                        continue
+                    if self.reject_stale_updates == True:
+                        if version != self.model_version:
+                            logger.info(
+                                f"Rejecting trainer update from {end} of version {version}, "
+                                f"agg self.model_version: {self.model_version}. Will return."
+                            )
+                            # num_freed += 1
+                            channel.cleanup_recvd_end(end)
+                            # channel._selector.ordered_updates_recv_ends.append(end)
+                            continue
 
                 if (
                     MessageType.GRADIENTS in msg
@@ -1568,7 +1576,7 @@ class TopAggregator(SyncTopAgg):
                 self._round += 1
                 self.data_id = 0
                 channel.set_property("round", self._round)
-            if self.config.hyperparameters.model_version_increment_per_update:
+            if self.config.hyperparameters.inc_model_version_per_data_id:
                 self.model_version += 1
                 logger.info(f"incrementing model version to {self.model_version} now, round id: {self._round}")
             else:

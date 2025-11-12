@@ -139,7 +139,10 @@ class RandomSelector(AbstractSelector):
         channel_props: dict[str, Scalar],
         task_to_perform: str = "train",
     ) -> SelectorReturnType:
-        """Return k number of ends from the given ends."""
+        """Return ends from the given ends to maintain concurrency self.c.
+        If it is not possible to maintain concurrency, fails fast and selects none.
+        It is left to the aggregator to make ends available for future selection.
+        """
         logger.debug("calling random select")
         # self.requester = channel_props[KEY_CH_SELECT_REQUESTER] if
         # self.requester not in self.selected_ends:
@@ -158,11 +161,11 @@ class RandomSelector(AbstractSelector):
         
         logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
-        blocked_trainers = len(set(self.selected_ends))
-        con  = min(len(ends), self.c - blocked_trainers)
-        logger.info(f"Waiting on {blocked_trainers}, need {con} more to maintain concurrency {self.c}")
-        if len(ends) < con:
-            logger.info(f"not enough ends, need atleast {con}")
+        trainers_in_use_cnt = len(set(self.selected_ends))
+        concurrency  = min(len(ends), self.c - trainers_in_use_cnt)
+        logger.info(f"Waiting on {trainers_in_use_cnt}, need {concurrency} more to maintain concurrency {self.c}")
+        if len(ends) < concurrency:
+            logger.info(f"not enough ends, need atleast {concurrency}")
             time.sleep(0.1)
             return {}
 
@@ -174,34 +177,33 @@ class RandomSelector(AbstractSelector):
             logger.warning(f"round not found in channel_props: {channel_props}. Defaulting to 0")
         
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-                req = 0
 
-                already_in_use = self.selected_ends
-                logger.info(f"already_in_use: {already_in_use}")
+                trainers_in_use = self.selected_ends
+                logger.info(f"already_in_use: {trainers_in_use}")
                 new_selection = set()
                 for end_ in ends.keys():
-                    if end_ not in already_in_use:
+                    if end_ not in trainers_in_use:
                         curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
                         logger.info(f"state of {end_} : {curr_end_id_avl_state}")
                         if curr_end_id_avl_state in (TrainerAvailState.AVL_TRAIN.value, None):
                             new_selection.add(end_)
-                            req +=1
-                            if req == con:
-                                break
                         else:
                             logger.info(f"state of {end_} is not avail, skipping ")
                             continue
 
 
-                logger.info(f"new_selection: {new_selection}")
+                logger.info(f"available ends: {new_selection}")
 
-                if len(new_selection) < con:
+                if len(new_selection) < concurrency:
                     time.sleep(0.1)
                     # cannot handle concurrency, wait further to clear and reselect
-                    logger.info(f" {len(new_selection)} new selection less than concurrency {con}")
+                    logger.info(f" {len(new_selection)} new selection less than concurrency {concurrency}")
                     return {}
+                
+                candidates = set(random.sample(list(new_selection), concurrency))
+                logger.info(f"new selected ends: {candidates}")
 
-                self.selected_ends = set(self.selected_ends).union(new_selection)
+                self.selected_ends = set(self.selected_ends).union(candidates)
                 if round> self.round:
                     self.round = round
 
@@ -224,7 +226,10 @@ class RandomSelector(AbstractSelector):
         trainer_unavail_list: list,
         task_to_perform: str = "train",
     ) -> SelectorReturnType:
-        """Return c number of ends from the given ends."""
+        """Return ends from the given ends to maintain concurrency self.c.
+        If it is not possible to maintain concurrency, fails fast and selects none.
+        It is left to the aggregator to make ends available for future selection.
+        """
         logger.debug("calling random select")
         # self.requester = channel_props[KEY_CH_SELECT_REQUESTER] if
         # self.requester not in self.selected_ends:
@@ -243,11 +248,11 @@ class RandomSelector(AbstractSelector):
         
         logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
-        blocked_trainers = len(set(self.selected_ends))
-        con  = min(len(ends), self.c - blocked_trainers)
-        logger.info(f"Waiting on {blocked_trainers}, need {con} more to maintain concurrency {self.c}")
-        if len(ends) < con:
-            logger.info(f"not enough ends, need atleast {con}")
+        trainers_in_use_cnt = len(set(self.selected_ends))
+        concurrency  = min(len(ends), self.c - trainers_in_use_cnt)
+        logger.info(f"Waiting on {trainers_in_use_cnt}, need {concurrency} more to maintain concurrency {self.c}")
+        if len(ends) < concurrency:
+            logger.info(f"not enough ends, need atleast {concurrency}")
             time.sleep(0.1)
             return {}
 
@@ -261,35 +266,33 @@ class RandomSelector(AbstractSelector):
             logger.warning(f"round not found in channel_props: {channel_props}. Defaulting to 0")
         
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-                req = 0
-
-                already_in_use = self.selected_ends
-                logger.info(f"already_in_use: {already_in_use}")
+                trainers_in_use = self.selected_ends
+                logger.info(f"already_in_use: {trainers_in_use}")
                 new_selection = set()
                 for end_ in ends.keys():
-                    if end_ not in already_in_use:
+                    if end_ not in trainers_in_use:
                         curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
                         logger.info(f"state of {end_} : {curr_end_id_avl_state}")
                         if curr_end_id_avl_state in (TrainerAvailState.AVL_TRAIN.value, None):
                             if  end_ not in trainer_unavail_list:
                                 new_selection.add(end_)
-                                req +=1
-                                if req == con:
-                                    break
                         else:
                             logger.info(f"state of {end_} is not avail, skipping ")
                             continue
                         
                 
-                logger.info(f"new_selection: {new_selection}")
+                logger.info(f"available ends: {new_selection}")
 
-                if len(new_selection) < con:
+                if len(new_selection) < concurrency:
                     time.sleep(0.1)
                     # cannot handle concurrency, wait further to clear and reselect
-                    logger.info(f" {len(new_selection)} new selection less than concurrency {con}")
+                    logger.info(f" {len(new_selection)} new selection less than concurrency {concurrency}")
                     return {}
                 
-                self.selected_ends = set(self.selected_ends).union(new_selection)
+                candidates = set(random.sample(list(new_selection), concurrency))
+                logger.info(f"new selected ends: {candidates}")
+                
+                self.selected_ends = set(self.selected_ends).union(candidates)
                 if round> self.round:
                     self.round = round
 
