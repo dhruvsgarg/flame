@@ -115,8 +115,9 @@ class TopAggregator(AsyncTopAgg):
         self._optimizer_sort_value = self.config.optimizer.sort
         OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF, )
         self._weighted_aggregation_enabled = (self._optimizer_sort_value in OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION)
-        logger.info(f"Setting rate=1.0 for all updates because optimizer.sort is "
-                    f"{self._optimizer_sort_value}; weighted aggregation only supported by {OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION}.")
+        if not self._weighted_aggregation_enabled:
+            logger.info(f"Setting rate=1.0 for all updates because optimizer.sort is "
+                        f"{self._optimizer_sort_value}; weighted aggregation only supported by {OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION}.")
         # variables related to checking trainer availability
         self._per_trainer_last_heartbeat_ts = {}
         if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
