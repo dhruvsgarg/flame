@@ -482,7 +482,7 @@ class TopAggregator(AsyncTopAgg):
             self.aggregate_grads_from_trainers(
                 trainer_gradients,
                 version_for_rate=version_for_rate,
-                stat_utility=stat_utility_val,
+                stat_utility=channel.get_end_property(end, PROP_STAT_UTILITY),
                 grad_for_var_check=grad_for_var_check,
             )
             
