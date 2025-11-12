@@ -202,15 +202,15 @@ class Channel(object):
                     self.trainer_unavail_list,
                     task_to_perform,
                 )
-                logger.debug(f"selected: {selected}")
-                if len(selected) is 0:
+                logger.debug(f"trainer unavail list available, selected: {selected}")
+                if len(selected) == 0:
                     return
             else:
                 selected = self._selector.select(
                     self._ends, self.properties, task_to_perform
                 )
-                logger.debug(f"selected: {selected}")
-                if len(selected) is 0:
+                logger.debug(f"trainer unavail list not available, selected: {selected}")
+                if len(selected) == 0:
                     return
             logger.debug(
                 f"selected for task {task_to_perform} and returned from select(): {selected}"
