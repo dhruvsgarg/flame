@@ -116,17 +116,8 @@
     }
     },
     "optimizer": {
-        "sort": "fedbuff",
-        "kwargs": {
-            "use_oort_lr": "True",
-            "dataset_name": "cifar-10",
-            "agg_rate_conf": {
-                "type": "new",
-                "scale": 1.0,
-                "a_exp": 0.2,
-                "b_exp": 0.1
-            }
-        }
+        "sort": "fedavg",
+        "kwargs": {}
     },
     "maxRunTime": 600,
     "realm": "default",
