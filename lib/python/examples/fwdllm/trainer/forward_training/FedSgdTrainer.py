@@ -9,6 +9,10 @@ import os
 import numpy as np
 from datetime import datetime
 
+from flame.monitor.runtime import FwdLLMStage, timer_decorator
+import flame.monitor.runtime
+import math
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,7 +152,7 @@ class FedSGDTrainer(Trainer):
         self.device = device
 
         # abstract attributes
-        self.loss_fn = None
+        self.loss_fn = torch.nn.CrossEntropyLoss
         self.dataset_size = None
         self.model = model_trainer.model
         # NRL adding new variables
@@ -157,6 +161,12 @@ class FedSGDTrainer(Trainer):
         self.total_data_bins = None
         self.grad_for_var_check = None
         self.data_written_to_file = False  # Flag to prevent writing data multiple times
+        setattr(self.trainer.model_trainer, "base_trainer", self) # for accessing FedSGDTrainer methods inside model_trainer - stat utility
+
+        # Check if client will emulate delays in training time
+        self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
+        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        self.speedup_factor = 1.0
 
     def _write_client_data_to_file(self, client_id, train_data, round_idx=None):
         """Write all training data for a client to a JSON file"""
@@ -253,6 +263,7 @@ class FedSGDTrainer(Trainer):
             f"Task_id: {self.trainer_id} initialize completed at timestamp: "
             f"{time.time()}"
         )
+        self.init_oort_variables() #initialize oort variables for stat_utility calculation (fwdllm)
 
     def update_model(self, weights):
         # logger.info(f"NRL: Updated model weights: {weights}")
@@ -292,7 +303,11 @@ class FedSGDTrainer(Trainer):
 
         return weights, self.local_sample_number
 
+    @timer_decorator
     def train_with_data_id(self):
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, self.trainer_id)
+
         if self.abort_training == True:
             logger.info(f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}")
             return
@@ -302,6 +317,8 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
+
+        self.reset_stat_utility() #reset stat_utility for this databin (fwdllm)
         
         # List Index to be used in case of both sync and async version.
         # In sync model version = round hence, Index = model version
@@ -313,6 +330,17 @@ class FedSGDTrainer(Trainer):
             
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
         logger.debug(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
+
+        # emulate delays in training (due to compute resource and/or
+        # dataset size and/or network latency)
+        if self.training_delay_enabled == "True":
+            # Eval is 3X faster than training on CPU
+            # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
+            eval_delay = self.training_delay_s / 3.0
+            time.sleep(eval_delay / self.speedup_factor)
+            logger.info(
+                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s. Sleeping for {eval_delay / self.speedup_factor}s."
+            )
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"

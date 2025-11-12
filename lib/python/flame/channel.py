@@ -29,6 +29,7 @@ from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
 from flame.mode.message import MessageType
 from flame.mode.role import Role
+from flame.monitor.runtime import timer_decorator
 import gzip
 import zstandard as zstd
 import sys
@@ -178,13 +179,16 @@ class Channel(object):
         return end_list[0] if len(end_list) > 0 else None
 
     def ends(
-        self, state: Union[None, str] = None, task_to_perform: str = "train"
+        self, state: Union[None, str] = None, task_to_perform: str = "train", 
+        curr_triplet: tuple[int, int, int] = None,
+        trainer_state_dict: dict[str, tuple[int, int, int]] = None,
     ) -> list[str]:
         """Return a list of end ids."""
         logger.info(
             f"ends() for channel name: {self._name}, "
             f"current self._ends: {self._ends}"
         )
+
         if state == VAL_CH_STATE_RECV or state == VAL_CH_STATE_SEND:
             self.properties[KEY_CH_STATE] = state
 
@@ -198,17 +202,24 @@ class Channel(object):
 
             if self.trainer_unavail_list is not None and self.trainer_unavail_list != []:
                 selected = self._selector.select(
-                    self._ends,
-                    self.properties,
-                    self.trainer_unavail_list,
-                    task_to_perform,
+                    ends= self._ends,
+                    channel_props = self.properties,
+                    trainer_unavail_list = self.trainer_unavail_list,
+                    task_to_perform = task_to_perform,
+                    curr_triplet = curr_triplet, 
+                    trainer_state_dict = trainer_state_dict,
                 )
                 logger.info(f"selected: {selected}")
                 if len(selected) is 0:
                     return
             else:
                 selected = self._selector.select(
-                    self._ends, self.properties, task_to_perform
+                    ends= self._ends,
+                    channel_props = self.properties,
+                    trainer_unavail_list = [],
+                    task_to_perform = task_to_perform,
+                    curr_triplet = curr_triplet, 
+                    trainer_state_dict = trainer_state_dict,
                 )
                 logger.info(f"selected: {selected}")
                 if len(selected) is 0:
@@ -249,7 +260,7 @@ class Channel(object):
        
 
 
-    def cleanup_recvd_ends_for_stale_updates(self, end_ids_to_cleanup: list[str]):
+    def cleanup_provided_ends(self, end_ids_to_cleanup: list[str]):
         """Cleans up ends which have sent stale updates."""
         if isinstance(end_ids_to_cleanup, str):
             end_ids_to_cleanup = [end_ids_to_cleanup]

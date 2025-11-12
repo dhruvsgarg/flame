@@ -83,3 +83,7 @@ lib/python/examples/fwdllm/expts/run_tc_expts/mpi_host_file
 scripts/logs/*
 scripts/plotters/output/*
 scripts/plotters/plots/*
+
+
+# Local json files (fwdllm) - populated with $USER - do not commit
+/tmp_expanded_configs_*
