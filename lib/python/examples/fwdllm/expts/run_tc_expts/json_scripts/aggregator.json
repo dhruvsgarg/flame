@@ -87,7 +87,7 @@
         },
         "aggGoal": 10 ,
         "rounds": 300,
-        "rejectStaleUpdates": "True"
+        "rejectStaleUpdates": false
     },
     "baseModel": {
         "name": "",
@@ -105,7 +105,7 @@
     "sort": "async_oort",
     "kwargs": {
         "//": "c: concurrency level",
-        "c": 30,
+        "c": 50,
         "aggGoal": 10,
         "evalGoalFactor": 0.5,
         "selectType": "default",
@@ -123,7 +123,7 @@
             "agg_rate_conf": {
                 "type": "new",
                 "scale": 1.0,
-                "a_exp": 0.5,
+                "a_exp": 0.2,
                 "b_exp": 0.1
             }
         }
