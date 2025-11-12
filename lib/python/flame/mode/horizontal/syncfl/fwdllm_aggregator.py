@@ -1400,6 +1400,7 @@ class TopAggregator(SyncTopAgg):
                 break
 
         # second loop to poll more if needed
+        # TODO(Aishwwarya): This stalls indefinitely when we have distributed weights but there are no more update to read.
         num_freed = 0 # if at least one is freed, exit loop
         while self._agg_goal_cnt < self._agg_goal and not self.ends_not_selected_yet: 
             for msg, metadata in channel.recv_fifo(channel.ends(), 1):
