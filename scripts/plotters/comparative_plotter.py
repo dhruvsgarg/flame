@@ -12,20 +12,35 @@ BATCHES_PER_EPOCH = 150
 LINE_WIDTH = 1.5
 
 MIN_MAX_DISABLED = True
+STOP_LINE_AT_MISSING_DATA = True  # If True, lines stop at missing data instead of forward-filling
+X_AXIS_END_AT_SHORTEST = True  # If True, x-axis ends at shortest system's max x-value; if False, extends to longest system's max x-value
 
 # SYSTEM1_FILES = ["flame_run1.csv", "flame_run2.csv", "flame_run3.csv"]
 # SYSTEM1_NAME = "Flame"
 # SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
 # SYSTEM2_NAMES = "FwdLLM"
 
-# SYSTEM1_FILES = ["output/21Sept_evaluation_metrics.csv"]
-# SYSTEM1_FILES = ["output/test_agg_fedFwd_distilbert_agnews_lr_client_num__numerical_25_10_12_21.csv"]
-SYSTEM1_FILES = ["output/eval_agg_wash_rnds3.5_acc86_25_10_12_21_sample_iter142.csv"]
-SYSTEM1_NAME = "SyncFL (no stagglers)"
-# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics.csv"]
-# SYSTEM2_FILES = ["output/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.csv"]
-SYSTEM2_FILES = ["output/eval_agg_rnd1_acc75_delayBy3_25_10_01_34.csv"]
-SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 3)"
+# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn20-discard_stale.csv"]
+# SYSTEM1_NAME = "Stale discarded"
+# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn10-weight_stale_norm_k.csv"]
+# SYSTEM1_NAME = "Sync with stale weighted aggregation (norm = k)"
+# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn10-weight_stale_norm_weights.csv"]
+# SYSTEM1_NAME = "Sync with stale weighted aggregation (norm = weights)"
+# SYSTEM1_FILES = ["output/async_k10_c30_n100-weight_stale_norm_k.csv"]
+SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stale_norm_k.csv"]
+SYSTEM1_NAME = "Async with weighted stale aggregation (norm=k)"
+SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stat_utility.csv"]
+SYSTEM1_NAME = "Async with weighted stat_utility"
+# SYSTEM1_FILES = ["output/"]
+# SYSTEM1_NAME = "Async with stale weighted aggregation (norm = k)"
+
+# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
+# SYSTEM2_NAMES = "client reselection for each model update"
+# SYSTEM2_FILES = ["output/unavail_k5_c7_n50_syn20-keep_stale.csv"]
+# SYSTEM2_NAME = "Sync with stale aggregated (overselection)"
+# SYSTEM2_FILES = ["output/async_k10_c30_n100-keep_stale.csv"]
+SYSTEM2_FILES = ["output/async_k10_c50_n150-keep_stale.csv"]
+SYSTEM2_NAME = "Async with stale updates"
 
 # SYSTEM2_FILES = ["output/eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv"]
 # SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 20)"
@@ -200,18 +215,28 @@ def plot_comparison_chart(
         interpolate = True
     elif plot_type == 'batch':
         x_data_key, y_data_key = 'Unique_Mini_Batch_ID', 'Accuracy'
-        x_label, y_label = 'Mini-Batch ID/ Model Version', 'Test Accuracy'
+        x_label, y_label = 'Model Version (Mini-Batch ID)', 'Test Accuracy'
         interpolate = False
     elif plot_type == 'time_vs_batch':
         x_data_key, y_data_key = 'Time_Since_Start', 'Unique_Mini_Batch_ID'
-        x_label, y_label = 'Time Since Start (Minutes)', 'Mini-Batch ID/ Model Version'
+        x_label, y_label = 'Time Since Start (Minutes)', 'Model Version (Mini-Batch ID)'
         interpolate = True
     else:
         raise ValueError("plot_type must be 'time', 'batch', or 'time_vs_batch'.")
 
-    # Combine all x-axis data to determine the plot range
+    # Determine the plot range based on per-system maximums
+    # Calculate max x-value for each system
+    system1_max_x = max([df[x_data_key].max() for df in system1_runs if not df[x_data_key].empty], default=0)
+    system2_max_x = max([df[x_data_key].max() for df in system2_runs if not df[x_data_key].empty], default=0)
+    
+    # Use min or max of per-system maximums based on X_AXIS_END_AT_SHORTEST
+    if X_AXIS_END_AT_SHORTEST:
+        max_x = min(system1_max_x, system2_max_x)
+    else:
+        max_x = max(system1_max_x, system2_max_x)
+    
+    # Also keep all_x_data for other calculations (e.g., interpolation points)
     all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
-    max_x = np.max(all_x_data) if all_x_data else 0
     
     # Determine interpolation points (if required)
     if interpolate:
@@ -225,6 +250,8 @@ def plot_comparison_chart(
     else:
         # For 'batch' plot, use the union of all unique batch IDs
         all_batches = sorted(list(set(all_x_data)))
+        # Filter to only include batch IDs up to max_x (which respects X_AXIS_END_AT_SHORTEST)
+        all_batches = [b for b in all_batches if b <= max_x]
         common_x_grid = np.array(all_batches)
 
     # 3. Process runs to get Y-values corresponding to the common X-grid
@@ -241,19 +268,33 @@ def plot_comparison_chart(
                 # Only interpolate within the range of observed x. Beyond that, forward fill
                 x_obs = sorted_df[x_data_key].values
                 y_obs = sorted_df[y_data_key].values
+                max_x_obs = np.max(x_obs)  # Maximum x-value for this specific run
 
                 # print(f"x size: {len(x_obs)}, y size: {len(y_obs)}, y[-1]: {y_obs[-1]}")
 
+                # Determine right boundary behavior based on STOP_LINE_AT_MISSING_DATA
+                if STOP_LINE_AT_MISSING_DATA:
+                    right_val = np.nan  # Stop the line at missing data
+                else:
+                    right_val = y_obs[-1]  # Forward fill with last value
+                
                 y_interp = np.interp(
                     common_x_grid, x_obs, y_obs,
-                    left=0, right = y_obs[-1]           # Forward filling values to the right
-                    # right=np.nan
+                    left=0, right=right_val
                 )
+
+                # When STOP_LINE_AT_MISSING_DATA is True, set values to NaN for points beyond this run's max x-value
+                if STOP_LINE_AT_MISSING_DATA:
+                    y_interp[common_x_grid > max_x_obs] = np.nan
+
                 y_processed = y_interp
                 # print(f"Interpolated points: {y_processed}")
             else:
-                # Align data to the common batch ID set (using previous value if missing)
-                df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid).ffill()
+                # Align data to the common batch ID set
+                df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid)
+                if not STOP_LINE_AT_MISSING_DATA:
+                    # Forward fill missing values to extend the line
+                    df_temp = df_temp.ffill()
                 y_processed = df_temp.values
             
             processed_y_values.append(y_processed)
@@ -261,15 +302,25 @@ def plot_comparison_chart(
 
     # 4. Calculate Mean and Min/Max for the Y-axis data
     s1_processed_y = process_runs(system1_runs)
-    s1_mean = np.mean(s1_processed_y, axis=0)
-    s1_upper_bound = np.max(s1_processed_y, axis=0)
-    s1_lower_bound = np.min(s1_processed_y, axis=0)
+    if STOP_LINE_AT_MISSING_DATA:
+        s1_mean = np.nanmean(s1_processed_y, axis=0)
+        s1_upper_bound = np.nanmax(s1_processed_y, axis=0)
+        s1_lower_bound = np.nanmin(s1_processed_y, axis=0)
+    else:
+        s1_mean = np.mean(s1_processed_y, axis=0)
+        s1_upper_bound = np.max(s1_processed_y, axis=0)
+        s1_lower_bound = np.min(s1_processed_y, axis=0)
 
     # System 2
     s2_processed_y = process_runs(system2_runs)
-    s2_mean = np.mean(s2_processed_y, axis=0)
-    s2_upper_bound = np.max(s2_processed_y, axis=0)
-    s2_lower_bound = np.min(s2_processed_y, axis=0)
+    if STOP_LINE_AT_MISSING_DATA:
+        s2_mean = np.nanmean(s2_processed_y, axis=0)
+        s2_upper_bound = np.nanmax(s2_processed_y, axis=0)
+        s2_lower_bound = np.nanmin(s2_processed_y, axis=0)
+    else:
+        s2_mean = np.mean(s2_processed_y, axis=0)
+        s2_upper_bound = np.max(s2_processed_y, axis=0)
+        s2_lower_bound = np.min(s2_processed_y, axis=0)
 
     # 5. Plotting (Using default style for better custom axis control)
     plt.style.use('default')
@@ -302,10 +353,20 @@ def plot_comparison_chart(
     y_tick_count = y_tick_count if y_tick_count is not None else DEFAULT_Y_TICK_COUNT
     
     # Y-axis range (find global min/max across all runs/systems)
-    global_min_y = min(np.min(s1_lower_bound), np.min(s2_lower_bound))
-    global_max_y = max(np.max(s1_upper_bound), np.max(s2_upper_bound))
+    if STOP_LINE_AT_MISSING_DATA:
+        global_min_y = min(np.nanmin(s1_lower_bound), np.nanmin(s2_lower_bound))
+        global_max_y = max(np.nanmax(s1_upper_bound), np.nanmax(s2_upper_bound))
+    else:
+        global_min_y = min(np.min(s1_lower_bound), np.min(s2_lower_bound))
+        global_max_y = max(np.max(s1_upper_bound), np.max(s2_upper_bound))
 
     # Add a small buffer (5% padding) to the Y range
+    # Handle NaN values (can occur when STOP_LINE_AT_MISSING_DATA is True and all data is missing)
+    if np.isnan(global_min_y) or np.isnan(global_max_y):
+        print("Warning: All data points are missing. Using default Y-axis range.")
+        global_min_y = 0
+        global_max_y = 1
+    
     y_range = global_max_y - global_min_y
     buffer = y_range * 0.05 if y_range > 0 else 1
     min_y = max(0, global_min_y - buffer)
@@ -352,7 +413,7 @@ def plot_comparison_chart(
     axes.set_title(f'Performance Comparison: {system1_label} vs {system2_label}')
     axes.set_xlabel(x_label)
     axes.set_ylabel(y_label)
-    axes.legend(loc='upper right')
+    axes.legend(loc='lower right')
     plt.tight_layout()
 
     file_name = f'{plot_type}_comparison.png'
@@ -371,7 +432,7 @@ if __name__ == "__main__":
         system2_label=SYSTEM2_NAME,
         plot_type='time',
         x_tick_count=10,
-        y_tick_count=5
+        y_tick_count=10
     )
 
     # Example usage for the new 'batch' plot (no interpolation):
@@ -381,7 +442,8 @@ if __name__ == "__main__":
         system2_files=SYSTEM2_FILES,
         system2_label=SYSTEM2_NAME,
         plot_type='batch',
-        x_tick_count=10
+        x_tick_count=10,
+        y_tick_count=10
     )
 
     # Example usage for the new 'time_vs_batch' plot:
@@ -392,5 +454,5 @@ if __name__ == "__main__":
         system2_label=SYSTEM2_NAME,
         plot_type='time_vs_batch',
         x_tick_count=10,
-        y_tick_count=5
+        y_tick_count=10
     )

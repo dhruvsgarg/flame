@@ -641,16 +641,16 @@ if __name__ == '__main__':
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")     # This is also delayed
     # log_file = Path(
     #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
-    log_file = Path(
-        "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.log")
-    row_proc_steps = [
-        create_time_calculator_processor(start_log_name='train_time'),
-        create_numeric_id_processor(
-            source_col='trainer_id', dest_col='trainer_num'),
-        create_cumulative_sum_processor(
-            group_key_col='trainer_id', target_cols=['recv_weights_time']),
-        populate_model_version(),
-    ]
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.log")
+    # row_proc_steps = [
+    #     create_time_calculator_processor(start_log_name='train_time'),
+    #     create_numeric_id_processor(
+    #         source_col='trainer_id', dest_col='trainer_num'),
+    #     create_cumulative_sum_processor(
+    #         group_key_col='trainer_id', target_cols=['recv_weights_time']),
+    #     populate_model_version(),
+    # ]
 
     # log_file_type = "flame_fwdllm_trainer_old"
     # log_file = Path(
@@ -697,16 +697,31 @@ if __name__ == '__main__':
 
     ################### Aggregator
     log_file_type = "flame_fwdllm_aggregator"
-    log_file = Path(
-        "../logs/agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.log")
     # log_file = Path(
-    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_21_09_04_04.log")
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_06_11_02_08.log")
+    # suffix = "keep_stale"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_10_11_14_46.log")
+    # suffix = "weight_stale_norm_k"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c30_n100-{suffix}.csv'
+    
+    log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_02_23.log")
+    suffix = "weight_stale_norm_k"
+    log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_03_28.log")
+    suffix = "keep_stale"
+    log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_00_58.log")
+    suffix = "weight_stat_utility"
+    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c50_n150-{suffix}.csv'
 
     # log_file = Path(
-    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
-
-    # log_file = Path(
-    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_05_11_22_44.log")
+    # suffix = "discard_stale"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_07_11_21_28.log")
+    # suffix = "weight_stale_norm_k"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_11_09_40.log")
+    # suffix = "weight_stale_norm_weights"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_11_20_55.log")
+    # suffix = "keep_stale"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'unavail_k5_c7_n50_syn10-{suffix}.csv'
     row_proc_steps = [
         create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
         create_time_calculator_processor(start_log_name='first_distribute_weights'),
@@ -715,37 +730,37 @@ if __name__ == '__main__':
     df_proc_steps = []
     
     ############## Async-Cifar-10
-    log_file_type = "Async-Cifar-10"
+    # log_file_type = "Async-Cifar-10"
 
-    log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
+    # log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
 
-    # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
-    # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
-    # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
-    oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
-    felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
+    # # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
+    # # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
+    # # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
+    # oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
+    # felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
 
-    oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
-    suffix = "oort_async_oracular"
-    EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
+    # oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
+    # suffix = "oort_async_oracular"
+    # EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
 
-    log_file = Path(oort_async_oracular_syn0_comm)
-    row_proc_steps = []
-    df_proc_steps = [
-        # Step 1: Generate the summary counts
-        create_summarization_processor(
-            group_by_col='log_name',
-            aggregations={
-                'timestamp': 'count',
-                # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
-            },
-        ),
-        # Step 2: Apply the custom OORT logic
-        apply_oort_comm_fix(
-            group_by_col='log_name', # <-- Pass the col that was grouped on
-            concurrency=13
-        ),
-    ]
+    # log_file = Path(oort_async_oracular_syn0_comm)
+    # row_proc_steps = []
+    # df_proc_steps = [
+    #     # Step 1: Generate the summary counts
+    #     create_summarization_processor(
+    #         group_by_col='log_name',
+    #         aggregations={
+    #             'timestamp': 'count',
+    #             # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
+    #         },
+    #     ),
+    #     # Step 2: Apply the custom OORT logic
+    #     apply_oort_comm_fix(
+    #         group_by_col='log_name', # <-- Pass the col that was grouped on
+    #         concurrency=13
+    #     ),
+    # ]
     
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],
