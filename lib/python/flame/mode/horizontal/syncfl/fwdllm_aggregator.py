@@ -1,5 +1,3 @@
-# shreya
-
 # Copyright 2023 Cisco Systems, Inc. and its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -17,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Aysnc and SyncFL horizontal FL top level aggregator for FwdLLM."""
 
+#TODO: Shift is_async param to hyperparameters
 import gc
 import logging
 import psutil
@@ -529,6 +528,7 @@ class TopAggregator(AsyncTopAgg):
             logger.debug("Agg goal reached, so resetting trainer end states in the channel")
             channel.cleanup_recvd_ends()
 
+    #TODO: Refactor / rename and modify docstring
     def aggregate_and_collect(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
         # Create FwdLLMStage for timing/metrics logging
@@ -1236,7 +1236,6 @@ class TopAggregator(AsyncTopAgg):
             payload = None
             if self.var_good_enough == True:
                 logger.info(
-                    f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 
