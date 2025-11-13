@@ -733,7 +733,7 @@ class AsyncOortSelector(AbstractSelector):
 
         return utility_list
 
-    def _cleanup_single_end(self, ends_to_cleanup: dict[str, End], ends: dict[str, End]):
+    def _cleanup_provided_ends(self, ends_to_cleanup: dict[str, End], ends: dict[str, End]):
         """Clean-up a specific end so it becomes eligible for sampling again - reject stale updates in FwdLLM (async)"""
         
         selected_ends = self.selected_ends.get(self.requester, set())
@@ -744,7 +744,7 @@ class AsyncOortSelector(AbstractSelector):
             # reset only if it's in received state
             if state == VAL_END_STATE_RECVD:
                 ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                logger.info(
+                logger.debug(
                     f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
                     f"and"
                     f" removing from selected_ends and all_selected"
@@ -761,7 +761,7 @@ class AsyncOortSelector(AbstractSelector):
 
         # update the mapping back
         self.selected_ends[self.requester] = selected_ends
-        logger.info(f"Cleanup complete. Freed {len(ends_to_cleanup)} end(s) for resampling.")
+        logger.info(f"Cleanup complete. Freed [{ends}] end(s) for resampling; state set to {VAL_END_STATE_NONE}.")
 
 
 

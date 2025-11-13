@@ -314,7 +314,7 @@ class ForwardTextClassificationTrainer:
                         else:
                             logits = pred
                         loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
-                    logging.info(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
+                    logging.debug(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
 
                     if self.args.perturbation_sampling and v_buffer != {}:
                         v_params = [
@@ -394,7 +394,7 @@ class ForwardTextClassificationTrainer:
                     
                     if hasattr(self, "base_trainer"):
                         self.base_trainer.normalize_stat_utility(epoch)
-                        logging.info(f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}")
+                        logging.debug(f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}")
 
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]

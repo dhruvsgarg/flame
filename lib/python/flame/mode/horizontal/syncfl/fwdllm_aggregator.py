@@ -425,7 +425,7 @@ class TopAggregator(AsyncTopAgg):
             if MessageType.STAT_UTILITY in msg:
                 logger.info(
                     f"received stat_utility from {end} "
-                    f"msg[MessageType.STAT_UTILITY] {msg[MessageType.STAT_UTILITY]}"
+                    f"msg[MessageType.STAT_UTILITY] = {msg[MessageType.STAT_UTILITY]}"
                 )
                 channel.set_end_property(
                     end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
@@ -460,8 +460,8 @@ class TopAggregator(AsyncTopAgg):
 
             if version != self._model_version:
                 logger.info(
-                    f"Rejecting trainer update of version {version}, "
-                    f" self._model_version: {self._model_version}. Will return."
+                    f"Rejecting stale update with staleness: {self._model_version-version}. Trainer update version: {version}, "
+                    f" self._model_version: {self._model_version}"
                 )
                 channel.cleanup_provided_ends(end)
                 return

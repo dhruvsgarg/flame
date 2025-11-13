@@ -273,7 +273,7 @@ class Channel(object):
         # for end_id in ends_to_cleanup:
         #     logger.debug(f"Cleaning up end: {end_id} | end state: {self._ends[end_id].get_property(KEY_END_STATE)}")
 
-        self._selector._cleanup_single_end(ends_to_cleanup, self._ends)
+        self._selector._cleanup_provided_ends(ends_to_cleanup, self._ends)
         
         # for end_id in ends_to_cleanup:
         #     logger.debug(f"Cleanup end: {end_id} | end state: {self._ends[end_id].get_property(KEY_END_STATE)}")
