@@ -7,6 +7,8 @@ import setproctitle
 import torch
 import threading
 
+#TODO: Check the json and deprecate fields like client_num_per_round that may not be getting used
+
 # this is a temporal import, we will refactor FedML as a package installation
 # import wandb
 

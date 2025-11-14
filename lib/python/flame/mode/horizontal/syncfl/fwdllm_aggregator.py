@@ -1499,6 +1499,10 @@ class TopAggregator(AsyncTopAgg):
             logger.info("Inside sync aggregator")
             self._aggregate_grads_sync(tag)
 
+<<<<<<< HEAD
+=======
+#TODO: Cleanup compose loop
+>>>>>>> origin/dg-fork-main
     def compose(self) -> None:
         """Compose role with tasklets."""
         logger.info(f"Fetch is_async value from config:")

@@ -85,7 +85,11 @@
             "enabled": "False",
             "type": "NA"
         },
+<<<<<<< HEAD
         "aggGoal": 5,
+=======
+        "aggGoal": 10,
+>>>>>>> origin/dg-fork-main
         "rounds": 300,
         "rejectStaleUpdates": true,
         "inc_model_version_per_data_id": true
