@@ -85,7 +85,7 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 5,
+        "aggGoal": 10,
         "rounds": 300,
         "rejectStaleUpdates": true,
         "inc_model_version_per_data_id": true
