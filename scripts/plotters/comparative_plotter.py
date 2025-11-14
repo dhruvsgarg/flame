@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 # --- Global Constants for Dynamic Plot Configuration ---
 # Default ratio to determine interpolation points if not provided.
@@ -29,22 +30,30 @@ X_AXIS_END_AT_SHORTEST = True  # If True, x-axis ends at shortest system's max x
 # SYSTEM1_FILES = ["output/async_k10_c30_n100-weight_stale_norm_k.csv"]
 SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stale_norm_k.csv"]
 SYSTEM1_NAME = "Async with weighted stale aggregation (norm=k)"
-SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stat_utility.csv"]
-SYSTEM1_NAME = "Async with weighted stat_utility"
+# SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stat_utility.csv"]
+# SYSTEM1_NAME = "Async with weighted stat_utility"
 # SYSTEM1_FILES = ["output/"]
 # SYSTEM1_NAME = "Async with stale weighted aggregation (norm = k)"
+SYSTEM1_FILES = ["output/async_k10_c50_n150-reject_stale.csv"]
+SYSTEM1_NAME = "Async with stale rejections"
+
+SYSTEM2_FILES = ["output/sync_k10_c50_n150-reject_stale.csv"]
+SYSTEM2_NAME = "Sync with stale rejections"
 
 # SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
 # SYSTEM2_NAMES = "client reselection for each model update"
 # SYSTEM2_FILES = ["output/unavail_k5_c7_n50_syn20-keep_stale.csv"]
 # SYSTEM2_NAME = "Sync with stale aggregated (overselection)"
 # SYSTEM2_FILES = ["output/async_k10_c30_n100-keep_stale.csv"]
-SYSTEM2_FILES = ["output/async_k10_c50_n150-keep_stale.csv"]
-SYSTEM2_NAME = "Async with stale updates"
+# SYSTEM2_FILES = ["output/async_k10_c50_n150-keep_stale.csv"]
+# SYSTEM2_NAME = "Async with stale updates"
 
 # SYSTEM2_FILES = ["output/eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv"]
 # SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 20)"
 # -----------------------------------------------------
+
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
     """
@@ -229,11 +238,14 @@ def plot_comparison_chart(
     system1_max_x = max([df[x_data_key].max() for df in system1_runs if not df[x_data_key].empty], default=0)
     system2_max_x = max([df[x_data_key].max() for df in system2_runs if not df[x_data_key].empty], default=0)
     
+    min_x = min(system1_max_x, system2_max_x)
+    max_x = max(system1_max_x, system2_max_x)
     # Use min or max of per-system maximums based on X_AXIS_END_AT_SHORTEST
     if X_AXIS_END_AT_SHORTEST:
-        max_x = min(system1_max_x, system2_max_x)
-    else:
-        max_x = max(system1_max_x, system2_max_x)
+        if max_x > (min_x * 1.05):
+            max_x = min_x * 1.05    # Add 5% extra to show that the run ended early
+        else:
+            max_x = max_x
     
     # Also keep all_x_data for other calculations (e.g., interpolation points)
     all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
@@ -416,7 +428,9 @@ def plot_comparison_chart(
     axes.legend(loc='lower right')
     plt.tight_layout()
 
-    file_name = f'{plot_type}_comparison.png'
+    output_dir = Path("plots/")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    file_name = output_dir / f'{plot_type}_comparison.png'
     plt.savefig(file_name)
     # plt.show() # Disabled for production environment
 
