@@ -85,9 +85,10 @@
             "enabled": "False",
             "type": "NA"
         },
-        "aggGoal": 10 ,
+        "aggGoal": 10,
         "rounds": 300,
-        "rejectStaleUpdates": false
+        "rejectStaleUpdates": true,
+        "inc_model_version_per_data_id": true
     },
     "baseModel": {
         "name": "",

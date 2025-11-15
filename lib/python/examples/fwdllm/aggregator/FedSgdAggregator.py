@@ -83,7 +83,7 @@ class FedSGDAggregator(TopAggregator):
             self.track_trainer_avail["enabled"]
             and self.track_trainer_avail["type"] == "ORACULAR"
         ):
-            self.trainer_event_dict = self.read_trainer_unavailability()
+            self.trainer_event_dict = self.read_trainer_unavailability(self.track_trainer_avail["trace"])
             logger.info(f"self.trainer_event_dict:{ self.trainer_event_dict}")
       
         self.loss_list = []
@@ -123,7 +123,7 @@ class FedSGDAggregator(TopAggregator):
         logger.info(f"self.var = {self.var}")
 
         model_list = []
-        weighted_denominator = 0
+        training_num = 0
 
         # self.warmup_rounds = 20
         if current_round < self.warmup_rounds:
@@ -140,7 +140,7 @@ class FedSGDAggregator(TopAggregator):
         # Will use 0th grads from model_dict since worker_num = 1
         for idx in range(self.worker_num):
             model_list.append((self.sample_num_dict[idx], self.model_dict[idx]))
-            weighted_denominator += self.sample_num_dict[idx]
+            training_num += self.sample_num_dict[idx]
 
         # logger.info(f"len(model_list): {model_list}")
 
@@ -154,14 +154,14 @@ class FedSGDAggregator(TopAggregator):
             logger.info(f"len of cached v: {len(self.cached_v)}")
             for cached_v in self.cached_v:
                 model_list.append(cached_v)
-                weighted_denominator += cached_v[0]
-            logger.info(f"training_num : {weighted_denominator}")
+                training_num += cached_v[0]
+            logger.info(f"training_num : {training_num}")
 
         logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
 
         # old_param = self.get_global_model_params()
         old_param = self.trainer.model.parameters()
-        if (weighted_denominator == 0) :
+        if (training_num == 0) :
             logger.warning("Not updating the model, division by 0 error")
             return old_param
 
@@ -176,10 +176,11 @@ class FedSGDAggregator(TopAggregator):
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
             next(old_param).detach().to("cpu").sub_(
-                learning_rate * weighted_gradient_sum[id] / weighted_denominator
+                learning_rate * weighted_gradient_sum[id] / training_num
             )
         if self.args.var_control:
             if self.var <= self.var_threshold:
+                logger.debug("current model is good, variance under threshold")
                 self.var_good_enough = True
                 # 方差满足要求
                 self.cached_v = []
