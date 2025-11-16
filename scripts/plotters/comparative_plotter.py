@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+import warnings
 
 # --- Global Constants for Dynamic Plot Configuration ---
 # Default ratio to determine interpolation points if not provided.
@@ -16,48 +17,34 @@ MIN_MAX_DISABLED = True
 STOP_LINE_AT_MISSING_DATA = True  # If True, lines stop at missing data instead of forward-filling
 X_AXIS_END_AT_SHORTEST = True  # If True, x-axis ends at shortest system's max x-value; if False, extends to longest system's max x-value
 
-# SYSTEM1_FILES = ["flame_run1.csv", "flame_run2.csv", "flame_run3.csv"]
-# SYSTEM1_NAME = "Flame"
-# SYSTEM2_FILES = ["fwdllm_run1.csv", "fwdllm_run2.csv", "fwdllm_run3.csv"]
-# SYSTEM2_NAMES = "FwdLLM"
+# --- System-Agnostic Configuration ---
 
-# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn20-discard_stale.csv"]
-# SYSTEM1_NAME = "Stale discarded"
-# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn10-weight_stale_norm_k.csv"]
-# SYSTEM1_NAME = "Sync with stale weighted aggregation (norm = k)"
-# SYSTEM1_FILES = ["output/unavail_k5_c7_n50_syn10-weight_stale_norm_weights.csv"]
-# SYSTEM1_NAME = "Sync with stale weighted aggregation (norm = weights)"
-# SYSTEM1_FILES = ["output/async_k10_c30_n100-weight_stale_norm_k.csv"]
-SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stale_norm_k.csv"]
-SYSTEM1_NAME = "Async with weighted stale aggregation (norm=k)"
-# SYSTEM1_FILES = ["output/async_k10_c50_n150-weight_stat_utility.csv"]
-# SYSTEM1_NAME = "Async with weighted stat_utility"
-# SYSTEM1_FILES = ["output/"]
-# SYSTEM1_NAME = "Async with stale weighted aggregation (norm = k)"
-SYSTEM1_FILES = ["output/async_k10_c50_n150-reject_stale.csv"]
-SYSTEM1_NAME = "Async with stale rejections"
+# Define all systems and their corresponding run files in this dictionary.
+# Add as many systems as you need.
+SYSTEMS_DATA = {
+    "Async with smart (stale+stat_util) aggregation": [
+        "output/async_k10_c50_n150-weight_stale_and_stat_utility.csv"
+    ],
+    "Async with stale rejections": [
+        "output/async_k10_c50_n150-reject_stale.csv"
+    ],
+    "Async with weighted stale aggregation (norm=k)": [
+        "output/async_k10_c50_n150-weight_stale_norm_k.csv"
+    ]
+}
 
-SYSTEM2_FILES = ["output/sync_k10_c50_n150-reject_stale.csv"]
-SYSTEM2_NAME = "Sync with stale rejections"
+# Define colors for the system lines.
+# Colors will be assigned in the order systems are defined in SYSTEMS_DATA.
+# If there are more systems than colors, the list will wrap around.
+SYSTEM_COLORS = ['C0', 'red', 'green', 'purple', 'orange', 'brown']
 
-# SYSTEM2_FILES = ["output/19Oct_slow_straggler_evaluation_metrics_stalled.csv"]
-# SYSTEM2_NAMES = "client reselection for each model update"
-# SYSTEM2_FILES = ["output/unavail_k5_c7_n50_syn20-keep_stale.csv"]
-# SYSTEM2_NAME = "Sync with stale aggregated (overselection)"
-# SYSTEM2_FILES = ["output/async_k10_c30_n100-keep_stale.csv"]
-# SYSTEM2_FILES = ["output/async_k10_c50_n150-keep_stale.csv"]
-# SYSTEM2_NAME = "Async with stale updates"
-
-# SYSTEM2_FILES = ["output/eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv"]
-# SYSTEM2_NAME = "SyncFL (with stagglers) (Delay Factor = 20)"
 # -----------------------------------------------------
 
-import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 def round_nice_ticks(data_min, data_max, num_ticks_target):
     """
-    Calculates tick positions that are 'nice' round numbers (steps of 1, 2, or 5 
+    Calculates tick positions that are 'nice' round numbers (steps of 1, 2, or 5
     times a power of 10) based on the data range and a target number of ticks.
     This fixed logic reliably prevents non-clean steps like 333 or 999.
     """
@@ -191,29 +178,31 @@ def load_and_preprocess_data(file_list):
     return all_runs_dfs
 
 def plot_comparison_chart(
-    system1_files,
-    system1_label,
-    system2_files,
-    system2_label,
+    systems_data,
     plot_type='time', # 'time', 'batch', or 'time_vs_batch'
     x_tick_count=None,
     y_tick_count=None,
     explicit_interpolation_points=None
 ):
     """
-    Generates a comparative plot for two systems, handling interpolation 
+    Generates a comparative plot for N systems, handling interpolation
     and dynamic tick generation.
     """
-    # Set plot colors explicitly
-    color1 = 'C0' # Explicit Blue for System 1 (Flame)
-    color2 = 'red' # Explicit Red for System 2 (FwdLLM)
     
-    # 1. Load and Preprocess Data
-    system1_runs = load_and_preprocess_data(system1_files)
-    system2_runs = load_and_preprocess_data(system2_files)
+    # 1. Load and Preprocess Data for all systems
+    all_systems_runs = {}
+    all_runs_list = []
+    
+    for system_name, file_list in systems_data.items():
+        runs = load_and_preprocess_data(file_list)
+        if not runs:
+            print(f"Warning: No valid data loaded for system '{system_name}'. Skipping.")
+            continue
+        all_systems_runs[system_name] = runs
+        all_runs_list.extend(runs)
 
-    if not system1_runs or not system2_runs:
-        print("Not enough valid run data to compare.")
+    if not all_systems_runs:
+        print("No valid run data found for any system. Aborting plot.")
         return
     print('Data loaded successfully')
 
@@ -234,21 +223,27 @@ def plot_comparison_chart(
         raise ValueError("plot_type must be 'time', 'batch', or 'time_vs_batch'.")
 
     # Determine the plot range based on per-system maximums
-    # Calculate max x-value for each system
-    system1_max_x = max([df[x_data_key].max() for df in system1_runs if not df[x_data_key].empty], default=0)
-    system2_max_x = max([df[x_data_key].max() for df in system2_runs if not df[x_data_key].empty], default=0)
+    system_max_xs = []
+    for system_name, runs in all_systems_runs.items():
+        max_x_for_system = max([df[x_data_key].max() for df in runs if not df[x_data_key].empty], default=0)
+        system_max_xs.append(max_x_for_system)
+
+    if not system_max_xs:
+        print("No x-data found.")
+        return
+
+    min_x = min(system_max_xs)
+    max_x = max(system_max_xs)
     
-    min_x = min(system1_max_x, system2_max_x)
-    max_x = max(system1_max_x, system2_max_x)
     # Use min or max of per-system maximums based on X_AXIS_END_AT_SHORTEST
     if X_AXIS_END_AT_SHORTEST:
         if max_x > (min_x * 1.05):
-            max_x = min_x * 1.05    # Add 5% extra to show that the run ended early
+            max_x = min_x * 1.05  # Add 5% extra to show that the run ended early
         else:
             max_x = max_x
     
     # Also keep all_x_data for other calculations (e.g., interpolation points)
-    all_x_data = [t for df in system1_runs + system2_runs for t in df[x_data_key].tolist()]
+    all_x_data = [t for df in all_runs_list for t in df[x_data_key].tolist()]
     
     # Determine interpolation points (if required)
     if interpolate:
@@ -282,8 +277,6 @@ def plot_comparison_chart(
                 y_obs = sorted_df[y_data_key].values
                 max_x_obs = np.max(x_obs)  # Maximum x-value for this specific run
 
-                # print(f"x size: {len(x_obs)}, y size: {len(y_obs)}, y[-1]: {y_obs[-1]}")
-
                 # Determine right boundary behavior based on STOP_LINE_AT_MISSING_DATA
                 if STOP_LINE_AT_MISSING_DATA:
                     right_val = np.nan  # Stop the line at missing data
@@ -300,7 +293,6 @@ def plot_comparison_chart(
                     y_interp[common_x_grid > max_x_obs] = np.nan
 
                 y_processed = y_interp
-                # print(f"Interpolated points: {y_processed}")
             else:
                 # Align data to the common batch ID set
                 df_temp = df.set_index(x_data_key)[y_data_key].reindex(common_x_grid)
@@ -312,51 +304,63 @@ def plot_comparison_chart(
             processed_y_values.append(y_processed)
         return np.array(processed_y_values)
 
-    # 4. Calculate Mean and Min/Max for the Y-axis data
-    s1_processed_y = process_runs(system1_runs)
-    if STOP_LINE_AT_MISSING_DATA:
-        s1_mean = np.nanmean(s1_processed_y, axis=0)
-        s1_upper_bound = np.nanmax(s1_processed_y, axis=0)
-        s1_lower_bound = np.nanmin(s1_processed_y, axis=0)
-    else:
-        s1_mean = np.mean(s1_processed_y, axis=0)
-        s1_upper_bound = np.max(s1_processed_y, axis=0)
-        s1_lower_bound = np.min(s1_processed_y, axis=0)
+    # 4. Calculate Mean and Min/Max for the Y-axis data for all systems
+    processed_data = {}
+    
+    for system_name, runs in all_systems_runs.items():
+        processed_y = process_runs(runs)
+        
+        if processed_y.size == 0:
+            print(f"Warning: No processed Y-data for system '{system_name}'.")
+            processed_data[system_name] = {
+                'mean': np.array([]),
+                'lower': np.array([]),
+                'upper': np.array([])
+            }
+            continue
 
-    # System 2
-    s2_processed_y = process_runs(system2_runs)
-    if STOP_LINE_AT_MISSING_DATA:
-        s2_mean = np.nanmean(s2_processed_y, axis=0)
-        s2_upper_bound = np.nanmax(s2_processed_y, axis=0)
-        s2_lower_bound = np.nanmin(s2_processed_y, axis=0)
-    else:
-        s2_mean = np.mean(s2_processed_y, axis=0)
-        s2_upper_bound = np.max(s2_processed_y, axis=0)
-        s2_lower_bound = np.min(s2_processed_y, axis=0)
+        if STOP_LINE_AT_MISSING_DATA:
+            mean = np.nanmean(processed_y, axis=0)
+            upper = np.nanmax(processed_y, axis=0)
+            lower = np.nanmin(processed_y, axis=0)
+        else:
+            mean = np.mean(processed_y, axis=0)
+            upper = np.max(processed_y, axis=0)
+            lower = np.min(processed_y, axis=0)
+        
+        processed_data[system_name] = {
+            'mean': mean,
+            'lower': lower,
+            'upper': upper
+        }
 
     # 5. Plotting (Using default style for better custom axis control)
     plt.style.use('default')
     fig, axes = plt.subplots(figsize=(10, 6))
-
     
-    # System 1: Line (Mean) and Fill (Min/Max)
-    axes.plot(common_x_grid, s1_mean, label=system1_label, color=color1, linewidth=LINE_WIDTH)
-    if not MIN_MAX_DISABLED:
-        axes.fill_between(
-            common_x_grid, s1_lower_bound, s1_upper_bound,
-            color=color1, alpha=0.25,
-            label=f'Min/Max of {system1_label}'
-            # label=f'$\\pm 1$ StdDev ({system1_label})'
-        )
+    # Assign colors
+    system_names = list(all_systems_runs.keys())
+    colors = {}
+    for i, name in enumerate(system_names):
+        colors[name] = SYSTEM_COLORS[i % len(SYSTEM_COLORS)]
 
-    # System 2: Line (Mean) and Fill (Min/Max)
-    axes.plot(common_x_grid, s2_mean, label=system2_label, color=color2, linewidth=LINE_WIDTH)
-    if not MIN_MAX_DISABLED:
-        axes.fill_between(
-            common_x_grid, s2_lower_bound, s2_upper_bound,
-            color=color2, alpha=0.25,
-            label=f'Min/Max of {system2_label}'
-        )
+    # Loop through and plot each system
+    for system_name, data in processed_data.items():
+        if data['mean'].size == 0:
+            continue  # Skip systems with no data
+
+        color = colors[system_name]
+        
+        # Plot Line (Mean)
+        axes.plot(common_x_grid, data['mean'], label=system_name, color=color, linewidth=LINE_WIDTH)
+        
+        # Plot Fill (Min/Max)
+        if not MIN_MAX_DISABLED:
+            axes.fill_between(
+                common_x_grid, data['lower'], data['upper'],
+                color=color, alpha=0.25,
+                label=f'Min/Max of {system_name}'
+            )
 
     # 6. Dynamic and Human-Readable Ticks
     
@@ -364,13 +368,21 @@ def plot_comparison_chart(
     x_tick_count = x_tick_count if x_tick_count is not None else DEFAULT_X_TICK_COUNT
     y_tick_count = y_tick_count if y_tick_count is not None else DEFAULT_Y_TICK_COUNT
     
-    # Y-axis range (find global min/max across all runs/systems)
-    if STOP_LINE_AT_MISSING_DATA:
-        global_min_y = min(np.nanmin(s1_lower_bound), np.nanmin(s2_lower_bound))
-        global_max_y = max(np.nanmax(s1_upper_bound), np.nanmax(s2_upper_bound))
+    # Y-axis range (find global min/max across all systems)
+    all_lower_bounds = [data['lower'] for data in processed_data.values() if data['lower'].size > 0]
+    all_upper_bounds = [data['upper'] for data in processed_data.values() if data['upper'].size > 0]
+    
+    if not all_lower_bounds or not all_upper_bounds:
+         print("Warning: No Y-data to determine range. Using default [0, 1].")
+         global_min_y = 0
+         global_max_y = 1
     else:
-        global_min_y = min(np.min(s1_lower_bound), np.min(s2_lower_bound))
-        global_max_y = max(np.max(s1_upper_bound), np.max(s2_upper_bound))
+        if STOP_LINE_AT_MISSING_DATA:
+            global_min_y = np.nanmin([np.nanmin(b) for b in all_lower_bounds])
+            global_max_y = np.nanmax([np.nanmax(b) for b in all_upper_bounds])
+        else:
+            global_min_y = np.min([np.min(b) for b in all_lower_bounds])
+            global_max_y = np.max([np.max(b) for b in all_upper_bounds])
 
     # Add a small buffer (5% padding) to the Y range
     # Handle NaN values (can occur when STOP_LINE_AT_MISSING_DATA is True and all data is missing)
@@ -422,7 +434,7 @@ def plot_comparison_chart(
     axes.tick_params(axis='both', which='major', length=6, width=1.5, color='black')
     axes.grid(True, linestyle='--', alpha=0.6, color='lightgray')
 
-    axes.set_title(f'Performance Comparison: {system1_label} vs {system2_label}')
+    axes.set_title(f'Performance Comparison ({plot_type.replace("_", " ").title()})')
     axes.set_xlabel(x_label)
     axes.set_ylabel(y_label)
     axes.legend(loc='lower right')
@@ -440,10 +452,7 @@ if __name__ == "__main__":
     
     # Example usage for the original 'time' plot:
     plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAME,
+        systems_data=SYSTEMS_DATA,
         plot_type='time',
         x_tick_count=10,
         y_tick_count=10
@@ -451,10 +460,7 @@ if __name__ == "__main__":
 
     # Example usage for the new 'batch' plot (no interpolation):
     plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAME,
+        systems_data=SYSTEMS_DATA,
         plot_type='batch',
         x_tick_count=10,
         y_tick_count=10
@@ -462,10 +468,7 @@ if __name__ == "__main__":
 
     # Example usage for the new 'time_vs_batch' plot:
     plot_comparison_chart(
-        system1_files=SYSTEM1_FILES,
-        system1_label=SYSTEM1_NAME,
-        system2_files=SYSTEM2_FILES,
-        system2_label=SYSTEM2_NAME,
+        systems_data=SYSTEMS_DATA,
         plot_type='time_vs_batch',
         x_tick_count=10,
         y_tick_count=10

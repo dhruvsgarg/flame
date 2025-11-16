@@ -710,13 +710,15 @@ if __name__ == '__main__':
     # suffix = "keep_stale"
     # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_00_58.log")
     # suffix = "weight_stat_utility"
-    log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_09_40.log")
-    suffix = "reject_stale"
-    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c50_n150-{suffix}.csv'
-
-    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_14_11_11_02.log")
+    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_09_40.log")
     # suffix = "reject_stale"
-    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'sync_k10_c50_n150-{suffix}.csv'
+    # log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_15_11_02_31.log")
+    # suffix = "weight_stale_and_stat_utility"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c50_n150-{suffix}.csv'
+
+    log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_14_11_11_02.log")
+    suffix = "reject_stale"
+    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'sync_k10_c50_n150-{suffix}.csv'
 
     # log_file = Path(
     #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_05_11_22_44.log")
