@@ -1,12 +1,179 @@
+from mimetypes import init
 import re, os
 import pandas as pd
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime
 from typing import List, Dict, Any, Callable, Optional, Tuple
+from configs import LOG_CONFIG, EXPORT_CONFIG
+
+def initialization():
+    output_dir = Path("output/")
+
+    # log_file_type = 'flame_fwdllm_aggregator'
+    # log_file = Path("../logs/agg_2000.log")
+    # row_proc_steps = [
+    #     create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
+    #     create_time_calculator_processor(start_log_name='first_distribute_weights'),
+    #     # create_numeric_id_processor(source_col='trainer_id', dest_col='trainer_num'),
+    #     # create_cumulative_sum_processor(group_key_col='trainer_id', target_cols=['train_time', 'stall_time'])
+    #     # Example of a simple lambda processor
+    #     # lambda row, state: row.assign(accuracy_plus_one=row['accuracy'] + 1 if pd.notna(row['accuracy']) else pd.NA)
+    # ]
+
+    ################# Aggregator
+
+    ################# 1 hour runs
+    # log_file_type = "flame_fwdllm_trainer"
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_01_39.log")
+    # row_proc_steps = [
+    #     create_time_calculator_processor(start_log_name='train_time'),
+    #     create_numeric_id_processor(
+    #         source_col='trainer_id', dest_col='trainer_num'),
+    #     create_cumulative_sum_processor(
+    #         group_key_col='trainer_id', target_cols=['train_time_sec'])
+    # ]
+
+    ################# 2.5-3 hour runs
+    log_file_type = "flame_fwdllm_trainer"
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")     # This is also delayed
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.log")
+    # row_proc_steps = [
+    #     create_time_calculator_processor(start_log_name='train_time'),
+    #     create_numeric_id_processor(
+    #         source_col='trainer_id', dest_col='trainer_num'),
+    #     create_cumulative_sum_processor(
+    #         group_key_col='trainer_id', target_cols=['recv_weights_time']),
+    #     populate_model_version(),
+    # ]
+
+    # log_file_type = "flame_fwdllm_trainer_old"
+    # log_file = Path(
+    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_30_09_05_22.log")
+    # row_proc_steps = [
+        # create_time_calculator_processor(start_log_name='train_time'),
+        # create_sequential_id_processor(
+        #     eval_log_name='first_fetch_weights', iter_log_name='train_time'),
+        # create_numeric_id_processor(
+        #     source_col='iteration_id', dest_col='trainer_num'),             # hack
+        # create_cumulative_sum_processor(
+        #     group_key_col='trainer_num', target_cols=['train_time_sec'])
+    # ]
+
+    # Define DataFrame Processors (Whole-dataframe, group-wise operations)
+    df_proc_steps = [
+        create_broadcast_aggregator(
+            group_by_cols=['round_id', 'data_id', 'iteration_id'],
+            aggregations={
+                'train_time_sec': ['mean', 'sum'],
+                'cumulative_recv_weights_time': ['mean', 'sum'],
+                'recv_weights_time': ['mean', 'sum'],
+            }
+        ),
+        create_broadcast_aggregator(
+            group_by_cols=['round_id'],     # todo: find a bigger granularity & selection be the first/ last one from an iteration
+            aggregations={
+                'sum:recv_weights_time': ['mean', 'sum'],
+                'sum:train_time_sec': ['mean', 'sum'],
+            }
+        )
+    ]
+
+    # Define DataFrame Processors (Whole-dataframe, group-wise operations)
+    df_proc_steps = [
+        create_broadcast_aggregator(
+            group_by_cols=['round_id', 'data_id', 'iteration_id'],
+            aggregations={
+                'train_time_sec': ['mean', 'sum'],
+                'cumulative_recv_weights_time': ['mean', 'sum'],
+            }
+        )
+    ]
+
+    ################### Aggregator
+    log_file_type = "flame_fwdllm_aggregator"
+    # log_file = Path(
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_06_11_02_08.log")
+    # suffix = "keep_stale"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_10_11_14_46.log")
+    # suffix = "weight_stale_norm_k"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c30_n100-{suffix}.csv'
+    
+    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_02_23.log")
+    # suffix = "weight_stale_norm_k"
+    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_03_28.log")
+    # suffix = "keep_stale"
+    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_00_58.log")
+    # suffix = "weight_stat_utility"
+    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_09_40.log")
+    # suffix = "reject_stale"
+    # log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_15_11_02_31.log")
+    # suffix = "weight_stale_and_stat_utility"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c50_n150-{suffix}.csv'
+
+    log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_14_11_11_02.log")
+    suffix = "reject_stale"
+    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'sync_k10_c50_n150-{suffix}.csv'
+
+    # log_file = Path(
+    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_05_11_22_44.log")
+    # suffix = "discard_stale"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_07_11_21_28.log")
+    # suffix = "weight_stale_norm_k"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_11_09_40.log")
+    # suffix = "weight_stale_norm_weights"
+    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_11_20_55.log")
+    # suffix = "keep_stale"
+    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'unavail_k5_c7_n50_syn10-{suffix}.csv'
+    row_proc_steps = [
+        create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
+        create_time_calculator_processor(start_log_name='first_distribute_weights'),
+    ]
+
+    df_proc_steps = []
+    
+    ############## Async-Cifar-10
+    # log_file_type = "Async-Cifar-10"
+
+    # log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
+
+    # # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
+    # # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
+    # # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
+    # oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
+    # felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
+
+    # oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
+    # suffix = "oort_async_oracular"
+    # EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
+
+    # log_file = Path(oort_async_oracular_syn0_comm)
+    # row_proc_steps = []
+    # df_proc_steps = [
+    #     # Step 1: Generate the summary counts
+    #     create_summarization_processor(
+    #         group_by_col='log_name',
+    #         aggregations={
+    #             'timestamp': 'count',
+    #             # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
+    #         },
+    #     ),
+    #     # Step 2: Apply the custom OORT logic
+    #     apply_oort_comm_fix(
+    #         group_by_col='log_name', # <-- Pass the col that was grouped on
+    #         concurrency=13
+    #     ),
+    # ]
+
+    return log_file_type, row_proc_steps, df_proc_steps, log_file, output_dir
 
 # --- Row-wise Processors ---
-
 
 def create_numeric_id_processor(source_col: str, dest_col: str) -> Callable:
     """
@@ -232,26 +399,6 @@ def apply_oort_comm_fix(group_by_col: str, concurrency: int = 13) -> Callable:
         return df
     return process
 
-
-# --- Handlers & Config ---
-
-
-def handle_stat_utility(parser: 'LogParser', match: re.Match) -> Dict[str, Any]:
-    trainer_id = match.group('trainer_id')
-    trainer_state = parser.keyed_state[trainer_id]
-    round_num = trainer_state.get('round')
-    data_id = trainer_state.get('data_id')
-    iteration_key = (trainer_id, round_num, data_id)
-    parser.iteration_tracker[iteration_key] += 1
-    iteration = parser.iteration_tracker[iteration_key]
-    return {'round': round_num, 'data_id': data_id, 'iteration': iteration}
-
-
-# Declaration
-LOG_CONFIG = {}
-EXPORT_CONFIG = {}
-
-
 class LogParser:
     def __init__(self, patterns: List[Dict], row_processors: Optional[List[Callable]] = None, dataframe_processors: Optional[List[Callable]] = None, export_configs: Optional[Dict] = None):
         self.patterns = patterns
@@ -389,386 +536,8 @@ class LogParser:
             print(
                 f"✅ Successfully wrote {len(df)} records to {output_filepath}")
 
-# --- Configuration ---
-
-
-LOG_CONFIG = {
-    'flame_fwdllm_aggregator': [
-        {
-            'name': 'first_distribute_weights',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*fwdllm_aggregator\.py.*_distribute_weights.*sending weights"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-        {
-            'name': 'extract_stat_utility',
-            'regex': re.compile(r"stat_utility for trainerId: (?P<trainer_id>\w+) is (?P<stat>[\d\.]+), loss: (?P<loss>[\d\.]+)"),
-            'type': 'EXTRACT',
-            # 'extract_key_group': 'trainer_id',
-            'group_to_columns': {'trainer_id': ('trainer_id', str), 'stat': ('stat_utility', float), 'loss': ('loss', float)},
-            'handler': handle_stat_utility
-        },
-        {
-            'name': 'eval_model',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}).*"
-                r"'acc':\s*(?P<acc>[\d.]+).*'data_id_iterations':\s*(?P<data_id_iterations>\d+)"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'acc': ('accuracy', lambda x: float(x) * 100),
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')),
-                'data_id_iterations': ('data_id_iterations', int)
-            }
-        },
-        {
-            'name': 'var',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}).*"
-                r"self\.var\s*=\s*(?P<self_var>[\d.]+), self.var_threshold"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'self_var': ('var', float),
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S'))
-            }
-        },
-    ],
-    'flame_fwdllm_trainer': [
-        {
-            'name': 'train_time',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*"
-                r"Runtime of train_with_data_id:\s(?P<runtime>[\d\.]+)s\s"
-                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+)\)"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-                'runtime': ('train_time_sec', float),
-                'round_id': ('round_id', lambda round_id: int(round_id) - 1),
-                'data_id': ('data_id', int),
-                'iter_id': ('iteration_id', int),
-                'trainer_id': ('trainer_id', str)
-            }
-        },
-        {
-            'name': 'recv_weights_time',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*"
-                r"Runtime of recv_wrapper:\s(?P<runtime>[\d\.]+)s\s"
-                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+)\)"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-                'runtime': ('recv_weights_time', float),
-                'round_id': ('round_id', int),
-                'data_id': ('data_id', int),
-                'iter_id': ('iteration_id', int),
-                'trainer_id': ('trainer_id', str)
-            }
-        },
-    ],
-    'flame_fwdllm_trainer_old': [
-        {
-            'name': 'train_time',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*"
-                # r"Runtime of train is \s(?P<runtime>[\d\.]+)$"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-                # 'runtime': ('train_time_sec', float)
-            }
-        },
-        {
-            'name': 'first_distribute_weights',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*"
-                r"New message received for trainer_id 505f9fc483cf4df68a2409257b5fad7d3c580372"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-    ],
-    # --- NEW CONFIG GROUP ---
-    'Async-Cifar-10': [
-        {
-            'name': 'agg_train_sent',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*sending weights.*task: train"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-        {
-            'name': 'agg_eval_sent',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*sending weights.*task: eval"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-        {
-            'name': 'agg_weight_recv',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*Received weights.*trained on model version"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-        {
-            'name': 'agg_eval_recv',
-            'regex': re.compile(
-                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*received eval message"
-            ),
-            'type': 'EXTRACT',
-            'group_to_columns': {
-                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-            }
-        },
-    ]
-}
-
-EXPORT_CONFIG = {
-    'flame_fwdllm_aggregator': {
-        'evaluation_metrics': {
-            # 'default_output_filename': '19Oct_slow_straggler_evaluation_metrics.csv',
-            'default_output_filename': 'eval_agg_k10_n50_rnd1_acc70_delayBy20_19_10_05_18.csv',
-            'log_names': ['eval_model'],
-            'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
-        },
-        # 'trainer_performance': {
-        #     'default_output_filename': 'trainer_performance.csv',
-        #     'log_names': ['extract_stat_utility'],
-        #     'columns': ['timestamp', 'trainer_id', 'trainer_num', 'loss', 'stat_utility']
-        # },
-    },
-    'flame_fwdllm_trainer': {
-        'train_times': {
-            # 'default_output_filename': 'train_times_delay_slow_6hr.csv',
-            # 'default_output_filename': 'train_times_noDelay_slow_4hr.csv',
-            # 'default_output_filename': 'train_times_delayBy20_3hrs.csv',
-            'default_output_filename': 'train_times_delayBy3_8hrs.csv',
-            'log_names': ['recv_weights_time'],
-            'columns': ['timestamp', 'round_id', 'data_id', 'iteration_id', 'train_time_sec',
-                        # 'cumulative_train_time_sec', 'mean:cumulative_train_time_sec',
-                        'cumulative_recv_weights_time', 'mean:cumulative_recv_weights_time', 
-                        'time_since_start',
-                        'trainer_num', '_model_version',
-                        # 'sum:recv_weights_time', 'mean:sum:recv_weights_time',
-                        # 'sum:train_time_sec', 'mean:sum:train_time_sec',
-                        # 'trainer_id',
-                        ]
-        }
-    },
-    'flame_fwdllm_trainer_old': {
-        'train_times': {
-            'default_output_filename': 'old_train_times.csv',
-            'log_names': ['train_time', 'first_distribute_weights'],
-            'columns': ['timestamp', 'round_id', 'data_id', 'iteration_id',
-                        'train_time_sec',
-                        # 'mean:train_time_sec', 'sum:train_time_sec',
-                        'cumulative_train_time_sec', 'mean:cumulative_train_time_sec',
-                        'time_since_start',
-                        'trainer_num',
-                        # 'trainer_id',
-                        ]
-        }
-    },
-    'Async-Cifar-10': {
-        'communication_raw': {
-            'output_filename': 'communication_raw.csv',
-            'log_names': ['agg_train_sent', 'agg_eval_sent', 'agg_weight_recv', 'agg_eval_recv'],
-            'columns': ['log_name', 'timestamp']
-        },
-        'communication_summary': {
-            'output_filename': f'communication_summary.csv',                # todo: make it easier to declartively add suffix here
-            'log_names': ['agg_train_sent', 'agg_eval_sent', 'agg_weight_recv', 'agg_eval_recv'],
-            'columns': ['log_name', 'count:timestamp']
-        }
-    },
-}
-
 if __name__ == '__main__':
-    # global EXPORT_CONFIG
-    output_dir = Path("output/")
-
-    # log_file_type = 'flame_fwdllm_aggregator'
-    # log_file = Path("../logs/agg_2000.log")
-    # row_proc_steps = [
-    #     create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
-    #     create_time_calculator_processor(start_log_name='first_distribute_weights'),
-    #     # create_numeric_id_processor(source_col='trainer_id', dest_col='trainer_num'),
-    #     # create_cumulative_sum_processor(group_key_col='trainer_id', target_cols=['train_time', 'stall_time'])
-    #     # Example of a simple lambda processor
-    #     # lambda row, state: row.assign(accuracy_plus_one=row['accuracy'] + 1 if pd.notna(row['accuracy']) else pd.NA)
-    # ]
-
-    ################# Aggregator
-
-    ################# 1 hour runs
-    # log_file_type = "flame_fwdllm_trainer"
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_01_39.log")
-    # row_proc_steps = [
-    #     create_time_calculator_processor(start_log_name='train_time'),
-    #     create_numeric_id_processor(
-    #         source_col='trainer_id', dest_col='trainer_num'),
-    #     create_cumulative_sum_processor(
-    #         group_key_col='trainer_id', target_cols=['train_time_sec'])
-    # ]
-
-    ################# 2.5-3 hour runs
-    log_file_type = "flame_fwdllm_trainer"
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_18_03.log")
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_20_02.log")     # This is also delayed
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_19_10_05_18.log")
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_25_10_01_34.log")
-    # row_proc_steps = [
-    #     create_time_calculator_processor(start_log_name='train_time'),
-    #     create_numeric_id_processor(
-    #         source_col='trainer_id', dest_col='trainer_num'),
-    #     create_cumulative_sum_processor(
-    #         group_key_col='trainer_id', target_cols=['recv_weights_time']),
-    #     populate_model_version(),
-    # ]
-
-    # log_file_type = "flame_fwdllm_trainer_old"
-    # log_file = Path(
-    #     "../logs/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_30_09_05_22.log")
-    # row_proc_steps = [
-        # create_time_calculator_processor(start_log_name='train_time'),
-        # create_sequential_id_processor(
-        #     eval_log_name='first_fetch_weights', iter_log_name='train_time'),
-        # create_numeric_id_processor(
-        #     source_col='iteration_id', dest_col='trainer_num'),             # hack
-        # create_cumulative_sum_processor(
-        #     group_key_col='trainer_num', target_cols=['train_time_sec'])
-    # ]
-
-    # Define DataFrame Processors (Whole-dataframe, group-wise operations)
-    df_proc_steps = [
-        create_broadcast_aggregator(
-            group_by_cols=['round_id', 'data_id', 'iteration_id'],
-            aggregations={
-                'train_time_sec': ['mean', 'sum'],
-                'cumulative_recv_weights_time': ['mean', 'sum'],
-                'recv_weights_time': ['mean', 'sum'],
-            }
-        ),
-        create_broadcast_aggregator(
-            group_by_cols=['round_id'],     # todo: find a bigger granularity & selection be the first/ last one from an iteration
-            aggregations={
-                'sum:recv_weights_time': ['mean', 'sum'],
-                'sum:train_time_sec': ['mean', 'sum'],
-            }
-        )
-    ]
-
-    # Define DataFrame Processors (Whole-dataframe, group-wise operations)
-    df_proc_steps = [
-        create_broadcast_aggregator(
-            group_by_cols=['round_id', 'data_id', 'iteration_id'],
-            aggregations={
-                'train_time_sec': ['mean', 'sum'],
-                'cumulative_recv_weights_time': ['mean', 'sum'],
-            }
-        )
-    ]
-
-    ################### Aggregator
-    log_file_type = "flame_fwdllm_aggregator"
-    # log_file = Path(
-    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_06_11_02_08.log")
-    # suffix = "keep_stale"
-    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_10_11_14_46.log")
-    # suffix = "weight_stale_norm_k"
-    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c30_n100-{suffix}.csv'
-    
-    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_02_23.log")
-    # suffix = "weight_stale_norm_k"
-    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_11_03_28.log")
-    # suffix = "keep_stale"
-    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_00_58.log")
-    # suffix = "weight_stat_utility"
-    # log_file = Path("/Users/gaurav/Projects/flame_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_13_11_09_40.log")
-    # suffix = "reject_stale"
-    # log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_15_11_02_31.log")
-    # suffix = "weight_stale_and_stat_utility"
-    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'async_k10_c50_n150-{suffix}.csv'
-
-    log_file = Path("/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_14_11_11_02.log")
-    suffix = "reject_stale"
-    EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'sync_k10_c50_n150-{suffix}.csv'
-
-    # log_file = Path(
-    #     "../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_50_numerical_05_11_22_44.log")
-    # suffix = "discard_stale"
-    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_07_11_21_28.log")
-    # suffix = "weight_stale_norm_k"
-    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_11_09_40.log")
-    # suffix = "weight_stale_norm_weights"
-    # log_file = Path("../logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_11_20_55.log")
-    # suffix = "keep_stale"
-    # EXPORT_CONFIG['flame_fwdllm_aggregator']['evaluation_metrics']['default_output_filename'] = f'unavail_k5_c7_n50_syn10-{suffix}.csv'
-    row_proc_steps = [
-        create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
-        create_time_calculator_processor(start_log_name='first_distribute_weights'),
-    ]
-
-    df_proc_steps = []
-    
-    ############## Async-Cifar-10
-    # log_file_type = "Async-Cifar-10"
-
-    # log_file_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
-
-    # # oort_syn0_comm = f"{log_file_dir}/agg_sheph_14_05_12_52_alpha0.1_cifar_70acc_fedavg_oort_unaware_syn_50.log"
-    # # oort_oracular_syn0_comm = f"{log_file_dir}/agg_wash_11_05_02_42_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn0.log"
-    # # oort_async_syn0_comm = f"{log_file_dir}/agg_wash_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_0.log"
-    # oort_async_oracular_syn0_comm = f"{log_file_dir}/agg_sheph_11_05_02_42_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn0.log"
-    # felix_syn0_comm = f"{log_file_dir}/agg_sheph_13_05_01_50_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_0.log"
-
-    # oort_syn0_comm_replacement = f"{log_file_dir}/agg_sheph_15_05_12_46_alpha0.1_cifar_70acc_fedbuff_async_oort_unaware_syn_50.log"
-    # suffix = "oort_async_oracular"
-    # EXPORT_CONFIG['Async-Cifar-10']['communication_summary']['output_filename'] = f'communication_summary-{suffix}.csv'
-
-    # log_file = Path(oort_async_oracular_syn0_comm)
-    # row_proc_steps = []
-    # df_proc_steps = [
-    #     # Step 1: Generate the summary counts
-    #     create_summarization_processor(
-    #         group_by_col='log_name',
-    #         aggregations={
-    #             'timestamp': 'count',
-    #             # 'timestamp': 'max',           # todo: Fix output for multiple aggregations
-    #         },
-    #     ),
-    #     # Step 2: Apply the custom OORT logic
-    #     apply_oort_comm_fix(
-    #         group_by_col='log_name', # <-- Pass the col that was grouped on
-    #         concurrency=13
-    #     ),
-    # ]
+    log_file_type, row_proc_steps, df_proc_steps, log_file, output_dir = initialization()
     
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],
