@@ -43,6 +43,7 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
+from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
 # TODO: (DG) torch is needed for asyncoort in oort_loss() function, but need to
 # comment / uncomment based on the backend used. If it is commented, Flame can
@@ -57,6 +58,13 @@ TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
 TAG_HEARTBEAT = "heartbeat_send"
 
+@timer_decorator
+def recv_wrapper(self, channel, end_id):
+    """Wrapper around recv to be used with timer_decorator."""
+    # Create FwdLLMStage for timing/metrics logging
+    self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, self.trainer_id)
+
+    return channel.recv(end_id)
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -109,6 +117,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self._round = 1
         self._work_done = False
+        self._model_version = 0
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -130,19 +139,22 @@ class Trainer(Role, metaclass=ABCMeta):
         # for tracking trainer round progress and checking before sending
         # updates
         self._updates_returned_upto_round = 0
+        self._updates_returned_upto_model = 0
         self._trainer_online_channel_status = True
 
         self.task_to_perform = "train"
         self.iteration_per_data_id = None
         self.abort_training = False
+        self._stat_utility = 0
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    @timer_decorator
     def _fetch_weights(self, tag: str) -> None:
-        logger.debug(
+        logger.info(
             f"### FETCH WEIGHTS start for tag: {tag} "
             f"and trainer_id {self.trainer_id}"
         )
@@ -160,7 +172,7 @@ class Trainer(Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer joins this channel
-        logger.debug(
+        logger.info(
             f"_fetch_weights: waiting for someone to join channel: {channel} "
             f"for trainer_id {self.trainer_id}"
         )
@@ -168,10 +180,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        msg, _ = channel.recv(end)
+        msg, _ = recv_wrapper(self, channel, end)
 
         if not msg:
-            logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
+            logger.info(f"NO msg received for trainer_id {self.trainer_id}")
             if self._work_done:
                 # when the work is done, we cancel continue condition (i.e., we
                 # set fetch_success to True)
@@ -186,6 +198,15 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
 
+        if MessageType.MODEL_VERSION in msg:
+            self._model_version = msg[MessageType.MODEL_VERSION]
+
+        logger.info(f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}")
+        logger.info(f"isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
+        
+        if MessageType.MODEL_VERSION in msg:
+            self._model_version = msg[MessageType.MODEL_VERSION]
+
         if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
             if (
                 self.data_id is not None
@@ -196,11 +217,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.abort_training = True
                 logger.info(
                     f"Fetch weights aborted for given model version "
-                    f"{self._round} while trainer_id {self.trainer_id} has "
+                    f"{self._model_version} while trainer_id {self.trainer_id} has "
                     f"already sent updates "
                     f"upto iteration_per_data_id: {self.iteration_per_data_id}"
                 )
-
                 # Received old data but still allow aggregator cleanup state to
                 # occur so as to receive the next update
                 logger.info(
@@ -218,10 +238,12 @@ class Trainer(Role, metaclass=ABCMeta):
             else:
                 self.abort_training = False
                 self.iteration_per_data_id = msg[MessageType.ITERATION_PER_DATA_ID]
+                self.data_id = msg[MessageType.DATA_ID]
 
         if MessageType.VAR in msg:
             logger.info(
-                f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}. Not updating weights"
+                f"Calc more variance received for trainer id: {self.trainer_id} and round {self._round}"
+                f" and model version {self._model_version}. Not updating weights"
             )
 
         elif MessageType.WEIGHTS in msg:
@@ -233,6 +255,9 @@ class Trainer(Role, metaclass=ABCMeta):
             # to trainer to re-train for == round condition if the message was
             # dropped.
             logger.info("message type weights received")
+            logger.info(
+                f"Trainer id: {self.trainer_id}|round: {self._round} |model version: {self._model_version} | weights: {list(msg[MessageType.WEIGHTS].keys())} |data id: {msg.get(MessageType.DATA_ID, 'N/A')} | iteration per data id: {msg.get(MessageType.ITERATION_PER_DATA_ID, 'N/A')}"
+            )
 
             # if self._round <= self._updates_returned_upto_round: logger.info(
             #     f"Fetch weights aborted for given model version "
@@ -270,8 +295,10 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
                 )
                 self.data_id = msg[MessageType.DATA_ID]
+                logger.info(f"[GJD] self.data_id is set to {self.data_id}")
 
             if MessageType.GRAD_POOL in msg:
+                logger.info("Message type grad pool received")
                 partial_grad = msg[MessageType.GRAD_POOL]
                 full_grad = []
                 if self.args.var_control:
@@ -323,21 +350,25 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(
             f"### FETCH WEIGHTS complete for trainer_id {self.trainer_id}, "
-            f"round: {self._round}, data id: {self.data_id} and work_done: {self._work_done} ###"
+            f"round: {self._round}, data id: {self.data_id}, model version: {self._model_version} "
+            f" and work_done: {self._work_done} ###"
         )
 
-        logger.debug(
+        logger.info(
             "Model weights received, so resetting aggregator end states in "
             "the channel"
         )
 
         channel._selector.ordered_updates_recv_ends.append(end)
-        logger.debug(
+        logger.info(
             f"After appending {end} to ordered_updates_recv_ends: "
             f"{channel._selector.ordered_updates_recv_ends}"
         )
 
         channel.cleanup_recvd_ends()
+
+        # Create FwdLLMStage for timing/metrics logging
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
 
     def put(self, tag: str) -> None:
         """Set data to remote role(s)."""
@@ -348,6 +379,7 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.info("calling send heartbeat")
             self._send_heartbeat_to_agg(tag)
 
+    @timer_decorator
     def _send_heartbeat_to_agg(self, tag: str) -> None:
         logger.debug(
             f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
@@ -375,6 +407,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         return
 
+    @timer_decorator
     def _send_grads(self, tag: str) -> None:
         # Added a 1 second sleep so as to not overwhelm mqtt time.sleep(1)
 
@@ -435,20 +468,20 @@ class Trainer(Role, metaclass=ABCMeta):
                 )
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
-
+               
             msg = {
                 MessageType.GRADIENTS: grad_dict,
                 MessageType.GRADIENTS_FOR_VAR_CHECK: self.grad_for_var_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                # MessageType.STAT_UTILITY: self._stat_utility, #uncomment later
+                MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
         else:
             msg = {
-                MessageType.MODEL_VERSION: self._round,
+                MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
             }
 
@@ -458,16 +491,18 @@ class Trainer(Role, metaclass=ABCMeta):
             # To allow the trainer to participate in eval AND train in the same
             # round, we set _updates_returned_upto_round only over here.
             self._updates_returned_upto_round = self._round
+            self._updates_returned_upto_model = self._model_version
 
             logger.info(
                 f"sending grads done for trainer_id: {self.trainer_id} "
                 f"and _updates_returned_upto_round "
                 f"{self._updates_returned_upto_round}"
+                f", model version { self._updates_returned_upto_model}"
             )
         elif self.task_to_perform == "eval":
             logger.info(
                 f"sending eval stat utility done for trainer_id: {self.trainer_id} "
-                f"for model version: {self._round}"
+                f"for model version: {self._model_version}"
             )
         else:
             logger.error(
@@ -573,7 +608,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.mc.clear()
         logger.debug(f"saving metrics: {self.metrics}")
         if self.metrics:
-            self.registry_client.save_metrics(self._round - 1, self.metrics)
+            self.registry_client.save_metrics(self._model_version - 1, self.metrics)
             logger.debug("saving metrics done")
         self.metrics = dict()
 
@@ -624,6 +659,7 @@ class Trainer(Role, metaclass=ABCMeta):
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
         self._stat_utility = 0
+        self._batch_size = 0
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
             msg = "Parameter 'reduction' not found in loss function "
@@ -644,27 +680,24 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's statistical
         utility is measured at epoch 1.
         """
-        if epoch == 1 and batch_idx == 0:
-            if "reduction" in kwargs.keys():
-                reduction = kwargs["reduction"]
-            else:
-                reduction = "mean"  # default reduction policy is mean
-            kwargs_wo_reduction = {
-                key: value for key, value in kwargs.items() if key != "reduction"
-            }
-
-            criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
-            loss_list = criterion(output, target)
-            self._stat_utility += torch.square(loss_list).sum()
-
-            if reduction == "mean":
-                loss = loss_list.mean()
-            elif reduction == "sum":
-                loss = loss_list.sum()
+        
+        if "reduction" in kwargs.keys():
+            reduction = kwargs["reduction"]
         else:
-            criterion = self.loss_fn(**kwargs)
-            loss = criterion(output, target)
+            reduction = "mean"  # default reduction policy
+        kwargs_wo_reduction = {
+            key: value for key, value in kwargs.items() if key != "reduction"
+        }
+        criterion = self.loss_fn(reduction="none", **kwargs_wo_reduction)
+        loss_list = criterion(output, target)
+        self._batch_size = len(loss_list)
+        logger.debug(f"batch size: {len(loss_list)}")
+        self._stat_utility += torch.square(loss_list).sum()
 
+        if reduction == "mean":
+            loss = loss_list.mean()
+        elif reduction == "sum":
+            loss = loss_list.sum()
         return loss
 
     def normalize_stat_utility(self, epoch) -> None:
@@ -672,17 +705,17 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size of the
         trainer's datset, at epoch 1.
         """
-        if epoch == 1:
-            self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
-                self._stat_utility / len(self.train_loader.dataset)
-            )
-        else:
-            return
-
+        # incase of oort - stat utility is calculated only at the beginning (epoch = 0, batch = 0)
+        # but in fwdllm, we want to calculate it with every update
+        self._stat_utility = self._batch_size * math.sqrt(
+            self._stat_utility / self._batch_size
+        )
+        
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
 
+    @timer_decorator
     def pause_execution(self):
         time.sleep(1)
         return

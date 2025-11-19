@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Callable, Optional, Tuple
 from configs import LOG_CONFIG, EXPORT_CONFIG
 
-def initialization():
+def configure():
     output_dir = Path("output/")
 
     log_file_type = "flame_fwdllm_aggregator"
@@ -327,7 +327,7 @@ class LogParser:
                 f"✅ Successfully wrote {len(df)} records to {output_filepath}")
 
 if __name__ == '__main__':
-    log_file_type, row_proc_steps, df_proc_steps, log_file, output_dir = initialization()
+    log_file_type, row_proc_steps, df_proc_steps, log_file, output_dir = configure()
     
     parser = LogParser(
         patterns=LOG_CONFIG[log_file_type],
