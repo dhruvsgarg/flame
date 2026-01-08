@@ -115,9 +115,6 @@ class TopAggregator(AsyncTopAgg):
         self.var = None
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
-        # This preserves statistical weighting by sample count and scales steps by the same weights used on the numerator
-        self._effective_sample_weight_sum = 0.0
-        # Enable weighted aggregation only if optimizer.sort is FEDBUFF; otherwise force neutral rate
         self._optimizer_sort_value = self.config.optimizer.sort
         OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF, )
         self._weighted_aggregation_enabled = (self._optimizer_sort_value in OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION)
@@ -386,9 +383,6 @@ class TopAggregator(AsyncTopAgg):
                 logger.warning(f"Falling back to neutral rate due to error in weight_factor: {e}")
                 rate = 1.0
 
-        # Accumulate denominator: sum of rates (kept in [0,1])
-        self._effective_sample_weight_sum += rate
-
         for i, (name, param) in enumerate(np):  # Assuming self.params is a dict
             if param.requires_grad:
                 if name in trainer_grad:
@@ -518,7 +512,7 @@ class TopAggregator(AsyncTopAgg):
         if MessageType.GRADIENTS in msg:
             trainer_gradients = msg[MessageType.GRADIENTS]
             version_for_rate = msg[MessageType.MODEL_VERSION]
-            stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
+            
             grad_for_var_check = (
                 msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
                 if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
@@ -559,21 +553,11 @@ class TopAggregator(AsyncTopAgg):
             
             self.grad_pool.append(self.grad)
             self.add_local_trained_result(0, self.grad, self._agg_goal_cnt) # Assuming 0 is ok
-            # Use effective denominator if available; else warn and skip this update
-            # Denominator choice: sum_i (rate_i * count_i) vs raw #samples
-            # We choose the former to obtain a true weighted average that matches the numerator scaling
-            if self._effective_sample_weight_sum <= 0:
-                logger.warning("Effective sample-weight sum is zero or lower; skipping model update for this aggregation goal")
-                # Clean up and return early without updating the model
-                self.grad = [torch.zeros_like(g) for g in self.grad]
-                channel.cleanup_recvd_ends()
-                return
             
             self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
                 self.model
             )
             self.grad = [torch.zeros_like(p) for p in self.params]
-            self._effective_sample_weight_sum = 0.0
 
             self.aggregate(self._round) # This sets self.var and self.var_good_enough
             
@@ -719,7 +703,7 @@ class TopAggregator(AsyncTopAgg):
             if MessageType.GRADIENTS in msg:
                 trainer_gradients = msg[MessageType.GRADIENTS]
                 version_for_rate = msg[MessageType.MODEL_VERSION]
-                stat_utility_val = msg.get(MessageType.STAT_UTILITY, 0.0)
+
                 grad_for_var_check = (
                     msg[MessageType.GRADIENTS_FOR_VAR_CHECK]
                     if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
@@ -729,7 +713,7 @@ class TopAggregator(AsyncTopAgg):
                 self.aggregate_grads_from_trainers(
                     trainer_gradients,
                     version_for_rate=version_for_rate,
-                    stat_utility=stat_utility_val,
+                    stat_utility=channel.get_end_property(end, PROP_STAT_UTILITY),
                     grad_for_var_check=grad_for_var_check,
                 )
 
@@ -917,17 +901,8 @@ class TopAggregator(AsyncTopAgg):
         self.print_trainable_params_stats(
             location="[agg_start,_aggregate_grads_sync()]"
         )
-        # Use effective denominator if available; else warn and skip this update
-        # Denominator choice: sum_i (rate_i * count_i) vs raw #samples
-        # We choose the former to obtain a true weighted average that matches the numerator scaling
-        if self._effective_sample_weight_sum <= 0:
-            logger.warning("Effective sample-weight sum is zero or lower; skipping model update for this aggregation goal")
-            # Clean up and return early without updating the model
-            self.grad = [torch.zeros_like(g) for g in self.grad]
-            channel.cleanup_recvd_ends()
-            return
 
-        self.add_local_trained_result(0, self.grad, self._effective_sample_weight_sum)
+        self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
         self.print_trainable_params_stats(
             location="[after_add_local,_aggregate_grads_sync()]"
         )
@@ -935,7 +910,6 @@ class TopAggregator(AsyncTopAgg):
             self.model
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
-        self._effective_sample_weight_sum = 0.0
 
         if self._agg_goal_cnt < self._agg_goal:
             # we enter this only if we have not distributed weights to enough clients

@@ -165,7 +165,7 @@ class FedSGDAggregator(TopAggregator):
             logger.warning("Not updating the model, division by 0 error")
             return old_param
 
-        # logger.info("################aggregate: %d" % len(model_list))
+        # If weighted_aggregation_enabled is False, then the weight of each gradient in this sum is 1. Else, the weight the is determined by calling self.optimizer.weight_factor()
         (_, weighted_gradient_sum) = model_list[0]
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
