@@ -8,6 +8,12 @@ import hashlib
 import os
 import numpy as np
 from datetime import datetime
+import ast
+from flame.config import TrainerAvailState
+
+from flame.monitor.runtime import FwdLLMStage, timer_decorator
+import flame.monitor.runtime
+import math
 
 from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import flame.monitor.runtime
@@ -152,14 +158,61 @@ class FedSGDTrainer(Trainer):
         self.device = device
 
         # abstract attributes
-        self.loss_fn = None
+        self.loss_fn = torch.nn.CrossEntropyLoss
         self.dataset_size = None
         self.model = model_trainer.model
         # NRL adding new variables
         self.data_id = None
+        logger.info("[GJD] self.data_id is reset to None")
         self.total_data_bins = None
         self.grad_for_var_check = None
         self.data_written_to_file = False  # Flag to prevent writing data multiple times
+        setattr(self.trainer.model_trainer, "base_trainer", self) # for accessing FedSGDTrainer methods inside model_trainer - stat utility
+
+        # Check if client will emulate delays in training time
+        self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
+        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        self.speedup_factor = 1.0
+
+        self.trainer_start_ts = time.time()
+        # Storing synthetic avail traces
+        self.avl_events_syn_0 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_0
+        )
+
+        self.avl_events_syn_20 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_20
+        )
+
+        self.avl_events_syn_50 = ast.literal_eval(
+            self.config.hyperparameters.avl_events_syn_50
+        )
+
+        self.client_notify = self.config.hyperparameters.client_notify
+
+        if self.client_notify['trace'] == "syn_0":
+            self.state_avl_event_ts = self.avl_events_syn_0
+            logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
+        elif self.client_notify['trace'] == "syn_20":
+            self.state_avl_event_ts = self.avl_events_syn_20
+            logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
+        elif self.client_notify['trace'] == "syn_50":
+            self.state_avl_event_ts = self.avl_events_syn_50
+            logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
+        else:
+            logger.info(
+                f"No avl_events set for trainer id {self.trainer_id} since state not specified."
+            )
+
+        self.avl_state = TrainerAvailState.AVL_TRAIN
+        logger.info(
+                f"Set the available_state for {self.trainer_id} to AVL_TRAIN."
+            )
+
+        # flag to decide whether the trainer upon unavailability will wait or exit
+        self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
+
+        logger.info(f"Set the wait_until_next_avl to be {self.wait_until_next_avl}")
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
@@ -261,6 +314,7 @@ class FedSGDTrainer(Trainer):
             f"Task_id: {self.trainer_id} initialize completed at timestamp: "
             f"{time.time()}"
         )
+        self.init_oort_variables() #initialize oort variables for stat_utility calculation (fwdllm)
 
     def update_model(self, weights):
         # logger.info(f"NRL: Updated model weights: {weights}")
@@ -308,16 +362,40 @@ class FedSGDTrainer(Trainer):
         if self.abort_training == True:
             logger.info(f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}")
             return
+        
+        if self.avl_state != TrainerAvailState.AVL_TRAIN:
+            if self.wait_until_next_avl:
+                logger.info(
+                    f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
+                )
+                while self.avl_state != TrainerAvailState.AVL_TRAIN:
+                    time.sleep(1) 
+                logger.info(
+                    f"Trainer id {self.trainer_id} is back to available to train."
+                )
+            else:
+                logger.info(
+                    f"Trainer id {self.trainer_id} is not available to train. Exiting training."
+                )
+                return
+
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
-        logger.debug(
+        logger.info(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
+
+        self.reset_stat_utility() #reset stat_utility for this databin (fwdllm)
         
+        # List Index to be used in case of both sync and async version.
+        # In sync model version = round hence, Index = model version
+        # In async: Index = model version % round
+        list_index = self._model_version % self._round if self._model_version  > self._round else self._model_version
         self.trainer.train(
-            [self.train_local_list[0][self.data_id]], self.device, self.args
+            [self.train_local_list[0][list_index]], self.device, self.args
         )
+            
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
         logger.debug(f"len of grad_for_var_check = {len(self.grad_for_var_check)}")
 
@@ -373,3 +451,46 @@ class FedSGDTrainer(Trainer):
 
     def check_and_sleep(self) -> None:
         pass
+
+
+    def check_and_update_state_avl(self):
+        if hasattr(self, "cm") and self.cm is not None:
+            if len(self.state_avl_event_ts) > 0:
+                next_event_ts = self.trainer_start_ts + (
+                    self.state_avl_event_ts[0][0]
+                )
+                if time.time() >= next_event_ts:
+                    state_to_set = self.state_avl_event_ts.pop(0)[1]
+                    old_status = self.avl_state.value
+                    try:
+                        self.avl_state = TrainerAvailState(state_to_set)
+                    except ValueError:
+                        logger.error(
+                            f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
+                        )
+                        return
+                    new_status = self.avl_state.value
+                    logger.info(
+                        f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
+                    )
+                    if self.client_notify["enabled"] == "True":
+                        logger.info("Trainer trying to notify aggregator")
+                        self._perform_channel_state_update(
+                            tag="upload", state=self.avl_state, timestamp=str(time.time())
+                        )
+            else:
+                logger.debug(f"No availability events pending for trainer {self.trainer_id}")
+        else:
+            logger.info(
+                f"Channel manager not set yet for trainer {self.trainer_id}. "
+                f"Skipping avail status update. "
+                f"Sleep for 20s before checking again."
+            )
+            time.sleep(20)
+
+
+    def notify_trainer_avail(self) -> None:
+        logger.info("notify_trainer_avail thread running")
+        while True:
+            time.sleep(1)  # Will check every 1 second
+            self.check_and_update_state_avl()

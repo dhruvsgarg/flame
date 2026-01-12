@@ -78,7 +78,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         """Initialize internal state for role."""
         # global variable for plugin manager
         self.plugin_manager = PluginManager()
-
+        logger.info("Intializing Channel Manager in Top Aggregator for SYNC")
         self.cm = ChannelManager()
         self.cm(self.config)
         self.cm.join_all()
@@ -227,6 +227,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 )
 
     def _aggregate_weights(self, tag: str) -> None:
+        logger.info("Agg weights inside top_aggregator syncfl")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
@@ -307,7 +308,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def put(self, tag: str, task_to_perform: str = "train") -> None:
         """Set data to remote role(s)."""
-        logger.debug(f"distributing weights with task_to_perform = {task_to_perform}")
+        logger.info(f"Sync distributing weights with task_to_perform = {task_to_perform}")
         if tag == TAG_DISTRIBUTE:
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
@@ -494,6 +495,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def compose(self) -> None:
         """Compose role with tasklets."""
+        
         with Composer() as composer:
             self.composer = composer
 
