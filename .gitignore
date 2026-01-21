@@ -78,6 +78,8 @@ cache_dir
 scripts/logs/*
 scripts/plotters/output/*
 scripts/plotters/plots/*
+scripts/plotters/old_output/*
+scripts/plotters/old_plots/*
 
 # Files on server to ignore
 src/*
