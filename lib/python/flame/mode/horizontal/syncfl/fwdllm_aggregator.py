@@ -1273,19 +1273,6 @@ class TopAggregator(AsyncTopAgg):
         self.print_trainable_params_stats(location="[populate_params, _distr_weights]")
         trainable_params = self.get_trainable_param_state_dict()
         self.print_param_dict_stats(trainable_params, location="After filtering")
-        shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
-
-        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
-
-        shared_grad_pool_trainable = []
-        if shared_grad_pool == None:
-            shared_grad_pool_trainable = None
-        else:
-            idx = 0
-            for param in self.model.parameters():
-                if param.requires_grad:
-                    shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
-                idx += 1
 
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
@@ -1306,6 +1293,19 @@ class TopAggregator(AsyncTopAgg):
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
                 
+                shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
+
+                shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+                shared_grad_pool_trainable = []
+                if shared_grad_pool == None:
+                    shared_grad_pool_trainable = None
+                else:
+                    idx = 0
+                    for param in self.model.parameters():
+                        if param.requires_grad:
+                            shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
+                        idx += 1
+
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
                     MessageType.GRAD_POOL: shared_grad_pool_trainable,
