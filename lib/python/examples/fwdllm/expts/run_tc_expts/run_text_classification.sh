@@ -92,7 +92,7 @@ if [ $FL_ALG = "FedAvg" ];then
     --do_lower_case True \
     --train_batch_size $train_batch_size \
     --frequency_of_the_test $frequency_of_the_test \
-    --eval_batch_size 8 \
+    --eval_batch_size 32 \
     --max_seq_length $max_seq_length \
     --lr $C_LR \
     --server_lr $S_LR \
@@ -118,7 +118,7 @@ elif [ $FL_ALG = FedSgd ];then
     --frequency_of_the_test $frequency_of_the_test \
     --do_lower_case True \
     --train_batch_size $train_batch_size \
-    --eval_batch_size 8 \
+    --eval_batch_size 32 \
     --max_seq_length $max_seq_length \
     --lr $C_LR \
     --server_lr $S_LR \
