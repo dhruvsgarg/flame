@@ -592,10 +592,11 @@ class TopAggregator(AsyncTopAgg):
             channel.cleanup_recvd_ends()
 
     #TODO: Refactor / rename and modify docstring
+    @timer_decorator
     def aggregate_and_collect(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
         # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id)
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, trainer_id=None)
         
         recv_ends = channel.ends()
         if self.ends_not_selected_yet and len(recv_ends) ==0:
@@ -976,6 +977,13 @@ class TopAggregator(AsyncTopAgg):
 
         self.log_memory("end _aggregate_grads_sync", self.device)
 
+    def _force_cuda_memory_cleanup(self, x, labels, output, logits, loss):
+        self.log_memory("before del x, labels, output, logits, loss", self.device)
+        del x, labels, output, logits, loss
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
@@ -1042,9 +1050,7 @@ class TopAggregator(AsyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
-        del x, labels, output, logits, loss
-        torch.cuda.empty_cache()
-        gc.collect()
+        self._force_cuda_memory_cleanup(x, labels, output, logits, loss)
 
         self.log_memory("end eval_model", self.device)
 
