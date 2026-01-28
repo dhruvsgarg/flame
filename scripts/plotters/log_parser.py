@@ -88,19 +88,33 @@ def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Ca
         round_id = seq_counter // 150
         data_id = seq_counter % 150
 
+        # Don't override if any of row['iteration_id'], row['data_id'] and row['round_id'] are present
+        has_ids = any(pd.notna(row.get(k)) for k in ['iteration_id', 'data_id', 'round_id'])
+
         if row['log_name'] == eval_log_name:
-            row['round_id'], row['data_id'] = round_id, data_id
-            row['iteration_id'], row['_model_version'] = iter_counter, seq_counter
+            if not has_ids:
+                row['round_id'], row['data_id'] = round_id, data_id
+                row['iteration_id'] = iter_counter
+            
+            if pd.isna(row.get('_model_version')):
+                row['_model_version'] = seq_counter
+
             state['sequential_id_counter'] += 1
             state['iteration_id_counter'] = 0
             state['current_round_id'], state['current_data_id'] = round_id, data_id
         elif row['log_name'] == iter_log_name:
-            row['round_id'], row['data_id'] = round_id, data_id
-            row['iteration_id'], row['_model_version'] = iter_counter, seq_counter
+            if not has_ids:
+                row['round_id'], row['data_id'] = round_id, data_id
+                row['iteration_id'] = iter_counter
+
+            if pd.isna(row.get('_model_version')):
+                row['_model_version'] = seq_counter
+
             state['iteration_id_counter'] += 1
         else:
-            row['round_id'], row['data_id'] = pd.NA, pd.NA 
-            row['iteration_id'] = pd.NA
+            if not has_ids:
+                row['round_id'], row['data_id'] = pd.NA, pd.NA 
+                row['iteration_id'] = pd.NA
         return row
     return process
 

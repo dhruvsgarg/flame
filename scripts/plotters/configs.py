@@ -14,6 +14,7 @@ def handle_stat_utility(parser: 'LogParser', match: re.Match) -> Dict[str, Any]:
     return {'round': round_num, 'data_id': data_id, 'iteration': iteration}
 
 # --- Configs ---
+# Note: Patterns are checked in order & only the first match is used
 LOG_CONFIG = {
     'flame_fwdllm_aggregator': [
         {
@@ -81,6 +82,74 @@ LOG_CONFIG = {
             'group_to_columns': {
                 'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
                 'runtime': ('aggregate_latency', float)
+            }
+        },
+        {
+            'name': 'eval_model_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of eval_model:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('eval_model_latency', float),
+                'round_id': ('round_id', int),
+                'data_id': ('data_id', int),
+                'iter_id': ('iteration_id', int),
+                'trainer_id': ('trainer_id', None)
+            }
+        },
+        {
+            'name': 'aggregate_and_collect_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of aggregate_and_collect:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('aggregate_and_collect_latency', float),
+                'round_id': ('round_id', int),
+                'data_id': ('data_id', int),
+                'iter_id': ('iteration_id', int),
+                'trainer_id': ('trainer_id', None)
+            }
+        },
+        {
+            'name': 'aggregate_runtime',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of aggregate:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('aggregate_runtime', float),
+                'round_id': ('round_id', int),
+                'data_id': ('data_id', int),
+                'iter_id': ('iteration_id', int),
+                'trainer_id': ('trainer_id', None)
+            }
+        },
+        {
+            'name': 'aggregate_grads_sync_latency',     # As compared to aggregate_grads, it contains iterationId
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _aggregate_grads_sync:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('aggregate_grads_sync_latency', float),
+                'round_id': ('round_id', int),
+                'data_id': ('data_id', int),
+                'iter_id': ('iteration_id', int),
+                'trainer_id': ('trainer_id', None)
             }
         },
     ],
@@ -188,6 +257,125 @@ LOG_CONFIG = {
                 'trainer_id': ('trainer_id', str)
             }
         },
+        {
+            'name': 'make_model_functional_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _make_model_functional:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('make_model_functional_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'select_optimal_perturbations_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _select_optimal_perturbations:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('select_optimal_perturbations_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'compute_batch_stat_utility_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _compute_batch_stat_utility:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('compute_batch_stat_utility_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'prepare_perturbation_tensors_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _prepare_perturbation_tensors:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('prepare_perturbation_tensors_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'compute_forward_jvp_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _compute_forward_jvp:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('compute_forward_jvp_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'accumulate_and_extract_grads_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _accumulate_and_extract_grads:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('accumulate_and_extract_grads_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
+        {
+            'name': 'force_cuda_memory_cleanup_latency',
+            'regex': re.compile(
+                r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
+                r"\[decorator\]\sRuntime of _force_cuda_memory_cleanup:\s(?P<runtime>[\d\.]+)s\s"
+                r"\(Round=(?P<round_id>None|\d+),\sDataId=(?P<data_id>None|\d+),\sIter=(?P<iter_id>None|\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
+            ),
+            'type': 'EXTRACT',
+            'group_to_columns': {
+                'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
+                'runtime': ('force_cuda_memory_cleanup_latency', float),
+                'round_id': ('round_id', lambda x: None if x == 'None' else int(x)),
+                'data_id': ('data_id', lambda x: None if x == 'None' else int(x)),
+                'iter_id': ('iteration_id', lambda x: None if x == 'None' else int(x)),
+                'trainer_id': ('trainer_id', lambda x: None if x == 'None' else str(x))
+            }
+        },
     ],
     'flame_fwdllm_trainer_old': [
         {
@@ -287,7 +475,22 @@ EXPORT_CONFIG = {
             'default_output_filename': lambda: f'{CONSTANTS['file_prefix']}-aggregate_latency.csv',
             'log_names': ['aggregate'],
             'columns': ['timestamp', 'aggregate_latency']
-        }
+        },
+        'eval_model_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-eval_model_latency.csv',
+            'log_names': ['eval_model_latency'],
+            'columns': ['timestamp', 'eval_model_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'aggregate_and_collect_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency.csv',
+            'log_names': ['aggregate_and_collect_latency'],
+            'columns': ['timestamp', 'aggregate_and_collect_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'aggregate_runtime_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_runtime_latency.csv',
+            'log_names': ['aggregate_runtime'],
+            'columns': ['timestamp', 'aggregate_runtime', 'round_id', 'data_id', 'iteration_id']
+        },
     },
     'flame_fwdllm_trainer': {
         # 'train_times': {
@@ -325,6 +528,41 @@ EXPORT_CONFIG = {
             'default_output_filename': lambda: f'{CONSTANTS['file_prefix']}-pause_execution.csv',
             'log_names': ['pause_execution'],
             'columns': ['timestamp', 'trainer_id', 'pause_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'make_model_functional_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-make_model_functional_latency.csv',
+            'log_names': ['make_model_functional_latency'],
+            'columns': ['timestamp', 'trainer_id', 'make_model_functional_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'select_optimal_perturbations_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-select_optimal_perturbations_latency.csv',
+            'log_names': ['select_optimal_perturbations_latency'],
+            'columns': ['timestamp', 'trainer_id', 'select_optimal_perturbations_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'compute_batch_stat_utility_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-compute_batch_stat_utility_latency.csv',
+            'log_names': ['compute_batch_stat_utility_latency'],
+            'columns': ['timestamp', 'trainer_id', 'compute_batch_stat_utility_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'prepare_perturbation_tensors_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-prepare_perturbation_tensors_latency.csv',
+            'log_names': ['prepare_perturbation_tensors_latency'],
+            'columns': ['timestamp', 'trainer_id', 'prepare_perturbation_tensors_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'compute_forward_jvp_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-compute_forward_jvp_latency.csv',
+            'log_names': ['compute_forward_jvp_latency'],
+            'columns': ['timestamp', 'trainer_id', 'compute_forward_jvp_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'accumulate_and_extract_grads_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-accumulate_and_extract_grads_latency.csv',
+            'log_names': ['accumulate_and_extract_grads_latency'],
+            'columns': ['timestamp', 'trainer_id', 'accumulate_and_extract_grads_latency', 'round_id', 'data_id', 'iteration_id']
+        },
+        'force_cuda_memory_cleanup_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-force_cuda_memory_cleanup_latency.csv',
+            'log_names': ['force_cuda_memory_cleanup_latency'],
+            'columns': ['timestamp', 'trainer_id', 'force_cuda_memory_cleanup_latency', 'round_id', 'data_id', 'iteration_id']
         }
     },
     'flame_fwdllm_trainer_old': {
