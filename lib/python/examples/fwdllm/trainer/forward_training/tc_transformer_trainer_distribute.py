@@ -356,6 +356,7 @@ class ForwardTextClassificationTrainer:
         self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
+        # TODO: Figure out if this _force_cuda_memory_cleanup() is needed
         gc.collect()
         torch.cuda.empty_cache()
 

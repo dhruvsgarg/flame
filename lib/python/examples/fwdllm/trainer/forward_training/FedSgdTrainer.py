@@ -384,7 +384,8 @@ class FedSGDTrainer(Trainer):
         # In async: Index = model version % round
         list_index = self._model_version % self._round if self._model_version  > self._round else self._model_version
         self.trainer.train(
-            [self.train_local_list[0][list_index]], self.device, self.args
+            [self.train_local_list[0][list_index]], self.device, self.args,
+            {"round_id": self._round, "data_id": self.data_id, "iteration": self.iteration}
         )
             
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check
