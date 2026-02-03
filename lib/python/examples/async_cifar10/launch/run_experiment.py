@@ -48,6 +48,12 @@ class ExperimentRunner:
         print(f"RUNNING EXPERIMENT: {exp_config.name}")
         print("="*70)
         
+        # Initialize paths early for exception handling
+        aggregator_config_path = None
+        aggregator_main_path = None
+        agg_log_file = None
+        trainers_log_file = None
+        
         try:
             # Step 1: Setup experiment directory
             print("\n[1/6] Setting up experiment directory...")
@@ -87,6 +93,7 @@ class ExperimentRunner:
             if not aggregator_config_path.exists():
                 raise FileNotFoundError(f"Aggregator config not found: {aggregator_config_path}")
             
+            print(f"  Spawning aggregator with config: {aggregator_config_path}")
             self.aggregator_spawner.spawn(aggregator_main_path, aggregator_config_path)
             
             # Wait for aggregator to be ready
@@ -146,7 +153,10 @@ class ExperimentRunner:
             print("\n✓ Experiment completed successfully")
             
         except Exception as e:
+            import traceback
             print(f"\n✗ Experiment failed: {e}")
+            print("\nFull traceback:")
+            traceback.print_exc()
             raise
         finally:
             self._cleanup()
