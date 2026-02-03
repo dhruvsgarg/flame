@@ -62,106 +62,89 @@ class MockAggregator:
             device = self.device
 
         logger.info(f"device inside eval_model() is set to: {device}")
-        self.log_memory("start eval_model", self.device)
+        self.log_memory("start eval_model", device)
 
         results = {}
-
-        eval_loss = 0.0
+        eval_loss_acc = torch.tensor(0.0, device=device)
         nb_eval_steps = 0
-        n_batches = len(self.test_global)
         test_sample_len = len(self.test_global.dataset)
-        preds = np.empty((test_sample_len, self.num_labels))
-
-        logger.info(
-            f"Created n_batches: {n_batches}, test_sample_len: {test_sample_len} and preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}"
-        )
-
-        out_label_ids = np.empty(test_sample_len)
+        
         # Move model to device before performing the eval
         self.model.to(device)
         self.model.eval()
-        
-        # Original code uses functional call: self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
-        try:
-            import functorch as fc
-            self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
-        except ImportError:
-            try:
-                import torch.func as fc
-                self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(self.model)
-            except ImportError:
-                logger.warning("functorch or torch.func not found, skipping make_functional_with_buffers")
 
-        # Metering for granular analysis
-        data_movement_times = []
-        forward_pass_times = []
+        # One-time GPU data transfer if enabled and not already cached
+        t_cache_start = time.time()
+        if not hasattr(self, "_cached_test_data") or self._cached_test_data is None:
+            logger.info("One-time GPU data transfer for evaluation dataset")
+            self._cached_test_data = [t.to(device) for t in self.test_global.dataset.tensors]
+        t_cache_end = time.time()
+        cache_time = t_cache_end - t_cache_start
 
-        for i, batch in enumerate(self.test_global):
-            with torch.no_grad():
-                # Metering: Data Movement Start
-                if device.type == 'cuda': torch.cuda.synchronize()
-                t0 = time.time()
+        # Use GPU tensors for inputs/labels
+        input_ids_all = self._cached_test_data[1]
+        labels_all = self._cached_test_data[4]
+
+        # Accumulate predictions on GPU to avoid per-batch CPU sync
+        preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
+        out_label_ids_gpu = torch.empty(test_sample_len, dtype=labels_all.dtype, device=device)
+
+        batch_size = self.args.eval_batch_size
+        loss_fct = CrossEntropyLoss()
+
+        # Metering for granular analysis (new optimized loop)
+        inner_loop_times = []
+
+        with torch.no_grad():
+            for i in range(0, test_sample_len, batch_size):
+                t_inner_start = time.time()
+                end_index = min(i + batch_size, test_sample_len)
                 
-                batch = tuple(t for t in batch)
-                x = batch[1].to(device)
-                labels = batch[4].to(device)
-                
-                # Metering: Data Movement End
-                if device.type == 'cuda': torch.cuda.synchronize()
-                t1 = time.time()
-                data_movement_times.append(t1 - t0)
+                x = input_ids_all[i:end_index]
+                labels = labels_all[i:end_index]
 
-                # Metering: Forward Pass Start
+                # Forward pass
                 output = self.model(x)
-                logits = output[0]
-                
-                # Metering: Forward Pass End
-                if device.type == 'cuda': torch.cuda.synchronize()
-                t2 = time.time()
-                forward_pass_times.append(t2 - t1)
+                if hasattr(output, "logits"):
+                    logits = output.logits
+                elif isinstance(output, (tuple, list)):
+                    logits = output[0]
+                else:
+                    logits = output
 
-                loss_fct = CrossEntropyLoss()
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-                eval_loss += loss.item()
+                eval_loss_acc += loss
 
-            nb_eval_steps += 1
-            # Note: start_index calculation in original code: start_index = self.args.eval_batch_size * i
-            # Using eval_batch_size from args as it might vary
-            current_batch_size = x.size(0)
-            start_index = self.args.eval_batch_size * i
+                preds_gpu[i:end_index] = logits
+                out_label_ids_gpu[i:end_index] = labels
+                nb_eval_steps += 1
+                
+                t_inner_end = time.time()
+                inner_loop_times.append(t_inner_end - t_inner_start)
 
-            end_index = (
-                start_index + current_batch_size
-                if i != (n_batches - 1)
-                else test_sample_len
-            )
-            preds[start_index:end_index] = logits.detach().cpu().numpy()
-            out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
-
-        eval_loss = eval_loss / nb_eval_steps
+        # Move back to CPU once at the end
+        eval_loss = (eval_loss_acc / nb_eval_steps).item()
+        preds = preds_gpu.cpu().numpy()
+        out_label_ids = out_label_ids_gpu.cpu().numpy()
 
         model_outputs = preds
-        preds = np.argmax(preds, axis=1)
+        preds_argmax = np.argmax(preds, axis=1)
+        
         result, wrong = self.compute_metrics(
-            preds, out_label_ids, self.test_global.examples
+            preds_argmax, out_label_ids, self.test_global.examples
         )
         result["eval_loss"] = eval_loss
         results.update(result)
 
         # Log granular metrics
-        logger.info(f"Granular Performance (Avg per batch): Data Movement: {np.mean(data_movement_times)*1000:.2f}ms, Forward Pass: {np.mean(forward_pass_times)*1000:.2f}ms")
+        logger.info(f"Optimization Metrics: Cache transfer: {cache_time*1000:.2f}ms, Avg Inner Loop (Pure Forward): {np.mean(inner_loop_times)*1000:.2f}ms")
 
-        # self.results.update(result)
         logging.info(f"results after eval are: {results}, len(wrong) is: {len(wrong)}")
 
-        # TODO: Check if model needs to be moved back to cpu? Do we need to keep
-        # moving the model between CPU and GPU repeatedly?
-        del x, labels, output, logits, loss
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         gc.collect()
 
-        self.log_memory("end eval_model", self.device)
+        self.log_memory("end eval_model", device)
 
         return result, model_outputs, wrong
 
