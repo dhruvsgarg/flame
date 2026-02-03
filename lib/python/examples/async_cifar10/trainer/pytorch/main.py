@@ -146,29 +146,37 @@ class PyTorchCifar10Trainer(Trainer):
         logger.info(
             f"Trainer id {self.trainer_id} has battery threshold set to {self.event_battery_threshold}"
         )
+        
+        # Helper function to handle both string and list formats
+        def parse_trace(value):
+            if isinstance(value, list):
+                return value  # Already parsed (from JSON config)
+            else:
+                return ast.literal_eval(value)  # String format (from file config)
+        
         if self.event_battery_threshold == 50:
-            self.avl_events_3_state = ast.literal_eval(
+            self.avl_events_3_state = parse_trace(
                 self.config.hyperparameters.avl_events_mobiperf_3st_50
             )
         elif self.event_battery_threshold == 75:
-            self.avl_events_3_state = ast.literal_eval(
+            self.avl_events_3_state = parse_trace(
                 self.config.hyperparameters.avl_events_mobiperf_3st_75
             )
 
-        self.avl_events_mobiperf_2st = ast.literal_eval(
+        self.avl_events_mobiperf_2st = parse_trace(
             self.config.hyperparameters.avl_events_mobiperf_2st
         )
 
         # Storing synthetic avail traces
-        self.avl_events_syn_0 = ast.literal_eval(
+        self.avl_events_syn_0 = parse_trace(
             self.config.hyperparameters.avl_events_syn_0
         )
 
-        self.avl_events_syn_20 = ast.literal_eval(
+        self.avl_events_syn_20 = parse_trace(
             self.config.hyperparameters.avl_events_syn_20
         )
 
-        self.avl_events_syn_50 = ast.literal_eval(
+        self.avl_events_syn_50 = parse_trace(
             self.config.hyperparameters.avl_events_syn_50
         )
 

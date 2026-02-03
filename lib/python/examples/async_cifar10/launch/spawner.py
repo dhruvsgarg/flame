@@ -161,12 +161,20 @@ class TrainerSpawner:
         self,
         config_generator: ConfigGenerator,
         num_gpus: int = 8,
-        sleep_between_spawns: float = 1.0
+        sleep_between_spawns: float = 1.0,
+        log_file: Optional[Path] = None
     ):
         self.config_gen = config_generator
         self.num_gpus = num_gpus
         self.sleep_between_spawns = sleep_between_spawns
+        self.log_file = log_file
         self.processes = []
+        self._log_handle = None
+        
+        # Open combined log file if specified
+        if self.log_file:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            self._log_handle = open(self.log_file, 'w', buffering=1)  # Line buffered
     
     def spawn_trainer(
         self,
@@ -210,12 +218,22 @@ class TrainerSpawner:
             '--config-json', config_json
         ]
         
+        # Determine stdout/stderr handling
+        if self._log_handle:
+            # Write to combined log file with trainer ID prefix
+            stdout_target = self._log_handle
+            stderr_target = subprocess.STDOUT
+        else:
+            # Default: pipe
+            stdout_target = subprocess.PIPE
+            stderr_target = subprocess.PIPE
+        
         # Spawn process
         process = subprocess.Popen(
             cmd,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=stdout_target,
+            stderr=stderr_target,
             text=True
         )
         
@@ -284,6 +302,11 @@ class TrainerSpawner:
                     proc_info['process'].kill()
             except:
                 pass
+        
+        # Close log file
+        if self._log_handle:
+            self._log_handle.close()
+            self._log_handle = None
 
 
 # Example usage
