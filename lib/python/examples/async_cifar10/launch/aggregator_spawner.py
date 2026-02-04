@@ -60,14 +60,20 @@ class AggregatorSpawner:
             wandb_available = False
             try:
                 # Local import to avoid making wandb a hard dependency of this module
-                import wandb  # type: ignore[import] # wandb is optional dependency
+                import wandb  # type: ignore[import-untyped] # wandb is optional dependency
                 # If import succeeds, assume wandb is available; detailed config checks
                 # (e.g., API key) are handled by the aggregator process itself.
                 wandb_available = True
-            except Exception:
+            except ImportError:
                 print(
                     "  ⚠ wandb logging was requested, but the 'wandb' package is not "
-                    "available or failed to import. Continuing without wandb logging."
+                    "installed. Continuing without wandb logging. "
+                    "Install with: pip install wandb"
+                )
+            except Exception as exc:
+                print(
+                    f"  ⚠ wandb logging was requested, but wandb import failed: {exc}. "
+                    "Continuing without wandb logging."
                 )
 
             if wandb_available:
