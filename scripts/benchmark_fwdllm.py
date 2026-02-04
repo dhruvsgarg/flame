@@ -88,6 +88,8 @@ class MockAggregator:
         input_mask_all = self._cached_test_data[2]
         labels_all = self._cached_test_data[4]
 
+        logger.info(f"Actual tensor shape in GPU memory: {input_ids_all.shape} (BS, SeqLen)")
+
         # Accumulate predictions on GPU
         preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
         out_label_ids_gpu = torch.empty(test_sample_len, dtype=labels_all.dtype, device=device)
@@ -99,7 +101,8 @@ class MockAggregator:
         inner_loop_times = []
 
         t_loop_start = time.time()
-        with torch.no_grad():
+        from torch.cuda.amp import autocast
+        with torch.no_grad(), autocast():
             for i in range(0, test_sample_len, batch_size):
                 if torch.cuda.is_available(): torch.cuda.synchronize()
                 t_inner_start = time.time()
