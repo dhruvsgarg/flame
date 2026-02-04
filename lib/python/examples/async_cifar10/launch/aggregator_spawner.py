@@ -60,7 +60,8 @@ class AggregatorSpawner:
             wandb_available = False
             try:
                 # Local import to avoid making wandb a hard dependency of this module
-                import wandb  # type: ignore[import-untyped] # wandb is optional dependency
+                # wandb is an optional dependency that may not be installed
+                import wandb  # type: ignore[import-untyped]
                 # If import succeeds, assume wandb is available; detailed config checks
                 # (e.g., API key) are handled by the aggregator process itself.
                 wandb_available = True

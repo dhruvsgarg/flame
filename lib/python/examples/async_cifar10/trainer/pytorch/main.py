@@ -24,6 +24,7 @@ import ast
 import calendar
 import gc
 import logging
+import os
 import threading
 import time
 import math
@@ -518,7 +519,6 @@ def main():
         # Create a temporary config file or pass dict directly
         # For now, write to temp file for compatibility with Config class
         import tempfile
-        import os
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(config_dict, f)
             temp_config_path = f.name
