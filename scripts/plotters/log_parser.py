@@ -31,20 +31,42 @@ def configure():
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_01_21_52.log")
     # log_file_type = "flame_fwdllm_aggregator"
     # CONSTANTS['file_prefix'] = "sync_nck_5_baseline_agg"
-    log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_01_02_53.log")
-    log_file_type = "flame_fwdllm_aggregator"
-    CONSTANTS['file_prefix'] = "sync_n100_c30_k5_baseline_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_01_02_53.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_baseline_agg"
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_01_21_52.log")
     # log_file_type = "flame_fwdllm_trainer"
     # CONSTANTS['file_prefix'] = "sync_nck_5_baseline_trainer"
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_01_02_53.log")
     # log_file_type = "flame_fwdllm_trainer"
-    # CONSTANTS['file_prefix'] = "sync_n100_c30_k5_baseline_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_baseline_trainer"
+
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_27_01_19_57.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_nck_5_eval256_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_27_01_19_57.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_nck_5_eval256_trainer"
+
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_16.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval32_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_16.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval32_trainer"
+    log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_56.log")
+    log_file_type = "flame_fwdllm_aggregator"
+    CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_56.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_trainer"
 
     ## Post processors on the parsed data
     row_proc_steps = [
-        # create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
-        # create_time_calculator_processor(start_log_name='first_distribute_weights'),
+        create_sequential_id_processor(eval_log_name='eval_model', iter_log_name='var'),
+        create_time_calculator_processor(start_log_name='first_distribute_weights'),
     ]
 
     df_proc_steps = []
@@ -117,6 +139,9 @@ def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Ca
                 row['iteration_id'] = pd.NA
         return row
     return process
+
+# def time_per_iteration_processor(start_log_name: str) -> Callable:
+#     def process(row: pd.Series, state: dict) -> pd.Series:
 
 
 def create_time_calculator_processor(start_log_name: str) -> Callable:

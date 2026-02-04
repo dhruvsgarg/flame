@@ -334,6 +334,7 @@ class TopAggregator(AsyncTopAgg):
         logger.info("Completed reading all trainer unavailability from files")
         return trainer_events_dict
 
+    # TODO: checking if CPU or GPU & timing it
     def aggregate_grads_from_trainers(self, trainer_grad, version_for_rate: int, stat_utility: float = 0.0, grad_for_var_check=None):
         """Aggregate a single trainer's gradients into self.grad.
 

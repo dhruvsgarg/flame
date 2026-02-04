@@ -459,7 +459,7 @@ EXPORT_CONFIG = {
             'default_output_filename': lambda: f'{CONSTANTS['file_prefix']}-evaluation_metrics.csv',
             # 'default_output_filename': f'evaluation_metrics.csv',
             'log_names': ['eval_model'],
-            'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy']
+            'columns': ['timestamp', 'time_since_start', 'round_id', 'data_id', 'accuracy', 'data_id_iterations']
         },
         # 'trainer_performance': {
         #     'default_output_filename': 'trainer_performance.csv',

@@ -44,6 +44,69 @@ TRAINER_PLOTTING_CONFIG = {
             'x_label': 'Pause Execution Latency (seconds)',
             'y_label': 'CDF',
             'title': lambda: f'Pause Latency ({CONSTANTS['file_prefix']})'
+        },
+        {
+            'latency_type': 'make_model_functional_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-make_model_functional_latency.csv',
+            'latency_column': 'make_model_functional_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-make_model_functional_latency_cdf.png',
+            'x_label': 'Make Model Functional Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Make Model Functional Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'select_optimal_perturbations_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-select_optimal_perturbations_latency.csv',
+            'latency_column': 'select_optimal_perturbations_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-select_optimal_perturbations_latency_cdf.png',
+            'x_label': 'Select Optimal Perturbations Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Select Optimal Perturbations Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'compute_batch_stat_utility_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-compute_batch_stat_utility_latency.csv',
+            'latency_column': 'compute_batch_stat_utility_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-compute_batch_stat_utility_latency_cdf.png',
+            'x_label': 'Compute Batch Stat Utility Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Compute Batch Stat Utility Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'prepare_perturbation_tensors_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-prepare_perturbation_tensors_latency.csv',
+            'latency_column': 'prepare_perturbation_tensors_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-prepare_perturbation_tensors_latency_cdf.png',
+            'x_label': 'Prepare Perturbation Tensors Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Prepare Perturbation Tensors Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'compute_forward_jvp_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-compute_forward_jvp_latency.csv',
+            'latency_column': 'compute_forward_jvp_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-compute_forward_jvp_latency_cdf.png',
+            'x_label': 'Compute Forward JVP Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Compute Forward JVP Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'accumulate_and_extract_grads_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-accumulate_and_extract_grads_latency.csv',
+            'latency_column': 'accumulate_and_extract_grads_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-accumulate_and_extract_grads_latency_cdf.png',
+            'x_label': 'Accumulate and Extract Grads Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Accumulate and Extract Grads Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'force_cuda_memory_cleanup_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-force_cuda_memory_cleanup_latency.csv',
+            'latency_column': 'force_cuda_memory_cleanup_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-force_cuda_memory_cleanup_latency_cdf.png',
+            'x_label': 'Force CUDA Memory Cleanup Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Force CUDA Memory Cleanup Latency ({CONSTANTS["file_prefix"]})'
         }
     ],
     'directory_name': 'plots/',
@@ -70,7 +133,34 @@ AGGREGATOR_PLOTTING_CONFIG = {
             'x_label': 'Aggregate Latency (seconds)',
             'y_label': 'CDF',
             'title': lambda: f'Aggregate Latency ({CONSTANTS['file_prefix']})'
-        }
+        },
+        {
+            'latency_type': 'eval_model_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-eval_model_latency.csv',
+            'latency_column': 'eval_model_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-eval_model_latency_cdf.png',
+            'x_label': 'Eval Model Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Eval Model Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'aggregate_and_collect_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency.csv',
+            'latency_column': 'aggregate_and_collect_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency_cdf.png',
+            'x_label': 'Aggregate and Collect Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Aggregate and Collect Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'aggregate_runtime_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-aggregate_runtime_latency.csv',
+            'latency_column': 'aggregate_runtime',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_runtime_latency_cdf.png',
+            'x_label': 'Aggregate Runtime Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Aggregate Runtime Latency ({CONSTANTS["file_prefix"]})'
+        },
     ],
     'directory_name': 'plots/',
     'x_lim_left': 0,
@@ -243,13 +333,9 @@ def process_cdf_configs(config, config_name):
 if __name__ == "__main__":
     print("Starting CDF plot generation...")
     
-    CONSTANTS['file_prefix'] = 'sync_nck_5_baseline_trainer'
+    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_eval256_trainer'
     process_cdf_configs(TRAINER_PLOTTING_CONFIG, "Trainer")
-    CONSTANTS['file_prefix'] = 'sync_nck_5_baseline_agg'
-    process_cdf_configs(AGGREGATOR_PLOTTING_CONFIG, "Aggregator")
-    CONSTANTS['file_prefix'] = 'sync_n100_c30_k5_baseline_trainer'
-    process_cdf_configs(TRAINER_PLOTTING_CONFIG, "Trainer")
-    CONSTANTS['file_prefix'] = 'sync_n100_c30_k5_baseline_agg'
+    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_eval256_agg'
     process_cdf_configs(AGGREGATOR_PLOTTING_CONFIG, "Aggregator")
     
     print("\n" + "="*60)
