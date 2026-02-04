@@ -1352,8 +1352,6 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
-<<<<<<< HEAD
-=======
                 
                 shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
 
@@ -1367,7 +1365,6 @@ class TopAggregator(AsyncTopAgg):
                         if param.requires_grad:
                             shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
                         idx += 1
->>>>>>> origin/perf/measure_iter_time
 
                 payload = {
                     MessageType.WEIGHTS: shared_weights,
@@ -1419,7 +1416,7 @@ class TopAggregator(AsyncTopAgg):
                 # Added a 0.5 second sleep so as to not overwhelm mqtt
                 # time.sleep(0.5)
             del payload
-            gc.collect()
+            # gc.collect()
 
             # Update send_time in training_duration_s
             if end not in self._track_trainer_version_duration_s.keys():

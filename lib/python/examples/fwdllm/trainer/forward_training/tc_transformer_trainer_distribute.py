@@ -385,8 +385,7 @@ class ForwardTextClassificationTrainer:
         allocated_before = torch.cuda.memory_allocated(device)
 
         # TODO: Figure out if this _force_cuda_memory_cleanup() is needed
-        gc.collect()
-        torch.cuda.empty_cache()
+        self._force_cuda_memory_cleanup(device, "before_train_model")
 
         """
         If you want absolute determinism between runs, run the model in eval mode. Make sure to switch the model back to train model before the method returns: `self.model.train()`. 
