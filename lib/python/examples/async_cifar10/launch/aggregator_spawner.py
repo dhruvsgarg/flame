@@ -3,7 +3,6 @@ Aggregator spawner for Phase 3.
 
 Spawns aggregator process with log capture.
 """
-import json
 import subprocess
 import sys
 import time
@@ -57,9 +56,24 @@ class AggregatorSpawner:
         
         # Add optional wandb flags
         if log_to_wandb:
-            cmd.append('--log_to_wandb')
-            if wandb_run_name:
-                cmd.extend(['--wandb_run_name', wandb_run_name])
+            # Validate that wandb is available before enabling wandb logging
+            wandb_available = False
+            try:
+                # Local import to avoid making wandb a hard dependency of this module
+                import wandb  # type: ignore[import]
+                # If import succeeds, assume wandb is available; detailed config checks
+                # (e.g., API key) are handled by the aggregator process itself.
+                wandb_available = True
+            except Exception as exc:
+                print(
+                    "  ⚠ wandb logging was requested, but the 'wandb' package is not "
+                    "available or failed to import. Continuing without wandb logging."
+                )
+
+            if wandb_available:
+                cmd.append('--log_to_wandb')
+                if wandb_run_name:
+                    cmd.extend(['--wandb_run_name', wandb_run_name])
         
         # Spawn process
         self.process = subprocess.Popen(
@@ -123,8 +137,9 @@ class AggregatorSpawner:
                 time.sleep(2)
                 if self.process.poll() is None:
                     self.process.kill()
-            except:
-                pass
+            except Exception as exc:
+                # Process may have already terminated; ignore cleanup errors
+                print(f"  ⚠ Failed to terminate aggregator cleanly: {exc}")
         
         if self._log_handle:
             self._log_handle.close()

@@ -4,7 +4,7 @@ Experiment configuration schema for Phase 3.
 Defines data structures for experiment configurations.
 """
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from pathlib import Path
 import yaml
 

@@ -10,7 +10,6 @@ import json
 import subprocess
 import time
 import os
-import signal
 from pathlib import Path
 from typing import Dict, List, Optional
 import sys
@@ -292,7 +291,8 @@ class TrainerSpawner:
         for proc_info in self.processes:
             try:
                 proc_info['process'].terminate()
-            except:
+            except Exception:
+                # Process may have already terminated; ignore
                 pass
         
         # Wait a bit, then kill if needed
@@ -301,7 +301,8 @@ class TrainerSpawner:
             try:
                 if proc_info['process'].poll() is None:
                     proc_info['process'].kill()
-            except:
+            except Exception:
+                # Process may have already terminated; ignore
                 pass
         
         # Close log file

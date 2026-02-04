@@ -8,7 +8,6 @@ Saves complete experiment state including:
 - Metadata checksums
 - Git commit info
 """
-import json
 import yaml
 import hashlib
 import subprocess
@@ -127,7 +126,8 @@ class ExperimentSnapshot:
                 'clean': len(status) == 0,
                 'uncommitted_changes': bool(status),
             }
-        except:
+        except Exception:
+            # Git may not be available or not a git repository
             return {'error': 'Git information not available'}
     
     def _compute_metadata_checksums(self, metadata_dir: Path) -> Dict:
@@ -161,7 +161,7 @@ class ExperimentSnapshot:
         with open(file_path, 'rb') as f:
             for chunk in iter(lambda: f.read(4096), b''):
                 sha256.update(chunk)
-        return sha256.hexdigest()[:16]  # Use first 16 chars
+        return sha256.hexdigest()  # Use full hash for collision resistance
     
     @classmethod
     def load_snapshot(cls, snapshot_file: Path) -> Dict:

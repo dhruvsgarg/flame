@@ -152,7 +152,14 @@ class PyTorchCifar10Trainer(Trainer):
             if isinstance(value, list):
                 return value  # Already parsed (from JSON config)
             else:
-                return ast.literal_eval(value)  # String format (from file config)
+                # String format (from file config) - validate it's a safe list literal
+                try:
+                    parsed = ast.literal_eval(value)
+                    if not isinstance(parsed, list):
+                        raise ValueError(f"Expected list, got {type(parsed)}")
+                    return parsed
+                except (ValueError, SyntaxError) as e:
+                    raise ValueError(f"Invalid trace format: {e}")
         
         if self.event_battery_threshold == 50:
             self.avl_events_3_state = parse_trace(
@@ -511,13 +518,16 @@ def main():
         # Create a temporary config file or pass dict directly
         # For now, write to temp file for compatibility with Config class
         import tempfile
+        import os
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(config_dict, f)
             temp_config_path = f.name
-        config = Config(temp_config_path)
-        # Clean up temp file after Config loads it
-        import os
-        os.unlink(temp_config_path)
+        
+        try:
+            config = Config(temp_config_path)
+        finally:
+            # Clean up temp file even if Config() fails
+            os.unlink(temp_config_path)
     elif args.config:
         # Load config from file (legacy mode)
         config = Config(args.config)

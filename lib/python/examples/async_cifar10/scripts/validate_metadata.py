@@ -8,7 +8,7 @@ Phase 1.2 of Configuration Migration
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import sys
 
 class MetadataValidator:

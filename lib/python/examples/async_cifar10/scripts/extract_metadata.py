@@ -9,7 +9,7 @@ import json
 import yaml
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Set
+from typing import List
 
 class MetadataExtractor:
     def __init__(self, trainer_config_dirs: List[Path], output_dir: Path):
@@ -271,8 +271,6 @@ class MetadataExtractor:
 
 # Main execution
 if __name__ == '__main__':
-    import sys
-    
     # Define config directories to process
     base_dir = Path(__file__).parent.parent / 'trainer'
     config_dirs = [
