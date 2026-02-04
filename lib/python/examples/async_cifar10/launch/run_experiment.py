@@ -24,6 +24,7 @@ from launch.experiment_config import load_experiment_config, ExperimentConfig
 from launch.spawner import MetadataLoader, ConfigGenerator, TrainerSpawner
 from launch.aggregator_spawner import AggregatorSpawner
 from launch.snapshot import ExperimentSnapshot
+from launch.execution_config_generator import create_execution_config, save_execution_config
 
 
 class ExperimentRunner:
@@ -94,7 +95,16 @@ class ExperimentRunner:
                 raise FileNotFoundError(f"Aggregator config not found: {aggregator_config_path}")
             
             print(f"  Spawning aggregator with config: {aggregator_config_path}")
-            self.aggregator_spawner.spawn(aggregator_main_path, aggregator_config_path)
+            if exp_config.aggregator.log_to_wandb:
+                print(f"  Wandb logging enabled")
+                if exp_config.aggregator.wandb_run_name:
+                    print(f"    Run name: {exp_config.aggregator.wandb_run_name}")
+            self.aggregator_spawner.spawn(
+                aggregator_main_path, 
+                aggregator_config_path,
+                log_to_wandb=exp_config.aggregator.log_to_wandb,
+                wandb_run_name=exp_config.aggregator.wandb_run_name
+            )
             
             # Wait for aggregator to be ready
             if not self.aggregator_spawner.wait_until_ready(
@@ -102,11 +112,10 @@ class ExperimentRunner:
             ):
                 raise RuntimeError("Aggregator failed to start")
             
-            # Step 4: Create snapshot
-            print("\n[4/6] Creating configuration snapshot...")
-            snapshot = ExperimentSnapshot(self.current_exp_dir)
+            # Step 4: Create execution config and snapshot
+            print("\n[4/6] Creating execution config and snapshot...")
             
-            # Build spawn commands for snapshot
+            # Build spawn commands for record
             trainer_spawn_cmd = self._build_trainer_spawn_command(exp_config)
             agg_spawn_cmd = [
                 sys.executable,
@@ -114,6 +123,20 @@ class ExperimentRunner:
                 str(aggregator_config_path)  # Positional argument
             ]
             
+            # Create compact execution config (primary reproducibility record)
+            exec_config = create_execution_config(
+                exp_config,
+                aggregator_config_path.relative_to(self.example_dir),
+                spawn_commands={
+                    'aggregator': [str(c) for c in agg_spawn_cmd],
+                    'trainers': [str(c) for c in trainer_spawn_cmd]
+                }
+            )
+            exec_config_path = self.current_exp_dir / 'execution_config.yaml'
+            save_execution_config(exec_config, exec_config_path)
+            
+            # Also create legacy snapshot for compatibility
+            snapshot = ExperimentSnapshot(self.current_exp_dir)
             snapshot.create_snapshot(
                 exp_config,
                 self.metadata_dir,

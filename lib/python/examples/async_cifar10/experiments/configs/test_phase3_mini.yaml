@@ -16,5 +16,5 @@ experiments:
     
     execution:
       num_gpus: 2
-      sleep_between_spawns: 2.0
-      aggregator_warmup_time: 5.0
+      sleep_between_spawns: 1
+      aggregator_warmup_time: 5

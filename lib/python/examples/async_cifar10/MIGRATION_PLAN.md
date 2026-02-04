@@ -1517,3 +1517,414 @@ Trainer main.py → receives JSON, creates temp file for Config class
 **Document Version**: 2.0  
 **Last Updated**: February 3, 2026  
 **Status**: Migration Complete - System in Production
+
+---
+
+## PHASE 3 STATUS UPDATE - February 3, 2026 Evening
+
+### Current Implementation Status
+
+**Phase 1**: ✅ COMPLETE - Metadata extraction validated  
+**Phase 2**: ✅ COMPLETE - Programmatic spawning implemented  
+**Phase 3**: ⚠️ IMPLEMENTED BUT UNTESTED - Needs validation and refinement
+
+### Critical Gap Identified
+
+**User Requirements Review:**
+1. ✅ "Programmatic configuration generation at runtime" - ACHIEVED
+2. ⚠️ "One YAML file per execution with all arguments for reproducibility" - NEEDS IMPLEMENTATION
+3. ⚠️ "Underlying launcher scripts remain the same" - NEEDS CLARIFICATION
+
+### The Core Issue
+
+Current snapshot system saves metadata checksums but lacks a clear execution record.
+
+**User requirement**: One YAML file per execution with all arguments to reproduce experiments.
+
+### Optimized Solution: Compact Execution Config with Metadata Keys
+
+**Key insight**: Since metadata is organized with named keys (e.g., `"syn_0"`, `"cifar10_alpha0.1_n300"`), we only need to store the **keys**, not the full data. This keeps execution configs:
+- **Readable**: ~1-2KB, not 50-100KB
+- **Editable**: Easy to modify for next run
+- **Standard**: Uses same labels as launcher scripts and metadata
+- **Reproducible**: Git commit + metadata keys = exact reproduction
+
+Each experiment run generates `execution_config.yaml`:
+```yaml
+# Compact, readable execution record (~1-2KB)
+execution_timestamp: "2026-02-03T14:30:00"
+
+git_info:
+  commit: "abc123def456"
+  branch: "dg/simplify_cifar10_expts"
+  dirty: false
+
+# Metadata references by KEY (not full data)
+metadata_refs:
+  trainer_registry: "metadata/trainer_registry.yaml"
+  dataset_split_key: "cifar10_alpha0.1_n300"  # Key in dataset_splits/
+  availability_trace_key: "syn_0"              # Key in availability_traces/
+
+# Aggregator config by PATH (not embedded)
+aggregator:
+  config_file: "expt_scripts_2026/configs/oort_n300_oracular_9may25_syn0.json"
+  selector: "oort"
+  tracking_mode: "oracular"
+  agg_goal: 10
+
+# Experiment parameters (what changes between runs)
+experiment:
+  name: "oort_n300_alpha0.1_syn0"
+  description: "Oort with 300 trainers, alpha=0.1, synthetic 0% unavailability"
+  
+  trainer:
+    num_trainers: 300
+    start_id: 1
+    trainer_id_range: [1, 300]
+    dataset:
+      alpha: 0.1
+      split_key: "cifar10_alpha0.1_n300"
+    availability:
+      mode: "syn_0"
+      trace_key: "syn_0"
+    battery_threshold: 50
+    speedup_factor: 1.0
+  
+  execution:
+    num_gpus: 8
+    sleep_between_spawns: 1.0
+    aggregator_warmup_time: 10
+
+# Exact spawn commands used
+spawn_commands:
+  aggregator: ["python3", "aggregator/pytorch/main_oort_agg.py", "expt_scripts_2026/configs/oort_n300_oracular_9may25_syn0.json"]
+  trainers: ["python3", "launch/spawner.py", "--alpha", "0.1", "--availability", "syn_0", "--num-trainers", "300", "--start-id", "1", "--num-gpus", "8"]
+```
+
+**Benefits**:
+1. **Compact**: ~1-2KB vs 50-100KB
+2. **Human-readable**: Clear experiment parameters
+3. **Easy to edit**: Change keys/params for next run
+4. **Uses standard labels**: Same as launcher scripts and metadata
+5. **Git-based reproducibility**: Checkout commit → load metadata by keys → spawn
+6. **No duplication**: Metadata folder is single source of truth
+
+### Implementation Plan
+
+#### Task 1: Create `launch/execution_config_generator.py`
+**Purpose**: Generate compact execution configs with metadata keys  
+**Effort**: 1-2 hours
+
+Key function:
+```python
+def create_execution_config(exp_config: ExperimentConfig, 
+                           aggregator_config_path: Path,
+                           spawn_commands: Dict) -> Dict:
+    """Generate compact execution config using metadata keys."""
+    import subprocess
+    
+    return {
+        'execution_timestamp': datetime.now().isoformat(),
+        'git_info': {
+            'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
+            'branch': subprocess.check_output(['git', 'branch', '--show-current']).decode().strip(),
+            'dirty': len(subprocess.check_output(['git', 'status', '--porcelain']).decode()) > 0
+        },
+        'metadata_refs': {
+            'trainer_registry': 'metadata/trainer_registry.yaml',
+            'dataset_split_key': f"cifar10_alpha{exp_config.trainer.dataset.dirichlet_alpha}_n300",
+            'availability_trace_key': exp_config.trainer.availability.mode,
+        },
+        'aggregator': {
+            'config_file': str(aggregator_config_path),
+            'selector': exp_config.aggregator.selector,
+            'tracking_mode': exp_config.aggregator.tracking_mode,
+            'agg_goal': exp_config.aggregator.agg_goal,
+        },
+        'experiment': {
+            'name': exp_config.name,
+            'description': exp_config.description,
+            'trainer': {
+                'num_trainers': exp_config.trainer.num_trainers,
+                'start_id': exp_config.trainer.start_id,
+                'trainer_id_range': [exp_config.trainer.start_id, 
+                                    exp_config.trainer.start_id + exp_config.trainer.num_trainers - 1],
+                'dataset': {
+                    'alpha': exp_config.trainer.dataset.dirichlet_alpha,
+                    'split_key': f"cifar10_alpha{exp_config.trainer.dataset.dirichlet_alpha}_n300",
+                },
+                'availability': {
+                    'mode': exp_config.trainer.availability.mode,
+                    'trace_key': exp_config.trainer.availability.mode,
+                },
+                'battery_threshold': exp_config.trainer.battery_threshold,
+                'speedup_factor': exp_config.trainer.speedup_factor,
+            },
+            'execution': {
+                'num_gpus': exp_config.execution.num_gpus,
+                'sleep_between_spawns': exp_config.execution.sleep_between_spawns,
+                'aggregator_warmup_time': exp_config.execution.aggregator_warmup_time,
+            }
+        },
+        'spawn_commands': spawn_commands
+    }
+```
+
+#### Task 2: Create `launch/reproduce.py`
+**Purpose**: Reproduce experiments from compact execution configs  
+**Effort**: 1-2 hours
+
+Usage:
+```bash
+python3 launch/reproduce.py experiments/run_20260203_143000/execution_config.yaml
+```
+
+Loads metadata using keys, spawns using exact parameters from config:
+```python
+def reproduce_from_config(exec_config_path: Path):
+    """Reproduce experiment using metadata keys from execution config."""
+    with open(exec_config_path) as f:
+        config = yaml.safe_load(f)
+    
+    # Warn if git state differs
+    current_commit = get_git_commit()
+    if current_commit != config['git_info']['commit']:
+        print(f"⚠️  Git commit mismatch: {current_commit[:7]} vs {config['git_info']['commit'][:7]}")
+    
+    # Load metadata using keys
+    example_dir = Path(__file__).parent.parent
+    metadata_loader = MetadataLoader(example_dir / 'metadata')
+    
+    # Extract experiment params
+    exp = config['experiment']
+    
+    # Spawn aggregator
+    agg_config_path = example_dir / config['aggregator']['config_file']
+    agg_spawner = AggregatorSpawner(...)
+    agg_spawner.spawn(agg_config_path)
+    
+    # Spawn trainers using metadata keys
+    config_gen = ConfigGenerator(metadata_loader, ...)
+    trainer_spawner = TrainerSpawner(config_gen, ...)
+    trainer_spawner.spawn_all(2-3 hours (much faster with compact format!)
+- **Testing & debugging (Task 4)**: 2-4 hours
+- **Optional bash wrapper (Task 5)**: 30 minutes
+- **Total**: 4.5-7.5 hours of focused work
+
+### Recommendation
+
+Focus on **Tasks 1-4** in this order:
+1. **Implement execution_config_generator.py** (1-2 hours) - create compact configs with metadata keys
+2. **Integrate into run_experiment.py** (30 min) - auto-generate on each run
+3. **Test mini experiment** (1-2 hours) - verify execution_config.yaml is readable and complete
+4. **Implement reproduce.py** (1-2 hours) - parse keys and spawn processes
+5. **Test reproduction workflow** (1 hour) - ensure exact reproducibility
+6. **Scale to 300 trainers** (1 hour) - validate full-scale experiments
+
+**Key advantages of compact format**:
+- ✅ Faster implementation (no data embedding logic)
+- ✅ Easier to read/edit/debug
+- ✅ Standard labels match launcher scripts
+- ✅ Single source of truth (metadata folder)
+- ✅ Git-based versioning works naturally
+
+exec_config = create_execution_config(
+    exp_config, 
+    aggregator_config_path,
+    spawn_commands={
+        'aggregator': aggregator_cmd,
+        'trainers': trainer_cmd
+    }
+)
+exec_config_file = self.current_exp_dir / 'execution_config.yaml'
+with open(exec_config_file, 'w') as f:
+    yaml.dump(exec_config, f, default_flow_style=False, sort_keys=False)
+print(f"  ✓ Saved execution config: {exec_config_file}")
+```
+
+#### Task 4: Test End-to-End
+**Purpose**: Validate full workflow  
+**Effort**: 2-4 hours
+
+1. Run mini experiment (5 trainers)
+2. Verify execution_config.yaml generated
+3. Test reproduction
+4. Debug any issues
+
+#### Task 5: Bash Script Compatibility (Optional)
+**Purpose**: Keep existing script interface  
+**Effort**: 1 hour
+
+Wrapper:
+```bash
+#!/bin/bash
+# oort_n300_all4unavail.sh - New implementation
+python3 launch/run_experiment.py experiments/configs/oort_n300_all4unavail.yaml
+```
+
+### Testing Roadmap
+
+**Phase 3a: Mini Test (5 trainers)**
+```bash
+python3 launch/run_experiment.py experiments/configs/test_phase3_mini.yaml
+```
+compact, ~1-2KB, human-readable)
+- [ ] Config uses metadata keys (not embedded data)
+- [ ] Config includes exact spawn commands
+- [ ] Reproduction from config
+- [ ] Aggregator spawns
+- [ ] Trainers connect
+- [ ] Logs captured
+- [ ] execution_config.yaml created (self-contained)
+- [ ] Reproduction works
+- [ ] Ctrl+C cleanup works
+
+**Phase 3b: Full Test (300 trainers)**
+```bash
+python3 launch/run_experiment.py experiments/configs/oort_n300_all4unavail.yaml
+```
+
+### What's Already Working
+
+1. **Compact execution configs with metadata keys**: Not yet implemented (1-2 hours)
+2. **Reproduction tool using metadata keys**: Not yet implemented (1-2 hours)
+3. **End-to-end testing**: Not yet validated (2-4 hours)
+4. **Bash script wrapper** (optional): Thin wrapper for compatibility (30 min)
+
+**Design decision made**: Use compact format with metadata keys instead of embedding all dataefinitions
+
+### What Needs Work
+
+1. **Self-contained execution configs**: Not yet implemented
+2. **Reproduction tool**: Not yet implemented
+3. **End-to-end testing**: Not yet validated
+4. **Bash script bridge**: Decision needed on interface
+
+### Estimated Completion Time
+
+- **Core functionality (Tasks 1-3)**: 4-6 hours
+- **Testing & debugging (Task 4)**: 2-4 hours
+- **Optional bash wrapper (Task 5)**: 1 hour
+- **Total**: 7-11 hours of focused work
+
+### Recommendation
+
+Focus on **Tasks 1-4** in this order:
+1. Implement execution_snapshot.py (embed all data)
+2. Integrate into run_experiment.py (auto-generate on each run)
+3. Test mini experiment (5 trainers)
+4. Implement reproduce.py (once we see real execution_config.yaml)
+5. Test reproduction workflow
+6. Scale to 300 trainers
+
+This approach ensures we build reproducibility correctly before scaling.
+
+---
+
+**Document Status**: Phase 3 gap analysis complete, action plan defined  
+**Updated**: February 3, 2026, 8:00 PM  
+**Next Action**: Implement execution_snapshot.py
+
+
+---
+
+## DESIGN REFINEMENT - February 3, 2026 (Final Update)
+
+### Optimized Approach: Compact Execution Configs
+
+**Key insight from user feedback**: Don't embed all metadata inline. Use **keys** instead.
+
+#### Why This Is Better
+
+**Previous approach** (embedded data):
+- ❌ 50-100KB files with duplicate data
+- ❌ Hard to read and edit
+- ❌ Doesn't leverage organized metadata structure
+
+**Optimized approach** (metadata keys):
+- ✅ 1-2KB readable configs
+- ✅ Uses same labels as launcher scripts
+- ✅ Easy to modify for next run
+- ✅ Metadata folder is single source of truth
+- ✅ Git tracks both metadata and execution configs together
+
+#### Execution Config Format
+
+```yaml
+# execution_config.yaml - Compact and readable (~1-2KB)
+
+execution_timestamp: "2026-02-03T14:30:00"
+
+git_info:
+  commit: "abc123def456"
+  branch: "dg/simplify_cifar10_expts"
+  dirty: false
+
+# References to metadata by KEY (not embedded!)
+metadata_refs:
+  trainer_registry: "metadata/trainer_registry.yaml"
+  dataset_split_key: "cifar10_alpha0.1_n300"  # Key to look up in dataset_splits/
+  availability_trace_key: "syn_0"              # Key to look up in availability_traces/
+
+# Aggregator config by PATH (not embedded!)
+aggregator:
+  config_file: "expt_scripts_2026/configs/oort_n300_oracular_9may25_syn0.json"
+  selector: "oort"
+  tracking_mode: "oracular"
+  agg_goal: 10
+
+# Experiment parameters
+experiment:
+  name: "oort_n300_alpha0.1_syn0"
+  trainer:
+    num_trainers: 300
+    start_id: 1
+    dataset: {alpha: 0.1, split_key: "cifar10_alpha0.1_n300"}
+    availability: {mode: "syn_0", trace_key: "syn_0"}
+    battery_threshold: 50
+    speedup_factor: 1.0
+  execution:
+    num_gpus: 8
+    sleep_between_spawns: 1.0
+    aggregator_warmup_time: 10
+
+# Exact commands used
+spawn_commands:
+  aggregator: ["python3", "aggregator/pytorch/main_oort_agg.py", "..."]
+  trainers: ["python3", "launch/spawner.py", "--alpha", "0.1", ...]
+```
+
+#### Reproduction Workflow
+
+1. **Read execution_config.yaml**
+2. **Checkout git commit** (if different from current)
+3. **Load metadata using keys**:
+   - `dataset_split_key` → load from `metadata/dataset_splits/`
+   - `availability_trace_key` → load from `metadata/availability_traces/`
+4. **Load aggregator config** using `config_file` path
+5. **Spawn processes** using experiment parameters
+
+#### Why This Optimizes for User Goals
+
+1. **Programmatic generation**: ✅ Configs generated at runtime from metadata
+2. **Reproducibility**: ✅ Git commit + metadata keys = exact reproduction
+3. **Minimal changes between runs**: ✅ Edit keys/parameters, not regenerate files
+4. **Readable and informative**: ✅ Uses standard labels from launcher scripts
+5. **Easy parsing**: ✅ Simple YAML structure for next launch
+
+#### Implementation Simplicity
+
+**Compact format is faster to implement**:
+- No data embedding logic needed
+- No data extraction from embedded configs
+- Simple key lookups in metadata folder
+- Standard YAML read/write
+
+**Estimated total time**: 4.5-7.5 hours (vs 7-11 hours for embedded approach)
+
+---
+
+**Migration Plan Status**: Updated with optimized compact execution config approach  
+**Ready for**: Implementation of execution_config_generator.py  
+**Updated**: February 3, 2026, 8:30 PM
+

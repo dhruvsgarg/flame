@@ -23,6 +23,8 @@ class AggregatorSpawner:
         self,
         aggregator_main_path: Path,
         config_path: Path,
+        log_to_wandb: bool = False,
+        wandb_run_name: Optional[str] = None,
     ) -> subprocess.Popen:
         """
         Spawn aggregator process.
@@ -30,6 +32,8 @@ class AggregatorSpawner:
         Args:
             aggregator_main_path: Path to aggregator main.py
             config_path: Path to aggregator config JSON
+            log_to_wandb: Enable wandb logging
+            wandb_run_name: Custom wandb run name
         
         Returns:
             subprocess.Popen object
@@ -48,8 +52,14 @@ class AggregatorSpawner:
         cmd = [
             sys.executable,
             str(aggregator_main_path),
-            str(aggregator_config_path)  # Positional argument, not --config
+            str(config_path)  # Positional argument, not --config
         ]
+        
+        # Add optional wandb flags
+        if log_to_wandb:
+            cmd.append('--log_to_wandb')
+            if wandb_run_name:
+                cmd.extend(['--wandb_run_name', wandb_run_name])
         
         # Spawn process
         self.process = subprocess.Popen(

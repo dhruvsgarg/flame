@@ -20,7 +20,8 @@ class MetadataLoader:
     """Loads and caches experiment metadata."""
     
     def __init__(self, metadata_dir: Path):
-        self.metadata_dir = metadata_dir
+        # Ensure metadata_dir is a Path object
+        self.metadata_dir = Path(metadata_dir) if not isinstance(metadata_dir, Path) else metadata_dir
         self._load_all()
     
     def _load_all(self):

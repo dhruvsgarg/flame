@@ -17,6 +17,11 @@ experiments:
       selector: oort
       tracking_mode: oracular
       agg_goal: 10
+    
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 5.0
+      aggregator_warmup_time: 600
   
   - name: oort_n300_alpha0.1_syn20
     description: "Oort with 300 trainers, alpha=0.1, synthetic 20% unavailability"
@@ -33,6 +38,11 @@ experiments:
       selector: oort
       tracking_mode: oracular
       agg_goal: 10
+    
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 5.0
+      aggregator_warmup_time: 600
   
   - name: oort_n300_alpha0.1_syn50
     description: "Oort with 300 trainers, alpha=0.1, synthetic 50% unavailability"
@@ -49,6 +59,11 @@ experiments:
       selector: oort
       tracking_mode: oracular
       agg_goal: 10
+    
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 5.0
+      aggregator_warmup_time: 600
   
   - name: oort_n300_alpha0.1_mobiperf2st
     description: "Oort with 300 trainers, alpha=0.1, MobiPerf 2-state traces"
@@ -65,3 +80,8 @@ experiments:
       selector: oort
       tracking_mode: oracular
       agg_goal: 10
+    
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 5.0
+      aggregator_warmup_time: 600

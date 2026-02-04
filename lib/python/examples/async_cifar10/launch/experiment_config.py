@@ -40,6 +40,8 @@ class AggregatorConfig:
     selector: str = "oort"
     tracking_mode: str = "oracular"  # oracular, default
     agg_goal: int = 10
+    log_to_wandb: bool = False  # Enable wandb logging
+    wandb_run_name: Optional[str] = None  # Custom wandb run name
 
 
 @dataclass
