@@ -623,14 +623,13 @@ class TopAggregator(AsyncTopAgg):
             )
             channel.cleanup_recvd_ends()
 
-    # TODO: Refactor / rename and modify docstring
+    #TODO: Refactor / rename and modify docstring
+    @timer_decorator
     def aggregate_and_collect(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
         # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(
-            self._round, self.data_id, self.iteration_per_data_id
-        )
-
+        self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, trainer_id=None)
+        
         recv_ends = channel.ends()
         if self.ends_not_selected_yet and len(recv_ends) == 0:
             logger.info("no ends selected yet")
@@ -1010,6 +1009,14 @@ class TopAggregator(AsyncTopAgg):
 
         self.log_memory("end _aggregate_grads_sync", self.device)
 
+    @timer_decorator
+    def _force_cuda_memory_cleanup(self, x, labels, output, logits, loss):
+        self.log_memory("before del x, labels, output, logits, loss", self.device)
+        # del x, labels, output, logits, loss   # TODO: Check if we sould delete the preds this time
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
@@ -1092,9 +1099,7 @@ class TopAggregator(AsyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
-        # del x, labels, output, logits, loss   # TODO: Check if we sould delete the preds this time
-        torch.cuda.empty_cache()
-        gc.collect()
+        self._force_cuda_memory_cleanup(x, labels, output, logits, loss)
 
         self.log_memory("end eval_model", self.device)
 
@@ -1328,19 +1333,6 @@ class TopAggregator(AsyncTopAgg):
         self.print_trainable_params_stats(location="[populate_params, _distr_weights]")
         trainable_params = self.get_trainable_param_state_dict()
         self.print_param_dict_stats(trainable_params, location="After filtering")
-        shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
-
-        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
-
-        shared_grad_pool_trainable = []
-        if shared_grad_pool == None:
-            shared_grad_pool_trainable = None
-        else:
-            idx = 0
-            for param in self.model.parameters():
-                if param.requires_grad:
-                    shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
-                idx += 1
 
         for end in ends:
             # setting start time for OORT TODO: (DG) round_start_time for all
@@ -1360,6 +1352,22 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
+<<<<<<< HEAD
+=======
+                
+                shared_weights = weights_to_device(trainable_params, DeviceType.CPU)
+
+                shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+                shared_grad_pool_trainable = []
+                if shared_grad_pool == None:
+                    shared_grad_pool_trainable = None
+                else:
+                    idx = 0
+                    for param in self.model.parameters():
+                        if param.requires_grad:
+                            shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
+                        idx += 1
+>>>>>>> origin/perf/measure_iter_time
 
                 payload = {
                     MessageType.WEIGHTS: shared_weights,

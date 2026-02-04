@@ -653,6 +653,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.model = self.model_arch().to(self.device)
         logger.debug(f"Loaded model on gpu for trainer_id: {self.trainer_id}")
 
+<<<<<<< HEAD
     # def _evict_model_from_gpu(self):
     #     self.model.cpu()
     #     self.model = None
@@ -661,6 +662,8 @@ class Trainer(Role, metaclass=ABCMeta):
     #     torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
     #     logger.debug(f"Evicted model from gpu for trainer_id: {self.trainer_id}")
 
+=======
+>>>>>>> origin/perf/measure_iter_time
     def send_heartbeat_to_agg(self) -> None:
         logger.debug("Inside trainer.py will call self.put(heartbeat)")
         self.put(TAG_HEARTBEAT)
