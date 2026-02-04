@@ -78,33 +78,41 @@ class MockAggregator:
         if not hasattr(self, "_cached_test_data") or self._cached_test_data is None:
             logger.info("One-time GPU data transfer for evaluation dataset")
             self._cached_test_data = [t.to(device) for t in self.test_global.dataset.tensors]
+        
+        if torch.cuda.is_available(): torch.cuda.synchronize()
         t_cache_end = time.time()
         cache_time = t_cache_end - t_cache_start
 
-        # Use GPU tensors for inputs/labels
+        # Use GPU tensors for inputs/mask/labels
         input_ids_all = self._cached_test_data[1]
+        input_mask_all = self._cached_test_data[2]
         labels_all = self._cached_test_data[4]
 
-        # Accumulate predictions on GPU to avoid per-batch CPU sync
+        # Accumulate predictions on GPU
         preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
         out_label_ids_gpu = torch.empty(test_sample_len, dtype=labels_all.dtype, device=device)
 
         batch_size = self.args.eval_batch_size
         loss_fct = CrossEntropyLoss()
 
-        # Metering for granular analysis (new optimized loop)
+        # Detailed timing
         inner_loop_times = []
 
+        t_loop_start = time.time()
         with torch.no_grad():
             for i in range(0, test_sample_len, batch_size):
+                if torch.cuda.is_available(): torch.cuda.synchronize()
                 t_inner_start = time.time()
+                
                 end_index = min(i + batch_size, test_sample_len)
                 
                 x = input_ids_all[i:end_index]
+                mask = input_mask_all[i:end_index]
                 labels = labels_all[i:end_index]
 
-                # Forward pass
-                output = self.model(x)
+                # Forward pass - PASSING MASK NOW
+                output = self.model(x, attention_mask=mask)
+                
                 if hasattr(output, "logits"):
                     logits = output.logits
                 elif isinstance(output, (tuple, list)):
@@ -119,10 +127,14 @@ class MockAggregator:
                 out_label_ids_gpu[i:end_index] = labels
                 nb_eval_steps += 1
                 
+                if torch.cuda.is_available(): torch.cuda.synchronize()
                 t_inner_end = time.time()
                 inner_loop_times.append(t_inner_end - t_inner_start)
+        
+        t_loop_end = time.time()
 
-        # Move back to CPU once at the end
+        # Post-processing timing
+        t_post_start = time.time()
         eval_loss = (eval_loss_acc / nb_eval_steps).item()
         preds = preds_gpu.cpu().numpy()
         out_label_ids = out_label_ids_gpu.cpu().numpy()
@@ -135,16 +147,16 @@ class MockAggregator:
         )
         result["eval_loss"] = eval_loss
         results.update(result)
+        t_post_end = time.time()
 
-        # Log granular metrics
-        logger.info(f"Optimization Metrics: Cache transfer: {cache_time*1000:.2f}ms, Avg Inner Loop (Pure Forward): {np.mean(inner_loop_times)*1000:.2f}ms")
-
-        logging.info(f"results after eval are: {results}, len(wrong) is: {len(wrong)}")
-
+        # Cleanup timing
+        t_clean_start = time.time()
         torch.cuda.empty_cache()
         gc.collect()
+        t_clean_end = time.time()
 
-        self.log_memory("end eval_model", device)
+        # Final breakdown
+        logger.info(f"Breakdown: Cache: {cache_time*1000:.2f}ms, Total Loop: {(t_loop_end-t_loop_start)*1000:.2f}ms, Avg Batch: {np.mean(inner_loop_times)*1000:.2f}ms, Post-proc: {(t_post_end-t_post_start)*1000:.2f}ms, Cleanup: {(t_clean_end-t_clean_start)*1000:.2f}ms")
 
         return result, model_outputs, wrong
 
