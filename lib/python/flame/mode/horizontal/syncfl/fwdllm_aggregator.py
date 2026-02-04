@@ -161,6 +161,7 @@ class TopAggregator(AsyncTopAgg):
                 "minInitialTrainers must be specified in selector config & must not be None for determinism"
             )
         self.trainer_unavail_durations = None
+        self._cached_test_data = None
         logger.info("finished init for sync agg")
 
     def pause_execution(self):
@@ -1018,17 +1019,10 @@ class TopAggregator(AsyncTopAgg):
 
         results = {}
 
-        eval_loss = 0.0
-        nb_eval_steps = 0
-        n_batches = len(self.test_global)
+        eval_loss_total = torch.tensor(0.0, device=device)
+        num_eval_steps = 0
         test_sample_len = len(self.test_global.dataset)
-        preds = np.empty((test_sample_len, self.num_labels))
-
-        logger.info(
-            f"Created n_batches: {n_batches}, test_sample_len: {test_sample_len} and preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}"
-        )
-
-        out_label_ids = np.empty(test_sample_len)
+        
         # Move model to device before performing the eval
         self.model.to(device)
         self.model.eval()
@@ -1036,36 +1030,57 @@ class TopAggregator(AsyncTopAgg):
             self.model
         )
 
-        for i, batch in enumerate(self.test_global):
-            with torch.no_grad():
-                batch = tuple(t for t in batch)
-                x = batch[1].to(device)
-                labels = batch[4].to(device)
+        # One-time GPU data transfer for caching test data
+        if not hasattr(self, "_cached_test_data") or self._cached_test_data is None:
+            logger.info("One-time GPU data transfer for evaluation dataset")
+            self._cached_test_data = [t.to(device) for t in self.test_global.dataset.tensors]
+
+        input_ids_all = self._cached_test_data[1]
+        labels_all = self._cached_test_data[4]
+
+        # Accumulate predictions on GPU
+        preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
+        out_label_ids_gpu = torch.empty(test_sample_len, dtype=labels_all.dtype, device=device)
+
+        batch_size = self.args.eval_batch_size
+        loss_fct = CrossEntropyLoss()
+
+        from torch.cuda.amp import autocast
+        with torch.no_grad(), autocast():
+            for batch_start_idx in range(0, test_sample_len, batch_size):
+                batch_end_idx = min(batch_start_idx + batch_size, test_sample_len)
+                
+                x = input_ids_all[batch_start_idx:batch_end_idx]
+                labels = labels_all[batch_start_idx:batch_end_idx]
 
                 output = self.model(x)
-                logits = output[0]
+                if hasattr(output, "logits"):
+                    logits = output.logits
+                elif isinstance(output, (tuple, list)):
+                    logits = output[0]
+                else:
+                    logits = output
 
-                loss_fct = CrossEntropyLoss()
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-                eval_loss += loss.item()
+                eval_loss_total += loss
 
-            nb_eval_steps += 1
-            start_index = self.args.eval_batch_size * i
+                preds_gpu[batch_start_idx:end_index] = logits
+                out_label_ids_gpu[batch_start_idx:end_index] = labels
+                num_eval_steps += 1
 
-            end_index = (
-                start_index + self.args.eval_batch_size
-                if i != (n_batches - 1)
-                else test_sample_len
-            )
-            preds[start_index:end_index] = logits.detach().cpu().numpy()
-            out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
+        # Move to CPU only once at the end
+        eval_loss = (eval_loss_total / num_eval_steps).item()
+        preds = preds_gpu.cpu().numpy()
+        out_label_ids = out_label_ids_gpu.cpu().numpy()
 
-        eval_loss = eval_loss / nb_eval_steps
+        logger.info(
+            f"# of batches: {num_eval_steps} with (batch_size, seq_len): {input_ids_all.shape}. test_sample_len: {test_sample_len}, preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}"
+        )
 
         model_outputs = preds
-        preds = np.argmax(preds, axis=1)
+        preds_argmax = np.argmax(preds, axis=1)
         result, wrong = self.compute_metrics(
-            preds, out_label_ids, self.test_global.examples
+            preds_argmax, out_label_ids, self.test_global.examples
         )
         result["eval_loss"] = eval_loss
         results.update(result)
@@ -1077,7 +1092,7 @@ class TopAggregator(AsyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
-        del x, labels, output, logits, loss
+        # del x, labels, output, logits, loss   # TODO: Check if we sould delete the preds this time
         torch.cuda.empty_cache()
         gc.collect()
 
