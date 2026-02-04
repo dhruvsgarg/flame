@@ -7,7 +7,6 @@ Loads metadata using keys, spawns processes with exact parameters.
 """
 import sys
 import signal
-import time
 import yaml
 import subprocess
 from pathlib import Path
