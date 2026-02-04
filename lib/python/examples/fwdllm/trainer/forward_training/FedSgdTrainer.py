@@ -430,7 +430,7 @@ class FedSGDTrainer(Trainer):
         )
         self.trainer.train(
             [self.train_local_list[0][list_index]], self.device, self.args,
-            {"round_id": self._round, "data_id": self.data_id, "iteration": self.iteration}
+            {"round_id": self._round, "data_id": self.data_id, "iteration": self.iteration_per_data_id}
         )
 
         self.grad_for_var_check = self.trainer.model_trainer.grad_for_var_check

@@ -29,16 +29,6 @@ from configs import LOG_CONFIG, EXPORT_CONFIG, CONSTANTS
 def configure():
     output_dir = Path("output/")
 
-<<<<<<< HEAD
-    log_file_type = "flame_fwdllm_aggregator"
-    log_file = Path(
-        "/Users/gaurav/Library/CloudStorage/OneDrive-GeorgiaInstituteofTechnology/SysML_experiment_logs/logs/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_14_11_11_02.log"
-    )
-    suffix = "reject_stale"
-    EXPORT_CONFIG["flame_fwdllm_aggregator"]["evaluation_metrics"][
-        "default_output_filename"
-    ] = f"sync_k10_c50_n150-{suffix}.csv"
-=======
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_07_01_21_52.log")
     # log_file_type = "flame_fwdllm_aggregator"
     # CONSTANTS['file_prefix'] = "sync_nck_5_baseline_agg"
@@ -51,7 +41,6 @@ def configure():
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_08_01_02_53.log")
     # log_file_type = "flame_fwdllm_trainer"
     # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_baseline_trainer"
->>>>>>> origin/perf/measure_iter_time
 
 
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_5_numerical_27_01_19_57.log")
@@ -128,21 +117,6 @@ def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Ca
         round_id = seq_counter // 150
         data_id = seq_counter % 150
 
-<<<<<<< HEAD
-        if row["log_name"] == eval_log_name:
-            row["round_id"], row["data_id"] = round_id, data_id
-            row["iteration_id"], row["_model_version"] = iter_counter, seq_counter
-            state["sequential_id_counter"] += 1
-            state["iteration_id_counter"] = 0
-            state["current_round_id"], state["current_data_id"] = round_id, data_id
-        elif row["log_name"] == iter_log_name:
-            row["round_id"], row["data_id"] = round_id, data_id
-            row["iteration_id"], row["_model_version"] = iter_counter, seq_counter
-            state["iteration_id_counter"] += 1
-        else:
-            row["round_id"], row["data_id"] = pd.NA, pd.NA
-            row["iteration_id"] = pd.NA
-=======
         # Don't override if any of row['iteration_id'], row['data_id'] and row['round_id'] are present
         has_ids = any(pd.notna(row.get(k)) for k in ['iteration_id', 'data_id', 'round_id'])
 
@@ -170,7 +144,6 @@ def create_sequential_id_processor(eval_log_name: str, iter_log_name: str) -> Ca
             if not has_ids:
                 row['round_id'], row['data_id'] = pd.NA, pd.NA 
                 row['iteration_id'] = pd.NA
->>>>>>> origin/perf/measure_iter_time
         return row
 
     return process
@@ -455,11 +428,7 @@ class LogParser:
                 if name == "iteration_timing" or name == "communication_summary":
                     df_filtered.drop_duplicates(subset=existing_cols, inplace=True)
 
-<<<<<<< HEAD
-                output_path = output_dir / config["default_output_filename"]
-=======
                 output_path = output_dir / config['default_output_filename']()
->>>>>>> origin/perf/measure_iter_time
                 df_filtered[existing_cols].to_csv(output_path, index=False)
                 print(
                     f"✅ Successfully wrote {len(df_filtered)} records for '{name}' to {os.path.abspath(output_path)}"

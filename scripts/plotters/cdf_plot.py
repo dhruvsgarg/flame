@@ -144,13 +144,13 @@ AGGREGATOR_PLOTTING_CONFIG = {
             'title': lambda: f'Eval Model Latency ({CONSTANTS["file_prefix"]})'
         },
         {
-            'latency_type': 'aggregate_and_collect_latency',
-            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency.csv',
-            'latency_column': 'aggregate_and_collect_latency',
-            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency_cdf.png',
-            'x_label': 'Aggregate and Collect Latency (seconds)',
+            'latency_type': 'collect_and_aggregate_grads_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-collect_and_aggregate_grads_latency.csv',
+            'latency_column': 'collect_and_aggregate_grads_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-collect_and_aggregate_grads_latency_cdf.png',
+            'x_label': 'Collect_and_aggregate_grads latency (seconds)',
             'y_label': 'CDF',
-            'title': lambda: f'Aggregate and Collect Latency ({CONSTANTS["file_prefix"]})'
+            'title': lambda: f'Collect_and_aggregate_grads latency ({CONSTANTS["file_prefix"]})'
         },
         {
             'latency_type': 'aggregate_runtime_latency',

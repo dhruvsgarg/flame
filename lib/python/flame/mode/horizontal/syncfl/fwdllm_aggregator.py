@@ -79,7 +79,6 @@ def recv_fifo_wrapper(channel, ends):
         yield msg, metadata
     logger.debug("Exiting recv_fifo_wrapper")
 
-
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
@@ -623,9 +622,8 @@ class TopAggregator(AsyncTopAgg):
             )
             channel.cleanup_recvd_ends()
 
-    #TODO: Refactor / rename and modify docstring
     @timer_decorator
-    def aggregate_and_collect(self, tag, channel):
+    def collect_and_aggregate_grads(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
         # Create FwdLLMStage for timing/metrics logging
         self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, trainer_id=None)
@@ -920,7 +918,7 @@ class TopAggregator(AsyncTopAgg):
             return
 
         # receive local model parameters from trainers
-        self.aggregate_and_collect(tag, channel)
+        self.collect_and_aggregate_grads(tag, channel)
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
@@ -1017,6 +1015,11 @@ class TopAggregator(AsyncTopAgg):
         gc.collect()
 
     @timer_decorator
+    def invoke_gc(self, payload):
+        del payload
+        gc.collect()
+
+    @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
         if not device:
             device = self.device
@@ -1071,8 +1074,8 @@ class TopAggregator(AsyncTopAgg):
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
                 eval_loss_total += loss
 
-                preds_gpu[batch_start_idx:end_index] = logits
-                out_label_ids_gpu[batch_start_idx:end_index] = labels
+                preds_gpu[batch_start_idx:batch_end_idx] = logits
+                out_label_ids_gpu[batch_start_idx:batch_end_idx] = labels
                 num_eval_steps += 1
 
         # Move to CPU only once at the end
@@ -1415,8 +1418,7 @@ class TopAggregator(AsyncTopAgg):
                 channel.send(end, payload)
                 # Added a 0.5 second sleep so as to not overwhelm mqtt
                 # time.sleep(0.5)
-            del payload
-            # gc.collect()
+            self.invoke_gc(payload)
 
             # Update send_time in training_duration_s
             if end not in self._track_trainer_version_duration_s.keys():
