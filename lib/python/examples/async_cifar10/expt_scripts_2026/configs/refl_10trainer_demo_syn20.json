@@ -55,8 +55,8 @@
     }
   },
   "registry": {
-    "sort": "mlflow",
-    "uri": "tmp/mlflow"
+    "sort": "dummy",
+    "uri": ""
   },
   "job": {
     "id": "refl_demo_10trainers_syn20",
