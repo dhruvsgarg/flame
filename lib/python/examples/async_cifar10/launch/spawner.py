@@ -140,7 +140,7 @@ class ConfigGenerator:
         # Apply any overrides
         for key, value in overrides.items():
             if '.' in key:
-                # Nested key like 'hyperparameters.batchSize'
+                # Nested key like 'hyperparameters.batchSize' or 'job.id'
                 parts = key.split('.')
                 current = config
                 for part in parts[:-1]:

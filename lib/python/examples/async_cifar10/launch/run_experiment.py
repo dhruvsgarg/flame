@@ -11,6 +11,7 @@ Orchestrates complete experiments:
 """
 import sys
 import signal
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -61,6 +62,22 @@ class ExperimentRunner:
             
             # Step 2: Initialize spawners
             print("\n[2/6] Initializing spawners...")
+            
+            # Load aggregator config to extract job ID
+            aggregator_config_path = self.example_dir / exp_config.aggregator.config_template
+            if not aggregator_config_path.exists():
+                raise FileNotFoundError(f"Aggregator config not found: {aggregator_config_path}")
+            
+            with open(aggregator_config_path) as f:
+                agg_config = json.load(f)
+                agg_job_id = agg_config.get('job', {}).get('id')
+                agg_job_name = agg_config.get('job', {}).get('name')
+            
+            if not agg_job_id:
+                raise ValueError(f"Aggregator config missing job.id: {aggregator_config_path}")
+            
+            print(f"  Aggregator job ID: {agg_job_id}")
+            
             metadata_loader = MetadataLoader(self.metadata_dir)
             config_gen = ConfigGenerator(
                 metadata_loader,
@@ -84,13 +101,7 @@ class ExperimentRunner:
             
             # Step 3: Start aggregator
             print("\n[3/6] Starting aggregator...")
-            # Define paths first for use in exception handling
-            aggregator_config_path = self.example_dir / exp_config.aggregator.config_template
             aggregator_main_path = self.example_dir / 'aggregator' / 'pytorch' / 'main_oort_agg.py'
-            
-            # Verify aggregator config exists
-            if not aggregator_config_path.exists():
-                raise FileNotFoundError(f"Aggregator config not found: {aggregator_config_path}")
             
             print(f"  Spawning aggregator with config: {aggregator_config_path}")
             if exp_config.aggregator.log_to_wandb:
@@ -150,11 +161,14 @@ class ExperimentRunner:
                 exp_config.trainer.start_id + exp_config.trainer.num_trainers
             ))
             
+            # Pass aggregator job ID to trainers for MQTT communication
             self.trainer_spawner.spawn_all(
                 trainer_ids,
                 alpha=exp_config.trainer.dataset.dirichlet_alpha,
                 availability_mode=exp_config.trainer.availability.mode,
-                trainer_main_path=self.example_dir / 'trainer' / 'pytorch' / 'main.py'
+                trainer_main_path=self.example_dir / 'trainer' / 'pytorch' / 'main.py',
+                # Override job ID to match aggregator
+                **{'job.id': agg_job_id, 'job.name': agg_job_name}
             )
             
             # Step 6: Monitor

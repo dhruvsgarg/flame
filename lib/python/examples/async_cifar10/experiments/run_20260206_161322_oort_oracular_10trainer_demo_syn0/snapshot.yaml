@@ -1,11 +1,12 @@
 snapshot_version: '1.0'
-timestamp: '2026-02-06T13:10:21.836890'
+timestamp: '2026-02-06T16:13:41.545400'
 hostname: kaylee
 experiment:
-  name: refl_test_5trainers_syn0
-  description: Test REFL with 5 trainers, always available (syn_0)
+  name: oort_oracular_10trainer_demo_syn0
+  description: 'Oracular Oort baseline: Oort selection + FedAvg aggregation + Oracular
+    tracking (10 trainers, syn_0 trace)'
   trainer:
-    num_trainers: 5
+    num_trainers: 10
     start_id: 1
     dataset:
       name: cifar10
@@ -15,19 +16,19 @@ experiment:
     battery_threshold: 50
     speedup_factor: 1.0
   aggregator:
-    config_template: expt_scripts_2026/configs/refl_config_test.json
-    selector: refl_oort
+    config_template: expt_scripts_2026/configs/oort_oracular_10trainer_demo.json
+    selector: oort
     tracking_mode: oracular
-    agg_goal: 3
+    agg_goal: 5
   execution:
-    num_gpus: 2
+    num_gpus: 8
     sleep_between_spawns: 1.0
-    aggregator_warmup_time: 10
+    aggregator_warmup_time: 15
 spawn_commands:
   aggregator:
   - /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python3
   - /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/pytorch/main_oort_agg.py
-  - /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/refl_config_test.json
+  - /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/oort_oracular_10trainer_demo.json
   trainers:
   - python3
   - launch/spawner.py
@@ -36,13 +37,13 @@ spawn_commands:
   - --availability
   - syn_0
   - --num-trainers
-  - '5'
+  - '10'
   - --start-id
   - '1'
   - --num-gpus
-  - '2'
+  - '8'
 git_info:
-  commit: f5a09e37e8bfa3d70e0a2efa2516bb4fbc7f912b
+  commit: 51f901f6ff1c8115303b9fc9803f919b74d204f3
   branch: dg/updated_refl_expts
   clean: false
   uncommitted_changes: true
@@ -57,4 +58,4 @@ metadata_checksums:
   availability_traces:
     mobiperf_traces.yaml: f1e2da681116f0cdd6b08aa327f2b485990b9aba93f4a25949c5db7bf0355fa2
     synthetic_traces.yaml: 044e5db1ae6ff2e9e3f0da978a5d7b4fdadc0051c752374fc491beea8726a78b
-aggregator_config: /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/refl_config_test.json
+aggregator_config: /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/oort_oracular_10trainer_demo.json
