@@ -31,7 +31,8 @@
       "aggr_num": 10,
       "avail_priority": 0,
       "blacklist_rounds": -1,
-      "pacer_step": -1
+      "pacer_step": -1,
+      "trainer_registry_file": "metadata/trainer_registry.yaml"
     }
   },
   "optimizer": {

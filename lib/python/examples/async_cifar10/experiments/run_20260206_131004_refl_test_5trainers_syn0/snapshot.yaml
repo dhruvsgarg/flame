@@ -1,5 +1,5 @@
 snapshot_version: '1.0'
-timestamp: '2026-02-06T10:36:02.321237'
+timestamp: '2026-02-06T13:10:21.836890'
 hostname: kaylee
 experiment:
   name: refl_test_5trainers_syn0
@@ -42,7 +42,7 @@ spawn_commands:
   - --num-gpus
   - '2'
 git_info:
-  commit: 1af0d1feeebe64a776fb6ecad231fbd525410fc4
+  commit: f5a09e37e8bfa3d70e0a2efa2516bb4fbc7f912b
   branch: dg/updated_refl_expts
   clean: false
   uncommitted_changes: true

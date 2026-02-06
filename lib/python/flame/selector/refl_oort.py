@@ -64,8 +64,10 @@ class REFLOortSelector(OortSelector):
         
         # Availability tracker
         trace_file = kwargs.get("availability_trace_file", None)
+        trainer_registry = kwargs.get("trainer_registry_file", None)
+        
         if trace_file:
-            self.avail_tracker = REFLAvailabilityTracker(trace_file)
+            self.avail_tracker = REFLAvailabilityTracker(trace_file, trainer_registry)
         else:
             self.avail_tracker = None
             if self.avail_priority > 0:

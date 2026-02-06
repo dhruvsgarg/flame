@@ -31,19 +31,49 @@ class REFLAvailabilityTracker:
     Each trace contains availability periods for each client.
     """
 
-    def __init__(self, trace_file_path: Optional[str] = None):
+    def __init__(self, trace_file_path: Optional[str] = None, trainer_registry_path: Optional[str] = None):
         """
         Initialize the availability tracker.
         
         Args:
             trace_file_path: Path to trace file (pickle or YAML format)
+            trainer_registry_path: Path to trainer registry for ID mapping
         """
         self.traces = {}
         self.availability_periods = {}
+        self.trainer_id_map = {}  # Maps task_id -> logical trainer number
+        self.pattern_mode = False  # Whether traces are patterns vs per-trainer
+        
+        if trainer_registry_path:
+            self.load_trainer_registry(trainer_registry_path)
         
         if trace_file_path:
             self.load_traces(trace_file_path)
             self.compute_availability_periods()
+    
+    def load_trainer_registry(self, registry_path: str) -> None:
+        """
+        Load trainer registry to build task_id -> trainer_num mapping.
+        
+        Args:
+            registry_path: Path to trainer_registry.yaml
+        """
+        try:
+            with open(registry_path, 'r') as f:
+                registry = yaml.safe_load(f)
+            
+            # Build mapping from task_id to logical trainer number
+            for trainer_key, trainer_data in registry.get('trainers', {}).items():
+                task_id = trainer_data.get('task_id')
+                trainer_id = trainer_data.get('trainer_id')
+                if task_id and trainer_id:
+                    self.trainer_id_map[task_id] = trainer_id
+            
+            logger.info(f"Loaded trainer ID mapping for {len(self.trainer_id_map)} trainers")
+            
+        except Exception as e:
+            logger.error(f"Failed to load trainer registry from {registry_path}: {e}")
+            self.trainer_id_map = {}
     
     def load_traces(self, trace_file_path: str) -> None:
         """
@@ -69,8 +99,13 @@ class REFLAvailabilityTracker:
                     self.traces = data['traces']
                 else:
                     self.traces = data
-                    
-                logger.info(f"Loaded {len(self.traces)} client traces from YAML: {trace_file_path}")
+                
+                # Check if this is a pattern file (synthetic traces)
+                if self.traces and any('pattern' in v or 'description' in v for v in self.traces.values() if isinstance(v, dict)):
+                    logger.info(f"Detected pattern-based trace file with {len(self.traces)} patterns")
+                    self.pattern_mode = True
+                else:
+                    logger.info(f"Loaded {len(self.traces)} client traces from YAML: {trace_file_path}")
             
             else:
                 logger.warning(f"Unknown trace file format: {trace_file_path}")
@@ -86,8 +121,16 @@ class REFLAvailabilityTracker:
         
         Converts trace data into [(start_time, end_time), ...] format
         for efficient availability queries.
+        
+        For pattern-based traces (synthetic), this method doesn't pre-compute
+        but marks pattern_mode for on-demand lookups.
         """
         self.availability_periods = {}
+        
+        # If pattern mode, don't pre-compute - we'll handle task_id lookups dynamically
+        if self.pattern_mode:
+            logger.info(f"Pattern mode enabled - availability will be computed on-demand")
+            return
         
         for client_id, trace_data in self.traces.items():
             if isinstance(trace_data, dict):
@@ -107,6 +150,56 @@ class REFLAvailabilityTracker:
         
         logger.info(f"Computed availability periods for {len(self.availability_periods)} clients")
     
+    def _pattern_is_available(self, pattern_name: str, cur_time: float) -> bool:
+        """
+        Check if pattern indicates availability at given time.
+        
+        Args:
+            pattern_name: Name of the pattern (e.g., 'syn_0')
+            cur_time: Current virtual time
+            
+        Returns:
+            True if available, False otherwise
+        """
+        # For synthetic traces, patterns like 'syn_0' are always available
+        if pattern_name == 'syn_0':
+            return True
+        
+        # For other patterns, would need to evaluate the pattern
+        # For now, assume available
+        return True
+    
+    def _resolve_client_id(self, client_id: str) -> Optional[str]:
+        """
+        Resolve task_id to logical trainer ID if needed.
+        
+        Args:
+            client_id: Task ID (hash) or logical trainer ID
+            
+        Returns:
+            Resolved client identifier for lookup, or None if not found
+        """
+        client_id = str(client_id)
+        
+        # Direct match in availability_periods
+        if client_id in self.availability_periods:
+            return client_id
+        
+        # Try mapping task_id -> trainer_num
+        if client_id in self.trainer_id_map:
+            trainer_num = self.trainer_id_map[client_id]
+            # Try different formats
+            for fmt in [f"trainer_{trainer_num}", f"trainer_{trainer_num:03d}", str(trainer_num)]:
+                if fmt in self.availability_periods:
+                    return fmt
+        
+        # In pattern mode, return pattern name if available
+        # For now, default to 'syn_0' if pattern_mode
+        if self.pattern_mode:
+            return 'syn_0'  # Default always-available pattern
+        
+        return None
+    
     def is_available(
         self, 
         client_id: str, 
@@ -118,7 +211,7 @@ class REFLAvailabilityTracker:
         Check if client is available during a specific time window.
         
         Args:
-            client_id: Client identifier
+            client_id: Client identifier (task_id hash or trainer number)
             cur_time: Current virtual time
             time_window: Duration of time window to check
             time_slots: Number of time slots to check (default 1)
@@ -126,13 +219,22 @@ class REFLAvailabilityTracker:
         Returns:
             True if client is available for entire duration, False otherwise
         """
-        client_id = str(client_id)
+        # Pattern mode: Check pattern-based availability
+        if self.pattern_mode:
+            # For synthetic traces syn_0, always available
+            return self._pattern_is_available('syn_0', cur_time)
         
-        if client_id not in self.availability_periods:
-            # If no trace data, assume always available
+        # Resolve client_id
+        resolved_id = self._resolve_client_id(client_id)
+        if resolved_id is None:
+            # No trace data, assume always available
+            logger.debug(f"No trace for client {client_id}, assuming available")
             return True
         
-        periods = self.availability_periods[client_id]
+        if resolved_id not in self.availability_periods:
+            return True
+        
+        periods = self.availability_periods[resolved_id]
         if not periods:
             return True
         
@@ -223,12 +325,16 @@ class REFLAvailabilityTracker:
         Returns:
             Number of deadline-sized availability periods
         """
-        client_id = str(client_id)
+        # Pattern mode: For 'syn_0', effectively infinite availability
+        if self.pattern_mode:
+            return 999  # Large number to indicate always available
         
-        if client_id not in self.availability_periods:
+        # Resolve client_id
+        resolved_id = self._resolve_client_id(client_id)
+        if resolved_id is None or resolved_id not in self.availability_periods:
             return 0
         
-        periods = self.availability_periods[client_id]
+        periods = self.availability_periods[resolved_id]
         if not periods:
             return 0
         
@@ -335,12 +441,16 @@ class REFLAvailabilityTracker:
         Returns:
             Duration of trace in seconds (or time units)
         """
-        client_id = str(client_id)
-        
-        if client_id not in self.availability_periods:
+        # Pattern mode: Effectively infinite duration
+        if self.pattern_mode:
             return float('inf')
         
-        periods = self.availability_periods[client_id]
+        # Resolve client_id
+        resolved_id = self._resolve_client_id(client_id)
+        if resolved_id is None or resolved_id not in self.availability_periods:
+            return float('inf')
+        
+        periods = self.availability_periods[resolved_id]
         if not periods:
             return float('inf')
         
