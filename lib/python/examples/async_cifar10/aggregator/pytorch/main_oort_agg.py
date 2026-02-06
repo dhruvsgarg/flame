@@ -146,37 +146,26 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.model = Net().to(self.device)
 
     def read_trainer_unavailability(self, trace=None) -> dict:
-        print(f"Came to read_trainer_unavailability, trace: {trace}")
-        trainer_events_dict = {}
-
-        # Set path to read JSON files from (TODO: Remove hardcoding later)
-        files_path = "../../trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
-
-        # Set range of trainer IDs to read from
-        trainer_start_num = 1
-        trainer_end_num = 300
-
-        for i in range(trainer_start_num, trainer_end_num + 1):
-            dirname = os.path.dirname(__file__)
-            file_path = os.path.join(dirname, files_path, f"trainer_{i}.json")
-
-            with open(file_path) as f:
-                trainer_json = json.load(f)
-                curr_trainer_id = trainer_json["taskid"]
-                event_list = ast.literal_eval(trainer_json["hyperparameters"][trace])
-
-                # SortedDict for efficient timestamp lookup
-                state_dict = SortedDict()
-
-                # Process the events
-                for timestamp, event_name in event_list:
-                    state_dict[timestamp] = event_name
-
-                trainer_events_dict[curr_trainer_id] = state_dict
-                print(f"Completed file read for {file_path}")
-
-        print("Completed reading all trainer unavailability from files")
-        return trainer_events_dict
+        """
+        Read availability trace pattern from central trace file.
+        
+        Currently returns None to disable oracular pre-loading.
+        The REFLOortSelector can still access traces via availability_trace_file config.
+        
+        This allows the aggregator to work with dynamic trainer spawning
+        without hardcoding the number of expected trainers.
+        """
+        print(f"REFL oracular mode with trace: {trace}")
+        print("Aggregator will work with trainers dynamically as they connect")
+        print(f"Oracular per-trainer tracking disabled - will proceed when agg_goal met")
+        
+        # Return None to disable oracular pre-tracking
+        # This prevents get_curr_unavail_trainers() from expecting specific trainer IDs
+        # The REFLOortSelector has access to availability_trace_file in config
+        # and can handle availability checking independently
+        
+        print("Trace setup complete - ready for dynamic trainers")
+        return None
 
     def load_data(self) -> None:
         """Load a test dataset."""

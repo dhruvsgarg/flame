@@ -66,6 +66,7 @@ class OptimizerType(str, Enum):
     FEDDYN = "feddyn"
     SCAFFOLD = "scaffold"
     FEDGFT = "fedgft"
+    REFLFEDAVG = "reflfedavg"  # REFL FedAvg with deadline filtering and staleness handling
 
     DEFAULT = FEDAVG
 
@@ -78,6 +79,7 @@ class SelectorType(str, Enum):
     FEDBUFF = "fedbuff"
     OORT = "oort"
     ASYNC_OORT = "async_oort"
+    REFL_OORT = "refl_oort"  # REFL-enhanced Oort with priority selection and availability tracking
 
 
 class DataSamplerType(str, Enum):

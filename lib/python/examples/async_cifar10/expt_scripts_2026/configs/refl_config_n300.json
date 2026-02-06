@@ -1,12 +1,28 @@
 {
-  "realm": "cifar10-refl",
-  "role": "aggregator",
+  "taskid": "refl_full_n300_experiment",
+  "backend": "mqtt",
+  "brokers": [
+    {
+      "host": "localhost",
+      "sort": "mqtt"
+    }
+  ],
+  "groupAssociation": {
+    "param-channel": "default"
+  },
   "channels": [
     {
-      "type": "mqtt",
-      "name": "default",
-      "brokerHost": "localhost",
-      "pair": ["trainer"]
+      "description": "Model update is sent from trainer to aggregator and vice-versa",
+      "groupBy": {
+        "type": "tag",
+        "value": ["default"]
+      },
+      "name": "param-channel",
+      "pair": ["trainer", "aggregator"],
+      "funcTags": {
+        "aggregator": ["distribute", "aggregate"],
+        "trainer": ["fetch", "upload"]
+      }
     }
   ],
   "selector": {
@@ -53,7 +69,19 @@
     "epochs": 1,
     "batchSize": 32,
     "learningRate": 0.01,
-    "lossFn": "cross_entropy"
+    "aggGoal": 30,
+    "trackTrainerAvail": {
+      "enabled": "True",
+      "type": "ORACULAR",
+      "trace": "avl_events_mobiperf_2st"
+    }
   },
-  "dataset": "cifar10"
+  "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+  "dependencies": ["numpy >= 1.2.0"],
+  "baseModel": {
+    "name": "",
+    "version": 2
+  },
+  "realm": "cifar10-refl",
+  "role": "aggregator"
 }

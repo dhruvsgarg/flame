@@ -12,7 +12,29 @@ The REFL integration provides three main components that can be used independent
 
 ## Quick Start
 
-### Basic REFL Configuration
+### IMPORTANT: Use YAML Experiment Configs
+
+The experiment runner expects YAML configuration files that reference JSON aggregator configs.
+
+**Correct usage:**
+```bash
+cd /home/dgarg39/flame/lib/python/examples/async_cifar10
+
+# Test with 5 trainers
+python3 launch/run_experiment.py experiments/configs/refl_test_5trainers.yaml
+
+# Run ablation study
+python3 launch/run_experiment.py experiments/configs/refl_ablation_study.yaml
+
+# Full scale with 300 trainers
+python3 launch/run_experiment.py experiments/configs/refl_full_n300.yaml
+```
+
+**Note:** The YAML files reference JSON aggregator configs in `expt_scripts_2026/configs/refl_config_*.json`
+
+### Basic REFL Configuration (JSON Aggregator Config)
+
+The JSON aggregator configs define the Flame components:
 
 ```json
 {
@@ -34,15 +56,7 @@ The REFL integration provides three main components that can be used independent
 }
 ```
 
-### Running REFL Experiments
-
-```bash
-# Test with 5 trainers
-python3 launch/run_experiment.py aggregator/refl_config_test.json
-
-# Full scale with 300 trainers
-python3 launch/run_experiment.py aggregator/refl_config_n300.json
-```
+**See `expt_scripts_2026/configs/refl_config_*.json` for complete examples.**
 
 ## Component Configuration
 

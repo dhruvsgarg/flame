@@ -1,0 +1,69 @@
+{
+  "taskid": "refl_ablation_availability_experiment",
+  "backend": "mqtt",
+  "brokers": [
+    {
+      "host": "localhost",
+      "sort": "mqtt"
+    }
+  ],
+  "groupAssociation": {
+    "param-channel": "default"
+  },
+  "channels": [
+    {
+      "description": "Model update is sent from trainer to aggregator and vice-versa",
+      "groupBy": {
+        "type": "tag",
+        "value": ["default"]
+      },
+      "name": "param-channel",
+      "pair": ["trainer", "aggregator"],
+      "funcTags": {
+        "aggregator": ["distribute", "aggregate"],
+        "trainer": ["fetch", "upload"]
+      }
+    }
+  ],
+  "selector": {
+    "sort": "refl_oort",
+    "kwargs": {
+      "aggr_num": 10,
+      "avail_priority": 2,
+      "blacklist_rounds": -1,
+      "pacer_step": -1,
+      "availability_trace_file": "metadata/availability_traces/synthetic_traces.yaml"
+    }
+  },
+  "optimizer": {
+    "sort": "fedavg"
+  },
+  "registry": {
+    "sort": "mlflow",
+    "uri": "tmp/mlflow"
+  },
+  "job": {
+    "id": "ablation-avail-only",
+    "name": "REFL Availability Selection Only"
+  },
+  "hyperparameters": {
+    "rounds": 100,
+    "epochs": 1,
+    "batchSize": 32,
+    "learningRate": 0.01,
+    "aggGoal": 10,
+    "trackTrainerAvail": {
+      "enabled": "True",
+      "type": "ORACULAR",
+      "trace": "avl_events_syn_20"
+    }
+  },
+  "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+  "dependencies": ["numpy >= 1.2.0"],
+  "baseModel": {
+    "name": "",
+    "version": 2
+  },
+  "realm": "cifar10-refl-avail",
+  "role": "aggregator"
+}
