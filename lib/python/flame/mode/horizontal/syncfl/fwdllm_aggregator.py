@@ -623,7 +623,7 @@ class TopAggregator(AsyncTopAgg):
             channel.cleanup_recvd_ends()
 
     @timer_decorator
-    def collect_and_aggregate_grads(self, tag, channel):
+    def collect_and_accumulate_grads(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
         # Create FwdLLMStage for timing/metrics logging
         self.fwd_llm_stage = FwdLLMStage(self._round, self.data_id, self.iteration_per_data_id, trainer_id=None)
@@ -918,7 +918,7 @@ class TopAggregator(AsyncTopAgg):
             return
 
         # receive local model parameters from trainers
-        self.collect_and_aggregate_grads(tag, channel)
+        self.collect_and_accumulate_grads(tag, channel)
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
