@@ -260,6 +260,7 @@ class ForwardTextClassificationTrainer:
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
+        self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
 
     @timer_decorator
@@ -316,14 +317,14 @@ class ForwardTextClassificationTrainer:
                 (
                     v_buffer[i][0].to(device)
                     if p.requires_grad
-                    else torch.zeros_like(p)
+                    else torch.zeros_like(p).to(device)
                 )
                 for i, p in enumerate(self.params)
             ]
         else:
             v_params = [
                 (
-                    torch.randn_like(p, device=p.device)
+                    torch.randn_like(p, device=device)
                     if p.requires_grad
                     else torch.zeros_like(p, device=device)
                 )
@@ -387,6 +388,9 @@ class ForwardTextClassificationTrainer:
         self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
+        # Ensure model is on the correct device
+        self.model.to(device)
+
         # Removed _force_cuda_memory_cleanup() to avoid "stop the world" pause.
         # Cleanup is now handled only at the very end of the training/evaluation sessions.
 
@@ -418,8 +422,8 @@ class ForwardTextClassificationTrainer:
             # Optimization: Initialize on device to avoid Host to Device transfer every batch
             self.grad = [torch.zeros_like(p, device=device) for p in self.params]
         else:
-            for fg in self.grad:
-                fg.zero_()
+            # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
+            self.grad = [fg.to(device).zero_() for fg in self.grad]
 
         with torch.no_grad():
             for epoch in range(self.args.epochs):
@@ -499,6 +503,8 @@ class ForwardTextClassificationTrainer:
         if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
 
+        # gc.collect()
+        # torch.cuda.empty_cache()
         # Optimization: GC & buffer flushes removed from here. 
         # They are now handled at the framework level after sending gradients.
 
@@ -516,12 +522,16 @@ class ForwardTextClassificationTrainer:
         if not device:
             device = self.device
 
+        # Ensure model is on the correct device
+        self.model.to(device)
+
         # todo: Make sure that the model doesn't need to be put back into train mode using: `self.model.train()` before this method returns
         self.model.eval()
         # Optimization: use cached functional model components
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
+        self.params = [p.to(device) for p in self.params]
         self.buffers = [b.to(device) for b in self.buffers]
 
         eval_loss, nb_eval_steps = 0.0, 0
