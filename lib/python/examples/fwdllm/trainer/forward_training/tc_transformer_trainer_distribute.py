@@ -220,6 +220,12 @@ class ForwardTextClassificationTrainer:
 
         self.total_rng_iter = 0
 
+        # Optimization: cache fmodel, params, and buffers to avoid recreation
+        self.fmodel = None
+        self.params = None
+        self.buffers = None
+        self.grad_for_var_check = None
+
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -353,15 +359,12 @@ class ForwardTextClassificationTrainer:
 
     @timer_decorator
     def _accumulate_and_extract_grads(self, device, jvp, v_params):
+        # Optimization: Accumulate on device. self.grad should be on device.
         for j, fg in enumerate(self.grad):
-            updated = (jvp * v_params[j]).detach().cpu()
+            updated = (jvp * v_params[j]) # Keep on device
             fg.add_(updated)
             if self.args.var_control and j == self.layer_id_for_check:
-                self.grad_for_var_check = updated.clone()
-
-        for p, fg in zip(self.model.parameters(), self.grad):
-            if p.requires_grad:
-                p.grad = fg.clone().to(device)
+                self.grad_for_var_check = updated.detach().cpu() # Move to CPU only for check
 
     @timer_decorator
     def _force_cuda_memory_cleanup(self, device, tag):
@@ -384,8 +387,8 @@ class ForwardTextClassificationTrainer:
         self.log_memory("train_model_start", device)
         allocated_before = torch.cuda.memory_allocated(device)
 
-        # TODO: Figure out if this _force_cuda_memory_cleanup() is needed
-        self._force_cuda_memory_cleanup(device, "before_train_model")
+        # Removed _force_cuda_memory_cleanup() to avoid "stop the world" pause.
+        # Cleanup is now handled only at the very end of the training/evaluation sessions.
 
         """
         If you want absolute determinism between runs, run the model in eval mode. Make sure to switch the model back to train model before the method returns: `self.model.train()`. 
@@ -412,7 +415,8 @@ class ForwardTextClassificationTrainer:
             or self.grad is None
             or len(self.grad) != len(self.params)
         ):
-            self.grad = [torch.zeros_like(p, device="cpu") for p in self.params]
+            # Optimization: Initialize on device to avoid Host to Device transfer every batch
+            self.grad = [torch.zeros_like(p, device=device) for p in self.params]
         else:
             for fg in self.grad:
                 fg.zero_()
@@ -458,7 +462,8 @@ class ForwardTextClassificationTrainer:
                         break
 
                     del x, labels, jvp, v_params, loss
-                    self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
+                    # Optimization: Remove GC & buffer flushes from the batch loop
+                    # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
                     
                     if hasattr(self, "base_trainer"):
                         self.base_trainer.normalize_stat_utility(epoch)
@@ -478,19 +483,24 @@ class ForwardTextClassificationTrainer:
             f"Gradients: {len(gradients)} | Size: {human_readable_size(get_size_in_bytes(gradients))}"
         )
 
-        # Final cleanup
-        del self.fmodel, self.params, self.buffers
-        self.fmodel, self.params, self.buffers = None, None, None
+        # Optimization: Set p.grad only ONCE at the end of training
+        for p, fg in zip(self.model.parameters(), self.grad):
+            if p.requires_grad:
+                p.grad = fg.clone() # Already on device
+
+        # Final cleanup - Optimization: keep self.fmodel, self.params, self.buffers across runs
+        # del self.fmodel, self.params, self.buffers
+        # self.fmodel, self.params, self.buffers = None, None, None
 
         if self.args.perturbation_sampling:
             del v_buffer
 
         self.grad = [fg.detach().cpu() for fg in self.grad]
-        if hasattr(self, "grad_for_var_check"):
+        if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
 
-        gc.collect()
-        torch.cuda.empty_cache()
+        # Optimization: GC & buffer flushes removed from here. 
+        # They are now handled at the framework level after sending gradients.
 
         allocated_after = torch.cuda.memory_allocated(device)
         self.log_memory("end", device)
@@ -508,9 +518,11 @@ class ForwardTextClassificationTrainer:
 
         # todo: Make sure that the model doesn't need to be put back into train mode using: `self.model.train()` before this method returns
         self.model.eval()
+        # Optimization: use cached functional model components
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
+        self.buffers = [b.to(device) for b in self.buffers]
 
         eval_loss, nb_eval_steps = 0.0, 0
         n_batches = len(self.test_dl)
@@ -542,8 +554,9 @@ class ForwardTextClassificationTrainer:
                 out_label_ids[start_index:end_index] = labels.detach().cpu().numpy()
 
                 del x, labels, output, logits, loss
-                torch.cuda.empty_cache()
-                gc.collect()
+                # Optimization: Remove GC & buffer flushes from the batch loop
+                # torch.cuda.empty_cache()
+                # gc.collect()
 
                 nb_eval_steps += 1
 
@@ -558,11 +571,11 @@ class ForwardTextClassificationTrainer:
         self.results.update(result)
         logging.info(self.results)
 
-        # Free memory
-        del self.fmodel, self.params, self.buffers
-        self.fmodel, self.params, self.buffers = None, None, None
-        gc.collect()
-        torch.cuda.empty_cache()
+        # Optimization: keep functional components
+        # del self.fmodel, self.params, self.buffers
+        # self.fmodel, self.params, self.buffers = None, None, None
+        
+        # Optimization: GC and buffer flushes moved to the framework level.
 
         return result, model_outputs, wrong
 
