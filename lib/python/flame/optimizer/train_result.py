@@ -20,19 +20,19 @@ class TrainResult(object):
     """TrainResult class."""
 
     def __init__(
-        self, 
-        weights=None, 
-        count=0, 
-        version=0, 
+        self,
+        weights=None,
+        count=0,
+        version=0,
         stat_utility=0,
         completion_time=None,
         round_duration=None,
         staleness=0,
-        end_id=None
+        end_id=None,
     ):
         """
         Initialize TrainResult.
-        
+
         Args:
             weights: Model weights
             count: Number of samples used for training
@@ -48,7 +48,7 @@ class TrainResult(object):
         self.count = count
         self.version = version
         self.stat_utility = stat_utility
-        
+
         # REFL-specific fields
         self.completion_time = completion_time
         self.round_duration = round_duration

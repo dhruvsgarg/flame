@@ -186,7 +186,7 @@ class Channel(object):
         trainer_version_states: dict[str, tuple[int, int, int]] = None,
     ) -> list[str]:
         """Return a list of end ids.
-        
+
         Args:
             agg_version_state: Aggregator version as (model_version, data_id, iteration_id)
             trainer_version_states: Map of trainer_id to their version triplets

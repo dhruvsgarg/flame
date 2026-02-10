@@ -66,7 +66,9 @@ class OptimizerType(str, Enum):
     FEDDYN = "feddyn"
     SCAFFOLD = "scaffold"
     FEDGFT = "fedgft"
-    REFLFEDAVG = "reflfedavg"  # REFL FedAvg with deadline filtering and staleness handling
+    REFLFEDAVG = (
+        "reflfedavg"  # REFL FedAvg with deadline filtering and staleness handling
+    )
 
     DEFAULT = FEDAVG
 

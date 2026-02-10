@@ -152,22 +152,24 @@ class PyTorchCifar10Aggregator(TopAggregator):
     def read_trainer_unavailability(self, trace=None) -> None:
         """
         Read availability trace pattern from central trace file.
-        
+
         Currently returns None to disable oracular pre-loading.
         The selector can still access traces via availability_trace_file config.
-        
+
         This allows the aggregator to work with dynamic trainer spawning
         without hardcoding the number of expected trainers.
         """
         print(f"REFL oracular mode with trace: {trace}")
         print("Aggregator will work with trainers dynamically as they connect")
-        print(f"Oracular per-trainer tracking disabled - will proceed when agg_goal met")
-        
+        print(
+            f"Oracular per-trainer tracking disabled - will proceed when agg_goal met"
+        )
+
         # Return None to disable oracular pre-tracking
         # This prevents get_curr_unavail_trainers() from expecting specific trainer IDs
         # The selector (if REFL-based) has access to availability_trace_file in config
         # and can handle availability checking independently
-        
+
         print("Trace setup complete - ready for dynamic trainers")
         return None
 
