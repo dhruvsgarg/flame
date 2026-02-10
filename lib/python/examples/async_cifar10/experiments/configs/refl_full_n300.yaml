@@ -25,7 +25,7 @@ experiments:
     
     execution:
       num_gpus: 8
-      sleep_between_spawns: 6.0
+      sleep_between_spawns: 8.0
       aggregator_warmup_time: 120
       monitoring:
         enabled: true

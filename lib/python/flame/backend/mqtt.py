@@ -138,7 +138,10 @@ class MqttBackend(AbstractBackend):
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
         async def _setup_mqtt_client():
+            # Start both data and notification processing tasks
             _ = asyncio.create_task(self._rx_task())
+            _ = asyncio.create_task(self._notify_rx_task())
+            logger.info("Started parallel message processing: data queue and notify queue")
 
             self._mqtt_client.on_connect = self.on_connect
             self._mqtt_client.on_message = self.on_message
@@ -150,7 +153,29 @@ class MqttBackend(AbstractBackend):
 
             _ = AsyncioHelper(self._loop, self._mqtt_client)
 
-            self._mqtt_client.connect(self._broker)
+            # Connection with retry and exponential backoff to handle high concurrency
+            max_retries = 5
+            retry_delay = 0.5  # Start with 500ms
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"MQTT connect attempt {attempt + 1}/{max_retries} to {self._broker}")
+                    self._mqtt_client.connect(self._broker, keepalive=60)
+                    logger.info(f"MQTT connection successful to {self._broker}")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        # Add jitter (random 0-50% of delay) to prevent thundering herd
+                        jitter = retry_delay * (0.5 + 0.5 * __import__('random').random())
+                        logger.warning(
+                            f"MQTT connect attempt {attempt + 1} failed: {e}. "
+                            f"Retrying in {jitter:.2f}s..."
+                        )
+                        await asyncio.sleep(jitter)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error(f"MQTT connect failed after {max_retries} attempts: {e}")
+                        raise ConnectionError(f"Failed to connect to MQTT broker {self._broker}: {e}")
+            
             self._mqtt_client.subscribe(self._health_check_topic)
 
         coro = _setup_mqtt_client()
@@ -290,7 +315,31 @@ class MqttBackend(AbstractBackend):
         logger.debug(f"Message being sent to chunk_mgr for end: {msg.end_id}")
         self.chunk_mgr.handle(msg, channel)
 
+    async def _notify_rx_task(self):
+        """Process NOTIFY messages (JOIN/LEAVE) in parallel with DATA messages.
+        
+        This separate task ensures that JOIN/LEAVE notifications are processed
+        immediately and are not blocked by large volumes of model update messages.
+        """
+        self._notify_deque = deque()
+        self._notify_deque.append(self._loop.create_future())
+        logger.debug("inside _notify_rx_task")
+        while True:
+            message = await self._notify_deque[0]
+            self._notify_deque.popleft()
+
+            logger.debug(
+                f"_notify_rx_task - topic: {message.topic}; len: {len(message.payload)}"
+            )
+
+            any_msg = Any().FromString(message.payload)
+            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
+                await self._handle_notification(any_msg)
+            else:
+                logger.warning(f"unexpected message type in notify queue")
+
     async def _rx_task(self):
+        """Process DATA messages (model updates)."""
         self._rx_deque = deque()
         self._rx_deque.append(self._loop.create_future())
         logger.debug("inside _rx_task")
@@ -309,12 +358,10 @@ class MqttBackend(AbstractBackend):
 
             any_msg = Any().FromString(message.payload)
 
-            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
-                await self._handle_notification(any_msg)
-            elif any_msg.Is(msg_pb2.Data.DESCRIPTOR):
+            if any_msg.Is(msg_pb2.Data.DESCRIPTOR):
                 await self._handle_data(any_msg)
             else:
-                logger.warning("unknown message type")
+                logger.warning("unexpected message type in data queue")
 
     def uid(self):
         """Return backend id."""
@@ -336,20 +383,50 @@ class MqttBackend(AbstractBackend):
             logger.debug(f"on_connect temp: {temp}")
 
     def on_message(self, client, userdata, message):
-        """on_message receives message."""
+        """on_message receives and routes messages to appropriate queues.
+        
+        NOTIFY messages (JOIN/LEAVE) are routed to _notify_deque for immediate processing.
+        DATA messages (model updates) are routed to _rx_deque.
+        Health check messages (plain text) are also routed to _rx_deque.
+        This prevents JOIN notifications from being delayed by model updates.
+        """
         logger.debug(f"topic: {message.topic}; len: {len(message.payload)}")
-        idx = len(self._rx_deque) - 1
-
-        if self._rx_deque[idx].cancelled():
-            # this is because _rx_task is cancelled rx_task is
-            # cancelled when the program exits; nothing to do
+        
+        # Health check messages go to data queue (they're plain text, not protobuf)
+        if message.topic == self._health_check_topic:
+            idx = len(self._rx_deque) - 1
+            if self._rx_deque[idx].cancelled():
+                return
+            self._rx_deque[idx].set_result(message)
+            self._rx_deque.append(self._loop.create_future())
+            logger.debug(f"data deque size = {len(self._rx_deque)}")
             return
-
-        # set result at the end of the queue
-        self._rx_deque[idx].set_result(message)
-        # add one extra future in the queue
-        self._rx_deque.append(self._loop.create_future())
-        logger.debug(f"deque size = {len(self._rx_deque)}")
+        
+        # Peek at message type to route to appropriate queue
+        try:
+            any_msg = Any().FromString(message.payload)
+            is_notify = any_msg.Is(msg_pb2.Notify.DESCRIPTOR)
+        except Exception as e:
+            logger.warning(f"Failed to parse message type: {e}")
+            is_notify = False
+        
+        # Route to appropriate queue
+        if is_notify:
+            # Route NOTIFY messages to dedicated notify queue
+            idx = len(self._notify_deque) - 1
+            if self._notify_deque[idx].cancelled():
+                return
+            self._notify_deque[idx].set_result(message)
+            self._notify_deque.append(self._loop.create_future())
+            logger.debug(f"notify deque size = {len(self._notify_deque)}")
+        else:
+            # Route DATA messages to regular queue
+            idx = len(self._rx_deque) - 1
+            if self._rx_deque[idx].cancelled():
+                return
+            self._rx_deque[idx].set_result(message)
+            self._rx_deque.append(self._loop.create_future())
+            logger.debug(f"data deque size = {len(self._rx_deque)}")
 
     def subscribe(self, topic) -> None:
         """Subscribe to a topic."""

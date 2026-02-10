@@ -20,11 +20,13 @@ pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
+import argparse
 import ast
 import calendar
 import gc
 import logging
 import os
+import sys
 import threading
 import time
 import math
@@ -37,6 +39,7 @@ import torchvision.transforms as transforms
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from torchvision.datasets import CIFAR10
+from memory_profiler import MemoryProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +219,13 @@ class PyTorchCifar10Trainer(Trainer):
 
         # flag to decide whether the trainer upon unavailability will wait or exit
         self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
+        
+        # Initialize memory profiler
+        self.memory_profiler = MemoryProfiler(
+            trainer_id=str(self.trainer_id),
+            log_interval_rounds=5  # Detailed logs every 5 rounds
+        )
+        logger.info(f"Trainer {self.trainer_id}: Memory profiler initialized")
 
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -261,9 +271,22 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
+        self.memory_profiler.log_component_memory("initialize", "BEFORE")
+        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
+        
+        # Log model memory usage
+        model_info = self.memory_profiler.analyze_model_memory(self.model)
+        logger.info(
+            f"Task_id: {self.trainer_id} Model initialized: "
+            f"{model_info['total_params']} params, "
+            f"{model_info['param_memory_mb']:.1f} MB"
+        )
+        
+        self.memory_profiler.log_component_memory("initialize", "AFTER")
+        
         logger.debug(
             f"Task_id: {self.trainer_id} initialize completed at timestamp: "
             f"{time.time()}"
@@ -271,6 +294,8 @@ class PyTorchCifar10Trainer(Trainer):
 
     def load_data(self) -> None:
         """Load data."""
+        self.memory_profiler.log_component_memory("load_data", "BEFORE")
+        
         transform_train = transforms.Compose(
             [
                 transforms.RandomCrop(32, padding=4),
@@ -356,6 +381,17 @@ class PyTorchCifar10Trainer(Trainer):
         # Release the memory of the full dataset
         del dataset
         gc.collect()
+        
+        # Log DataLoader memory info
+        dataloader_info = self.memory_profiler.get_dataloader_memory(self.train_loader)
+        logger.info(
+            f"Task_id: {self.trainer_id} DataLoader created: "
+            f"dataset_size={dataloader_info['dataset_size']}, "
+            f"batch_size={dataloader_info['batch_size']}, "
+            f"num_workers={dataloader_info['num_workers']}"
+        )
+        
+        self.memory_profiler.log_component_memory("load_data", "AFTER")
 
         logger.debug(
             f"Task_id: {self.trainer_id} load_data completed at timestamp: "
@@ -364,6 +400,18 @@ class PyTorchCifar10Trainer(Trainer):
 
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
+        
+        # Log memory before training round
+        self.memory_profiler.log_memory_before_round()
+        
+        # Aggressive cleanup before training to prevent memory buildup
+        if hasattr(self, '_round') and self._round > 1:
+            # Clear CUDA cache to reclaim GPU memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Force garbage collection
+            gc.collect()
+        
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
@@ -397,6 +445,19 @@ class PyTorchCifar10Trainer(Trainer):
         # save dataset size so that the info can be shared with
         # aggregator
         self.dataset_size = len(self.train_loader.dataset)
+        
+        # Aggressive memory cleanup after training
+        # Clear optimizer state to prevent accumulation
+        if hasattr(self, 'optimizer') and self.optimizer is not None:
+            self.optimizer.zero_grad(set_to_none=True)
+        
+        # Clear CUDA cache and force garbage collection
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Log memory after training round
+        self.memory_profiler.log_memory_after_round()
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency) if enabled
@@ -409,10 +470,14 @@ class PyTorchCifar10Trainer(Trainer):
 
     def _train_epoch(self, epoch):
         self.model.train()
+        
+        # Log memory for first epoch to track per-batch memory
+        if epoch == 1:
+            self.memory_profiler.log_component_memory(f"epoch_{epoch}", "START")
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
             data, target = data.to(self.device), target.to(self.device)
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
             output = self.model(data)
 
             if self.use_oort_loss_fn == "False":
@@ -425,18 +490,38 @@ class PyTorchCifar10Trainer(Trainer):
 
             loss.backward()
             self.optimizer.step()
-            if batch_idx % 100 == 0:
+            
+            # Detach tensors to break computation graph and free memory
+            if batch_idx %100 == 0:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
                 percent = 100.0 * batch_idx / len(self.train_loader)
+                # Use .item() and detach to avoid keeping computation graph
+                loss_val = loss.detach().item()
                 logger.info(
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                    f"\tloss: {loss.item():.6f}"
+                    f"\tloss: {loss_val:.6f}"
                 )
+            
+            # Clear references to free memory
+            del output, data, target, loss
+            
+            # Periodic CUDA cache clearing during training
+            if batch_idx % 50 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)
+        
+        # Aggressive memory cleanup after epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Log memory after first epoch
+        if epoch == 1:
+            self.memory_profiler.log_component_memory(f"epoch_{epoch}", "END")
 
     def evaluate(self) -> None:
         """Evaluate a model."""
@@ -534,6 +619,8 @@ class PyTorchCifar10Trainer(Trainer):
 def main():
     import argparse
     import json
+    import signal
+    import atexit
 
     parser = argparse.ArgumentParser(description="")
     parser.add_argument(
@@ -570,11 +657,15 @@ def main():
     )
 
     args = parser.parse_args()
+    
+    # Early startup logging - print to ensure it appears even if logger not configured yet
+    print(f"[TRAINER STARTUP] Process started, PID: {os.getpid()}")
 
     # Handle config loading: either from file or JSON string
     if args.config_json:
         # Load config from JSON string (new programmatic spawning mode)
         config_dict = json.loads(args.config_json)
+        print(f"[TRAINER STARTUP] Loaded config from JSON string")
         # Create a temporary config file or pass dict directly
         # For now, write to temp file for compatibility with Config class
         import tempfile
@@ -591,10 +682,16 @@ def main():
     elif args.config:
         # Load config from file (legacy mode)
         config = Config(args.config)
+        print(f"[TRAINER STARTUP] Loaded config from file: {args.config}")
     else:
         raise ValueError("Must provide either --config or --config-json")
 
+    print(f"[TRAINER STARTUP] Creating trainer object...")
     t = PyTorchCifar10Trainer(config, args.battery_threshold, args.speedup_factor)
+    
+    print(f"[TRAINER STARTUP] Trainer created - ID: {t.trainer_id}, Job: {t.config.job.job_id}")
+    logger.info(f"========== TRAINER STARTED: ID={t.trainer_id}, PID={os.getpid()} ==========")
+    
     print(
         f"# Trainer id: {t.trainer_id}, has heartbeats_enabled: "
         f"{t.heartbeats_enabled}, has client_notify: "
@@ -602,6 +699,27 @@ def main():
         f"training_delay_enabled: {t.training_delay_enabled}, "
         f"with training_delay_s: {t.training_delay_s}"
     )
+
+    # Register exit handler to generate memory report
+    def cleanup_and_report():
+        """Generate memory profiling report on exit."""
+        try:
+            report = t.memory_profiler.generate_report()
+            logger.info(f"\n{report}")
+            print(f"\n{report}")
+        except Exception as e:
+            logger.error(f"Error generating memory report: {e}")
+    
+    atexit.register(cleanup_and_report)
+    
+    # Handle SIGTERM gracefully
+    def signal_handler(signum, frame):
+        logger.info(f"Trainer {t.trainer_id} received signal {signum}, generating report...")
+        cleanup_and_report()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
     if t.heartbeats_enabled == "True":
         logger.info(
@@ -623,6 +741,8 @@ def main():
         avail_notify_thread.daemon = True
         avail_notify_thread.start()
 
+    print(f"[TRAINER STARTUP] Starting compose and run for trainer {t.trainer_id}...")
+    logger.info(f"Trainer {t.trainer_id} initiating compose() and run() - will now connect to aggregator")
     t.compose()
     t.run()
 
