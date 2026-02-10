@@ -208,14 +208,66 @@ class PyTorchCifar10Trainer(Trainer):
         indices = torch.tensor(self.trainer_indices_list)
 
         dataset = data_utils.Subset(dataset, indices)
-        train_kwargs = {
-            "batch_size": self.batch_size,
-            "drop_last": True,
-            "shuffle": True,
-            "num_workers": 2,
-        }
-
-        self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
+        
+        # GPU pre-loading optimization for small datasets
+        # This significantly reduces CPU RAM usage by keeping data on GPU
+        dataset_size = len(indices)
+        gpu_preload_threshold = 2000  # Adjust based on GPU memory availability
+        
+        if dataset_size <= gpu_preload_threshold and self.device is not None:
+            logger.info(
+                f"Trainer {self.trainer_id}: Pre-loading {dataset_size} samples to GPU "
+                f"to reduce CPU RAM usage"
+            )
+            
+            # Load all data to GPU at once
+            temp_loader = torch.utils.data.DataLoader(
+                dataset, batch_size=dataset_size, shuffle=False
+            )
+            
+            all_data = []
+            all_targets = []
+            for data, target in temp_loader:
+                all_data.append(data.to(self.device))
+                all_targets.append(target.to(self.device))
+            
+            # Create TensorDataset on GPU
+            gpu_dataset = data_utils.Subset(dataset, indices)
+            gpu_dataset = torch.utils.data.TensorDataset(
+                torch.cat(all_data), torch.cat(all_targets)
+            )
+            
+            train_kwargs = {
+                "batch_size": self.batch_size,
+                "drop_last": True,
+                "shuffle": True,
+                "num_workers": 0,  # No workers needed - data already on GPU
+            }
+            
+            self.train_loader = torch.utils.data.DataLoader(gpu_dataset, **train_kwargs)
+            
+            # Release temporary loader
+            del temp_loader, all_data, all_targets
+            
+            logger.info(
+                f"Trainer {self.trainer_id}: Successfully pre-loaded data to GPU"
+            )
+        else:
+            # Standard loading for larger datasets
+            train_kwargs = {
+                "batch_size": self.batch_size,
+                "drop_last": True,
+                "shuffle": True,
+                "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage from worker processes
+                "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
+            }
+            
+            self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
+            
+            logger.info(
+                f"Trainer {self.trainer_id}: Using standard loading "
+                f"({dataset_size} samples exceeds GPU pre-load threshold)"
+            )
 
         logger.debug(
             f"Task_id: {self.trainer_id} load_data completed at timestamp: {time.time()}"
