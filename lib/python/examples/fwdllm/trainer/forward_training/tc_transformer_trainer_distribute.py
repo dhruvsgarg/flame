@@ -19,7 +19,6 @@ from transformers import (
 )
 from functools import partial
 import functorch as fc
-from torch.cuda.amp import autocast
 import gc
 import os
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
