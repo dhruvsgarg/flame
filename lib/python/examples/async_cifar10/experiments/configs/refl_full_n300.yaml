@@ -14,6 +14,7 @@ experiments:
       availability:
         mode: syn_0  # Synthetic trace - 0% unavailability (always available)
       speedup_factor: 1.0
+      enable_training_delays: true  # Enable per-trainer training delays from metadata
     
     aggregator:
       config_template: expt_scripts_2026/configs/refl_config_n300.json

@@ -68,11 +68,11 @@ class ChunkThread(Thread):
         """
 
         async def inner(end_id: str, data: bytes, timestamp: datetime):
-            logger.debug(f"fully assembled data size = {len(data)}")
+            logger.info(f"[CHUNK_MGR] Attempting to deliver fully assembled message for end_id {end_id}, data size = {len(data)}")
 
             rxq = self._channel.get_rxq(end_id)
             if rxq is None:
-                logger.debug(f"rxq not found for {end_id}")
+                logger.error(f"[CHUNK_MGR] MESSAGE DROPPED! rxq not found for {end_id} - message was lost")
 
                 # set cleanup ready event for a given end id
                 cleanup_ready_future = self._backend.set_cleanup_ready_async(end_id)
@@ -87,8 +87,9 @@ class ChunkThread(Thread):
                         f"set_cleanup_ready_async returned None for end_id: {end_id}"
                     )
                 return
-            logger.debug(f"rxq {rxq} found for {end_id}, will await put")
+            logger.info(f"[CHUNK_MGR] rxq {rxq} found for {end_id}, will await put")
             await rxq.put((data, timestamp))
+            logger.info(f"[CHUNK_MGR] Successfully put message into rxq for end_id {end_id}")
 
         while not self._done:
             try:
@@ -103,9 +104,10 @@ class ChunkThread(Thread):
             # assemble is done in a chunk thread so that it won't
             # block asyncio task
             if self.chunk_store.seqno + 1 != msg.seqno:
-                logger.info(
-                    f"about to assemble message for end id: {msg.end_id}. Might get out-of-order"
+                logger.warning(
+                    f"[CHUNK_MGR] Out-of-order chunks for end id: {msg.end_id}. Expected seqno {self.chunk_store.seqno + 1}, got {msg.seqno}"
                 )
+            logger.debug(f"[CHUNK_MGR] Assembling chunk seqno={msg.seqno} for end_id={msg.end_id}, eom={msg.eom}")
             status = self.chunk_store.assemble(msg)
             logger.debug("Assemble attempted for chunkstore")
             if not status:
@@ -129,13 +131,17 @@ class ChunkThread(Thread):
                     continue
 
                 payload = self.chunk_store.get_data()
-                logger.debug(
-                    f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
+                logger.info(
+                    f"[CHUNK_MGR] Complete message assembled for end: {msg.end_id}, size={len(payload)} bytes. Pushing to rxq."
                 )
                 # now push payload to a target receive queue.
                 _, status = run_async(
                     inner(msg.end_id, payload, timestamp), self._backend.loop()
                 )
+                if status:
+                    logger.info(f"[CHUNK_MGR] Successfully delivered message from end {msg.end_id} to channel")
+                else:
+                    logger.error(f"[CHUNK_MGR] FAILED to deliver message from end {msg.end_id} - status={status}")
 
                 # message was completely assembled, reset the chunk
                 # store

@@ -118,6 +118,10 @@ class ConfigGenerator:
 
         config["hyperparameters"]["trainer_indices_list"] = dataset_indices
         config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
+        
+        # Set training_delay_enabled from overrides (default True)
+        training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
+        config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled
 
         # Add availability traces
         if availability_mode.startswith("mobiperf"):

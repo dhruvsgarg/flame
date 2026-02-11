@@ -312,6 +312,7 @@ class MqttBackend(AbstractBackend):
             self._cleanup_waits[msg.end_id] = expiry
 
         channel = self._channels[msg.channel_name]
+        logger.info(f"[MQTT] Received DATA message from end: {msg.end_id}, channel: {msg.channel_name}, seqno: {msg.seqno}, eom: {msg.eom}")
         logger.debug(f"Message being sent to chunk_mgr for end: {msg.end_id}")
         self.chunk_mgr.handle(msg, channel)
 
@@ -390,7 +391,7 @@ class MqttBackend(AbstractBackend):
         Health check messages (plain text) are also routed to _rx_deque.
         This prevents JOIN notifications from being delayed by model updates.
         """
-        logger.debug(f"topic: {message.topic}; len: {len(message.payload)}")
+        logger.debug(f"[MQTT on_message] topic: {message.topic}; len: {len(message.payload)}")
         
         # Health check messages go to data queue (they're plain text, not protobuf)
         if message.topic == self._health_check_topic:
@@ -399,13 +400,14 @@ class MqttBackend(AbstractBackend):
                 return
             self._rx_deque[idx].set_result(message)
             self._rx_deque.append(self._loop.create_future())
-            logger.debug(f"data deque size = {len(self._rx_deque)}")
+            logger.debug(f"[MQTT on_message] Health: data deque size = {len(self._rx_deque)}")
             return
         
         # Peek at message type to route to appropriate queue
         try:
             any_msg = Any().FromString(message.payload)
             is_notify = any_msg.Is(msg_pb2.Notify.DESCRIPTOR)
+            logger.debug(f"[MQTT on_message] Parsed message, is_notify={is_notify}")
         except Exception as e:
             logger.warning(f"Failed to parse message type: {e}")
             is_notify = False
@@ -415,18 +417,20 @@ class MqttBackend(AbstractBackend):
             # Route NOTIFY messages to dedicated notify queue
             idx = len(self._notify_deque) - 1
             if self._notify_deque[idx].cancelled():
+                logger.warning(f"[MQTT on_message] Notify deque future was cancelled!")
                 return
             self._notify_deque[idx].set_result(message)
             self._notify_deque.append(self._loop.create_future())
-            logger.debug(f"notify deque size = {len(self._notify_deque)}")
+            logger.debug(f"[MQTT on_message] NOTIFY: notify deque size = {len(self._notify_deque)}")
         else:
             # Route DATA messages to regular queue
             idx = len(self._rx_deque) - 1
             if self._rx_deque[idx].cancelled():
+                logger.warning(f"[MQTT on_message] DATA: rx deque future was cancelled!")
                 return
             self._rx_deque[idx].set_result(message)
             self._rx_deque.append(self._loop.create_future())
-            logger.debug(f"data deque size = {len(self._rx_deque)}")
+            logger.debug(f"[MQTT on_message] DATA: data deque size = {len(self._rx_deque)}")
 
     def subscribe(self, topic) -> None:
         """Subscribe to a topic."""
@@ -555,13 +559,17 @@ class MqttBackend(AbstractBackend):
         """Send data chunks."""
         chunk_store = ChunkStore()
         chunk_store.set_data(data)
-
+        
+        total_chunks = 0
         while True:
             chunk, seqno, eom = chunk_store.get_chunk()
             if chunk is None:
                 break
+            total_chunks += 1
 
             self.send_chunk(topic, ch_name, chunk, seqno, eom)
+        
+        logger.info(f"[MQTT SEND_CHUNKS] Completed sending {total_chunks} chunks for end_id={self._id}, channel={ch_name}")
 
     def send_chunk(
         self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
@@ -578,12 +586,22 @@ class MqttBackend(AbstractBackend):
         any.Pack(msg)
         payload = any.SerializeToString()
 
+        logger.info(f"[MQTT SEND] Publishing chunk: end_id={self._id}, channel={channel_name}, seqno={seqno}, eom={eom}, size={len(payload)} bytes")
         info = self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
+        logger.debug(f"[MQTT SEND] Publish initiated: mid={info.mid}, rc={info.rc}")
 
-        while not info.is_published():
-            logger.debug(f"waiting for publish completion: rc = {info.rc}")
+        loop_count = 0
+        max_loops = 1000  # Prevent infinite loop
+        while not info.is_published() and loop_count < max_loops:
+            logger.debug(f"[MQTT SEND] waiting for publish completion: rc = {info.rc}, loop={loop_count}")
             retval = self._mqtt_client.loop(MQTT_LOOP_CHECK_PERIOD)
-            logger.debug(f"retval from loop = {retval}")
+            logger.debug(f"[MQTT SEND] retval from loop = {retval}")
+            loop_count += 1
+        
+        if loop_count >= max_loops:
+            logger.error(f"[MQTT SEND] MESSAGE NOT PUBLISHED! end_id={self._id}, seqno={seqno}, eom={eom}, rc={info.rc} - POTENTIAL MESSAGE LOSS")
+        else:
+            logger.info(f"[MQTT SEND] Chunk published successfully: end_id={self._id}, seqno={seqno}, eom={eom}, loops={loop_count}")
 
         logger.debug(f"sending chunk {seqno} to {topic} is done")
 

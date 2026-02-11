@@ -37,6 +37,7 @@ class TrainerConfig:
     availability: AvailabilityConfig = field(default_factory=AvailabilityConfig)
     battery_threshold: int = 50  # For 3-state modes
     speedup_factor: float = 1.0
+    enable_training_delays: bool = True  # Enable per-trainer training delays
 
 
 @dataclass
@@ -155,6 +156,7 @@ class ExperimentBatch:
                     ),
                     battery_threshold=trainer_data.get("battery_threshold", 50),
                     speedup_factor=trainer_data.get("speedup_factor", 1.0),
+                    enable_training_delays=trainer_data.get("enable_training_delays", True),
                 ),
                 aggregator=AggregatorConfig(**agg_data) if agg_data else None,
                 execution=(

@@ -198,13 +198,19 @@ class ExperimentRunner:
             )
 
             # Pass aggregator job ID to trainers for MQTT communication
+            # Prepare config overrides
+            config_overrides = {
+                "job.id": agg_job_id,
+                "job.name": agg_job_name,
+                "hyperparameters.training_delay_enabled": str(exp_config.trainer.enable_training_delays),
+            }
+            
             self.trainer_spawner.spawn_all(
                 trainer_ids,
                 alpha=exp_config.trainer.dataset.dirichlet_alpha,
                 availability_mode=exp_config.trainer.availability.mode,
                 trainer_main_path=self.example_dir / "trainer" / "pytorch" / "main.py",
-                # Override job ID to match aggregator
-                **{"job.id": agg_job_id, "job.name": agg_job_name},
+                **config_overrides,
             )
 
             # Step 6: Monitor
