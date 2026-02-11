@@ -194,18 +194,10 @@ class OortSelector(AbstractSelector):
             f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}"
         )
 
-        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
-        # Process trainers that have returned updates since last round
-        # Remove them from the in-flight tracking so they can be selected again
-        if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set):
-            # Process updates received since last selection
-            for end_id in list(self.ordered_updates_recv_ends):
-                if end_id in self.selected_ends:
-                    self.selected_ends.discard(end_id)
-                    logger.debug(f"Removed {end_id} from in-flight set (update received)")
-            # Clear the processed updates list
-            self.ordered_updates_recv_ends.clear()
-            logger.info(f"After processing updates: {len(self.selected_ends)} trainers still in-flight")
+        # NOTE: Cleanup of ordered_updates_recv_ends and selected_ends is now done
+        # in _cleanup_recvd_ends() immediately after aggregation completes.
+        # This fixes a race condition where trainers returning updates between
+        # agg_goal and next select() would be incorrectly kept in the in-flight set.
 
         # Return existing selected end_ids if the round did not
         # proceed
@@ -677,6 +669,63 @@ class OortSelector(AbstractSelector):
             f"Going to cleanup selector state for "
             f"end_id {end_id} since it has left the channel"
         )
+
+    def _cleanup_recvd_ends(self, ends: dict[str, End]):
+        """Clean up ends whose updates were received, freeing them from selected_ends.
+
+        This method is called immediately after aggregation completes (when agg_goal is met).
+        It processes trainers who returned updates and removes them from the in-flight set,
+        making them eligible for selection in the next round.
+
+        CRITICAL: This fixes a race condition where trainers returning updates between
+        agg_goal completion and the next select() call would remain incorrectly marked
+        as in-flight, preventing their re-selection even though they're available.
+
+        For SyncFL with overcommitment (e.g., select 27, wait for 20):
+        - When 20 trainers return → agg_goal met → aggregation happens → cleanup called
+        - Any trainers in ordered_updates_recv_ends are freed from selected_ends
+        - If 7 stragglers return after this but before next select(), they're also freed
+          immediately when their updates arrive (cleanup is called again)
+        """
+        logger.debug(
+            f"Cleaning up received ends. selected_ends: {self.selected_ends}, "
+            f"ordered_updates_recv_ends: {self.ordered_updates_recv_ends}"
+        )
+
+        if not hasattr(self, 'selected_ends'):
+            self.selected_ends = set()
+
+        # Process all trainers in ordered_updates_recv_ends
+        # (These are trainers who returned updates since last cleanup)
+        num_ends_to_remove = len(self.ordered_updates_recv_ends)
+        
+        if num_ends_to_remove != 0:
+            ends_to_remove = self.ordered_updates_recv_ends.copy()
+            logger.debug(
+                f"Will remove {num_ends_to_remove} ends from selected_ends: "
+                f"{ends_to_remove}"
+            )
+
+            # Clear the list since we're processing all of them
+            self.ordered_updates_recv_ends = []
+
+            # Remove from selected_ends (in-flight set)
+            for end_id in ends_to_remove:
+                if end_id in self.selected_ends:
+                    self.selected_ends.remove(end_id)
+                    logger.debug(f"Freed trainer {end_id} from in-flight set")
+                else:
+                    logger.debug(
+                        f"Trainer {end_id} was not in selected_ends "
+                        f"(may have been cleaned up already)"
+                    )
+
+            logger.debug(
+                f"After cleanup: selected_ends has {len(self.selected_ends)} trainers, "
+                f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} trainers"
+            )
+        else:
+            logger.debug("No ends to clean up (ordered_updates_recv_ends is empty)")
 
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from selected ends"""

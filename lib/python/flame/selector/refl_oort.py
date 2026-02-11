@@ -138,18 +138,11 @@ class REFLOortSelector(OortSelector):
             f"task: {task_to_perform}, avail_priority={self.avail_priority}"
         )
 
-        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
-        # Process trainers that have returned updates since last round
-        # Remove them from the in-flight tracking so they can be selected again
-        if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set):
-            # Process updates received since last selection
-            for end_id in list(self.ordered_updates_recv_ends):
-                if end_id in self.selected_ends:
-                    self.selected_ends.discard(end_id)
-                    logger.debug(f"Removed {end_id} from in-flight set (update received)")
-            # Clear the processed updates list
-            self.ordered_updates_recv_ends.clear()
-            logger.info(f"After processing updates: {len(self.selected_ends)} trainers still in-flight")
+        # NOTE: Cleanup of ordered_updates_recv_ends and selected_ends is now done
+        # in _cleanup_recvd_ends() (inherited from OortSelector) immediately after
+        # aggregation completes. This fixes race condition where trainers returning
+        # updates between agg_goal and next select() would be incorrectly kept in
+        # the in-flight set.
 
         # Return existing selected end_ids if round did not proceed
         if round_num <= self.round and hasattr(self, 'selected_ends') and len(self.selected_ends) != 0:

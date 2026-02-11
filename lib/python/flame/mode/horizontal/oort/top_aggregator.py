@@ -207,6 +207,16 @@ class TopAggregator(BaseTopAggregator):
         # update model with global weights
         self._update_model()
 
+        # CRITICAL: Clean up trainers who returned updates, freeing them from in-flight set
+        # This must happen immediately after aggregation to prevent race condition where
+        # trainers finishing after agg_goal but before next select() remain incorrectly
+        # marked as busy, allowing them to be sent new work while still processing old work
+        num_to_cleanup = len(channel._selector.ordered_updates_recv_ends)
+        channel.cleanup_recvd_ends()
+        logger.debug(
+            f"[CLEANUP] Freed {num_to_cleanup} trainers from in-flight set after aggregation"
+        )
+
         logger.info(
             f"====== aggregation finished for round {self._round}, "
             f"self._updates_recevied: "
@@ -364,10 +374,13 @@ class TopAggregator(BaseTopAggregator):
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
             self._round_update_values["stat_utility"].append(stat_utility)
-            self._round_update_values["trainer_speed"].append(
-                channel.get_end_property(
-                    end_id=end, key=PROP_ROUND_DURATION
-                ).total_seconds()
-            )
+            # Only append trainer_speed if round_duration is available
+            if round_duration_seconds is not None:
+                self._round_update_values["trainer_speed"].append(round_duration_seconds)
+            else:
+                logger.debug(
+                    f"Skipping trainer_speed for {end} - round_duration is None "
+                    f"(stale update: msg_version={trainer_model_version}, current_round={self._round})"
+                )
 
         return total
