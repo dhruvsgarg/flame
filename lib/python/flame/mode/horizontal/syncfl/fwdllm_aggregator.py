@@ -1328,6 +1328,33 @@ class TopAggregator(AsyncTopAgg):
                 idx += 1
 
         for end in ends:
+            # AsyncFL/SyncFL checks: Similar to FedBuff, prevent sending weights to trainers that:
+            # 1. Already have been sent weights for current version and haven't responded
+            # 2. Are already selected in the current round
+            
+            # Check 1: Has trainer been sent this version but not responded yet?
+            if end in self._track_trainer_version_duration_s.keys():
+                sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
+                recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
+                
+                # If current version was sent but not received, skip
+                if self._model_version in sent_versions and self._model_version not in recv_versions:
+                    logger.warning(
+                        f"[SELECTION_CHECK] Skipping {end}: already sent model_version={self._model_version} "
+                        f"but no response received yet. Sent at {sent_versions[self._model_version]}, "
+                        f"sent_versions={list(sent_versions.keys())}, recv_versions={list(recv_versions.keys())}"
+                    )
+                    continue
+                
+                # Check 2: Are there any unreturned versions (sent but not received)?
+                unreturned_versions = [v for v in sent_versions.keys() if v not in recv_versions.keys()]
+                if unreturned_versions:
+                    logger.warning(
+                        f"[SELECTION_CHECK] Trainer {end} has {len(unreturned_versions)} unreturned versions: "
+                        f"{unreturned_versions}. Current version to send: {self._model_version}. "
+                        f"This may indicate concurrent selection - proceeding but this could cause issues."
+                    )
+            
             # setting start time for OORT TODO: (DG) round_start_time for all
             # trainers in the same round may not be the same
             logger.debug(
@@ -1569,6 +1596,33 @@ class TopAggregator(AsyncTopAgg):
 
         # ASYNC SEND LOOP (from AsyncTopAgg)
         for end in ends:
+            # AsyncFL checks: Similar to FedBuff, prevent sending weights to trainers that:
+            # 1. Already have been sent weights for current version and haven't responded
+            # 2. Are already selected in the current round
+            
+            # Check 1: Has trainer been sent this version but not responded yet?
+            if end in self._track_trainer_version_duration_s.keys():
+                sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
+                recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
+                
+                # If current version was sent but not received, skip
+                if self._model_version in sent_versions and self._model_version not in recv_versions:
+                    logger.warning(
+                        f"[SELECTION_CHECK] Skipping {end}: already sent model_version={self._model_version} "
+                        f"but no response received yet. Sent at {sent_versions[self._model_version]}, "
+                        f"sent_versions={list(sent_versions.keys())}, recv_versions={list(recv_versions.keys())}"
+                    )
+                    continue
+                
+                # Check 2: Are there any unreturned versions (sent but not received)?
+                unreturned_versions = [v for v in sent_versions.keys() if v not in recv_versions.keys()]
+                if unreturned_versions:
+                    logger.warning(
+                        f"[SELECTION_CHECK] Trainer {end} has {len(unreturned_versions)} unreturned versions: "
+                        f"{unreturned_versions}. Current version to send: {self._model_version}. "
+                        f"This may indicate concurrent selection - proceeding but this could cause issues."
+                    )
+            
             # Updated the trainer state dict
             self._trainer_state_dict[end] = (
                 self._model_version,

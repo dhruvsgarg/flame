@@ -1,16 +1,16 @@
 # Copyright 2022 Cisco Systems, Inc. and its affiliates
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you
-# may not use this file except in compliance with the License. You may
-# obtain a copy of the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy of
+# the License at
 #
 #      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-# implied. See the License for the specific language governing
-# permissions and limitations under the License.
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations under
+# the License.
 #
 # SPDX-License-Identifier: Apache-2.0
 """MQTT backend."""
@@ -40,10 +40,10 @@ from paho.mqtt.client import MQTTv5
 END_STATUS_ON = "online"
 END_STATUS_OFF = "offline"
 
-# wait time of 10 sec clean up resources allocated for terminated end
-# if no message arrives after the wait time
-# NOTE: DG increased wait_time to 4h to handle trainer init stalls and other
-# waits during unavailability unaware training
+# wait time of 10 sec clean up resources allocated for terminated end if no
+# message arrives after the wait time NOTE: DG increased wait_time to 4h to
+# handle trainer init stalls and other waits during unavailability unaware
+# training
 MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
@@ -79,8 +79,8 @@ class MqttBackend(AbstractBackend):
         self._mqtt_client = None
         self._last_payload_sig = None
         self._cleanup_waits = None
-        # TODO: (DG) check if _cleanup_ready is being used correctly
-        # Refer p2p.py for implementation
+        # TODO: (DG) check if _cleanup_ready is being used correctly Refer
+        # p2p.py for implementation
         self._cleanup_ready = set()
 
         if self._initialized:
@@ -114,8 +114,8 @@ class MqttBackend(AbstractBackend):
             for end_id, expiry in list(self._cleanup_waits.items()):
                 if time.time() >= expiry:
                     logger.info(f"end termination check timed out: {end_id}")
-                    # linear iteration is okay because there are not
-                    # many channels per role in general
+                    # linear iteration is okay because there are not many
+                    # channels per role in general
                     for _, channel in self._channels.items():
                         # remove the end id from the channel
                         await channel.remove(end_id)
@@ -138,10 +138,7 @@ class MqttBackend(AbstractBackend):
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
         async def _setup_mqtt_client():
-            # Start both data and notification processing tasks
             _ = asyncio.create_task(self._rx_task())
-            _ = asyncio.create_task(self._notify_rx_task())
-            logger.info("Started parallel message processing: data queue and notify queue")
 
             self._mqtt_client.on_connect = self.on_connect
             self._mqtt_client.on_message = self.on_message
@@ -153,29 +150,7 @@ class MqttBackend(AbstractBackend):
 
             _ = AsyncioHelper(self._loop, self._mqtt_client)
 
-            # Connection with retry and exponential backoff to handle high concurrency
-            max_retries = 5
-            retry_delay = 0.5  # Start with 500ms
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"MQTT connect attempt {attempt + 1}/{max_retries} to {self._broker}")
-                    self._mqtt_client.connect(self._broker, keepalive=60)
-                    logger.info(f"MQTT connection successful to {self._broker}")
-                    break
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        # Add jitter (random 0-50% of delay) to prevent thundering herd
-                        jitter = retry_delay * (0.5 + 0.5 * __import__('random').random())
-                        logger.warning(
-                            f"MQTT connect attempt {attempt + 1} failed: {e}. "
-                            f"Retrying in {jitter:.2f}s..."
-                        )
-                        await asyncio.sleep(jitter)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        logger.error(f"MQTT connect failed after {max_retries} attempts: {e}")
-                        raise ConnectionError(f"Failed to connect to MQTT broker {self._broker}: {e}")
-            
+            self._mqtt_client.connect(self._broker)
             self._mqtt_client.subscribe(self._health_check_topic)
 
         coro = _setup_mqtt_client()
@@ -269,8 +244,8 @@ class MqttBackend(AbstractBackend):
         any_msg.Unpack(msg)
 
         if msg.end_id == self._id:
-            # This case happens when message is broadcast to a
-            # self-loop e.g., distributed topology
+            # This case happens when message is broadcast to a self-loop e.g.,
+            # distributed topology
             logger.debug("message sent to self; do nothing")
             return
 
@@ -281,8 +256,8 @@ class MqttBackend(AbstractBackend):
         channel = self._channels[msg.channel_name]
 
         if msg.type == msg_pb2.NotifyType.JOIN and not channel.has(msg.end_id):
-            # this is the first time to see this end, so let's notify
-            # my presence to the end
+            # this is the first time to see this end, so let's notify my
+            # presence to the end
             logger.debug(f"Acknowledge join notification from {msg.end_id}")
             self.notify(msg.channel_name, msg_pb2.NotifyType.JOIN)
 
@@ -300,8 +275,8 @@ class MqttBackend(AbstractBackend):
         any_msg.Unpack(msg)
 
         if msg.end_id == self._id:
-            # This case happens when message is broadcast to a
-            # self-loop e.g., distributed topology
+            # This case happens when message is broadcast to a self-loop e.g.,
+            # distributed topology
             logger.debug("message sent to self; do nothing")
             return
 
@@ -312,35 +287,10 @@ class MqttBackend(AbstractBackend):
             self._cleanup_waits[msg.end_id] = expiry
 
         channel = self._channels[msg.channel_name]
-        logger.info(f"[MQTT] Received DATA message from end: {msg.end_id}, channel: {msg.channel_name}, seqno: {msg.seqno}, eom: {msg.eom}")
         logger.debug(f"Message being sent to chunk_mgr for end: {msg.end_id}")
         self.chunk_mgr.handle(msg, channel)
 
-    async def _notify_rx_task(self):
-        """Process NOTIFY messages (JOIN/LEAVE) in parallel with DATA messages.
-        
-        This separate task ensures that JOIN/LEAVE notifications are processed
-        immediately and are not blocked by large volumes of model update messages.
-        """
-        self._notify_deque = deque()
-        self._notify_deque.append(self._loop.create_future())
-        logger.debug("inside _notify_rx_task")
-        while True:
-            message = await self._notify_deque[0]
-            self._notify_deque.popleft()
-
-            logger.debug(
-                f"_notify_rx_task - topic: {message.topic}; len: {len(message.payload)}"
-            )
-
-            any_msg = Any().FromString(message.payload)
-            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
-                await self._handle_notification(any_msg)
-            else:
-                logger.warning(f"unexpected message type in notify queue")
-
     async def _rx_task(self):
-        """Process DATA messages (model updates)."""
         self._rx_deque = deque()
         self._rx_deque.append(self._loop.create_future())
         logger.debug("inside _rx_task")
@@ -359,10 +309,12 @@ class MqttBackend(AbstractBackend):
 
             any_msg = Any().FromString(message.payload)
 
-            if any_msg.Is(msg_pb2.Data.DESCRIPTOR):
+            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
+                await self._handle_notification(any_msg)
+            elif any_msg.Is(msg_pb2.Data.DESCRIPTOR):
                 await self._handle_data(any_msg)
             else:
-                logger.warning("unexpected message type in data queue")
+                logger.warning("unknown message type")
 
     def uid(self):
         """Return backend id."""
@@ -373,8 +325,8 @@ class MqttBackend(AbstractBackend):
         broker."""
         logger.debug("calling on_connect")
 
-        # publish health data; format: <end_id>:<status> status is
-        # either END_STATUS_ON or END_STATUS_OFF
+        # publish health data; format: <end_id>:<status> status is either
+        # END_STATUS_ON or END_STATUS_OFF
         temp = client.publish(
             self._health_check_topic,
             payload=f"{self._id}:{END_STATUS_ON}",
@@ -384,53 +336,20 @@ class MqttBackend(AbstractBackend):
             logger.debug(f"on_connect temp: {temp}")
 
     def on_message(self, client, userdata, message):
-        """on_message receives and routes messages to appropriate queues.
-        
-        NOTIFY messages (JOIN/LEAVE) are routed to _notify_deque for immediate processing.
-        DATA messages (model updates) are routed to _rx_deque.
-        Health check messages (plain text) are also routed to _rx_deque.
-        This prevents JOIN notifications from being delayed by model updates.
-        """
-        logger.debug(f"[MQTT on_message] topic: {message.topic}; len: {len(message.payload)}")
-        
-        # Health check messages go to data queue (they're plain text, not protobuf)
-        if message.topic == self._health_check_topic:
-            idx = len(self._rx_deque) - 1
-            if self._rx_deque[idx].cancelled():
-                return
-            self._rx_deque[idx].set_result(message)
-            self._rx_deque.append(self._loop.create_future())
-            logger.debug(f"[MQTT on_message] Health: data deque size = {len(self._rx_deque)}")
+        """on_message receives message."""
+        logger.debug(f"topic: {message.topic}; len: {len(message.payload)}")
+        idx = len(self._rx_deque) - 1
+
+        if self._rx_deque[idx].cancelled():
+            # this is because _rx_task is cancelled rx_task is cancelled when
+            # the program exits; nothing to do
             return
-        
-        # Peek at message type to route to appropriate queue
-        try:
-            any_msg = Any().FromString(message.payload)
-            is_notify = any_msg.Is(msg_pb2.Notify.DESCRIPTOR)
-            logger.debug(f"[MQTT on_message] Parsed message, is_notify={is_notify}")
-        except Exception as e:
-            logger.warning(f"Failed to parse message type: {e}")
-            is_notify = False
-        
-        # Route to appropriate queue
-        if is_notify:
-            # Route NOTIFY messages to dedicated notify queue
-            idx = len(self._notify_deque) - 1
-            if self._notify_deque[idx].cancelled():
-                logger.warning(f"[MQTT on_message] Notify deque future was cancelled!")
-                return
-            self._notify_deque[idx].set_result(message)
-            self._notify_deque.append(self._loop.create_future())
-            logger.debug(f"[MQTT on_message] NOTIFY: notify deque size = {len(self._notify_deque)}")
-        else:
-            # Route DATA messages to regular queue
-            idx = len(self._rx_deque) - 1
-            if self._rx_deque[idx].cancelled():
-                logger.warning(f"[MQTT on_message] DATA: rx deque future was cancelled!")
-                return
-            self._rx_deque[idx].set_result(message)
-            self._rx_deque.append(self._loop.create_future())
-            logger.debug(f"[MQTT on_message] DATA: data deque size = {len(self._rx_deque)}")
+
+        # set result at the end of the queue
+        self._rx_deque[idx].set_result(message)
+        # add one extra future in the queue
+        self._rx_deque.append(self._loop.create_future())
+        logger.debug(f"deque size = {len(self._rx_deque)}")
 
     def subscribe(self, topic) -> None:
         """Subscribe to a topic."""
@@ -533,10 +452,9 @@ class MqttBackend(AbstractBackend):
     async def _tx_task(self, channel, end_id, comm_type: CommType):
         """Conducts data transmission in a loop.
 
-        _tx_task() must be created per tx queue right after end_id is
-        added to channel (e.g., channel.add(end_id)). In case of a tx
-        task for broadcast queue, a broadcaset queue must be created
-        first.
+        _tx_task() must be created per tx queue right after end_id is added to
+        channel (e.g., channel.add(end_id)). In case of a tx task for broadcast
+        queue, a broadcaset queue must be created first.
         """
         if comm_type == CommType.BROADCAST:
             txq = channel.broadcast_q()
@@ -559,17 +477,13 @@ class MqttBackend(AbstractBackend):
         """Send data chunks."""
         chunk_store = ChunkStore()
         chunk_store.set_data(data)
-        
-        total_chunks = 0
+
         while True:
             chunk, seqno, eom = chunk_store.get_chunk()
             if chunk is None:
                 break
-            total_chunks += 1
 
             self.send_chunk(topic, ch_name, chunk, seqno, eom)
-        
-        logger.info(f"[MQTT SEND_CHUNKS] Completed sending {total_chunks} chunks for end_id={self._id}, channel={ch_name}")
 
     def send_chunk(
         self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
@@ -586,29 +500,18 @@ class MqttBackend(AbstractBackend):
         any.Pack(msg)
         payload = any.SerializeToString()
 
-        logger.info(f"[MQTT SEND] Publishing chunk: end_id={self._id}, channel={channel_name}, seqno={seqno}, eom={eom}, size={len(payload)} bytes")
         info = self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
-        logger.debug(f"[MQTT SEND] Publish initiated: mid={info.mid}, rc={info.rc}")
 
-        loop_count = 0
-        max_loops = 1000  # Prevent infinite loop
-        while not info.is_published() and loop_count < max_loops:
-            logger.debug(f"[MQTT SEND] waiting for publish completion: rc = {info.rc}, loop={loop_count}")
+        while not info.is_published():
+            logger.debug(f"waiting for publish completion: rc = {info.rc}")
             retval = self._mqtt_client.loop(MQTT_LOOP_CHECK_PERIOD)
-            logger.debug(f"[MQTT SEND] retval from loop = {retval}")
-            loop_count += 1
-        
-        if loop_count >= max_loops:
-            logger.error(f"[MQTT SEND] MESSAGE NOT PUBLISHED! end_id={self._id}, seqno={seqno}, eom={eom}, rc={info.rc} - POTENTIAL MESSAGE LOSS")
-        else:
-            logger.info(f"[MQTT SEND] Chunk published successfully: end_id={self._id}, seqno={seqno}, eom={eom}, loops={loop_count}")
+            logger.debug(f"retval from loop = {retval}")
 
         logger.debug(f"sending chunk {seqno} to {topic} is done")
 
     async def cleanup(self):
         """Clean up resources in backend."""
-        # NOTE: DG attempted implementation to fix issue
-        # Stop MQTT client loop
+        # NOTE: DG attempted implementation to fix issue Stop MQTT client loop
         if self._mqtt_client is not None:
             self._mqtt_client.loop_stop()
 

@@ -477,7 +477,8 @@ class Channel(object):
 
             if msg is not None:
                 if MessageType.MODEL_VERSION in msg:
-                    logger.info(f"msg of type MODEL_VERSION recvd for end {end_id}")
+                    model_version = msg[MessageType.MODEL_VERSION]
+                    logger.info(f"msg of type MODEL_VERSION recvd for end {end_id}, model_version={model_version}")
                 elif MessageType.HEARTBEAT in msg:
                     logger.info(f"msg of type HEARTBEAT recvd for end {end_id}")
                     # TODO: (DG) Check if it helps here- can reset
@@ -539,8 +540,10 @@ class Channel(object):
                 skipped_ends.append(f"{end_id}:not_in_channel")
                 continue
             if end_id in self._active_recv_fifo_tasks:
-                logger.warning(f"[RECV_FIFO] Skipping end_id {end_id} - already has active task")
-                skipped_ends.append(f"{end_id}:already_active")
+                # Check queue depth for this end to see if messages are piling up
+                queue_depth = self._ends[end_id].qsize() if hasattr(self._ends[end_id], 'qsize') else 'unknown'
+                logger.warning(f"[RECV_FIFO] Skipping end_id {end_id} - already has active task, queue_depth={queue_depth}")
+                skipped_ends.append(f"{end_id}:already_active:qd={queue_depth}")
                 continue
             
             runs.append(_get_inner(end_id))

@@ -233,8 +233,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         total = 0
 
+        # For REFL/Oort with overcommitment: wait for aggGoal responses, not all selected
+        agg_goal = self.config.hyperparameters.aggregation_goal
+        first_k = agg_goal if agg_goal and agg_goal > 0 else 0
+        logger.info(f"Waiting for first_k={first_k} responses from {len(channel.ends())} selected trainers")
+
         # receive local model parameters from trainers
-        for msg, metadata in channel.recv_fifo(channel.ends()):
+        for msg, metadata in channel.recv_fifo(channel.ends(), first_k=first_k):
             end, timestamp = metadata
             if not msg:
                 logger.debug(f"No data from {end}; skipping it")

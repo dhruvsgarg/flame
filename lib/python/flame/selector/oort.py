@@ -90,6 +90,12 @@ class OortSelector(AbstractSelector):
         # present there
         self.ordered_updates_recv_ends = list()
 
+        # CRITICAL: Initialize selected_ends as a set to track in-flight trainers
+        # For SyncFL with overcommitment, this prevents re-selecting trainers
+        # that haven't returned their updates yet
+        if not hasattr(self, 'selected_ends'):
+            self.selected_ends = set()
+
         # Track sliding window statistics for the selector
         self._selector_stats = {}
         for task in ["train", "eval"]:
@@ -188,13 +194,45 @@ class OortSelector(AbstractSelector):
             f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}"
         )
 
+        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
+        # Process trainers that have returned updates since last round
+        # Remove them from the in-flight tracking so they can be selected again
+        if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set):
+            # Process updates received since last selection
+            for end_id in list(self.ordered_updates_recv_ends):
+                if end_id in self.selected_ends:
+                    self.selected_ends.discard(end_id)
+                    logger.debug(f"Removed {end_id} from in-flight set (update received)")
+            # Clear the processed updates list
+            self.ordered_updates_recv_ends.clear()
+            logger.info(f"After processing updates: {len(self.selected_ends)} trainers still in-flight")
+
         # Return existing selected end_ids if the round did not
         # proceed
-        if round <= self.round and len(self.selected_ends) != 0:
+        if round <= self.round and hasattr(self, 'selected_ends') and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
 
         # Run pacer that controls round_threshold
         self.pacer()
+
+        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
+        # Filter out trainers that are currently "in flight" (selected but haven't returned)
+        in_flight_trainers = self.selected_ends if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set) else set()
+        
+        # Filter ends to exclude in-flight trainers
+        eligible_ends = {
+            end_id: end
+            for end_id, end in ends.items()
+            if end_id not in in_flight_trainers
+        }
+        
+        logger.info(
+            f"Eligible ends: {len(eligible_ends)} out of {len(ends)} "
+            f"(in_flight: {len(in_flight_trainers)})"
+        )
+        
+        # Use eligible_ends instead of ends for selection
+        ends = eligible_ends
 
         # Make a filter of blocklist ends
         blocklist_end_ids = self.find_blocklists(ends)
@@ -260,7 +298,8 @@ class OortSelector(AbstractSelector):
             explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
         logger.debug(f"explore-selected ends: {explore_end_ids}")
 
-        self.selected_ends = [*explore_end_ids, *exploit_end_ids]
+        # Store as set to track in-flight trainers for SyncFL with overcommitment
+        self.selected_ends = set([*explore_end_ids, *exploit_end_ids])
 
         # save the history of exploited utility at this round for
         # pacer

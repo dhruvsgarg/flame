@@ -70,12 +70,39 @@ class TopAggregator(BaseTopAggregator):
             end, _ = metadata
 
             if not msg:
-                logger.debug(f"No data from {end}; skipping it")
+                logger.info(f"[MSG_SKIP] No data from ...{end[-8:]}; skipping it")
                 continue
 
-            if self._round != msg[MessageType.MODEL_VERSION]:
-                logger.debug(f"Stale message from {end}; skipping it")
-                continue
+            # Calculate staleness
+            trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
+            staleness = self._round - trainer_round
+
+            # Check if optimizer supports REFL staleness (has stale_update_max attribute)
+            stale_update_max = getattr(self.optimizer, 'stale_update_max', None)
+            
+            # If staleness > 0, check if we should accept or reject based on REFL config
+            if staleness > 0:
+                if stale_update_max is not None:
+                    # REFL mode: check against stale_update_max threshold
+                    if stale_update_max >= 0 and staleness > stale_update_max:
+                        logger.info(
+                            f"[MSG_SKIP] Message from ...{end[-8:]} TOO STALE: "
+                            f"staleness={staleness} > stale_update_max={stale_update_max}; skipping it"
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            f"[MSG_ACCEPT_STALE] Stale message from ...{end[-8:]}, "
+                            f"staleness={staleness} <= stale_update_max={stale_update_max}, "
+                            f"accepting with weight degradation"
+                        )
+                else:
+                    # Non-REFL mode (standard Oort): reject all stale messages
+                    logger.info(
+                        f"[MSG_SKIP] Stale message from ...{end[-8:]}, "
+                        f"expected_round={self._round}, got_round={trainer_round}; skipping it"
+                    )
+                    continue
 
             total = self._handle_weights_msg(msg, metadata, channel, total)
 
@@ -83,11 +110,20 @@ class TopAggregator(BaseTopAggregator):
                 self._updates_recevied[end] = 1
             else:
                 self._updates_recevied[end] += 1
+            
+            # CRITICAL: Notify selector that this trainer has returned its update
+            # This prevents the selector from re-selecting this trainer in the next round
+            # before it has returned its update (key for SyncFL with overcommitment)
+            channel._selector.ordered_updates_recv_ends.append(end)
+            
+            logger.info(f"[MSG_ACCEPTED] Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
             # remove end_id if it sends a valid message with correct
             # round info break the for loop if k valid messages arrive
             received_end_count += 1
-            end_ids.remove(end)
+            # Only remove if end is in end_ids (stale messages from previous rounds won't be)
+            if end in end_ids:
+                end_ids.remove(end)
             if received_end_count == aggr_num:
                 break
 
@@ -98,20 +134,54 @@ class TopAggregator(BaseTopAggregator):
                 end, _ = metadata
 
                 if not msg:
-                    logger.debug(f"No data from {end}; skipping it")
+                    logger.info(f"[MSG_SKIP] (loop2) No data from ...{end[-8:]}; skipping it")
                     continue
 
-                if self._round != msg[MessageType.MODEL_VERSION]:
-                    logger.info(f"Stale message from {end}; skipping it")
-                    continue
+                # Calculate staleness
+                trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
+                staleness = self._round - trainer_round
+
+                # Check if optimizer supports REFL staleness (has stale_update_max attribute)
+                stale_update_max = getattr(self.optimizer, 'stale_update_max', None)
+                
+                # If staleness > 0, check if we should accept or reject based on REFL config
+                if staleness > 0:
+                    if stale_update_max is not None:
+                        # REFL mode: check against stale_update_max threshold
+                        if stale_update_max >= 0 and staleness > stale_update_max:
+                            logger.info(
+                                f"[MSG_SKIP] (loop2) Message from ...{end[-8:]} TOO STALE: "
+                                f"staleness={staleness} > stale_update_max={stale_update_max}; skipping it"
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                f"[MSG_ACCEPT_STALE] (loop2) Stale message from ...{end[-8:]}, "
+                                f"staleness={staleness} <= stale_update_max={stale_update_max}, "
+                                f"accepting with weight degradation"
+                            )
+                    else:
+                        # Non-REFL mode (standard Oort): reject all stale messages
+                        logger.info(
+                            f"[MSG_SKIP] (loop2) Stale message from ...{end[-8:]}, "
+                            f"expected_round={self._round}, got_round={trainer_round}; skipping it"
+                        )
+                        continue
 
                 total = self._handle_weights_msg(msg, metadata, channel, total)
+                
+                # CRITICAL: Notify selector that this trainer has returned its update
+                channel._selector.ordered_updates_recv_ends.append(end)
+                
+                logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
                 # remove end_id if it sends a valid message with
                 # correct round info break the for loop if k valid
                 # messages arrive
                 received_end_count += 1
-                end_ids.remove(end)
+                # Only remove if end is in end_ids (stale messages from previous rounds won't be)
+                if end in end_ids:
+                    end_ids.remove(end)
                 if received_end_count == aggr_num:
                     break
 
@@ -212,6 +282,7 @@ class TopAggregator(BaseTopAggregator):
         end = metadata[0]
         timestamp = metadata[1]
 
+        logger.info(f"[MSG_PROCESSING] Processing message from end ...{end[-8:]}, round={self._round}, msg_version={msg.get(MessageType.MODEL_VERSION, 'N/A')}")
         logger.debug(f"received data from {end}")
 
         # calculate round duration for this end, if the round number
@@ -261,11 +332,34 @@ class TopAggregator(BaseTopAggregator):
 
         if weights is not None and count > 0:
             total += count
-            tres = TrainResult(weights, count, trainer_model_version)
-            # save training result from trainer in a disk cache
+            
+            # Calculate staleness BEFORE creating TrainResult
+            update_staleness_val = self._round - trainer_model_version
+            
+            # Get round duration if available
+            round_duration_obj = channel.get_end_property(end, PROP_ROUND_DURATION)
+            round_duration_seconds = None
+            if round_duration_obj:
+                round_duration_seconds = round_duration_obj.total_seconds()
+            
+            # Create TrainResult with all REFL-required fields
+            tres = TrainResult(
+                weights=weights,
+                count=count,
+                version=trainer_model_version,
+                stat_utility=stat_utility,
+                staleness=update_staleness_val,
+                round_duration=round_duration_seconds,
+                end_id=end
+            )
+            
+            # Save training result from trainer in a disk cache
             self.cache[end] = tres
-
-            update_staleness_val = self._round - tres.version
+            
+            logger.debug(
+                f"Created TrainResult for {end}: staleness={update_staleness_val}, "
+                f"stat_utility={stat_utility}, round_duration={round_duration_seconds}"
+            )
 
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)

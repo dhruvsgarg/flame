@@ -142,6 +142,16 @@ class REFLFedAvg(AbstractOptimizer):
         if not all_results:
             return None
 
+        # Log staleness distribution
+        staleness_dist = [tres.staleness if tres.staleness else 0 for tres in all_results]
+        logger.info(
+            f"[REFL_AGG] Aggregating {len(all_results)} trainers: "
+            f"staleness distribution: min={min(staleness_dist)}, "
+            f"max={max(staleness_dist)}, avg={sum(staleness_dist)/len(staleness_dist):.2f}"
+        )
+        # Note: top_aggregator now handles staleness filtering based on stale_update_max
+        # All results here have staleness <= stale_update_max (or stale_update_max < 0 for unlimited)
+        # We just need to compute importance weights and aggregate
         # Apply deadline filtering
         fast_results, slow_results = self.filter_by_deadline(
             all_results, round_duration
@@ -175,19 +185,14 @@ class REFLFedAvg(AbstractOptimizer):
 
         # Aggregate with weighted averaging
         aggregated_count = 0
-        for tres in all_trainers:
+        for tres in all_results:
             rate = (tres.count / total) * importance_weights.get(tres.end_id, 1.0)
             self.aggregate_fn(tres, rate)
             aggregated_count += 1
 
         logger.info(
-            f"Aggregated {aggregated_count} trainers "
-            f"({len(fast_results)} fast + {len(applicable_stale)} stale)"
+            f"[REFL_AGG] Aggregated {aggregated_count} trainers with weighted averaging"
         )
-
-        # Update moving average deadline if using adaptive deadline
-        if self.deadline == 0 and fast_results:
-            self.update_moving_avg_deadline(fast_results)
 
         return self.agg_weights
 
@@ -420,6 +425,12 @@ class REFLFedAvg(AbstractOptimizer):
         total_weight = sum(weights.values())
         if total_weight > 0:
             weights = {k: v / total_weight for k, v in weights.items()}
+
+        # Log importance weights with staleness for debugging
+        logger.debug("[REFL_WEIGHTS] Importance weights by staleness:")
+        for end_id, weight in weights.items():
+            staleness = next((t.staleness for t in trainers if t.end_id == end_id), 0)
+            logger.debug(f"  ...{end_id[-8:]}: staleness={staleness}, weight={weight:.6f}")
 
         return weights
 

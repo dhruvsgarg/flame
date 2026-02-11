@@ -463,7 +463,7 @@ class PyTorchCifar10Trainer(Trainer):
         # dataset size and/or network latency) if enabled
         if self.training_delay_enabled == "True":
             time.sleep(self.training_delay_s / self.speedup_factor)
-            logger.debug(
+            logger.info(
                 f"Delayed training time for trainer "
                 f"{self.trainer_id} by {self.training_delay_s}s"
             )

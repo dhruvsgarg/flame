@@ -88,6 +88,12 @@ class REFLOortSelector(OortSelector):
         self.exploitation_util_history = deque(maxlen=200)
         self.last_pacer_round = 0
 
+        # CRITICAL: Initialize selected_ends as a set to track in-flight trainers
+        # For SyncFL with overcommitment, this prevents re-selecting trainers
+        # that haven't returned their updates yet
+        if not hasattr(self, 'selected_ends'):
+            self.selected_ends = set()
+
         logger.info(
             f"REFLOortSelector initialized: "
             f"avail_priority={self.avail_priority}, "
@@ -104,7 +110,7 @@ class REFLOortSelector(OortSelector):
         **kwargs,
     ):
         """
-        Select clients using REFL's priority-based approach.
+        Select clients using REFL's priority-based approach for SyncFL.
 
         Args:
             ends: Dictionary of available ends
@@ -132,19 +138,59 @@ class REFLOortSelector(OortSelector):
             f"task: {task_to_perform}, avail_priority={self.avail_priority}"
         )
 
+        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
+        # Process trainers that have returned updates since last round
+        # Remove them from the in-flight tracking so they can be selected again
+        if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set):
+            # Process updates received since last selection
+            for end_id in list(self.ordered_updates_recv_ends):
+                if end_id in self.selected_ends:
+                    self.selected_ends.discard(end_id)
+                    logger.debug(f"Removed {end_id} from in-flight set (update received)")
+            # Clear the processed updates list
+            self.ordered_updates_recv_ends.clear()
+            logger.info(f"After processing updates: {len(self.selected_ends)} trainers still in-flight")
+
         # Return existing selected end_ids if round did not proceed
-        if round_num <= self.round and len(self.selected_ends) != 0:
+        if round_num <= self.round and hasattr(self, 'selected_ends') and len(self.selected_ends) != 0:
+            logger.debug(f"Round {round_num} <= {self.round}, returning existing selections")
             return {key: None for key in self.selected_ends}
 
         # Run pacer to adjust round_threshold
         self.pacer()
 
+        # Filter out unavailable trainers AND trainers that are currently "in flight"
+        # (selected in previous rounds but haven't returned updates yet)
+        # This is CRITICAL for SyncFL with overcommitment (selecting 1.3K but waiting for K)
+        
+        # Get trainers that are still in flight from previous rounds  
+        in_flight_trainers = self.selected_ends if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set) else set()
+        
+        eligible_ends = {
+            end_id: end
+            for end_id, end in ends.items()
+            if (not trainer_unavail_list or end_id not in trainer_unavail_list)
+            and end_id not in in_flight_trainers  # NEW: filter out in-flight trainers
+        }
+
+        logger.info(
+            f"Eligible ends: {len(eligible_ends)} out of {len(ends)} "
+            f"(unavail: {len(trainer_unavail_list or [])}, in_flight: {len(in_flight_trainers)})"
+        )
+
+        if len(eligible_ends) == 0:
+            logger.debug("No eligible ends available")
+            return {}
+
+        # Adjust selection count based on available eligible ends
+        num_to_select = min(num_of_ends, len(eligible_ends))
+
         # Build blacklist if enabled
-        blacklist = self.get_blacklist(ends) if self.blacklist_rounds > 0 else set()
+        blacklist = self.get_blacklist(eligible_ends) if self.blacklist_rounds > 0 else set()
 
         # Build priority lists using availability tracker
         priority_ends, remaining_ends = self.build_priority_lists(
-            ends, cur_time, round_duration_hint, blacklist, trainer_unavail_list
+            eligible_ends, cur_time, round_duration_hint, blacklist, trainer_unavail_list or []
         )
 
         logger.info(
@@ -155,43 +201,53 @@ class REFLOortSelector(OortSelector):
         # Select based on priority mode
         if self.avail_priority == 0:
             # No priority: use standard Oort on all available ends
-            available_ends = set(ends.keys()) - blacklist - set(trainer_unavail_list)
+            all_candidates = set(priority_ends + remaining_ends)
             selected = self._select_with_oort_ucb(
-                ends, available_ends, num_of_ends, round_num
+                eligible_ends, all_candidates, num_to_select, round_num
             )
 
         elif self.avail_priority == 1:
             # Fill mode: prioritize high-priority, fill remaining from others
             selected = self._select_priority_fill(
-                ends, priority_ends, remaining_ends, num_of_ends, round_num
+                eligible_ends, priority_ends, remaining_ends, num_to_select, round_num
             )
 
         elif self.avail_priority == 2:
             # Strict mode: only select from high-priority clients
+            available_priority = min(len(priority_ends), num_to_select)
+            logger.info(
+                f"Strict priority mode: selecting {available_priority} from "
+                f"{len(priority_ends)} priority ends"
+            )
             selected = self._select_with_oort_ucb(
-                ends,
-                set(priority_ends),
-                min(num_of_ends, len(priority_ends)),
-                round_num,
+                eligible_ends, set(priority_ends), available_priority, round_num
             )
 
         else:
             logger.warning(
                 f"Unknown avail_priority={self.avail_priority}, using mode 0"
             )
-            available_ends = set(ends.keys()) - blacklist - set(trainer_unavail_list)
+            all_candidates = set(priority_ends + remaining_ends)
             selected = self._select_with_oort_ucb(
-                ends, available_ends, num_of_ends, round_num
+                eligible_ends, all_candidates, num_to_select, round_num
             )
 
+        # Store selected ends as a set
         self.selected_ends = set(selected)
+        
+        # Update round tracking
         self.round = round_num
 
         # Update exploration factor
         self.update_exploration_factor()
 
         # Increment selection count for selected ends
-        self.increment_selected_count_on_selected_ends(ends)
+        for end_id in selected:
+            if end_id in ends:
+                count = ends[end_id].get_property(PROP_SELECTED_COUNT)
+                if count is None:
+                    count = 0
+                ends[end_id].set_property(PROP_SELECTED_COUNT, count + 1)
 
         logger.info(f"Selected {len(self.selected_ends)} ends: {self.selected_ends}")
 
