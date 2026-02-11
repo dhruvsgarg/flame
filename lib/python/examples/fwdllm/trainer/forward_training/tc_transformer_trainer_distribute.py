@@ -21,6 +21,7 @@ from functools import partial
 import functorch as fc
 import gc
 import os
+import contextlib
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
 logger = logging.getLogger(__name__)
@@ -307,7 +308,8 @@ class ForwardTextClassificationTrainer:
             else:
                 logits = pred
             loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
-        logging.debug(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
+        # Optimization: removed .item() to avoid GPU sync
+        logging.debug(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean()}")
 
     @timer_decorator
     def _prepare_perturbation_tensors(self, device, v_buffer):
@@ -402,7 +404,9 @@ class ForwardTextClassificationTrainer:
         self._make_model_functional(device)
         self.log_memory("after_fmodel_setup", device)
 
-        global_step, tr_loss = 0, 0.0
+        global_step = 0
+        # Optimization: Accumulate loss on GPU as a tensor to avoid frequent Host to Device syncs
+        tr_loss = torch.tensor(0.0, device=device)
 
         v_buffer = {}
         # Perturbation selection logic slightly differs from the vanilla FwdLLM implementation. Their logic has a flaw which cannot be used in a true-FL setting 
@@ -424,11 +428,21 @@ class ForwardTextClassificationTrainer:
             # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
             self.grad = [fg.to(device).zero_() for fg in self.grad]
 
-        with torch.no_grad():
+        # Optimization: Use autocast for training loop if enabled
+        from torch.cuda.amp import autocast
+        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        logging.debug(f"Autocast enabled: {self.args.fp16}")
+
+        with torch.no_grad(), autocast_cm:
             for epoch in range(self.args.epochs):
                 logging.info(f"train_dl size: {len(self.train_dl)}")
                 for batch_idx, batch in enumerate(self.train_dl):
                     curr_client_idx = self.args.client_idx
+                    if batch_idx == 0 and epoch == 0 and not batch[2].is_cuda:
+                        # batch[2] is typically the attention_mask. Summing it gives the count of non-padding tokens.
+                        max_seq_len_in_batch = (batch[2] != 0).sum(dim=1).max().item()
+                        logging.debug(f"Max active sequence length in first batch: {max_seq_len_in_batch}")
+
                     self.log_memory(
                         f"epoch{epoch}_batch{batch_idx}_client{curr_client_idx}_start",
                         device,
@@ -448,11 +462,11 @@ class ForwardTextClassificationTrainer:
 
                     self._accumulate_and_extract_grads(device, jvp, v_params)
 
-                    current_loss = loss.item()
-                    tr_loss += current_loss
+                    # Optimization: Keep tr_loss on device.
+                    tr_loss += loss
                     global_step += 1
                     logging.info(
-                        f"epoch = {epoch}, trainer_id = {self.trainer_id}, loss = {current_loss}"
+                        f"epoch = {epoch}, trainer_id = {self.trainer_id}, loss = {loss}"
                     )
 
                     if (
@@ -514,10 +528,20 @@ class ForwardTextClassificationTrainer:
         )
 
         # self.model.train()        # See comment about self.model.eval() above. TL;DR: This is used to make training deterministic
-        return global_step, tr_loss / global_step if global_step > 0 else 0.0
+        return global_step, (tr_loss / global_step).item() if global_step > 0 else 0.0
 
 
+    @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
+        """
+        Evaluate the model and compute metrics.
+        
+        As a future optimization, consider the following improvements mirroring the aggregator:
+        1. Autocasting: Wrap the evaluation loop with `torch.cuda.amp.autocast()` to leverage TensorCores.
+        2. Keep on GPU: Accumulate `eval_loss`, `preds`, and `out_label_ids` on GPU as `torch.tensor` 
+           and only move to CPU at the end to avoid frequent pipeline flushes.
+        3. One-time GPU transfer: Cache evaluation data in GPU memory if it doesn't change between calls.
+        """
         if not device:
             device = self.device
 

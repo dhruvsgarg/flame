@@ -71,7 +71,7 @@
         "var_control": true,
         "perturbation_sampling": true,
         "evaluate_during_training_steps": 100,
-        "fp16": false,
+        "fp16": true,
         "output_dir": "/tmp/",
         "is_debug_mode": 0,
         "fedprox_mu": 1,
