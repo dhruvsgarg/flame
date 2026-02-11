@@ -1056,7 +1056,9 @@ class TopAggregator(AsyncTopAgg):
         loss_fct = CrossEntropyLoss()
 
         from torch.cuda.amp import autocast
-        with torch.no_grad(), autocast():
+        import contextlib
+        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        with torch.no_grad(), autocast_cm:
             for batch_start_idx in range(0, test_sample_len, batch_size):
                 batch_end_idx = min(batch_start_idx + batch_size, test_sample_len)
                 

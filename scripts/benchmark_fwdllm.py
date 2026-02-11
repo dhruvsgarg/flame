@@ -21,6 +21,7 @@ from examples.fwdllm.data_manager.text_classification_data_manager import TextCl
 from examples.fwdllm.data_manager.base_data_manager import BaseDataManager
 from examples.fwdllm.expts.initializer import set_seed, create_model
 from flame.config import Config
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,8 @@ class MockAggregator:
 
         t_loop_start = time.time()
         from torch.cuda.amp import autocast
-        with torch.no_grad(), autocast():
+        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        with torch.no_grad(), autocast_cm:
             for i in range(0, test_sample_len, batch_size):
                 if torch.cuda.is_available(): torch.cuda.synchronize()
                 t_inner_start = time.time()
