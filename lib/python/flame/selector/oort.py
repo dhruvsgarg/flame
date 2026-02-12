@@ -291,7 +291,11 @@ class OortSelector(AbstractSelector):
         logger.debug(f"explore-selected ends: {explore_end_ids}")
 
         # Store as set to track in-flight trainers for SyncFL with overcommitment
-        self.selected_ends = set([*explore_end_ids, *exploit_end_ids])
+        # Add newly selected trainers to existing in-flight ones instead of replacing
+        newly_selected = set([*explore_end_ids, *exploit_end_ids])
+        old_selected = self.selected_ends if hasattr(self, 'selected_ends') else set()
+        self.selected_ends = old_selected | newly_selected
+
 
         # save the history of exploited utility at this round for
         # pacer
@@ -687,9 +691,10 @@ class OortSelector(AbstractSelector):
         - If 7 stragglers return after this but before next select(), they're also freed
           immediately when their updates arrive (cleanup is called again)
         """
-        logger.debug(
-            f"Cleaning up received ends. selected_ends: {self.selected_ends}, "
-            f"ordered_updates_recv_ends: {self.ordered_updates_recv_ends}"
+        logger.info(
+            f"[CLEANUP_DEBUG] Starting cleanup: "
+            f"selected_ends has {len(self.selected_ends) if hasattr(self, 'selected_ends') else 0} trainers, "
+            f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} pending"
         )
 
         if not hasattr(self, 'selected_ends'):
@@ -699,33 +704,54 @@ class OortSelector(AbstractSelector):
         # (These are trainers who returned updates since last cleanup)
         num_ends_to_remove = len(self.ordered_updates_recv_ends)
         
+        # DEBUG: Check if 389 is involved in cleanup
+        test_trainer_id = '505f9fc483cf4df68a2409257b5fad7d3c580389'
+        trainer_389_in_cleanup = test_trainer_id in self.ordered_updates_recv_ends
+        trainer_389_in_selected = test_trainer_id in self.selected_ends
+        logger.info(
+            f"[DEBUG_389_CLEANUP] Before cleanup: 389_in_cleanup_list={trainer_389_in_cleanup}, "
+            f"389_in_selected_ends={trainer_389_in_selected}, selected_ends_size={len(self.selected_ends)}"
+        )
+        
         if num_ends_to_remove != 0:
             ends_to_remove = self.ordered_updates_recv_ends.copy()
-            logger.debug(
-                f"Will remove {num_ends_to_remove} ends from selected_ends: "
-                f"{ends_to_remove}"
+            logger.info(
+                f"[CLEANUP_DEBUG] Will remove {num_ends_to_remove} ends from selected_ends"
+            )
+            logger.info(
+                f"[CLEANUP_DEBUG] IDs to remove: {ends_to_remove[:10]}"
             )
 
             # Clear the list since we're processing all of them
             self.ordered_updates_recv_ends = []
 
             # Remove from selected_ends (in-flight set)
+            removed_count = 0
+            not_found_count = 0
             for end_id in ends_to_remove:
                 if end_id in self.selected_ends:
                     self.selected_ends.remove(end_id)
+                    removed_count += 1
                     logger.debug(f"Freed trainer {end_id} from in-flight set")
+                    if end_id == test_trainer_id:
+                        logger.info(f"[DEBUG_389_CLEANUP] Successfully removed trainer 389 from selected_ends")
                 else:
+                    not_found_count += 1
                     logger.debug(
                         f"Trainer {end_id} was not in selected_ends "
                         f"(may have been cleaned up already)"
                     )
+                    if end_id == test_trainer_id:
+                        logger.warning(f"[DEBUG_389_CLEANUP] Trainer 389 was NOT in selected_ends during cleanup!")
 
-            logger.debug(
-                f"After cleanup: selected_ends has {len(self.selected_ends)} trainers, "
+            logger.info(
+                f"[CLEANUP_DEBUG] Cleanup complete: "
+                f"Removed {removed_count} trainers, {not_found_count} were not in selected_ends. "
+                f"selected_ends now has {len(self.selected_ends)} trainers, "
                 f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} trainers"
             )
         else:
-            logger.debug("No ends to clean up (ordered_updates_recv_ends is empty)")
+            logger.info("[CLEANUP_DEBUG] No ends to clean up (ordered_updates_recv_ends is empty)")
 
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from selected ends"""
