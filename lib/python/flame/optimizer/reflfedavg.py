@@ -192,9 +192,12 @@ class REFL(AbstractOptimizer):
         assert base_weights is not None
 
         # Initialize aggregated weights from base_weights
-        # REFL directly updates model parameters in-place
+        # CRITICAL: Trainers send DELTA weights (current - previous)
+        # We must accumulate weighted deltas separately, then add to base
         self.agg_weights = self._copy_weights(base_weights)
-        self.model_in_update = []  # Track if this is first update
+        
+        # Accumulate weighted deltas separately (don't modify base yet)
+        self.weighted_deltas = self._zero_weights(base_weights)
 
         if len(cache) == 0 or total == 0:
             return base_weights
@@ -255,18 +258,44 @@ class REFL(AbstractOptimizer):
             all_trainers, total, base_weights, tasks_round
         )
 
-        # Aggregate using REFL's in-place update approach
+        # Log a sample weight BEFORE aggregation for debugging
+        sample_key = next(iter(base_weights.keys())) if base_weights else None
+        if sample_key:
+            base_sample = base_weights[sample_key].flatten()[:3] if hasattr(base_weights[sample_key], 'flatten') else base_weights[sample_key][:3]
+            logger.debug(f"[REFL_DEBUG] BEFORE aggregation - base_weights[{sample_key}][:3] = {base_sample}")
+
+        # Aggregate using REFL's staleness-aware approach
+        # CRITICAL: Accumulate weighted deltas, then normalize, then add to base
         importance_sum = 0.0
         for tres in all_trainers:
             end_id = tres.end_id if tres.end_id else "unknown"
             importance = importance_weights.get(end_id, 1.0)
             
-            # Aggregate with importance weight
+            # Accumulate weighted deltas (NOT into base model yet!)
             self.aggregate_fn(tres, importance)
             importance_sum += importance
 
-        # Normalize by sum of importance weights (REFL's approach)
-        self._normalize_by_importance(self.agg_weights, importance_sum)
+        # Log a sample weight AFTER accumulation BEFORE normalization
+        if sample_key:
+            delta_sample = self.weighted_deltas[sample_key].flatten()[:3] if hasattr(self.weighted_deltas[sample_key], 'flatten') else self.weighted_deltas[sample_key][:3]
+            logger.debug(f"[REFL_DEBUG] Accumulated weighted deltas[{sample_key}][:3] = {delta_sample}, importance_sum={importance_sum:.4f}")
+
+        # Normalize ONLY the deltas (not the base model!)
+        self._normalize_by_importance(self.weighted_deltas, importance_sum)
+        
+        # Log normalized deltas
+        if sample_key:
+            norm_delta_sample = self.weighted_deltas[sample_key].flatten()[:3] if hasattr(self.weighted_deltas[sample_key], 'flatten') else self.weighted_deltas[sample_key][:3]
+            logger.debug(f"[REFL_DEBUG] Normalized deltas[{sample_key}][:3] = {norm_delta_sample}")
+        
+        # Add normalized deltas to base model to get final weights
+        # This is the correct formula: new_model = base + normalized_deltas
+        self._add_deltas_to_base(self.agg_weights, self.weighted_deltas)
+        
+        # Log final weights
+        if sample_key:
+            final_sample = self.agg_weights[sample_key].flatten()[:3] if hasattr(self.agg_weights[sample_key], 'flatten') else self.agg_weights[sample_key][:3]
+            logger.debug(f"[REFL_DEBUG] Final weights[{sample_key}][:3] = {final_sample}")
 
         # Apply gradient policy if specified (YoGi or QFedAvg)
         if self.gradient_policy and self.last_global_model is not None:
@@ -681,6 +710,33 @@ class REFL(AbstractOptimizer):
             return [np.copy(w) for w in weights]
         else:
             raise NotImplementedError(f"Unsupported framework: {ml_framework}")
+    
+    def _zero_weights(self, weights: ModelWeights) -> ModelWeights:
+        """Create zero-initialized weights with same structure as input."""
+        ml_framework = get_ml_framework_in_use()
+        
+        if ml_framework == MLFramework.PYTORCH:
+            import torch
+            return {k: torch.zeros_like(v) for k, v in weights.items()}
+        elif ml_framework == MLFramework.TENSORFLOW:
+            import numpy as np
+            return [np.zeros_like(w) for w in weights]
+        else:
+            raise NotImplementedError(f"Unsupported framework: {ml_framework}")
+    
+    def _add_deltas_to_base(self, base: ModelWeights, deltas: ModelWeights) -> None:
+        """Add deltas to base weights in-place. Formula: base += deltas"""
+        ml_framework = get_ml_framework_in_use()
+        
+        if ml_framework == MLFramework.PYTORCH:
+            for k in base.keys():
+                if k in deltas:
+                    base[k] += deltas[k]
+        elif ml_framework == MLFramework.TENSORFLOW:
+            for idx in range(len(base)):
+                base[idx] += deltas[idx]
+        else:
+            raise NotImplementedError(f"Unsupported framework: {ml_framework}")
 
     def _normalize_by_importance(self, weights: ModelWeights, importance_sum: float) -> None:
         """
@@ -707,43 +763,34 @@ class REFL(AbstractOptimizer):
 
     def _aggregate_pytorch(self, tres: TrainResult, importance: float):
         """
-        Aggregate PyTorch weights using REFL's in-place update approach.
+        Accumulate PyTorch DELTA weights with importance weighting.
         
-        First trainer: param.data = weight * importance
-        Subsequent trainers: param.data += weight * importance
+        CRITICAL: Trainers send DELTA weights (current - previous).
+        We accumulate weighted deltas into self.weighted_deltas.
+        The base model (self.agg_weights) remains unchanged until final step.
+        
+        Formula: weighted_deltas += delta * importance
         """
-        if len(self.model_in_update) == 0:
-            # First trainer: initialize aggregated weights
-            self.model_in_update = [True]
-            for k, v in tres.weights.items():
-                if k in self.agg_weights:
-                    self.agg_weights[k] = v * importance
-                else:
-                    logger.warning(f"Key {k} not found in agg_weights")
-        else:
-            # Subsequent trainers: accumulate
-            for k, v in tres.weights.items():
-                if k in self.agg_weights:
-                    self.agg_weights[k] += v * importance
-                else:
-                    logger.warning(f"Key {k} not found in agg_weights")
+        # Accumulate weighted deltas (not into base model!)
+        for k, v in tres.weights.items():
+            if k in self.weighted_deltas:
+                self.weighted_deltas[k] += v * importance
+            else:
+                logger.warning(f"Key {k} not found in weighted_deltas")
 
     def _aggregate_tensorflow(self, tres: TrainResult, importance: float):
         """
-        Aggregate TensorFlow weights using REFL's in-place update approach.
+        Accumulate TensorFlow DELTA weights with importance weighting.
         
-        First trainer: param[idx] = weight[idx] * importance
-        Subsequent trainers: param[idx] += weight[idx] * importance
+        CRITICAL: Trainers send DELTA weights (current - previous).
+        We accumulate weighted deltas into self.weighted_deltas.
+        The base model (self.agg_weights) remains unchanged until final step.
+        
+        Formula: weighted_deltas[idx] += delta[idx] * importance
         """
-        if len(self.model_in_update) == 0:
-            # First trainer: initialize aggregated weights
-            self.model_in_update = [True]
-            for idx in range(len(tres.weights)):
-                self.agg_weights[idx] = tres.weights[idx] * importance
-        else:
-            # Subsequent trainers: accumulate
-            for idx in range(len(tres.weights)):
-                self.agg_weights[idx] += tres.weights[idx] * importance
+        # Accumulate weighted deltas (not into base model!)
+        for idx in range(len(tres.weights)):
+            self.weighted_deltas[idx] += tres.weights[idx] * importance
 
     def _init_yogi_controller(self):
         """Initialize YoGi controller for gradient policy."""
