@@ -1,5 +1,5 @@
 {
-    "taskid": "refl_n300_syn0_experiment",
+    "taskid": "refl_n300_oort_params_prob1.0",
     "backend": "mqtt",
     "brokers": [
         {
@@ -43,8 +43,9 @@
     "selector": {
         "sort": "refl_oort",
         "kwargs": {
-            "aggr_num": 30,
+            "aggr_num": 10,
             "avail_priority": 1,
+            "avail_probability": 1.0,
             "blacklist_rounds": 50,
             "pacer_step": 20,
             "pacer_delta": 5,
@@ -55,11 +56,14 @@
             "exploration_min": 0.2,
             "round_threshold": 30,
             "alpha": 2,
-            "comment": "REFL Oort selector - availability-aware utility-based selection for 300 trainers"
+            "max_selection_retries": 5,
+            "selection_retry_wait": 10.0,
+            "min_trainers_ratio": 0.5,
+            "comment": "REFL Oort selector with 100% accuracy (perfect oracle) - matching Oort params. Retry config: 5 retries, 10s wait (50s total), require >=50% of aggr_num (>=5 trainers)"
         }
     },
     "optimizer": {
-        "sort": "reflfedavg",
+        "sort": "refl",
         "kwargs": {
             "deadline": 100,
             "stale_update": 5,
@@ -68,7 +72,7 @@
             "scale_coff": 10.0,
             "target_ratio": 0.8,
             "initial_deadline": 100.0,
-            "comment": "REFL for CIFAR-10: staleness-aware aggregation with FedAvg (no YoGi per REFL paper)"
+            "comment": "REFL for CIFAR-10: staleness-aware aggregation with FedAvg (no YoGi), beta=0.35 per paper"
         }
     },
     "registry": {
@@ -76,7 +80,7 @@
         "uri": ""
     },
     "job": {
-        "id": "refl_n300_syn0",
+        "id": "refl_n300_oort_params_prob1.0",
         "name": "cifar-10"
     },
     "hyperparameters": {
@@ -84,12 +88,16 @@
         "epochs": 1,
         "batchSize": 10,
         "learningRate": 0.01,
-        "aggGoal": 30,
+        "lrDecayEnabled": true,
+        "lrDecayFactor": 0.98,
+        "lrDecayEpoch": 10,
+        "minLearningRate": 0.0001,
+        "aggGoal": 10,
         "trackTrainerAvail": {
             "enabled": "True",
             "type": "ORACULAR",
             "trace": "avl_events_syn_0",
-            "comment": "Oracular mode - perfect knowledge of trainer availability, syn_0 = 0% unavailability (always available)"
+            "comment": "Oracular mode with 100% prediction accuracy - syn_0 = 0% unavailability (always available)"
         }
     },
     "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
@@ -100,7 +108,7 @@
         "name": "",
         "version": 2
     },
-    "maxRunTime": 300,
+    "maxRunTime": 600,
     "realm": "default",
     "role": "aggregator"
 }

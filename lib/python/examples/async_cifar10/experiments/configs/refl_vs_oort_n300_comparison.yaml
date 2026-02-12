@@ -49,7 +49,11 @@ experiments:
       enable_training_delays: true
       hyperparameters:
         batchSize: 10  # Trainer batch size (matching REFL default for CIFAR-10)
-        # learningRate: 0.01  # Can also specify other trainer-specific hyperparams
+        learningRate: 0.01  # Client learning rate (REFL CIFAR-10 default)
+        lrDecayEnabled: true  # Enable LR decay for REFL
+        lrDecayFactor: 0.98  # Decay factor (REFL default)
+        lrDecayEpoch: 10  # Apply decay every N rounds (REFL default)
+        minLearningRate: 0.0001  # Minimum LR floor
     
     aggregator:
       config_template: expt_scripts_2026/configs/refl_n300_oort_params_prob1.0.json
@@ -86,6 +90,11 @@ experiments:
       enable_training_delays: true
       hyperparameters:
         batchSize: 10
+        learningRate: 0.01
+        lrDecayEnabled: true
+        lrDecayFactor: 0.98
+        lrDecayEpoch: 10
+        minLearningRate: 0.0001
     
     aggregator:
       config_template: expt_scripts_2026/configs/refl_n300_oort_params_prob0.9.json
@@ -122,6 +131,11 @@ experiments:
       enable_training_delays: true
       hyperparameters:
         batchSize: 10
+        learningRate: 0.01
+        lrDecayEnabled: true
+        lrDecayFactor: 0.98
+        lrDecayEpoch: 10
+        minLearningRate: 0.0001
     
     aggregator:
       config_template: expt_scripts_2026/configs/refl_n300_oort_params_prob0.7.json

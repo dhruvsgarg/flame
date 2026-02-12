@@ -64,11 +64,11 @@
             "deadline": 100,
             "stale_update": 5,
             "stale_factor": -4,
-            "stale_beta": 0.9,
+            "stale_beta": 0.35,
             "scale_coff": 10.0,
             "target_ratio": 0.8,
             "initial_deadline": 100.0,
-            "comment": "REFL FedAvg - staleness-aware weighted aggregation"
+            "comment": "REFL for CIFAR-10: staleness-aware aggregation with FedAvg (no YoGi per REFL paper)"
         }
     },
     "registry": {
@@ -82,8 +82,8 @@
     "hyperparameters": {
         "rounds": 20000,
         "epochs": 1,
-        "batchSize": 32,
-        "learningRate": 0.3,
+        "batchSize": 10,
+        "learningRate": 0.01,
         "aggGoal": 30,
         "trackTrainerAvail": {
             "enabled": "True",

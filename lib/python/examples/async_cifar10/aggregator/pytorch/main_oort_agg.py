@@ -47,10 +47,14 @@ def initialize_wandb(run_name=None):
         name=run_name,  # Set the run name
         # track hyperparameters and run metadata
         config={
-            # fedbuff "server_learning_rate": 40.9,
-            # "client_learning_rate": 0.000195,
-            # oort
-            "client_learning_rate": 0.04,
+            # REFL/Oort CIFAR-10 uses client LR = 0.01 (from REFL config)
+            # REFL uses LR decay: decay_factor=0.98 every decay_epoch=10 rounds
+            # Oort baselines don't use LR decay
+            "client_learning_rate": 0.01,
+            "lr_decay_enabled": True,  # For REFL experiments
+            "lr_decay_factor": 0.98,
+            "lr_decay_epoch": 10,
+            "min_learning_rate": 0.0001,
             "architecture": "CNN",
             "dataset": "CIFAR-10",
             "fl-type": "sync, oort",

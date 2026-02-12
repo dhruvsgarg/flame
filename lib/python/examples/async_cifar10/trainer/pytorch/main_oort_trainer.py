@@ -321,7 +321,7 @@ class PyTorchCifar10Trainer(Trainer):
             # OLD CODE loss BEFORE OORT loss = F.nll_loss(output,
             # target) calculate statistical utility of a trainer while
             # calculating loss
-            loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+            loss = self.oort_loss(output, target, epoch, batch_idx)
             loss.backward()
             self.optimizer.step()
             batches_processed += 1

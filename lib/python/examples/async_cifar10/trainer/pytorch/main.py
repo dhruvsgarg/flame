@@ -90,6 +90,18 @@ class PyTorchCifar10Trainer(Trainer):
         self.batch_size = self.config.hyperparameters.batch_size or 16
         self.trainer_id = self.config.task_id
 
+        # Learning rate decay configuration (optional, for REFL)
+        # REFL uses decay_factor=0.98 every 10 rounds, Oort doesn't use decay
+        self.lr_decay_enabled = getattr(self.config.hyperparameters, 'lr_decay_enabled', False)
+        self.lr_decay_factor = getattr(self.config.hyperparameters, 'lr_decay_factor', 0.98)
+        self.lr_decay_epoch = getattr(self.config.hyperparameters, 'lr_decay_epoch', 10)
+        self.min_learning_rate = getattr(self.config.hyperparameters, 'min_learning_rate', 1e-4)
+        
+        logger.info(
+            f"Trainer {self.trainer_id}: LR decay {'ENABLED' if self.lr_decay_enabled else 'DISABLED'} "
+            f"(factor={self.lr_decay_factor}, epoch={self.lr_decay_epoch}, min_lr={self.min_learning_rate})"
+        )
+
         self.criterion = None
 
         self.task_to_perform = "train"
@@ -434,7 +446,23 @@ class PyTorchCifar10Trainer(Trainer):
 
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate)
+        
+        # Apply learning rate decay if enabled (REFL uses this, Oort doesn't)
+        current_lr = self.learning_rate
+        if self.lr_decay_enabled and hasattr(self, '_round') and self._round > 1:
+            num_decays = (self._round - 1) // self.lr_decay_epoch
+            current_lr = max(
+                self.learning_rate * (self.lr_decay_factor ** num_decays),
+                self.min_learning_rate
+            )
+            logger.info(
+                f"Trainer {self.trainer_id} Round {self._round}: LR decayed to {current_lr:.6f} "
+                f"(base_lr={self.learning_rate}, num_decays={num_decays})"
+            )
+        else:
+            logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
+        
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=current_lr)
 
         # reset stat utility for OORT
         self.reset_stat_utility()
@@ -511,7 +539,7 @@ class PyTorchCifar10Trainer(Trainer):
             elif self.use_oort_loss_fn == "True":
                 # Calculate statistical utility of a trainer while
                 # calculating loss
-                loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+                loss = self.oort_loss(output, target, epoch, batch_idx)
 
             loss.backward()
             self.optimizer.step()
@@ -596,7 +624,7 @@ class PyTorchCifar10Trainer(Trainer):
                 elif self.use_oort_loss_fn == "True":
                     # Calculate statistical utility of a trainer while
                     # calculating loss
-                    loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
+                    loss = self.oort_loss(output, target, epoch, batch_idx)
                 if batch_idx % 100 == 0:
                     done = batch_idx * len(data)
                     total = len(self.train_loader.dataset)
