@@ -295,8 +295,22 @@ class Channel(object):
         # can extend beyond just "recvd" state. We might also want to
         # send a subset of ends here not the entire self._ends?
 
+        # Log cleanup invocation with detailed state
+        num_pending = len(getattr(self._selector, 'ordered_updates_recv_ends', []))
+        in_flight_before = len(getattr(self._selector, 'selected_ends', set()))
+        
+        logger.info(
+            f"[CHANNEL_CLEANUP] Invoking selector cleanup: "
+            f"pending_updates={num_pending}, in_flight_before={in_flight_before}"
+        )
+        
         self._selector._cleanup_recvd_ends(self._ends)
-        logger.debug("Cleaned up ends successfully")
+        
+        in_flight_after = len(getattr(self._selector, 'selected_ends', set()))
+        logger.info(
+            f"[CHANNEL_CLEANUP] Cleanup completed: "
+            f"in_flight_after={in_flight_after}, freed={in_flight_before - in_flight_after}"
+        )
 
     def cleanup_recvd_end(self, end):
         """Performs cleanup of end states in the selector. Usually

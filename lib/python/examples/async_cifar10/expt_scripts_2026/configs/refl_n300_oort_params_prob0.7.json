@@ -56,10 +56,10 @@
             "exploration_min": 0.2,
             "round_threshold": 30,
             "alpha": 2,
-            "max_selection_retries": 5,
-            "selection_retry_wait": 10.0,
-            "min_trainers_ratio": 0.5,
-            "comment": "REFL Oort selector with 70% accuracy (poor predictor) - matching Oort params. Retry config: 5 retries, 10s wait (50s total), require >=50% of aggr_num (>=5 trainers)"
+            "max_selection_retries": 20,
+            "selection_retry_wait": 20.0,
+            "min_trainers_ratio": 1.3,
+            "comment": "REFL Oort selector with 70% accuracy (poor predictor) - matching Oort params. Retry config: 20 retries, 20s wait (400s total), require 100% of desired_selection (13 trainers with overcommitment)"
         }
     },
     "optimizer": {

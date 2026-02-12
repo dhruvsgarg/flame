@@ -722,13 +722,19 @@ class OortSelector(AbstractSelector):
         # (These are trainers who returned updates since last cleanup)
         num_ends_to_remove = len(self.ordered_updates_recv_ends)
         
-        # DEBUG: Check if 389 is involved in cleanup
-        test_trainer_id = '505f9fc483cf4df68a2409257b5fad7d3c580389'
-        trainer_389_in_cleanup = test_trainer_id in self.ordered_updates_recv_ends
-        trainer_389_in_selected = test_trainer_id in self.selected_ends
+        # DEBUG: Check if specific test trainers are involved in cleanup
+        test_trainer_389 = '505f9fc483cf4df68a2409257b5fad7d3c580389'
+        test_trainer_411 = '505f9fc483cf4df68a2409257b5fad7d3c580411'
+        
+        trainer_389_in_cleanup = test_trainer_389 in self.ordered_updates_recv_ends
+        trainer_389_in_selected = test_trainer_389 in self.selected_ends
+        trainer_411_in_cleanup = test_trainer_411 in self.ordered_updates_recv_ends
+        trainer_411_in_selected = test_trainer_411 in self.selected_ends
+        
         logger.info(
-            f"[DEBUG_389_CLEANUP] Before cleanup: 389_in_cleanup_list={trainer_389_in_cleanup}, "
-            f"389_in_selected_ends={trainer_389_in_selected}, selected_ends_size={len(self.selected_ends)}"
+            f"[DEBUG_CLEANUP] Before cleanup: 389_in_cleanup={trainer_389_in_cleanup}, "
+            f"389_in_selected={trainer_389_in_selected}, 411_in_cleanup={trainer_411_in_cleanup}, "
+            f"411_in_selected={trainer_411_in_selected}, selected_ends_size={len(self.selected_ends)}"
         )
         
         if num_ends_to_remove != 0:
@@ -746,21 +752,34 @@ class OortSelector(AbstractSelector):
             # Remove from selected_ends (in-flight set)
             removed_count = 0
             not_found_count = 0
+            removed_ids = []
+            not_found_ids = []
+            
             for end_id in ends_to_remove:
                 if end_id in self.selected_ends:
                     self.selected_ends.remove(end_id)
                     removed_count += 1
-                    logger.debug(f"Freed trainer {end_id} from in-flight set")
-                    if end_id == test_trainer_id:
-                        logger.info(f"[DEBUG_389_CLEANUP] Successfully removed trainer 389 from selected_ends")
+                    removed_ids.append(end_id)
+                    logger.debug(f"Freed trainer ...{end_id[-8:]} from in-flight set")
+                    
+                    # Track specific test trainers
+                    if end_id == test_trainer_389:
+                        logger.info(f"[TRACK_389] Successfully removed trainer 389 from selected_ends in cleanup")
+                    if end_id == test_trainer_411:
+                        logger.info(f"[TRACK_411] Successfully removed trainer 411 from selected_ends in cleanup")
                 else:
                     not_found_count += 1
+                    not_found_ids.append(end_id)
                     logger.debug(
-                        f"Trainer {end_id} was not in selected_ends "
+                        f"Trainer ...{end_id[-8:]} was not in selected_ends "
                         f"(may have been cleaned up already)"
                     )
-                    if end_id == test_trainer_id:
-                        logger.warning(f"[DEBUG_389_CLEANUP] Trainer 389 was NOT in selected_ends during cleanup!")
+                    
+                    # Track specific test trainers
+                    if end_id == test_trainer_389:
+                        logger.warning(f"[TRACK_389] Trainer 389 was NOT in selected_ends during cleanup!")
+                    if end_id == test_trainer_411:
+                        logger.warning(f"[TRACK_411] Trainer 411 was NOT in selected_ends during cleanup!")
 
             logger.info(
                 f"[CLEANUP_DEBUG] Cleanup complete: "
@@ -768,6 +787,12 @@ class OortSelector(AbstractSelector):
                 f"selected_ends now has {len(self.selected_ends)} trainers, "
                 f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} trainers"
             )
+            
+            # Log sample IDs for verification
+            if removed_count > 0:
+                logger.info(f"[CLEANUP_DEBUG] Removed IDs (first 5): {[id[-8:] for id in removed_ids[:5]]}")
+            if not_found_count > 0:
+                logger.info(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
         else:
             logger.info("[CLEANUP_DEBUG] No ends to clean up (ordered_updates_recv_ends is empty)")
 

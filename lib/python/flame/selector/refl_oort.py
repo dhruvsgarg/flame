@@ -173,13 +173,23 @@ class REFLOortSelector(OortSelector):
         if len(unavail_set) > 0 and len(unavail_set) <= 10:
             logger.info(f"[FILTER_DEBUG] Unavailable IDs (sample): {list(unavail_set)[:10]}")
         
-        # DEBUG: Check for specific trainer 389
-        test_trainer_id = '505f9fc483cf4df68a2409257b5fad7d3c580389'
-        trainer_389_in_ends = test_trainer_id in ends
-        trainer_389_in_inflight = test_trainer_id in in_flight_trainers
+        # DEBUG: Check for specific test trainers
+        test_trainer_389 = '505f9fc483cf4df68a2409257b5fad7d3c580389'
+        test_trainer_411 = '505f9fc483cf4df68a2409257b5fad7d3c580411'
+        
+        trainer_389_in_ends = test_trainer_389 in ends
+        trainer_389_in_inflight = test_trainer_389 in in_flight_trainers
+        trainer_389_in_unavail = test_trainer_389 in unavail_set
+        
+        trainer_411_in_ends = test_trainer_411 in ends
+        trainer_411_in_inflight = test_trainer_411 in in_flight_trainers
+        trainer_411_in_unavail = test_trainer_411 in unavail_set
+        
         logger.info(
-            f"[DEBUG_389] Round {round_num}: Trainer 389 in ends={trainer_389_in_ends}, "
-            f"in_flight={trainer_389_in_inflight}, selected_ends_size={len(self.selected_ends) if hasattr(self, 'selected_ends') else 0}"
+            f"[TRACK_SELECT] Round {round_num}: "
+            f"389: in_ends={trainer_389_in_ends}, in_flight={trainer_389_in_inflight}, unavail={trainer_389_in_unavail} | "
+            f"411: in_ends={trainer_411_in_ends}, in_flight={trainer_411_in_inflight}, unavail={trainer_411_in_unavail} | "
+            f"selected_ends_size={len(self.selected_ends) if hasattr(self, 'selected_ends') else 0}"
         )
         
         logger.info(
@@ -207,14 +217,24 @@ class REFLOortSelector(OortSelector):
             and end_id not in in_flight_trainers  # NEW: filter out in-flight trainers
         }
 
-        # DEBUG: Check if 389 made it through filtering
-        trainer_389_in_eligible = test_trainer_id in eligible_ends
+        # DEBUG: Check if test trainers made it through filtering
+        trainer_389_in_eligible = test_trainer_389 in eligible_ends
+        trainer_411_in_eligible = test_trainer_411 in eligible_ends
+        
         logger.info(
-            f"[DEBUG_389] Round {round_num}: After filtering, trainer 389 in eligible_ends={trainer_389_in_eligible}"
+            f"[TRACK_SELECT] Round {round_num}: After filtering - "
+            f"389: eligible={trainer_389_in_eligible} | 411: eligible={trainer_411_in_eligible}"
         )
+        
+        # Check for bugs
         if trainer_389_in_inflight and trainer_389_in_eligible:
             logger.error(
                 f"[BUG_FOUND] Round {round_num}: Trainer 389 is in BOTH in_flight and eligible_ends! "
+                f"This should never happen!"
+            )
+        if trainer_411_in_inflight and trainer_411_in_eligible:
+            logger.error(
+                f"[BUG_FOUND] Round {round_num}: Trainer 411 is in BOTH in_flight and eligible_ends! "
                 f"This should never happen!"
             )
 
@@ -326,11 +346,28 @@ class REFLOortSelector(OortSelector):
             f"  - Total tracked in-flight: {len(self.selected_ends)} trainers"
         )
         
-        # DEBUG: Check if 389 was selected
-        test_trainer_id = '505f9fc483cf4df68a2409257b5fad7d3c580389'
-        if test_trainer_id in newly_selected and test_trainer_id in old_in_flight:
+        # DEBUG: Check if test trainers were selected
+        test_trainer_389 = '505f9fc483cf4df68a2409257b5fad7d3c580389'
+        test_trainer_411 = '505f9fc483cf4df68a2409257b5fad7d3c580411'
+        
+        trainer_389_newly_selected = test_trainer_389 in newly_selected
+        trainer_411_newly_selected = test_trainer_411 in newly_selected
+        
+        if trainer_389_newly_selected or trainer_411_newly_selected:
+            logger.info(
+                f"[TRACK_SELECT] Round {round_num}: Selection result - "
+                f"389: selected={trainer_389_newly_selected} | 411: selected={trainer_411_newly_selected}"
+            )
+        
+        # Check for bugs
+        if test_trainer_389 in newly_selected and test_trainer_389 in old_in_flight:
             logger.error(
                 f"[BUG_FOUND] Round {round_num}: Trainer 389 was SELECTED despite being in old_in_flight! "
+                f"This should have been filtered out!"
+            )
+        if test_trainer_411 in newly_selected and test_trainer_411 in old_in_flight:
+            logger.error(
+                f"[BUG_FOUND] Round {round_num}: Trainer 411 was SELECTED despite being in old_in_flight! "
                 f"This should have been filtered out!"
             )
         
