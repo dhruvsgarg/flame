@@ -219,9 +219,27 @@ class OortSelector(AbstractSelector):
         }
         
         logger.info(
-            f"Eligible ends: {len(eligible_ends)} out of {len(ends)} "
-            f"(in_flight: {len(in_flight_trainers)})"
+            f"[OORT_SELECT] Round {round}: Eligible ends: {len(eligible_ends)} out of {len(ends)} "
+            f"(in_flight: {len(in_flight_trainers)}, desired: {num_of_ends})"
         )
+        
+        # CRITICAL: Check if we have enough eligible trainers
+        if len(eligible_ends) == 0:
+            logger.error(
+                f"[OORT_SELECT] Round {round}: NO eligible trainers! "
+                f"total_ends={len(ends)}, in_flight={len(in_flight_trainers)}"
+            )
+            return {}
+        
+        if len(eligible_ends) < num_of_ends:
+            shortage = num_of_ends - len(eligible_ends)
+            logger.warning(
+                f"[OORT_SELECT] Round {round}: TRAINER SHORTAGE! "
+                f"Can only select {len(eligible_ends)}/{num_of_ends} trainers (shortage: {shortage}). "
+                f"total_ends={len(ends)}, in_flight={len(in_flight_trainers)}"
+            )
+            # Adjust num_of_ends to available eligible ends
+            num_of_ends = len(eligible_ends)
         
         # Use eligible_ends instead of ends for selection
         ends = eligible_ends

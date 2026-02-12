@@ -229,11 +229,24 @@ class REFLOortSelector(OortSelector):
             logger.info(f"[FILTER_DEBUG] Sample eligible end IDs: {sample_eligible}")
 
         if len(eligible_ends) == 0:
-            logger.debug("No eligible ends available")
+            logger.error(
+                f"[SELECTION_FAILED] Round {round_num}: NO eligible trainers! "
+                f"total_ends={len(ends)}, unavail={len(unavail_set)}, in_flight={len(in_flight_trainers)}"
+            )
             return {}
 
         # Adjust selection count based on available eligible ends
         num_to_select = min(num_of_ends, len(eligible_ends))
+        
+        # CRITICAL: Warn if we cannot select enough trainers
+        if num_to_select < num_of_ends:
+            shortage = num_of_ends - num_to_select
+            logger.warning(
+                f"[SELECTION_SHORTAGE] Round {round_num}: Can only select {num_to_select}/{num_of_ends} trainers. "
+                f"Shortage of {shortage} trainers. "
+                f"Breakdown: total={len(ends)}, unavail={len(unavail_set)}, in_flight={len(in_flight_trainers)}, "
+                f"eligible={len(eligible_ends)}"
+            )
 
         # Build blacklist if enabled
         blacklist = self.get_blacklist(eligible_ends) if self.blacklist_rounds > 0 else set()
