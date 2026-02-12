@@ -373,7 +373,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # send out global model parameters to trainers
-        for end in selected_ends:
+        for idx, end in enumerate(selected_ends):
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
@@ -410,6 +410,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
+            
+            # Add small delay between sends to distribute MQTT broker load
+            # This prevents overwhelming the broker with many concurrent large messages
+            # and allows the event loop to process keepalive packets
+            if idx < len(selected_ends) - 1:  # Don't sleep after last send
+                time.sleep(0.5)
 
     def inform_end_of_training(self) -> None:
         """Inform all the trainers that the training is finished."""

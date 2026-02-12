@@ -833,7 +833,8 @@ class TopAggregator(SyncTopAgg):
             return
 
         # send out global model parameters to trainers
-        for end in ends:
+        ends_list = list(ends)
+        for idx, end in enumerate(ends_list):
             # AsyncFL checks: Similar to FedBuff, prevent sending weights to trainers that:
             # 1. Already have been sent weights for current version and haven't responded
             # 2. Are already selected in the current round
@@ -917,6 +918,12 @@ class TopAggregator(SyncTopAgg):
             self._track_trainer_version_duration_s[end]["sent_wts_version_ts"][
                 self._round
             ] = datetime.now()
+            
+            # Add small delay between sends to distribute MQTT broker load
+            # This prevents overwhelming the broker with many concurrent large messages
+            # and allows the event loop to process keepalive packets
+            if idx < len(ends_list) - 1:  # Don't sleep after last send
+                time.sleep(0.5)
 
     def compose(self) -> None:
         """Compose role with tasklets."""
