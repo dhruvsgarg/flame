@@ -348,7 +348,7 @@ class PyTorchCifar10Trainer(Trainer):
             
             train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": True,
+                "drop_last": False,  # Keep incomplete batches for small datasets in FL
                 "shuffle": True,
                 "num_workers": 0,  # No workers needed - data already on GPU
             }
@@ -365,7 +365,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Standard loading for larger datasets
             train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": True,
+                "drop_last": False,  # Keep incomplete batches for small datasets in FL
                 "shuffle": True,
                 "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage from worker processes
                 "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
@@ -439,8 +439,30 @@ class PyTorchCifar10Trainer(Trainer):
         # reset stat utility for OORT
         self.reset_stat_utility()
 
+        # Log training start with comprehensive info
+        num_batches = len(self.train_loader)
+        dataset_size = len(self.train_loader.dataset)
+        logger.info(
+            f"[TRAIN_START] Trainer {self.trainer_id} starting training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"num_batches={num_batches}, batch_size={self.batch_size}, epochs={self.epochs}"
+        )
+
+        total_batches_processed = 0
+        final_loss = None
         for epoch in range(1, self.epochs + 1):
-            self._train_epoch(epoch)
+            epoch_batches, epoch_loss = self._train_epoch(epoch)
+            total_batches_processed += epoch_batches
+            if epoch_loss is not None:
+                final_loss = epoch_loss
+
+        # Log training completion summary
+        loss_str = f"{final_loss:.6f}" if final_loss is not None else "N/A"
+        logger.info(
+            f"[TRAIN_COMPLETE] Trainer {self.trainer_id} completed training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"total_batches_processed={total_batches_processed}, final_loss={loss_str}"
+        )
 
         # save dataset size so that the info can be shared with
         # aggregator
@@ -475,6 +497,9 @@ class PyTorchCifar10Trainer(Trainer):
         if epoch == 1:
             self.memory_profiler.log_component_memory(f"epoch_{epoch}", "START")
 
+        batches_processed = 0
+        last_loss = None
+        
         for batch_idx, (data, target) in enumerate(self.train_loader):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
@@ -490,16 +515,21 @@ class PyTorchCifar10Trainer(Trainer):
 
             loss.backward()
             self.optimizer.step()
+            batches_processed += 1
             
             # Detach tensors to break computation graph and free memory
-            if batch_idx %100 == 0:
+            # Log every batch for small trainers, every 100 for large trainers
+            num_batches = len(self.train_loader)
+            should_log = (num_batches <= 10) or (batch_idx % 100 == 0)
+            if should_log:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
                 percent = 100.0 * batch_idx / len(self.train_loader)
                 # Use .item() and detach to avoid keeping computation graph
                 loss_val = loss.detach().item()
+                last_loss = loss_val
                 logger.info(
-                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]" 
                     f"\tloss: {loss_val:.6f}"
                 )
             
@@ -522,6 +552,8 @@ class PyTorchCifar10Trainer(Trainer):
         # Log memory after first epoch
         if epoch == 1:
             self.memory_profiler.log_component_memory(f"epoch_{epoch}", "END")
+        
+        return batches_processed, last_loss
 
     def evaluate(self) -> None:
         """Evaluate a model."""

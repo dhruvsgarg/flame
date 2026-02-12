@@ -239,7 +239,7 @@ class PyTorchCifar10Trainer(Trainer):
             
             train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": True,
+                "drop_last": False,  # Keep incomplete batches for small datasets in FL
                 "shuffle": True,
                 "num_workers": 0,  # No workers needed - data already on GPU
             }
@@ -256,7 +256,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Standard loading for larger datasets
             train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": True,
+                "drop_last": False,  # Keep incomplete batches for small datasets in FL
                 "shuffle": True,
                 "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage from worker processes
                 "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
@@ -278,9 +278,31 @@ class PyTorchCifar10Trainer(Trainer):
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate)
 
+        # Log training start with comprehensive info
+        num_batches = len(self.train_loader)
+        dataset_size = len(self.train_loader.dataset)
+        logger.info(
+            f"[TRAIN_START] Trainer {self.trainer_id} starting training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"num_batches={num_batches}, batch_size={self.batch_size}, epochs={self.epochs}"
+        )
+
         self.reset_stat_utility()
+        total_batches_processed = 0
+        final_loss = None
         for epoch in range(1, self.epochs + 1):
-            self._train_epoch(epoch)
+            epoch_batches, epoch_loss = self._train_epoch(epoch)
+            total_batches_processed += epoch_batches
+            if epoch_loss is not None:
+                final_loss = epoch_loss
+
+        # Log training completion summary
+        loss_str = f"{final_loss:.6f}" if final_loss is not None else "N/A"
+        logger.info(
+            f"[TRAIN_COMPLETE] Trainer {self.trainer_id} completed training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"total_batches_processed={total_batches_processed}, final_loss={loss_str}"
+        )
 
         # save dataset size so that the info can be shared with
         # aggregator
@@ -289,6 +311,9 @@ class PyTorchCifar10Trainer(Trainer):
     def _train_epoch(self, epoch):
         self.model.train()
 
+        batches_processed = 0
+        last_loss = None
+        
         for batch_idx, (data, target) in enumerate(self.train_loader):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
@@ -299,18 +324,27 @@ class PyTorchCifar10Trainer(Trainer):
             loss = self.oort_loss(output, target.squeeze(), epoch, batch_idx)
             loss.backward()
             self.optimizer.step()
-            if batch_idx % 100 == 0:
+            batches_processed += 1
+            
+            # Log every batch for small trainers, every 100 for large trainers
+            num_batches = len(self.train_loader)
+            should_log = (num_batches <= 10) or (batch_idx % 100 == 0)
+            if should_log:
                 done = batch_idx * len(data)
                 total = len(self.train_loader.dataset)
                 percent = 100.0 * batch_idx / len(self.train_loader)
+                loss_val = loss.item()
+                last_loss = loss_val
                 logger.info(
                     f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                    f"\tloss: {loss.item():.6f}"
+                    f"\tloss: {loss_val:.6f}"
                 )
 
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)
+        
+        return batches_processed, last_loss
 
     def evaluate(self) -> None:
         """Evaluate a model."""

@@ -205,6 +205,12 @@ class ExperimentRunner:
                 "hyperparameters.training_delay_enabled": str(exp_config.trainer.enable_training_delays),
             }
             
+            # Apply trainer-specific hyperparameters from experiment config (if specified)
+            if exp_config.trainer.hyperparameters:
+                print(f"  Applying trainer hyperparameters: {exp_config.trainer.hyperparameters}")
+                for key, value in exp_config.trainer.hyperparameters.items():
+                    config_overrides[f"hyperparameters.{key}"] = value
+            
             self.trainer_spawner.spawn_all(
                 trainer_ids,
                 alpha=exp_config.trainer.dataset.dirichlet_alpha,

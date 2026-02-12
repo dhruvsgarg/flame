@@ -5,7 +5,7 @@ Defines data structures for experiment configurations.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import yaml
 
@@ -38,6 +38,7 @@ class TrainerConfig:
     battery_threshold: int = 50  # For 3-state modes
     speedup_factor: float = 1.0
     enable_training_delays: bool = True  # Enable per-trainer training delays
+    hyperparameters: Optional[dict] = None  # Trainer-specific hyperparameters (e.g., batchSize, learningRate)
 
 
 @dataclass
@@ -157,6 +158,7 @@ class ExperimentBatch:
                     battery_threshold=trainer_data.get("battery_threshold", 50),
                     speedup_factor=trainer_data.get("speedup_factor", 1.0),
                     enable_training_delays=trainer_data.get("enable_training_delays", True),
+                    hyperparameters=trainer_data.get("hyperparameters"),
                 ),
                 aggregator=AggregatorConfig(**agg_data) if agg_data else None,
                 execution=(
