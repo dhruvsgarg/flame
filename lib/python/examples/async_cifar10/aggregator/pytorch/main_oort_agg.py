@@ -175,10 +175,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         trace_field = f"avl_events_{trace}"
         logger.info(f"Looking for trace field: {trace_field}")
         
-        # Get the path to trainer JSON files in launch directory
-        dirname = os.path.dirname(os.path.dirname(__file__))
-        launch_path = os.path.join(dirname, "launch")
-        search_pattern = os.path.join(launch_path, "trainer_*.json")
+        # Use pre-generated trainer configs from static config directory
+        # This bypasses the timing issue with spawner-generated JSONs
+        config_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
+        search_pattern = os.path.join(config_dir, "trainer_*.json")
         
         logger.info(f"Searching for trainer JSONs: {search_pattern}")
         json_files = glob.glob(search_pattern)
