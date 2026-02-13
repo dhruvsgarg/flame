@@ -62,7 +62,7 @@ experiments:
       wandb_run_name: refl_n300_syn20_prob0.7_alpha0.1
     
     execution:
-      num_gpus: 8
+      num_gpus: 4
       sleep_between_spawns: 8.0
       aggregator_warmup_time: 120
       monitoring:
@@ -103,7 +103,7 @@ experiments:
       wandb_run_name: refl_n300_syn50_prob0.7_alpha0.1
     
     execution:
-      num_gpus: 8
+      num_gpus: 4
       sleep_between_spawns: 8.0
       aggregator_warmup_time: 120
       monitoring:
