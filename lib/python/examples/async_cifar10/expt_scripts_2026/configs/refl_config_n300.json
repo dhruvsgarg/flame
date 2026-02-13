@@ -55,7 +55,10 @@
             "exploration_min": 0.2,
             "round_threshold": 30,
             "alpha": 2,
-            "comment": "REFL Oort selector - availability-aware utility-based selection for 300 trainers"
+            "max_selection_retries": 20,
+            "selection_retry_wait": 20.0,
+            "min_trainers_ratio": 1.3,
+            "comment": "REFL Oort selector - availability-aware utility-based selection for 300 trainers. Retry: 20 retries, 20s wait, require full desired_selection (39 trainers with overcommitment)"
         }
     },
     "optimizer": {

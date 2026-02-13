@@ -93,6 +93,12 @@ class REFLOortSelector(OortSelector):
         # that haven't returned their updates yet
         if not hasattr(self, 'selected_ends'):
             self.selected_ends = set()
+        
+        # Track which trainers were newly selected in the current round
+        # This is needed because select() gets called twice per round:
+        # once for distribute, once for aggregate
+        if not hasattr(self, 'newly_selected_this_round'):
+            self.newly_selected_this_round = set()
 
         logger.info(
             f"REFLOortSelector initialized: "
@@ -145,9 +151,12 @@ class REFLOortSelector(OortSelector):
         # the in-flight set.
 
         # Return existing selected end_ids if round did not proceed
-        if round_num <= self.round and hasattr(self, 'selected_ends') and len(self.selected_ends) != 0:
-            logger.debug(f"Round {round_num} <= {self.round}, returning existing selections")
-            return {key: None for key in self.selected_ends}
+        # CRITICAL FIX: Return only newly selected trainers from this round,
+        # not the cumulative in-flight set. select() is called twice per round:
+        # once for distribute (which we want to remember), once for aggregate (which should return same set)
+        if round_num <= self.round and hasattr(self, 'newly_selected_this_round') and len(self.newly_selected_this_round) != 0:
+            logger.info(f"[RETURN_CACHED] Round {round_num}: Returning {len(self.newly_selected_this_round)} cached newly selected trainers")
+            return {key: None for key in self.newly_selected_this_round}
 
         # Run pacer to adjust round_threshold
         self.pacer()
@@ -318,6 +327,11 @@ class REFLOortSelector(OortSelector):
         # Store selected ends as a set
         old_in_flight = self.selected_ends if hasattr(self, 'selected_ends') else set()
         newly_selected = set(selected)
+        
+        # CRITICAL: Store the newly selected set for this round
+        # This is returned on subsequent select() calls in the same round (for aggregate)
+        self.newly_selected_this_round = newly_selected
+        
         # Add newly selected trainers to existing in-flight ones instead of replacing
         self.selected_ends = old_in_flight | newly_selected
         

@@ -1,6 +1,6 @@
-execution_timestamp: '2026-02-09T23:34:37.201621'
+execution_timestamp: '2026-02-12T17:55:13.209558'
 git_info:
-  commit: 53f6a8c8c2b056eda104e837e6c87ebc5b0869e7
+  commit: b3afc4f7794fa323e4c9d30af2f1bf3f4e3b343c
   branch: dg/updated_refl_expts
   dirty: true
 metadata_refs:
@@ -8,13 +8,14 @@ metadata_refs:
   dataset_split_key: cifar10_alpha0.1_n300
   availability_trace_key: syn_0
 aggregator:
-  config_file: expt_scripts_2026/configs/refl_config_n300.json
+  config_file: expt_scripts_2026/configs/refl_n300_oort_params_prob1.0.json
   selector: refl_oort
   tracking_mode: oracular
-  agg_goal: 30
+  agg_goal: 10
 experiment:
-  name: refl_n300_syn0
-  description: Full REFL with 300 trainers, syn_0 traces (0% unavailability)
+  name: refl_n300_oort_params_prob1.0
+  description: REFL with 100% predictor accuracy (perfect oracle) - Oort-matching
+    params
   trainer:
     num_trainers: 300
     start_id: 1
@@ -32,13 +33,13 @@ experiment:
     speedup_factor: 1.0
   execution:
     num_gpus: 8
-    sleep_between_spawns: 6.0
+    sleep_between_spawns: 8.0
     aggregator_warmup_time: 120
 spawn_commands:
   aggregator:
   - /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python3
   - /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/pytorch/main_oort_agg.py
-  - /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/refl_config_n300.json
+  - /home/dgarg39/flame/lib/python/examples/async_cifar10/expt_scripts_2026/configs/refl_n300_oort_params_prob1.0.json
   trainers:
   - python3
   - launch/spawner.py

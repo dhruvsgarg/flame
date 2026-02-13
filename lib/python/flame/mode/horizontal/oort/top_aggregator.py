@@ -61,7 +61,24 @@ class TopAggregator(BaseTopAggregator):
         # aggregating when received weights from k ends (k *
         # overcommitment is selected for training with Oort)
 
-        end_ids = channel.ends()
+        # CRITICAL: Use ALL in-flight trainers (selected_ends), not just newly selected
+        # This allows us to receive stale updates from slow trainers selected in previous rounds
+        # while also receiving fresh updates from trainers selected in this round.
+        # This is essential for SyncFL with overcommitment where we select more than we wait for.
+        if hasattr(channel._selector, 'selected_ends'):
+            end_ids = list(channel._selector.selected_ends)
+            logger.info(
+                f"[AGGREGATE] Round {self._round}: Listening to ALL in-flight trainers. "
+                f"Total in-flight={len(end_ids)} (includes old stragglers + newly selected)"
+            )
+        else:
+            # Fallback to channel.ends() if selected_ends doesn't exist
+            end_ids = channel.ends()
+            logger.warning(
+                f"[AGGREGATE] Round {self._round}: selected_ends not found, using channel.ends(). "
+                f"Stale updates may not be consumed!"
+            )
+        
         configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         aggr_num = min(configured_aggr_num, len(end_ids))
         
@@ -69,13 +86,13 @@ class TopAggregator(BaseTopAggregator):
         if len(end_ids) < configured_aggr_num:
             logger.warning(
                 f"[AGGREGATE] Round {self._round}: Aggregating with FEWER trainers than configured! "
-                f"selected={len(end_ids)} < configured_aggr_num={configured_aggr_num}. "
+                f"in_flight={len(end_ids)} < configured_aggr_num={configured_aggr_num}. "
                 f"Will wait for {aggr_num} updates."
             )
         else:
             logger.info(
                 f"[AGGREGATE] Round {self._round}: Waiting for {aggr_num} updates "
-                f"from {len(end_ids)} selected trainers"
+                f"from {len(end_ids)} in-flight trainers"
             )
 
         received_end_count = 0
