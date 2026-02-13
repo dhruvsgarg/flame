@@ -147,6 +147,16 @@ class ConfigGenerator:
                 self.metadata.get_mobiperf_trace(trainer_id, variant)
             )
 
+        # Set client_notify configuration
+        # For oracular mode: trainers always use syn_0 (100% available)
+        # The aggregator uses the actual trace to simulate unavailability
+        if "client_notify" not in config["hyperparameters"]:
+            config["hyperparameters"]["client_notify"] = {}
+        
+        # Always set trainers to syn_0 for oracular mode (trainers stay available)
+        config["hyperparameters"]["client_notify"]["enabled"] = "False"
+        config["hyperparameters"]["client_notify"]["trace"] = "syn_0"
+
         # Apply any overrides
         for key, value in overrides.items():
             if "." in key:
