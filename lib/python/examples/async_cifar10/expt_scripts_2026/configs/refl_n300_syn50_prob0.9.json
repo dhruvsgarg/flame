@@ -96,7 +96,7 @@
         "trackTrainerAvail": {
             "enabled": "True",
             "type": "ORACULAR",
-            "trace": "avl_events_syn_50",
+            "trace": "syn_50",
             "comment": "Oracular mode with 90% prediction accuracy - syn_50 = 50% unavailability"
         }
     },

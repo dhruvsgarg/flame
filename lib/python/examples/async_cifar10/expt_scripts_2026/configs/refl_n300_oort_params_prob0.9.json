@@ -96,7 +96,7 @@
         "trackTrainerAvail": {
             "enabled": "True",
             "type": "ORACULAR",
-            "trace": "avl_events_syn_0",
+            "trace": "syn_0",
             "comment": "Oracular mode with 90% prediction accuracy (REFL paper setting) - syn_0 = 0% unavailability (always available)"
         }
     },
