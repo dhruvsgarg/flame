@@ -258,6 +258,9 @@ class ForwardTextClassificationTrainer:
 
     @timer_decorator
     def _make_model_functional(self, device):
+        # Ensure model is on the correct device
+        self.model.to(device)               # TODO(Gaurav): does this need to be in CPU?
+        
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
             self.model
         )
@@ -375,39 +378,9 @@ class ForwardTextClassificationTrainer:
         torch.cuda.empty_cache()
         self.log_memory(tag, device)
 
-    def train_model(self, device=None, logging_state=None):
-        if not device:
-            device = self.device
-
-        if logging_state:
-            self.fwd_llm_stage = FwdLLMStage(
-                logging_state.get("round_id"),
-                logging_state.get("data_id"),
-                logging_state.get("iteration"),
-                self.trainer_id
-            )
-
-        self.log_memory("train_model_start", device)
-        allocated_before = torch.cuda.memory_allocated(device)
-
-        # Ensure model is on the correct device
-        self.model.to(device)
-
-        # Removed _force_cuda_memory_cleanup() to avoid "stop the world" pause.
-        # Cleanup is now handled only at the very end of the training/evaluation sessions.
-
-        """
-        If you want absolute determinism between runs, run the model in eval mode. Make sure to switch the model back to train model before the method returns: `self.model.train()`. 
-        Even though this seems to not affect training, this is commented as we're not sure how the model trains in eval mode. Any relative impact on accuracy without it isn't measured.
-        self.model.eval()
-        """
-        
-        self._make_model_functional(device)
+    @timer_decorator
+    def _setup_training_state(self, device, logging_state):
         self.log_memory("after_fmodel_setup", device)
-
-        global_step = 0
-        # Optimization: Accumulate loss on GPU as a tensor to avoid frequent Host to Device syncs
-        tr_loss = torch.tensor(0.0, device=device)
 
         v_buffer = {}
         # Perturbation selection logic slightly differs from the vanilla FwdLLM implementation. Their logic has a flaw which cannot be used in a true-FL setting 
@@ -428,7 +401,15 @@ class ForwardTextClassificationTrainer:
         else:
             # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
             self.grad = [fg.to(device).zero_() for fg in self.grad]
+            
+        return v_buffer
 
+    @timer_decorator
+    def _training_loop(self, device, v_buffer):
+        global_step = 0
+        # Optimization: Accumulate loss on GPU as a tensor to avoid frequent Host to Device syncs
+        tr_loss = torch.tensor(0.0, device=device)
+        
         # Optimization: Use autocast for training loop if enabled
         from torch.cuda.amp import autocast
         autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
@@ -488,7 +469,10 @@ class ForwardTextClassificationTrainer:
                         logging.debug(
                             f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
                         )
+        return global_step, tr_loss
 
+    @timer_decorator
+    def _finalize_training(self, device, global_step, tr_loss):
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]
         logging.info(
@@ -506,30 +490,46 @@ class ForwardTextClassificationTrainer:
             if p.requires_grad:
                 p.grad = fg.clone() # Already on device
 
-        # Final cleanup - Optimization: keep self.fmodel, self.params, self.buffers across runs
-        # del self.fmodel, self.params, self.buffers
-        # self.fmodel, self.params, self.buffers = None, None, None
-
-        if self.args.perturbation_sampling:
-            del v_buffer
-
         self.grad = [fg.detach().cpu() for fg in self.grad]
         if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
 
-        # gc.collect()
-        # torch.cuda.empty_cache()
-        # Optimization: GC & buffer flushes removed from here. 
-        # They are now handled at the framework level after sending gradients.
-
         allocated_after = torch.cuda.memory_allocated(device)
         self.log_memory("end", device)
         logging.info(
-            f"[MEM] Allocated Before/After: {allocated_before/1e6:.2f}MB → {allocated_after/1e6:.2f}MB, Δ: {(allocated_after-allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
+            f"[MEM] Allocated Before/After: {self.allocated_before/1e6:.2f}MB \u2192 {allocated_after/1e6:.2f}MB, \u0394: {(allocated_after-self.allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
         )
 
-        # self.model.train()        # See comment about self.model.eval() above. TL;DR: This is used to make training deterministic
-        return global_step, (tr_loss / global_step).item() if global_step > 0 else 0.0
+        return (tr_loss / global_step).item() if global_step > 0 else 0.0
+
+    @timer_decorator
+    def train_model(self, device=None, logging_state=None):
+        if not device:
+            device = self.device
+
+        if logging_state:
+            self.fwd_llm_stage = FwdLLMStage(
+                logging_state.get("round_id"),
+                logging_state.get("data_id"),
+                logging_state.get("iteration"),
+                self.trainer_id
+            )
+
+        self.log_memory("train_model_start", device)
+        self.allocated_before = torch.cuda.memory_allocated(device)
+        
+        self._make_model_functional(device)
+        
+        v_buffer = self._setup_training_state(device, logging_state)
+        
+        global_step, tr_loss = self._training_loop(device, v_buffer)
+        
+        avg_loss = self._finalize_training(device, global_step, tr_loss)
+
+        if self.args.perturbation_sampling:
+            del v_buffer
+
+        return global_step, avg_loss
 
 
     @timer_decorator

@@ -1048,6 +1048,10 @@ class TopAggregator(AsyncTopAgg):
         input_ids_all = self._cached_test_data[1]
         labels_all = self._cached_test_data[4]
 
+        # batch[2] is typically the attention_mask. Summing it gives the count of non-padding tokens.
+        max_seq_len_in_batch = (self._cached_test_data[2] != 0).sum(dim=1).max().item()
+        logger.info(f"Max active sequence length in first batch: {max_seq_len_in_batch}")
+
         # Accumulate predictions on GPU
         preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
         out_label_ids_gpu = torch.empty(test_sample_len, dtype=labels_all.dtype, device=device)
