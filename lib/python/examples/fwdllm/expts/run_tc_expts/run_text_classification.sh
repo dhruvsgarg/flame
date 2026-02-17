@@ -244,4 +244,6 @@ else
   fi
 
   wait
+  # Clean up watchdog on normal exit
+  kill $WATCHDOG_PID 2>/dev/null
 fi
