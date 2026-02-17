@@ -408,9 +408,17 @@ class ForwardTextClassificationTrainer:
                     self.grad_for_var_check = updated.detach().cpu() # Move to CPU only for check
 
         curr_client_idx = self.args.client_idx
-        if batch_idx == 0 and epoch == 0 and not batch[2].is_cuda:
-            # batch[2] is typically the attention_mask. Summing it gives the count of non-padding tokens.
-            max_seq_len_in_batch = (batch[2] != 0).sum(dim=1).max().item()
+        
+        # Zero-Sync Sequence Length Check on CPU (Prevents GPU Stalls)
+        # batch[2] is typically the attention_mask. Use it before moving to device.
+        max_seq_len_in_batch = (batch[2] != 0).sum(dim=1).max().item()
+        if max_seq_len_in_batch > self.args.max_seq_length:
+            logging.warning(
+                f"Trainer {self.trainer_id}: Batch sequence length ({max_seq_len_in_batch}) "
+                f"exceeds max_seq_length ({self.args.max_seq_length}). This may lead to truncated inputs or memory issues."
+            )
+
+        if batch_idx == 0 and epoch == 0:
             logging.debug(f"Max active sequence length in first batch: {max_seq_len_in_batch}")
 
         self.log_memory(

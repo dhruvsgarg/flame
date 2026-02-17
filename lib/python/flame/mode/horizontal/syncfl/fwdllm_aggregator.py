@@ -1048,9 +1048,8 @@ class TopAggregator(AsyncTopAgg):
         input_ids_all = self._cached_test_data[1]
         labels_all = self._cached_test_data[4]
 
-        # batch[2] is typically the attention_mask. Summing it gives the count of non-padding tokens.
-        max_seq_len_in_batch = (self._cached_test_data[2] != 0).sum(dim=1).max().item()
-        logger.info(f"Max active sequence length in first batch: {max_seq_len_in_batch}")
+        # For Zero-Sync sequence length monitoring (CPU side source)
+        attention_mask_all_cpu = self.test_global.dataset.tensors[2]
 
         # Accumulate predictions on GPU
         preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)
@@ -1062,12 +1061,23 @@ class TopAggregator(AsyncTopAgg):
         from torch.cuda.amp import autocast
         import contextlib
         autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        if not self.args.fp16: logging.warning(f"Autocast is disabled: {self.args.fp16}")
+
         with torch.no_grad(), autocast_cm:
             for batch_start_idx in range(0, test_sample_len, batch_size):
                 batch_end_idx = min(batch_start_idx + batch_size, test_sample_len)
                 
                 x = input_ids_all[batch_start_idx:batch_end_idx]
                 labels = labels_all[batch_start_idx:batch_end_idx]
+
+                # Zero-Sync Sequence Length Check on CPU (May or may not prevent GPU Stalls)
+                mask_cpu = attention_mask_all_cpu[batch_start_idx:batch_end_idx]
+                max_seq_len_in_batch = (mask_cpu != 0).sum(dim=1).max().item()
+                if max_seq_len_in_batch > self.args.max_seq_length:
+                    logger.warning(
+                        f"Aggregator: Batch sequence length ({max_seq_len_in_batch}) "
+                        f"exceeds max_seq_length ({self.args.max_seq_length}). This may lead to truncated inputs or memory issues."
+                    )
 
                 output = self.model(x)
                 if hasattr(output, "logits"):
