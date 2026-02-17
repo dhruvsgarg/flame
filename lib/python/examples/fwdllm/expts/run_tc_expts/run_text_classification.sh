@@ -144,14 +144,14 @@ else
   # Function to check logs for errors and kill all processes if found
   check_errors() {
     # Use basic grep (-e for multiple patterns) to find the first file with an error
-    FOUND_ERR_FILE=$(grep -il -e "Error" -e "Exception" -e "Traceback" "$AGG_LOG_FILE" "$TRAINER_LOG_FILE" | head -n 1)
+    FOUND_ERR_FILE=$(grep -l -e "Error" -e "Exception" -e "Traceback" "$AGG_LOG_FILE" "$TRAINER_LOG_FILE" | head -n 1)
 
     if [ ! -z "$FOUND_ERR_FILE" ]; then
       echo "--------------------------------------------------------"
       echo "ERROR DETECTED in $FOUND_ERR_FILE! Shutting down..."
       echo "--------------------------------------------------------"
       # Show the first few errors using basic grep
-      ERR_MSG=$(grep -i -e "Error" -e "Exception" -e "Traceback" "$FOUND_ERR_FILE" | head -n 20)
+      ERR_MSG=$(grep -e "Error" -e "Exception" -e "Traceback" "$FOUND_ERR_FILE" | head -n 20)
       
       # Append termination message to both logs
       TERMINATION_MSG="Killed spawned processes due to error in $FOUND_ERR_FILE\n\n$ERR_MSG"
