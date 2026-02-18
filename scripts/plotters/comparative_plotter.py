@@ -22,16 +22,27 @@ X_AXIS_END_AT_SHORTEST = True  # If True, x-axis ends at shortest system's max x
 # Define all systems and their corresponding run files in this dictionary.
 # Add as many systems as you need.
 SYSTEMS_DATA = {
-    "Async with smart (stale+stat_util) aggregation": [
-        "output/async_k10_c50_n150-weight_stale_and_stat_utility.csv"
+    # "With inference optimizations (batch size = 32, seq lengths = (512, 128))": [
+    #     "output/sync_n100_c30_k10_train_buffer_gc_eval_amp_seq512_128_batch32_agg-evaluation_metrics.csv"
+    # ],
+    "With 5+4 inference optimizations (batch size = 32, seq lengths = (128, 192))": [
+        "output/sync_n100_c30_k10_train_opt5_4_seq128_192_batch32_agg-evaluation_metrics.csv"
     ],
-    "Async with stale rejections": [
-        "output/async_k10_c50_n150-reject_stale.csv"
+    # "With inference optimizations (batch size = 256, seq lengths = (266, 256))": [
+    #     "output/sync_n100_c30_k10_train_buffer_gc_eval_amp_seq266_256_batch256_agg-evaluation_metrics.csv"
+    # ],
+    # "With inference optimizations (batch size = 256)": [
+    #     "output/sync_n100_c30_k10_eval_amp_seq256_batch256_agg-evaluation_metrics.csv"
+    # ],
+    # "Without inference optimizations (batch size = 32)": [
+    #     "output/sync_n100_c30_k10_eval32_agg-evaluation_metrics.csv"
+    # ],
+    "Without inference optimizations (batch size = 8)": [
+        "output/sync_n100_c30_k10_baseline_agg-evaluation_metrics.csv"
     ],
-    "Async with weighted stale aggregation (norm=k)": [
-        "output/async_k10_c50_n150-weight_stale_norm_k.csv"
-    ]
 }
+# FILE_SUFFIX = "seq_512_128_batch_32_vs_baseline"
+FILE_SUFFIX = "seq_128_192_batch32_vs_baseline"
 
 # Define colors for the system lines.
 # Colors will be assigned in the order systems are defined in SYSTEMS_DATA.
@@ -442,7 +453,7 @@ def plot_comparison_chart(
 
     output_dir = Path("plots/")
     output_dir.mkdir(parents=True, exist_ok=True)
-    file_name = output_dir / f'{plot_type}_comparison.png'
+    file_name = output_dir / f'{plot_type}_comparison_{FILE_SUFFIX}.png'
     plt.savefig(file_name)
     # plt.show() # Disabled for production environment
 

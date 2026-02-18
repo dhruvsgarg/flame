@@ -144,10 +144,10 @@ AGGREGATOR_PLOTTING_CONFIG = {
             'title': lambda: f'Eval Model Latency ({CONSTANTS["file_prefix"]})'
         },
         {
-            'latency_type': 'aggregate_and_collect_latency',
-            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency.csv',
-            'latency_column': 'aggregate_and_collect_latency',
-            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency_cdf.png',
+            'latency_type': 'collect_and_accumulate_grads_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-collect_and_accumulate_grads_latency.csv',
+            'latency_column': 'collect_and_accumulate_grads_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-collect_and_accumulate_grads_latency_cdf.png',
             'x_label': 'Aggregate and Collect Latency (seconds)',
             'y_label': 'CDF',
             'title': lambda: f'Aggregate and Collect Latency ({CONSTANTS["file_prefix"]})'
@@ -333,10 +333,20 @@ def process_cdf_configs(config, config_name):
 if __name__ == "__main__":
     print("Starting CDF plot generation...")
     
-    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_eval256_trainer'
+    # CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_eval256_trainer'
+    # process_cdf_configs(TRAINER_PLOTTING_CONFIG, "Trainer")
+
+    # Checking to see if eval accuracy is still affected
+    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_train_opt5_4_seq128_192_batch32_trainer'
     process_cdf_configs(TRAINER_PLOTTING_CONFIG, "Trainer")
-    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_eval256_agg'
+    CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_train_opt5_4_seq128_192_batch32_agg'
     process_cdf_configs(AGGREGATOR_PLOTTING_CONFIG, "Aggregator")
+    
+    # Buffered train evaluation
+    # CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_train_buffer_gc_eval_amp_seq256_batch1024_trainer'
+    # process_cdf_configs(TRAINER_PLOTTING_CONFIG, "Trainer")
+    # CONSTANTS['file_prefix'] = 'sync_n100_c30_k10_train_buffer_gc_eval_amp_seq256_batch1024_agg'
+    # process_cdf_configs(AGGREGATOR_PLOTTING_CONFIG, "Aggregator")
     
     print("\n" + "="*60)
     print("CDF plot generation complete.")

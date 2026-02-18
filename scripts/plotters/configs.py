@@ -102,16 +102,16 @@ LOG_CONFIG = {
             }
         },
         {
-            'name': 'aggregate_and_collect_latency',
+            'name': 'collect_and_accumulate_grads_latency',
             'regex': re.compile(
                 r"^(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}).*?"
-                r"\[decorator\]\sRuntime of aggregate_and_collect:\s(?P<runtime>[\d\.]+)s\s"
+                r"\[decorator\]\sRuntime of collect_and_accumulate_grads:\s(?P<runtime>[\d\.]+)s\s"
                 r"\(Round=(?P<round_id>\d+),\sDataId=(?P<data_id>\d+),\sIter=(?P<iter_id>\d+),\sTrainerId=(?P<trainer_id>\w+|None)\)"
             ),
             'type': 'EXTRACT',
             'group_to_columns': {
                 'timestamp': ('timestamp', lambda ts_str: datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f')),
-                'runtime': ('aggregate_and_collect_latency', float),
+                'runtime': ('collect_and_accumulate_grads_latency', float),
                 'round_id': ('round_id', int),
                 'data_id': ('data_id', int),
                 'iter_id': ('iteration_id', int),
@@ -481,10 +481,10 @@ EXPORT_CONFIG = {
             'log_names': ['eval_model_latency'],
             'columns': ['timestamp', 'eval_model_latency', 'round_id', 'data_id', 'iteration_id']
         },
-        'aggregate_and_collect_latency': {
-            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_and_collect_latency.csv',
-            'log_names': ['aggregate_and_collect_latency'],
-            'columns': ['timestamp', 'aggregate_and_collect_latency', 'round_id', 'data_id', 'iteration_id']
+        'collect_and_accumulate_grads_latency': {
+            'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-collect_and_accumulate_grads_latency.csv',
+            'log_names': ['collect_and_accumulate_grads_latency'],
+            'columns': ['timestamp', 'collect_and_accumulate_grads_latency', 'round_id', 'data_id', 'iteration_id']
         },
         'aggregate_runtime_latency': {
             'default_output_filename': lambda: f'{CONSTANTS["file_prefix"]}-aggregate_runtime_latency.csv',

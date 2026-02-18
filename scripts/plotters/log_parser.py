@@ -56,12 +56,47 @@ def configure():
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_16.log")
     # log_file_type = "flame_fwdllm_trainer"
     # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval32_trainer"
-    log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_56.log")
-    log_file_type = "flame_fwdllm_aggregator"
-    CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_56.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_agg"
     # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_28_01_01_56.log")
     # log_file_type = "flame_fwdllm_trainer"
     # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_trainer"
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_04_02_11_05.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval_amp_seq32batch1024_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_04_02_11_05")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval256_trainer"
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_10_02_23_16.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval_amp_seq256_batch256_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_10_02_23_16.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_eval_amp_seq256_batch256_trainer"
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_11_02_04_25.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_buffer_gc_eval_amp_seq512_128_batch32_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_11_02_04_25.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_buffer_gc_eval_amp_seq512_128_batch32_trainer"
+
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_02_11_01.log")
+    # log_file_type = "flame_fwdllm_aggregator"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_buffer_gc_eval_amp_seq266_256_batch256_agg"
+    # log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_12_02_11_01.log")
+    # log_file_type = "flame_fwdllm_trainer"
+    # CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_buffer_gc_eval_amp_seq266_256_batch256_trainer"
+
+    log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_agg_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_16_02_11_44.log")
+    log_file_type = "flame_fwdllm_aggregator"
+    CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_opt5_4_seq128_192_batch32_agg"
+    log_file = Path("/Users/gaurav/Projects/flame/scripts/logs/runtime_optimizations/test_trainer_fedFwd_distilbert_agnews_lr0.01_client_num_10_numerical_16_02_11_44.log")
+    log_file_type = "flame_fwdllm_trainer"
+    CONSTANTS['file_prefix'] = "sync_n100_c30_k10_train_opt5_4_seq128_192_batch32_trainer"
 
     ## Post processors on the parsed data
     row_proc_steps = [
