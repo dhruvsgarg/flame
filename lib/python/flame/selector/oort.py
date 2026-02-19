@@ -89,7 +89,7 @@ class OortSelector(AbstractSelector):
         # available to select again NOTE: Not used in sync but just
         # present there
         self.ordered_updates_recv_ends = list()
-        
+
         # Track sliding window statistics for the selector
         self._selector_stats = {}
         for task in ["train", "eval"]:
@@ -97,8 +97,8 @@ class OortSelector(AbstractSelector):
             for metric in ["util", "speed", "round"]:
                 for window in [50, 100, 200]:
                     key = f"{metric}_last_{window}"
-                    self._selector_stats[task]['data'][key] = deque(maxlen=window)
-        
+                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
+
         self._select_run_counter = 0
 
     def compute_trainer_stat_summary(self):
@@ -133,29 +133,48 @@ class OortSelector(AbstractSelector):
 
         tasks = ["train", "eval"]
         metrics = [
-            "util_last_50", "util_last_100", "util_last_200",
-            "speed_last_50", "speed_last_100", "speed_last_200",
-            "round_last_50", "round_last_100", "round_last_200"
+            "util_last_50",
+            "util_last_100",
+            "util_last_200",
+            "speed_last_50",
+            "speed_last_100",
+            "speed_last_200",
+            "round_last_50",
+            "round_last_100",
+            "round_last_200",
         ]
 
         for task in tasks:
             for metric in metrics:
-                values = self._selector_stats[task]['data'].get(metric, [])
+                values = self._selector_stats[task]["data"].get(metric, [])
                 key = f"stat_{metric}" if "util" in metric else metric
                 self._selector_stats[task]["summary"][key] = compute_summary(values)
-        
+
     def _reset_selector_stats(self) -> None:
         self._selector_stats = {}
-    
+
     def select(
         self,
         ends: dict[str, End],
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list,
         task_to_perform: str,
+        **kwargs,
     ) -> SelectorReturnType:
-        """Return k number of ends from the given ends."""
+        """Return k number of ends from the given ends.
+        
+        Additional kwargs (used in async FL contexts, unused in sync Oort):
+        - agg_version_state: Aggregator's (model_version, data_id, iteration_id)
+        - trainer_version_states: Map of trainer_id to version triplets
+        """
         logger.debug("calling oort select")
+        # Extract async FL params for forward compatibility (unused in sync Oort)
+        agg_version_state = kwargs.get("agg_version_state")
+        trainer_version_states = kwargs.get("trainer_version_states")
+        if agg_version_state is not None:
+            logger.debug(f"Received aggregator version state: {agg_version_state}")
+        if trainer_version_states is not None:
+            logger.debug(f"Received trainer version states for {len(trainer_version_states)} trainers")
 
         num_of_ends = min(len(ends), self.num_of_ends)
         if num_of_ends == 0:
@@ -253,10 +272,10 @@ class OortSelector(AbstractSelector):
 
         logger.info(f"selected ends: {self.selected_ends}")
         self.round = round
-        
+
         # Computations for selector statistics
         self._select_run_counter += 1
-        
+
         for selected_end_id in self.selected_ends:
             end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
             end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
@@ -264,18 +283,28 @@ class OortSelector(AbstractSelector):
             # Insert to queues tracking stat_util, speed, round data
             for window in [50, 100, 200]:
                 if end_stat_util is not None:
-                    self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
+                    self._selector_stats[task_to_perform]["data"][
+                        f"util_last_{window}"
+                    ].append(end_stat_util)
                 if end_speed is not None:
-                    self._selector_stats[task_to_perform]['data'][f'speed_last_{window}'].append(end_speed.total_seconds())
+                    self._selector_stats[task_to_perform]["data"][
+                        f"speed_last_{window}"
+                    ].append(end_speed.total_seconds())
                 if end_last_round is not None:
-                    self._selector_stats[task_to_perform]['data'][f'round_last_{window}'].append(end_last_round)
-            
+                    self._selector_stats[task_to_perform]["data"][
+                        f"round_last_{window}"
+                    ].append(end_last_round)
+
         if self._select_run_counter % 5 == 0:
             self.compute_trainer_stat_summary()
-            logger.info(f"Train selector stats summary: {self._selector_stats['train']['summary']}")
-            logger.info(f"Eval selector stats summary: {self._selector_stats['eval']['summary']}")
+            logger.info(
+                f"Train selector stats summary: {self._selector_stats['train']['summary']}"
+            )
+            logger.info(
+                f"Eval selector stats summary: {self._selector_stats['eval']['summary']}"
+            )
             self._select_run_counter = 0
-                
+
         return {key: None for key in self.selected_ends}
 
     def cutoff_util(
@@ -607,7 +636,7 @@ class OortSelector(AbstractSelector):
             f"Going to cleanup selector state for "
             f"end_id {end_id} since it has left the channel"
         )
-        
+
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from selected ends"""
         selected_ends = self.selected_ends[self.requester]
