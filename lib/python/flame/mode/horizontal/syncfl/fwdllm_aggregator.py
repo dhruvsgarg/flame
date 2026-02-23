@@ -1008,9 +1008,7 @@ class TopAggregator(AsyncTopAgg):
         self.log_memory("end _aggregate_grads_sync", self.device)
 
     @timer_decorator
-    def _force_cuda_memory_cleanup(self, x, labels, output, logits, loss):
-        self.log_memory("before del x, labels, output, logits, loss", self.device)
-        # del x, labels, output, logits, loss   # TODO: Check if we sould delete the preds this time
+    def _force_cuda_memory_cleanup(self):
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -1104,7 +1102,9 @@ class TopAggregator(AsyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
-        self._force_cuda_memory_cleanup(x, labels, output, logits, loss)
+
+        # Can delete x, labels, output, logits, loss in case we run out of memory
+        self._force_cuda_memory_cleanup()
 
         self.log_memory("end eval_model", self.device)
 
