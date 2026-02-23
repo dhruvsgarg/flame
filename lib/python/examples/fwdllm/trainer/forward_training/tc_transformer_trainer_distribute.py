@@ -220,6 +220,15 @@ class ForwardTextClassificationTrainer:
             f"Device: {device}, trainer_id: {self.trainer_id}"
         )
 
+    def compute_metrics_with_logging_train(self, x, labels):
+
+        logging.info(f"Trainer ID |  'Example'  | 'Label")
+
+        for j, example in enumerate(x):
+            logging.info(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
+        return
+    
+
     def train_model(self, device=None, logging_state=None):
         if not device:
             device = self.device
@@ -257,23 +266,31 @@ class ForwardTextClassificationTrainer:
             all_perturbations_hash = ""
             selected_perturbation_hash = ""
             index = 0
+            if (self.grad is not None):
+                logging.debug(f"self.grad hashes: {[(_calculate_hash(p), p.shape) for p in self.grad]}")
+                logging.debug(f"self.grad/target_grad_full length = {len(self.grad)}")
+            else:
+                logging.debug("self.grad is None")
+
             for k, v in self.model.named_parameters():
                 if self.grad is not None and v.requires_grad:
                     self.total_rng_iter += 1
                     shape = v.shape
                     candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                    logging.debug(f"Candidate v - random generation for layer - '{index}' layer shape {candidate_v.shape}")
                     # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
                     target_grad = self.grad[index]
 
                     target_grad = torch.flatten(target_grad)
                     candidate_v = torch.flatten(candidate_v, start_dim=1)
-
+                    
                     logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                     all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
 
                     sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                    logging.debug(f"cos sim values for trainer {self.trainer_id}:  {sorted_values}")
                     v_buffer[index] = [
                         candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
                     ]
@@ -294,7 +311,9 @@ class ForwardTextClassificationTrainer:
 
         with torch.no_grad():
             for epoch in range(self.args.epochs):
-                logging.info(f"train_dl size: {len(self.train_dl)}")
+                logging.debug(f"train_dl size: {len(self.train_dl)}")
+                logging.debug(f"train_dl[0] size: {len(self.train_dl[0])}")
+                logging.debug(f"train_dl[0][0] size: {len(self.train_dl[0][0])}")
                 for batch_idx, batch in enumerate(self.train_dl):
                     curr_client_idx = self.args.client_idx
                     self.log_memory(
@@ -303,6 +322,9 @@ class ForwardTextClassificationTrainer:
 
                     x = batch[1].to(device, non_blocking=True)
                     labels = batch[4].to(device, non_blocking=True)
+
+                    # Uncomment below to log all training data
+                    # self.compute_metrics_with_logging_train(x, labels)
 
                     # Stat-utility calculation
                     with torch.no_grad():
@@ -317,6 +339,7 @@ class ForwardTextClassificationTrainer:
                     logging.debug(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean().item()}")
 
                     if self.args.perturbation_sampling and v_buffer != {}:
+                        logging.debug(f"V buffer is populated")
                         v_params = [
                             (
                                 v_buffer[i][0].to(device)
@@ -326,6 +349,7 @@ class ForwardTextClassificationTrainer:
                             for i, p in enumerate(self.params)
                         ]
                     else:
+                        logging.debug(f"V buffer empty, creating random perturbations")
                         v_params = [
                             (
                                 torch.randn_like(p, device=p.device)
@@ -360,6 +384,7 @@ class ForwardTextClassificationTrainer:
 
                     loss, jvp = calculate_jvp(f, self.params, v_params)
                     jvp = jvp.to(device)
+                    logging.debug(f"Batch Id(Client Id): {self.trainer_id} - jvp {jvp} V_params length: {len(v_params)} ")
 
                     for j, fg in enumerate(self.grad):
                         updated = (jvp * v_params[j]).detach().cpu()
