@@ -223,12 +223,8 @@ class BaseDataManager(ABC):
 
             test_index_list = test_index_list[:test_cut_off]
             if not test_only:
-                logging.info(
-                    f"NRL: len of train_index_list: {len(train_index_list)};"
-                )
-            logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)}"
-            )
+                logging.info(f"NRL: len of train_index_list: {len(train_index_list)};")
+            logging.info(f"NRL: len of test_index_list: {len(test_index_list)}")
             logging.info(
                 "caching test index size "
                 + str(len(test_index_list))
@@ -315,7 +311,9 @@ class BaseDataManager(ABC):
         logging.debug(f"data_file: {self.args.data_file_path} and partition_file: {self.args.partition_file_path} and num_partitions: {num_partitions}")
         logging.debug(f"original_client_idxs data used to load from parition file: {original_client_idxs} ")
         if client_idx >= num_partitions:
-            logging.warning(f"There are no more unique partitions to read from. Client Id: {client_idx} will read data from partitionId: {client_idx % num_partitions}")
+            logging.warning(
+                f"There are no more unique partitions to read from. Client Id: {client_idx} will read data from partitionId: {client_idx % num_partitions}"
+            )
 
         train_data_local_dict = {}
         test_data_local_dict = {}
@@ -343,14 +341,18 @@ class BaseDataManager(ABC):
             train_index_list = []
             test_index_list = []
             for orig_idx in original_client_idxs:
-                train_index_list.extend(partition_file[partition_method]["partition_data"][str(orig_idx)]["train"][()])
-                test_index_list.extend(partition_file[partition_method]["partition_data"][str(orig_idx)]["test"][()])
-            logging.info(
-                f"NRL: len of train_index_list: {len(train_index_list)};"
-            )
-            logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)};"
-            )
+                train_index_list.extend(
+                    partition_file[partition_method]["partition_data"][str(orig_idx)][
+                        "train"
+                    ][()]
+                )
+                test_index_list.extend(
+                    partition_file[partition_method]["partition_data"][str(orig_idx)][
+                        "test"
+                    ][()]
+                )
+            logging.info(f"NRL: len of train_index_list: {len(train_index_list)};")
+            logging.info(f"NRL: len of test_index_list: {len(test_index_list)};")
             train_data = self.read_instance_from_h5(
                 data_file,
                 train_index_list,
@@ -450,12 +452,8 @@ class BaseDataManager(ABC):
             test_index_list = partition_file[partition_method]["partition_data"][
                 str(client_idx)
             ]["test"][()]
-            logging.info(
-                f"NRL: len of train_index_list: {len(train_index_list)}"
-            )
-            logging.info(
-                f"NRL: len of test_index_list: {len(test_index_list)}"
-            )
+            logging.info(f"NRL: len of train_index_list: {len(train_index_list)}")
+            logging.info(f"NRL: len of test_index_list: {len(test_index_list)}")
             train_data = self.read_instance_from_h5(
                 data_file,
                 train_index_list,
