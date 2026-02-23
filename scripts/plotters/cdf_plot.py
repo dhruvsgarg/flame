@@ -14,7 +14,7 @@ TRAINER_PLOTTING_CONFIG = {
             'input_csv': lambda: f'output/{CONSTANTS['file_prefix']}-train_latency.csv',
             'latency_column': 'train_time_sec',
             'output_filename': lambda: f'{CONSTANTS['file_prefix']}-train_latency_cdf.png',
-            'x_label': 'Train Latency (seconds)',
+            'x_label': 'Overall Train Latency (seconds)',
             'y_label': 'CDF',
             'title': lambda: f'Train Latency ({CONSTANTS['file_prefix']})'
         },
@@ -89,6 +89,15 @@ TRAINER_PLOTTING_CONFIG = {
             'x_label': 'Compute Forward JVP Latency (seconds)',
             'y_label': 'CDF',
             'title': lambda: f'Compute Forward JVP Latency ({CONSTANTS["file_prefix"]})'
+        },
+        {
+            'latency_type': 'accumulate_and_extract_grads_latency',
+            'input_csv': lambda: f'output/{CONSTANTS["file_prefix"]}-accumulate_and_extract_grads_latency.csv',
+            'latency_column': 'accumulate_and_extract_grads_latency',
+            'output_filename': lambda: f'{CONSTANTS["file_prefix"]}-accumulate_and_extract_grads_latency_cdf.png',
+            'x_label': 'Accumulate and Extract Grads Latency (seconds)',
+            'y_label': 'CDF',
+            'title': lambda: f'Accumulate and Extract Grads Latency ({CONSTANTS["file_prefix"]})'
         },
         {
             'latency_type': 'force_cuda_memory_cleanup_latency',
