@@ -71,13 +71,13 @@ PROP_ROUND_END_TIME = "round_end_time"
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
 
-@timer_decorator
-def recv_fifo_wrapper(channel, ends):
-    logger.debug("Entering recv_fifo_wrapper generator loop")
-    for msg, metadata in channel.recv_fifo(ends):
-        logger.debug(f"Yielding msg from {metadata}")
-        yield msg, metadata
-    logger.debug("Exiting recv_fifo_wrapper")
+# @timer_decorator
+# def recv_fifo_wrapper(channel, ends):
+#     logger.debug("Entering recv_fifo_wrapper generator loop")
+#     for msg, metadata in channel.recv_fifo(ends):
+#         logger.debug(f"Yielding msg from {metadata}")
+#         yield msg, metadata
+#     logger.debug("Exiting recv_fifo_wrapper")
 
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
@@ -445,7 +445,6 @@ class TopAggregator(AsyncTopAgg):
         """
         Aggregate local model GRADIENTS asynchronously for FwdLLM.
 
-        This method is overridden from AsyncTopAgg.
         It receives gradients, aggregates them until _agg_goal is met,
         then performs FwdLLM variance check and model update.
         """
@@ -457,7 +456,7 @@ class TopAggregator(AsyncTopAgg):
         if channel.ends(VAL_CH_STATE_RECV) is None:
             logger.info("no ends yet")
             return
-        time.sleep(0.1)  # Slight delay to allow messages to arrive
+        # time.sleep(0.1)  # Slight delay to allow messages to arrive
 
         msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
         end, timestamp = metadata
@@ -466,7 +465,7 @@ class TopAggregator(AsyncTopAgg):
             return
 
         # Use new extracted helper
-        if not self._process_single_trainer_message(channel, msg, end, metadata):
+        if not self._process_single_trainer_message(channel, msg, end, timestamp):
             return
 
         logger.info(f"Received and processed grads from {end}.")
@@ -484,8 +483,7 @@ class TopAggregator(AsyncTopAgg):
 
 
     @timer_decorator
-    def _process_single_trainer_message(self, channel, msg, end, metadata):
-        timestamp = metadata[1]
+    def _process_single_trainer_message(self, channel, msg, end, timestamp):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
             if self.reject_stale_updates == True:
@@ -681,7 +679,7 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(f"No data from {end}; skipping it")
                 continue
             
-            self._process_single_trainer_message(channel, msg, end, metadata)
+            self._process_single_trainer_message(channel, msg, end, timestamp)
 
             if self._agg_goal_cnt >= self._agg_goal:
                 logger.info(
@@ -696,7 +694,7 @@ class TopAggregator(AsyncTopAgg):
                 if not msg:
                     continue
                 
-                self._process_single_trainer_message(channel, msg, end, metadata)
+                self._process_single_trainer_message(channel, msg, end, timestamp)
 
                 if self._agg_goal_cnt >= self._agg_goal:
                     logger.info(
@@ -863,55 +861,6 @@ class TopAggregator(AsyncTopAgg):
             {**{"mcc": mcc, "tp": tp, "tn": tn, "fp": fp, "fn": fn}, **extra_metrics},
             wrong,
         )
-
-    def oracular_trainer_avail_check(self, end: str) -> bool:
-        logger.debug("In oracular_trainer_avail_check")
-
-        picked_trainer_is_available = True
-
-        if end in self.trainer_unavail_durations.keys():
-            # get aggregator seconds from start
-            agg_time_since_start_s = time.time() - self.agg_start_time_ts
-
-            curr_trainer_unavail_list = self.trainer_unavail_durations[end]
-
-            # iterate through unavailability list First, check if the current
-            # time is within any failure window
-
-            for start_time, duration in curr_trainer_unavail_list:
-                if start_time <= agg_time_since_start_s < start_time + duration:
-                    logger.debug(
-                        f"### Trainer {end} attempted to be picked in failed " f"state."
-                    )
-                    picked_trainer_is_available = False
-                    return picked_trainer_is_available
-                else:
-                    logger.debug(f"### Trainer {end} is available.")
-                    picked_trainer_is_available = True
-
-            # Remove entries that occurred in the past
-            updated_trainer_unavail_list = [
-                (start_time, duration)
-                for start_time, duration in curr_trainer_unavail_list
-                if (start_time + duration) >= agg_time_since_start_s
-            ]
-
-            # Remove end from trainer_unavail_durations if list is empty TODO:
-            # Check if deletion is happening properly
-            if len(updated_trainer_unavail_list) == 0:
-                logger.debug(
-                    f"### Trainer {end} will no longer fail, removing from "
-                    f"trainer_unavail_durations"
-                )
-                del self.trainer_unavail_durations[end]
-            else:
-                self.trainer_unavail_durations[end] = updated_trainer_unavail_list
-        else:
-            logger.info(
-                f"No info on end {end} in self.trainer_unavail_durations"
-                f", returning TRUE (default)"
-            )
-        return picked_trainer_is_available
 
     def hearbeat_trainer_avail_check(self, end: str) -> bool:
         picked_trainer_is_available = True
