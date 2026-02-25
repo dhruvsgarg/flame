@@ -440,7 +440,7 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"starting training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
-        logger.debug(
+        logger.info(
             f"train_local_list[0][0]: {len(self.train_local_list[0][0])}, {len(self.train_local_list)}"
         )
 
@@ -449,12 +449,9 @@ class FedSGDTrainer(Trainer):
         # List Index to be used in case of both sync and async version.
         # In sync model version = round hence, Index = model version
         # In async: Index = model version % round
-        # TODO: Might need to revist this logic where we compare it with data_id instead of round
-        list_index = (
-            self._model_version % self._round
-            if self._model_version > self._round
-            else self._model_version
-        )
+        # list_index = self._model_version % self._round if self._model_version  > self._round else self._model_version
+        list_index = self.data_id # Which data bin to use for training
+        logging.info(f"self._model_version: {self._model_version } - list-index/data-id = {list_index}")
         
         
         self._perform_training(list_index)
