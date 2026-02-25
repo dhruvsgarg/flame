@@ -486,6 +486,8 @@ class TopAggregator(AsyncTopAgg):
     def _process_single_trainer_message(self, channel, msg, end, timestamp):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
+            if version != self._model_version:
+                logger.info(f"Received grad with staleness={self._model_version-version}.")
             if self.reject_stale_updates == True:
                 if version != self._model_version:
                     logger.info(
