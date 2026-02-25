@@ -1008,9 +1008,7 @@ class TopAggregator(AsyncTopAgg):
         self.log_memory("end _aggregate_grads_sync", self.device)
 
     @timer_decorator
-    def _force_cuda_memory_cleanup(self, x, labels, output, logits, loss):
-        self.log_memory("before del x, labels, output, logits, loss", self.device)
-        # del x, labels, output, logits, loss   # TODO: Check if we sould delete the preds this time
+    def _force_cuda_memory_cleanup(self):
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -1118,7 +1116,9 @@ class TopAggregator(AsyncTopAgg):
 
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
-        self._force_cuda_memory_cleanup(x, labels, output, logits, loss)
+        
+        # Can delete x, labels, output, logits, loss in case we run into any memory issues
+        self._force_cuda_memory_cleanup()
 
         self.log_memory("end eval_model", self.device)
 
@@ -1511,13 +1511,13 @@ class TopAggregator(AsyncTopAgg):
             self.iteration_per_data_id,
         )
         logger.debug(
-            f"Current triplet of model_version, data_id, iteration_id set in aggregator: {self._curr_agg_version}"
+            f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
         )
         ends = channel.ends(
             state=VAL_CH_STATE_SEND,
             task_to_perform=task_to_perform,
-            curr_triplet=self._curr_agg_version,
-            trainer_state_dict=self._trainer_state_dict,
+            agg_version_state=self._curr_agg_version,
+            trainer_version_states=self._trainer_state_dict,
         )
         logger.info(f"ends: {ends}")
         # TODO: check in agg_weights if ends is None
