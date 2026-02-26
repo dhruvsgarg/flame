@@ -70,15 +70,6 @@ PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
-
-# @timer_decorator
-# def recv_fifo_wrapper(channel, ends):
-#     logger.debug("Entering recv_fifo_wrapper generator loop")
-#     for msg, metadata in channel.recv_fifo(ends):
-#         logger.debug(f"Yielding msg from {metadata}")
-#         yield msg, metadata
-#     logger.debug("Exiting recv_fifo_wrapper")
-
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
