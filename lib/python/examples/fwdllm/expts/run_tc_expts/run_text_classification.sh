@@ -44,7 +44,7 @@ else
   peft_method=bitfit
 fi
 
-PARTITION_METHOD="uniform"
+PARTITION_METHOD="niid_label_clients=100_alpha=100"
 if [ $DATA_NAME = "agnews" ];then
   max_seq_length=64  # this is set in aggregator.json, this will be overwritten
   frequency_of_the_test=1
@@ -68,7 +68,7 @@ LOG_FILE="fedavg_transformer_tc.log"
 CI=0
 
 REPO_PATH=/home/dgarg39/$FWDLLM_USER/flame
-DATA_DIR=/home/dgarg39/$FWDLLM_USER/fednlp_data
+DATA_DIR=/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data
 
 PROCESS_NUM=`expr $WORKER_NUM + 1`
 echo $PROCESS_NUM
