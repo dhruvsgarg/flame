@@ -941,10 +941,10 @@ class TopAggregator(AsyncTopAgg):
         )
         
         # Uncomment the below to log the prediction stats
-        # probs = F.softmax(torch.tensor(preds), dim=1) # Shape: [N, 4]
-        # log_margin_distribution(probs)
-        # compute_metrics_with_logging(probs, preds, out_label_ids, self.test_global)
-        # log_error_distribution(probs, out_label_ids)
+        probs = F.softmax(torch.tensor(preds), dim=1) # Shape: [N, 4]
+        log_margin_distribution(probs)
+        compute_metrics_with_logging(probs, preds, out_label_ids, self.test_global)
+        log_error_distribution(probs, out_label_ids)
         
         result["eval_loss"] = eval_loss
         results.update(result)
