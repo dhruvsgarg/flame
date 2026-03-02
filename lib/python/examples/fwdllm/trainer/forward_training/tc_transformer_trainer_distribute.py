@@ -19,7 +19,6 @@ from transformers import (
 )
 from functools import partial
 import functorch as fc
-from torch.cuda.amp import autocast
 import gc
 import os
 import contextlib
@@ -267,13 +266,40 @@ class ForwardTextClassificationTrainer:
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
 
-
-
     @timer_decorator
-    def _force_cuda_memory_cleanup(self, device, tag):
-        gc.collect()
-        torch.cuda.empty_cache()
-        self.log_memory(tag, device)
+    def _select_optimal_perturbations(self, device, logging_state):
+        if self.args.var_control:
+            self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
+
+        v_buffer = {}
+        all_perturbations_hash = ""
+        selected_perturbation_hash = ""
+        index = 0
+        for k, v in self.model.named_parameters():
+            if self.grad is not None and v.requires_grad:
+                self.total_rng_iter += 1
+                shape = v.shape
+                candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
+                target_grad = self.grad[index]
+
+                target_grad = torch.flatten(target_grad)
+                candidate_v = torch.flatten(candidate_v, start_dim=1)
+
+                logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
+                all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
+
+                cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
+
+                sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                v_buffer[index] = [
+                    candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
+                ]
+
+                del candidate_v, target_grad, cos_sim, sorted_indices, shape
+            index += 1
+        return v_buffer
+
 
     @timer_decorator
     def _setup_training_state(self, device, logging_state):
@@ -319,7 +345,7 @@ class ForwardTextClassificationTrainer:
         # perturbations based on cosine similarity. This is not the same as generating 10 candidate perturbations per client & selecting the top 1. We did not
         # observe any significant changes in accuracy, after assigning clients distinct RNG seeds, & hence we chose the later approach.
         if self.args.perturbation_sampling:
-            v_buffer = _select_optimal_perturbations(self, device, logging_state)
+            v_buffer = self._select_optimal_perturbations(device, logging_state)
 
         # Efficient grad allocation / zeroing
         if (
@@ -423,9 +449,9 @@ class ForwardTextClassificationTrainer:
         labels = batch[4].to(device, non_blocking=True)
 
         # Stat-utility calculation
-        _compute_batch_stat_utility(self, device, x, labels)
+        self._compute_batch_stat_utility(device, x, labels)
 
-        v_params = _prepare_perturbation_tensors(self, device, v_buffer)
+        v_params = self._prepare_perturbation_tensors(device, v_buffer)
         logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
         logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
@@ -442,6 +468,8 @@ class ForwardTextClassificationTrainer:
                 f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
             )
         
+        del x, labels, jvp, v_params, loss
+        # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
         return loss
 
     @timer_decorator
@@ -527,6 +555,12 @@ class ForwardTextClassificationTrainer:
         self.log_memory("train_model_start", device)
         self.allocated_before = torch.cuda.memory_allocated(device)
         
+        """
+        If you want absolute determinism between runs, run the model in eval mode. Make sure to switch the model back to train model before the method returns: `self.model.train()`. 
+        Even though this seems to not affect training, this is commented as we're not sure how the model trains in eval mode. Any relative impact on accuracy without it isn't measured.
+        self.model.eval()
+        """
+        self._force_cuda_memory_cleanup(device, "before_train_model")
         self._make_model_functional(device)
         
         v_buffer = self._setup_training_state(device, logging_state)
