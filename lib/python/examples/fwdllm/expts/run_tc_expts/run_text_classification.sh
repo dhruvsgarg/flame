@@ -137,21 +137,24 @@ else
   # Generate timestamp once
   RUN_TIMESTAMP=$(date +%d_%m_%H_%M)
   LOG_SUFFIX="fedFwd_${model_type}_${DATA_NAME}_lr${LR}_client_num_${client_num_per_round}_numerical_${RUN_TIMESTAMP}"
-  AGG_LOG_FILE="$LOG_DIR/test_agg_${LOG_SUFFIX}.log"
-  TRAINER_LOG_FILE="$LOG_DIR/test_trainer_${LOG_SUFFIX}.log"
+  AGG_LOG_FILE=$(readlink -f "$LOG_DIR/test_agg_${LOG_SUFFIX}.log")
+  TRAINER_LOG_FILE=$(readlink -f "$LOG_DIR/test_trainer_${LOG_SUFFIX}.log")
   PARENT_PID=$$
 
   # Function to check logs for errors and kill all processes if found
   check_errors() {
-    # Use basic grep (-e for multiple patterns) to find the first file with an error
-    FOUND_ERR_FILE=$(grep -l -e "Error" -e "Exception" -e "Traceback" "$AGG_LOG_FILE" "$TRAINER_LOG_FILE" | head -n 1)
+    # Find the first file that contains a real error (ignoring known false positives)
+    FOUND_ERR_FILE=$(grep -E -H "Error|Exception|Traceback" "$AGG_LOG_FILE" "$TRAINER_LOG_FILE" | \
+                     grep -vE "Error Distribution Analysis|log_error_distribution" | \
+                     head -n 1 | cut -d: -f1)     # Extracts the name that the first grep matches
 
     if [ ! -z "$FOUND_ERR_FILE" ]; then
       echo "--------------------------------------------------------"
       echo "ERROR DETECTED in $FOUND_ERR_FILE! Shutting down..."
       echo "--------------------------------------------------------"
-      # Show the first few errors using basic grep
-      ERR_MSG=$(grep -e "Error" -e "Exception" -e "Traceback" "$FOUND_ERR_FILE" | head -n 20)
+      # Show the first few errors, excluding known false positives
+      ERR_MSG=$(grep -E "Error|Exception|Traceback" "$FOUND_ERR_FILE" | \
+                grep -vE "Error Distribution Analysis|log_error_distribution" | head -n 20)
       
       # Append termination message to both logs
       TERMINATION_MSG="Killed spawned processes due to error in $FOUND_ERR_FILE\n\n$ERR_MSG"
