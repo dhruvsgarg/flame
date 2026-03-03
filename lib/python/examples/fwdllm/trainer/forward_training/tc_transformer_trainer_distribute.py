@@ -255,6 +255,14 @@ class ForwardTextClassificationTrainer:
             f"Device: {device}, trainer_id: {self.trainer_id}"
         )
 
+    def compute_metrics_with_logging_train(self, x, labels):
+
+        logging.info(f"Trainer ID |  'Example'  | 'Label")
+
+        for j, example in enumerate(x):
+            logging.info(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
+        return
+    
     @timer_decorator
     def _make_model_functional(self, device):
         # Ensure model is on the correct device
@@ -275,11 +283,17 @@ class ForwardTextClassificationTrainer:
         all_perturbations_hash = ""
         selected_perturbation_hash = ""
         index = 0
+        if (self.grad is not None):
+            logging.debug(f"self.grad hashes: {[(_calculate_hash(p), p.shape) for p in self.grad]}")
+            logging.debug(f"self.grad/target_grad_full length = {len(self.grad)}")
+        else:
+            logging.debug("self.grad is None")
         for k, v in self.model.named_parameters():
             if self.grad is not None and v.requires_grad:
                 self.total_rng_iter += 1
                 shape = v.shape
                 candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                logging.debug(f"Candidate v - random generation for layer - '{index}' layer shape {candidate_v.shape}")
                 # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
                 target_grad = self.grad[index]
 
@@ -292,6 +306,7 @@ class ForwardTextClassificationTrainer:
                 cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
 
                 sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                logging.debug(f"cos sim values for trainer {self.trainer_id}:  {sorted_values}")
                 v_buffer[index] = [
                     candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
                 ]
@@ -360,6 +375,36 @@ class ForwardTextClassificationTrainer:
             self.grad = [fg.to(device).zero_() for fg in self.grad]
             
         return v_buffer
+
+    # TODO: Yet to validate this incomming change    
+    def _prepare_perturbation_tensors(self, device, v_buffer):
+        if self.args.perturbation_sampling and v_buffer != {}:
+            logging.debug(f"V buffer is populated")
+            v_params = [
+                (
+                    v_buffer[i][0].to(device)
+                    if p.requires_grad
+                    else torch.zeros_like(p)
+                )
+                for i, p in enumerate(self.params)
+            ]
+        else:
+            logging.debug(f"V buffer empty, creating random perturbations")
+            v_params = [
+                (
+                    torch.randn_like(p, device=p.device)
+                    if p.requires_grad
+                    else torch.zeros_like(p, device=device)
+                )
+                for p in self.params
+            ]
+        logging.debug(
+                        f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}"
+        )
+        logging.debug(
+                        f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}"
+        )
+        return v_params
 
     @timer_decorator
     def _train_one_batch(self, device, batch, epoch, batch_idx, v_buffer):
@@ -463,11 +508,10 @@ class ForwardTextClassificationTrainer:
         # Optimization: Remove GC & buffer flushes from the batch loop
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
         
-        if hasattr(self, "base_trainer"):
-            self.base_trainer.normalize_stat_utility(epoch)
-            logging.debug(
-                f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
-            )
+        self.base_trainer.normalize_stat_utility(epoch)
+        logging.debug(
+            f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
+        )
         
         del x, labels, jvp, v_params
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
