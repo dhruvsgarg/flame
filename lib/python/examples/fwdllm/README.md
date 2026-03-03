@@ -3,6 +3,7 @@
 This document outlines the inheritance hierarchy of the Aggregator classes used in FwdLLM to help understand where specific methods are defined and why some might be redundant.
 
 ## Hierarchy Overview
+
 ```mermaid
 classDiagram
     class SyncTopAgg ["flame/mode/horizontal/syncfl/top_aggregator.py:TopAggregator"] {
@@ -10,13 +11,13 @@ classDiagram
         +_aggregate_weights()
         +_distribute_weights()
     }
-    
+
     class AsyncTopAgg ["flame/mode/horizontal/asyncfl/top_aggregator.py:TopAggregator"] {
         +oracular_trainer_avail_check(end: str) : bool
         +hearbeat_trainer_avail_check(end: str) : bool
         +_aggregate_weights(tag: str)
     }
-    
+
     class FwdLLMAggregator ["flame/mode/horizontal/syncfl/fwdllm_aggregator.py:TopAggregator"] {
         +oracular_trainer_avail_check(end: str) : bool
         +hearbeat_trainer_avail_check(end: str) : bool
@@ -40,6 +41,7 @@ Here is the function call hierarchy for both the aggregate and distribute method
 ### 1. `_aggregate_weights(tag)`
 
 #### **Sync Flow** (`is_async == False`)
+
 ```text
 _aggregate_weights
 └── ⏱️ _aggregate_grads_sync
@@ -55,6 +57,7 @@ _aggregate_weights
 ```
 
 #### **Async Flow** (`is_async == True`)
+
 ```text
 _aggregate_weights
 └── ⏱️ _aggregate_grads_async
@@ -73,6 +76,7 @@ _aggregate_weights
 ### 2. `_distribute_weights(tag, task_to_perform)`
 
 #### **Sync Flow** (`is_async == False`)
+
 ```text
 _distribute_weights
 └── ⏱️ _distribute_weights_sync
@@ -84,6 +88,7 @@ _distribute_weights
 ```
 
 #### **Async Flow** (`is_async == True`)
+
 ```text
 _distribute_weights
 └── ⏱️ _distribute_weights_async
@@ -92,4 +97,31 @@ _distribute_weights
     │   ├── get_trainable_param_state_dict
     │   └── aggregate_grad_pool
     └── (Sends the pre-computed payload or the variance requests to the ends)
+```
+
+### 3. `Trainer`
+
+#### **train_with_data_id**
+
+```text
+FedSgdTrainer.py
+└── FedSGDTrainer.train_with_data_id ⏱️
+    ├── _check_availability ⏱️
+    ├── _emulate_training_delay ⏱️
+    └── _perform_training ⏱️
+        │
+        └── tc_transformer_trainer_distribute.py
+            └── ForwardTextClassificationTrainer.train_model ⏱️
+                ├── _make_model_functional ⏱️
+                ├── _setup_training_state ⏱️
+                │   └── _select_optimal_perturbations ⏱️ (nested)
+                ├── _training_loop ⏱️
+                │   ├── _train_one_batch ⏱️
+                │   │   ├── _compute_batch_stat_utility ⏱️ (nested)
+                │   │   ├── _prepare_perturbation_tensors ⏱️ (nested)
+                │   │   ├── _compute_forward_jvp ⏱️ (nested)
+                │   │   └── _accumulate_and_extract_grads ⏱️ (nested)
+                │   └── eval_model ⏱️ (called periodically)
+                │       └── compute_metrics
+                └── _finalize_training ⏱️
 ```

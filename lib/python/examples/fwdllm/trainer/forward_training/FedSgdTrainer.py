@@ -340,38 +340,6 @@ class FedSGDTrainer(Trainer):
         # logger.info(f"NRL: Updated model weights: {weights}")
         self.trainer.set_model_params(weights)
 
-    # def update_dataset(self, client_index, round_idx=None):
-    #     logger.info(f"NRL: Updated client index: {client_index}, round: {round_idx}")
-    #     self.client_index = client_index
-    #     self.train_local = [self.train_data_local_dict[id] for id in client_index]
-    #     self.local_sample_number = self.train_data_local_num_dict[client_index[0]]
-
-    #     self.test_local = self.test_data_local_dict[client_index[0]]
-
-    #     self.train_local_list = [
-    #         [data for data in self.train_local[i]] for i in range(len(self.train_local))
-    #     ]
-
-    #     # Write all training data for each client to separate files
-    #     # Only write if we haven't written during initialization
-    #     if not self.data_written_to_file:
-    #         logger.info(
-    #             f"Writing training data to files during update_dataset for clients {client_index}"
-    #         )
-    #         for i, client_id in enumerate(client_index):
-    #             if i < len(self.train_local):
-    #                 self._write_client_data_to_file(
-    #                     client_id, self.train_local[i], round_idx
-    #                 )
-    #         self.data_written_to_file = True
-    #         logger.info(
-    #             "Successfully wrote training data for all clients during update_dataset"
-    #         )
-    #     else:
-    #         logger.info(
-    #             "Training data already written to files during initialization, skipping update_dataset write"
-    #         )
-
     def train(self, round_idx=None):
         logger.info("entered train where weights = params and not grad")
         self.args.round_idx = round_idx
