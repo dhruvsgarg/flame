@@ -52,7 +52,7 @@ Here is the function call hierarchy for both the aggregate and distribute method
 ```text
 _aggregate_weights
 └── ⏱️ _aggregate_grads_sync
-    ├── ⏱️ collect_and_accumulate_grads (Loops multiple times until agg goal is met)
+    ├── ⏱️ sync_collect_and_accumulate_grads (Loops multiple times until agg goal is met)
     │   └── ⏱️ _process_single_trainer_message
     │       └── aggregate_grads_from_trainers
     │
