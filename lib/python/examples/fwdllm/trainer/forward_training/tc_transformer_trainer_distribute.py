@@ -376,36 +376,6 @@ class ForwardTextClassificationTrainer:
             
         return v_buffer
 
-    # TODO: Yet to validate this incomming change    
-    def _prepare_perturbation_tensors(self, device, v_buffer):
-        if self.args.perturbation_sampling and v_buffer != {}:
-            logging.debug(f"V buffer is populated")
-            v_params = [
-                (
-                    v_buffer[i][0].to(device)
-                    if p.requires_grad
-                    else torch.zeros_like(p)
-                )
-                for i, p in enumerate(self.params)
-            ]
-        else:
-            logging.debug(f"V buffer empty, creating random perturbations")
-            v_params = [
-                (
-                    torch.randn_like(p, device=p.device)
-                    if p.requires_grad
-                    else torch.zeros_like(p, device=device)
-                )
-                for p in self.params
-            ]
-        logging.debug(
-                        f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}"
-        )
-        logging.debug(
-                        f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}"
-        )
-        return v_params
-
     @timer_decorator
     def _train_one_batch(self, device, batch, epoch, batch_idx, v_buffer):
         @timer_decorator
@@ -426,6 +396,7 @@ class ForwardTextClassificationTrainer:
         @timer_decorator
         def _prepare_perturbation_tensors(device, v_buffer):
             if self.args.perturbation_sampling and v_buffer != {}:
+                logging.debug(f"V buffer is populated")
                 v_params = [
                     (
                         v_buffer[i][0].to(device)
@@ -435,6 +406,7 @@ class ForwardTextClassificationTrainer:
                     for i, p in enumerate(self.params)
                 ]
             else:
+                logging.debug(f"V buffer empty, creating random perturbations")
                 v_params = [
                     (
                         torch.randn_like(p, device=device)
@@ -443,6 +415,14 @@ class ForwardTextClassificationTrainer:
                     )
                     for p in self.params
                 ]
+
+            logging.debug(
+                f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}"
+            )
+            logging.debug(
+                f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}"
+            )
+            
             return v_params
 
         @timer_decorator
