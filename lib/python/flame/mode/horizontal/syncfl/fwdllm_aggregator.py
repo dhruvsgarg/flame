@@ -1110,7 +1110,6 @@ class TopAggregator(AsyncTopAgg):
 
         return payload
 
-    @timer_decorator
     def _update_state_after_payload_prepared(self):
         """Update state after preparing payload.
         Reset grad pools if the model was updated.
