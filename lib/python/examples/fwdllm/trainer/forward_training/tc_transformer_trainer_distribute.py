@@ -390,8 +390,8 @@ class ForwardTextClassificationTrainer:
                 else:
                     logits = pred
                 loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
-            # Optimization: removed .item() to avoid GPU sync
-            logging.debug(f"stat_utility for trainerId: {self.trainer_id} is {self.base_trainer._stat_utility}, loss: {loss.mean()}")
+            # Optimization: Lazy logging & removed .item() to avoid Host-device sync
+            logging.debug("stat_utility for trainerId: %s is %s, loss: %s", self.trainer_id, self.base_trainer._stat_utility, loss.mean())
 
         @timer_decorator
         def _prepare_perturbation_tensors(device, v_buffer):
@@ -500,13 +500,10 @@ class ForwardTextClassificationTrainer:
     @timer_decorator
     def _training_loop(self, device, v_buffer):
         global_step = 0
-        # Optimization: Accumulate loss on GPU as a tensor to avoid frequent Host to Device syncs
-        tr_loss = torch.tensor(0.0, device=device)
-        
         # Optimization: Use autocast for training loop if enabled
         from torch.cuda.amp import autocast
         autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
-        logging.debug(f"Autocast enabled: {self.args.fp16}")
+        if not self.args.fp16: logging.warning(f"Autocast is disabled: {self.args.fp16}")
 
         with torch.no_grad(), autocast_cm:
             for epoch in range(self.args.epochs):
@@ -514,8 +511,6 @@ class ForwardTextClassificationTrainer:
                 for batch_idx, batch in enumerate(self.train_dl):
                     loss = self._train_one_batch(device, batch, epoch, batch_idx, v_buffer)
 
-                    # Optimization: Keep tr_loss on device.
-                    tr_loss += loss
                     global_step += 1
                     logging.info(
                         f"epoch = {epoch}, trainer_id = {self.trainer_id}, loss = {loss}"
@@ -531,10 +526,9 @@ class ForwardTextClassificationTrainer:
                         break
 
                     del batch, loss
-        return global_step, tr_loss
 
     @timer_decorator
-    def _finalize_training(self, device, global_step, tr_loss):
+    def _finalize_training(self, device):
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         gradients = [p.grad for p in trainable_params if p.grad is not None]
         logging.info(
@@ -561,8 +555,6 @@ class ForwardTextClassificationTrainer:
         logging.info(
             f"[MEM] Allocated Before/After: {self.allocated_before/1e6:.2f}MB \u2192 {allocated_after/1e6:.2f}MB, \u0394: {(allocated_after-self.allocated_before)/1e6:.2f}MB | trainer id: {self.trainer_id}"
         )
-
-        return (tr_loss / global_step).item() if global_step > 0 else 0.0
 
     @timer_decorator
     def _force_cuda_memory_cleanup(self, device, tag):
@@ -596,15 +588,12 @@ class ForwardTextClassificationTrainer:
         
         v_buffer = self._setup_training_state(device, logging_state)
         
-        global_step, tr_loss = self._training_loop(device, v_buffer)
+        self._training_loop(device, v_buffer)
         
-        avg_loss = self._finalize_training(device, global_step, tr_loss)
+        self._finalize_training(device)
 
         if self.args.perturbation_sampling:
             del v_buffer
-
-        return global_step, avg_loss
-
 
     @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
