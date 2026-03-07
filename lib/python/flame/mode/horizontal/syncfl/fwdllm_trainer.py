@@ -69,6 +69,14 @@ def recv_wrapper(self, channel, end_id):
 
     return channel.recv(end_id)
 
+import hashlib
+
+def _calculate_hash(tensor):
+    if tensor is None:
+        return ""
+
+    """Calculate a hash for a tensor for logging."""
+    return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -296,6 +304,10 @@ class Trainer(Role, metaclass=ABCMeta):
             self.weights = full_state_dict
             self._update_model()
 
+            # Helper lambda for a cleaner log
+            format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+            logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
+            
             if MessageType.DATA_ID in msg:
                 logger.info(
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
@@ -326,9 +338,18 @@ class Trainer(Role, metaclass=ABCMeta):
                                     full_grad.append(
                                         torch.zeros_like(param, device="cpu")
                                     )
+                        
+                        if partial_grad is not None:
+                            format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
+                        else:
+                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
+
                         if self.data_id % 2:
+                            logger.debug(f"using old grad for : {self.data_id}")
                             self.trainer.model_trainer.old_grad = full_grad
                         else:
+                            logger.debug(f"reset old grad for : {self.data_id}")
                             self.trainer.model_trainer.old_grad = None
                         # logger.info(
                         #     f"Trainer id {self.trainer_id} using grad_pool from message {self.trainer.model_trainer.old_grad}"
@@ -476,6 +497,9 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"Going to send gradients dictionary with {len(grad_dict)} entries "
                     f"({size_mb:.2f} MB)."
                 )
+
+                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+                logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
 
@@ -652,14 +676,6 @@ class Trainer(Role, metaclass=ABCMeta):
     def _load_model_onto_gpu(self):
         self.model = self.model_arch().to(self.device)
         logger.debug(f"Loaded model on gpu for trainer_id: {self.trainer_id}")
-
-    def _evict_model_from_gpu(self):
-        self.model.cpu()
-        self.model = None
-        torch.cuda.empty_cache()
-        gc.collect()  # Force garbage collection
-        torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
-        logger.debug(f"Evicted model from gpu for trainer_id: {self.trainer_id}")
 
     def send_heartbeat_to_agg(self) -> None:
         logger.debug("Inside trainer.py will call self.put(heartbeat)")

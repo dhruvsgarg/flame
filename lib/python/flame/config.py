@@ -83,6 +83,7 @@ class SelectorType(str, Enum):
     OORT = "oort"
     ASYNC_OORT = "async_oort"
     REFL_OORT = "refl_oort"  # REFL-enhanced Oort with priority selection and availability tracking
+    ASYNC_RANDOM = "async_random"
 
 
 class DataSamplerType(str, Enum):
