@@ -24,17 +24,8 @@ logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
-PROP_UTILITY = "utility"
 PROP_END_ID = "end_id"
-PROP_SELECTED_COUNT = "selected_count"
-PROP_ROUND_START_TIME = "round_start_time"
-PROP_ROUND_DURATION = "round_duration"
 PROP_STAT_UTILITY = "stat_utility"
-PROP_DATASET_SIZE = "dataset_size"
-PROP_UPDATE_COUNT = "update_count"
-PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
-PROP_LAST_SELECTED_ROUND = "last_selected_round"
-PROP_LAST_EVAL_ROUND = "last_eval_round"
 PROP_AVL_STATE = "avl_state"
 
 
@@ -67,18 +58,6 @@ class AsyncRandomSelector(AbstractSelector):
 
         if self.agg_goal < 0:
             self.agg_goal = 1
-
-        # With Oort, we select 1.3 * k ends and wait until k ends to
-        # complete at a round
-        self.overcommitment = 1.3
-        self.num_of_ends = int(self.agg_goal * self.overcommitment)
-
-        self.exploration_factor = 0.9
-        self.exploration_factor_decay = 0.98
-        self.min_exploration_factor = 0.2
-
-        self.exploitation_util_history = []
-
 
         # #### CHANGES BASED OFF FEDBUFF FOR ASYNCFL
         # Tracking selected ends to ensure selection correctness for
@@ -196,12 +175,6 @@ class AsyncRandomSelector(AbstractSelector):
             if len(results) is not 0:
                 self._select_run_counter += 1
 
-            for selected_end_id in results.keys():
-                end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
-                end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
-                end_last_round = ends[selected_end_id].get_property(
-                    PROP_LAST_EVAL_ROUND
-                )
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
             results = self._handle_recv_state(ends, concurrency)
@@ -495,9 +468,6 @@ class AsyncRandomSelector(AbstractSelector):
         )
         candidates = []
 
-        # ### From Oort selector
-        # num_of_ends = min(len(ends), self.num_of_ends) if
-        # num_of_ends == 0: logger.debug("ends is empty") return {}
         if extra == 0:
             logger.debug(f"extra: {extra}, nothing to select")
             return {}
@@ -505,15 +475,6 @@ class AsyncRandomSelector(AbstractSelector):
         round = channel_props["round"] if "round" in channel_props else 0
         logger.debug(f"let's select {extra} ends for round {round}")
 
-        # if round % 100 == 0:
-        #     # Log to info level the property of LAST_EVAL_ROUND for
-        #     # all the ends
-        #     for end_id, end in ends.items():
-        #         logger.debug(
-        #             f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_STAT_UTILITY)}"
-        #         )
-
-        # NOTE: (DG) Assuming that shuffled_end_ids is not needed
 
         # Invalidate previous all_selected entry if you don't get an
         # update in UPDATE_TIMEOUT_WAIT_S. The client might have
