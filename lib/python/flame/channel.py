@@ -298,6 +298,13 @@ class Channel(object):
         self._selector._cleanup_recvd_ends(self._ends)
         logger.debug("Cleaned up ends successfully")
 
+    def remove_from_selected_ends(self, end):
+        """Performs cleanup of end states in the selector. Usually
+        only performed after aggregation of a round completes"""
+
+        self._selector.remove_from_selected_ends(self._ends, end)
+        logger.debug("removed from selected ends successfully")
+
     def cleanup_recvd_end(self, end):
         """Performs cleanup of end states in the selector. Usually
         only performed after aggregation of a round completes"""
