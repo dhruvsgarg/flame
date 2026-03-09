@@ -731,7 +731,7 @@ class OortSelector(AbstractSelector):
         trainer_411_in_cleanup = test_trainer_411 in self.ordered_updates_recv_ends
         trainer_411_in_selected = test_trainer_411 in self.selected_ends
         
-        logger.info(
+        logger.debug(
             f"[DEBUG_CLEANUP] Before cleanup: 389_in_cleanup={trainer_389_in_cleanup}, "
             f"389_in_selected={trainer_389_in_selected}, 411_in_cleanup={trainer_411_in_cleanup}, "
             f"411_in_selected={trainer_411_in_selected}, selected_ends_size={len(self.selected_ends)}"
@@ -763,10 +763,11 @@ class OortSelector(AbstractSelector):
                     logger.debug(f"Freed trainer ...{end_id[-8:]} from in-flight set")
                     
                     # Track specific test trainers
+                    # TODO: Cleanup if not required anymore after debugging
                     if end_id == test_trainer_389:
-                        logger.info(f"[TRACK_389] Successfully removed trainer 389 from selected_ends in cleanup")
+                        logger.debug(f"[TRACK_389] Successfully removed trainer 389 from selected_ends in cleanup")
                     if end_id == test_trainer_411:
-                        logger.info(f"[TRACK_411] Successfully removed trainer 411 from selected_ends in cleanup")
+                        logger.debug(f"[TRACK_411] Successfully removed trainer 411 from selected_ends in cleanup")
                 else:
                     not_found_count += 1
                     not_found_ids.append(end_id)
@@ -792,7 +793,7 @@ class OortSelector(AbstractSelector):
             if removed_count > 0:
                 logger.info(f"[CLEANUP_DEBUG] Removed IDs (first 5): {[id[-8:] for id in removed_ids[:5]]}")
             if not_found_count > 0:
-                logger.info(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
+                logger.warning(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
         else:
             logger.info("[CLEANUP_DEBUG] No ends to clean up (ordered_updates_recv_ends is empty)")
 
