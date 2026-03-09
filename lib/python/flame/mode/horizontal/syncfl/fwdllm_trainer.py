@@ -464,6 +464,12 @@ class Trainer(Role, metaclass=ABCMeta):
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
 
+        # We assume self.trainer.model_trainer is present and has the required method
+        full_stat_utility = self.trainer.model_trainer.calculate_full_dataset_stat_utility(
+            self.train_local_list[0], self.device
+        )
+        logging.debug(f"Trainer {self.trainer_id} full_dataset_stat_utility calculation complete: {full_stat_utility}")
+
         if self.task_to_perform == "train":
             # trainer is expected to train and it is also available to train -
             # best case self._update_weights()
@@ -510,13 +516,14 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                 MessageType.STAT_UTILITY: self._stat_utility,
-                # - rn FedSgdTrainer has no utility
+                MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
             }
 
         channel.send(end, msg)

@@ -498,6 +498,60 @@ class ForwardTextClassificationTrainer:
         return loss
 
     @timer_decorator
+    def calculate_full_dataset_stat_utility(self, all_data_bins, device=None):
+        if not device:
+            device = self.device
+            
+        self.model.to(device)
+        self.model.eval()
+
+        total_squared_loss = 0.0
+        total_samples = 0
+        
+        # We need the original loss function without reduction
+        if hasattr(self, 'base_trainer') and self.base_trainer is not None:
+            criterion = self.base_trainer.loss_fn(reduction="none", **{k: v for k, v in self.base_trainer.config.hyperparameters.__dict__.items() if k in self.base_trainer.loss_fn.__init__.__code__.co_varnames and k != 'reduction'})
+        else:
+            criterion = CrossEntropyLoss(reduction="none")
+            
+        from torch.cuda.amp import autocast
+        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+
+        with torch.no_grad(), autocast_cm:
+            for data_bin in all_data_bins:
+                # We expect data_bin to be a DataLoader. 
+                # If we need to force eval_batch_size, we might need a workaround, but typically 
+                # for these evaluation passes we can just iterate over the existing batches.
+                # If mem is constrained, we should rely on the user's config batch size.
+                for batch in data_bin:
+                    x = batch[1].to(device, non_blocking=True)
+                    labels = batch[4].to(device, non_blocking=True)
+                    
+                    pred = self.model(x)
+                    if hasattr(pred, "logits"):
+                        logits = pred.logits
+                    elif isinstance(pred, (tuple, list)):
+                        logits = pred[0]
+                    else:
+                        logits = pred
+                        
+                    loss_list = criterion(logits.view(-1, self.num_labels), labels.view(-1))
+                    
+                    total_squared_loss += torch.square(loss_list).sum().item()
+                    total_samples += len(loss_list)
+                    
+                    del x, labels, pred, logits, loss_list
+        
+        # Calculate full stat utility: sqrt(N * sum(loss^2))
+        if total_samples > 0:
+            full_stat_utility = math.sqrt(total_samples * total_squared_loss)
+        else:
+            full_stat_utility = 0.0
+            
+        logging.info(f"full_dataset_stat_utility for trainerId: {self.trainer_id} is {full_stat_utility} over {total_samples} samples")
+        return full_stat_utility
+
+    @timer_decorator
     def _training_loop(self, device, v_buffer):
         global_step = 0
         # Optimization: Use autocast for training loop if enabled
