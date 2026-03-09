@@ -9,3 +9,4 @@ data
 wandb
 
 examples/fwdllm/expts/run_tc_expts/mpi_host_file
+lib/python/examples/fwdllm/expts/run_tc_expts/mpi_host_file

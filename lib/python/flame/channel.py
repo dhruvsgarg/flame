@@ -191,7 +191,7 @@ class Channel(object):
             agg_version_state: Aggregator version as (model_version, data_id, iteration_id)
             trainer_version_states: Map of trainer_id to their version triplets
         """
-        logger.info(
+        logger.debug(
             f"ends() for channel name: {self._name}, "
             f"current self._ends: {self._ends}"
         )

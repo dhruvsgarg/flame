@@ -82,7 +82,7 @@ def _calculate_hash(tensor):
 
 def log_error_distribution(probs, labels):
     """
-    Analyzes error distribution across 4 classes and logs via logging.info.
+    Analyzes error distribution across 4 classes and logs via logging.debug.
     probs: ndarray [N, 4] - Softmax probabilities
     labels: ndarray [N] - Integer ground truth
     """
@@ -99,12 +99,12 @@ def log_error_distribution(probs, labels):
     wrong_mask = (preds != actual_labels)
     
     if not np.any(wrong_mask):
-        logging.info("Accuracy is 100%.")
+        logging.debug("Accuracy is 100%.")
         return
 
     # 3. Filter for wrong predictions (Now safely NumPy)
     wrong_probs = probs[wrong_mask]
-    logging.info(f"wrong probs len = {len(wrong_probs)}")
+    logging.debug("wrong probs len = %d", len(wrong_probs))
     
     # Now this will work perfectly
     confidences = np.max(wrong_probs, axis=1)
@@ -117,9 +117,9 @@ def log_error_distribution(probs, labels):
     bins = np.linspace(0, 1.0, 11)
     margin_bins = np.digitize(margins, bins) - 1
     
-    logging.info("=== Error Distribution Analysis (Incorrect Predictions Only) ===")
-    logging.info(f"{'Margin Bin':<12} | {'Count':<8} | {'Avg Confidence':<15} | {'Max Confidence'}")
-    logging.info("-" * 65)
+    logging.debug("=== Error Distribution Analysis (Incorrect Predictions Only) ===")
+    logging.debug(f"{'Margin Bin':<12} | {'Count':<8} | {'Avg Confidence':<15} | {'Max Confidence'}")
+    logging.debug("-" * 65)
     
     for i in range(len(bins) - 1):
         mask = (margin_bins == i)
@@ -135,7 +135,7 @@ def log_error_distribution(probs, labels):
             
     # 4. Summary Statistics for "Confidently Wrong" samples
     high_margin_count = np.sum(margins > 0.5)
-    logging.info(f"Summary: {high_margin_count} errors have a margin > 0.5 (Confidently Wrong).")
+    logging.debug("Summary: %d errors have a margin > 0.5 (Confidently Wrong).", high_margin_count)
 
 
 def log_margin_distribution(probs):
@@ -152,19 +152,19 @@ def log_margin_distribution(probs):
         #    Samples where the gap between winner and loser is tiny (< 0.1)
         indecisive_count = np.sum(margins < 0.1)
         
-        logging.info(f"\n--- INDECISION REPORT ---")
-        logging.info(f"  Total Samples: {len(margins)}")
-        logging.info(f"  Samples with Margin < 0.1: {indecisive_count} ({(indecisive_count/len(margins))*100:.1f}%)")
-        logging.info(f"  Avg Margin: {np.mean(margins):.4f}")
+        logging.debug("\n--- INDECISION REPORT ---")
+        logging.debug("  Total Samples: %d", len(margins))
+        logging.debug("  Samples with Margin < 0.1: %d (%.1f%%)", indecisive_count, (indecisive_count/len(margins))*100)
+        logging.debug("  Avg Margin: %.4f", np.mean(margins))
         
         # 5. (Optional) Histogram the margins to see the spread
         hist, bin_edges = np.histogram(margins, bins=10, range=(0.0, 1.0))
-        logging.info(f"  Margin Distribution: {hist}")
-        logging.info("------------------------------------------\n")
+        logging.debug(f"  Margin Distribution: {hist}")
+        logging.debug("------------------------------------------\n")
 
 def compute_metrics_with_logging(probs, preds, out_label_ids, examples):
 
-        logging.info(f"'Hash' |  'Prob'  | 'Pred' | 'Actual'")
+        logging.debug("'Hash' |  'Prob'  | 'Pred' | 'Actual'")
 
         for i, batch in enumerate(examples):
             batch = tuple(t.to("cpu") for t in batch)

@@ -34,7 +34,7 @@ def run_analysis(data_path, partition_path, model_name, method):
     partition_data = partition_file[method]["partition_data"]
     
     trainer_batch_max_lengths = []
-    batch_size = 8
+    batch_size = 1
     
     for client_idx in tqdm(partition_data.keys(), desc="Trainer (Partitions)"):
         indices = partition_data[client_idx]["train"][()]
@@ -55,8 +55,8 @@ def run_analysis(data_path, partition_path, model_name, method):
 
 if __name__ == "__main__":
     # Parameters based on your input
-    DATA = "/Users/gaurav/Projects/fednlp_data/data_files/agnews_data.h5"
-    PARTITION = "/Users/gaurav/Projects/fednlp_data/partition_files/agnews_partition.h5"
+    DATA = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5"
+    PARTITION = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5"
     MODEL = "distilbert-base-uncased"
     METHOD = "uniform"
     
