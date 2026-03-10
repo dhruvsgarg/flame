@@ -83,15 +83,16 @@ if __name__ == "__main__":
     parser.add_argument("--log_level", type=str, default="INFO", required=False)
     args = parser.parse_args()
 
-    logger.setLevel(args.log_level)
+    logger.setLevel(args.log_level.upper())
     config = Config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # customize the log format
     logging.basicConfig(
-        level=logging._nameToLevel[args.log_level],
+        level=logging._nameToLevel[args.log_level.upper()],
         format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
         datefmt="%Y-%m-%d,%H:%M:%S",
+        force=True,
     )
     logger.info(config)
     set_seed(config.hyperparameters.manual_seed)

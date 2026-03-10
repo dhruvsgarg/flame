@@ -77,9 +77,10 @@ if __name__ == "__main__":
 
     # customize the log format
     logging.basicConfig(
-        level=logging._nameToLevel[args.log_level],
+        level=logging._nameToLevel[args.log_level.upper()],
         format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
         datefmt="%Y-%m-%d,%H:%M:%S",
+        force=True,
     )
     logging.debug(config)
     set_seed(config.hyperparameters.manual_seed)
