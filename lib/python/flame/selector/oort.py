@@ -745,11 +745,11 @@ class OortSelector(AbstractSelector):
                     self.selected_ends.remove(end_id)
                     removed_count += 1
                     removed_ids.append(end_id)
-                    logger.info(f"Freed trainer ...{end_id[-8:]} from in-flight set")
+                    logger.debug(f"Freed trainer ...{end_id[-8:]} from in-flight set")
                 else:
                     not_found_count += 1
                     not_found_ids.append(end_id)
-                    logger.warning(
+                    logger.debug(
                         f"Trainer ...{end_id[-8:]} was not in selected_ends "
                         f"(may have been cleaned up already)"
                     )
@@ -763,9 +763,9 @@ class OortSelector(AbstractSelector):
             
             # Log sample IDs for verification
             if removed_count > 0:
-                logger.info(f"[CLEANUP_DEBUG] Removed IDs (first 5): {[id[-8:] for id in removed_ids[:5]]}")
+                logger.debug(f"[CLEANUP_DEBUG] Removed IDs (first 5): {[id[-8:] for id in removed_ids[:5]]}")
             if not_found_count > 0:
-                logger.warning(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
+                logger.debug(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
         else:
             logger.info("[CLEANUP_DEBUG] No ends to clean up (ordered_updates_recv_ends is empty)")
 
