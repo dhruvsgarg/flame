@@ -67,9 +67,6 @@ class OptimizerType(str, Enum):
     SCAFFOLD = "scaffold"
     FEDGFT = "fedgft"
     REFL = "refl"  # REFL: Resource-Efficient Federated Learning with staleness-aware aggregation
-    REFLFEDAVG = (
-        "reflfedavg"  # Backward compatibility alias for REFL
-    )
 
     DEFAULT = FEDAVG
 
@@ -173,6 +170,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds", default=False
+    )
+    training_delay_factor: t.Optional[float] = Field(
+        alias="trainingDelayFactor", default=False
     )
     use_oort_loss_fn: t.Optional[float] = Field(alias="useOORTLossFn", default=False)
     wait_until_next_avl: t.Optional[bool] = Field(

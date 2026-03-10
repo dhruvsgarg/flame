@@ -52,7 +52,7 @@
         "dataset": "agnews",
         "data_file_path": "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5",
         "partition_file_path": "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5",
-        "partition_method": "niid_label_clients=100_alpha=100",
+        "partition_method": "niid_label_clients=100_alpha=0.5",
         "fl_algorithm": "FedFwd",
         "model_type": "distilbert",
         "model_name": "distilbert-base-uncased",
@@ -82,12 +82,13 @@
         "client_num_in_total": 0,
         "warmup_ratio": 0,
         "trackTrainerAvail": {
-            "enabled": "False",
-            "type": "NA"
+            "enabled": "True",
+            "type": "ORACULAR",
+            "trace": "avl_events_syn_train_90_eval_10_unavail_0"
         },
-        "aggGoal": 10,
+        "aggGoal": 5,
         "rounds": 300,
-        "rejectStaleUpdates": false,
+        "rejectStaleUpdates": true,
         "inc_model_version_per_data_id": true
     },
     "baseModel": {
@@ -103,22 +104,31 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_oort",
+        "sort": "async_random",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 30,
-            "aggGoal": 10,
-            "evalGoalFactor": 0.5,
+            "c": 5,
+            "aggGoal": 5,
+            "evalGoalFactor": 0,
             "selectType": "default",
             "roundNudgeType": "last_eval",
             "minInitialTrainers": 5,
-            "k": 10,
+            "k": 5,
             "is_async": true
         }
     },
     "optimizer": {
-        "sort": "fedavg",
-        "kwargs": {}
+        "sort": "fedbuff",
+        "kwargs": {
+            "use_oort_lr": "True",
+            "dataset_name": "google-speech",
+            "agg_rate_conf": {
+                "type": "old",
+                "scale": 1.0,
+                "a_exp": 0.2,
+                "b_exp": 0.25
+            }
+        }
     },
     "maxRunTime": 600,
     "realm": "default",
