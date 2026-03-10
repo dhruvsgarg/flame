@@ -108,7 +108,7 @@
             "//": "c: concurrency level",
             "c": 30,
             "aggGoal": 10,
-            "evalGoalFactor": 0.5,
+            "evalGoalFactor": 0,
             "selectType": "default",
             "roundNudgeType": "last_eval",
             "minInitialTrainers": 5,
