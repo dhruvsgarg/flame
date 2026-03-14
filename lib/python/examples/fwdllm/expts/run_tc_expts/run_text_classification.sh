@@ -144,7 +144,7 @@ else
   TRAINER_LOG_FILE=$(readlink -f "$LOG_DIR/test_trainer_${LOG_SUFFIX}.log")
   PARENT_PID=$$
 
-  ACC_MONITOR_FILE="$LOG_DIR/accuracy_monitor_${LOG_SUFFIX}.log"  # overwritten each tick
+  ACC_MONITOR_FILE=$(readlink -f "$LOG_DIR/accuracy_monitor_${LOG_SUFFIX}.log")  # overwritten each tick
   SCRIPT_START_TIME=$(date +%s)
   _acc_consec_count=0
   _acc_last_grep_offset=0   # byte offset: attempt to resume grep from last occurrence
