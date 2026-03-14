@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Ensure that you have set the FWDLLM_USER environment variable before running this script
 # Run to set as part of conda environment:
 # conda env config vars set FWDLLM_USER=<your-folder-name>
