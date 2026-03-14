@@ -148,6 +148,7 @@ else
   ACC_MONITOR_FILE=$(readlink -f "$LOG_DIR/accuracy_monitor_${LOG_SUFFIX}.log")  # overwritten each tick
   SCRIPT_START_TIME=$(date +%s)
   _acc_consec_count=0
+  _acc_last_seen_line=""  # dedup: only count each new eval result once
   _acc_last_grep_offset=0   # byte offset: attempt to resume grep from last occurrence
 
   # Function to check logs for errors and kill all processes if found
@@ -195,7 +196,27 @@ else
       ACC_LINE=$(grep -oE "'acc': [0-9]+\.?[0-9]*" "$AGG_LOG_FILE" 2>/dev/null | tail -n 1)
     fi
 
-    [ -z "$ACC_LINE" ] && return   # No accuracy entry yet
+    if [ -z "$ACC_LINE" ]; then
+      # No eval result yet — write a waiting status so the file always exists
+      printf "Waiting for first eval result...\nRuntime: %s\n" \
+        "$(printf '%dh %dm %ds' $(( ($(date +%s) - SCRIPT_START_TIME)/3600 )) $(( (($(date +%s) - SCRIPT_START_TIME)%3600)/60 )) $(( ($(date +%s) - SCRIPT_START_TIME)%60 )))" \
+        > "$ACC_MONITOR_FILE"
+      return
+    fi
+
+    # Dedup guard: if this is the same log line we saw last tick, the training
+    # round hasn't produced a new eval result yet — skip counter update but
+    # still refresh the runtime in the monitor file.
+    if [ "$ACC_LINE" = "$_acc_last_seen_line" ]; then
+      NOW=$(date +%s)
+      ELAPSED=$(( NOW - SCRIPT_START_TIME ))
+      ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+      {
+        echo "Acc     : ${ACC_PCT_LAST}% (no new eval) |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
+      } > "$ACC_MONITOR_FILE"
+      return
+    fi
+    _acc_last_seen_line="$ACC_LINE"
 
     # Extract the raw fraction (e.g. 0.7505263...) and convert to percentage
     ACC_RAW=$(echo "$ACC_LINE" | grep -oE "[0-9]+\.?[0-9]*$")
@@ -206,6 +227,7 @@ else
     NOW=$(date +%s)
     ELAPSED=$(( NOW - SCRIPT_START_TIME ))
     ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+    ACC_PCT_LAST="$ACC_PCT"   # remember for dedup ticks
     {
       echo "Acc     : ${ACC_PCT}%  |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
     } > "$ACC_MONITOR_FILE"
@@ -315,6 +337,8 @@ else
   # The watchdog will automatically exit if the parent process ($PARENT_PID) dies
   if [ "$ENABLE_WATCHDOG" = "true" ]; then
     echo "accuracy-monitor (overwrites each tick): watch -n 10 cat ${ACC_MONITOR_FILE}"
+    # Initialize the file immediately so it's always findable from the start
+    echo "accuracy-monitor starting up... ($(date '+%Y-%m-%d %H:%M:%S'))" > "$ACC_MONITOR_FILE"
     (
       while kill -0 $PARENT_PID 2>/dev/null; do   # Checks if the parent script is still alive
         check_errors
