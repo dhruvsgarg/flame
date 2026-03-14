@@ -144,7 +144,7 @@ else
   TRAINER_LOG_FILE=$(readlink -f "$LOG_DIR/test_trainer_${LOG_SUFFIX}.log")
   PARENT_PID=$$
 
-  # -----------------------------------------
+  ACC_MONITOR_FILE="$LOG_DIR/accuracy_monitor_${LOG_SUFFIX}.log"  # overwritten each tick
   SCRIPT_START_TIME=$(date +%s)
   _acc_consec_count=0
   _acc_last_grep_offset=0   # byte offset: attempt to resume grep from last occurrence
@@ -200,7 +200,14 @@ else
     ACC_RAW=$(echo "$ACC_LINE" | grep -oE "[0-9]+\.?[0-9]*$")
     ACC_PCT=$(awk "BEGIN { printf \"%.2f\", $ACC_RAW * 100 }")
 
-    echo "[accuracy-monitor] latest acc: ${ACC_PCT}%  (consecutive above ${ACC_THRESHOLD}%: ${_acc_consec_count})"
+    # Write status to the dedicated monitor file (overwrite, not append).
+    # This keeps stdout clean — no repeated lines after a 12-hour run.
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - SCRIPT_START_TIME ))
+    ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+    {
+      echo "Acc     : ${ACC_PCT}%  |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
+    } > "$ACC_MONITOR_FILE"
 
     # Compare using awk (bash can't do float comparisons)
     IS_ABOVE=$(awk "BEGIN { print ($ACC_PCT >= $ACC_THRESHOLD) ? 1 : 0 }")
@@ -247,6 +254,11 @@ else
     if [ -d "$EXPANDED_TMP_DIR" ]; then
       echo "Removing temporary directory: $EXPANDED_TMP_DIR"
       rm -rf "$EXPANDED_TMP_DIR"
+    fi
+    # 4. Remove accuracy monitor status file
+    if [ -f "$ACC_MONITOR_FILE" ]; then
+      echo "Removing accuracy monitor file: $ACC_MONITOR_FILE"
+      rm -f "$ACC_MONITOR_FILE"
     fi
   }
   # Trap common termination signals
@@ -296,11 +308,12 @@ else
       fi
   done
 
-  echo "Log files created: \n Aggregator: $AGG_LOG_FILE \n Trainer: $TRAINER_LOG_FILE"
+  echo "Log files created: \n [Aggregator]: $AGG_LOG_FILE \n [Trainer]: $TRAINER_LOG_FILE"
 
   # Start background periodic check (every 30 seconds)
   # The watchdog will automatically exit if the parent process ($PARENT_PID) dies
   if [ "$ENABLE_WATCHDOG" = "true" ]; then
+    echo "accuracy-monitor (overwrites each tick): watch -n 10 cat ${ACC_MONITOR_FILE}"
     (
       while kill -0 $PARENT_PID 2>/dev/null; do   # Checks if the parent script is still alive
         check_errors
