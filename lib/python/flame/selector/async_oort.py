@@ -44,6 +44,8 @@ PROP_END_ID = "end_id"
 PROP_SELECTED_COUNT = "selected_count"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
+PROP_FULL_DATASET_STAT_UTILITY = "full_dataset_stat_utility"
+PROP_PARTIAL_DATASET_STAT_UTILITY = "partial_dataset_stat_utility"
 PROP_STAT_UTILITY = "stat_utility"
 PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
@@ -324,7 +326,9 @@ class AsyncOortSelector(AbstractSelector):
                 self._select_run_counter += 1
 
             for selected_end_id in results.keys():
-                end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
+                end_stat_util = ends[selected_end_id].get_property(
+                    PROP_FULL_DATASET_STAT_UTILITY
+                )
                 end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
                 end_last_round = ends[selected_end_id].get_property(
                     PROP_LAST_EVAL_ROUND
@@ -507,7 +511,7 @@ class AsyncOortSelector(AbstractSelector):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):
-                end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
+                end_utility = ends[end_id].get_property(PROP_FULL_DATASET_STAT_UTILITY)
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
@@ -650,7 +654,7 @@ class AsyncOortSelector(AbstractSelector):
             exploited_utility = 0
             for exploit_end_id in exploit_end_ids:
                 exploited_utility += ends[exploit_end_id].get_property(
-                    PROP_STAT_UTILITY
+                    PROP_FULL_DATASET_STAT_UTILITY
                 )
             exploited_utility /= len(exploit_end_ids)
             self.exploitation_util_history.append(exploited_utility)
@@ -710,6 +714,32 @@ class AsyncOortSelector(AbstractSelector):
         # Sort the utility list by the utility value placed at the
         # index 1 of each tuple
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
+
+        # Todo: (GD) Figure out why the code is not entering this loop
+        if len(utility_list) > 0:
+            logger.debug("Entered full_dataset_stat_util denormalization loop")
+            min_val = utility_list[0][PROP_UTILITY]
+            max_val = utility_list[-1][PROP_UTILITY]
+            for utility_idx in range(len(utility_list)):
+                unnormalized_val = utility_list[utility_idx][PROP_UTILITY]
+
+                if max_val == min_val:
+                    normalized_val = 100.0
+                else:
+                    normalized_val = (
+                        (unnormalized_val - min_val) / (max_val - min_val)
+                    ) * 100.0
+
+                utility_list[utility_idx][PROP_UTILITY] = normalized_val
+
+                curr_end_id = utility_list[utility_idx][PROP_END_ID]
+
+                logger.debug(
+                    f"Trainer {curr_end_id} "
+                    f"full_dataset_stat_utility: unnormalized = {unnormalized_val:.4f}, "
+                    f"normalized = {normalized_val:.4f}, "
+                    f"partial_dataset_stat_utility: {ends[curr_end_id].get_property(PROP_PARTIAL_DATASET_STAT_UTILITY):.4f}"
+                )
 
         # Calculate the clip value that caps utility value of a client
         # to no more than an upper bound (95% value in utility
@@ -1308,7 +1338,7 @@ class AsyncOortSelector(AbstractSelector):
             # all the ends
             for end_id, end in ends.items():
                 logger.debug(
-                    f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_STAT_UTILITY)}"
+                    f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_FULL_DATASET_STAT_UTILITY)}"
                 )
 
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed
@@ -1811,7 +1841,10 @@ class AsyncOortSelector(AbstractSelector):
                 curr_end_state = end.get_property(KEY_END_STATE)
                 # candidates[end_id] = end
                 if end_id not in self.all_selected.keys():
-                    if curr_end_state != VAL_END_STATE_NONE:
+                    if (
+                        curr_end_state is not None  # TODO: (GD) revert this
+                        and curr_end_state != VAL_END_STATE_NONE
+                    ):
                         logging.info(
                             f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                             f"to candidates: key {end_id}, val: {end}"

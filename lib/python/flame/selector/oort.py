@@ -35,6 +35,8 @@ PROP_END_ID = "end_id"
 PROP_SELECTED_COUNT = "selected_count"
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_DURATION = "round_duration"
+PROP_PARTIAL_DATASET_STAT_UTILITY = "partial_dataset_stat_utility"
+PROP_FULL_DATASET_STAT_UTILITY = "full_dataset_stat_utility"
 PROP_STAT_UTILITY = "stat_utility"
 PROP_DATASET_SIZE = "dataset_size"
 PROP_UPDATE_COUNT = "update_count"
@@ -332,7 +334,7 @@ class OortSelector(AbstractSelector):
         self._select_run_counter += 1
 
         for selected_end_id in self.selected_ends:
-            end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
+            end_stat_util = ends[selected_end_id].get_property(PROP_FULL_DATASET_STAT_UTILITY)
             end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
             end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
             # Insert to queues tracking stat_util, speed, round data
@@ -498,7 +500,7 @@ class OortSelector(AbstractSelector):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):
-                end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
+                end_utility = ends[end_id].get_property(PROP_FULL_DATASET_STAT_UTILITY)
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
@@ -597,7 +599,7 @@ class OortSelector(AbstractSelector):
             exploited_utility = 0
             for exploit_end_id in exploit_end_ids:
                 exploited_utility += ends[exploit_end_id].get_property(
-                    PROP_STAT_UTILITY
+                    PROP_FULL_DATASET_STAT_UTILITY
                 )
             exploited_utility /= len(exploit_end_ids)
             self.exploitation_util_history.append(exploited_utility)

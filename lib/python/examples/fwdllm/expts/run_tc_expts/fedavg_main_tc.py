@@ -63,8 +63,7 @@ if __name__ == "__main__":
     # customize the log format
     logging.basicConfig(
         level=getattr(logging, getattr(args, "log_level", "INFO").upper(), logging.INFO),
-        format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
-        datefmt="%Y-%m-%d,%H:%M:%S",
+        format="%(asctime)s | %(filename)s:%(lineno)d | %(levelname)s | %(threadName)s | %(funcName)s | %(message)s",
         force=True,
     )
     logging.info(args)

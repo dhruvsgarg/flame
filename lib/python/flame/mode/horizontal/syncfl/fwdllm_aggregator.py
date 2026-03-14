@@ -53,6 +53,7 @@ from flame.selector.oort import (
     PROP_LAST_EVAL_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
+    PROP_PARTIAL_DATASET_STAT_UTILITY,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
 )
@@ -420,8 +421,8 @@ class TopAggregator(AsyncTopAgg):
         logger.info(f"Came to read_trainer_unavailability, trace: {trace}")
         trainer_events_dict = {}
 
-        # TODO(Aishwwarya): Set path to read JSON files without 'aish_test' after Twisha's PR merge
-        files_path = "/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
+        fwdllm_user = os.environ.get("FWDLLM_USER", "NO USER FOUND")
+        files_path = f"/home/dgarg39/{fwdllm_user}/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
 
         dirname = os.path.dirname(__file__)
         search_pattern = os.path.join(dirname, files_path, "trainer_*.json")
@@ -437,6 +438,7 @@ class TopAggregator(AsyncTopAgg):
             with open(file_path) as f:
                 trainer_json = json.load(f)
                 curr_trainer_id = trainer_json["taskid"]
+                logger.info(f"Processing file {file_path} for trainer {curr_trainer_id}")
                 event_list = ast.literal_eval(trainer_json["hyperparameters"][trace])
 
                 # SortedDict for efficient timestamp lookup
@@ -498,14 +500,16 @@ class TopAggregator(AsyncTopAgg):
                     scale_val = self.optimizer.agg_rate_conf["scale"]
                     a_exp_val = self.optimizer.agg_rate_conf["a_exp"]
                     b_exp_val = self.optimizer.agg_rate_conf["b_exp"]
+                    alpha_type = self.optimizer.agg_rate_conf["alpha_type"]
+                    beta_type = self.optimizer.agg_rate_conf["beta_type"]
                     rate = self.optimizer.weight_factor(
                         scale=scale_val,
                         staleness=staleness_val,
                         a_exp=a_exp_val,
                         loss=stat_utility,
                         b_exp=b_exp_val,
-                        alpha_type="polynomial",
-                        beta_type="polynomial_upshift",
+                        alpha_type=alpha_type,
+                        beta_type=beta_type,
                     )
                 except Exception as e:
                     logger.warning(
@@ -669,11 +673,34 @@ class TopAggregator(AsyncTopAgg):
                 if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
                 else None
             )
-            logger.debug(f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}")
+
+            partial_stat_utility = 0
+            if MessageType.PARTIAL_DATASET_STAT_UTILITY in msg:
+                channel.set_end_property(
+                    end,
+                    PROP_PARTIAL_DATASET_STAT_UTILITY,
+                    msg[MessageType.PARTIAL_DATASET_STAT_UTILITY]
+                )
+                partial_stat_utility = msg[MessageType.PARTIAL_DATASET_STAT_UTILITY]
+
+            if MessageType.FULL_DATASET_STAT_UTILITY in msg:
+                channel.set_end_property(
+                    end,
+                    PROP_STAT_UTILITY,
+                    msg[MessageType.FULL_DATASET_STAT_UTILITY],
+                )
+
+            logger.info(
+                f"Aggregated utilities for {end}. "
+                f"Partial stat utility used for FedBuff: {partial_stat_utility}. "
+                f"Full stat utility stored for Oort: {msg.get(MessageType.FULL_DATASET_STAT_UTILITY, 0)}"
+            )
+
+            logger.debug(f"Calling aggregate_grads_for_trainers")
             self.aggregate_grads_from_trainers(
                 trainer_gradients,
                 version_for_rate=version_for_rate,
-                stat_utility=channel.get_end_property(end, PROP_STAT_UTILITY),
+                stat_utility=partial_stat_utility,
                 grad_for_var_check=grad_for_var_check,
             )
 

@@ -82,13 +82,13 @@
         "client_num_in_total": 0,
         "warmup_ratio": 0,
         "trackTrainerAvail": {
-            "enabled": "True",
-            "type": "ORACULAR",
+            "enabled": "False",
+            "type": "NONE",
             "trace": "avl_events_syn_train_90_eval_10_unavail_0"
         },
-        "aggGoal": 5,
+        "aggGoal": 10,
         "rounds": 300,
-        "rejectStaleUpdates": true,
+        "rejectStaleUpdates": false,
         "inc_model_version_per_data_id": true
     },
     "baseModel": {
@@ -104,16 +104,16 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_random",
+        "sort": "async_oort",
         "kwargs": {
             "//": "c: concurrency level",
-            "c": 5,
-            "aggGoal": 5,
+            "c": 30,
+            "aggGoal": 10,
             "evalGoalFactor": 0,
             "selectType": "default",
             "roundNudgeType": "last_eval",
-            "minInitialTrainers": 5,
-            "k": 5,
+            "minInitialTrainers": 10,
+            "k": 10,
             "is_async": true
         }
     },
@@ -123,10 +123,12 @@
             "use_oort_lr": "True",
             "dataset_name": "google-speech",
             "agg_rate_conf": {
-                "type": "old",
-                "scale": 1.0,
+                "type": "new",
+                "scale": 0.0,
                 "a_exp": 0.2,
-                "b_exp": 0.25
+                "b_exp": 0.25,
+                "alpha_type": "polynomial",
+                "beta_type": "exponential"
             }
         }
     },

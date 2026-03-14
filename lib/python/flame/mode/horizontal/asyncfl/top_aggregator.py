@@ -39,6 +39,8 @@ from flame.selector.oort import (
     PROP_LAST_EVAL_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
+    PROP_PARTIAL_DATASET_STAT_UTILITY,
+    PROP_FULL_DATASET_STAT_UTILITY,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
 )
@@ -466,21 +468,31 @@ class TopAggregator(SyncTopAgg):
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
 
-        stat_utility = 0  # default
-        if MessageType.STAT_UTILITY in msg:
+        partial_stat_utility = 0  # default
+        
+        if MessageType.PARTIAL_DATASET_STAT_UTILITY in msg:
             channel.set_end_property(
-                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+                end, PROP_PARTIAL_DATASET_STAT_UTILITY, msg[MessageType.PARTIAL_DATASET_STAT_UTILITY]
             )
-            stat_utility = msg[MessageType.STAT_UTILITY]
+            # Extracted directly from the message since fedbuff uses this
+            partial_stat_utility = msg[MessageType.PARTIAL_DATASET_STAT_UTILITY]
+
+        if MessageType.FULL_DATASET_STAT_UTILITY in msg:
+            channel.set_end_property(
+                end,
+                PROP_FULL_DATASET_STAT_UTILITY,
+                msg[MessageType.FULL_DATASET_STAT_UTILITY],
+            )
 
         logger.info(
-            f"Received weights from {end}. It was trained on model version {version}, with {count} samples. Returned stat utility {stat_utility}"
+            f"Received weights from {end}. It was trained on model version {version}, with {count} samples. "
+            f"Returned partial stat utility {partial_stat_utility} and full stat utility {msg.get(MessageType.FULL_DATASET_STAT_UTILITY, 0)}"
         )
 
         if (
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
-            tres = TrainResult(weights, count, version, stat_utility)
+            tres = TrainResult(weights, count, version, partial_stat_utility)
             # save training result from trainer in a disk cache
             self.cache[end] = tres
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
@@ -491,7 +503,7 @@ class TopAggregator(SyncTopAgg):
 
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
-            self._round_update_values["stat_utility"].append(stat_utility)
+            self._round_update_values["stat_utility"].append(partial_stat_utility)
             self._round_update_values["trainer_speed"].append(
                 channel.get_end_property(
                     end_id=end, key=PROP_ROUND_DURATION

@@ -40,6 +40,9 @@ class MessageType(Enum):
 
     STAT_UTILITY = 11  # measured utility of a trainer based on Oort
 
+    FULL_DATASET_STAT_UTILITY = 32  # measured utility of a trainer over its entire local dataset
+    PARTIAL_DATASET_STAT_UTILITY = 33  # measured utility of a trainer over the data it trained on
+
     COORDINATED_ENDS = 12  # ends coordinated by a coordinator
 
     DATASAMPLER_METADATA = 13  # datasampler metadata
@@ -71,4 +74,3 @@ class MessageType(Enum):
     )
     GRAD_POOL = 30  # stores all gradients until var isn't good enough
     ITERATION_PER_DATA_ID = 31  # stores round within a data id
-    FULL_DATASET_STAT_UTILITY = 32  # measured utility of a trainer over its entire local dataset

@@ -204,8 +204,7 @@ def main():
     # Log setup
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s.%(msecs)03d - %(funcName)s(): %(message)s",
-        datefmt="%Y-%m-%d,%H:%M:%S",
+        format="%(asctime)s | %(filename)s:%(lineno)d | %(levelname)s | %(threadName)s | %(funcName)s | %(message)s",
     )
 
     config = Config(args.config)

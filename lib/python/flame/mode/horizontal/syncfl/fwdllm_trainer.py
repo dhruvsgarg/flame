@@ -157,7 +157,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.task_to_perform = "train"
         self.iteration_per_data_id = None
         self.abort_training = False
-        self._stat_utility = 0
+        self.partial_stat_utility = 0
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -465,10 +465,12 @@ class Trainer(Role, metaclass=ABCMeta):
         end = channel.one_end(VAL_CH_STATE_SEND)
 
         # We assume self.trainer.model_trainer is present and has the required method
+        # Pass the entire list so that the first loop in calculate_full_dataset_stat_utility 
+        # correctly identifies the 'bins'.
         full_stat_utility = self.trainer.model_trainer.calculate_full_dataset_stat_utility(
-            self.train_local_list[0], self.device
+            self.train_local_list, self.device
         )
-        logging.debug(f"Trainer {self.trainer_id} full_dataset_stat_utility calculation complete: {full_stat_utility}")
+        logger.debug(f"Trainer {self.trainer_id} full_dataset_stat_utility calculation complete: {full_stat_utility}")
 
         if self.task_to_perform == "train":
             # trainer is expected to train and it is also available to train -
@@ -515,14 +517,14 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.PARTIAL_DATASET_STAT_UTILITY: self.partial_stat_utility,
                 MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
-                MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.PARTIAL_DATASET_STAT_UTILITY: self.partial_stat_utility,
                 MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
             }
 
@@ -697,7 +699,7 @@ class Trainer(Role, metaclass=ABCMeta):
     # #### ADDED OORT RELATED FUNCTIONALITY
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
-        self._stat_utility = 0
+        self.partial_stat_utility = 0
         self._batch_size = 0
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
@@ -731,7 +733,7 @@ class Trainer(Role, metaclass=ABCMeta):
         loss_list = criterion(output, target)
         self._batch_size = len(loss_list)
         logger.debug(f"batch size: {len(loss_list)}")
-        self._stat_utility += torch.square(loss_list).sum()
+        self.partial_stat_utility += torch.square(loss_list).sum()
 
         if reduction == "mean":
             loss = loss_list.mean()
@@ -746,13 +748,13 @@ class Trainer(Role, metaclass=ABCMeta):
         """
         # incase of oort - stat utility is calculated only at the beginning (epoch = 0, batch = 0)
         # but in fwdllm, we want to calculate it with every update
-        self._stat_utility = self._batch_size * math.sqrt(
-            self._stat_utility / self._batch_size
+        self.partial_stat_utility = self._batch_size * math.sqrt(
+            self.partial_stat_utility / self._batch_size
         )
 
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
-        self._stat_utility = 0
+        self.partial_stat_utility = 0
 
     @timer_decorator
     def pause_execution(self):

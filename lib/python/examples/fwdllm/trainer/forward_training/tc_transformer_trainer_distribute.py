@@ -391,7 +391,7 @@ class ForwardTextClassificationTrainer:
                     logits = pred
                 loss = self.base_trainer.oort_loss(logits, labels.view(-1), epoch=0, batch_idx=0, reduction="mean")
             # Optimization: Lazy logging & removed .item() to avoid Host-device sync
-            logging.debug("stat_utility for trainerId: %s is %s, loss: %s", self.trainer_id, self.base_trainer._stat_utility, loss.mean())
+            logging.debug("partial_stat_utility for trainerId: %s is %s, loss: %s", self.trainer_id, self.base_trainer.partial_stat_utility, loss.mean())
 
         @timer_decorator
         def _prepare_perturbation_tensors(device, v_buffer):
@@ -490,7 +490,7 @@ class ForwardTextClassificationTrainer:
         
         self.base_trainer.normalize_stat_utility(epoch)
         logging.debug(
-            f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
+            f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer.partial_stat_utility}"
         )
         
         del x, labels, jvp, v_params

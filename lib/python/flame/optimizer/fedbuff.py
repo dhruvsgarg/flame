@@ -96,6 +96,9 @@ class FedBuff(AbstractOptimizer):
     def beta_exponential(self, loss, b_exp):
         return 1 - np.exp(-b_exp * loss)
 
+    def beta_exponential_upshift(self, loss, b_exp):
+        return 1 - np.exp(-b_exp * loss) + 0.25
+
     def beta_exponential_custom(self, loss, b_exp):
         decay_constant = 500 / math.log(2)  # Adjusting the decay constant
         return math.exp(-loss / decay_constant)
@@ -125,6 +128,8 @@ class FedBuff(AbstractOptimizer):
             beta = self.beta_polynomial_upshift(loss, b_exp)
         elif beta_type == "exponential_custom":
             beta = self.beta_exponential_custom(loss, b_exp)
+        elif beta_type == "exponential_upshift":
+            beta = self.beta_exponential_upshift(loss, b_exp)
         else:
             raise ValueError("Invalid beta type")
 
