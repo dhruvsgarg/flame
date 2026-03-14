@@ -198,9 +198,9 @@ else
 
     if [ -z "$ACC_LINE" ]; then
       # No eval result yet — write a waiting status so the file always exists
-      printf "Waiting for first eval result...\nRuntime: %s\n" \
+      printf "Waiting for first eval result... | Runtime: %s\n" \
         "$(printf '%dh %dm %ds' $(( ($(date +%s) - SCRIPT_START_TIME)/3600 )) $(( (($(date +%s) - SCRIPT_START_TIME)%3600)/60 )) $(( ($(date +%s) - SCRIPT_START_TIME)%60 )))" \
-        > "$ACC_MONITOR_FILE"
+        >> "$ACC_MONITOR_FILE"
       return
     fi
 
@@ -212,8 +212,8 @@ else
       ELAPSED=$(( NOW - SCRIPT_START_TIME ))
       ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
       {
-        echo "Acc     : ${ACC_PCT_LAST}% (no new eval) |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
-      } > "$ACC_MONITOR_FILE"
+        echo "Acc     : ${ACC_PCT_LAST}% |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT} | No new eval"
+      } >> "$ACC_MONITOR_FILE"
       return
     fi
     _acc_last_seen_line="$ACC_LINE"
@@ -230,7 +230,7 @@ else
     ACC_PCT_LAST="$ACC_PCT"   # remember for dedup ticks
     {
       echo "Acc     : ${ACC_PCT}%  |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
-    } > "$ACC_MONITOR_FILE"
+    } >> "$ACC_MONITOR_FILE"
 
     # Compare using awk (bash can't do float comparisons)
     IS_ABOVE=$(awk "BEGIN { print ($ACC_PCT >= $ACC_THRESHOLD) ? 1 : 0 }")
@@ -336,7 +336,7 @@ else
   # Start background periodic check (every 30 seconds)
   # The watchdog will automatically exit if the parent process ($PARENT_PID) dies
   if [ "$ENABLE_WATCHDOG" = "true" ]; then
-    echo "accuracy-monitor (overwrites each tick): watch -n 10 cat ${ACC_MONITOR_FILE}"
+    echo "accuracy-monitor (appends on each tick): watch -n 10 cat ${ACC_MONITOR_FILE}"
     # Initialize the file immediately so it's always findable from the start
     echo "accuracy-monitor starting up... ($(date '+%Y-%m-%d %H:%M:%S'))" > "$ACC_MONITOR_FILE"
     (
