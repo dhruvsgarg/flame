@@ -435,8 +435,10 @@ class TopAggregator(AsyncTopAgg):
         logger.info(f"Came to read_trainer_unavailability, trace: {trace}")
         trainer_events_dict = {}
 
-        fwdllm_user = os.environ.get("FWDLLM_USER", "dgarg39")
-        files_path = f"/home/{fwdllm_user}/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        files_path = os.path.join(
+            current_dir, "../../../../examples/fwdllm/expts/run_tc_expts/json_scripts"
+        )
         search_pattern = os.path.join(files_path, "trainer_*.json")
         json_files = glob.glob(search_pattern)
 
