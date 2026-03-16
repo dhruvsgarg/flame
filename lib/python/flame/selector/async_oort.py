@@ -481,6 +481,15 @@ class AsyncOortSelector(AbstractSelector):
         0 ends while unexplored ends exist.
         """
 
+        # Only exploit if there are no unexplored ends
+        if len(unexplored_end_ids) == 0:
+            return 0, num_of_ends
+
+        if num_of_ends == 1:
+            return random.choice(
+                [(1, 0), (0, 1)]
+            )  # TODO: (GD) This is a hack to avoid always exploring in the Async common case (Just one end is required)
+
         exploration_len = min(
             int(num_of_ends * self.exploration_factor) + 1,
             len(unexplored_end_ids),
@@ -737,8 +746,9 @@ class AsyncOortSelector(AbstractSelector):
         # temporal uncertainty and multiplying the global system
         # utility
 
-        logger.debug(
-            f"end_utility, temporal_uncertainty, global_system_utility, final_utility, clip_value, end_id"
+        # TODO (GD): Change this back to DEBUG
+        logger.info(
+            f"end_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
         )
         for utility_idx in range(len(utility_list)):
             curr_end_utility = utility_list[utility_idx][PROP_UTILITY]
@@ -766,7 +776,8 @@ class AsyncOortSelector(AbstractSelector):
 
             utility_list[utility_idx][PROP_UTILITY] = curr_end_utility
 
-            logger.debug(
+            # TODO (GD): Change this back to DEBUG
+            logger.info(
                 f"{curr_end_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
             )
 
@@ -1594,7 +1605,8 @@ class AsyncOortSelector(AbstractSelector):
                     num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
                 )
             )
-            logger.debug(
+            # TODO (GD): Change this back to DEBUG
+            logger.info(
                 f"After calculate_num_of_exploration_exploitation(), "
                 f"exploration_len: {exploration_len}, exploitation_len: "
                 f"{exploitation_len}"
