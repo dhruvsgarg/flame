@@ -111,7 +111,7 @@
             "aggGoal": 10,
             "evalGoalFactor": 0,
             "selectType": "default",
-            "roundNudgeType": "last_eval",
+            "roundNudgeType": "last_train",
             "minInitialTrainers": 10,
             "k": 10,
             "is_async": true
