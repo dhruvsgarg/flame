@@ -249,6 +249,10 @@ class AsyncOortSelector(AbstractSelector):
             f"Aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
         )
         logger.debug(f"Trainer version states: {trainer_version_states}")
+
+        if self.enforce_min_start(len(ends)):
+            return {}
+
         # TODO: (DG) Update later, currently setting eval concurrency
         # to be twice of training concurrency
         if task_to_perform == "train":
@@ -480,15 +484,6 @@ class AsyncOortSelector(AbstractSelector):
         exploitation; Add 1 to exploration_len to avoid not exploring
         0 ends while unexplored ends exist.
         """
-
-        # Only exploit if there are no unexplored ends
-        if len(unexplored_end_ids) == 0:
-            return 0, num_of_ends
-
-        if num_of_ends == 1:
-            return random.choice(
-                [(1, 0), (0, 1)]
-            )  # TODO: (GD) This is a hack to avoid always exploring in the Async common case (Just one end is required)
 
         exploration_len = min(
             int(num_of_ends * self.exploration_factor) + 1,
@@ -747,12 +742,15 @@ class AsyncOortSelector(AbstractSelector):
         # utility
 
         # TODO (GD): Change this back to DEBUG
+        logger.info(f"Total utilities")
         logger.info(
-            f"end_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
+            f"stat_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
         )
         for utility_idx in range(len(utility_list)):
             curr_end_utility = utility_list[utility_idx][PROP_UTILITY]
             curr_end_id = utility_list[utility_idx][PROP_END_ID]
+
+            stat_utility = curr_end_utility
 
             # Clip the utility value
             utility_list[utility_idx][PROP_UTILITY] = min(
@@ -772,13 +770,14 @@ class AsyncOortSelector(AbstractSelector):
             global_system_utility = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
-            curr_end_utility *= global_system_utility
 
-            utility_list[utility_idx][PROP_UTILITY] = curr_end_utility
+            utility_list[utility_idx][PROP_UTILITY] = (
+                curr_end_utility * global_system_utility
+            )
 
             # TODO (GD): Change this back to DEBUG
             logger.info(
-                f"{curr_end_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
+                f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
             )
 
         # Sort the utility list again, with the updated utility value
@@ -1064,6 +1063,13 @@ class AsyncOortSelector(AbstractSelector):
         logger.debug(f"explore_end_ids: {explore_end_ids}")
 
         candidates = [*explore_end_ids, *exploit_end_ids]
+
+        logger.info("Candidates selected with utilities")
+        logger.info("end_id, utility")
+        for candidate in candidates:
+            for utility_pair in utility_list:
+                if utility_pair[PROP_END_ID] == candidate:
+                    logger.info(f"{candidate}, {utility_pair[PROP_UTILITY]}")
 
         return candidates, exploit_end_ids
 
