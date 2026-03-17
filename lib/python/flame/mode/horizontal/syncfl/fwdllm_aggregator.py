@@ -743,34 +743,38 @@ class TopAggregator(AsyncTopAgg):
 
         def compute_percentiles(values, reverse=False):
             if not values:
-                return -1, -1, -1, -1, -1, -1
+                return -1, -1, -1, -1, -1, -1, -1, -1
             arr = np.array(values)
 
             # This of this as the equivalent of sorting the array in reverse order where
-            p20, p30, p75, p90, p99 = (
-                (80, 70, 25, 10, 1) if reverse else (20, 30, 75, 90, 99)
+            p1, p5, p20, p30, p50, p75, p90, p99 = (
+                (99, 95, 80, 70, 50, 25, 10, 1) if reverse else (1, 5, 20, 30, 50, 75, 90, 99)
             )
             return (
-                float(np.percentile(arr, p20)),
-                float(np.percentile(arr, p30)),
-                float(np.median(arr)),
-                float(np.percentile(arr, p75)),
-                float(np.percentile(arr, p90)),
-                float(np.percentile(arr, p99)),
+                float(np.percentile(arr, p1, method='lower')),
+                float(np.percentile(arr, p5, method='lower')),
+                float(np.percentile(arr, p20, method='lower')),
+                float(np.percentile(arr, p30, method='lower')),
+                float(np.percentile(arr, p50, method='lower')),
+                float(np.percentile(arr, p75, method='lower')),
+                float(np.percentile(arr, p90, method='lower')),
+                float(np.percentile(arr, p99, method='lower')),
             )
 
         n_unique = len(self._model_version_unique_trainers)
-        rd_p20, rd_p30, rd_p50, rd_p75, rd_p90, rd_p99 = compute_percentiles(
-            self._model_version_trainer_stats["train_duration"]
+        rd_p1, rd_p5, rd_p20, rd_p30, rd_p50, rd_p75, rd_p90, rd_p99 = (
+            compute_percentiles(self._model_version_trainer_stats["train_duration"])
         )
-        su_p20, su_p30, su_p50, su_p75, su_p90, su_p99 = compute_percentiles(
-            self._model_version_trainer_stats["partial_stat_utility"], reverse=True
+        su_p1, su_p5, su_p20, su_p30, su_p50, su_p75, su_p90, su_p99 = (
+            compute_percentiles(
+                self._model_version_trainer_stats["partial_stat_utility"], reverse=True
+            )
         )
 
         logger.info(
             f"==== Model version incremented to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
-            f"p20, p30, p50, p75, p90, p99 of train duration \n{rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
-            f"p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
+            f"p1, p5, p20, p30, p50, p75, p90, p99 of train duration \n{rd_p1:.3f}, {rd_p5:.3f}, {rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
+            f"p1, p5, p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
         )
 
         # Reset accumulators for the next model version window
