@@ -251,6 +251,10 @@ class AsyncOortSelector(AbstractSelector):
             f"Aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
         )
         logger.debug(f"Trainer version states: {trainer_version_states}")
+
+        if self.enforce_min_start(len(ends)):
+            return {}
+
         # TODO: (DG) Update later, currently setting eval concurrency
         # to be twice of training concurrency
         if task_to_perform == "train":
@@ -336,8 +340,10 @@ class AsyncOortSelector(AbstractSelector):
                 # Insert to queues tracking stat_util, speed, round
                 # data
                 for window in [50, 100, 200]:
-                    # if end_stat_util is not None:
-                    #     self._selector_stats[task_to_perform]['data'][f'util_last_{window}'].append(end_stat_util)
+                    if end_stat_util is not None:
+                        self._selector_stats[task_to_perform]["data"][
+                            f"util_last_{window}"
+                        ].append(end_stat_util)
                     if end_speed is not None:
                         self._selector_stats[task_to_perform]["data"][
                             f"speed_last_{window}"
@@ -567,10 +573,10 @@ class AsyncOortSelector(AbstractSelector):
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
-        self, ends: dict[str, End], end_id: str, round: int
+        self, ends: dict[str, End], end_id: str, model_version: int
     ) -> float:
         """
-        Calculate temproal uncertainty term based on the end's last
+        Calculate temporal uncertainty term based on the end's last
         selected round.
         """
 
@@ -587,7 +593,7 @@ class AsyncOortSelector(AbstractSelector):
         if self.round_nudge_type == "last_train":
             end_last_selected_round = ends[end_id].get_property(
                 PROP_LAST_SELECTED_ROUND
-            )
+            )  # Misnomer: This is actually PROP_LAST_SELECTED_MODEL_VERSION
         elif self.round_nudge_type == "last_eval":
             end_last_selected_round = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
 
@@ -598,12 +604,19 @@ class AsyncOortSelector(AbstractSelector):
         # TODO: (DG) Enable a flag to use or not use temporal
         # uncertainty as 0 based on our solution. We might want to
         # disable it in the final selection process in FeLiX.
-        if end_last_selected_round is None:
-            trainer_temporal_uncertainty = 0
-        else:
-            trainer_temporal_uncertainty = math.sqrt(
-                0.1 * math.log(round) / end_last_selected_round
-            )
+        if (
+            model_version == 0
+            or model_version == end_last_selected_round
+            or end_last_selected_round in (None, 0)
+        ):
+            return 0
+
+        trainer_temporal_uncertainty = math.sqrt(
+            0.1 * math.log(model_version) / end_last_selected_round
+        )
+        logger.debug(
+            f"model_version: {model_version}, end_last_selected_round: {end_last_selected_round}, trainer_temporal_uncertainty: {trainer_temporal_uncertainty}"
+        )
         return trainer_temporal_uncertainty
 
     def calculate_global_system_utility_of_trainer(
@@ -694,7 +707,10 @@ class AsyncOortSelector(AbstractSelector):
         return {key: None for key in selected_random_ends}
 
     def calculate_total_utility(
-        self, utility_list: list[tuple[str, float]], ends: dict[str, End], round: int
+        self,
+        utility_list: list[tuple[str, float]],
+        ends: dict[str, End],
+        model_version: int,
     ) -> list[tuple[str, float]]:
         """
         Calculate the total utility value of trainers with applying
@@ -754,9 +770,17 @@ class AsyncOortSelector(AbstractSelector):
         # Calculate the final utility value of a trainer by adding the
         # temporal uncertainty and multiplying the global system
         # utility
+
+        # TODO (GD): Change this back to DEBUG
+        logger.info(f"Total utilities")
+        logger.info(
+            f"stat_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
+        )
         for utility_idx in range(len(utility_list)):
             curr_end_utility = utility_list[utility_idx][PROP_UTILITY]
             curr_end_id = utility_list[utility_idx][PROP_END_ID]
+
+            stat_utility = curr_end_utility
 
             # Clip the utility value
             utility_list[utility_idx][PROP_UTILITY] = min(
@@ -765,7 +789,7 @@ class AsyncOortSelector(AbstractSelector):
 
             # Add temproal uncertainty term
             temporal_uncertainty = self.calculate_temporal_uncertainty_of_trainer(
-                ends, curr_end_id, round
+                ends, curr_end_id, model_version
             )
             curr_end_utility += temporal_uncertainty
             logger.debug(
@@ -776,12 +800,15 @@ class AsyncOortSelector(AbstractSelector):
             global_system_utility = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
-            curr_end_utility *= global_system_utility
-            logger.debug(
-                f"end_id: {curr_end_id}, curr_end_utility: {curr_end_utility} after multiplying global_system_utility: {global_system_utility}"
+
+            utility_list[utility_idx][PROP_UTILITY] = (
+                curr_end_utility * global_system_utility
             )
 
-            utility_list[utility_idx][PROP_UTILITY] = curr_end_utility
+            # TODO (GD): Change this back to DEBUG
+            logger.info(
+                f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
+            )
 
         # Sort the utility list again, with the updated utility value
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
@@ -1067,6 +1094,13 @@ class AsyncOortSelector(AbstractSelector):
 
         candidates = [*explore_end_ids, *exploit_end_ids]
 
+        logger.info("Candidates selected with utilities")
+        logger.info("end_id, utility")
+        for candidate in candidates:
+            for utility_pair in utility_list:
+                if utility_pair[PROP_END_ID] == candidate:
+                    logger.info(f"{candidate}, {utility_pair[PROP_UTILITY]}")
+
         return candidates, exploit_end_ids
 
     # Invoked when selection mode is maxSamples i.e. select clients
@@ -1330,10 +1364,13 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"extra: {extra}, nothing to select")
             return {}
 
-        round = channel_props["round"] if "round" in channel_props else 0
-        logger.debug(f"let's select {extra} ends for round {round}")
+        # round = channel_props["round"] if "round" in channel_props else 0
+        if not agg_version_state or agg_version_state[0] is not None:
+            model_version = agg_version_state[0]
 
-        if round % 100 == 0:
+        logger.debug(f"let's select {extra} ends for model_version {model_version}")
+
+        if model_version % 100 == 0:
             # Log to info level the property of LAST_EVAL_ROUND for
             # all the ends
             for end_id, end in ends.items():
@@ -1480,7 +1517,8 @@ class AsyncOortSelector(AbstractSelector):
                     # rounds old to be considered. This is to limit
                     # comm overhead and assumes that the model hasn't
                     # diverged a lot in this time
-                    and round - ends[end_id].get_property(PROP_LAST_EVAL_ROUND) >= 35
+                    and model_version - ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
+                    >= 35
                 ):
                     # NOTE: Picking from avl_train as well since it
                     # gave us better results. But need to set to low
@@ -1519,7 +1557,7 @@ class AsyncOortSelector(AbstractSelector):
                     logger.debug(f"Not skipping trainer: {end_id}")
                     eligible_filtered_ends[end_id] = end
                 else:
-                    logger.info(
+                    logger.debug(
                         f"Skipping trainer: {end_id} already has same "
                         f"(model_version={curr_model_version}, "
                         f"iteration_id={curr_iteration_id}, data_id={curr_data_id})"
@@ -1589,11 +1627,32 @@ class AsyncOortSelector(AbstractSelector):
                 f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}"
             )
 
+            logger.debug(f"Going into stat_util calculation: {model_version}")
+            # Not the first round, performing Oort-based selection
+            # Calculate number of ends to select for exploration and
+            # exploitation
+            logger.debug(
+                f"Invoking calculate_num_of_exploration_exploitation() "
+                f"with num_of_ends: {feasible_extra}, "
+                f"unexplored_end_ids: {unexplored_end_ids}"
+            )
+            exploration_len, exploitation_len = (
+                self.calculate_num_of_exploration_exploitation(
+                    num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
+                )
+            )
+            # TODO (GD): Change this back to DEBUG
+            logger.info(
+                f"After calculate_num_of_exploration_exploitation(), "
+                f"exploration_len: {exploration_len}, exploitation_len: "
+                f"{exploitation_len}"
+            )
+
             # DG: Removed old check for first round This indicates the
             # first round, where no end's utility has been measured;
             # Then, perform random selection
-            if round == 0:
-                self.round = round
+            if len(utility_list) < exploitation_len:
+                self.round = model_version
 
                 logger.debug(
                     f"Round: {self.round}, will sample feasible_extra: "
@@ -1617,34 +1676,14 @@ class AsyncOortSelector(AbstractSelector):
 
                 return candidates_dict
 
-            # Not the first round, performing Oort-based selection
-            # Calculate number of ends to select for exploration and
-            # exploitation
-            logger.debug(
-                f"Invoking calculate_num_of_exploration_exploitation() "
-                f"with num_of_ends: {feasible_extra}, "
-                f"unexplored_end_ids: {unexplored_end_ids}"
-            )
-            (
-                exploration_len,
-                exploitation_len,
-            ) = self.calculate_num_of_exploration_exploitation(
-                num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
-            )
-            logger.debug(
-                f"After calculate_num_of_exploration_exploitation(), "
-                f"exploration_len: {exploration_len}, exploitation_len: "
-                f"{exploitation_len}"
-            )
-
             # Calculate the total utility value of trainers with
             # applying temporal uncertainty and global system utility
             logger.debug(
                 f"Invoking calculate_total_utility() with utility_list: "
-                f"{utility_list}, filtered_ends: {filtered_ends}, round: {round}"
+                f"{utility_list}, filtered_ends: {filtered_ends}, round: {model_version}"
             )
             utility_list = self.calculate_total_utility(
-                utility_list, filtered_ends, round
+                utility_list, filtered_ends, model_version
             )
 
             logger.debug(f"After calculate_total_utility, utility_list: {utility_list}")
@@ -1661,7 +1700,7 @@ class AsyncOortSelector(AbstractSelector):
             # Removed "and len(self.selected_ends) == 0 from the if
             # condition"
             if len(utility_list) == 0:
-                self.round = round
+                self.round = model_version
                 logger.debug(
                     f"len(utility_list) = {len(utility_list)}, will invoke "
                     f"select_random() with filtered_ends: {filtered_ends} and "
@@ -1749,7 +1788,7 @@ class AsyncOortSelector(AbstractSelector):
             )
             self.increment_selected_count_on_selected_ends(ends, candidate_ends)
 
-            self.round = round
+            self.round = model_version
 
         elif task_to_perform == "eval":
             # Here we populate a mapping between all items in
@@ -1783,7 +1822,7 @@ class AsyncOortSelector(AbstractSelector):
             self.curr_round_eval_slots_left -= len(candidates)
 
             logger.debug(
-                f"Selected candidates with last_eval_rounds for eval: {[(end_id, end_id_to_last_eval_round[end_id]) for end_id in candidates]}, curr_round_eval_slots_left: {self.curr_round_eval_slots_left} for round {round}"
+                f"Selected candidates with last_eval_rounds for eval: {[(end_id, end_id_to_last_eval_round[end_id]) for end_id in candidates]}, curr_round_eval_slots_left: {self.curr_round_eval_slots_left} for round {model_version}"
             )
 
             candidates_dict = {key: None for key in candidates}

@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Ensure that you have set the FWDLLM_USER environment variable before running this script
 # Run to set as part of conda environment:
 # conda env config vars set FWDLLM_USER=<your-folder-name>
@@ -9,6 +10,9 @@ FL_ALG=$3
 total_client_num=$4
 LOG_LEVEL=$5
 ENABLE_WATCHDOG=${6:-false}  # Set to "true" to enable error checking, defaults to "false"
+# --- Accuracy monitoring configuration ---
+ACC_THRESHOLD=80          # Accuracy percentage (0-100) to monitor for
+ACC_CONSEC_LIMIT=20       # Number of consecutive rounds above threshold before stopping the run
 
 pkill -f "$FWDLLM_USER.*fl_main.py"
 if [ $? -eq 0 ]; then
@@ -45,7 +49,7 @@ else
   peft_method=bitfit
 fi
 
-PARTITION_METHOD="niid_label_clients=100_alpha=0.5" # this is set in aggregator.json, this will be overwritten
+PARTITION_METHOD="niid_label_clients=100_alpha=1" # this is set in aggregator.json, this will be overwritten
 if [ $DATA_NAME = "agnews" ];then
   max_seq_length=64  # this is set in aggregator.json, this will be overwritten
   frequency_of_the_test=1
@@ -141,6 +145,12 @@ else
   TRAINER_LOG_FILE=$(readlink -f "$LOG_DIR/test_trainer_${LOG_SUFFIX}.log")
   PARENT_PID=$$
 
+  ACC_MONITOR_FILE=$(readlink -f "$LOG_DIR/accuracy_monitor_${LOG_SUFFIX}.log")  # overwritten each tick
+  SCRIPT_START_TIME=$(date +%s)
+  _acc_consec_count=0
+  _acc_last_seen_line=""  # dedup: only count each new eval result once
+  _acc_last_grep_offset=0   # byte offset: attempt to resume grep from last occurrence
+
   # Function to check logs for errors and kill all processes if found
   check_errors() {
     # Find the first file that contains a real error (ignoring known false positives)
@@ -169,6 +179,88 @@ else
     fi
   }
 
+  # Function to monitor model accuracy from the aggregator log.
+  # Tracks consecutive rounds above ACC_THRESHOLD and triggers shutdown
+  # when ACC_CONSEC_LIMIT is reached.
+  check_accuracy() {
+    [ -f "$AGG_LOG_FILE" ] || return
+
+    # --- Smart tail-first grep ---
+    # The log is append-only and can be very large (up to ~8 GB).
+    # We first try scanning only the last 200 KB for the accuracy line, which
+    # covers many rounds without reading the full file.  If nothing is found
+    # there (e.g. the file is brand-new) we fall back to a full scan.
+    ACC_LINE=$(tail -c 204800 "$AGG_LOG_FILE" 2>/dev/null | \
+               grep -oE "'acc': [0-9]+\.?[0-9]*" | tail -n 1)
+    if [ -z "$ACC_LINE" ]; then
+      ACC_LINE=$(grep -oE "'acc': [0-9]+\.?[0-9]*" "$AGG_LOG_FILE" 2>/dev/null | tail -n 1)
+    fi
+
+    if [ -z "$ACC_LINE" ]; then
+      # No eval result yet — write a waiting status so the file always exists
+      printf "Waiting for first eval result... | Runtime: %s\n" \
+        "$(printf '%dh %dm %ds' $(( ($(date +%s) - SCRIPT_START_TIME)/3600 )) $(( (($(date +%s) - SCRIPT_START_TIME)%3600)/60 )) $(( ($(date +%s) - SCRIPT_START_TIME)%60 )))" \
+        >> "$ACC_MONITOR_FILE"
+      return
+    fi
+
+    # Dedup guard: if this is the same log line we saw last tick, the training
+    # round hasn't produced a new eval result yet — skip counter update but
+    # still refresh the runtime in the monitor file.
+    if [ "$ACC_LINE" = "$_acc_last_seen_line" ]; then
+      NOW=$(date +%s)
+      ELAPSED=$(( NOW - SCRIPT_START_TIME ))
+      ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+      {
+        echo "Acc     : ${ACC_PCT_LAST}% |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT} | No new eval"
+      } >> "$ACC_MONITOR_FILE"
+      return
+    fi
+    _acc_last_seen_line="$ACC_LINE"
+
+    # Extract the raw fraction (e.g. 0.7505263...) and convert to percentage
+    ACC_RAW=$(echo "$ACC_LINE" | grep -oE "[0-9]+\.?[0-9]*$")
+    ACC_PCT=$(awk "BEGIN { printf \"%.2f\", $ACC_RAW * 100 }")
+
+    # Write status to the dedicated monitor file (overwrite, not append).
+    # This keeps stdout clean — no repeated lines after a 12-hour run.
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - SCRIPT_START_TIME ))
+    ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+    ACC_PCT_LAST="$ACC_PCT"   # remember for dedup ticks
+    {
+      echo "Acc     : ${ACC_PCT}%  |  Threshold: ${ACC_THRESHOLD}%  |  Consecutive above: ${_acc_consec_count} / ${ACC_CONSEC_LIMIT} |  Runtime: ${ELAPSED_FMT}"
+    } >> "$ACC_MONITOR_FILE"
+
+    # Compare using awk (bash can't do float comparisons)
+    IS_ABOVE=$(awk "BEGIN { print ($ACC_PCT >= $ACC_THRESHOLD) ? 1 : 0 }")
+
+    if [ "$IS_ABOVE" -eq 1 ]; then
+      _acc_consec_count=$(( _acc_consec_count + 1 ))
+    else
+      _acc_consec_count=0
+    fi
+
+    if [ "$_acc_consec_count" -ge "$ACC_CONSEC_LIMIT" ]; then
+      NOW=$(date +%s)
+      ELAPSED=$(( NOW - SCRIPT_START_TIME ))
+      ELAPSED_FMT=$(printf '%dh %dm %ds' $(( ELAPSED/3600 )) $(( (ELAPSED%3600)/60 )) $(( ELAPSED%60 )))
+
+      ACCURACY_MSG="[accuracy-monitor] ACC_CONSEC_LIMIT (${ACC_CONSEC_LIMIT}) reached."
+      ACCURACY_MSG+="\n  Overall experiment time : ${ELAPSED_FMT}"
+      ACCURACY_MSG+="\n  Consecutive rounds above ${ACC_THRESHOLD}% : ${_acc_consec_count}"
+      ACCURACY_MSG+="\n  Last recorded accuracy   : ${ACC_PCT}%"
+      ACCURACY_MSG+="\n  Triggering graceful shutdown..."
+
+      echo -e "$ACCURACY_MSG"
+      echo -e "$ACCURACY_MSG" >> "$AGG_LOG_FILE"
+      echo -e "$ACCURACY_MSG" >> "$TRAINER_LOG_FILE"
+
+      kill -TERM $PARENT_PID
+      exit 0
+    fi
+  }
+
   EXPANDED_TMP_DIR="${REPO_PATH}/tmp_expanded_configs_${RUN_TIMESTAMP}"
   mkdir -p "$EXPANDED_TMP_DIR"
 
@@ -185,6 +277,11 @@ else
     if [ -d "$EXPANDED_TMP_DIR" ]; then
       echo "Removing temporary directory: $EXPANDED_TMP_DIR"
       rm -rf "$EXPANDED_TMP_DIR"
+    fi
+    # 4. Remove accuracy monitor status file
+    if [ -f "$ACC_MONITOR_FILE" ]; then
+      echo "Removing accuracy monitor file: $ACC_MONITOR_FILE"
+      rm -f "$ACC_MONITOR_FILE"
     fi
   }
   # Trap common termination signals
@@ -208,6 +305,8 @@ else
   if [ "$ENABLE_WATCHDOG" = "true" ]; then
     check_errors
   fi
+
+  echo -e "Log files to monitor: \n [Aggregator]: $AGG_LOG_FILE \n [Trainer]: $TRAINER_LOG_FILE \n [Accuracy]: $ACC_MONITOR_FILE\n"
 
   NUM_AVAIL_GPUS=8
 
@@ -234,14 +333,18 @@ else
       fi
   done
 
-  echo "Log files created: \n - $AGG_LOG_FILE \n - $TRAINER_LOG_FILE"
+  echo -e "Log files created: \n [Aggregator]: $AGG_LOG_FILE \n [Trainer]: $TRAINER_LOG_FILE"
 
   # Start background periodic check (every 30 seconds)
   # The watchdog will automatically exit if the parent process ($PARENT_PID) dies
   if [ "$ENABLE_WATCHDOG" = "true" ]; then
+    echo "accuracy-monitor (appends on each tick): watch -n 10 cat ${ACC_MONITOR_FILE}"
+    # Initialize the file immediately so it's always findable from the start
+    echo "accuracy-monitor starting up... ($(date '+%Y-%m-%d %H:%M:%S'))" > "$ACC_MONITOR_FILE"
     (
       while kill -0 $PARENT_PID 2>/dev/null; do   # Checks if the parent script is still alive
         check_errors
+        check_accuracy
         sleep 30
       done
     ) &
