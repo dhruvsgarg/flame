@@ -741,30 +741,36 @@ class TopAggregator(AsyncTopAgg):
         variance-threshold breaches.
         """
 
-        def compute_percentiles(values):
+        def compute_percentiles(values, reverse=False):
             if not values:
-                return -1, -1, -1, -1
+                return -1, -1, -1, -1, -1, -1
             arr = np.array(values)
+
+            # This of this as the equivalent of sorting the array in reverse order where
+            p20, p30, p75, p90, p99 = (
+                (80, 70, 25, 10, 1) if reverse else (20, 30, 75, 90, 99)
+            )
             return (
+                float(np.percentile(arr, p20)),
+                float(np.percentile(arr, p30)),
                 float(np.median(arr)),
-                float(np.percentile(arr, 75)),
-                float(np.percentile(arr, 90)),
-                float(np.percentile(arr, 99)),
+                float(np.percentile(arr, p75)),
+                float(np.percentile(arr, p90)),
+                float(np.percentile(arr, p99)),
             )
 
         n_unique = len(self._model_version_unique_trainers)
-        rd_med, rd_p75, rd_p90, rd_p99 = compute_percentiles(
+        rd_p20, rd_p30, rd_p50, rd_p75, rd_p90, rd_p99 = compute_percentiles(
             self._model_version_trainer_stats["train_duration"]
         )
-        su_med, su_p75, su_p90, su_p99 = compute_percentiles(
-            self._model_version_trainer_stats["partial_stat_utility"]
+        su_p20, su_p30, su_p50, su_p75, su_p90, su_p99 = compute_percentiles(
+            self._model_version_trainer_stats["partial_stat_utility"], reverse=True
         )
 
         logger.info(
-            f"==== Model version incremented to {self._model_version}. Stats for previous training window: \n"
-            f"Round, Model Version, Unique Trainer Count: {self._round},{self._model_version},{n_unique}. "
-            f"Median, 75th percentile, 90th percentile, 99th percentile of train duration: {rd_med:.3f},{rd_p75:.3f},{rd_p90:.3f},{rd_p99:.3f}. "
-            f"Median, 75th percentile, 90th percentile, 99th percentile of partial stat utilities: {su_med:.4f},{su_p75:.4f},{su_p90:.4f},{su_p99:.4f}."
+            f"==== Model version incremented to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
+            f"p20, p30, p50, p75, p90, p99 of train duration \n{rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
+            f"p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
         )
 
         # Reset accumulators for the next model version window
