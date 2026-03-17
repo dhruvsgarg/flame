@@ -11,32 +11,61 @@ INTERP_RATIO = 0.5
 DEFAULT_X_TICK_COUNT = 10
 DEFAULT_Y_TICK_COUNT = 5
 BATCHES_PER_EPOCH = 150
-LINE_WIDTH = 1.5
+LINE_WIDTH = 2
 
 MIN_MAX_DISABLED = True
 STOP_LINE_AT_MISSING_DATA = (
     True  # If True, lines stop at missing data instead of forward-filling
 )
-X_AXIS_END_AT_SHORTEST = True  # If True, x-axis ends at shortest system's max x-value; if False, extends to longest system's max x-value
+X_AXIS_END_AT_SHORTEST = False  # If True, x-axis ends at shortest system's max x-value; if False, extends to longest system's max x-value
+
+plt.rcParams.update({
+    'font.size': 18,
+    'axes.labelsize': 20,
+    'axes.titlesize': 20,
+    'xtick.labelsize': 18,
+    'ytick.labelsize': 18,
+    'legend.fontsize': 16,
+    'figure.figsize': [6, 4],  # Adjusted to match the standard paper aspect ratio
+    'pdf.fonttype': 42,
+    'ps.fonttype': 42,
+    'grid.color': 'gainsboro',
+    'axes.grid': True,
+    'axes.axisbelow': True,
+    'axes.labelweight': 'bold', # Bold axis labels like your reference
+})
+plt.margins(0.5, 0.5)
+plt.tight_layout(pad=0)
+
+SYSTEM_COLORS = ["royalblue", "red", "green", "purple", "goldenrod", "maroon"]
+
 
 # --- System-Agnostic Configuration ---
 
 # Define all systems and their corresponding run files in this dictionary.
 # Add as many systems as you need.
 SYSTEMS_DATA = {
-    "Async with smart (stale+stat_util) aggregation": [
-        "output/async_k10_c50_n150-weight_stale_and_stat_utility.csv"
+    # "Sync": [
+    #     "output/nsdi/nsdi_sync_n_100_c_13_k_10_alpha_1_a_100_e_0_u_0-evaluation_metrics.csv"
+    # ],
+    # "Async": ["output/nsdi/nsdi_async_n_100_c_30_k_10_alpha_1_a_100_e_0_u_0-evaluation_metrics.csv"],
+    # "FeLiX (ours)": [
+    #     "output/nsdi/nsdi_felix_n_100_c_30_k_10_alpha_1_a_100_e_0_u_0-evaluation_metrics.csv"
+    # ],
+
+    "Sync": [
+        "/home/dgarg39/aish_test/flame/output/nsdi/nsdi_sync_n_100_c_13_k_10_alpha_1_a_90_e_10_u_0-evaluation_metrics.csv"
     ],
-    "Async with stale rejections": ["output/async_k10_c50_n150-reject_stale.csv"],
-    "Async with weighted stale aggregation (norm=k)": [
-        "output/async_k10_c50_n150-weight_stale_norm_k.csv"
+    "Async": ["output/nsdi/nsdi_async_n_100_c_30_k_10_alpha_1_a_90_e_10_u_0-evaluation_metrics.csv"],
+    "FeLiX (ours)": [
+        "output/nsdi/async_n100_c30_k10_opts_alpha1_oort_durations_fixed_agg-evaluation_metrics.csv"
     ],
+    "FeLiX Deterministic" : ["output/nsdi_felix_deter_n_100_c_30_k_10_alpha_1_a_90_e_10_u_0-evaluation_metrics.csv"],
 }
 
 # Define colors for the system lines.
 # Colors will be assigned in the order systems are defined in SYSTEMS_DATA.
 # If there are more systems than colors, the list will wrap around.
-SYSTEM_COLORS = ["C0", "red", "green", "purple", "orange", "brown"]
 
 # -----------------------------------------------------
 
@@ -217,6 +246,17 @@ def plot_comparison_chart(
         all_systems_runs[system_name] = runs
         all_runs_list.extend(runs)
 
+    plt.style.use("default")
+    fig, axes = plt.subplots(figsize=(7, 4))
+    
+    # Enforce a 4-sided black box around the plot area
+    for spine in axes.spines.values():
+        spine.set_visible(True)
+        spine.set_color('black')
+        spine.set_linewidth(1.5)
+
+    axes.margins(x=0.02, y=0.02)
+
     if not all_systems_runs:
         print("No valid run data found for any system. Aborting plot.")
         return
@@ -353,7 +393,8 @@ def plot_comparison_chart(
 
     # 5. Plotting (Using default style for better custom axis control)
     plt.style.use("default")
-    fig, axes = plt.subplots(figsize=(10, 6))
+    fig, axes = plt.subplots()
+    axes.tick_params(which='both', direction='out', length=4, width=1.2, color='black', labelsize=18)
 
     # Assign colors
     system_names = list(all_systems_runs.keys())
@@ -453,22 +494,15 @@ def plot_comparison_chart(
         y_ticks_formatted = [f"{int(t)}" for t in y_ticks]
     axes.set_yticklabels(y_ticks_formatted)
 
-    # 7. Apply Solid Black Axis Lines and styling
-    for spine in ["bottom", "left"]:
-        axes.spines[spine].set_color("black")
-        axes.spines[spine].set_linewidth(1.5)
-    for spine in ["top", "right"]:
-        axes.spines[spine].set_visible(False)
 
     # Configure major ticks (no negative X ticks because xlim starts at 0)
-    axes.tick_params(axis="both", which="major", length=6, width=1.5, color="black")
-    axes.grid(True, linestyle="--", alpha=0.6, color="lightgray")
+    axes.tick_params(axis="both", which="major", length=6, width=1.5, color="black", labelsize=16)
+    axes.grid(True, linestyle="--", alpha=0.6, color="lightgray", zorder=1)
 
-    axes.set_title(f'Performance Comparison ({plot_type.replace("_", " ").title()})')
-    axes.set_xlabel(x_label)
-    axes.set_ylabel(y_label)
-    axes.legend(loc="lower right")
-    plt.tight_layout()
+    axes.set_xlabel(x_label, fontsize=16)
+    axes.set_ylabel(y_label, fontsize=16)
+    axes.legend(frameon=False, loc="lower right", fontsize=14)
+    plt.tight_layout(pad=0.2)
 
     output_dir = Path("plots/")
     output_dir.mkdir(parents=True, exist_ok=True)
