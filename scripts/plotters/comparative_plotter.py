@@ -504,9 +504,9 @@ def plot_comparison_chart(
     axes.legend(frameon=False, loc="lower right", fontsize=14)
     plt.tight_layout(pad=0.2)
 
-    output_dir = Path("plots/nsdi/90_10_0")
+    output_dir = Path("plots/")
     output_dir.mkdir(parents=True, exist_ok=True)
-    file_name = output_dir / f"{plot_type}_comparison_with_deter.png"
+    file_name = output_dir / f"{plot_type}_comparison.png"
     plt.savefig(file_name)
     # plt.show() # Disabled for production environment
 
