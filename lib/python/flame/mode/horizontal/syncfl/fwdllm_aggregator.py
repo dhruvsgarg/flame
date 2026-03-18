@@ -54,6 +54,7 @@ from flame.selector.oort import (
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_PARTIAL_DATASET_STAT_UTILITY,
+    PROP_FULL_DATASET_STAT_UTILITY,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
 )
@@ -224,6 +225,7 @@ class TopAggregator(AsyncTopAgg):
         self._model_version_trainer_stats = {
             "train_duration": [],
             "partial_stat_utility": [],
+            "full_stat_utility": [],
         }
 
         self._per_round_staleness_list = []
@@ -709,11 +711,22 @@ class TopAggregator(AsyncTopAgg):
                 partial_stat_utility = msg[MessageType.PARTIAL_DATASET_STAT_UTILITY]
 
             if MessageType.FULL_DATASET_STAT_UTILITY in msg:
+                # Still populating PROP_STAT_UTILITY for backward compatibility
                 channel.set_end_property(
                     end,
                     PROP_STAT_UTILITY,
                     msg[MessageType.FULL_DATASET_STAT_UTILITY],
                 )
+                channel.set_end_property(
+                    end,
+                    PROP_FULL_DATASET_STAT_UTILITY,
+                    msg[MessageType.FULL_DATASET_STAT_UTILITY],
+                )
+            else:
+                raise Exception(
+                    f"End {end} has not have the required value for msg[MessageType.FULL_DATASET_STAT_UTILITY]"
+                )
+                # TODO(GD): Failing fast to catch config/ logic errors. Double check if we can catch this in async_oort.py without this exception & take care of the case where we select before we get the first gradients back.
 
             logger.info(
                 f"Aggregated utilities for {end}. "
@@ -801,11 +814,17 @@ class TopAggregator(AsyncTopAgg):
                 self._model_version_trainer_stats["partial_stat_utility"], reverse=True
             )
         )
+        fsu_p1, fsu_p5, fsu_p20, fsu_p30, fsu_p50, fsu_p75, fsu_p90, fsu_p99 = (
+            compute_percentiles(
+                self._model_version_trainer_stats["full_stat_utility"], reverse=True
+            )
+        )
 
         logger.info(
             f"==== Model version incremented to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
             f"p1, p5, p20, p30, p50, p75, p90, p99 of train duration \n{rd_p1:.3f}, {rd_p5:.3f}, {rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
-            f"p1, p5, p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
+            f"p1, p5, p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f} \n"
+            f"p1, p5, p20, p30, p50, p75, p90, p99 of full stat utilities \n{fsu_p1:.4f}, {fsu_p5:.4f}, {fsu_p20:.4f}, {fsu_p30:.4f}, {fsu_p50:.4f}, {fsu_p75:.4f}, {fsu_p90:.4f}, {fsu_p99:.4f}"
         )
 
         # Reset accumulators for the next model version window
@@ -813,6 +832,7 @@ class TopAggregator(AsyncTopAgg):
         self._model_version_trainer_stats = {
             "train_duration": [],
             "partial_stat_utility": [],
+            "full_stat_utility": [],
         }
 
     @timer_decorator
@@ -832,11 +852,18 @@ class TopAggregator(AsyncTopAgg):
                     train_duration.total_seconds()
                 )
             partial_stat_utility = channel.get_end_property(
-                trainer_update, PROP_STAT_UTILITY
+                trainer_update, PROP_PARTIAL_DATASET_STAT_UTILITY
             )
             if partial_stat_utility is not None:
                 self._model_version_trainer_stats["partial_stat_utility"].append(
                     partial_stat_utility
+                )
+            full_stat_utility = channel.get_end_property(
+                trainer_update, PROP_FULL_DATASET_STAT_UTILITY
+            )
+            if full_stat_utility is not None:
+                self._model_version_trainer_stats["full_stat_utility"].append(
+                    full_stat_utility
                 )
 
         self.grad_pool.append(self.grad)
