@@ -841,7 +841,7 @@ class TopAggregator(AsyncTopAgg):
             else:
                 self._model_version = self._round
 
-            self._log_and_reset_model_version_stats()
+            # self._log_and_reset_model_version_stats()
 
             if self.data_id == self.total_data_bins:
                 logger.info(
@@ -898,6 +898,7 @@ class TopAggregator(AsyncTopAgg):
             logger.info(f"We are waiting to clear up queue")
             num_min_req = min(num_min_req, 1)
 
+        logger.info(f"REcv on {num_min_req} ends")
         for msg, metadata in channel.recv_fifo(channel.ends(), num_min_req):
             end, timestamp = metadata
             if not msg:
@@ -1222,7 +1223,7 @@ class TopAggregator(AsyncTopAgg):
 
         This method is overridden from one in synchronous top aggregator
         """
-
+        self.ends_not_selected_yet = False
         logger.info(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -1254,12 +1255,6 @@ class TopAggregator(AsyncTopAgg):
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
-        logger.info(f"ends: {ends}")
-        if ends is None or len(ends) >= self._agg_goal:
-            self.ends_not_selected_yet = True
-        else:
-            self.ends_not_selected_yet = False
-
         if not ends:
             logger.debug(
                 f"No trainers found for tag {tag}, will "
@@ -1310,6 +1305,18 @@ class TopAggregator(AsyncTopAgg):
 
             channel.send(end, payload)
             logger.info(f"Sent weights to {end}")
+
+        ends_in_recv = channel.ends(VAL_CH_STATE_RECV)
+        logger.info(f"ends_in_recv: {ends_in_recv}")
+        if ends_in_recv is None:
+            self.ends_not_selected_yet = True
+            logger.info(f"ends_in_recv is None")
+        elif len(ends_in_recv) < channel.get_c():  
+            self.ends_not_selected_yet = True
+            logger.info(f"Selected only {len(ends)} in this round, total in flight {len(ends_in_recv)}, need {channel.get_c() - len(ends_in_recv)} to meet agg-goal.")
+        else:
+            self.ends_not_selected_yet = False
+            logger.info("Distributed to c ends and can wait for k updates")
             # self.invoke_gc()
 
     @timer_decorator

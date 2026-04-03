@@ -178,6 +178,13 @@ class Channel(object):
         end_list = self.ends(state)
         return end_list[0] if len(end_list) > 0 else None
 
+    def get_c(self):
+        try:
+            result = self._selector.c
+        except Exception:
+            result = None
+        return result
+
     def ends(
         self,
         state: Union[None, str] = None,

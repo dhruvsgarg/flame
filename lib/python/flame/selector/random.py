@@ -35,6 +35,7 @@ from flame.channel import (
 )
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.config import TrainerAvailState
+import copy
 
 logger = logging.getLogger(__name__)
 PROP_AVL_STATE = "avl_state"
@@ -95,6 +96,8 @@ class RandomSelector(AbstractSelector):
                 for window in [50, 100, 200]:
                     key = f"{metric}_last_{window}"
                     self._selector_stats[task]["data"][key] = deque(maxlen=window)
+
+        self.selected_for_whole_round = None
 
     def compute_trainer_stat_summary(self):
         def compute_summary(values):
@@ -293,74 +296,96 @@ class RandomSelector(AbstractSelector):
         logger.debug(f"new k = {k}")
         if "round" in channel_props:
             round = channel_props["round"]
+            logger.info(f"aish - round: {round}")
         else:
             round = 0
+            logger.info(f"aish - round: {round}")
             logger.warning(
                 f"round not found in channel_props: {channel_props}. Defaulting to 0"
             )
 
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-            # --- START TIMEOUT LOGIC ---
-            current_time = time.time()
-            # We use list() to avoid "dictionary changed size during iteration" errors
-            current_time = time.time()
-            for end_id in list(self.selected_ends):
-                if end_id in self.time_sent:
-                    if (current_time - self.time_sent[end_id]) > SEND_TIMEOUT_WAIT_S:
-                        logger.info(f"Moving {end_id} to stale_ends (Timeout).")
-                        self.selected_ends.remove(end_id)
-                        del self.all_selected[end_id] # This is needed if we want to resample from timed out ends
-                        self.stale_ends.add(end_id)
-            # --- END TIMEOUT LOGIC ---
-            trainers_in_use = self.selected_ends
-            trainers_used_in_iteration = self.all_selected
-            logger.info(f"already_in_use: {trainers_in_use}")
-            avl_candidates = set()
-            for end_ in ends.keys():
-                if end_ not in trainers_used_in_iteration:
-                    curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
-                    logger.info(f"state of {end_} : {curr_end_id_avl_state}")
-                    if curr_end_id_avl_state in (
-                        TrainerAvailState.AVL_TRAIN.value,
-                        None,
-                    ):
-                        if end_ not in trainer_unavail_list:
-                            avl_candidates.add(end_)
-                    else:
-                        logger.info(f"state of {end_} is not avail, skipping ")
-                        continue
-
-            logger.info(f"available ends: {avl_candidates}")
-
-            # update this in case clients timed out
-            required_trainers = min(len(ends), self.c - len(trainers_in_use))
-            logger.info(
-                f"Waiting on {trainers_in_use_cnt}, need {required_trainers} more to maintain concurrency {self.c}"
-            )
-
-            if len(avl_candidates) < required_trainers:
-                time.sleep(0.1)
-                # cannot handle concurrency, wait further to clear and reselect
-                logger.info(
-                    f" {len(avl_candidates)} new selection less than concurrency {required_trainers}"
-                )
-                return {}
-
-            selected_candidates = set(
-                random.sample(list(avl_candidates), required_trainers)
-            )
-            logger.info(f"new selected ends: {selected_candidates}")
-
-            self.selected_ends = set(self.selected_ends).union(selected_candidates)
-            self.all_selected.update({key: None for key in self.selected_ends})
-            for candidate in selected_candidates:
-                self.time_sent[candidate] = time.time()
-            
-            if round > self.round:
+            if round > self.round or self.selected_for_whole_round is None or len(self.selected_for_whole_round) == 0:
                 self.round = round
+                # random.seed(round)
+                selected_candidates = set(
+                    random.sample(list(ends.keys()), self.c)
+                )
 
-            logger.info("select in send state")
-            return {key: None for key in selected_candidates}
+                self.selected_ends = selected_candidates
+                self.selected_for_whole_round = copy.deepcopy(selected_candidates)
+                logger.info(f"new selected ends for round {round}: {[word[-3:] for word in self.selected_ends]}")
+                return {key: None for key in self.selected_ends}
+
+            else:
+                available_for_next_sel = list(set(self.selected_for_whole_round) - set(self.selected_ends))
+                self.selected_ends = copy.deepcopy(self.selected_for_whole_round)
+                logger.info(f"round did not update: {round}, using same selection {[word[-3:] for word in self.selected_for_whole_round]}")
+                logger.info(f"returning updated selection: {[word[-3:] for word in available_for_next_sel]}")
+                return {key: None for key in available_for_next_sel}
+
+
+            # # --- START TIMEOUT LOGIC ---
+            # current_time = time.time()
+            # # We use list() to avoid "dictionary changed size during iteration" errors
+            # current_time = time.time()
+            # for end_id in list(self.selected_ends):
+            #     if end_id in self.time_sent:
+            #         if (current_time - self.time_sent[end_id]) > SEND_TIMEOUT_WAIT_S:
+            #             logger.info(f"Moving {end_id} to stale_ends (Timeout).")
+            #             self.selected_ends.remove(end_id)
+            #             del self.all_selected[end_id] # This is needed if we want to resample from timed out ends
+            #             self.stale_ends.add(end_id)
+            # # --- END TIMEOUT LOGIC ---
+            # trainers_in_use = self.selected_ends
+            # trainers_used_in_iteration = self.all_selected
+            # logger.info(f"already_in_use: {trainers_in_use}")
+            # avl_candidates = set()
+            # for end_ in ends.keys():
+            #     if end_ not in trainers_used_in_iteration:
+            #         curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
+            #         logger.info(f"state of {end_} : {curr_end_id_avl_state}")
+            #         if curr_end_id_avl_state in (
+            #             TrainerAvailState.AVL_TRAIN.value,
+            #             None,
+            #         ):
+            #             if end_ not in trainer_unavail_list:
+            #                 avl_candidates.add(end_)
+            #         else:
+            #             logger.info(f"state of {end_} is not avail, skipping ")
+            #             continue
+
+            # logger.info(f"available ends: {avl_candidates}")
+
+            # # update this in case clients timed out
+            # required_trainers = min(len(ends), self.c - len(trainers_in_use))
+            # logger.info(
+            #     f"Waiting on {trainers_in_use_cnt}, need {required_trainers} more to maintain concurrency {self.c}"
+            # )
+
+            # if len(avl_candidates) < required_trainers:
+            #     time.sleep(0.1)
+            #     # cannot handle concurrency, wait further to clear and reselect
+            #     logger.info(
+            #         f" {len(avl_candidates)} new selection less than concurrency {required_trainers}"
+            #     )
+            #     return {}
+
+            # selected_candidates = set(
+            #     random.sample(list(avl_candidates), required_trainers)
+            # )
+            # logger.info(f"new selected ends: {selected_candidates}")
+
+            # self.selected_ends = set(self.selected_ends).union(selected_candidates)
+            # self.all_selected.update({key: None for key in self.selected_ends})
+            # for candidate in selected_candidates:
+            #     self.time_sent[candidate] = time.time()
+            
+            # if round > self.round:
+            #     self.round = round
+
+            # logger.info("select in send state")
+            # return {key: None for key in selected_candidates}
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
             logger.info("select in recv state")

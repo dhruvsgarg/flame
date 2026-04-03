@@ -474,6 +474,8 @@ class ForwardTextClassificationTrainer:
         x = batch[1].to(device, non_blocking=True)
         labels = batch[4].to(device, non_blocking=True)
 
+        self.compute_metrics_with_logging_train(x,labels)
+
         # Stat-utility calculation
         _compute_batch_stat_utility(device, x, labels)
 
