@@ -477,7 +477,7 @@ class ForwardTextClassificationTrainer:
         self.compute_metrics_with_logging_train(x,labels)
 
         # Stat-utility calculation
-        _compute_batch_stat_utility(device, x, labels)
+        # _compute_batch_stat_utility(device, x, labels)
 
         v_params = _prepare_perturbation_tensors(device, v_buffer)
         logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
@@ -490,10 +490,10 @@ class ForwardTextClassificationTrainer:
         # Optimization: Remove GC & buffer flushes from the batch loop
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
         
-        self.base_trainer.normalize_stat_utility(epoch)
-        logging.debug(
-            f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
-        )
+        # self.base_trainer.normalize_stat_utility(epoch)
+        # logging.debug(
+        #     f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
+        # )
         
         del x, labels, jvp, v_params
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
