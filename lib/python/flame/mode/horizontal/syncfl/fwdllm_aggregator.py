@@ -743,17 +743,18 @@ class TopAggregator(AsyncTopAgg):
 
         def compute_percentiles(values, reverse=False):
             if not values:
-                return -1, -1, -1, -1, -1, -1, -1, -1
+                return -1, -1, -1, -1, -1, -1, -1, -1, -1
             arr = np.array(values)
 
             # This of this as the equivalent of sorting the array in reverse order where
-            p1, p5, p20, p30, p50, p75, p90, p99 = (
-                (99, 95, 80, 70, 50, 25, 10, 1) if reverse else (1, 5, 20, 30, 50, 75, 90, 99)
+            p1, p5, p20, p25, p30, p50, p75, p90, p99 = (
+                (99, 95, 80, 75, 70, 50, 25, 10, 1) if reverse else (1, 5, 20, 25, 30, 50, 75, 90, 99)
             )
             return (
                 float(np.percentile(arr, p1, method='lower')),
                 float(np.percentile(arr, p5, method='lower')),
                 float(np.percentile(arr, p20, method='lower')),
+                float(np.percentile(arr, p25, method='lower')),
                 float(np.percentile(arr, p30, method='lower')),
                 float(np.percentile(arr, p50, method='lower')),
                 float(np.percentile(arr, p75, method='lower')),
@@ -762,10 +763,10 @@ class TopAggregator(AsyncTopAgg):
             )
 
         n_unique = len(self._model_version_unique_trainers)
-        rd_p1, rd_p5, rd_p20, rd_p30, rd_p50, rd_p75, rd_p90, rd_p99 = (
+        rd_p1, rd_p5, rd_p20, rd_p25, rd_p30, rd_p50, rd_p75, rd_p90, rd_p99 = (
             compute_percentiles(self._model_version_trainer_stats["train_duration"])
         )
-        su_p1, su_p5, su_p20, su_p30, su_p50, su_p75, su_p90, su_p99 = (
+        su_p1, su_p5, su_p20, su_p25, su_p30, su_p50, su_p75, su_p90, su_p99 = (
             compute_percentiles(
                 self._model_version_trainer_stats["partial_stat_utility"], reverse=True
             )
@@ -773,8 +774,8 @@ class TopAggregator(AsyncTopAgg):
 
         logger.info(
             f"==== Model version incremented to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
-            f"p1, p5, p20, p30, p50, p75, p90, p99 of train duration \n{rd_p1:.3f}, {rd_p5:.3f}, {rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
-            f"p1, p5, p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
+            f"p1, p5, p20, p25, p30, p50, p75, p90, p99 of train duration \n{rd_p1:.3f}, {rd_p5:.3f}, {rd_p20:.3f}, {rd_p25:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
+            f"p1, p5, p20, p25, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p25:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
         )
 
         # Reset accumulators for the next model version window
@@ -841,7 +842,7 @@ class TopAggregator(AsyncTopAgg):
             else:
                 self._model_version = self._round
 
-            # self._log_and_reset_model_version_stats()
+            self._log_and_reset_model_version_stats()
 
             if self.data_id == self.total_data_bins:
                 logger.info(
@@ -1253,6 +1254,15 @@ class TopAggregator(AsyncTopAgg):
             )
         else:
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+
+        self._curr_agg_version = (
+            self._model_version,
+            self.data_id,
+            self.iteration_per_data_id,
+        )
+        logger.debug(
+            f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
+        )
 
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         if not ends:
