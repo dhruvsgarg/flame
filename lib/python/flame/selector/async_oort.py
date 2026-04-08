@@ -724,20 +724,6 @@ class AsyncOortSelector(AbstractSelector):
         # return at the top, we don't have anything to do here?
         self.round_preferred_duration = self.calculate_round_preferred_duration(ends)
 
-        # Sort the utility list by the utility value placed at the
-        # index 1 of each tuple
-        utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
-
-        # Calculate the clip value that caps utility value of a client
-        # to no more than an upper bound (95% value in utility
-        # distributions) NOTE: In cases of new clients added to the
-        # system, there could be cases where the utility_list is
-        # empty. In that case, we set clip_value to 100. TODO: (DG)
-        # Verify that this would be okay.
-        clip_value = utility_list[
-            min(int(len(utility_list) * 0.95), len(utility_list) - 1)
-        ][PROP_UTILITY]
-
         # Calculate the final utility value of a trainer by adding the
         # temporal uncertainty and multiplying the global system
         # utility
@@ -752,11 +738,6 @@ class AsyncOortSelector(AbstractSelector):
             curr_end_id = utility_list[utility_idx][PROP_END_ID]
 
             stat_utility = curr_end_utility
-
-            # Clip the utility value
-            utility_list[utility_idx][PROP_UTILITY] = min(
-                utility_list[utility_idx][PROP_UTILITY], clip_value
-            )
 
             # Add temproal uncertainty term
             temporal_uncertainty = self.calculate_temporal_uncertainty_of_trainer(
@@ -781,10 +762,8 @@ class AsyncOortSelector(AbstractSelector):
                 f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
             )
 
-        # Sort the utility list again, with the updated utility value
-        utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
-
-        return utility_list
+        # Sort the utility list, with the updated utility value
+        return sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
     def _cleanup_provided_ends(
         self, ends_to_cleanup: dict[str, End], ends: dict[str, End]
