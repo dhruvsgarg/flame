@@ -590,7 +590,7 @@ class AsyncOortSelector(AbstractSelector):
         if self.round_nudge_type == "last_train":
             end_last_selected_round = ends[end_id].get_property(
                 PROP_LAST_SELECTED_ROUND
-            )  # Misnomer: This is actually PROP_LAST_SELECTED_MODEL_VERSION
+            )  # TODO(GD): Fix the misnomer: This should actually be PROP_LAST_SELECTED_MODEL_VERSION
         elif self.round_nudge_type == "last_eval":
             end_last_selected_round = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
 
@@ -1335,9 +1335,15 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"extra: {extra}, nothing to select")
             return {}
 
-        # round = channel_props["round"] if "round" in channel_props else 0
-        if not agg_version_state or agg_version_state[0] is not None:
+        if agg_version_state is not None and agg_version_state[0] is not None:
             model_version = agg_version_state[0]
+        else:
+            logger.warning(
+                "Passing agg_version_state to select() will soon be made mandatory. Using channel_props['round'] or self.round to determine model_version for now"
+            )
+            model_version = (
+                channel_props["round"] if "round" in channel_props else self.round
+            )
 
         logger.debug(f"let's select {extra} ends for model_version {model_version}")
 
@@ -1622,7 +1628,7 @@ class AsyncOortSelector(AbstractSelector):
             # DG: Removed old check for first round This indicates the
             # first round, where no end's utility has been measured;
             # Then, perform random selection
-            if len(utility_list) < exploitation_len:
+            if model_version == 0:
                 self.round = model_version
 
                 logger.debug(
