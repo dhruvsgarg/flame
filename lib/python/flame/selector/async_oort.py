@@ -387,8 +387,9 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug("Got empty utility_list, returning 999999.0")
             return 999999.0
 
-        index = int(num_of_ends * (1 - self.exploration_factor)) - 1
-        index = max(0, min(index, len(sorted_utility_list) - 1))
+        index = int(len(sorted_utility_list) * self.exploration_factor)
+        index = min(index, len(sorted_utility_list) - 1)
+        # This is the first index to exploit
 
         return 0.95 * sorted_utility_list[index][PROP_UTILITY]
 
