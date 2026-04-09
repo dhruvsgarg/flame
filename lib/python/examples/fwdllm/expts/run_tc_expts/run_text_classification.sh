@@ -331,7 +331,7 @@ else
       fi
   done
 
-  echo "Log files created: \n [Aggregator]: $AGG_LOG_FILE \n [Trainer]: $TRAINER_LOG_FILE"
+  echo -e "Log files created: \n [Aggregator]: $AGG_LOG_FILE \n [Trainer]: $TRAINER_LOG_FILE"
 
   # Start background periodic check (every 30 seconds)
   # The watchdog will automatically exit if the parent process ($PARENT_PID) dies
