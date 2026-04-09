@@ -1190,10 +1190,10 @@ class TopAggregator(AsyncTopAgg):
             )
             return
 
-        payload_var_bad = None
-        payload_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
+        payload_without_weights = None
+        payload_with_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
         if not self.var_good_enough:
-            payload_var_bad = self._prepare_distribution_payload(task_to_perform, force_weights=False)
+            payload_without_weights = self._prepare_distribution_payload(task_to_perform, force_weights=False)
         
 
         self._update_state_after_payload_prepared()
@@ -1203,13 +1203,13 @@ class TopAggregator(AsyncTopAgg):
             is_stale = (trainer_version != self._model_version)
 
             if self.var_good_enough:
-                payload = payload_weights
+                payload = payload_with_weights
             else:
                 if is_stale:
-                    payload = payload_weights
+                    payload = payload_with_weights
                     logger.info(f"Trainer {end} hasn't received weights for model_version {self._model_version} (has {trainer_version}). Sending WEIGHTS payload instead of VAR=bad.")
                 else:
-                    payload = payload_var_bad
+                    payload = payload_without_weights
 
             logger.debug(
                 f"Setting channel property {PROP_ROUND_START_TIME} for "
