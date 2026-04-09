@@ -69,7 +69,9 @@ def recv_wrapper(self, channel, end_id):
 
     return channel.recv(end_id)
 
+
 import hashlib
+
 
 def _calculate_hash(tensor):
     if tensor is None:
@@ -77,6 +79,7 @@ def _calculate_hash(tensor):
 
     """Calculate a hash for a tensor for logging."""
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
+
 
 class Trainer(Role, metaclass=ABCMeta):
     """Trainer implements an ML training role."""
@@ -304,8 +307,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
             # Helper lambda for a cleaner log
             format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-            logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
-            
+            logging.debug(
+                f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}"
+            )
+
             if MessageType.DATA_ID in msg:
                 logger.info(
                     f"Trainer id {self.trainer_id} received data id for training : {msg[MessageType.DATA_ID]}"
@@ -336,23 +341,30 @@ class Trainer(Role, metaclass=ABCMeta):
                                     full_grad.append(
                                         torch.zeros_like(param, device="cpu")
                                     )
-                        
+
                         if partial_grad is not None:
                             format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
+                            logger.debug(
+                                f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}"
+                            )
                         else:
-                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
+                            logger.debug(
+                                f"Trainer: {self.trainer_id}  - old_grad: None"
+                            )
 
-                        if self.data_id % 2:
-                            logger.debug(f"using old grad for : {self.data_id}")
-                            self.trainer.model_trainer.old_grad = full_grad
-                        else:
-                            logger.debug(f"reset old grad for : {self.data_id}")
-                            self.trainer.model_trainer.old_grad = None
+                        # if self.data_id % 2:
+                        logger.info(f"using old grad for : {self.data_id}")
+                        self.trainer.model_trainer.old_grad = full_grad
+                        # else:
+                        #     logger.debug(f"reset old grad for : {self.data_id}")
+                        #     self.trainer.model_trainer.old_grad = None
                         # logger.info(
                         #     f"Trainer id {self.trainer_id} using grad_pool from message {self.trainer.model_trainer.old_grad}"
                         # )
                 del full_grad
+            else:
+                if self.args.var_control and self.args.perturbation_sampling:
+                    logger.info(f"Keeping old grad unchanged for : {self.trainer_id} because GRAD_POOL not in msg with var {msg.get(MessageType.VAR, 'N/A')}")
         else:
             logger.info(
                 f"Invalid message received from agg for trainer id: {self.trainer_id} - skipping "
@@ -496,8 +508,12 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"({size_mb:.2f} MB)."
                 )
 
-                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-                logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
+                format_hash = lambda d: {
+                    k: _calculate_hash(v)[:8] for k, v in d.items()
+                }
+                logger.info(
+                    f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}"
+                )
             else:
                 logger.info("No gradients exist; sending an empty dictionary.")
 
@@ -546,7 +562,7 @@ class Trainer(Role, metaclass=ABCMeta):
         channel._selector._cleanup_send_ends()
 
         # Optimization: Perform GC and CUDA memory cleanup after sending gradients.
-        # This moves the "stop the world" synchronous flushes out of the measured 
+        # This moves the "stop the world" synchronous flushes out of the measured
         # training/evaluation phases and into the idle time between rounds.
         gc.collect()
         torch.cuda.empty_cache()

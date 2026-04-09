@@ -83,7 +83,7 @@ def _randn_wrapper(
 
     pre_state = _rng_state_hash(gen)
 
-    res = torch.randn(*size, device=device, generator=gen, **kwargs)
+    res = torch.randn(*size, device=gen.device, generator=gen, **kwargs).to(device)
 
     logging.debug(
         f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}"
@@ -120,7 +120,7 @@ def _randn_like_wrapper(
         tuple(input_tensor.shape),
         dtype=kwargs.get("dtype", input_tensor.dtype),
         layout=kwargs.get("layout", input_tensor.layout),
-        device=device,
+        device=gen.device,
         generator=gen,
         requires_grad=kwargs.get("requires_grad", input_tensor.requires_grad),
     ).to(
@@ -275,48 +275,6 @@ class ForwardTextClassificationTrainer:
         self.buffers = [b.to(device) for b in self.buffers]
 
     @timer_decorator
-    def _select_optimal_perturbations(self, device, logging_state):
-        if self.args.var_control:
-            self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
-
-        v_buffer = {}
-        all_perturbations_hash = ""
-        selected_perturbation_hash = ""
-        index = 0
-        if (self.grad is not None):
-            logging.debug(f"self.grad hashes: {[(_calculate_hash(p), p.shape) for p in self.grad]}")
-            logging.debug(f"self.grad/target_grad_full length = {len(self.grad)}")
-        else:
-            logging.debug("self.grad is None")
-        for k, v in self.model.named_parameters():
-            if self.grad is not None and v.requires_grad:
-                self.total_rng_iter += 1
-                shape = v.shape
-                candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                logging.debug(f"Candidate v - random generation for layer - '{index}' layer shape {candidate_v.shape}")
-                # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
-                target_grad = self.grad[index]
-
-                target_grad = torch.flatten(target_grad)
-                candidate_v = torch.flatten(candidate_v, start_dim=1)
-
-                logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
-                all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
-
-                cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-
-                sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-                logging.debug(f"cos sim values for trainer {self.trainer_id}:  {sorted_values}")
-                v_buffer[index] = [
-                    candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
-                ]
-
-                del candidate_v, target_grad, cos_sim, sorted_indices, shape
-            index += 1
-        return v_buffer
-
-
-    @timer_decorator
     def _setup_training_state(self, device, logging_state):
         @timer_decorator
         def _select_optimal_perturbations(device, logging_state):
@@ -331,15 +289,15 @@ class ForwardTextClassificationTrainer:
                 if self.grad is not None and v.requires_grad:
                     self.total_rng_iter += 1
                     shape = v.shape
-                    candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                    candidate_v = _randn_wrapper((1 * 200, *shape), device=device, generator=self.torch_rng, logging_state=logging_state, param_name=k)
                     # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
                     target_grad = self.grad[index]
 
                     target_grad = torch.flatten(target_grad)
                     candidate_v = torch.flatten(candidate_v, start_dim=1)
 
-                    logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
-                    all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
+                    if logging.getLogger().isEnabledFor(logging.DEBUG):
+                        logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
 
                     cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
 
@@ -350,6 +308,10 @@ class ForwardTextClassificationTrainer:
 
                     del candidate_v, target_grad, cos_sim, sorted_indices, shape
                 index += 1
+
+            if self.grad is None:
+                logger.warning("TrainerId: %s skipped cosine_similarity checks because self.old_grad is None. v_buffer is %s", self.trainer_id, v_buffer)
+
             return v_buffer
 
         self.log_memory("after_fmodel_setup", device)

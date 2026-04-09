@@ -132,11 +132,14 @@ def calculate_var(fwdgrad_list):
 def calculate_cos_sim(A, target_grad, device):
     batch_size = 1000
 
+    # Move target_grad to the expected device (A is already on device)
+    target_grad = target_grad.to(device)
+
     # 计算总批次数
     num_batches = math.ceil(A.size(0) / batch_size)
 
-    # 创建一个空的结果张量
-    result = torch.empty(A.size(0))
+    # 创建一个空的结果张量，放在合适的设备上
+    result = torch.empty(A.size(0), device=device)
 
     # 逐批次计算余弦相似度
     for i in range(num_batches):
@@ -154,4 +157,4 @@ def calculate_cos_sim(A, target_grad, device):
         # 将结果保存到结果张量的对应位置
         result[start_idx:end_idx] = similarity
 
-    return similarity
+    return result

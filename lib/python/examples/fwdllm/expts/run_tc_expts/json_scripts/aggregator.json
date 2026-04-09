@@ -104,7 +104,7 @@
         "uri": ""
     },
     "selector": {
-        "sort": "async_oort",
+        "sort": "async_random",
         "kwargs": {
             "//": "c: concurrency level",
             "c": 30,
@@ -112,7 +112,7 @@
             "evalGoalFactor": 0,
             "selectType": "default",
             "roundNudgeType": "last_eval",
-            "minInitialTrainers": 10,
+            "minInitialTrainers": 30,
             "k": 10,
             "is_async": true
         }
