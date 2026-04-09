@@ -240,6 +240,7 @@ class TopAggregator(AsyncTopAgg):
         self._is_model_updated = False
         self._model_version = 0
         self.grad_pool = []
+        self.cached_shared_grad_pool_trainable = None
         self.var = None
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
@@ -1100,20 +1101,22 @@ class TopAggregator(AsyncTopAgg):
             trainable_params, DeviceType.CPU
         )  # Need to move to CPU for sending over MQTT
 
-        shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
-        shared_grad_pool_trainable = []
-        if shared_grad_pool is None:
-            shared_grad_pool_trainable = None
-        else:
-            idx = 0
-            for param in self.model.parameters():
-                if param.requires_grad:
-                    shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
-                idx += 1
+        if self._is_model_updated:
+            shared_grad_pool = self.aggregate_grad_pool(self.grad_pool)
+            shared_grad_pool_trainable = []
+            if shared_grad_pool is None:
+                shared_grad_pool_trainable = None
+            else:
+                idx = 0
+                for param in self.model.parameters():
+                    if param.requires_grad:
+                        shared_grad_pool_trainable.append(shared_grad_pool[idx].clone())
+                    idx += 1
+            self.cached_shared_grad_pool_trainable = shared_grad_pool_trainable
 
         payload = {
             MessageType.WEIGHTS: shared_weights,
-            MessageType.GRAD_POOL: shared_grad_pool_trainable,
+            MessageType.GRAD_POOL: self.cached_shared_grad_pool_trainable,
             MessageType.ROUND: self._round,
             MessageType.MODEL_VERSION: self._model_version,
             MessageType.TASK_TO_PERFORM: task_to_perform,
