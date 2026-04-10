@@ -1229,6 +1229,7 @@ class TopAggregator(AsyncTopAgg):
         This method is overridden from one in synchronous top aggregator
         """
 
+        self.ends_not_selected_yet = False
         logger.info(f"Device for agg: {next(self.model.parameters()).device}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -1385,10 +1386,6 @@ class TopAggregator(AsyncTopAgg):
             trainer_version_states=self._trainer_state_dict,
         )
         logger.info(f"ends: {ends}")
-        if ends is None:
-            self.ends_not_selected_yet = True
-        else:
-            self.ends_not_selected_yet = False
 
         if not ends:
             logger.debug(
@@ -1447,6 +1444,18 @@ class TopAggregator(AsyncTopAgg):
             )
             channel.send(end, payload)
         logger.info(f"Sent weights to all ends")
+
+        ends_in_recv_state = channel.ends(VAL_CH_STATE_RECV)
+        logger.info(f"ends_in_recv_state: {ends_in_recv_state}")
+        if ends_in_recv_state is None:
+            self.ends_not_selected_yet = True
+            logger.info(f"ends_in_recv is None")
+        elif len(ends_in_recv_state) < channel.get_c():  
+            self.ends_not_selected_yet = True
+            logger.info(f"Selected only {len(ends)} in this round, total in flight {len(ends_in_recv_state)}, need {channel.get_c() - len(ends_in_recv_state)} to meet agg-goal.")
+        else:
+            self.ends_not_selected_yet = False
+            logger.info("Distributed to c ends and can wait for k updates")
 
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         if self.is_async:
