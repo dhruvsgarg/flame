@@ -11,8 +11,8 @@ total_client_num=$4
 LOG_LEVEL=$5
 ENABLE_WATCHDOG=${6:-false}  # Set to "true" to enable error checking, defaults to "false"
 # --- Accuracy monitoring configuration ---
-ACC_THRESHOLD=80          # Accuracy percentage (0-100) to monitor for
-ACC_CONSEC_LIMIT=20       # Number of consecutive rounds above threshold before stopping the run
+ACC_THRESHOLD=60          # Accuracy percentage (0-100) to monitor for
+ACC_CONSEC_LIMIT=10       # Number of consecutive rounds above threshold before stopping the run
 
 pkill -f "$FWDLLM_USER.*fl_main.py"
 if [ $? -eq 0 ]; then

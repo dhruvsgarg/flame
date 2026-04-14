@@ -1260,6 +1260,15 @@ class TopAggregator(AsyncTopAgg):
         else:
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
+        self._curr_agg_version = (
+            self._model_version,
+            self.data_id,
+            self.iteration_per_data_id,
+        )
+        logger.debug(
+            f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
+        )
+        
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         logger.info(f"ends: {ends}")
         if ends is None or len(ends) >= self._agg_goal:
