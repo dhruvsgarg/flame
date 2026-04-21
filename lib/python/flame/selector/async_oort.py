@@ -391,8 +391,9 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug("Got empty utility_list, returning 999999.0")
             return 999999.0
 
-        index = int(num_of_ends * (1 - self.exploration_factor)) - 1
-        index = max(0, min(index, len(sorted_utility_list) - 1))
+        index = int(len(sorted_utility_list) * self.exploration_factor)
+        index = min(index, len(sorted_utility_list) - 1)
+        # This is the first index to exploit
 
         return 0.95 * sorted_utility_list[index][PROP_UTILITY]
 
@@ -593,7 +594,7 @@ class AsyncOortSelector(AbstractSelector):
         if self.round_nudge_type == "last_train":
             end_last_selected_round = ends[end_id].get_property(
                 PROP_LAST_SELECTED_ROUND
-            )  # Misnomer: This is actually PROP_LAST_SELECTED_MODEL_VERSION
+            )  # TODO(GD): Fix the misnomer: This should actually be PROP_LAST_SELECTED_MODEL_VERSION
         elif self.round_nudge_type == "last_eval":
             end_last_selected_round = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
 
@@ -727,46 +728,6 @@ class AsyncOortSelector(AbstractSelector):
         # return at the top, we don't have anything to do here?
         self.round_preferred_duration = self.calculate_round_preferred_duration(ends)
 
-        # Sort the utility list by the utility value placed at the
-        # index 1 of each tuple
-        utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
-
-        # Todo: (GD) Figure out why the code is not entering this loop
-        if len(utility_list) > 0:
-            logger.debug("Entered full_dataset_stat_util denormalization loop")
-            min_val = utility_list[0][PROP_UTILITY]
-            max_val = utility_list[-1][PROP_UTILITY]
-            for utility_idx in range(len(utility_list)):
-                unnormalized_val = utility_list[utility_idx][PROP_UTILITY]
-
-                if max_val == min_val:
-                    normalized_val = 100.0
-                else:
-                    normalized_val = (
-                        (unnormalized_val - min_val) / (max_val - min_val)
-                    ) * 100.0
-
-                utility_list[utility_idx][PROP_UTILITY] = normalized_val
-
-                curr_end_id = utility_list[utility_idx][PROP_END_ID]
-
-                logger.debug(
-                    f"Trainer {curr_end_id} "
-                    f"full_dataset_stat_utility: unnormalized = {unnormalized_val:.4f}, "
-                    f"normalized = {normalized_val:.4f}, "
-                    f"partial_dataset_stat_utility: {ends[curr_end_id].get_property(PROP_PARTIAL_DATASET_STAT_UTILITY):.4f}"
-                )
-
-        # Calculate the clip value that caps utility value of a client
-        # to no more than an upper bound (95% value in utility
-        # distributions) NOTE: In cases of new clients added to the
-        # system, there could be cases where the utility_list is
-        # empty. In that case, we set clip_value to 100. TODO: (DG)
-        # Verify that this would be okay.
-        clip_value = utility_list[
-            min(int(len(utility_list) * 0.95), len(utility_list) - 1)
-        ][PROP_UTILITY]
-
         # Calculate the final utility value of a trainer by adding the
         # temporal uncertainty and multiplying the global system
         # utility
@@ -781,11 +742,6 @@ class AsyncOortSelector(AbstractSelector):
             curr_end_id = utility_list[utility_idx][PROP_END_ID]
 
             stat_utility = curr_end_utility
-
-            # Clip the utility value
-            utility_list[utility_idx][PROP_UTILITY] = min(
-                utility_list[utility_idx][PROP_UTILITY], clip_value
-            )
 
             # Add temproal uncertainty term
             temporal_uncertainty = self.calculate_temporal_uncertainty_of_trainer(
@@ -810,10 +766,8 @@ class AsyncOortSelector(AbstractSelector):
                 f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
             )
 
-        # Sort the utility list again, with the updated utility value
-        utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
-
-        return utility_list
+        # Sort the utility list, with the updated utility value
+        return sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
     def _cleanup_provided_ends(
         self, ends_to_cleanup: dict[str, End], ends: dict[str, End]
@@ -1364,9 +1318,15 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"extra: {extra}, nothing to select")
             return {}
 
-        # round = channel_props["round"] if "round" in channel_props else 0
-        if not agg_version_state or agg_version_state[0] is not None:
+        if agg_version_state is not None and agg_version_state[0] is not None:
             model_version = agg_version_state[0]
+        else:
+            logger.warning(
+                "Passing agg_version_state to select() will soon be made mandatory. Using channel_props['round'] or self.round to determine model_version for now"
+            )
+            model_version = (
+                channel_props["round"] if "round" in channel_props else self.round
+            )
 
         logger.debug(f"let's select {extra} ends for model_version {model_version}")
 
@@ -1651,7 +1611,7 @@ class AsyncOortSelector(AbstractSelector):
             # DG: Removed old check for first round This indicates the
             # first round, where no end's utility has been measured;
             # Then, perform random selection
-            if len(utility_list) < exploitation_len:
+            if model_version == 0:
                 self.round = model_version
 
                 logger.debug(
