@@ -230,6 +230,10 @@ class ForwardTextClassificationTrainer:
         self.params = None
         self.buffers = None
         self.grad_for_var_check = None
+        self.databin_best_jvp_val = 0.0
+        self.databin_best_v_params = None
+        self.last_model_version_jvp_updated = -1
+
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -386,7 +390,13 @@ class ForwardTextClassificationTrainer:
         @timer_decorator
         def _setup_training_state( device, logging_state, x, labels):
             @timer_decorator
-            def _select_optimal_perturbations(device, logging_state):
+            def _select_optimal_perturbations(device, logging_state ):
+                if logging_state.get('data_id') != self.last_model_version_jvp_updated :
+                    self.databin_best_jvp_val = 0.0 # reset after a databin is complete
+                    self.databin_best_v_params = None
+                    self.last_model_version_jvp_updated = logging_state.get('data_id')
+                    logging.info(f"data_id_iteration {logging_state.get('iteration')} - resetting")
+                
                 if self.args.var_control:
                     self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
 
@@ -439,9 +449,16 @@ class ForwardTextClassificationTrainer:
                 sorted_indices = [i for i, v in sorted(enumerate(jvp_all_perturbations), key=lambda x: abs(x[1]))]
                 sorted_jvps = [jvp_all_perturbations[i] for i in sorted_indices]
 
-                logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[sorted_indices[-1]]} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
+                # if 0.8 * self.databin_best_jvp_val > abs(sorted_jvps[-1]):
+                if False:
+                    best_idx = -1
+                    logging.info(f"Databin best jvp so far: {self.databin_best_jvp_val} - best this iteration: {abs(sorted_jvps[-1])}")
+                else:
+                    best_idx = np.random.choice([sorted_indices[-1], sorted_indices[-2]])
+                    self.databin_best_jvp_val = abs(sorted_jvps[-1])
+                    logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[sorted_indices[-1]]} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
   
-                return v_buffer, sorted_indices[-1] # v_buffer here contains all perturbations
+                return v_buffer, best_idx # v_buffer here contains all perturbations
 
             self.log_memory("after_fmodel_setup", device)
 
@@ -571,7 +588,12 @@ class ForwardTextClassificationTrainer:
         _compute_batch_stat_utility(device, x, labels)
         v_buffer, best_idx = _setup_training_state(device, logging_state, x, labels)
 
-        v_params = _prepare_perturbation_tensors(device, v_buffer, best_idx)
+        if best_idx == -1 and self.databin_best_v_params is not None:
+            v_params = self.databin_best_v_params
+            logging.info(f"Using global best, not using a new perturbation.")
+        else:
+            v_params = _prepare_perturbation_tensors(device, v_buffer, best_idx)
+            self.databin_best_v_params = copy.deepcopy(v_params)
         logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
         logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
