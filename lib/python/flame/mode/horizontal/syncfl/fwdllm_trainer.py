@@ -161,6 +161,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.iteration_per_data_id = None
         self.abort_training = False
         self.partial_stat_utility = 0
+        self.required_stat_utilities = []
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -379,6 +380,10 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.debug(f"Found task_to_perform in msg: {self.task_to_perform}")
         else:
             logger.info(f"Didn't find TASK_TO_PERFORM in msg")
+            
+        if MessageType.REQUIRED_STAT_UTILITIES in msg:
+            self.required_stat_utilities = msg[MessageType.REQUIRED_STAT_UTILITIES]
+            self.trainer.model_trainer.required_stat_utilities = self.required_stat_utilities
 
         self.fetch_success = True
 
@@ -474,14 +479,18 @@ class Trainer(Role, metaclass=ABCMeta):
         # We assume self.trainer.model_trainer is present and has the required method
         # Pass the entire list so that the first loop in calculate_full_dataset_stat_utility
         # correctly identifies the 'bins'.
-        full_stat_utility = (
-            self.trainer.model_trainer.calculate_full_dataset_stat_utility(
-                self.train_local_list, self.device
+        full_stat_utility = 0.0
+        if "full" in self.required_stat_utilities:
+            full_stat_utility = (
+                self.trainer.model_trainer.calculate_full_dataset_stat_utility(
+                    self.train_local_list, self.device
+                )
             )
-        )
-        logger.info(
-            f"Trainer {self.trainer_id} full_dataset_stat_utility calculation complete: {full_stat_utility}"
-        )
+            logger.info(
+                f"Trainer {self.trainer_id} full_dataset_stat_utility calculation complete: {full_stat_utility}"
+            )
+        else:
+            logger.info("Skipping full stat_utility computation as per config.")
 
         if self.task_to_perform == "train":
             # trainer is expected to train and it is also available to train -
@@ -532,16 +541,18 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.PARTIAL_DATASET_STAT_UTILITY: self.partial_stat_utility,
-                MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
             }
+            if self.required_stat_utilities:
+                msg[MessageType.PARTIAL_DATASET_STAT_UTILITY] = self.partial_stat_utility
+                msg[MessageType.FULL_DATASET_STAT_UTILITY] = full_stat_utility
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
-                MessageType.PARTIAL_DATASET_STAT_UTILITY: self.partial_stat_utility,
-                MessageType.FULL_DATASET_STAT_UTILITY: full_stat_utility,
             }
+            if self.required_stat_utilities:
+                msg[MessageType.PARTIAL_DATASET_STAT_UTILITY] = self.partial_stat_utility
+                msg[MessageType.FULL_DATASET_STAT_UTILITY] = full_stat_utility
 
         channel.send(end, msg)
 

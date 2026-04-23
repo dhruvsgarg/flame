@@ -121,9 +121,15 @@ class AsyncOortSelector(AbstractSelector):
 
         self.exploration_factor = 0.9
         self.exploration_factor_decay = 0.98
-        self.min_exploration_factor = 0.2
-
+        self.min_exploration_factor = 0.1
         self.exploitation_util_history = []
+        
+        stat_utility_config = kwargs.get("stat_utility", "partial")
+        self._target_stat_utility_prop = (
+            PROP_FULL_DATASET_STAT_UTILITY 
+            if stat_utility_config == "full" 
+            else PROP_PARTIAL_DATASET_STAT_UTILITY
+        )
 
         # Assuming a max round duration of 99999 seconds (~1.2 days)
         self.round_preferred_duration = timedelta(seconds=99999)
@@ -331,7 +337,7 @@ class AsyncOortSelector(AbstractSelector):
 
             for selected_end_id in results.keys():
                 end_stat_util = ends[selected_end_id].get_property(
-                    PROP_FULL_DATASET_STAT_UTILITY
+                    self._target_stat_utility_prop
                 )
                 end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
                 end_last_round = ends[selected_end_id].get_property(
@@ -518,7 +524,13 @@ class AsyncOortSelector(AbstractSelector):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):
-                end_utility = ends[end_id].get_property(PROP_FULL_DATASET_STAT_UTILITY)
+                end_utility = ends[end_id].get_property(self._target_stat_utility_prop)
+                has_trained = ends[end_id].get_property(PROP_ROUND_DURATION) is not None
+                
+                if has_trained and end_utility is None:
+                    logger.error(f"Selector expected {self._target_stat_utility_prop} for end {end_id} but it was missing.")
+                    raise ValueError(f"Crucial state gap: Expected {self._target_stat_utility_prop} for {end_id} in selector, but got None.")
+
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
@@ -668,7 +680,7 @@ class AsyncOortSelector(AbstractSelector):
             exploited_utility = 0
             for exploit_end_id in exploit_end_ids:
                 exploited_utility += ends[exploit_end_id].get_property(
-                    PROP_FULL_DATASET_STAT_UTILITY
+                    self._target_stat_utility_prop
                 )
             exploited_utility /= len(exploit_end_ids)
             self.exploitation_util_history.append(exploited_utility)
@@ -1335,7 +1347,7 @@ class AsyncOortSelector(AbstractSelector):
             # all the ends
             for end_id, end in ends.items():
                 logger.debug(
-                    f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_FULL_DATASET_STAT_UTILITY)}"
+                    f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(self._target_stat_utility_prop)}"
                 )
 
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed

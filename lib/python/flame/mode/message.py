@@ -42,6 +42,7 @@ class MessageType(Enum):
 
     FULL_DATASET_STAT_UTILITY = 32  # measured utility of a trainer over its entire local dataset
     PARTIAL_DATASET_STAT_UTILITY = 33  # measured utility of a trainer over the data it trained on
+    REQUIRED_STAT_UTILITIES = 34  # list of stat utilities that the trainer is requested to compute
 
     COORDINATED_ENDS = 12  # ends coordinated by a coordinator
 

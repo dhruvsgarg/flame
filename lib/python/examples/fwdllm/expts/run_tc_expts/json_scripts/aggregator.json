@@ -114,7 +114,8 @@
             "roundNudgeType": "last_train",
             "minInitialTrainers": 50,
             "k": 10,
-            "is_async": true
+            "is_async": true,
+            "stat_utility": "partial"
         }
     },
     "optimizer": {
@@ -129,7 +130,8 @@
                 "b_exp": 0.25,
                 "alpha_type": "polynomial",
                 "beta_type": "exponential"
-            }
+            },
+            "stat_utility": "partial"
         }
     },
     "maxRunTime": 600,

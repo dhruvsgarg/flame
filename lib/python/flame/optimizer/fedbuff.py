@@ -178,6 +178,10 @@ class FedBuff(AbstractOptimizer):
                 rate = 1 / math.sqrt(1 + version - tres.version)
 
             elif self.agg_rate_conf["type"] == "new":
+                if getattr(tres, "stat_utility", None) is None:
+                    logger.error("FedBuff optimizer configured for 'new' agg_rate expects 'stat_utility' from the trainer, but it is missing.")
+                    raise ValueError("FedBuff optimizer expected 'stat_utility' in message from Trainer but got None. Check aggregator / trainer config.")
+                    
                 # New rate that trades off staleness and statistical
                 # utility
 

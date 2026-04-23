@@ -225,6 +225,7 @@ class ForwardTextClassificationTrainer:
         self.params = None
         self.buffers = None
         self.grad_for_var_check = None
+        self.required_stat_utilities = []
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -380,6 +381,10 @@ class ForwardTextClassificationTrainer:
     def _train_one_batch(self, device, batch, epoch, batch_idx, v_buffer):
         @timer_decorator
         def _compute_batch_stat_utility(device, x, labels):
+            if "partial" not in self.required_stat_utilities:
+                if batch_idx == 0 and epoch == 0:
+                    logging.info("Skipping partial stat_utility computation as per config.")
+                return
 
             with torch.no_grad():
                 pred = self.model(x)
@@ -488,10 +493,11 @@ class ForwardTextClassificationTrainer:
         # Optimization: Remove GC & buffer flushes from the batch loop
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
         
-        self.base_trainer.normalize_stat_utility(epoch)
-        logging.debug(
-            f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer.partial_stat_utility}"
-        )
+        if "partial" in self.required_stat_utilities:
+            self.base_trainer.normalize_stat_utility(epoch)
+            logging.debug(
+                f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer.partial_stat_utility}"
+            )
         
         del x, labels, jvp, v_params
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")

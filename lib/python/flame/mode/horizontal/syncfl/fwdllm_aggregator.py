@@ -1211,6 +1211,17 @@ class TopAggregator(AsyncTopAgg):
 
     @timer_decorator
     def _prepare_distribution_payload(self, task_to_perform: str, force_weights: bool = False):
+        selector_stat_util = self.config.selector.kwargs.get("stat_utility")
+        optimizer_stat_util = self.config.optimizer.kwargs.get("stat_utility")
+        
+        if selector_stat_util is None or optimizer_stat_util is None:
+            logger.error("stat_utility configuration is missing in aggregator.json. Please set it to 'full', 'partial', or 'none'. In FwdLLM, 'partial' is a good default value.")
+            raise ValueError("Missing stat_utility configuration in aggregator.json.")
+            
+        required_utils_set = {selector_stat_util.lower(), optimizer_stat_util.lower()}
+        required_utils_set.discard("none")
+        required_stat_utilities = list(required_utils_set)
+
         if self.var:
             logger.info(
                 f"self.var = {self.var}, self.var_threshold = {self.var_threshold}"
@@ -1228,6 +1239,7 @@ class TopAggregator(AsyncTopAgg):
                 MessageType.TASK_TO_PERFORM: task_to_perform,
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
+                MessageType.REQUIRED_STAT_UTILITIES: required_stat_utilities,
             }
 
         logger.info(
@@ -1263,6 +1275,7 @@ class TopAggregator(AsyncTopAgg):
             MessageType.TASK_TO_PERFORM: task_to_perform,
             MessageType.DATA_ID: self.data_id,
             MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
+            MessageType.REQUIRED_STAT_UTILITIES: required_stat_utilities,
         }
 
         return payload
