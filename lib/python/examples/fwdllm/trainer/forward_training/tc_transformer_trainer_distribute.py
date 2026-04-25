@@ -230,6 +230,7 @@ class ForwardTextClassificationTrainer:
         self.params = None
         self.buffers = None
         self.grad_for_var_check = None
+        self.jvp_for_snr_check = None
         self.databin_best_jvp_val = 0.0
         self.databin_best_v_params = None
         self.last_model_version_jvp_updated = -1
@@ -598,6 +599,7 @@ class ForwardTextClassificationTrainer:
         logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
         loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
+        self.jvp_for_snr_check = abs(jvp)
         logging.info(f"JVP of the perturbation: {jvp}")
 
         _accumulate_and_extract_grads(device, jvp, v_params)

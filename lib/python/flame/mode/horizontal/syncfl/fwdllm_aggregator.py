@@ -480,6 +480,7 @@ class TopAggregator(AsyncTopAgg):
         version_for_rate: int,
         stat_utility: float = 0.0,
         grad_for_var_check=None,
+        jvp_for_snr_check=None,
     ):
         """Aggregate a single trainer's gradients into self.grad.
 
@@ -557,6 +558,7 @@ class TopAggregator(AsyncTopAgg):
         if grad_for_var_check is not None:
             stacked = torch.stack(list(grad_for_var_check))
             self.grad_for_var_check_list.append(stacked * rate)
+            self.jvp_for_snr_check_list.append(jvp_for_snr_check)
 
         self.log_memory("end aggregate_grads_from_trainers", self.device)
         self.print_trainable_params_stats(
@@ -695,6 +697,12 @@ class TopAggregator(AsyncTopAgg):
                 if MessageType.GRADIENTS_FOR_VAR_CHECK in msg
                 else None
             )
+            jvp_for_snr_check = (
+                msg[MessageType.JVP_FOR_SNR_CHECK]
+                if MessageType.JVP_FOR_SNR_CHECK in msg
+                else None
+            )
+            logger.info(f"jvp_for_snr_check at aggregator: {jvp_for_snr_check}")
             logger.debug(
                 f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
             )
@@ -703,6 +711,7 @@ class TopAggregator(AsyncTopAgg):
                 version_for_rate=version_for_rate,
                 stat_utility=channel.get_end_property(end, PROP_STAT_UTILITY),
                 grad_for_var_check=grad_for_var_check,
+                jvp_for_snr_check=jvp_for_snr_check,
             )
 
             # del trainer_gradients # Free memory
@@ -1216,6 +1225,7 @@ class TopAggregator(AsyncTopAgg):
         if self._is_model_updated:
             self.grad_pool = []
             self.grad_for_var_check_list = []
+            self.jvp_for_snr_check_list = []
             self._is_model_updated = False
 
     @timer_decorator
