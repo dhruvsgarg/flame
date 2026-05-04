@@ -558,6 +558,36 @@ class ForwardTextClassificationTrainer:
             loss, jvp = calculate_jvp(f, self.params, v_params)
             jvp = jvp.to(device)
             return loss, jvp
+        
+        @timer_decorator
+        def _compute_loss_after_update(device, x, labels, v_params, jvp_scalar):
+            
+            f = partial(
+                functional_get_loss,
+                model=self.fmodel,
+                buffers = self.buffers,
+                num_classes = self.num_labels,
+                x=x,
+                t=labels,
+            )
+
+            loss = calculate_jvp_after_actual_update(f, self.params, v_params, jvp_scalar)
+            return loss
+        
+        @timer_decorator
+        def _compute_loss_before_update(device, x, labels, v_params, jvp_scalar):
+            
+            f = partial(
+                functional_get_loss,
+                model=self.fmodel,
+                buffers = self.buffers,
+                num_classes = self.num_labels,
+                x=x,
+                t=labels,
+            )
+
+            loss = calculate_jvp_before_actual_update(f, self.params)
+            return loss
 
         @timer_decorator
         def _accumulate_and_extract_grads(device, jvp, v_params):
@@ -599,6 +629,9 @@ class ForwardTextClassificationTrainer:
         logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
         loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
+        real_global_loss = _compute_loss_after_update(device, x, labels, v_params, jvp)
+        loss_before_update = _compute_loss_before_update(device, x, labels, v_params, jvp)
+        logging.info(f"At trainer: {self.trainer_id} - jvp_magnitude: {jvp} - loss before update: { loss_before_update } - loss after update: {real_global_loss}")
         self.jvp_for_snr_check = abs(jvp)
         logging.info(f"JVP of the perturbation: {jvp}")
 
