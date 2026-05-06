@@ -450,6 +450,7 @@ class ForwardTextClassificationTrainer:
                 sorted_indices = [i for i, v in sorted(enumerate(jvp_all_perturbations), key=lambda x: abs(x[1]))]
                 sorted_jvps = [jvp_all_perturbations[i] for i in sorted_indices]
 
+                # carefully delete this condition, we do not want to use best across iterations - this reduces exploration
                 # if 0.8 * self.databin_best_jvp_val > abs(sorted_jvps[-1]):
                 if False:
                     best_idx = -1

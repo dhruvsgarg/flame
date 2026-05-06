@@ -163,12 +163,12 @@ def log_dist(name, tensor):
     flat = tensor.detach().float().view(-1)
     
     # Define percentiles to track
-    q = torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9]).to(flat.device)
+    q = torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]).to(flat.device)
     percentiles = torch.quantile(flat, q)
     
     logger.info(
         f"{name:15} | Mean: {flat.mean():.6f} | "
-        f"P10: {percentiles[0]:.6f} | P50: {percentiles[2]:.6f} | P90: {percentiles[4]:.6f}"
+        f"P10: {percentiles[0]:.6f} | P50: {percentiles[2]:.6f} | P90: {percentiles[4]:.6f} | P95: {percentiles[5]:.6f} | P99: {percentiles[6]:.6f}"
     )
 
 def calculate_snr(fwdgrad_list):
