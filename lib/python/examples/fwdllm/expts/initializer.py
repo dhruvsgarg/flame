@@ -426,7 +426,7 @@ def add_federated_args(parser):
     )
 
     parser.add_argument(
-        "--jvp_perturbation_selection", type=bool, default=False, metavar="N", help="use_jvp_to_select_best_perturbation"
+        "--select_perturbation_using_jvp", type=bool, default=False, metavar="N", help="use_jvp_to_select_best_perturbation"
     )
 
     return parser

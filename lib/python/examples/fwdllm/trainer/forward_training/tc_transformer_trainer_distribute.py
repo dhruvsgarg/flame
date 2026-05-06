@@ -200,9 +200,9 @@ class ForwardTextClassificationTrainer:
         if self.args.perturbation_sampling and self.args.var_control:
             self.old_grad = None
 
-        self.jvp_perturbation_selection = False
-        if self.args.jvp_perturbation_selection:
-            self.jvp_perturbation_selection = self.args.jvp_perturbation_selection
+        self.select_perturbation_using_jvp = False
+        if self.args.select_perturbation_using_jvp:
+            self.select_perturbation_using_jvp = self.args.select_perturbation_using_jvp
 
         # var control TODO: It is not layer id it is param id. Distilbert for eg
         # has only 6 layers.
@@ -417,7 +417,7 @@ class ForwardTextClassificationTrainer:
                         logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                         all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
-                        if not self.jvp_perturbation_selection and self.grad is not None:
+                        if not self.select_perturbation_using_jvp and self.grad is not None:
                             target_grad = self.grad[index]
                             target_grad = torch.flatten(target_grad)
                             cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
@@ -434,7 +434,7 @@ class ForwardTextClassificationTrainer:
                             del candidate_v, shape
                     index += 1
 
-                if not self.jvp_perturbation_selection:
+                if not self.select_perturbation_using_jvp:
                     return v_buffer, 0 # we add only the best cos sim values here
                 
 
