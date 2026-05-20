@@ -24,11 +24,11 @@ import numpy as np
 from flame.common.typing import Scalar
 from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
-from flame.selector.oort import (
-    OortSelector,
-    PROP_UTILITY,
+from flame.selector.oort import OortSelector
+from flame.selector.properties import (
     PROP_END_ID,
     PROP_SELECTED_COUNT,
+    PROP_UTILITY,
 )
 from flame.availability.refl_tracker import REFLAvailabilityTracker
 

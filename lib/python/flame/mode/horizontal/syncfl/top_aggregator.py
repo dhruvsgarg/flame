@@ -43,17 +43,19 @@ from flame.optimizers import optimizer_provider
 from flame.plugin import PluginManager, PluginType
 from flame.registries import registry_provider
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
+from flame.selector.properties import (
+    PROP_LOCAL_ACCURACY,
+    PROP_ROUND_DURATION,
+    PROP_ROUND_END_TIME,
+    PROP_ROUND_START_TIME,
+    PROP_STAT_UTILITY,
+)
 
 logger = logging.getLogger(__name__)
 
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
 TAG_HEARTBEAT = "heartbeat_recv"
-PROP_ROUND_START_TIME = "round_start_time"
-PROP_ROUND_END_TIME = "round_end_time"
-PROP_STAT_UTILITY = "stat_utility"
-PROP_LOCAL_ACCURACY = "local_accuracy"
-PROP_ROUND_DURATION = "round_duration"
 
 
 class TopAggregator(Role, metaclass=ABCMeta):

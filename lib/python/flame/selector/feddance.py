@@ -18,22 +18,22 @@ import random
 from collections import deque
 from typing import Optional
 
+from flame.availability.feddance_predictor import FedDancePredictor
 from flame.common.typing import Scalar
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
-from flame.availability.feddance_predictor import FedDancePredictor
+from flame.selector.properties import (
+    PROP_A,
+    PROP_I,
+    PROP_LAST_ENGAGED_ROUND,
+    PROP_LOCAL_ACCURACY,
+    PROP_SELECTED_COUNT,
+    PROP_STAT_UTILITY,
+    PROP_U,
+    PROP_V,
+)
 
 logger = logging.getLogger(__name__)
-
-PROP_STAT_UTILITY = "stat_utility"
-PROP_LOCAL_ACCURACY = "local_accuracy"
-PROP_SELECTED_COUNT = "selected_count"
-PROP_LAST_ENGAGED_ROUND = "last_engaged_round"
-PROP_LAMBDA = "lambda_m"
-PROP_V = "v_m"
-PROP_I = "i_m"
-PROP_A = "a_m"
-PROP_U = "u_m"
 
 EPS = 1e-6
 
@@ -77,8 +77,7 @@ class FedDanceSelector(AbstractSelector):
         self.round = 0
         self.newly_selected_this_round: set = set()
 
-        # Buffer of (loss, accuracy) values seen in the current round, used
-        # to update prev_round_mean_I/A in on_round_completed.
+        # Drained in on_round_completed to update prev_round_mean_I/A.
         self._round_loss_buffer: list[float] = []
         self._round_acc_buffer: list[float] = []
 

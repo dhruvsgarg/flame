@@ -26,19 +26,20 @@ from flame.common.typing import Scalar
 from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
+from flame.selector.properties import (
+    PROP_DATASET_SIZE,
+    PROP_END_ID,
+    PROP_LAST_EVAL_ROUND,
+    PROP_LAST_SELECTED_ROUND,
+    PROP_ROUND_DURATION,
+    PROP_ROUND_START_TIME,
+    PROP_SELECTED_COUNT,
+    PROP_STAT_UTILITY,
+    PROP_UPDATE_COUNT,
+    PROP_UTILITY,
+)
 
 logger = logging.getLogger(__name__)
-
-PROP_UTILITY = "utility"
-PROP_END_ID = "end_id"
-PROP_SELECTED_COUNT = "selected_count"
-PROP_ROUND_START_TIME = "round_start_time"
-PROP_ROUND_DURATION = "round_duration"
-PROP_STAT_UTILITY = "stat_utility"
-PROP_DATASET_SIZE = "dataset_size"
-PROP_UPDATE_COUNT = "update_count"
-PROP_LAST_SELECTED_ROUND = "last_selected_round"
-PROP_LAST_EVAL_ROUND = "last_eval_round"
 
 
 class OortSelector(AbstractSelector):
@@ -155,23 +156,7 @@ class OortSelector(AbstractSelector):
         task_to_perform: str,
         **kwargs,
     ) -> SelectorReturnType:
-        """Return k number of ends from the given ends.
-
-        Additional kwargs (used in async FL contexts, unused in sync Oort):
-        - agg_version_state: Aggregator's (model_version, data_id, iteration_id)
-        - trainer_version_states: Map of trainer_id to version triplets
-        """
-        logger.debug("calling oort select")
-        # Extract async FL params for forward compatibility (unused in sync Oort)
-        agg_version_state = kwargs.get("agg_version_state")
-        trainer_version_states = kwargs.get("trainer_version_states")
-        if agg_version_state is not None:
-            logger.debug(f"Received aggregator version state: {agg_version_state}")
-        if trainer_version_states is not None:
-            logger.debug(
-                f"Received trainer version states for {len(trainer_version_states)} trainers"
-            )
-
+        """Return k number of ends from the given ends."""
         num_of_ends = min(len(ends), self.num_of_ends)
         if num_of_ends == 0:
             logger.debug("ends is empty")
@@ -253,43 +238,29 @@ class OortSelector(AbstractSelector):
         utility_list = self.calculate_total_utility(utility_list, ends, round)
         cutoff_utility = self.cutoff_util(utility_list, num_of_ends)
 
-        # sample exploitation_len of clients by utility
         exploit_end_ids = self.sample_by_util(
             cutoff_utility, utility_list, exploitation_len
         )
-        logger.debug(f"exploit-selected ends: {exploit_end_ids}")
 
-        # sample exploration_len of unexplored clients
         explore_end_ids = []
         if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
             explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
-        logger.debug(f"explore-selected ends: {explore_end_ids}")
 
         newly_selected = set([*explore_end_ids, *exploit_end_ids])
         self.selected_ends = self.selected_ends | newly_selected
 
-
-        # save the history of exploited utility at this round for
-        # pacer
         self.save_exploited_utility_history(ends, exploit_end_ids)
-
-        # update the exploration_factor
         self.update_exploration_factor()
-
-        # increment the round selected count on selected ends
         self.increment_selected_count_on_selected_ends(ends)
 
         logger.info(f"selected ends: {self.selected_ends}")
         self.round = round
 
-        # Computations for selector statistics
         self._select_run_counter += 1
-
         for selected_end_id in self.selected_ends:
             end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
             end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
             end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
-            # Insert to queues tracking stat_util, speed, round data
             for window in [50, 100, 200]:
                 if end_stat_util is not None:
                     self._selector_stats[task_to_perform]["data"][
@@ -394,9 +365,6 @@ class OortSelector(AbstractSelector):
             curr_pacer_step_util = sum(
                 self.exploitation_util_history[-self.pacer_step :]
             )
-
-            # increases round threshold when recently exploited
-            # statistical utility decreases
             if last_pacer_step_util > curr_pacer_step_util:
                 self.round_threshold = min(
                     100.0, self.round_threshold + self.pacer_delta
@@ -418,19 +386,12 @@ class OortSelector(AbstractSelector):
     def calculate_num_of_exploration_exploitation(
         self, num_of_ends: int, unexplored_end_ids: list[str]
     ) -> tuple[int, int]:
-        """
-        Calculate number of ends to select for exploration and
-        exploitation; Add 1 to exploration_len to avoid not exploring
-        0 ends while unexplored ends exist.
-        """
-
+        """Split num_of_ends into (exploration, exploitation) counts."""
         exploration_len = min(
             int(num_of_ends * self.exploration_factor) + 1,
             len(unexplored_end_ids),
         )
-        exploitation_len = num_of_ends - exploration_len
-
-        return exploration_len, exploitation_len
+        return exploration_len, num_of_ends - exploration_len
 
     def fetch_statistical_utility(
         self,
@@ -438,13 +399,7 @@ class OortSelector(AbstractSelector):
         blocklist_end_ids: list[str],
         trainer_unavail_list: list[str],
     ) -> tuple[list[tuple[str, float]], list[str]]:
-        """
-        Make a list of tuple (end_id, end_utility) as an utility_list
-        As unexplored ends that are not selected before do not have
-        utility value, collect them separately with unexplored_end_ids
-        list
-        """
-
+        """Return (utility_list, unexplored_end_ids)."""
         utility_list = []
         unexplored_end_ids = []
 
@@ -463,31 +418,15 @@ class OortSelector(AbstractSelector):
         return utility_list, unexplored_end_ids
 
     def calculate_round_preferred_duration(self, ends: dict[str, End]) -> float:
-        """
-        Calculate round preferred duration based on round_threshold
-        and end_round_duration of trainers. round_threshold is
-        controlled by pacer.
-        """
-        logger.debug(f"calculate_round_pref_duration ends.keys(): {ends.keys()}")
+        """Preferred round duration based on round_threshold + observed end durations."""
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
-                logger.debug(
-                    f"end_id: {end_id}, end_round_duration: {end_round_duration}"
-                )
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
-                elif end_round_duration is None:
-                    # TODO: (DG) Check if this is needed. Was put in
-                    # as a hack for eval selector. Unsure if it will
-                    # be used in sync OORT. Can set it to 60 seconds
-                    # since that is the max round duration for
-                    # training.
+                else:
                     sorted_round_duration.append(timedelta(seconds=60))
-            logger.debug(
-                f"after for loop, sorted_round_duration: {sorted_round_duration}"
-            )
             round_preferred_duration = timedelta(
                 seconds=sorted_round_duration[
                     min(
@@ -525,15 +464,12 @@ class OortSelector(AbstractSelector):
 
         end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
 
-        # TODO:(DG) Verify if this is needed for syncfl oort. Was put
-        # in place to replicate async_oort.py.
         if end_round_duration is None:
             return 1
 
         if end_round_duration <= self.round_preferred_duration:
             return 1
         else:
-            # Get both into datetime seconds before division
             return math.pow(
                 self.round_preferred_duration.total_seconds()
                 / end_round_duration.total_seconds(),
@@ -543,38 +479,23 @@ class OortSelector(AbstractSelector):
     def save_exploited_utility_history(
         self, ends: dict[str, End], exploit_end_ids: list[str]
     ) -> None:
-        """
-        Save the history of exploited utility at this round for pacer.
-        """
-
-        if len(exploit_end_ids) > 0:
-            exploited_utility = 0
-            for exploit_end_id in exploit_end_ids:
-                exploited_utility += ends[exploit_end_id].get_property(
-                    PROP_STAT_UTILITY
-                )
-            exploited_utility /= len(exploit_end_ids)
-            self.exploitation_util_history.append(exploited_utility)
+        if not exploit_end_ids:
+            return
+        total = sum(
+            ends[eid].get_property(PROP_STAT_UTILITY) for eid in exploit_end_ids
+        )
+        self.exploitation_util_history.append(total / len(exploit_end_ids))
 
     def update_exploration_factor(self) -> None:
-        """Update the exploration_factor."""
-
         self.exploration_factor = max(
             self.exploration_factor * self.exploration_factor_decay,
             self.min_exploration_factor,
         )
 
     def increment_selected_count_on_selected_ends(self, ends: dict[str, End]) -> None:
-        """Increment the round selected count on selected ends."""
-
         for end_id in self.selected_ends:
-            if ends[end_id].get_property(PROP_SELECTED_COUNT) == None:
-                ends[end_id].set_property(PROP_SELECTED_COUNT, 1)
-            else:
-                ends[end_id].set_property(
-                    PROP_SELECTED_COUNT,
-                    ends[end_id].get_property(PROP_SELECTED_COUNT) + 1,
-                )
+            count = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
+            ends[end_id].set_property(PROP_SELECTED_COUNT, count + 1)
 
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
@@ -585,53 +506,33 @@ class OortSelector(AbstractSelector):
     def calculate_total_utility(
         self, utility_list: list[tuple[str, float]], ends: dict[str, End], round: int
     ) -> list[tuple[str, float]]:
-        """
-        Calculate the total utility value of trainers with applying
-        temporal uncertainty and global system utility, based on the
-        Oort algorithm.
-        """
-
-        # Calculate preferred round duration
+        """Apply temporal uncertainty and global system utility to each entry."""
         self.round_preferred_duration = self.calculate_round_preferred_duration(ends)
 
-        # Sort the utility list by the utility value placed at the
-        # index 1 of each tuple
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
-        # Calculate the clip value that caps utility value of a client
-        # to no more than an upper bound (95% value in utility
-        # distributions)
+        # Clip at 95th percentile to bound outliers
         clip_value = utility_list[
             min(int(len(utility_list) * 0.95), len(utility_list) - 1)
         ][PROP_UTILITY]
 
-        # Calculate the final utility value of a trainer by adding the
-        # temporal uncertainty and multiplying the global system
-        # utility
         for utility_idx in range(len(utility_list)):
             curr_end_utility = utility_list[utility_idx][PROP_UTILITY]
             curr_end_id = utility_list[utility_idx][PROP_END_ID]
 
-            # Clip the utility value
+
             utility_list[utility_idx][PROP_UTILITY] = min(
                 utility_list[utility_idx][PROP_UTILITY], clip_value
             )
 
-            # Add temproal uncertainty term
-            temporal_uncertainty = self.calculate_temporal_uncertainty_of_trainer(
+            curr_end_utility += self.calculate_temporal_uncertainty_of_trainer(
                 ends, curr_end_id, round
             )
-            curr_end_utility += temporal_uncertainty
-
-            # Multiply global system utility
-            global_system_utility = self.calculate_global_system_utility_of_trainer(
+            curr_end_utility *= self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
-            curr_end_utility *= global_system_utility
-
             utility_list[utility_idx][PROP_UTILITY] = curr_end_utility
 
-        # Sort the utility list again, with the updated utility value
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
         return utility_list
