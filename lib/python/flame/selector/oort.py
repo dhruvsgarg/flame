@@ -22,7 +22,6 @@ from datetime import timedelta
 from collections import deque
 import numpy as np
 
-import numpy as np
 from flame.common.typing import Scalar
 from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
@@ -84,17 +83,6 @@ class OortSelector(AbstractSelector):
         self.blocklist_threshold = -1
 
         self.alpha = 2
-
-        # Tracks updates received from trainers and makes them
-        # available to select again NOTE: Not used in sync but just
-        # present there
-        self.ordered_updates_recv_ends = list()
-
-        # CRITICAL: Initialize selected_ends as a set to track in-flight trainers
-        # For SyncFL with overcommitment, this prevents re-selecting trainers
-        # that haven't returned their updates yet
-        if not hasattr(self, 'selected_ends'):
-            self.selected_ends = set()
 
         # Track sliding window statistics for the selector
         self._selector_stats = {}
@@ -194,54 +182,30 @@ class OortSelector(AbstractSelector):
             f"let's select {num_of_ends} ends for new round {round}, task: {task_to_perform}"
         )
 
-        # NOTE: Cleanup of ordered_updates_recv_ends and selected_ends is now done
-        # in _cleanup_recvd_ends() immediately after aggregation completes.
-        # This fixes a race condition where trainers returning updates between
-        # agg_goal and next select() would be incorrectly kept in the in-flight set.
-
-        # Return existing selected end_ids if the round did not
-        # proceed
-        if round <= self.round and hasattr(self, 'selected_ends') and len(self.selected_ends) != 0:
+        if round <= self.round and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
 
-        # Run pacer that controls round_threshold
         self.pacer()
 
-        # CRITICAL FOR SYNCFL WITH OVERCOMMITMENT:
-        # Filter out trainers that are currently "in flight" (selected but haven't returned)
-        in_flight_trainers = self.selected_ends if hasattr(self, 'selected_ends') and isinstance(self.selected_ends, set) else set()
-        
-        # Filter ends to exclude in-flight trainers
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
-            if end_id not in in_flight_trainers
+            if end_id not in self.selected_ends
         }
-        
-        logger.info(
-            f"[OORT_SELECT] Round {round}: Eligible ends: {len(eligible_ends)} out of {len(ends)} "
-            f"(in_flight: {len(in_flight_trainers)}, desired: {num_of_ends})"
-        )
-        
-        # CRITICAL: Check if we have enough eligible trainers
+
         if len(eligible_ends) == 0:
             logger.error(
-                f"[OORT_SELECT] Round {round}: NO eligible trainers! "
-                f"total_ends={len(ends)}, in_flight={len(in_flight_trainers)}"
+                f"[OORT_SELECT] Round {round}: no eligible trainers "
+                f"(total={len(ends)}, in_flight={len(self.selected_ends)})"
             )
             return {}
-        
+
         if len(eligible_ends) < num_of_ends:
-            shortage = num_of_ends - len(eligible_ends)
             logger.warning(
-                f"[OORT_SELECT] Round {round}: TRAINER SHORTAGE! "
-                f"Can only select {len(eligible_ends)}/{num_of_ends} trainers (shortage: {shortage}). "
-                f"total_ends={len(ends)}, in_flight={len(in_flight_trainers)}"
+                f"[OORT_SELECT] Round {round}: only {len(eligible_ends)}/{num_of_ends} trainers eligible"
             )
-            # Adjust num_of_ends to available eligible ends
             num_of_ends = len(eligible_ends)
-        
-        # Use eligible_ends instead of ends for selection
+
         ends = eligible_ends
 
         # Make a filter of blocklist ends
@@ -282,19 +246,12 @@ class OortSelector(AbstractSelector):
             num_of_ends, unexplored_end_ids
         )
 
-        # Calculate the total utility value of trainers with applying
-        # temporal uncertainty and global system utility
-        utility_list = self.calculate_total_utility(utility_list, ends, round)
-
-        logger.debug(f"{utility_list=}")
-
-        # cutOfUtil from Oort algorithm
-        cutoff_utility = self.cutoff_util(utility_list, num_of_ends)
-
-        # perform random if cutoff_utility == 0
-        if len(utility_list) == 0 and len(self.selected_ends) == 0:
+        if len(utility_list) == 0:
             self.round = round
             return self.select_random(ends, num_of_ends)
+
+        utility_list = self.calculate_total_utility(utility_list, ends, round)
+        cutoff_utility = self.cutoff_util(utility_list, num_of_ends)
 
         # sample exploitation_len of clients by utility
         exploit_end_ids = self.sample_by_util(
@@ -308,11 +265,8 @@ class OortSelector(AbstractSelector):
             explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
         logger.debug(f"explore-selected ends: {explore_end_ids}")
 
-        # Store as set to track in-flight trainers for SyncFL with overcommitment
-        # Add newly selected trainers to existing in-flight ones instead of replacing
         newly_selected = set([*explore_end_ids, *exploit_end_ids])
-        old_selected = self.selected_ends if hasattr(self, 'selected_ends') else set()
-        self.selected_ends = old_selected | newly_selected
+        self.selected_ends = self.selected_ends | newly_selected
 
 
         # save the history of exploited utility at this round for
@@ -623,12 +577,10 @@ class OortSelector(AbstractSelector):
                 )
 
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
-        """Randomly select num_of_ends ends."""
-
-        self.selected_ends = set(random.sample(list(ends), num_of_ends))
-        logger.debug(f"selected ends: {self.selected_ends}")
-
-        return {key: None for key in self.selected_ends}
+        """Randomly select num_of_ends ends, merging with any in-flight set."""
+        newly_selected = set(random.sample(list(ends), num_of_ends))
+        self.selected_ends = self.selected_ends | newly_selected
+        return {key: None for key in newly_selected}
 
     def calculate_total_utility(
         self, utility_list: list[tuple[str, float]], ends: dict[str, End], round: int
@@ -684,113 +636,17 @@ class OortSelector(AbstractSelector):
 
         return utility_list
 
-    # TODO: (DG) Check why this is being invoked even if trainer
-    # doesn't explicitly invoke remove() method
     def _cleanup_removed_ends(self, end_id):
-        logger.debug(
-            f"Going to cleanup selector state for "
-            f"end_id {end_id} since it has left the channel"
-        )
+        logger.debug(f"end_id {end_id} left the channel")
 
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
-        """Clean up ends whose updates were received, freeing them from selected_ends.
-
-        This method is called immediately after aggregation completes (when agg_goal is met).
-        It processes trainers who returned updates and removes them from the in-flight set,
-        making them eligible for selection in the next round.
-
-        CRITICAL: This fixes a race condition where trainers returning updates between
-        agg_goal completion and the next select() call would remain incorrectly marked
-        as in-flight, preventing their re-selection even though they're available.
-
-        For SyncFL with overcommitment (e.g., select 27, wait for 20):
-        - When 20 trainers return → agg_goal met → aggregation happens → cleanup called
-        - Any trainers in ordered_updates_recv_ends are freed from selected_ends
-        - If 7 stragglers return after this but before next select(), they're also freed
-          immediately when their updates arrive (cleanup is called again)
-        """
-        logger.info(
-            f"[CLEANUP_DEBUG] Starting cleanup: "
-            f"selected_ends has {len(self.selected_ends) if hasattr(self, 'selected_ends') else 0} trainers, "
-            f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} pending"
+        """Free ends whose updates were received from the in-flight set."""
+        if not self.ordered_updates_recv_ends:
+            return
+        for end_id in self.ordered_updates_recv_ends:
+            self.selected_ends.discard(end_id)
+        logger.debug(
+            f"freed {len(self.ordered_updates_recv_ends)} ends; "
+            f"in-flight now {len(self.selected_ends)}"
         )
-
-        if not hasattr(self, 'selected_ends'):
-            self.selected_ends = set()
-
-        # Process all trainers in ordered_updates_recv_ends
-        # (These are trainers who returned updates since last cleanup)
-        num_ends_to_remove = len(self.ordered_updates_recv_ends)
-        
-        if num_ends_to_remove != 0:
-            ends_to_remove = self.ordered_updates_recv_ends.copy()
-            logger.info(
-                f"[CLEANUP_DEBUG] Will remove {num_ends_to_remove} ends from selected_ends"
-            )
-            logger.info(
-                f"[CLEANUP_DEBUG] IDs to remove: {ends_to_remove[:10]}"
-            )
-
-            # Clear the list since we're processing all of them
-            self.ordered_updates_recv_ends = []
-
-            # Remove from selected_ends (in-flight set)
-            removed_count = 0
-            not_found_count = 0
-            removed_ids = []
-            not_found_ids = []
-            
-            for end_id in ends_to_remove:
-                if end_id in self.selected_ends:
-                    self.selected_ends.remove(end_id)
-                    removed_count += 1
-                    removed_ids.append(end_id)
-                    logger.debug(f"Freed trainer ...{end_id[-8:]} from in-flight set")
-                else:
-                    not_found_count += 1
-                    not_found_ids.append(end_id)
-                    logger.debug(
-                        f"Trainer ...{end_id[-8:]} was not in selected_ends "
-                        f"(may have been cleaned up already)"
-                    )
-
-            logger.info(
-                f"[CLEANUP_DEBUG] Cleanup complete: "
-                f"Removed {removed_count} trainers, {not_found_count} were not in selected_ends. "
-                f"selected_ends now has {len(self.selected_ends)} trainers, "
-                f"ordered_updates_recv_ends has {len(self.ordered_updates_recv_ends)} trainers"
-            )
-            
-            # Log sample IDs for verification
-            if removed_count > 0:
-                logger.debug(f"[CLEANUP_DEBUG] Removed IDs (first 5): {[id[-8:] for id in removed_ids[:5]]}")
-            if not_found_count > 0:
-                logger.debug(f"[CLEANUP_DEBUG] Not-found IDs (first 5): {[id[-8:] for id in not_found_ids[:5]]}")
-        else:
-            logger.info("[CLEANUP_DEBUG] No ends to clean up (ordered_updates_recv_ends is empty)")
-
-    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
-        """Remove an end from selected ends"""
-        selected_ends = self.selected_ends[self.requester]
-        if end_id in ends.keys():
-            if end_id in selected_ends:
-                logger.debug(
-                    f"Going to remove end_id {end_id} from selected_ends "
-                    f"{selected_ends}"
-                )
-                selected_ends.remove(end_id)
-                self.selected_ends[self.requester] = selected_ends
-                logger.debug(
-                    f"self.selected_ends: {self.selected_ends} after "
-                    f"removing end_id: {end_id}"
-                )
-            else:
-                logger.debug(
-                    f"Attempted to remove end {end_id} from "
-                    f"self.selected_ends {self.selected_ends}, but it wasnt present"
-                )
-        else:
-            logger.debug(
-                f"Attempted to remove end {end_id} from "
-                f"self.selected_ends {self.selected_ends}, but it wasnt in ends"
-            )
+        self.ordered_updates_recv_ends = []

@@ -81,6 +81,7 @@ class SelectorType(str, Enum):
     ASYNC_OORT = "async_oort"
     REFL_OORT = "refl_oort"  # REFL-enhanced Oort with priority selection and availability tracking
     ASYNC_RANDOM = "async_random"
+    FEDDANCE = "feddance"  # FedDance: Poisson V_m, loss I_m, accuracy slope A_m, UCB exploration
 
 
 class DataSamplerType(str, Enum):
