@@ -101,13 +101,9 @@ class FedDanceCifar10Trainer(Trainer):
 
 
 if __name__ == "__main__":
-    import argparse
+    from flame.launch.cli import load_config_from_argv
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config", nargs="?", default="./config.json")
-    args = parser.parse_args()
-    config = Config(args.config)
-
+    config = load_config_from_argv()
     t = FedDanceCifar10Trainer(config)
     t.compose()
     t.run()
