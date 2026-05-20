@@ -22,38 +22,32 @@ class AggregatorSpawner:
     def spawn(
         self,
         aggregator_main_path: Path,
-        config_path: Path,
+        config_path: Optional[Path] = None,
+        config_json: Optional[str] = None,
         log_to_wandb: bool = False,
         wandb_run_name: Optional[str] = None,
     ) -> subprocess.Popen:
-        """
-        Spawn aggregator process.
+        """Spawn aggregator process.
 
-        Args:
-            aggregator_main_path: Path to aggregator main.py
-            config_path: Path to aggregator config JSON
-            log_to_wandb: Enable wandb logging
-            wandb_run_name: Custom wandb run name
-
-        Returns:
-            subprocess.Popen object
+        Pass either `config_path` (file) or `config_json` (serialized dict).
         """
-        # Open log file if specified
+        if (config_path is None) == (config_json is None):
+            raise ValueError("provide exactly one of config_path or config_json")
+
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
-            self._log_handle = open(self.log_file, "w", buffering=1)  # Line buffered
+            self._log_handle = open(self.log_file, "w", buffering=1)
             stdout_target = self._log_handle
             stderr_target = subprocess.STDOUT
         else:
             stdout_target = subprocess.PIPE
             stderr_target = subprocess.PIPE
 
-        # Build command
-        cmd = [
-            sys.executable,
-            str(aggregator_main_path),
-            str(config_path),  # Positional argument, not --config
-        ]
+        cmd = [sys.executable, str(aggregator_main_path)]
+        if config_json is not None:
+            cmd.extend(["--config-json", config_json])
+        else:
+            cmd.append(str(config_path))
 
         # Add optional wandb flags
         if log_to_wandb:

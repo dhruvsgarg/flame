@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 from flame.launch.aggregator_spawner import AggregatorSpawner
+from flame.launch.baselines import (
+    format_provenance,
+    load_baselines,
+    merge_with_provenance,
+)
 from flame.launch.execution_config_generator import (
     create_execution_config,
     save_execution_config,
@@ -102,15 +107,31 @@ class ExperimentRunner:
             self.current_exp_dir = self._create_experiment_directory(exp)
             print(f"  exp dir: {self.current_exp_dir}")
 
-            agg_config_path = paths["example_dir"] / exp.aggregator.config_template
-            if not agg_config_path.exists():
-                raise FileNotFoundError(f"aggregator config not found: {agg_config_path}")
-            with open(agg_config_path) as f:
-                agg_cfg = json.load(f)
-                agg_job_id = agg_cfg.get("job", {}).get("id")
-                agg_job_name = agg_cfg.get("job", {}).get("name")
+            baselines = load_baselines(paths["metadata_dir"])
+            baseline_entry = self._resolve_baseline(exp, baselines)
+
+            agg_config_path = (
+                paths["example_dir"] / exp.aggregator.config_template
+                if exp.aggregator and exp.aggregator.config_template
+                else None
+            )
+            agg_cfg, agg_provenance = self._build_aggregator_config(
+                exp, agg_config_path, baseline_entry
+            )
+            agg_job_id = agg_cfg.get("job", {}).get("id")
+            agg_job_name = agg_cfg.get("job", {}).get("name")
             if not agg_job_id:
-                raise ValueError(f"aggregator config missing job.id: {agg_config_path}")
+                raise ValueError(
+                    f"aggregator config missing job.id "
+                    f"(template={agg_config_path}, baseline={exp.baseline})"
+                )
+
+            # Stash + log provenance.
+            agg_cfg_path_out = self.current_exp_dir / "aggregator_config.json"
+            with open(agg_cfg_path_out, "w") as f:
+                json.dump(agg_cfg, f, indent=4)
+            print(f"  aggregator config written: {agg_cfg_path_out}")
+            print(format_provenance("aggregator", agg_provenance))
 
             metadata_loader = MetadataLoader(paths["metadata_dir"])
             config_gen = ConfigGenerator(metadata_loader, paths["trainer_base"])
@@ -142,7 +163,7 @@ class ExperimentRunner:
 
             self.aggregator_spawner.spawn(
                 paths["aggregator_main"],
-                agg_config_path,
+                config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
             )
@@ -154,12 +175,15 @@ class ExperimentRunner:
             if self.resource_monitor:
                 self.resource_monitor.start()
 
-            agg_spawn_cmd = [sys.executable, str(paths["aggregator_main"]), str(agg_config_path)]
+            agg_spawn_cmd = [
+                sys.executable, str(paths["aggregator_main"]),
+                "--config-json", "<inline>",
+            ]
             trainer_spawn_cmd = self._build_trainer_spawn_command(exp)
 
             exec_config = create_execution_config(
                 exp,
-                agg_config_path.relative_to(paths["example_dir"]),
+                agg_cfg_path_out.relative_to(self.current_exp_dir),
                 spawn_commands={
                     "aggregator": [str(c) for c in agg_spawn_cmd],
                     "trainers": [str(c) for c in trainer_spawn_cmd],
@@ -169,7 +193,8 @@ class ExperimentRunner:
 
             snapshot = ExperimentSnapshot(self.current_exp_dir)
             snapshot.create_snapshot(
-                exp, paths["metadata_dir"], agg_config_path, trainer_spawn_cmd, agg_spawn_cmd
+                exp, paths["metadata_dir"], agg_cfg_path_out,
+                trainer_spawn_cmd, agg_spawn_cmd,
             )
 
             trainer_ids = list(
@@ -183,6 +208,21 @@ class ExperimentRunner:
             if exp.trainer.hyperparameters:
                 for key, value in exp.trainer.hyperparameters.items():
                     config_overrides[f"hyperparameters.{key}"] = value
+
+            # Trainer-side baseline + experiment override merge happens inside
+            # ConfigGenerator so that per-trainer state can flow through the
+            # existing dotted-key override mechanism. The baseline.trainer dict
+            # and exp.trainer.config_overrides dict are deep-merged first; then
+            # the dotted-key overrides (job.id, etc.) are applied last.
+            baseline_trainer = (baseline_entry or {}).get("trainer") or {}
+            exp_trainer_overrides = exp.trainer.config_overrides or {}
+            if baseline_trainer or exp_trainer_overrides:
+                merged_t, t_prov = merge_with_provenance([
+                    (f"baseline:{exp.baseline}", baseline_trainer),
+                    ("experiment.trainer.config_overrides", exp_trainer_overrides),
+                ])
+                config_gen.set_baseline_overrides(merged_t)
+                print(format_provenance("trainer", t_prov))
 
             self.trainer_spawner.spawn_all(
                 trainer_ids,
@@ -219,6 +259,55 @@ class ExperimentRunner:
                 resp = input("continue? (y/n): ")
                 if resp.lower() != "y":
                     break
+
+    def _resolve_baseline(
+        self, exp: ExperimentConfig, baselines: dict
+    ) -> Optional[dict]:
+        if not exp.baseline:
+            return None
+        if exp.baseline not in baselines:
+            raise ValueError(
+                f"baseline {exp.baseline!r} not found in baselines.yaml. "
+                f"Available: {sorted(baselines)}"
+            )
+        entry = baselines[exp.baseline]
+        print(f"  baseline: {exp.baseline}")
+        desc = entry.get("description")
+        if desc:
+            print(f"    {desc.strip()}")
+        return entry
+
+    def _build_aggregator_config(
+        self,
+        exp: ExperimentConfig,
+        template_path: Optional[Path],
+        baseline_entry: Optional[dict],
+    ) -> tuple[dict, dict]:
+        """Merge template + baseline.aggregator + experiment overrides.
+
+        Returns (final_dict, provenance) where provenance maps each leaf path
+        to the layer name that contributed it.
+        """
+        layers: list[tuple[str, dict]] = []
+        if template_path is not None:
+            if not template_path.exists():
+                raise FileNotFoundError(f"aggregator config_template not found: {template_path}")
+            with open(template_path) as f:
+                tmpl = json.load(f)
+            layers.append((f"config_template:{template_path.name}", tmpl))
+
+        if baseline_entry:
+            agg_layer = baseline_entry.get("aggregator")
+            if agg_layer:
+                layers.append((f"baseline:{exp.baseline}", agg_layer))
+
+        if exp.aggregator and exp.aggregator.config_overrides:
+            layers.append(
+                ("experiment.aggregator.config_overrides", exp.aggregator.config_overrides)
+            )
+
+        merged, provenance = merge_with_provenance(layers)
+        return merged, provenance
 
     def _create_experiment_directory(self, exp: ExperimentConfig) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

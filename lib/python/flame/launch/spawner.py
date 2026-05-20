@@ -75,11 +75,20 @@ class ConfigGenerator:
     def __init__(self, metadata_loader: MetadataLoader, base_config_path: Path):
         self.metadata = metadata_loader
         self.base_config = self._load_base_config(base_config_path)
+        self.baseline_overrides: Dict = {}
 
     def _load_base_config(self, path: Path) -> Dict:
         """Load base configuration template."""
         with open(path) as f:
             return yaml.safe_load(f)
+
+    def set_baseline_overrides(self, overrides: Dict) -> None:
+        """Dict of fields deep-merged into every generated trainer config
+        BEFORE per-trainer values and BEFORE flat-key kwargs overrides.
+        """
+        from flame.launch.baselines import deep_merge
+        self._deep_merge = deep_merge
+        self.baseline_overrides = overrides or {}
 
     def generate_trainer_config(
         self,
@@ -90,8 +99,21 @@ class ConfigGenerator:
         num_trainers: int = 300,
         **overrides,
     ) -> Dict:
-        """Build a full trainer config dict from base + metadata + overrides."""
-        config = self.base_config.copy()
+        """Build a full trainer config dict from base + metadata + overrides.
+
+        Layer order (later layers win):
+          1. trainer_base.yaml (per-example static template)
+          2. baseline_overrides (set via set_baseline_overrides, deep-merged)
+          3. per-trainer values from shared metadata (taskid, indices, traces)
+          4. **overrides dotted-key kwargs (job.id, hyperparameters.X)
+        """
+        from copy import deepcopy
+
+        from flame.launch.baselines import deep_merge
+
+        config = deepcopy(self.base_config)
+        if self.baseline_overrides:
+            config = deep_merge(config, self.baseline_overrides)
 
         trainer_meta = self.metadata.get_trainer_metadata(trainer_id)
         config["taskid"] = trainer_meta["task_id"]
@@ -135,15 +157,10 @@ class ConfigGenerator:
                 self.metadata.get_mobiperf_trace(trainer_id, variant)
             )
 
-        # Set client_notify configuration
-        # For oracular mode: trainers always use syn_0 (100% available)
-        # The aggregator uses the actual trace to simulate unavailability
-        if "client_notify" not in config["hyperparameters"]:
-            config["hyperparameters"]["client_notify"] = {}
-        
-        # Always set trainers to syn_0 for oracular mode (trainers stay available)
-        config["hyperparameters"]["client_notify"]["enabled"] = "False"
-        config["hyperparameters"]["client_notify"]["trace"] = "syn_0"
+        # client_notify defaults only when not provided by base/baseline/overrides.
+        cn = config["hyperparameters"].setdefault("client_notify", {})
+        cn.setdefault("enabled", "False")
+        cn.setdefault("trace", "syn_0")
 
         # Apply any overrides
         for key, value in overrides.items():

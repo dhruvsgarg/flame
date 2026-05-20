@@ -354,20 +354,14 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
 if __name__ == "__main__":
     import argparse
+    from flame.launch.cli import load_config_from_argv
 
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument("config", nargs="?", default="./config.json")
-    # Add the --log_to_wandb argument
-    parser.add_argument(
-        "--log_to_wandb", action="store_true", help="Flag to log to Weights and Biases"
-    )
-    parser.add_argument(
-        "--wandb_run_name", type=str, help="Name of the Weights and Biases run"
-    )
+    parser.add_argument("--log_to_wandb", action="store_true")
+    parser.add_argument("--wandb_run_name", type=str)
+    args, _ = parser.parse_known_args()
 
-    args = parser.parse_args()
-
-    config = Config(args.config)
+    config = load_config_from_argv()
 
     a = PyTorchCifar10Aggregator(config, args.log_to_wandb, args.wandb_run_name)
     a.compose()

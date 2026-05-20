@@ -39,18 +39,20 @@ class TrainerConfig:
     speedup_factor: float = 1.0
     enable_training_delays: bool = True  # Enable per-trainer training delays
     hyperparameters: Optional[dict] = None  # Trainer-specific hyperparameters (e.g., batchSize, learningRate)
+    config_overrides: Optional[dict] = None  # Deep-merged into per-trainer config last (wins over baseline)
 
 
 @dataclass
 class AggregatorConfig:
     """Aggregator configuration."""
 
-    config_template: str  # Path to aggregator JSON config
+    config_template: Optional[str] = None  # Path to aggregator JSON config (optional when using baseline)
     selector: str = "oort"
     tracking_mode: str = "oracular"  # oracular, default
     agg_goal: int = 10
-    log_to_wandb: bool = False  # Enable wandb logging
-    wandb_run_name: Optional[str] = None  # Custom wandb run name
+    log_to_wandb: bool = False
+    wandb_run_name: Optional[str] = None
+    config_overrides: Optional[dict] = None  # Deep-merged into aggregator JSON last (wins over baseline)
 
 
 @dataclass
@@ -101,6 +103,7 @@ class ExperimentConfig:
 
     name: str
     description: Optional[str] = None
+    baseline: Optional[str] = None  # Key into _metadata/baselines.yaml
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     aggregator: AggregatorConfig = None
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -167,6 +170,7 @@ class ExperimentBatch:
             exp = ExperimentConfig(
                 name=exp_data["name"],
                 description=exp_data.get("description"),
+                baseline=exp_data.get("baseline"),
                 example=ExampleConfig(**example_data) if example_data else ExampleConfig(),
                 metadata=MetadataPaths(**metadata_data) if metadata_data else MetadataPaths(),
                 trainer=TrainerConfig(
@@ -186,6 +190,7 @@ class ExperimentBatch:
                     speedup_factor=trainer_data.get("speedup_factor", 1.0),
                     enable_training_delays=trainer_data.get("enable_training_delays", True),
                     hyperparameters=trainer_data.get("hyperparameters"),
+                    config_overrides=trainer_data.get("config_overrides"),
                 ),
                 aggregator=AggregatorConfig(**agg_data) if agg_data else None,
                 execution=(

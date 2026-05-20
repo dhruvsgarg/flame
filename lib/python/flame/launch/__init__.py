@@ -9,6 +9,12 @@ base template; metadata (trainer registry, traces, dataset splits) is
 shared from examples/_metadata/ by default.
 """
 
+from flame.launch.baselines import (
+    deep_merge,
+    format_provenance,
+    load_baselines,
+    merge_with_provenance,
+)
 from flame.launch.experiment_config import (
     ExperimentBatch,
     ExperimentConfig,
@@ -40,4 +46,8 @@ __all__ = [
     "create_execution_config",
     "save_execution_config",
     "create_monitor_from_config",
+    "load_baselines",
+    "deep_merge",
+    "merge_with_provenance",
+    "format_provenance",
 ]
