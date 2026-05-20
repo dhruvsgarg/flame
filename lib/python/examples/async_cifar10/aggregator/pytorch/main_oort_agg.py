@@ -20,18 +20,16 @@ pytorch:
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
-import ast
-import glob
-import json
 import logging
-import os
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
+import yaml
 
 # wandb setup
 import wandb
@@ -40,6 +38,14 @@ from flame.dataset import Dataset
 from flame.mode.horizontal.oort.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
 from sortedcontainers import SortedDict
+
+
+_METADATA_DIR = (Path(__file__).resolve().parents[3] / "_metadata")
+_TRACE_KEY_TO_MOBIPERF_SUB = {
+    "mobiperf_2st": "states_2st",
+    "mobiperf_3st_50": "states_3st_50",
+    "mobiperf_3st_75": "states_3st_75",
+}
 
 
 def initialize_wandb(run_name=None):
@@ -156,75 +162,55 @@ class PyTorchCifar10Aggregator(TopAggregator):
         logger.info(f"Aggregator initialized at timestamp: {self.agg_start_time_ts}")
 
     def read_trainer_unavailability(self, trace=None) -> dict:
-        """
-        Read availability trace from trainer JSON files.
-        
-        For oracular mode, reads the specified trace (e.g., 'syn_20') from each
-        trainer's JSON config and builds a SortedDict for efficient timestamp lookups.
-        
-        Args:
-            trace: Name of the trace field (e.g., 'syn_20' for avl_events_syn_20)
-        
-        Returns:
-            dict: trainer_id -> SortedDict(timestamp -> state)
+        """Build trainer_id -> SortedDict(timestamp -> state) for `trace`.
+
+        Reads from the shared examples/_metadata/ bundle (registry + traces),
+        not from legacy per-trainer JSON files.
         """
         logger.info(f"Reading trainer unavailability for trace: {trace}")
-        trainer_events_dict = {}
-        
-        # Build the full trace field name (e.g., 'avl_events_syn_20')
-        trace_field = f"avl_events_{trace}"
-        logger.info(f"Looking for trace field: {trace_field}")
-        
-        # Use pre-generated trainer configs from static config directory
-        # This bypasses the timing issue with spawner-generated JSONs
-        config_dir = "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
-        search_pattern = os.path.join(config_dir, "trainer_*.json")
-        
-        logger.info(f"Searching for trainer JSONs: {search_pattern}")
-        json_files = glob.glob(search_pattern)
-        
-        if not json_files:
-            logger.warning(f"No JSON files found matching pattern: {search_pattern}")
-            logger.warning("Will attempt to work without oracular tracking")
+
+        registry_path = _METADATA_DIR / "trainer_registry.yaml"
+        with open(registry_path) as f:
+            registry = yaml.safe_load(f)["trainers"]
+
+        if trace in _TRACE_KEY_TO_MOBIPERF_SUB:
+            sub = _TRACE_KEY_TO_MOBIPERF_SUB[trace]
+            with open(_METADATA_DIR / "availability_traces/mobiperf_traces.yaml") as f:
+                traces = yaml.safe_load(f)["traces"]
+
+            def lookup(tk: str, trainer_id: int) -> list:
+                return traces[f"device_{trainer_id:03d}"][sub]
+
+        elif trace and trace.startswith("syn_"):
+            with open(_METADATA_DIR / "availability_traces/synthetic_traces.yaml") as f:
+                syn = yaml.safe_load(f)["traces"]
+            if trace not in syn:
+                logger.warning(f"trace {trace!r} not found in synthetic_traces.yaml")
+                return None
+            entry = syn[trace]
+            per_trainer = entry.get("per_trainer", {}).get("n300", {})
+            pattern = entry.get("pattern", [])
+
+            def lookup(tk: str, trainer_id: int) -> list:
+                return per_trainer.get(tk) or pattern
+
+        else:
+            logger.warning(f"unsupported trace name: {trace!r}")
             return None
-        
-        logger.info(f"Found {len(json_files)} trainer JSON files to process")
-        
-        for file_path in json_files:
-            try:
-                with open(file_path) as f:
-                    trainer_json = json.load(f)
-                    curr_trainer_id = trainer_json["taskid"]
-                    
-                    # Parse the availability events for this trace
-                    if trace_field not in trainer_json["hyperparameters"]:
-                        logger.warning(
-                            f"Trace {trace_field} not found in {file_path}, skipping"
-                        )
-                        continue
-                    
-                    event_list = ast.literal_eval(
-                        trainer_json["hyperparameters"][trace_field]
-                    )
-                    
-                    # Create SortedDict for efficient timestamp lookup
-                    state_dict = SortedDict()
-                    
-                    # Process the events: [(timestamp, state), ...]
-                    for timestamp, event_name in event_list:
-                        state_dict[timestamp] = event_name
-                    
-                    trainer_events_dict[curr_trainer_id] = state_dict
-                    logger.debug(
-                        f"Loaded {len(state_dict)} events for {curr_trainer_id}"
-                    )
-            
-            except Exception as e:
-                logger.error(f"Error reading {file_path}: {e}")
-                continue
-        
+
+        trainer_events_dict = {}
+        for tk, meta in registry.items():
+            trainer_id = meta["trainer_id"]
+            task_id = meta["task_id"]
+            events = lookup(tk, trainer_id)
+            state_dict = SortedDict()
+            for timestamp, state in events:
+                state_dict[timestamp] = state
+            trainer_events_dict[task_id] = state_dict
+
         logger.info(
-            f"Completed reading availability traces for {len(trainer_events_dict)} trainers"
+            f"Loaded availability traces for {len(trainer_events_dict)} trainers "
+            f"(trace={trace})"
         )
         return trainer_events_dict
 
