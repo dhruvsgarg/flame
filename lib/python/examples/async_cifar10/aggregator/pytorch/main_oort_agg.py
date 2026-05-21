@@ -140,7 +140,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
             )
         else:
             print(
-                f"Did not read oracular trainer jsons. Enabled value: {self.track_trainer_avail['enabled']}, type: {self.track_trainer_avail['type']}, trace: {self.track_trainer_avail['trace']}"
+                "Did not read oracular trainer jsons. "
+                f"enabled={self.track_trainer_avail.get('enabled')}, "
+                f"type={self.track_trainer_avail.get('type')}, "
+                f"trace={self.track_trainer_avail.get('trace', '<unset>')}"
             )
         print("self.trainer_event_dict: ", self.trainer_event_dict)
 

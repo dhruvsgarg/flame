@@ -20,11 +20,11 @@ import typing as t
 from enum import Enum
 
 from pydantic import BaseModel as pydBaseModel
-from pydantic import Extra, Field
+from pydantic import ConfigDict, Extra, Field
 
 
 class FlameSchema(pydBaseModel):
-    pass
+    model_config = ConfigDict(populate_by_name=True)
 
 
 GROUPBY_DEFAULT_GROUP = "default"
@@ -164,18 +164,18 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     heartbeats: t.Optional[dict] = Field(alias="heartbeats", default={})
     client_notify: t.Optional[dict] = Field(
-        alias="clientAvailAwareNotify", default=False
+        alias="clientAvailAwareNotify", default=None
     )
     training_delay_enabled: t.Optional[bool] = Field(
         alias="trainingDelayEnabled", default=False
     )
     training_delay_s: t.Optional[float] = Field(
-        alias="trainingDelaySeconds", default=False
+        alias="trainingDelaySeconds", default=None
     )
     training_delay_factor: t.Optional[float] = Field(
-        alias="trainingDelayFactor", default=False
+        alias="trainingDelayFactor", default=None
     )
-    use_oort_loss_fn: t.Optional[float] = Field(alias="useOORTLossFn", default=False)
+    use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
     )
