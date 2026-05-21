@@ -63,13 +63,15 @@ class ExperimentSnapshot:
         with open(self.snapshot_file, "w") as f:
             yaml.dump(snapshot_data, f, default_flow_style=False, sort_keys=False)
 
-        # Copy aggregator config only (metadata stays in original location)
+        # Copy aggregator config only if it's outside the experiment dir
+        # (the runner now writes the merged config directly into self.experiment_dir).
         agg_copy = self.experiment_dir / "aggregator_config.json"
-        shutil.copy(aggregator_config_path, agg_copy)
+        if Path(aggregator_config_path).resolve() != agg_copy.resolve():
+            shutil.copy(aggregator_config_path, agg_copy)
+            print(f"  ✓ Aggregator config copied: {agg_copy}")
 
         print(f"  ✓ Snapshot saved: {self.snapshot_file}")
         print(f"  ✓ Metadata location recorded: {metadata_dir}")
-        print(f"  ✓ Aggregator config copied: {agg_copy}")
 
     def _serialize_experiment_config(self, exp_config: ExperimentConfig) -> Dict:
         """Serialize experiment config to dict."""
