@@ -142,9 +142,9 @@ class BaseModel(FlameSchema):
 
 
 class Hyperparameters(FlameSchema, extra=Extra.allow):
-    batch_size: t.Optional[int] = Field(alias="batchSize")
-    learning_rate: t.Optional[float] = Field(alias="learningRate")
-    weight_decay: t.Optional[float] = Field(alias="weightDecay")
+    batch_size: t.Optional[int] = Field(alias="batchSize", default=None)
+    learning_rate: t.Optional[float] = Field(alias="learningRate", default=None)
+    weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
@@ -219,9 +219,9 @@ class Channel(FlameSchema):
     is_bidirectional: t.Optional[bool] = Field(default=True)
     group_by: t.Optional[GroupBy] = Field(default=GroupBy())
     func_tags: dict = Field(default={}, alias="func_tags")
-    description: t.Optional[str]
-    backend: t.Optional[str]
-    broker_host: t.Optional[str]
+    description: t.Optional[str] = None
+    backend: t.Optional[str] = None
+    broker_host: t.Optional[str] = None
 
 
 class ChannelConfigs(FlameSchema):
@@ -237,26 +237,26 @@ class Config(FlameSchema):
         super().__init__(**transformed_config)
 
     role: str
-    realm: t.Optional[str]  # to be deprecated
+    realm: t.Optional[str] = None  # to be deprecated
     group_association: dict
     task: t.Optional[str] = Field(default="local")
     task_id: str
     backend: BackendType
     channels: dict
-    hyperparameters: t.Optional[Hyperparameters]
+    hyperparameters: t.Optional[Hyperparameters] = None
     brokers: Broker
     job: Job
-    registry: t.Optional[Registry]
-    selector: t.Optional[Selector]
+    registry: t.Optional[Registry] = None
+    selector: t.Optional[Selector] = None
     datasampler: t.Optional[DataSampler] = Field(default=DataSampler())
     privacy: t.Optional[Privacy] = Field(default=Privacy())
     optimizer: t.Optional[Optimizer] = Field(default=Optimizer())
     dataset: str
     max_run_time: int
-    base_model: t.Optional[BaseModel]
-    groups: t.Optional[Groups]
-    dependencies: t.Optional[list[str]]
-    func_tag_map: t.Optional[dict]
+    base_model: t.Optional[BaseModel] = None
+    groups: t.Optional[Groups] = None
+    dependencies: t.Optional[list[str]] = None
+    func_tag_map: t.Optional[dict] = None
 
 
 def read_config(filename: str) -> dict:
