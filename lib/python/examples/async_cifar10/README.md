@@ -5,23 +5,21 @@ Asynchronous federated learning on CIFAR-10 with 300 trainers, demonstrating cli
 ## Quick Start
 
 ```bash
-# 1. Setup environment (automated)
-# Option A: Auto-detect flame repo path
-bash setup_env.sh my_flame_env
+# 1. Set up the conda env (Python 3.11 + flame + examples extras).
+#    Run from the repo root:
+bash scripts/setup_env.sh my_flame_env
 
-# Option B: Explicitly provide flame repo path (recommended)
-bash setup_env.sh my_flame_env /home/user/flame
-
-# 2. Check MQTT broker is running (contact admin if not)
+# 2. Check MQTT broker is running.
 systemctl is-active mosquitto || pgrep mosquitto
 
-# 3. Run experiment (use your environment name from step 1)
+# 3. Run an experiment via the YAML launcher.
 conda activate my_flame_env
-cd expt_scripts_2026/scripts
-./oort_n300_oracular_1feb_all4unavail.sh my_node_name
+python -m flame.launch.run_experiment \
+    lib/python/examples/async_cifar10/expt_scripts_2026/felix_n10_alpha100_syn20_smoke.yaml
 ```
 
-Logs saved to: `eurosys26_expts/agg_logs/` and `eurosys26_expts/trainer_logs/`
+Logs land in `experiments/run_<timestamp>_<name>/` (aggregator + trainers,
+plus the merged `aggregator_config.json` for reproducibility).
 
 ## What This Example Does
 
@@ -39,50 +37,43 @@ The experiment runs until reaching 70% test accuracy, testing 4 availability sce
 
 ```
 async_cifar10/
-├── setup_env.sh              # Automated environment setup
 ├── aggregator/               # Central server
 │   ├── pytorch/main_oort_agg.py
-│   └── *.json               # Aggregator configs
-├── trainer/                  # Client trainers  
-│   ├── pytorch/main.py
-│   └── config_dir*/         # Pre-configured trainer sets
-│       └── exec_*.sh        # Launch scripts
-├── eurosys26_expts/
-│   ├── scripts/             # Experiment runners ⭐
-│   ├── configs/             # Experiment configs
-│   ├── agg_logs/            # Output logs
-│   └── trainer_logs/
-└── data/                    # CIFAR-10 (auto-downloaded)
+│   └── *.json               # Legacy aggregator configs
+├── trainer/                  # Client trainers
+│   └── pytorch/main.py
+├── configs/
+│   └── trainer_base.yaml    # Per-example trainer template
+├── expt_scripts_2026/
+│   ├── felix_*.yaml         # Experiment YAMLs (launcher inputs)
+│   └── configs/             # Aggregator config templates
+└── data/                    # CIFAR-10 (auto-downloaded by trainers)
+
+# Shared across examples (sibling at examples/_metadata):
+examples/_metadata/
+├── trainer_registry.yaml             # n=300 device population
+├── availability_traces/              # mobiperf + synthetic
+├── dataset_splits/                   # per-(dataset, alpha, N) splits
+├── baselines.yaml                    # felix / refl / feddance / oort
+└── aggregator_base.json              # generic aggregator boilerplate
 ```
 
 ## Manual Setup
 
-If `setup_env.sh` doesn't work for your system:
+If `scripts/setup_env.sh` doesn't work for your system:
 
 ```bash
-# 1. Create environment (replace 'my_flame_env' with your desired name)
-conda create -n my_flame_env python=3.9 -y
+conda create -n my_flame_env python=3.11 -y
 conda activate my_flame_env
+pip install -e lib/python[examples,dev]
 
-# 2. Install dependencies from root requirements.txt
-cd /path/to/flame  # Navigate to flame root directory
-pip install -r requirements.txt
-
-# 3. Install Flame library
-cd lib/python
-pip install -e .
-
-# 4. Set environment variable
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
-
-# 5. Check MQTT broker status
+# Check MQTT broker
 systemctl is-active mosquitto 2>/dev/null || pgrep mosquitto
-# If not running, contact your system administrator
 ```
 
-**Note**: The root `requirements.txt` contains all necessary dependencies including:
-- PyTorch, torchvision
-- zstandard (for compression)
+Required deps (installed automatically by the extras above):
+- core (flame): paho-mqtt, pydantic, mlflow, grpcio, protobuf, PyYAML, ...
+- examples: torch, torchvision, sortedcontainers, wandb
 - wandb, sortedcontainers
 - All Flame library dependencies
 

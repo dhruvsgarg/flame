@@ -63,7 +63,7 @@ We recommend setting up your environment with `conda`. Within the cloned flame d
 ```bash
 # Run within the cloned flame directory
 cd lib/python/flame
-conda create -n flame python=3.9
+conda create -n flame python=3.11
 conda activate flame
 
 pip install google
