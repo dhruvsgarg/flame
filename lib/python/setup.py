@@ -34,7 +34,9 @@ setup(
         "psutil",
         "pydantic",
         "PyYAML",
+        "requests",
         "shared-memory-dict",
+        "zstandard",
     ],
     extras_require={
         # Runtime deps for examples/<x>/ workloads (torch + utilities).
