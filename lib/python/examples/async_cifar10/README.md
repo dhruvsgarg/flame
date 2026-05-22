@@ -37,16 +37,17 @@ The experiment runs until reaching 70% test accuracy, testing 4 availability sce
 
 ```
 async_cifar10/
-├── aggregator/               # Central server
-│   ├── pytorch/main_oort_agg.py
-│   └── *.json               # Legacy aggregator configs
+├── aggregator/               # Central server entrypoints (one per stack)
+│   ├── pytorch/main_asyncfl_agg.py    # asyncfl stack (felix, fedbuff)
+│   ├── pytorch/main_oort_sync_agg.py  # sync oort stack (oort, refl)
+│   └── pytorch/main_fedavg_agg.py     # base syncfl stack (fedavg)
 ├── trainer/                  # Client trainers
 │   └── pytorch/main.py
 ├── configs/
 │   └── trainer_base.yaml    # Per-example trainer template
-├── expt_scripts_2026/
-│   ├── felix_*.yaml         # Experiment YAMLs (launcher inputs)
-│   └── configs/             # Aggregator config templates
+├── expt_scripts_2026/        # Experiment YAMLs (launcher inputs)
+│   ├── <baseline>_n10_*.yaml      # 10-trainer smoke tests
+│   └── felix_n300_*.yaml          # full-scale runs
 └── data/                    # CIFAR-10 (auto-downloaded by trainers)
 
 # Shared across examples (sibling at examples/_metadata):
@@ -54,7 +55,7 @@ examples/_metadata/
 ├── trainer_registry.yaml             # n=300 device population
 ├── availability_traces/              # mobiperf + synthetic
 ├── dataset_splits/                   # per-(dataset, alpha, N) splits
-├── baselines.yaml                    # felix / refl / feddance / oort
+├── baselines.yaml                    # felix / fedbuff / fedavg / oort / refl
 └── aggregator_base.json              # generic aggregator boilerplate
 ```
 
@@ -77,65 +78,49 @@ Required deps (installed automatically by the extras above):
 - wandb, sortedcontainers
 - All Flame library dependencies
 
-## Running Experiments
+## Baselines & smoke tests
 
-### Using Automated Script (Recommended)
+A *baseline* (selector + optimizer + aggregator stack + tracking) is defined
+once in `examples/_metadata/baselines.yaml`. An experiment YAML names a baseline
+and overrides only what it needs. The launcher resolves the aggregator stack
+from the baseline and **refuses mismatched selector/stack combinations** (e.g.
+an async selector on the sync stack), so you can't accidentally run the wrong
+pairing.
+
+Ready-to-run 10-trainer smoke tests live in `expt_scripts_2026/`. Run any one
+with (from the repo root):
 
 ```bash
-cd eurosys26_expts/scripts
-./oort_n300_oracular_10may_all4unavail.sh my_node_name
+python -m flame.launch.run_experiment \
+    lib/python/examples/async_cifar10/expt_scripts_2026/<smoke>.yaml
 ```
 
-The script:
-- Starts aggregator and 300 trainers
-- Monitors accuracy, stops at 70%
-- Runs 4 traces: syn0 (no failures), syn20, syn50, mobiperf
-- Saves logs to `eurosys26_expts/{agg,trainer}_logs/`
+| Baseline | Selector / Optimizer | Stack       | Smoke YAML |
+|----------|----------------------|-------------|------------|
+| felix    | async_oort / fedbuff | asyncfl     | `felix_n10_alpha100_syn20_smoke.yaml` |
+| fedbuff  | fedbuff / fedbuff    | asyncfl     | `fedbuff_n10_alpha100_smoke.yaml` |
+| fedavg   | random / fedavg      | base syncfl | `fedavg_n10_alpha100_smoke.yaml` |
+| oort     | oort / fedavg        | sync oort   | `oort_n10_alpha100_syn0_smoke.yaml` |
+| refl     | refl_oort / refl     | sync oort   | `refl_n10_alpha100_syn0_smoke.yaml` |
 
-### Manual Execution
+Scale up by copying a smoke YAML and raising `num_trainers` (see
+`felix_n300_alpha100_syn20.yaml`). Logs land in `experiments/run_<ts>_<name>/`.
 
-**Terminal 1 (Aggregator)**:
-```bash
-conda activate my_flame_env  # Use your environment name
-cd aggregator
-python pytorch/main_oort_agg.py ../eurosys26_expts/configs/oort_n300_oracular_9may25_syn0.json
-```
-
-**Terminal 2 (Trainers)**:
-```bash
-conda activate my_flame_env  # Use your environment name
-cd trainer/config_dir0.1_num300_traceFail_6d_3state_oort/
-bash exec_300_trainers_2state.sh  # Distributes 300 trainers across 8 GPUs
-```
-
-**Single Trainer (Testing)**:
-```bash
-CUDA_VISIBLE_DEVICES=0 python ../pytorch/main.py --config trainer_1.json
-```
+> **FedDance** is not yet runnable here — see [`FEDDANCE_TODO.md`](FEDDANCE_TODO.md).
+>
+> The shell scripts under `*_expts/scripts/` are **deprecated** (see the
+> `DEPRECATED.md` in each directory); use the launcher above.
 
 ## Key Configuration Parameters
 
-**Aggregator config** (`eurosys26_expts/configs/*.json`):
-```json
-{
-  "hyperparameters": {
-    "aggGoal": 10,              // Trainer updates before global aggregation
-    "trackTrainerAvail": {
-      "type": "ORACULAR",       // ORACULAR (knows availability) or UNAWARE
-      "trace": "avl_events_syn_0"  // syn0/20/50 or mobiperf
-    }
-  },
-  "selector": {
-    "sort": "oort",             // oort, random, fedbuff
-    "kwargs": {"aggr_num": 10}  // Trainers selected per round
-  }
-}
-```
+Override per experiment under `aggregator.config_overrides` / `trainer.*` in the
+experiment YAML; baseline-wide values live in `baselines.yaml`.
 
-**Trainer directories** (data distribution):
-- `config_dir0.1_num300_*` - Highly non-IID (realistic)
-- `config_dir1_num300_*` - Moderately non-IID
-- `config_dir100_num300_*` - Nearly IID
+- `hyperparameters.aggGoal` — updates aggregated before a global step
+- `hyperparameters.trackTrainerAvail.{type,trace}` — `ORACULAR`+`syn_0/20/50`
+  (or `mobiperf_*`) vs disabled
+- `selector.kwargs.aggr_num` — trainers selected per round
+- `trainer.dataset.dirichlet_alpha` — `0.1` (highly non-IID) … `100` (near IID)
 
 ## Monitoring
 
@@ -159,7 +144,12 @@ tail -f eurosys26_expts/trainer_logs/log_trainer_*.log
 | MQTT connection failed | Check if mosquitto is running: `systemctl is-active mosquitto` or `pgrep mosquitto`. Contact admin if not running. |
 | CUDA out of memory | Edit `exec_*_trainers.sh`, increase `NUM_AVAIL_GPUS` or reduce `batchSize` |
 | Import error: `flame` | `cd ../../ && pip install -e .` |
-| Processes hang | `pkill -f main.py && pkill -f main_oort_agg.py` |
+| Processes hang | `pkill -f flame.launch.run_experiment; pkill -f aggregator/pytorch; pkill -f trainer/pytorch` |
+
+## Next steps
+
+- First task for a new contributor: [`ava_first_task.md`](ava_first_task.md)
+  (split the trainer delay into compute + RTT, then make RTT time-varying).
 
 ## References
 
