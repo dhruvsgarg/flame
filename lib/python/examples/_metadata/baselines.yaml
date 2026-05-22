@@ -5,6 +5,7 @@
 #
 # Schema:
 #   baselines.<name>.description         (str)
+#   baselines.<name>.example             (dict)  launcher paths; aggregator_main fixes the stack
 #   baselines.<name>.aggregator          (dict)  fields merged into aggregator JSON
 #   baselines.<name>.trainer             (dict)  fields merged into per-trainer config
 #
@@ -19,6 +20,8 @@ baselines:
       Felix = async_oort selector (evalGoalFactor=1) + fedbuff optimizer
       (use_oort_lr=True, agg_rate_conf.type=new). Uses client_notify (NOT
       oracular tracking).
+    example:
+      aggregator_main: aggregator/pytorch/main_asyncfl_agg.py
     aggregator:
       selector:
         sort: async_oort
@@ -47,6 +50,8 @@ baselines:
     description: >-
       REFL = refl_oort selector + refl optimizer with oracular availability
       tracking (priority-based selection, staleness-aware aggregation).
+    example:
+      aggregator_main: aggregator/pytorch/main_oort_sync_agg.py
     aggregator:
       selector:
         sort: refl_oort
@@ -82,6 +87,8 @@ baselines:
     description: >-
       FedDance = feddance selector (V_m * I_m * A_m with MAB exploration) +
       FedAvg optimizer.
+    example:
+      aggregator_main: aggregator/pytorch/main_fedavg_agg.py
     aggregator:
       selector:
         sort: feddance
@@ -105,6 +112,8 @@ baselines:
 
   oort:
     description: Oort selector (sync) + FedAvg optimizer, oracular tracking.
+    example:
+      aggregator_main: aggregator/pytorch/main_oort_sync_agg.py
     aggregator:
       selector:
         sort: oort

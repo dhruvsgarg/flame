@@ -11,9 +11,6 @@ experiments:
 
     baseline: felix
 
-    example:
-      aggregator_main: aggregator/pytorch/main_oort_agg.py
-
     trainer:
       num_trainers: 10
       start_id: 1

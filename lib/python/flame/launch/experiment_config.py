@@ -83,7 +83,7 @@ class ExampleConfig:
 
     dir: Optional[str] = None
     trainer_main: str = "trainer/pytorch/main.py"
-    aggregator_main: str = "aggregator/pytorch/main.py"
+    aggregator_main: Optional[str] = None  # owned by baseline; falls back to default in runner
     trainer_base: str = "configs/trainer_base.yaml"
 
 

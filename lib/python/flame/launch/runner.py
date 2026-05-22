@@ -10,6 +10,7 @@ Paths are resolved as follows (lowest precedence → highest):
 """
 
 import json
+import re
 import signal
 import sys
 from datetime import datetime
@@ -92,7 +93,6 @@ class ExperimentRunner:
         return {
             "example_dir": ex_dir,
             "trainer_main": ex_dir / exp.example.trainer_main,
-            "aggregator_main": ex_dir / exp.example.aggregator_main,
             "trainer_base": ex_dir / exp.example.trainer_base,
             "metadata_dir": meta_dir,
             "registry_path": registry,
@@ -125,6 +125,12 @@ class ExperimentRunner:
                     f"aggregator config missing job.id "
                     f"(template={agg_config_path}, baseline={exp.baseline})"
                 )
+
+            # Baseline owns the aggregator stack; resolve it and fail fast on
+            # any selector/stack mismatch before spawning.
+            agg_main_rel = self._resolve_aggregator_main(exp, baseline_entry)
+            paths["aggregator_main"] = paths["example_dir"] / agg_main_rel
+            self._validate_stack(paths["aggregator_main"], agg_cfg)
 
             # Stash + log provenance.
             agg_cfg_path_out = self.current_exp_dir / "aggregator_config.json"
@@ -276,6 +282,39 @@ class ExperimentRunner:
         if desc:
             print(f"    {desc.strip()}")
         return entry
+
+    def _resolve_aggregator_main(
+        self, exp: ExperimentConfig, baseline_entry: Optional[dict]
+    ) -> str:
+        base_val = ((baseline_entry or {}).get("example") or {}).get("aggregator_main")
+        if base_val:
+            if exp.example.aggregator_main:
+                raise ValueError(
+                    f"baseline {exp.baseline!r} owns example.aggregator_main "
+                    f"({base_val!r}); remove the experiment-level override."
+                )
+            return base_val
+        return exp.example.aggregator_main or "aggregator/pytorch/main.py"
+
+    # async selectors require the asyncfl stack; everything else is sync.
+    _ASYNC_STACKS = {"asyncfl", "coord_asyncfl"}
+    _ASYNC_SELECTORS = {"async_oort", "async_random", "fedbuff"}
+
+    def _validate_stack(self, agg_main_path: Path, agg_cfg: dict) -> None:
+        text = Path(agg_main_path).read_text()
+        m = re.search(
+            r"from flame\.mode\.horizontal\.(\w+)\.top_aggregator import", text
+        )
+        stack = m.group(1) if m else "syncfl"
+        selector = (agg_cfg.get("selector") or {}).get("sort", "")
+        is_async_stack = stack in self._ASYNC_STACKS
+        is_async_sel = selector in self._ASYNC_SELECTORS
+        if is_async_stack != is_async_sel:
+            raise ValueError(
+                f"selector/stack mismatch: selector={selector!r} "
+                f"(async={is_async_sel}) cannot run on aggregator stack "
+                f"{stack!r} (async={is_async_stack}). main={agg_main_path}"
+            )
 
     def _build_aggregator_config(
         self,

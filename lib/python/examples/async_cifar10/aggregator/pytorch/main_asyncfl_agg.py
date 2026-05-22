@@ -132,7 +132,7 @@ class PyTorchCifar10Aggregator(TopAggregator):
             )
         else:
             print(
-                f"Did not read oracular trainer jsons. Enabled value: {self.track_trainer_avail['enabled']}, type: {self.track_trainer_avail['type']}, trace: {self.track_trainer_avail['trace']}"
+                f"Did not read oracular trainer jsons. Enabled value: {self.track_trainer_avail['enabled']}, type: {self.track_trainer_avail['type']}, trace: {self.track_trainer_avail.get('trace', '<unset>')}"
             )
         print("self.trainer_event_dict: ", self.trainer_event_dict)
 
@@ -254,19 +254,19 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
 
 if __name__ == "__main__":
+    from flame.launch.cli import load_config_from_argv
+
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument("config", nargs="?", default="./config.json")
-    # Add the --log_to_wandb argument
+    parser.add_argument("config", nargs="?", default=None)
     parser.add_argument(
         "--log_to_wandb", action="store_true", help="Flag to log to Weights and Biases"
     )
     parser.add_argument(
         "--wandb_run_name", type=str, help="Name of the Weights and Biases run"
     )
+    args, _ = parser.parse_known_args()
 
-    args = parser.parse_args()
-
-    config = Config(args.config)
+    config = Config(args.config) if args.config else load_config_from_argv()
 
     a = PyTorchCifar10Aggregator(config, args.log_to_wandb, args.wandb_run_name)
     a.compose()
