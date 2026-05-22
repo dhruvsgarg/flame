@@ -66,6 +66,11 @@ that call `from flame.launch.cli import load_config_from_argv`, then add
 `configs/trainer_base.yaml` and `experiments/configs/<name>.yaml`. The launcher
 handles the rest.
 
+Migrating an **existing** example off per-trainer JSON / shell scripts onto this
+launcher: follow [`MIGRATING_TO_LAUNCHER.md`](MIGRATING_TO_LAUNCHER.md) (trainer +
+aggregator changes, adding dataset data to `_metadata/`, baseline catalog, and
+legacy decommission). `async_cifar10/` is the reference implementation.
+
 For provenance on the n=300 metadata, see
 [`_metadata/migration_plan_async_cifar10.yaml`](_metadata/migration_plan_async_cifar10.yaml).
 To re-run / extend that migration, see [`lib/python/scripts/migrate_async_cifar10.py`](../scripts/migrate_async_cifar10.py).
