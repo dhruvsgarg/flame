@@ -17,7 +17,8 @@ def load_config_from_argv(default_config: str = "./config.json") -> Config:
     disk or be piped in by the launcher as a JSON string.
     """
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--config", default=default_config)
+    parser.add_argument("config", nargs="?", default=None)  # positional (legacy)
+    parser.add_argument("--config", dest="config_opt", default=None)
     parser.add_argument("--config-json", default=None)
     args, _ = parser.parse_known_args()
 
@@ -31,4 +32,4 @@ def load_config_from_argv(default_config: str = "./config.json") -> Config:
         finally:
             os.unlink(tmp)
 
-    return Config(args.config)
+    return Config(args.config or args.config_opt or default_config)
