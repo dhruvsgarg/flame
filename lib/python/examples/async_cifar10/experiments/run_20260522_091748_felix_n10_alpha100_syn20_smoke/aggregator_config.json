@@ -1,5 +1,5 @@
 {
-    "taskid": "oort_oracular_10trainer_demo_baseline",
+    "taskid": "49d06b7526964db86cf37c70e8e0cdb6bd7aa742",
     "backend": "mqtt",
     "brokers": [
         {
@@ -46,14 +46,12 @@
     ],
     "hyperparameters": {
         "batchSize": 32,
-        "learningRate": 0.3,
+        "learningRate": 0.001,
         "rounds": 200,
         "aggGoal": 5,
         "trackTrainerAvail": {
-            "enabled": "True",
-            "type": "ORACULAR",
-            "trace": "avl_events_syn_0",
-            "comment": "Oracular mode - perfect knowledge of trainer availability"
+            "enabled": "False",
+            "type": "NA"
         }
     },
     "baseModel": {
@@ -61,7 +59,7 @@
         "version": 2
     },
     "job": {
-        "id": "oort_oracular_demo_10trainers",
+        "id": "felix_n10_alpha100_syn20_smoke",
         "name": "cifar-10"
     },
     "registry": {
@@ -69,18 +67,29 @@
         "uri": ""
     },
     "selector": {
-        "sort": "oort",
+        "sort": "async_oort",
         "kwargs": {
-            "aggr_num": 5,
-            "comment": "Oort selector - utility-based client selection, selects 5 trainers per round"
+            "evalGoalFactor": 1.0,
+            "selectType": "default",
+            "roundNudgeType": "last_train",
+            "c": 8,
+            "aggGoal": 5
         }
     },
     "optimizer": {
-        "sort": "fedavg",
-        "kwargs": {},
-        "comment": "FedAvg aggregation - weighted average based on dataset sizes"
+        "sort": "fedbuff",
+        "kwargs": {
+            "use_oort_lr": "True",
+            "dataset_name": "cifar-10",
+            "agg_rate_conf": {
+                "type": "new",
+                "scale": 0.4,
+                "a_exp": 0.25,
+                "b_exp": 0.1
+            }
+        }
     },
-    "maxRunTime": 300,
+    "maxRunTime": 600,
     "realm": "default",
     "role": "aggregator"
 }
