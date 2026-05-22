@@ -36,6 +36,9 @@ baselines:
           dataset_name: cifar-10
           agg_rate_conf:
             type: new
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
       hyperparameters:
         trackTrainerAvail:
           enabled: "False"
@@ -139,7 +142,11 @@ baselines:
         kwargs: {}
       optimizer:
         sort: fedbuff
-        kwargs: {}
+        kwargs:
+          use_oort_lr: "False"
+          dataset_name: cifar-10
+          agg_rate_conf:
+            type: old
       hyperparameters:
         trackTrainerAvail:
           enabled: "False"
