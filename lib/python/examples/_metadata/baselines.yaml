@@ -128,3 +128,45 @@ baselines:
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"
+
+  fedbuff:
+    description: FedBuff = fedbuff selector (uniform async) + fedbuff optimizer. Async stack.
+    example:
+      aggregator_main: aggregator/pytorch/main_asyncfl_agg.py
+    aggregator:
+      selector:
+        sort: fedbuff
+        kwargs: {}
+      optimizer:
+        sort: fedbuff
+        kwargs: {}
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
+
+  fedavg:
+    description: FedAvg = random selector (sync) + fedavg optimizer. Base syncfl stack.
+    example:
+      aggregator_main: aggregator/pytorch/main_fedavg_agg.py
+    aggregator:
+      selector:
+        sort: random
+        kwargs: {}
+      optimizer:
+        sort: fedavg
+        kwargs: {}
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
