@@ -256,6 +256,15 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     rtt_communication_time_ms: t.Optional[float] = Field(
         alias="rttCommunicationTimeMs", default=None
     )
+    rtt_base_ms: t.Optional[float] = Field(
+        alias="rttBaseMs", default=None
+    )
+    rtt_amplitude: t.Optional[float] = Field(
+        alias="rttAmplitude", default=0.3
+    )
+    rtt_period_s: t.Optional[float] = Field(
+        alias="rttPeriodS", default=120.0
+    )
 
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(

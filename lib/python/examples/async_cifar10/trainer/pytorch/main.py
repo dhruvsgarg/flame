@@ -164,6 +164,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
         self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms)
         self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
+	self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
+        self.rtt_amplitude = float(self.config.hyperparameters.rtt_amplitude)
+        self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
+        self.start_time = time.time()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
