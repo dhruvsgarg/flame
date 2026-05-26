@@ -250,6 +250,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
     )
+    computation_time_ms: t.Optional[float] = Field(
+        alias="computationTimeMs", default=None
+    )
+    rtt_communication_time_ms: t.Optional[float] = Field(
+        alias="rttCommunicationTimeMs", default=None
+    )
+
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False

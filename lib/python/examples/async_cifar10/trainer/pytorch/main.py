@@ -162,6 +162,8 @@ class PyTorchCifar10Trainer(Trainer):
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms)
+        self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -1090,7 +1092,7 @@ class PyTorchCifar10Trainer(Trainer):
             eval_delay = math.floor(self.training_delay_s / 20.0)
             time.sleep(eval_delay)
             logger.debug(
-                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
+                f"Delayed eval time for trainer {self.trainer_id} by {eval_delay}s"
             )
 
     def initiate_heartbeat(self) -> None:
