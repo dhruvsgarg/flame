@@ -87,6 +87,32 @@ The trainer is spawned with `--config-json`; everything per-trainer arrives in
 Trainer entrypoint also uses `load_config_from_argv()`. One trainer `main.py` is
 typically enough across stacks.
 
+### Streaming data (optional, port from async_cifar10)
+
+By default a trainer loads its **entire** partition at init and reuses it on every
+selection. Real devices instead generate data continuously, so a client selected
+early should train on *less* data than one selected late. `async_cifar10/main.py`
+is the reference implementation of an opt-in streaming mode — mirror it when
+migrating an example that wants realistic data growth.
+
+- **Config** (on `hyperparameters`, disabled by default in `trainer_base.yaml`):
+  ```yaml
+  data_streaming:
+    enabled: "False"
+    full_data_available_after_s: 0   # sim seconds until 100% data is visible
+  ```
+  Enable per experiment under `trainer.config_overrides.hyperparameters.data_streaming`.
+- **Algorithm:** at `load_data()` retain the full pool and a one-time shuffle of it
+  seeded by `trainer_id` (= data arrival order). A helper exposes a growing prefix:
+  `visible = floor(min(1, sim_elapsed / X) * total)`, floored at 1 sample so the
+  loader is never empty; once `sim_elapsed >= X` the full pool stays visible.
+  `sim_elapsed = (now - start) * speedup_factor`, consistent with how
+  `training_delay_s`/availability traces use the sim clock.
+  **TODO(DG):** revisit the `speedup_factor` coupling — its benefit is unverified.
+- **Where:** the loader is rebuilt at the top of `train()` and `evaluate()` so the
+  visible subset (and the `dataset_size` reported to the aggregator) reflects the
+  current time. All a no-op when `enabled: "False"`.
+
 ---
 
 ## 4. Baseline catalog (`baselines.yaml`)
@@ -128,8 +154,10 @@ everything else on a sync stack (`flame/launch/runner.py:_validate_stack`).
 8. Validate without spawning: load the YAML, resolve the baseline, build the
    aggregator config, and run `_validate_stack` (see the dry-run snippet in the
    commit history / `runner` API). Then run a 10-trainer smoke test.
-9. Delete the example's legacy JSON config dirs and mark its shell scripts
-   deprecated (§Legacy decommission).
+9. (Optional) Port the `data_streaming` block into `trainer_base.yaml` + the
+   trainer `main.py` if the example wants streamed data growth (§3 Streaming data).
+10. Delete the example's legacy JSON config dirs and mark its shell scripts
+    deprecated (§Legacy decommission).
 
 ---
 

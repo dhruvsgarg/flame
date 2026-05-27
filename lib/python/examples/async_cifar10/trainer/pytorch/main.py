@@ -24,6 +24,7 @@ import argparse
 import ast
 import calendar
 import gc
+import hashlib
 import logging
 import os
 import sys
@@ -231,7 +232,19 @@ class PyTorchCifar10Trainer(Trainer):
 
         # flag to decide whether the trainer upon unavailability will wait or exit
         self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
-        
+
+        # Data streaming: reveal samples over time (see MIGRATING_TO_LAUNCHER.md)
+        ds_cfg = getattr(self.config.hyperparameters, "data_streaming", None) or {}
+        self.data_streaming_enabled = str(ds_cfg.get("enabled", "False")) == "True"
+        self.data_streaming_full_after_s = float(
+            ds_cfg.get("full_data_available_after_s", 0)
+        )
+        logger.info(
+            f"Trainer {self.trainer_id}: data streaming "
+            f"{'ENABLED' if self.data_streaming_enabled else 'DISABLED'} "
+            f"(full_data_available_after_s={self.data_streaming_full_after_s})"
+        )
+
         # Initialize memory profiler
         self.memory_profiler = MemoryProfiler(
             trainer_id=str(self.trainer_id),
@@ -330,70 +343,72 @@ class PyTorchCifar10Trainer(Trainer):
         indices = torch.tensor(self.trainer_indices_list)
 
         dataset = data_utils.Subset(dataset, indices)
-        
-        # GPU pre-loading optimization for small datasets
-        # This significantly reduces CPU RAM usage by keeping data on GPU
+
+        # GPU pre-load for small datasets (cuts CPU RAM). Full pool is retained;
+        # the loader is (re)built from a prefix in _rebuild_stream_loader.
         dataset_size = len(indices)
         gpu_preload_threshold = 2000  # Adjust based on GPU memory availability
-        
+
         if dataset_size <= gpu_preload_threshold and self.device is not None:
             logger.info(
                 f"Trainer {self.trainer_id}: Pre-loading {dataset_size} samples to GPU "
                 f"to reduce CPU RAM usage"
             )
-            
+
             # Load all data to GPU at once
             temp_loader = torch.utils.data.DataLoader(
                 dataset, batch_size=dataset_size, shuffle=False
             )
-            
+
             all_data = []
             all_targets = []
             for data, target in temp_loader:
                 all_data.append(data.to(self.device))
                 all_targets.append(target.to(self.device))
-            
-            # Create TensorDataset on GPU
-            gpu_dataset = data_utils.TensorDataset(
-                torch.cat(all_data), torch.cat(all_targets)
-            )
-            
-            train_kwargs = {
+
+            # Retain the full GPU pool; loader built below from a prefix
+            self._stream_gpu = True
+            self._stream_all_data = torch.cat(all_data)
+            self._stream_all_targets = torch.cat(all_targets)
+            self._stream_train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": False,  # Keep incomplete batches for small datasets in FL
+                "drop_last": False,  # keep incomplete batches in FL
                 "shuffle": True,
-                "num_workers": 0,  # No workers needed - data already on GPU
+                "num_workers": 0,  # data already on GPU
             }
-            
-            self.train_loader = torch.utils.data.DataLoader(gpu_dataset, **train_kwargs)
-            
-            # Release temporary loader and CPU dataset
-            del temp_loader, all_data, all_targets
-            
+
+            del temp_loader, all_data, all_targets, dataset
             logger.info(
                 f"Trainer {self.trainer_id}: Successfully pre-loaded data to GPU"
             )
         else:
-            # Standard loading for larger datasets
-            train_kwargs = {
+            # Standard loading for larger datasets; retain full Subset
+            self._stream_gpu = False
+            self._stream_full_dataset = dataset
+            self._stream_train_kwargs = {
                 "batch_size": self.batch_size,
-                "drop_last": False,  # Keep incomplete batches for small datasets in FL
+                "drop_last": False,  # keep incomplete batches in FL
                 "shuffle": True,
-                "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage from worker processes
-                "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
+                "num_workers": 0,  # reduces CPU RAM from worker processes
+                "pin_memory": True,  # faster CPU->GPU transfers
             }
-            
-            self.train_loader = torch.utils.data.DataLoader(dataset, **train_kwargs)
-            
             logger.info(
                 f"Trainer {self.trainer_id}: Using standard loading "
                 f"({dataset_size} samples exceeds GPU pre-load threshold)"
             )
 
-        # Release the memory of the full dataset
-        del dataset
+        # Fixed shuffle of the pool (seeded by trainer_id) = data arrival
+        # order; streaming reveals a growing prefix of it.
+        self._stream_total = dataset_size
+        seed = int(hashlib.sha256(str(self.trainer_id).encode()).hexdigest(), 16) % (2**31)
+        self._stream_order = torch.randperm(
+            self._stream_total, generator=torch.Generator().manual_seed(seed)
+        )
+
+        # Build initial loader (full pool unless streaming is enabled)
+        self._rebuild_stream_loader()
         gc.collect()
-        
+
         # Log DataLoader memory info
         dataloader_info = self.memory_profiler.get_dataloader_memory(self.train_loader)
         logger.info(
@@ -408,6 +423,39 @@ class PyTorchCifar10Trainer(Trainer):
         logger.debug(
             f"Task_id: {self.trainer_id} load_data completed at timestamp: "
             f"{time.time()}"
+        )
+
+    def _visible_sample_count(self) -> int:
+        """Samples unlocked so far: linear in elapsed time, full after X."""
+        # TODO(DG): revisit speedup_factor coupling - its benefit is
+        # unverified; this assumes speedup_factor works correctly.
+        if not self.data_streaming_enabled or self.data_streaming_full_after_s <= 0:
+            return self._stream_total
+        sim_elapsed = (time.time() - self.trainer_start_ts) * self.speedup_factor
+        frac = min(1.0, sim_elapsed / self.data_streaming_full_after_s)
+        n = math.floor(frac * self._stream_total)
+        return min(self._stream_total, max(1, n))  # >=1 so loader is non-empty
+
+    def _rebuild_stream_loader(self) -> None:
+        """Rebuild train_loader over the currently-visible prefix of the pool."""
+        n = self._visible_sample_count()
+        full = n >= self._stream_total
+        if self._stream_gpu:
+            if full:
+                subset = data_utils.TensorDataset(
+                    self._stream_all_data, self._stream_all_targets
+                )
+            else:
+                # align index with data device (order is built on CPU)
+                pos = self._stream_order[:n].to(self._stream_all_data.device)
+                subset = data_utils.TensorDataset(
+                    self._stream_all_data[pos], self._stream_all_targets[pos]
+                )
+        else:
+            pos = self._stream_order if full else self._stream_order[:n]
+            subset = data_utils.Subset(self._stream_full_dataset, pos.tolist())
+        self.train_loader = torch.utils.data.DataLoader(
+            subset, **self._stream_train_kwargs
         )
 
     def train(self) -> None:
@@ -443,6 +491,14 @@ class PyTorchCifar10Trainer(Trainer):
                 return
 
         logger.info(f"Trainer {self.trainer_id} available to train")
+
+        # Refresh visible data for this selection (no-op if streaming off)
+        if self.data_streaming_enabled:
+            self._rebuild_stream_loader()
+            logger.info(
+                f"Trainer {self.trainer_id} streaming: "
+                f"{self._visible_sample_count()}/{self._stream_total} samples visible"
+            )
 
         """Train a model."""
         self.criterion = torch.nn.CrossEntropyLoss()
@@ -611,6 +667,10 @@ class PyTorchCifar10Trainer(Trainer):
             )
             while self.avl_state == TrainerAvailState.UN_AVL:
                 time.sleep(1)
+
+        # Use the same currently-visible data as training (no-op if off)
+        if self.data_streaming_enabled:
+            self._rebuild_stream_loader()
 
         logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
         for epoch in range(1, self.epochs + 1):
