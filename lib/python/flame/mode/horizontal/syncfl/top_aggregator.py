@@ -50,6 +50,8 @@ from flame.selector.properties import (
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
 )
+from flame import telemetry
+from flame.telemetry.events import build_agg_eval, build_agg_round
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +305,19 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
+        if telemetry.is_enabled():
+            ev, fields = build_agg_round(
+                round_num=self._round,
+                in_flight=len(channel.ends()),
+                staleness=list(self._round_update_values.get("staleness", [])),
+                stat_utility=list(self._round_update_values.get("stat_utility", [])),
+                trainer_speed_s=list(
+                    self._round_update_values.get("trainer_speed", [])
+                ),
+                contributing_trainers=list(self.cache.keys()),
+            )
+            telemetry.emit(ev, **fields)
+
         self._compute_aggregator_stats()
         if self._round % 5 == 0:
             logger.info(f"_agg_training_stats: {self._agg_training_stats}")
@@ -456,6 +471,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
     def update_metrics(self, metrics: dict[str, float]):
         """Update metrics."""
         self.metrics = self.metrics | metrics
+        # Telemetry: aggregator eval metrics (generic hook for all examples).
+        if telemetry.is_enabled():
+            ev, fields = build_agg_eval(round_num=self._round, metrics=metrics)
+            telemetry.emit(ev, **fields)
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:

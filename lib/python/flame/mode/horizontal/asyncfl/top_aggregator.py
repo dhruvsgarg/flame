@@ -33,6 +33,8 @@ from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTop
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
+from flame import telemetry
+from flame.telemetry.events import build_agg_round
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -46,6 +48,10 @@ from flame.selector.oort import (
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
+
+# Max wall-clock to block on one async receive before skipping the cycle and
+# re-selecting; guards against hanging when all in-flight trainers go quiet.
+RECV_TIMEOUT_WAIT_S = 30
 
 
 class TopAggregator(SyncTopAgg):
@@ -190,7 +196,24 @@ class TopAggregator(SyncTopAgg):
         # first NOTE: (DG) Right now, the leave notifications also
         # cause a message to be processed and yield (None,None) from
         # recv_fifo().
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+        # Drop in-flight ends no longer in the channel (selected, then left/went
+        # unavailable): recv_fifo skips them and would block on an empty receive.
+        # Skip the cycle if none remain so the loop re-selects when trainers return.
+        recv_ends = channel.ends(VAL_CH_STATE_RECV)
+        if recv_ends:
+            recv_ends = [e for e in recv_ends if channel.has(e)]
+        if not recv_ends:
+            logger.debug(
+                f"[AGG_RECV] no live ends to receive from "
+                f"(agg_model_version={self._round}); skipping cycle"
+            )
+            time.sleep(0.5)
+            return
+        # Bounded receive: on timeout msg is None, we skip and re-select; a quiet
+        # trainer's later update is still accepted/discarded by the checks below.
+        msg, metadata = next(
+            channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
+        )
         end, _ = metadata
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
@@ -492,11 +515,24 @@ class TopAggregator(SyncTopAgg):
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
             self._round_update_values["stat_utility"].append(stat_utility)
-            self._round_update_values["trainer_speed"].append(
-                channel.get_end_property(
-                    end_id=end, key=PROP_ROUND_DURATION
-                ).total_seconds()
-            )
+            _trainer_speed_s = channel.get_end_property(
+                end_id=end, key=PROP_ROUND_DURATION
+            ).total_seconds()
+            self._round_update_values["trainer_speed"].append(_trainer_speed_s)
+
+            # Telemetry: one record per processed train update.
+            if telemetry.is_enabled():
+                ev, fields = build_agg_round(
+                    round_num=self._round,
+                    agg_goal=self._agg_goal,
+                    agg_goal_count=self._agg_goal_cnt,
+                    updates_in_queue=self._updates_in_queue,
+                    staleness=[update_staleness_val],
+                    stat_utility=[stat_utility],
+                    trainer_speed_s=[_trainer_speed_s],
+                    contributing_trainers=[end],
+                )
+                telemetry.emit(ev, **fields)
 
             # capture per trainer staleness
             if end in self._per_trainer_staleness_track.keys():

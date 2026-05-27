@@ -188,11 +188,17 @@ class TrainerSpawner:
         num_gpus: int = 8,
         sleep_between_spawns: float = 1.0,
         log_file: Optional[Path] = None,
+        speedup_factor: float = 1.0,
+        battery_threshold: int = 50,
     ):
         self.config_gen = config_generator
         self.num_gpus = num_gpus
         self.sleep_between_spawns = sleep_between_spawns
         self.log_file = log_file
+        # CLI-only trainer knobs: read from argv, not config JSON; if not passed
+        # they silently fall back to argparse defaults (speedup_factor=1.0).
+        self.speedup_factor = speedup_factor
+        self.battery_threshold = battery_threshold
         self.processes = []
         self._log_handle = None
 
@@ -242,6 +248,10 @@ class TrainerSpawner:
             str(trainer_main_path),
             "--config-json",
             config_json,
+            "--speedup_factor",
+            str(self.speedup_factor),
+            "--battery_threshold",
+            str(self.battery_threshold),
         ]
 
         # Determine stdout/stderr handling

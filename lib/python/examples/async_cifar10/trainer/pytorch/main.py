@@ -39,6 +39,12 @@ import torch.utils.data as data_utils
 import torchvision.transforms as transforms
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
+from flame import telemetry
+from flame.telemetry.events import (
+    build_avail_change,
+    build_trainer_round,
+    build_util_disparity,
+)
 from torchvision.datasets import CIFAR10
 from memory_profiler import MemoryProfiler
 
@@ -245,6 +251,20 @@ class PyTorchCifar10Trainer(Trainer):
             f"(full_data_available_after_s={self.data_streaming_full_after_s})"
         )
 
+        # Streamed-vs-full statistical-utility counterfactual telemetry (opt-in).
+        # Config: util_counterfactual: {enabled, every_n_rounds, sample_size}.
+        uc_cfg = getattr(self.config.hyperparameters, "util_counterfactual", None) or {}
+        self.util_cf_enabled = str(uc_cfg.get("enabled", "False")) == "True"
+        self.util_cf_every_n = int(uc_cfg.get("every_n_rounds", 1) or 1)
+        _ss = uc_cfg.get("sample_size", 256)
+        self.util_cf_sample_size = int(_ss) if _ss not in (None, "None", "") else None
+        self._pool_tensor_cache = None  # lazily materialized full-pool tensors
+        logger.info(
+            f"Trainer {self.trainer_id}: util counterfactual "
+            f"{'ENABLED' if self.util_cf_enabled else 'DISABLED'} "
+            f"(every_n_rounds={self.util_cf_every_n}, sample_size={self.util_cf_sample_size})"
+        )
+
         # Initialize memory profiler
         self.memory_profiler = MemoryProfiler(
             trainer_id=str(self.trainer_id),
@@ -276,6 +296,13 @@ class PyTorchCifar10Trainer(Trainer):
                     logger.info(
                         f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
                     )
+                    if telemetry.is_enabled():
+                        ev, fields = build_avail_change(
+                            round_num=int(getattr(self, "_round", 0)),
+                            old_state=str(old_status),
+                            new_state=str(new_status),
+                        )
+                        telemetry.emit(ev, **fields)
                     if self.client_notify["enabled"] == "True":
                         self._perform_channel_state_update(
                             tag="upload",
@@ -458,6 +485,87 @@ class PyTorchCifar10Trainer(Trainer):
             subset, **self._stream_train_kwargs
         )
 
+    def _pool_tensors(self):
+        """Return (data, targets) tensors for the full sample pool on device.
+
+        Reuses the GPU-preloaded pool when available; otherwise materializes
+        the CPU Subset once and caches it. Only used for opt-in counterfactual
+        telemetry, so the one-time cost is acceptable.
+        """
+        if getattr(self, "_stream_gpu", False):
+            return self._stream_all_data, self._stream_all_targets
+        if self._pool_tensor_cache is not None:
+            return self._pool_tensor_cache
+        loader = torch.utils.data.DataLoader(
+            self._stream_full_dataset, batch_size=512, shuffle=False
+        )
+        datas, targets = [], []
+        for d, t in loader:
+            datas.append(d)
+            targets.append(t)
+        data = torch.cat(datas)
+        target = torch.cat(targets)
+        self._pool_tensor_cache = (data, target)
+        return self._pool_tensor_cache
+
+    def _oort_utility(self, data, targets, norm_n, sample_size=None):
+        """Oort statistical utility over a (sampled) set: N * sqrt(mean(loss^2)).
+
+        Mirrors the trainer's Oort utility but computed with no_grad over an
+        arbitrary index set, so the streamed-prefix and full-pool values are
+        directly comparable. Returns (utility, n_used).
+        """
+        n = data.shape[0]
+        if n == 0:
+            return 0.0, 0
+        if sample_size is not None and n > sample_size:
+            sel = torch.randperm(n)[:sample_size]
+            data = data[sel.to(data.device)]
+            targets = targets[sel.to(targets.device)]
+        criterion = self.loss_fn(reduction="none")
+        self.model.eval()
+        with torch.no_grad():
+            data = data.to(self.device)
+            targets = targets.to(self.device)
+            output = self.model(data)
+            per_sample = criterion(output, targets)
+            sumsq = torch.square(per_sample).sum().item()
+        n_used = data.shape[0]
+        utility = norm_n * math.sqrt(sumsq / n_used) if n_used > 0 else 0.0
+        return utility, n_used
+
+    def _emit_util_disparity(self, round_num, elapsed_s):
+        """Compute and emit streamed-prefix vs full-pool utility (opt-in)."""
+        if not (self.util_cf_enabled and telemetry.is_enabled()):
+            return
+        if self.util_cf_every_n > 1 and (round_num % self.util_cf_every_n != 0):
+            return
+        try:
+            data, targets = self._pool_tensors()
+            total = self._stream_total
+            visible_n = self._visible_sample_count()
+            order = self._stream_order.to(data.device)
+            ss = self.util_cf_sample_size
+            util_streamed, _ = self._oort_utility(
+                data[order[:visible_n]], targets[order[:visible_n]],
+                norm_n=visible_n, sample_size=ss,
+            )
+            util_full, n_used = self._oort_utility(
+                data[order], targets[order], norm_n=total, sample_size=ss,
+            )
+            ev, fields = build_util_disparity(
+                round_num=int(round_num),
+                elapsed_s=elapsed_s,
+                visible_samples=int(visible_n),
+                total_samples=int(total),
+                utility_streamed=util_streamed,
+                utility_full=util_full,
+                sample_size_used=n_used,
+            )
+            telemetry.emit(ev, **fields)
+        except Exception as e:  # telemetry must never break training
+            logger.debug(f"util disparity emit failed: {e}")
+
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
         
@@ -475,6 +583,8 @@ class PyTorchCifar10Trainer(Trainer):
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
+        # telemetry: measure time spent waiting on availability (vs. computing)
+        _wait_time_s = 0.0
         # don't enter the if condition if the three_state_avl switch is off
         # if we are checking for three_state_avl - check if the mechanism is to wait or exit
         if self.avl_state != TrainerAvailState.AVL_TRAIN:
@@ -482,8 +592,10 @@ class PyTorchCifar10Trainer(Trainer):
                 logger.info(
                     f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
                 )
+                _wait_start = time.time()
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
                     time.sleep(1)
+                _wait_time_s = time.time() - _wait_start
             else:
                 logger.info(
                     f"Trainer id {self.trainer_id} is not available to train. Exiting training."
@@ -534,11 +646,14 @@ class PyTorchCifar10Trainer(Trainer):
 
         total_batches_processed = 0
         final_loss = None
+        _gpu_start = time.time()
         for epoch in range(1, self.epochs + 1):
             epoch_batches, epoch_loss = self._train_epoch(epoch)
             total_batches_processed += epoch_batches
             if epoch_loss is not None:
                 final_loss = epoch_loss
+        # real GPU/compute time for this round, excluding any simulated delay
+        _real_gpu_time_s = time.time() - _gpu_start
 
         # Log training completion summary
         loss_str = f"{final_loss:.6f}" if final_loss is not None else "N/A"
@@ -564,6 +679,38 @@ class PyTorchCifar10Trainer(Trainer):
         
         # Log memory after training round
         self.memory_profiler.log_memory_after_round()
+
+        # Telemetry: per-round timing/availability + streamed-vs-full disparity.
+        if telemetry.is_enabled():
+            sim_dur = (
+                (self.training_delay_s / self.speedup_factor)
+                if self.training_delay_enabled == "True"
+                else 0.0
+            )
+            visible = (
+                self._visible_sample_count()
+                if self.data_streaming_enabled
+                else self._stream_total
+            )
+            ev, fields = build_trainer_round(
+                round_num=int(getattr(self, "_round", 0)),
+                real_gpu_time_s=_real_gpu_time_s,
+                sim_round_duration_s=sim_dur,
+                wait_time_s=_wait_time_s,
+                avail_state=self.avl_state.value,
+                visible_samples=int(visible),
+                total_samples=int(self._stream_total),
+                dataset_size=int(dataset_size),
+                stat_utility=float(self._stat_utility)
+                if isinstance(self._stat_utility, (int, float))
+                else float(getattr(self._stat_utility, "item", lambda: 0.0)()),
+                final_loss=final_loss,
+            )
+            telemetry.emit(ev, **fields)
+            self._emit_util_disparity(
+                int(getattr(self, "_round", 0)),
+                (time.time() - self.trainer_start_ts) * self.speedup_factor,
+            )
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency) if enabled
@@ -808,6 +955,10 @@ def main():
 
     print(f"[TRAINER STARTUP] Creating trainer object...")
     t = PyTorchCifar10Trainer(config, args.battery_threshold, args.speedup_factor)
+
+    # Structured telemetry (no-op unless $FLAME_TELEMETRY_DIR is set by the
+    # launcher). One JSONL file per trainer process.
+    telemetry.configure(role="trainer", end_id=str(t.trainer_id))
     
     print(f"[TRAINER STARTUP] Trainer created - ID: {t.trainer_id}, Job: {t.config.job.job_id}")
     logger.info(f"========== TRAINER STARTED: ID={t.trainer_id}, PID={os.getpid()} ==========")
