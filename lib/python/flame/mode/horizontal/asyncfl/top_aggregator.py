@@ -237,6 +237,14 @@ class TopAggregator(SyncTopAgg):
                 if sct is None:
                     sct = self._vclock.now
                 self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+                # Instrumentation: detect when a buffered trainer is still in
+                # all_selected (was selected but won't be cleaned up this round).
+                if actual_end in channel._selector.all_selected:
+                    logger.debug(
+                        f"[SIM_BUFFER] buffered actual_end={actual_end[-4:]} "
+                        f"sct={sct:.2f} — still in all_selected, "
+                        f"probed_end={e[-4:]}"
+                    )
             # If msg is None the trainer hasn't sent yet — the asyncfl loop
             # will call us again after the next put_train/put_eval cycle.
 
@@ -813,6 +821,37 @@ class TopAggregator(SyncTopAgg):
 
         logger.debug("Agg goal reached, so resetting trainer end states in the channel")
         channel.cleanup_recvd_ends()
+
+        if self.simulated:
+            # Simulated mode: trainers respond immediately so all N trainers
+            # send back in round K, but only agg_goal (< N) are committed.
+            # The uncommitted trainers are left in all_selected and can never
+            # be freed: they're not committed (so cleanup_recvd_ends skips
+            # them) and not selectable (they're in all_selected so OORT
+            # excludes them from filtered_ends) — a permanent deadlock.
+            # Fix: release all remaining all_selected entries at round end.
+            # Their buffered messages (in _sim_buffer) are still valid stale
+            # updates that will be processed in future rounds.
+            sel = channel._selector
+            stuck = list(sel.all_selected.keys())
+            if stuck:
+                logger.info(
+                    f"[SIM_CLEANUP] round={self._round} releasing {len(stuck)} "
+                    f"trainer(s) still in all_selected after cleanup "
+                    f"(selected but not committed this round — would be locked out "
+                    f"of future selection without this): "
+                    f"{[s[-4:] for s in stuck]}"
+                )
+            for end_id in stuck:
+                del sel.all_selected[end_id]
+                # Reset end state to NONE so channel.ends(VAL_CH_STATE_RECV)
+                # can return them again and OORT can re-probe them.
+                if channel.has(end_id):
+                    from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+                    channel._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+                requester = sel.requester
+                if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
+                    sel.selected_ends[requester].discard(end_id)
 
     def oracular_trainer_avail_check(self, end: str) -> bool:
         logger.debug("In oracular_trainer_avail_check")
