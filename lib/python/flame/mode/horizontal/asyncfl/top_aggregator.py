@@ -17,7 +17,7 @@
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -35,6 +35,8 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
 from flame.telemetry.events import build_agg_round
+from flame.sim import SimReorderBuffer
+from flame.selector.properties import PROP_SIM_SEND_TS
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -77,6 +79,16 @@ class TopAggregator(SyncTopAgg):
         self._per_trainer_staleness_track = {}
         self._track_trainer_version_duration_s = {}
 
+        # simulated-time mode: buffer arrived-but-uncommitted updates and commit
+        # them in virtual-completion order (reproduces real-mode arrival order
+        # without sleeping). Persists across _aggregate_weights calls so
+        # overcommitted stragglers carry over to later rounds.
+        self._sim_buffer = SimReorderBuffer()
+        # Set of ends committed in the current agg-goal window, so we don't
+        # re-probe them after they're committed (re-probing would hang on an
+        # empty recv queue). Reset when agg-goal completes and a new window starts.
+        self._sim_committed: set = set()
+
         # check if distribute_weights was successful
         self._prev_distribute_weights_success = False
 
@@ -116,6 +128,11 @@ class TopAggregator(SyncTopAgg):
             f"##### reset _agg_goal_cnt:{self._agg_goal_cnt}, _agg_goal_weights: "
             f"{self._agg_goal_weights}"
         )
+
+        # simulated mode: new agg-goal window — clear committed set so freshly
+        # selected trainers can be probed for their new-round updates.
+        if self.simulated:
+            self._sim_committed.clear()
 
     # TODO: (DG) Need to update or delete, not used right now
     def _read_heartbeat(self, tag: str) -> None:
@@ -179,6 +196,66 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
+    # Per-end probe timeout in _sim_recv_min. This is NOT how long we wait for
+    # training to finish — it's how long we check one trainer's queue before moving
+    # on. If the trainer is still computing, the background _get_inner task keeps
+    # waiting; the message is delivered to _rx_queue when it arrives, and the NEXT
+    # probe cycle picks it up instantly. Shorter = better throughput (fewer wasted
+    # seconds per still-computing trainer probe). Must be >= worst-case local MQTT
+    # delivery jitter (~50-150ms); 0.5s is safe for most deployments.
+    SIM_RECV_FILL_TIMEOUT_S = 0.5
+
+    def _sim_recv_min(self, channel, recv_ends):
+        """Simulated-time receive: return the in-flight update with the smallest
+        virtual completion time.
+
+        Design:
+        - Fill the reorder buffer from live recv ends not yet buffered or
+          committed, using a short per-message timeout (GPU-time order).
+        - If a message doesn't arrive within SIM_RECV_FILL_TIMEOUT_S it hasn't
+          been sent yet (trainer still doing GPU compute) — skip it.
+        - Pop and commit the minimum from the buffer. This is independent of
+          the current recv_ends set so a trainer whose in-flight entry was
+          cleaned up before its update was committed isn't lost.
+        """
+        # Step 1: try to receive from ends not yet buffered AND not yet committed
+        # (committed ends are in _sim_committed so we don't re-probe them).
+        to_probe = [
+            e for e in recv_ends
+            if not self._sim_buffer.has(e) and e not in self._sim_committed
+        ]
+        for e in to_probe:
+            msg, metadata = next(
+                channel.recv_fifo([e], 1, timeout=self.SIM_RECV_FILL_TIMEOUT_S)
+            )
+            if msg is not None:
+                # Use the actual sender from metadata, not the probed end: a stale
+                # _streamer_for_recv_fifo task for a different end may have delivered
+                # its message before the probed end's message arrived.
+                actual_end = metadata[0]
+                sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                if sct is None:
+                    sct = self._vclock.now
+                self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+            # If msg is None the trainer hasn't sent yet — the asyncfl loop
+            # will call us again after the next put_train/put_eval cycle.
+
+        # Step 2: commit the buffer minimum (regardless of current recv_ends
+        # membership — avoids losing updates when cleanup removes an end before
+        # its last commit).
+        popped = self._sim_buffer.pop_min()
+        if popped is None:
+            time.sleep(0.5)
+            return None, ("", datetime.now())
+        _end, sct, (m, md) = popped
+        self._vclock.advance(sct)
+        self._sim_committed.add(_end)
+        logger.debug(
+            f"[SIM_RECV] committed end={_end} sim_completion_ts={sct:.1f} "
+            f"T_v={self._vclock.now:.1f} buffer_remaining={len(self._sim_buffer)}"
+        )
+        return m, md
+
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -203,17 +280,28 @@ class TopAggregator(SyncTopAgg):
         if recv_ends:
             recv_ends = [e for e in recv_ends if channel.has(e)]
         if not recv_ends:
-            logger.debug(
-                f"[AGG_RECV] no live ends to receive from "
-                f"(agg_model_version={self._round}); skipping cycle"
+            # Simulated mode: probing marks ends RECVD even for messages that are
+            # only buffered (not yet committed). If the buffer still has entries,
+            # skip new probing and just pop the next minimum — don't block.
+            if self.simulated and len(self._sim_buffer) > 0:
+                recv_ends = []
+            else:
+                logger.debug(
+                    f"[AGG_RECV] no live ends to receive from "
+                    f"(agg_model_version={self._round}); skipping cycle"
+                )
+                time.sleep(0.5)
+                return
+        # simulated mode: commit updates in virtual-completion order via the
+        # reorder buffer. real mode: bounded FIFO receive (arrival order).
+        if self.simulated:
+            msg, metadata = self._sim_recv_min(channel, recv_ends)
+        else:
+            # On timeout msg is None: skip and re-select; a quiet trainer's
+            # later update is still accepted/discarded by the checks below.
+            msg, metadata = next(
+                channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
             )
-            time.sleep(0.5)
-            return
-        # Bounded receive: on timeout msg is None, we skip and re-select; a quiet
-        # trainer's later update is still accepted/discarded by the checks below.
-        msg, metadata = next(
-            channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
-        )
         end, _ = metadata
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
@@ -372,6 +460,25 @@ class TopAggregator(SyncTopAgg):
                     recv_wts_version
                 ] = recv_wts_ts
 
+                # Instrumentation: wall-clock lag from aggregator-send to
+                # aggregator-receive. In real mode this ≈ trainer training time +
+                # MQTT RTT. In simulated mode it ≈ GPU compute + MQTT delivery.
+                # A lag much higher than expected training time signals broker
+                # overload or network congestion.
+                wall_lag_s = (recv_wts_ts - sent_wts_ts).total_seconds()
+                logger.info(
+                    f"[SEND_RECV_LAG] end={end} version={recv_wts_version} "
+                    f"wall_lag_s={wall_lag_s:.3f}"
+                )
+                _lag_warn_threshold_s = 30.0 if not self.simulated else 10.0
+                if wall_lag_s > _lag_warn_threshold_s:
+                    logger.warning(
+                        f"[SEND_RECV_LAG_HIGH] end={end} version={recv_wts_version} "
+                        f"wall_lag_s={wall_lag_s:.1f}s exceeds threshold "
+                        f"{_lag_warn_threshold_s}s — possible MQTT broker backlog "
+                        f"or slow network delivery"
+                    )
+
             # TODO: (DG) Can pass a flag for this later.
             allow_updates_more_than_timeout_old = True
 
@@ -430,7 +537,17 @@ class TopAggregator(SyncTopAgg):
                 curr_cumulative_training_s = self._track_trainer_version_duration_s[
                     end
                 ]["total_training_time_s"]
-                curr_round_time_s = (recv_wts_ts - sent_wts_ts).total_seconds()
+                # round duration drives Oort's speed/system-utility. simulated
+                # mode: use the trainer-reported modeled duration D (the real
+                # recv-send delta is ~GPU time and misrepresents speed). real
+                # mode: the wall-clock delta (the sleep makes it ~= D).
+                if self.simulated:
+                    round_duration_td = timedelta(
+                        seconds=float(msg.get(MessageType.SIM_ROUND_DURATION, 0.0))
+                    )
+                else:
+                    round_duration_td = recv_wts_ts - sent_wts_ts
+                curr_round_time_s = round_duration_td.total_seconds()
                 new_cumulative_training_s = (
                     curr_cumulative_training_s + curr_round_time_s
                 )
@@ -450,11 +567,10 @@ class TopAggregator(SyncTopAgg):
                 # version to that trainer.
                 logger.debug(
                     f"Setting channel property {PROP_ROUND_DURATION} for "
-                    f"end {end} with duration "
-                    f"{recv_wts_ts - sent_wts_ts}"
+                    f"end {end} with duration {round_duration_td}"
                 )
                 channel.set_end_property(
-                    end, PROP_ROUND_DURATION, recv_wts_ts - sent_wts_ts
+                    end, PROP_ROUND_DURATION, round_duration_td
                 )
 
         # capture telemetry on trainer participation in rounds
@@ -515,9 +631,8 @@ class TopAggregator(SyncTopAgg):
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
             self._round_update_values["stat_utility"].append(stat_utility)
-            _trainer_speed_s = channel.get_end_property(
-                end_id=end, key=PROP_ROUND_DURATION
-            ).total_seconds()
+            _round_dur = channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION)
+            _trainer_speed_s = _round_dur.total_seconds() if _round_dur is not None else 0.0
             self._round_update_values["trainer_speed"].append(_trainer_speed_s)
 
             # Telemetry: one record per processed train update.
@@ -958,8 +1073,11 @@ class TopAggregator(SyncTopAgg):
             # Add small delay between sends to distribute MQTT broker load
             # This prevents overwhelming the broker with many concurrent large messages
             # and allows the event loop to process keepalive packets
-            if idx < len(ends_list) - 1:  # Don't sleep after last send
-                time.sleep(0.5)
+            # Stagger sends to avoid overwhelming the MQTT broker with concurrent
+            # large weight payloads. Use a shorter interval in simulated mode since
+            # trainers cycle faster and broker load is lower.
+            if idx < len(ends_list) - 1:
+                time.sleep(0.2 if self.simulated else 0.5)
 
     def compose(self) -> None:
         """Compose role with tasklets."""

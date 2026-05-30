@@ -52,6 +52,8 @@ from flame.selector.properties import (
 )
 from flame import telemetry
 from flame.telemetry.events import build_agg_eval, build_agg_round
+from flame.sim import VirtualClock
+from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,15 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._rounds = 1
         self._rounds = self.config.hyperparameters.rounds
         self._work_done = False
+
+        # Simulation time mode (replaces speedup_factor). "simulated": order
+        # updates by a virtual clock fed by trainer-reported completion times;
+        # "real": order by physical arrival (legacy/authentic baseline).
+        self.time_mode = getattr(
+            self.config.hyperparameters, "time_mode", "simulated"
+        )
+        self.simulated = self.time_mode == "simulated"
+        self._vclock = VirtualClock()
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -377,18 +388,20 @@ class TopAggregator(Role, metaclass=ABCMeta):
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
-            channel.send(
-                end,
-                {
-                    MessageType.WEIGHTS: weights_to_device(
-                        self.weights, DeviceType.CPU
-                    ),
-                    MessageType.ROUND: self._round,
-                    MessageType.DATASAMPLER_METADATA: datasampler_metadata,
-                    MessageType.MODEL_VERSION: self._round,
-                    MessageType.TASK_TO_PERFORM: task_to_perform,
-                },
-            )
+            msg = {
+                MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+                MessageType.ROUND: self._round,
+                MessageType.DATASAMPLER_METADATA: datasampler_metadata,
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.TASK_TO_PERFORM: task_to_perform,
+            }
+            # simulated mode: stamp the virtual send time so the trainer can
+            # report sim_completion_ts = sim_send_ts + D back to us.
+            if self.simulated:
+                sim_send_ts = self._vclock.now
+                msg[MessageType.SIM_SEND_TS] = sim_send_ts
+                channel.set_end_property(end, PROP_SIM_SEND_TS, sim_send_ts)
+            channel.send(end, msg)
             # register round start time on each end for round duration
             # measurement.
             channel.set_end_property(

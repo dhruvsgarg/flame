@@ -120,6 +120,9 @@ class ExperimentRunner:
             agg_cfg, agg_provenance = self._build_aggregator_config(
                 exp, agg_config_path, baseline_entry
             )
+            # Propagate the simulation time mode to the aggregator (it needs to
+            # know whether to order updates by a virtual clock or by arrival).
+            agg_cfg.setdefault("hyperparameters", {})["time_mode"] = exp.trainer.time_mode
             agg_job_id = agg_cfg.get("job", {}).get("id")
             agg_job_name = agg_cfg.get("job", {}).get("name")
             if not agg_job_id:
@@ -162,8 +165,8 @@ class ExperimentRunner:
                 num_gpus=exp.execution.num_gpus,
                 sleep_between_spawns=exp.execution.sleep_between_spawns,
                 log_file=trainers_log,
-                # CLI-only knobs; without these the trainer defaults to 1.0.
-                speedup_factor=exp.trainer.speedup_factor,
+                # CLI-only knobs passed on the trainer command line.
+                time_mode=exp.trainer.time_mode,
                 battery_threshold=exp.trainer.battery_threshold,
             )
 
@@ -251,7 +254,15 @@ class ExperimentRunner:
             )
 
             print(f"\nexperiment running. logs: {agg_log}, {trainers_log}")
-            self.trainer_spawner.wait_all()
+            # Wait for the aggregator to finish all rounds first, then give
+            # trainers a short grace window to process the EOT broadcast and
+            # exit cleanly. Without this, wait_all()'s per-trainer timeout fires
+            # immediately after spawn and kills trainers every 30s regardless of
+            # whether training is still in progress.
+            print("  waiting for aggregator to finish...")
+            self.aggregator_spawner.process.wait()
+            print("  aggregator done, waiting for trainers to exit...")
+            self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
             print("\nexperiment completed.")
 
             # Auto post-run analysis: parse the telemetry JSONL and emit plots.

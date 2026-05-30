@@ -209,7 +209,10 @@ class PyTorchCifar10Aggregator(TopAggregator):
         pass
 
     def evaluate(self) -> None:
-        """Evaluate (test) a model."""
+        """Evaluate (test) a model every evalEveryNRounds rounds (default 10)."""
+        eval_every = self.config.hyperparameters.eval_every_n_rounds or 10
+        if self._round % eval_every != 0:
+            return
         self.model.eval()
         test_loss = 0
         correct = 0
