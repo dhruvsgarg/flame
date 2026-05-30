@@ -32,6 +32,20 @@ Two related needs in the `async_cifar10` FL example. **Order of work: Task 1 (te
 
 # Task 2 — Virtual-clock speedup (do later)
 
+## Implementation status (2026-05-28)
+
+Implemented and unit-verified (156 tests green incl. `tests/sim` + `tests/mode`):
+- `speedup_factor` removed everywhere; replaced by `time_mode: real|simulated` (default `simulated`) plumbed through experiment_config → spawner (`--time_mode`) → trainer, and into the aggregator config (`hyperparameters.time_mode`). YAML `speedup_factor` lines stripped from ~20 configs.
+- Contract: `MessageType.SIM_SEND_TS / SIM_COMPLETION_TS / SIM_ROUND_DURATION`, `PROP_SIM_SEND_TS / PROP_SIM_COMPLETION_TS`, and pure `flame/sim/virtual_clock.py` (`VirtualClock`, `SimReorderBuffer`, `sim_ordered_ends`).
+- Trainer: `real` sleeps `D`; `simulated` skips sleeps, reports `sim_completion_ts`/`D`, evaluates availability + streaming against sim-time (`_sim_now`), and skips (rather than busy-waits) when unavailable in sim mode.
+- Async aggregator: stamps `sim_send_ts` on distribute; `simulated` commits via `_sim_recv_min` (reorder buffer → ascending `sim_completion_ts`, advances `T_v`) and sources `PROP_ROUND_DURATION` from `D`; `real` keeps arrival-order FIFO. Bounded-recv guard retained.
+
+Remaining / known gaps:
+- **Sync aggregator**: init + `sim_send_ts` stamping done, but the `first_k`-by-`sim_completion_ts` selection and sim-sourced round duration are **not** implemented (sync still uses arrival order in sim mode). The primary target (felix) is async; sync (oort/refl/fedavg) sim-ordering is a follow-up.
+- **End-to-end two-run verification** (Q1: `real` vs `simulated` per-round parity + speedup) needs a GPU/MQTT run — not yet executed.
+- **Availability in sim mode** uses the trainer's own trace evaluated at the stamped sim-time; correlated-trace / oracular-at-`T_v` selection nuances (and the client-notify-vs-oracular question) want runtime validation.
+- `examples/fwdllm` still hardcodes `speedup_factor=1.0` (separate example; left as-is).
+
 ## Why virtual-clock is the right call (correctness of reordering)
 
 Concern: the async aggregator pops updates FIFO **by physical arrival** (`channel.recv_fifo`, [channel.py:430](../../flame/channel.py#L430)) — if we stop sleeping, all trainers finish ~together and arrival order no longer reflects simulated speed, corrupting staleness/ordering. Verified against both loops:
@@ -48,20 +62,61 @@ Concern: the async aggregator pops updates FIFO **by physical arrival** (`channe
 
 This is more efficient than scaling sleeps: wall-clock is bounded by *real GPU time only*, not by the modeled delays, so large `training_delay_s` values cost nothing — and it keeps the aggregator decoupled from any client profile.
 
+## Resolved design questions (from review)
+
+**Two clean modes, one logical timeline, no `speedup_factor`.** There is a single logical simulated timeline driven by each trainer's modeled round duration `D` (= `training_delay_s` + eval). The two modes only differ in how they *realize* that timeline:
+- **`real` (unsimulated)** — how training behaves in the real world. The trainer **sleeps** `D` so a slow device genuinely takes that long; wall-clock **is** the sim-timeline (1:1). Decisions use **actual arrival order** and the **real recv−send delta**. Authentic baseline.
+- **`simulated`** — the same dynamics enacted faster: **no sleep**. The GPU does its real (fast) work, the trainer reports `sim_completion_ts = sim_send_ts + D`, and the aggregator advances a **virtual clock** `T_v`. Wall-clock = real GPU only.
+
+`speedup_factor` is **removed entirely** from both modes (it never worked end-to-end and is unnecessary: `real` runs at true pace, `simulated` is bounded by GPU compute). Sleep exists **only** in `real` mode — it is not reintroduced anywhere else.
+
+**Q1 — Two-run verification and the equivalence expectation.** Run the same experiment in `real` and `simulated` (fixed seed). Both read availability / data-visibility / speed / ordering off the *same logical times*, so they're expected to produce the **same per-(model-version) selection sets, staleness, and loss/accuracy** — "same per round/model-version, not per wall-clock-second" — with `simulated` wall-clock ≪ `real`. Equivalence is **exact in a deterministic scripted scenario** (well-separated `D`, controlled/mocked GPU time → arrival order == sim-completion order) and **within tolerance in a live smoke** (the only divergence source is real-GPU jitter reordering two trainers whose `D` are very close). Verify both: scripted parity test + smoke per-round parity & speedup.
+
+**Q2 — Trainer speed / system-utility source.** In `simulated` mode the wall-clock recv−send delta collapses to ~GPU time and misrepresents speed, so `PROP_ROUND_DURATION` is sourced from `sim_completion_ts − sim_send_ts` (= `D`). In `real` mode the real delta already ≈ `D` (the sleep dominates), so it stays authentic. Either way the value used for Oort's system-utility is the modeled duration. (The current `recv−send` path is *already* wrong under the old `speedup_factor>1`; removing speedup + this fix resolve it.)
+
+**Q3 — Dual timestamps (real + simulated) for lineage.** Keep both on every event record and in the aggregator's `_track_trainer_version_duration_s` (`real_ts` + `sim_ts`, send & recv), so lineage and wall-clock behavior stay reconstructable. Telemetry events gain `sim_ts`/`sim_completion_ts` alongside the existing real `ts`.
+
+**Q4 — Availability & data-streaming timing without `speedup_factor`.** Both are expressed in **sim-seconds** and evaluated against the logical sim-time: in `real` mode that equals wall-clock-since-start (1:1, no scaling — replaces today's `real_elapsed × speedup_factor` at [main.py:263](trainer/pytorch/main.py#L263)/[main.py:434](trainer/pytorch/main.py#L434)); in `simulated` mode against the virtual clock stamped on each task (`sim_send_ts = T_v`), so the trainer needs no free-running clock. **Smoke-test impact (expected, and fine):** switch the telemetry smoke to `time_mode: simulated`, delete `speedup_factor`, and keep `full_data_available_after_s` / availability horizons in sim-seconds (e.g. a 600s = 10-min ramp in sim-time).
+
 ### Shared library layer (generic, reused by all examples)
 - **A new `flame/sim/virtual_clock.py` mixin** holding `T_v`, `advance(ts)`, and a per-in-flight-end map of **trainer-reported** `sim_completion_ts`. Aggregators compose this in; examples inherit. The aggregator stores only what trainers announce — no client profile.
 - **Message contract** in [flame/common/constants.py](../../flame/common/constants.py): (a) a lightweight **ETA-announce control message** (`MessageType.SIM_COMPLETION_TS`) the trainer sends at start of compute; (b) the same field echoed on the final weight update for validation. Backward-compatible: absence ⇒ real-time behavior (non-sim examples untouched).
 - **New selector property** `PROP_SIM_COMPLETION_TS` in [selector/properties.py](../../flame/selector/properties.py), populated from the trainer's announcement; aggregator records `sim_send_ts` at distribute-time (reuse existing `PROP_ROUND_START_TIME` / `_track_trainer_version_duration_s`).
 
 ### Trainer changes ([trainer/pytorch/main.py](trainer/pytorch/main.py))
-- At start of a selected round, compute `sim_round_duration` locally (currently `training_delay_s` + eval delay, scaled by `speedup_factor`) and **announce** `sim_completion_ts` to the aggregator before/at the moment heavy compute begins. **Do not sleep** the delay. Remove/guard the post-GPU sleeps at [main.py:571](trainer/pytorch/main.py#L571) and [main.py:708](trainer/pytorch/main.py#L708); echo the same `sim_completion_ts` on the outgoing update for validation.
-- Fix the fixed real-time waits that ignore `speedup_factor`: availability wait loops ([main.py:485](trainer/pytorch/main.py#L485), [main.py:668](trainer/pytorch/main.py#L668)), polling thread (line ~735), heartbeat thread, and the 20s channel-not-ready fallback ([main.py:295](trainer/pytorch/main.py#L295)). Drive these from the virtual clock (availability transitions already scale at [main.py:263](trainer/pytorch/main.py#L263); align the rest).
-- A **`real` mode** flag preserves today's literal-sleep behavior for regression comparison.
+- Compute the modeled round duration `D` (`training_delay_s` + eval) locally. **`real` mode:** sleep `D` after GPU work ([main.py:571](trainer/pytorch/main.py#L571), [main.py:708](trainer/pytorch/main.py#L708)) — keep it. **`simulated` mode:** skip the sleep; instead **announce** `sim_completion_ts = sim_send_ts + D` (where `sim_send_ts` is the sim-time the aggregator stamped on the task) and echo `D`/`sim_completion_ts` on the outgoing update.
+- Drop `speedup_factor` from the timing path entirely. Evaluate availability and data-visibility against the logical sim-time: wall-clock-since-start in `real` mode, the task's stamped sim-time in `simulated` mode (replaces `real_elapsed × speedup_factor` in `_visible_sample_count`/`check_and_update_state_avl`). In `simulated` mode the fixed real-time waits ([main.py:485](trainer/pytorch/main.py#L485), [main.py:668](trainer/pytorch/main.py#L668), polling/heartbeat threads, 20s fallback at [main.py:295](trainer/pytorch/main.py#L295)) must not gate progress.
 
 ### Aggregator changes
-- **Async** ([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py)): consume ETA-announce messages into the in-flight ETA map. Replace the single `recv_fifo(...,1)` pop with "select in-flight end with min reported `sim_completion_ts` → targeted `channel.recv(end_id)` → commit → advance `T_v`." Targeted recv carries a real-time timeout that reuses the existing `SEND_TIMEOUT_WAIT_S` drop/stale path. Keep all existing staleness/agg-goal/participation logic; staleness now keys off `T_v` ordering instead of `datetime.now()` arrival.
-- **Sync** ([syncfl/top_aggregator.py](../../flame/mode/horizontal/syncfl/top_aggregator.py)): pick the `first_k` smallest reported `sim_completion_ts` responders; set round duration from virtual time; no sleeping. Aggregation math unchanged (order-independent weighted average).
-- Gate the whole thing behind a config switch (`time_mode: simulated|real`) so `real` mode is byte-for-byte the current path.
+- **Async** ([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py)): in `simulated` mode, consume ETA-announce messages into an in-flight ETA map; replace the single `recv_fifo(...,1)` pop with "select in-flight end with min `sim_completion_ts` → targeted `channel.recv(end_id)` → commit → advance `T_v`"; set `PROP_ROUND_DURATION = sim_completion_ts − sim_send_ts` (Q2); stamp each distributed task with `sim_send_ts = T_v`. In `real` mode keep today's arrival-ordered FIFO recv and real recv−send delta. Both keep the `RECV_TIMEOUT_WAIT_S` guard. Staleness keys off commit order (virtual-clock order in `simulated`, arrival order in `real`).
+- **Sync** ([syncfl/top_aggregator.py](../../flame/mode/horizontal/syncfl/top_aggregator.py)): `simulated` mode commits the `first_k` smallest-`sim_completion_ts` responders with round duration from virtual time; `real` mode unchanged. Aggregation math is order-independent (weighted average) either way.
+- Gate behind `time_mode: real|simulated`. `real` is the authentic, unchanged-decision baseline; `simulated` reproduces it via the virtual clock and is expected to match per-round (Q1).
+
+### `time_mode` plumbing (new config; replaces `speedup_factor`)
+- **Config field:** add `time_mode: str = "simulated"` to `TrainerConfig` in [experiment_config.py](../../flame/launch/experiment_config.py) (default `simulated`; `real` is opt-in for verification). Load it in the same place `speedup_factor` was read (`load_experiment_config`, ~L190).
+- **To the trainer:** the trainer reads `time_mode` from argv. Replace the trainer's `--speedup_factor` arg ([trainer/pytorch/main.py](trainer/pytorch/main.py), `main()`) with `--time_mode`; `TrainerSpawner` ([spawner.py](../../flame/launch/spawner.py)) passes `--time_mode <mode>` instead of `--speedup_factor` (drop that field from the spawner too). `runner.py` passes `time_mode=exp.trainer.time_mode`.
+- **To the aggregator:** the aggregator also needs `time_mode` (virtual-clock vs arrival path). Thread it into the aggregator config `hyperparameters.time_mode` via the runner's aggregator `config_overrides` (same mechanism as `agg_goal`), read it in `asyncfl/syncfl top_aggregator.__init__`.
+- **Snapshot/exec-config:** drop the `speedup_factor` keys from [snapshot.py:92](../../flame/launch/snapshot.py#L92) and [execution_config_generator.py:118](../../flame/launch/execution_config_generator.py#L118); record `time_mode` instead.
+
+### `speedup_factor` removal inventory (delete all occurrences)
+Code (remove field/arg/reads and the `/ speedup_factor` or `* speedup_factor` arithmetic — the timing now uses sim-time per the two modes):
+- [experiment_config.py](../../flame/launch/experiment_config.py): `TrainerConfig.speedup_factor` field + the `.get("speedup_factor", ...)` read.
+- [spawner.py](../../flame/launch/spawner.py): ctor param `speedup_factor`, `self.speedup_factor`, and the `--speedup_factor` cmd args.
+- [runner.py](../../flame/launch/runner.py): `speedup_factor=exp.trainer.speedup_factor` kwarg.
+- [snapshot.py](../../flame/launch/snapshot.py), [execution_config_generator.py](../../flame/launch/execution_config_generator.py): the recorded `speedup_factor` keys.
+- [trainer/pytorch/main.py](trainer/pytorch/main.py): ctor param, `self.speedup_factor`, the `--speedup_factor` argparse arg, and every `/ speedup_factor` (avail event ts ~L283, training delay sleep ~L718, eval delay sleep ~L855) and `* speedup_factor` (`_visible_sample_count` sim_elapsed ~L461, util-disparity elapsed ~L712). Replace with the two-mode sim-time logic; remove the stale `TODO(DG): revisit speedup_factor coupling` note.
+- YAMLs: delete the `speedup_factor: 1.0` lines across `expt_scripts_2026/*.yaml` and `experiments/configs/*.yaml` (≈25 files; a leftover line is harmless — the loader uses per-field `.get()` — but remove for cleanliness). Add `time_mode:` where a non-default is wanted.
+- Out of scope but for consistency: `examples/fwdllm/.../FedSgdTrainer.py` hardcodes `speedup_factor=1.0` + an eval-delay divide; leave or clean separately (it's a different example, always 1.0, so behavior is unaffected).
+
+### Smoke-test YAML update
+[felix_n10_alpha100_syn20_telemetry_smoke.yaml](expt_scripts_2026/felix_n10_alpha100_syn20_telemetry_smoke.yaml): remove `speedup_factor: 60.0`; add `time_mode: simulated`; set `data_streaming.full_data_available_after_s` back to **sim-seconds** (e.g. `600` for a 10-min *sim-time* ramp). Availability stays `syn_20`. For the Q1 two-run verification, add a tiny companion run/YAML (small `D`, few rounds) so a `time_mode: real` run finishes quickly.
+
+### Implementation order (suggested)
+1. `flame/sim/virtual_clock.py` mixin + `MessageType.SIM_COMPLETION_TS` + `PROP_SIM_COMPLETION_TS`; add `time_mode` config plumbing; rip out `speedup_factor` (inventory above).
+2. Trainer: modeled `D`, announce `sim_completion_ts` (simulated) / sleep `D` (real); sim-time availability + streaming; dual timestamps in telemetry.
+3. Async aggregator: virtual-clock ordering + targeted recv + `PROP_ROUND_DURATION` from sim duration (simulated); keep arrival path (real). Then sync.
+4. Tests: `tests/sim` (virtual clock), `tests/mode` (scripted real-vs-sim parity + arrival-order independence).
+5. Smoke YAML update; run the two-run verification (Q1).
 
 ---
 
@@ -70,7 +125,7 @@ This is more efficient than scaling sleeps: wall-clock is bounded by *real GPU t
 Running the telemetry smoke (`felix_n10_alpha100_syn20_telemetry_smoke.yaml`, async_oort/fedbuff) surfaced several real bugs. Some were fixed inline to unblock telemetry validation; the deeper ones are flagged for Task 2.
 
 **Already fixed (keep, but revisit under the virtual clock):**
-- **`speedup_factor` never reached the trainer.** The launcher built the trainer command without `--speedup_factor`/`--battery_threshold`, so the trainer always ran at `1.0` regardless of YAML — this is almost certainly why the original "speedup_factor=2 gave no 2× speedup" observation happened. Fixed in `flame/launch/spawner.py` (+ `runner.py` passes `exp.trainer.speedup_factor`). **Task 2 must still confirm the *intended* speedup semantics** (GPU compute time does not scale; only `time.sleep` delays + availability-event timestamps do — the virtual clock is what actually decouples wall-clock from sim-time).
+- **`speedup_factor` never reached the trainer.** The launcher built the trainer command without `--speedup_factor`/`--battery_threshold`, so the trainer always ran at `1.0` regardless of YAML — almost certainly why "speedup_factor=2 gave no 2× speedup". A stop-gap wiring fix was committed (spawner passes `--speedup_factor`), but **Task 2 supersedes it entirely: `speedup_factor` is removed in favor of the `real`/`simulated` two-mode design** (see "Resolved design questions" + the removal inventory). The `--battery_threshold` wiring stays.
 - **Aggregator hung forever on a quiet in-flight trainer.** `recv_fifo` had no timeout; when every in-flight end went silent (all unavailable, or a stale ghost) the async aggregator blocked indefinitely. Band-aided with `recv_fifo(timeout=...)` + `RECV_TIMEOUT_WAIT_S=30` in asyncfl `_aggregate_weights`, plus a ghost filter (`channel.has`) and `selected_ends` cleanup in `async_oort._cleanup_removed_ends`. **The virtual-clock redesign should replace this band-aid** with the targeted, ETA-ordered receive (which has principled per-end completion times and timeouts).
 - UTF-8 stdio in the launcher (latin-1 locales crashed on status glyphs) and an async `channel.ends()==None` guard.
 
@@ -116,7 +171,29 @@ Existing selector tests live in `lib/python/tests/selector/` with `lib/python/te
 2. `pytest lib/python/tests/telemetry` green.
 3. Cross-selector compare: run two selectors (e.g. async_oort vs. feddance), `analyze_run.py --compare` overlays utility/speed/staleness/accuracy.
 
-**Task 2**
-4. `pytest lib/python/tests/sim lib/python/tests/mode` green; ordering/parity tests pass.
-5. End-to-end async_cifar10 at `speedup_factor=2`, `time_mode=simulated`: wall-clock materially lower than `real` mode for the same #rounds, while final accuracy curve matches `real` within tolerance.
-6. Regression: `real` mode output unchanged vs. pre-change baseline (same seed) — final weights/accuracy parity.
+**Task 2** (the two-run equivalence is the core check — see Q1)
+4. `pytest lib/python/tests/sim lib/python/tests/mode` green: scripted deterministic scenario (fixed durations + availability + seed) yields **identical** commit order, staleness, selection sets, and resulting weights in `real` vs. `simulated` mode, and independent of physical arrival order.
+5. **Two smoke runs, same seed** — one `real`, one `simulated`: assert **per-(model-version) selection sets and loss/accuracy match** (within RNG tolerance), and `simulated` wall-clock ≪ `real`. This is the "same selection and learning over time (per round, not per second)" verification. Use a **short / small-`D` / few-round** scenario so the `real` run (true pace, no speedup) finishes in reasonable wall-clock.
+
+---
+
+## Parity smoke results (2026-05-30, pre-pending-commit fix)
+
+Runs: `run_20260530_130644_felix_n10_parity_REAL` vs `run_20260530_171846_felix_n10_parity_SIMULATED`
+Config: `felix_n10_parity_real_vs_sim.yaml` — 10 trainers, `syn_0` availability, 100 rounds, `agg_goal=5`, `c=8`.
+
+| Check | Result | Notes |
+|---|---|---|
+| 1. Selection parity (Jaccard) | **WARN** — 0% exact, mean J=0.477 | Unseeded OORT RNG + participation skew |
+| 2. Statistical utility (KS) | **FAIL** — max KS=0.806 | Slow trainers (D≥16s) have n_sim≤2 vs n_real≥32 |
+| 3. Aggregation sequence | **FAIL** — 1% exact | Directly downstream of participation skew |
+| 4. Staleness distribution | **WARN** — real mean=0.99, sim mean=2.14, diff=1.15 | Sim over-accumulates staleness |
+| 5. Participation counts | **FAIL** — avg diff=31, max=47 | Slow trainers starved in sim; fast trainers dominate |
+| 6. Convergence (acc/loss) | **PASS** — avg acc diff=0.040 | Both curves still flat (~random) at 100 rounds |
+
+**Root cause:** before the `_sim_pending_commit` fix, slow trainers (D=16–18s) were released back into selection at round end even though their buffer entry was uncommitted. OORT's system-utility then penalised them (high staleness → poor speed score), causing fast trainers (D=4–13s) to monopolise selection. Trainers 0371/0374/0377 (D=16/18/17s) appeared only 2/2/1 times in sim vs 36/32/32 in real.
+
+**Fix applied:** `_sim_pending_commit` — a trainer with an uncommitted `_sim_buffer` entry stays in `all_selected` (invisible to the selector) until `pop_min` commits that entry in `_sim_recv_min`. This enforces the real-mode invariant (one in-flight update per trainer at a time) in simulation.
+
+**Expected improvement in next run:** staleness mean should drop to ~1.0 (matching real), participation skew should narrow, and Jaccard should improve toward ≥0.7. Selection will not be bit-for-bit identical because OORT's RNG is unseeded; statistical distributions across trainers should match.
+6. Regression: `real`-mode decisions unchanged vs. pre-Task-2 baseline (same seed). Note a convergence prerequisite from Task 1 findings — confirm felix actually learns on a known-good config before reading equivalence into accuracy curves.

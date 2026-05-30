@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
@@ -79,15 +80,13 @@ class TopAggregator(SyncTopAgg):
         self._per_trainer_staleness_track = {}
         self._track_trainer_version_duration_s = {}
 
-        # simulated-time mode: buffer arrived-but-uncommitted updates and commit
-        # them in virtual-completion order (reproduces real-mode arrival order
-        # without sleeping). Persists across _aggregate_weights calls so
-        # overcommitted stragglers carry over to later rounds.
+        # Simulated-time receive: reorder buffer (keyed by end, ordered by
+        # sim_completion_ts), committed-end set for the current agg-goal window,
+        # and pending-commit set for cross-round stragglers (blocked from
+        # re-selection until their buffer entry is committed).
         self._sim_buffer = SimReorderBuffer()
-        # Set of ends committed in the current agg-goal window, so we don't
-        # re-probe them after they're committed (re-probing would hang on an
-        # empty recv queue). Reset when agg-goal completes and a new window starts.
         self._sim_committed: set = set()
+        self._sim_pending_commit: set = set()
 
         # check if distribute_weights was successful
         self._prev_distribute_weights_success = False
@@ -129,8 +128,6 @@ class TopAggregator(SyncTopAgg):
             f"{self._agg_goal_weights}"
         )
 
-        # simulated mode: new agg-goal window — clear committed set so freshly
-        # selected trainers can be probed for their new-round updates.
         if self.simulated:
             self._sim_committed.clear()
 
@@ -196,30 +193,13 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
-    # Per-end probe timeout in _sim_recv_min. This is NOT how long we wait for
-    # training to finish — it's how long we check one trainer's queue before moving
-    # on. If the trainer is still computing, the background _get_inner task keeps
-    # waiting; the message is delivered to _rx_queue when it arrives, and the NEXT
-    # probe cycle picks it up instantly. Shorter = better throughput (fewer wasted
-    # seconds per still-computing trainer probe). Must be >= worst-case local MQTT
-    # delivery jitter (~50-150ms); 0.5s is safe for most deployments.
+    # Short per-end probe timeout: how long we wait for one trainer's MQTT
+    # message before moving on. Not the training wait — just queue delivery jitter.
     SIM_RECV_FILL_TIMEOUT_S = 0.5
 
     def _sim_recv_min(self, channel, recv_ends):
-        """Simulated-time receive: return the in-flight update with the smallest
-        virtual completion time.
-
-        Design:
-        - Fill the reorder buffer from live recv ends not yet buffered or
-          committed, using a short per-message timeout (GPU-time order).
-        - If a message doesn't arrive within SIM_RECV_FILL_TIMEOUT_S it hasn't
-          been sent yet (trainer still doing GPU compute) — skip it.
-        - Pop and commit the minimum from the buffer. This is independent of
-          the current recv_ends set so a trainer whose in-flight entry was
-          cleaned up before its update was committed isn't lost.
-        """
-        # Step 1: try to receive from ends not yet buffered AND not yet committed
-        # (committed ends are in _sim_committed so we don't re-probe them).
+        """Fill the reorder buffer from un-buffered, un-committed ends; pop and
+        commit the entry with the smallest sim_completion_ts."""
         to_probe = [
             e for e in recv_ends
             if not self._sim_buffer.has(e) and e not in self._sim_committed
@@ -229,28 +209,16 @@ class TopAggregator(SyncTopAgg):
                 channel.recv_fifo([e], 1, timeout=self.SIM_RECV_FILL_TIMEOUT_S)
             )
             if msg is not None:
-                # Use the actual sender from metadata, not the probed end: a stale
-                # _streamer_for_recv_fifo task for a different end may have delivered
-                # its message before the probed end's message arrived.
+                # metadata[0] is the actual sender; may differ from probed end
+                # if a stale recv task delivered a different end's message first.
                 actual_end = metadata[0]
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 if sct is None:
                     sct = self._vclock.now
                 self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
-                # Instrumentation: detect when a buffered trainer is still in
-                # all_selected (was selected but won't be cleaned up this round).
-                if actual_end in channel._selector.all_selected:
-                    logger.debug(
-                        f"[SIM_BUFFER] buffered actual_end={actual_end[-4:]} "
-                        f"sct={sct:.2f} — still in all_selected, "
-                        f"probed_end={e[-4:]}"
-                    )
-            # If msg is None the trainer hasn't sent yet — the asyncfl loop
-            # will call us again after the next put_train/put_eval cycle.
 
-        # Step 2: commit the buffer minimum (regardless of current recv_ends
-        # membership — avoids losing updates when cleanup removes an end before
-        # its last commit).
+        # Pop the minimum regardless of recv_ends membership so buffered updates
+        # are not lost when an end is cleaned up before its commit.
         popped = self._sim_buffer.pop_min()
         if popped is None:
             time.sleep(0.5)
@@ -259,9 +227,18 @@ class TopAggregator(SyncTopAgg):
         self._vclock.advance(sct)
         self._sim_committed.add(_end)
         logger.debug(
-            f"[SIM_RECV] committed end={_end} sim_completion_ts={sct:.1f} "
-            f"T_v={self._vclock.now:.1f} buffer_remaining={len(self._sim_buffer)}"
+            f"[SIM_RECV] committed end={_end[-4:]} sct={sct:.1f} "
+            f"T_v={self._vclock.now:.1f} buf={len(self._sim_buffer)}"
         )
+        # Release trainer that was blocked waiting for this cross-round commit.
+        if _end in self._sim_pending_commit:
+            self._sim_pending_commit.discard(_end)
+            sel = channel._selector
+            if _end in sel.all_selected:
+                del sel.all_selected[_end]
+            if channel.has(_end):
+                channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
 
     def _aggregate_weights(self, tag: str) -> None:
@@ -276,37 +253,21 @@ class TopAggregator(SyncTopAgg):
             logger.debug("No channel found")
             return
 
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive local model parameters from a trainer who arrives
-        # first NOTE: (DG) Right now, the leave notifications also
-        # cause a message to be processed and yield (None,None) from
-        # recv_fifo().
-        # Drop in-flight ends no longer in the channel (selected, then left/went
-        # unavailable): recv_fifo skips them and would block on an empty receive.
-        # Skip the cycle if none remain so the loop re-selects when trainers return.
+        # Filter to live ends; drop ghosts that left after selection to avoid
+        # blocking recv_fifo on an empty queue.
         recv_ends = channel.ends(VAL_CH_STATE_RECV)
         if recv_ends:
             recv_ends = [e for e in recv_ends if channel.has(e)]
         if not recv_ends:
-            # Simulated mode: probing marks ends RECVD even for messages that are
-            # only buffered (not yet committed). If the buffer still has entries,
-            # skip new probing and just pop the next minimum — don't block.
             if self.simulated and len(self._sim_buffer) > 0:
-                recv_ends = []
+                recv_ends = []  # buffer still has entries to drain — don't block
             else:
-                logger.debug(
-                    f"[AGG_RECV] no live ends to receive from "
-                    f"(agg_model_version={self._round}); skipping cycle"
-                )
+                logger.debug(f"[AGG_RECV] no live recv ends (round={self._round}); skipping")
                 time.sleep(0.5)
                 return
-        # simulated mode: commit updates in virtual-completion order via the
-        # reorder buffer. real mode: bounded FIFO receive (arrival order).
         if self.simulated:
             msg, metadata = self._sim_recv_min(channel, recv_ends)
         else:
-            # On timeout msg is None: skip and re-select; a quiet trainer's
-            # later update is still accepted/discarded by the checks below.
             msg, metadata = next(
                 channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
             )
@@ -468,11 +429,6 @@ class TopAggregator(SyncTopAgg):
                     recv_wts_version
                 ] = recv_wts_ts
 
-                # Instrumentation: wall-clock lag from aggregator-send to
-                # aggregator-receive. In real mode this ≈ trainer training time +
-                # MQTT RTT. In simulated mode it ≈ GPU compute + MQTT delivery.
-                # A lag much higher than expected training time signals broker
-                # overload or network congestion.
                 wall_lag_s = (recv_wts_ts - sent_wts_ts).total_seconds()
                 logger.info(
                     f"[SEND_RECV_LAG] end={end} version={recv_wts_version} "
@@ -482,9 +438,7 @@ class TopAggregator(SyncTopAgg):
                 if wall_lag_s > _lag_warn_threshold_s:
                     logger.warning(
                         f"[SEND_RECV_LAG_HIGH] end={end} version={recv_wts_version} "
-                        f"wall_lag_s={wall_lag_s:.1f}s exceeds threshold "
-                        f"{_lag_warn_threshold_s}s — possible MQTT broker backlog "
-                        f"or slow network delivery"
+                        f"wall_lag_s={wall_lag_s:.1f}s — possible MQTT backlog"
                     )
 
             # TODO: (DG) Can pass a flag for this later.
@@ -823,35 +777,33 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
         if self.simulated:
-            # Simulated mode: trainers respond immediately so all N trainers
-            # send back in round K, but only agg_goal (< N) are committed.
-            # The uncommitted trainers are left in all_selected and can never
-            # be freed: they're not committed (so cleanup_recvd_ends skips
-            # them) and not selectable (they're in all_selected so OORT
-            # excludes them from filtered_ends) — a permanent deadlock.
-            # Fix: release all remaining all_selected entries at round end.
-            # Their buffered messages (in _sim_buffer) are still valid stale
-            # updates that will be processed in future rounds.
             sel = channel._selector
-            stuck = list(sel.all_selected.keys())
-            if stuck:
-                logger.info(
-                    f"[SIM_CLEANUP] round={self._round} releasing {len(stuck)} "
-                    f"trainer(s) still in all_selected after cleanup "
-                    f"(selected but not committed this round — would be locked out "
-                    f"of future selection without this): "
-                    f"{[s[-4:] for s in stuck]}"
-                )
-            for end_id in stuck:
+            requester = sel.requester
+            pending_in_buffer = set(self._sim_buffer.pending_ends())
+
+            # Release all_selected trainers with no buffer entry yet (GPU still
+            # running — rare). They'll be probed next round's fill pass.
+            for end_id in [e for e in list(sel.all_selected.keys()) if e not in pending_in_buffer]:
                 del sel.all_selected[end_id]
-                # Reset end state to NONE so channel.ends(VAL_CH_STATE_RECV)
-                # can return them again and OORT can re-probe them.
                 if channel.has(end_id):
-                    from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
                     channel._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                requester = sel.requester
                 if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
                     sel.selected_ends[requester].discard(end_id)
+
+            # Block every trainer with a pending buffer entry from re-selection.
+            # cleanup_recvd_ends may have freed them early; re-block here so the
+            # real-mode invariant holds: one in-flight update per trainer at a time.
+            for end_id in pending_in_buffer:
+                self._sim_pending_commit.add(end_id)
+                if end_id not in sel.all_selected:
+                    sel.all_selected[end_id] = time.time()
+                if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
+                    sel.selected_ends[requester].discard(end_id)
+            if pending_in_buffer:
+                logger.info(
+                    f"[SIM_PENDING] round={self._round} blocked {len(pending_in_buffer)} "
+                    f"trainer(s) pending buffer commit: {[e[-4:] for e in pending_in_buffer]}"
+                )
 
     def oracular_trainer_avail_check(self, end: str) -> bool:
         logger.debug("In oracular_trainer_avail_check")
