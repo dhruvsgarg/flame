@@ -226,6 +226,7 @@ class REFLOortSelector(OortSelector):
         # mis-selection oracle can score REFL too.
         self.emit_selection(
             round_num, task_to_perform, ends, eligible_ends.keys(), newly_selected,
+            per_trainer_extra=getattr(self, "_audit_components", None),
             extra={
                 "avail_priority": self.avail_priority,
                 "num_priority": len(priority_ends),
