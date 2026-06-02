@@ -95,8 +95,31 @@ def config_stamp(run_dir: str) -> str:
     stream = "off"
     if str(ds_cfg.get("enabled", "False")) == "True":
         stream = f"T={ds_cfg.get('full_data_available_after_s','?')}s"
+    else:
+        # snapshots don't serialize config_overrides; infer streaming from
+        # telemetry (a trainer round with visible < total samples).
+        stream = _infer_streaming(os.path.join(run_dir, "telemetry")) or "off"
     return (f"{name} | {sel} | n={n} α={alpha} | {avail} | "
             f"stream:{stream} | aggGoal={ag} | {tm}")
+
+
+def _infer_streaming(telemetry_dir: str):
+    import glob
+    import json
+    for p in glob.glob(os.path.join(telemetry_dir, "trainer_*.jsonl"))[:5]:
+        try:
+            for line in open(p):
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("event") == "trainer_round":
+                    vs, ts = d.get("visible_samples"), d.get("total_samples")
+                    if vs is not None and ts and vs < ts:
+                        return "on"
+        except Exception:
+            continue
+    return None
 
 
 def _save(fig, out_dir: str, file_name: str, stamp: Optional[str]) -> str:
