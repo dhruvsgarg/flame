@@ -22,13 +22,18 @@
 #   python -m flame.launch.run_experiment \
 #     lib/python/examples/async_cifar10/expt_scripts_2026/felix_oort_refl_streaming_alpha0.1.yaml
 #
-# Streaming horizon `full_data_available_after_s` = 10800 sim-seconds (3 sim-h).
-# This is calibrated to the run's sim-time scale (~14 s sim-time/round): data
-# finishes unlocking around round ~770, so it is *still arriving* through most of
-# training to the 60% target -- a strong but FEASIBLE mis-selection signal. (A 24h
-# horizon was tried and starves the model: <16% data unlocked by round 1000, so
-# 60% would need ~6000+ rounds.) Pass the same value to the oracle via
-# --full-after-s if a run's util_disparity events don't span the partial range.
+# time_mode: REAL (default for now while simulated-mode issues are resolved).
+# In real mode the streaming clock is WALL-CLOCK: full_data_available_after_s =
+# 10800 means data finishes unlocking ~3 real hours into each trainer's life, and
+# trainers sleep their modeled training delays (max(gpu, D)) so rounds advance at
+# real pace. NOTE: 10800 was calibrated against *sim*-time; re-check it against the
+# pilot's real per-round wall-clock + util_disparity trajectory and adjust so data
+# is still arriving through most of training (set it near the run's wall-clock
+# span). Pass the chosen value to the oracle via --full-after-s.
+# Caveat: the mis-selection oracle assumes a deterministic per-round unlock; in
+# real mode wall-clock is noisy and per-trainer, so oracle visible-counts are
+# approximate (directionally valid). Sim mode is more faithful once its issues
+# are fixed. (A 24h horizon starves the model regardless of mode.)
 
 experiments:
 
@@ -42,7 +47,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters: {batchSize: 10, learningRate: 0.01}
       config_overrides:
         hyperparameters:
@@ -85,7 +90,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters: {batchSize: 10, learningRate: 0.01}
       config_overrides:
         hyperparameters:
@@ -119,7 +124,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
@@ -158,7 +163,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
@@ -198,7 +203,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
@@ -236,7 +241,7 @@ experiments:
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters:
         batchSize: 10
         learningRate: 0.01

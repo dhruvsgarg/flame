@@ -12,7 +12,7 @@ experiments:
     availability:
       mode: syn_0
     enable_training_delays: true
-    time_mode: simulated
+    time_mode: real
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
@@ -70,7 +70,7 @@ experiments:
     availability:
       mode: syn_0
     enable_training_delays: true
-    time_mode: simulated
+    time_mode: real
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
@@ -132,7 +132,7 @@ experiments:
     availability:
       mode: syn_0
     enable_training_delays: true
-    time_mode: simulated
+    time_mode: real
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
