@@ -394,6 +394,10 @@ class AsyncOortSelector(AbstractSelector):
                     "in_all_selected": eid in self.all_selected,
                     "in_pending_commit": eid in getattr(self, "_agg_pending_commit_ref", set()),
                     "last_eval_round": ends[eid].get_property(PROP_LAST_EVAL_ROUND),
+                    # last TRAIN selection round; with last_eval_round this shows
+                    # whether Felix's believed I_m was refreshed by eval vs train
+                    # (the freshness mechanism the staleness audit measures).
+                    "last_train_round": ends[eid].get_property(PROP_LAST_SELECTED_ROUND),
                 }
                 for eid in ends
             }
