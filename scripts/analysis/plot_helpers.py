@@ -24,15 +24,16 @@ for _n in ("matplotlib", "matplotlib.font_manager", "fontTools",
            "fontTools.subset", "fontTools.ttLib"):
     logging.getLogger(_n).setLevel(logging.WARNING)
 
-# Paper-style rcParams (fonttype 42 => editable text in PDF/PS).
+# Paper-style rcParams (fonttype 42 => editable text in PDF/PS). Title/axis-label
+# sizes kept crisp so they fit the box; ticks/legend readable.
 plt.rcParams.update({
-    "axes.labelsize": 20,
-    "axes.titlesize": 20,
-    "xtick.labelsize": 18,
-    "ytick.labelsize": 18,
-    "figure.figsize": [6, 3],
-    "legend.fontsize": 18,
-    "legend.columnspacing": 2,
+    "axes.labelsize": 14,
+    "axes.titlesize": 13,
+    "xtick.labelsize": 13,
+    "ytick.labelsize": 13,
+    "figure.figsize": [6.5, 3.6],
+    "legend.fontsize": 11,
+    "legend.columnspacing": 1.5,
     "legend.handletextpad": 0.5,
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
@@ -127,7 +128,8 @@ def _save(fig, out_dir: str, file_name: str, stamp: Optional[str]) -> str:
         file_name = os.path.splitext(file_name)[0] + ".pdf"
     os.makedirs(out_dir, exist_ok=True)
     if stamp:
-        fig.text(0.5, -0.02, stamp, ha="center", va="top", fontsize=8,
+        # config line at the TOP of the figure, above the plot title
+        fig.text(0.5, 1.04, stamp, ha="center", va="bottom", fontsize=7,
                  color="0.4", wrap=True)
     fig.tight_layout()
     path = os.path.join(out_dir, file_name)
@@ -220,7 +222,16 @@ def hist_plot(values, x_label, title, out_dir, file_name, stamp=None, vline=0.0)
         return None
     fig, ax = plt.subplots()
     arr = np.asarray(vals, float)
-    ax.hist(arr, bins=min(60, max(10, len(arr) // 5)), color="#1f77b4", alpha=0.8)
+    counts, bins, patches = ax.hist(arr, bins=min(40, max(8, len(arr) // 5)),
+                                    color="#1f77b4", alpha=0.8)
+    # percentage of total on top of each non-empty bar
+    tot = counts.sum()
+    if tot:
+        for c, p in zip(counts, patches):
+            if c > 0:
+                ax.annotate(f"{100 * c / tot:.0f}%",
+                            (p.get_x() + p.get_width() / 2, c),
+                            ha="center", va="bottom", fontsize=7, color="0.3")
     if vline is not None:
         ax.axvline(vline, color="red", ls="--", lw=1.5)
     for q, lab in [(0.5, "P50"), (0.9, "P90")]:

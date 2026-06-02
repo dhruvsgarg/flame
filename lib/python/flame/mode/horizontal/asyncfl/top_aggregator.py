@@ -590,6 +590,7 @@ class TopAggregator(SyncTopAgg):
                     stat_utility=[stat_utility],
                     trainer_speed_s=[_trainer_speed_s],
                     contributing_trainers=[end],
+                    agg_observed_s={end: _trainer_speed_s},
                     extra={
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
                         "vclock_now": self._vclock.now if self.simulated else None,

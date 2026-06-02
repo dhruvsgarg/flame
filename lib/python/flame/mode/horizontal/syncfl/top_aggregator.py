@@ -319,6 +319,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         if telemetry.is_enabled():
+            agg_obs = {}
+            for eid in list(self.cache):
+                _rd = channel.get_end_property(end_id=eid, key=PROP_ROUND_DURATION)
+                if _rd is not None:
+                    agg_obs[eid] = _rd.total_seconds() if hasattr(_rd, "total_seconds") else _rd
             ev, fields = build_agg_round(
                 round_num=self._round,
                 in_flight=len(channel.ends()),
@@ -328,6 +333,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     self._round_update_values.get("trainer_speed", [])
                 ),
                 contributing_trainers=list(self.cache),  # diskcache iterates keys
+                agg_observed_s=agg_obs or None,
             )
             telemetry.emit(ev, **fields)
 

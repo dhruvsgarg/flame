@@ -102,9 +102,16 @@ def build_agg_round(
     stat_utility: Optional[list[float]] = None,
     trainer_speed_s: Optional[list[float]] = None,
     contributing_trainers: Optional[list[str]] = None,
+    agg_observed_s: Optional[dict[str, float]] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Aggregation-step record (one per completed aggregation)."""
+    """Aggregation-step record (one per completed aggregation).
+
+    agg_observed_s: {end_id -> wall seconds the aggregator observed between
+        sending the model and receiving/processing that trainer's update}. Lets
+        the analyzer compare aggregator-side turnaround to the trainer-reported
+        time (overhead sanity check).
+    """
     fields: dict[str, Any] = {"round": round_num}
     for k, v in (
         ("agg_goal", agg_goal),
@@ -115,6 +122,7 @@ def build_agg_round(
         ("stat_utility", stat_utility),
         ("trainer_speed_s", trainer_speed_s),
         ("contributing_trainers", contributing_trainers),
+        ("agg_observed_s", agg_observed_s),
     ):
         if v is not None:
             fields[k] = v

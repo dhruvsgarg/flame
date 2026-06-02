@@ -370,7 +370,7 @@ def sanity_plots(records, out, stamp, tdir):
         e = r.get("training_budget_s"); a = r.get("real_gpu_time_s")
         if e is None or a is None:
             continue
-        tid = str(r.get("end_id", "?"))[-6:]
+        tid = str(r.get("end_id", "?"))[-3:]
         counts[tid]["late" if r.get("overran") else ("early" if a < e else "ontime")] += 1
     if counts:
         cats = sorted(counts, key=lambda t: -counts[t]["late"])
@@ -389,6 +389,40 @@ def sanity_plots(records, out, stamp, tdir):
                          "fraction of trainers over budget",
                          "Overrun rate over rounds (GPU contention)", d,
                          "overrun_rate_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # aggregator-observed vs trainer-reported response time (overhead sanity):
+    # if a trainer returns in 10s but the aggregator only processes it at 14s,
+    # the 4s overhead shows up here (points above the diagonal).
+    agg_obs = {}
+    for r in by_event(records, EVENT_AGG_ROUND):
+        rd = int(r.get("round", 0))
+        for eid, sec in (r.get("agg_observed_s") or {}).items():
+            agg_obs[(rd, str(eid))] = sec
+    # trainer-reported response per trainer -> {round: duration}; match each
+    # aggregator-observed value to that trainer's nearest round (robust to the
+    # aggregator-round vs trained-model-version offset under staleness).
+    tr_rep = defaultdict(dict)
+    for r in tr:
+        if r.get("sim_round_duration_s") is not None:
+            tr_rep[str(r.get("end_id"))][int(r.get("round", 0))] = r["sim_round_duration_s"]
+    xs, ys = [], []
+    for (rd, eid), ao in agg_obs.items():
+        cand = tr_rep.get(eid)
+        if not cand:
+            continue
+        nearest = min(cand, key=lambda x: abs(x - rd))
+        xs.append(cand[nearest]); ys.append(ao)
+    if xs:
+        p = ph.scatter_diag(xs, ys, "trainer-reported response (s)",
+                            "aggregator-observed (s)",
+                            "Aggregator-observed vs trainer-reported response", d,
+                            "runtime_agg_vs_trainer.pdf", stamp=stamp)
+        if p: saved.append(p)
+        p = ph.hist_plot([y - x for x, y in zip(xs, ys)],
+                         "aggregator overhead = observed - reported (s)",
+                         "Aggregator processing/network overhead", d,
+                         "runtime_overhead_hist.pdf", stamp=stamp, vline=0.0)
         if p: saved.append(p)
 
     # expected vs actual utility (believed vs true)
@@ -520,7 +554,7 @@ def selection_plots(records, out, stamp, tdir):
         if p: saved.append(p)
     if freq:
         items = freq.most_common()
-        p = ph.bar_plot([k[-6:] for k, _ in items], [v for _, v in items],
+        p = ph.bar_plot([k[-3:] for k, _ in items], [v for _, v in items],
                         "times selected", "Selection frequency per trainer", d,
                         "selection_frequency_hist.pdf", stamp=stamp)
         if p: saved.append(p)
@@ -546,6 +580,38 @@ def selection_plots(records, out, stamp, tdir):
                                  "eval": [et[r]["eval"] for r in rr]},
                             "round", "selections", "Train vs eval selections per round",
                             d, "eval_vs_train_selections.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # per-round average BELIEVED speed & utility of the clients actually picked
+    # (what the selector "saw" about its picks each round)
+    spd, utl = {}, {}
+    for s in sel:
+        if s.get("task", "train") != "train":
+            continue
+        pt = s.get("per_trainer") or {}
+        chosen = [str(c) for c in (s.get("chosen") or [])]
+        sp = [pt[c].get("speed_s") for c in chosen if c in pt and pt[c].get("speed_s") is not None]
+        uu = [pt[c].get("believed_I", pt[c].get("utility")) for c in chosen
+              if c in pt and pt[c].get("believed_I", pt[c].get("utility")) is not None]
+        rd = int(s.get("round", 0))
+        if sp:
+            spd[rd] = sum(sp) / len(sp)
+        if uu:
+            utl[rd] = sum(uu) / len(uu)
+    both = sorted(set(spd) & set(utl))
+    if both:
+        p = ph.dual_axis_line(both, [spd[r] for r in both], [utl[r] for r in both],
+                              "round", "avg speed of picked (s)",
+                              "avg believed utility of picked",
+                              "Picked clients: avg speed & utility per round", d,
+                              "selected_speed_utility_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+    elif utl:  # e.g. FedDance has no speed factor
+        rr = sorted(utl)
+        p = ph.line_plot({"avg believed utility of picked": (rr, [utl[r] for r in rr])},
+                         "round", "avg believed utility of picked",
+                         "Picked clients: avg utility per round", d,
+                         "selected_speed_utility_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # participation heatmap (trainer x round: 0 idle, 1 eval-selected, 2 trained)
@@ -594,7 +660,7 @@ def _participation_heatmap(records, d, stamp):
         for t in ts:
             if t in idx:
                 m[idx[t], ridx[r]] = 2
-    yl = [t[-6:] for t in trainers] if len(trainers) <= 40 else None
+    yl = [t[-3:] for t in trainers] if len(trainers) <= 40 else None
     p = ph.heatmap(m, "round", "trainer",
                    "Participation (0=idle, 1=eval, 2=train)", d,
                    "participation_heatmap.pdf", stamp=stamp, cmap="viridis",
@@ -710,7 +776,7 @@ def system_plots(records, out, stamp, tdir):
     # trainer time breakdown (mean per trainer)
     agg = defaultdict(lambda: {"gpu": [], "sim": [], "wait": []})
     for r in by_event(records, EVENT_TRAINER_ROUND):
-        tid = str(r.get("end_id", "?"))[-6:]
+        tid = str(r.get("end_id", "?"))[-3:]
         agg[tid]["gpu"].append(r.get("real_gpu_time_s") or 0.0)
         agg[tid]["sim"].append(r.get("sim_round_duration_s") or 0.0)
         agg[tid]["wait"].append(r.get("wait_time_s") or 0.0)
