@@ -1,4 +1,4 @@
-# PHASE 1 (STREAMING) - NODE 1 of 2: felix + oort (streaming). Run concurrently with STREAMING_node2.
+# PHASE 1 (STREAMING) - NODE 1 of 2: felix + oort. Concurrent with STREAMING_node2.
 experiments:
 - name: felix_n300_alpha0.1_syn0_stream
   description: Felix (async_oort + fedbuff) WITH data streaming.
@@ -38,6 +38,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 10
         checkpoint:
@@ -100,6 +101,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         checkpoint:
           enabled: 'True'

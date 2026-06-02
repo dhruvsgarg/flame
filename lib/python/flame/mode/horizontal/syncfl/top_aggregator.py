@@ -473,6 +473,20 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._round += 1
         self._work_done = self._round > self._rounds
 
+        # Optional wall-clock cap: stop once max_runtime_s has elapsed since the
+        # aggregator started (e.g. after streaming data is fully unlocked, so we
+        # don't keep training past the point of interest). Applies to sync + async
+        # (both increment rounds through here).
+        _max_rt = getattr(self.config.hyperparameters, "max_runtime_s", None)
+        if _max_rt:
+            elapsed = time.time() - self.agg_start_time_ts
+            if elapsed > float(_max_rt):
+                logger.info(
+                    f"max_runtime_s={_max_rt}s reached (elapsed={elapsed:.0f}s) "
+                    f"at round {self._round}; stopping run."
+                )
+                self._work_done = True
+
         channel = self.cm.get_by_tag(self.dist_tag)
         if not channel:
             logger.debug(f"channel not found for tag {self.dist_tag}")

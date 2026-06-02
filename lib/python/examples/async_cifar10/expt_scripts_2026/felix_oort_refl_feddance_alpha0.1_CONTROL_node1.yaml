@@ -1,4 +1,4 @@
-# PHASE 2 (CONTROL/no-streaming) - NODE 1 of 2: felix + oort. Run AFTER phase 1, concurrently with CONTROL_node2.
+# PHASE 2 (CONTROL) - NODE 1 of 2: felix + oort. After phase 1; concurrent with CONTROL_node2.
 experiments:
 - name: felix_n300_alpha0.1_syn0_ctrl
   description: 'Felix control: NO data streaming (full data from start).'
@@ -38,6 +38,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 10
         checkpoint:
@@ -100,6 +101,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         checkpoint:
           enabled: 'True'

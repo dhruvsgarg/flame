@@ -67,6 +67,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           evalEveryNRounds: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
@@ -110,6 +111,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           evalEveryNRounds: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
@@ -150,6 +152,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
@@ -189,6 +192,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
@@ -229,6 +233,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
@@ -268,6 +273,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
@@ -308,6 +314,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           evalEveryNRounds: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
@@ -347,6 +354,7 @@ experiments:
           batchSize: 10
           learningRate: 0.01
           rounds: 1000
+          max_runtime_s: 12600  # 3.5h wall-clock cap (data fully unlocks at 3h)
           aggGoal: 10
           evalEveryNRounds: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}

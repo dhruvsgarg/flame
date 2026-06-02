@@ -1,4 +1,4 @@
-# PHASE 1 (STREAMING) - NODE 2 of 2: refl + feddance (streaming). Run concurrently with STREAMING_node1.
+# PHASE 1 (STREAMING) - NODE 2 of 2: refl + feddance. Concurrent with STREAMING_node1.
 experiments:
 - name: refl_n300_alpha0.1_syn0_stream
   description: REFL (refl_oort + refl, oracular) WITH data streaming.
@@ -42,6 +42,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         checkpoint:
           enabled: 'True'
@@ -104,6 +105,7 @@ experiments:
         batchSize: 10
         learningRate: 0.01
         rounds: 1000
+        max_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 10
         checkpoint:
