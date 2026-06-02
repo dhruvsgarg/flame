@@ -382,6 +382,61 @@ def load_oracle_misselection(telemetry_dir: str) -> list[dict]:
     return rows
 
 
+def load_oracle_utility(telemetry_dir: str) -> list[dict]:
+    """Read <run>/analysis/oracle_utility.csv (per round x candidate believed/true)."""
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    path = os.path.join(run_dir, "analysis", "oracle_utility.csv")
+    if not os.path.exists(path):
+        return []
+    with open(path) as fh:
+        return list(csv.DictReader(fh))
+
+
+def _spearman(a, b):
+    """Rank correlation (ties broken arbitrarily); None if degenerate."""
+    import numpy as np
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if len(a) < 3 or np.std(a) == 0 or np.std(b) == 0:
+        return None
+    ra = a.argsort().argsort()
+    rb = b.argsort().argsort()
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def im_staleness_by_round(telemetry_dir: str):
+    """Per-round I_m believed-vs-true staleness over the *candidate* pool.
+
+    For each train-selection round, over candidates whose believed utility is
+    known: rank-correlation(believed, true) (1.0 = believed ranks clients exactly
+    like reality; lower = more mis-ranking) and normalized mean|believed-true|.
+    This is the I_m staleness dimension; a selector that refreshes utility (Felix)
+    should keep correlation high/flat as data unlocks.
+    """
+    rows = [r for r in load_oracle_utility(telemetry_dir) if r.get("task") == "train"]
+    by_round = defaultdict(lambda: {"bel": [], "tru": []})
+    for r in rows:
+        b, t = r.get("believed"), r.get("true")
+        try:
+            b = float(b); t = float(t)
+        except (TypeError, ValueError):
+            continue
+        by_round[int(float(r["round"]))]["bel"].append(b)
+        by_round[int(float(r["round"]))]["tru"].append(t)
+    rounds, corr, ngap = [], [], []
+    for rd in sorted(by_round):
+        bel = by_round[rd]["bel"]; tru = by_round[rd]["tru"]
+        if len(bel) < 3:
+            continue
+        sc = _spearman(bel, tru)
+        mt = sum(tru) / len(tru)
+        g = sum(abs(b - t) for b, t in zip(bel, tru)) / len(bel)
+        rounds.append(rd)
+        corr.append(sc)
+        ngap.append(g / mt if mt else None)
+    return rounds, corr, ngap
+
+
 def _floats(rows, key):
     out = []
     for r in rows:
@@ -662,6 +717,21 @@ def compare_streaming(
           "compare_util_disparity.png")
     _line(delta_vis_series, "visible fraction (unlocked data)", "mean update L2 norm",
           "Update magnitude vs unlocked data", "compare_delta_norm_vs_visible.png")
+
+    # I_m staleness: how well each selector's BELIEVED utility tracks TRUE utility
+    # over the candidate pool, as data unlocks (per-baseline, self-relative).
+    corr_series, gap_series = {}, {}
+    for label, d in zip(labels, dirs):
+        rounds, corr, ngap = im_staleness_by_round(d)
+        if rounds:
+            corr_series[label] = (rounds, corr)
+            gap_series[label] = (rounds, ngap)
+    _line(corr_series, "round", "rank-corr(believed I_m, true I_m)",
+          "I_m staleness: belief-vs-truth ranking over time (1.0=perfect)",
+          "compare_Im_rankcorr.png")
+    _line(gap_series, "round", "normalized |believed - true| I_m",
+          "I_m staleness: belief-vs-truth magnitude over time",
+          "compare_Im_gap.png")
 
     # time-to-target table + bars
     ttt_path = os.path.join(out_dir, "compare_time_to_target.csv")
