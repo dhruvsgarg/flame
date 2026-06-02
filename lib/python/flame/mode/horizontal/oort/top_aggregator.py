@@ -35,6 +35,8 @@ from flame.selector.oort import (
 )
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
+from flame import telemetry
+from flame.telemetry.events import build_agg_round
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +283,34 @@ class TopAggregator(BaseTopAggregator):
         if self._round % 5 == 0:
             logger.info(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
+
+        # Aggregation-round telemetry (the OORT stack overrides _aggregate_weights
+        # and otherwise emits none). Built post-hoc from contributing ends so we
+        # don't instrument the two recv loops. staleness = current round - the
+        # model version each contributor trained on.
+        if telemetry.is_enabled():
+            stale, sutil, speeds = [], [], []
+            for eid in list(self.cache):
+                ver = channel.get_end_property(eid, PROP_LAST_SELECTED_ROUND)
+                if ver is not None:
+                    stale.append(self._round - ver)
+                su = channel.get_end_property(eid, PROP_STAT_UTILITY)
+                if su is not None:
+                    sutil.append(su)
+                rd = channel.get_end_property(eid, PROP_ROUND_DURATION)
+                if rd is not None:
+                    speeds.append(rd.total_seconds() if hasattr(rd, "total_seconds") else rd)
+            ev, fields = build_agg_round(
+                round_num=self._round,
+                agg_goal=aggr_num,
+                agg_goal_count=received_end_count,
+                updates_in_queue=len(getattr(channel._selector, "selected_ends", []) or []),
+                staleness=stale,
+                stat_utility=sutil,
+                trainer_speed_s=speeds,
+                contributing_trainers=list(self.cache),
+            )
+            telemetry.emit(ev, **fields)
 
         # set global weights
         self.weights = global_weights

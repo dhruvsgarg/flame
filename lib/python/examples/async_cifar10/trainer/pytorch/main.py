@@ -766,6 +766,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "overran": _overran,
                     "grad_norm_epoch1": self._grad_norm_epoch1,
                     "task_to_perform": getattr(self, "task_to_perform", None),
+                    "lr": current_lr,
                 },
             )
             telemetry.emit(ev, **fields)
