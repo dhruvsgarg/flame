@@ -733,6 +733,29 @@ def compare_streaming(
           "I_m staleness: belief-vs-truth magnitude over time",
           "compare_Im_gap.png")
 
+    # Self-relative counterfactual: each selector replayed with true vs believed
+    # factors (I_m + A_m); per-baseline staleness penalty within its own algorithm.
+    cf_miss, cf_reg = {}, {}
+    for label, d in zip(labels, dirs):
+        run_dir = os.path.dirname(os.path.abspath(d))
+        path = os.path.join(run_dir, "analysis", "oracle_counterfactual.csv")
+        if not os.path.exists(path):
+            continue
+        rows = sorted(
+            (r for r in csv.DictReader(open(path))),
+            key=lambda r: float(r.get("round", 0)),
+        )
+        if rows:
+            xs = _floats(rows, "round")
+            cf_miss[label] = (xs, _floats(rows, "cf_misselection_rate"))
+            cf_reg[label] = (xs, _floats(rows, "cf_utility_regret"))
+    _line(cf_miss, "round", "counterfactual mis-selection rate",
+          "Self-relative mis-selection (selector vs its own true-factor pick)",
+          "compare_cf_misselection.png")
+    _line(cf_reg, "round", "counterfactual regret (own true-score)",
+          "Self-relative regret (true-score forfeited to stale factors)",
+          "compare_cf_regret.png")
+
     # time-to-target table + bars
     ttt_path = os.path.join(out_dir, "compare_time_to_target.csv")
     with open(ttt_path, "w", newline="") as fh:

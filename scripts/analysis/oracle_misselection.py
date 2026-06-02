@@ -569,9 +569,11 @@ def main():
             bel_topk = set(sorted(bel_score, key=bel_score.get, reverse=True)[:kk])
             tru_topk = set(sorted(tru_score, key=tru_score.get, reverse=True)[:kk])
             cf_overlap = len(bel_topk & tru_topk) / kk
+            # Regret in the selector's OWN true-score units (>=0): true-score the
+            # selector forfeited by ranking with stale factors instead of true.
             cf_regret = (
-                sum(truth[t]["true"] for t in tru_topk) / kk
-                - sum(truth[t]["true"] for t in bel_topk) / kk
+                sum(tru_score[t] for t in tru_topk) / kk
+                - sum(tru_score[t] for t in bel_topk) / kk
             )
             cf_metrics.append({
                 "round": rnd,
