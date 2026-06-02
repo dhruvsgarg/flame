@@ -211,9 +211,19 @@ def visible_count(sim_now: float, full_after_s: float, total: int) -> int:
 
 def oort_utility(model, data, targets, norm_n, device, sample_size=None):
     """N * sqrt(mean(loss^2)); mirrors main.py:_oort_utility."""
+    u, _ = oort_utility_acc(model, data, targets, norm_n, device, sample_size)
+    return u
+
+
+def oort_utility_acc(model, data, targets, norm_n, device, sample_size=None):
+    """Return (Oort utility, top-1 accuracy) from one forward pass.
+
+    Utility = N*sqrt(mean(loss^2)) (mirrors main.py:_oort_utility); accuracy is
+    the local top-1 used as FedDance's true A_m source (slope across checkpoints).
+    """
     n = data.shape[0]
     if n == 0:
-        return 0.0
+        return 0.0, 0.0
     if sample_size is not None and n > sample_size:
         sel = torch.randperm(n)[:sample_size]
         data = data[sel]
@@ -221,11 +231,14 @@ def oort_utility(model, data, targets, norm_n, device, sample_size=None):
     criterion = nn.CrossEntropyLoss(reduction="none")
     model.eval()
     with torch.no_grad():
+        tg = targets.to(device)
         out = model(data.to(device))
-        per_sample = criterion(out, targets.to(device))
+        per_sample = criterion(out, tg)
         sumsq = torch.square(per_sample).sum().item()
+        acc = (out.argmax(dim=-1) == tg).float().mean().item()
     n_used = data.shape[0]
-    return norm_n * math.sqrt(sumsq / n_used) if n_used > 0 else 0.0
+    util = norm_n * math.sqrt(sumsq / n_used) if n_used > 0 else 0.0
+    return util, acc
 
 
 # --- telemetry loading ------------------------------------------------------
@@ -419,7 +432,7 @@ def main():
             vis_n = visible_count(sim_now, full_after_s, total)
             gidx = info["arrival_global_idx"]
             vis_g = gidx[:vis_n]
-            u_stream = oort_utility(
+            u_stream, acc_stream = oort_utility_acc(
                 model, imgs[vis_g], targets[vis_g], norm_n=vis_n,
                 device=device, sample_size=sample_size,
             )
@@ -430,6 +443,7 @@ def main():
             per_t[tid] = {
                 "true": u_stream,
                 "true_full": u_full,
+                "acc": acc_stream,
                 "visible_fraction": (vis_n / total) if total else None,
             }
         true_by_round[rnd] = per_t
@@ -442,9 +456,26 @@ def main():
         le = [x for x in avail_rounds if x <= r]
         return max(le) if le else min(avail_rounds)
 
+    # true A_m (FedDance accuracy-increment) = local-accuracy slope between
+    # consecutive checkpoints, per trainer. orr -> {end_id: slope}.
+    true_A_by_round: dict[int, dict[str, float]] = {}
+    for i, rnd in enumerate(avail_rounds):
+        prev = avail_rounds[i - 1] if i > 0 else None
+        per_t = {}
+        for tid, d in true_by_round[rnd].items():
+            a_now = d.get("acc", 0.0)
+            if prev is not None and tid in true_by_round[prev]:
+                a_prev = true_by_round[prev][tid].get("acc", a_now)
+                gap = max(1, rnd - prev)
+            else:
+                a_prev, gap = a_now, 1
+            per_t[tid] = (a_now - a_prev) / gap
+        true_A_by_round[rnd] = per_t
+
     # --- join with selections + write per (round,trainer) rows ---------------
     util_rows = []  # round, end_id, believed, true, true_full, selected, visible_fraction, task
     per_round_metrics = []  # round, task, k, gap, topk_overlap, regret, mean_true_selected
+    cf_metrics = []  # per-selector counterfactual replay (believed-vs-true-factor top-k)
 
     for sel in selections:
         rnd = int(sel.get("round", 0))
@@ -506,6 +537,51 @@ def main():
             "mean_true_oracle_topk": mean_true_oracle,
         })
 
+        # --- counterfactual replay (self-relative): re-run THIS selector's
+        # scoring formula with believed factors vs. true factors substituted
+        # (I_m for all; A_m also for FedDance), top-k each, measure the gap. This
+        # is the staleness penalty *within* the selector's own algorithm.
+        selector = str(sel.get("selector", ""))
+        is_feddance = "feddance" in selector.lower()
+        bel_score, tru_score = {}, {}
+        for t in candidates:
+            pt = per_trainer.get(t) or {}
+            true_I = truth[t]["true"]
+            if is_feddance:
+                V = pt.get("feddance_V"); I = pt.get("feddance_I")
+                A = pt.get("feddance_A"); U = pt.get("feddance_U")
+                if None in (V, I, A, U) or I == 0 or A == 0:
+                    continue
+                true_A = (true_A_by_round.get(orr, {}) or {}).get(t, A)
+                bel_score[t] = U
+                # U = V*I*A*MAB -> substitute I->true_I, A->true_A via ratios
+                tru_score[t] = U * (true_I / I) * (true_A / A if A else 1.0)
+            else:  # oort / refl / felix family: (I + temporal) * system_util
+                bI = pt.get("believed_I")
+                temporal = pt.get("temporal")
+                su = pt.get("system_util")
+                if bI is None or temporal is None or su is None:
+                    continue
+                bel_score[t] = (bI + temporal) * su
+                tru_score[t] = (true_I + temporal) * su  # speed ~identity here
+        kk = min(k, len(bel_score))
+        if kk >= 1:
+            bel_topk = set(sorted(bel_score, key=bel_score.get, reverse=True)[:kk])
+            tru_topk = set(sorted(tru_score, key=tru_score.get, reverse=True)[:kk])
+            cf_overlap = len(bel_topk & tru_topk) / kk
+            cf_regret = (
+                sum(truth[t]["true"] for t in tru_topk) / kk
+                - sum(truth[t]["true"] for t in bel_topk) / kk
+            )
+            cf_metrics.append({
+                "round": rnd,
+                "selector": selector,
+                "k": kk,
+                "cf_misselection_rate": 1.0 - cf_overlap,
+                "cf_topk_overlap": cf_overlap,
+                "cf_utility_regret": cf_regret,
+            })
+
     # --- write outputs -------------------------------------------------------
     _write_csv(os.path.join(out_dir, "oracle_utility.csv"), util_rows,
                ["round", "task", "end_id", "believed", "true", "true_full",
@@ -514,6 +590,9 @@ def main():
                ["round", "task", "k", "believed_minus_true_gap", "topk_overlap",
                 "misselection_rate", "utility_regret", "mean_true_selected",
                 "mean_true_oracle_topk"])
+    _write_csv(os.path.join(out_dir, "oracle_counterfactual.csv"), cf_metrics,
+               ["round", "selector", "k", "cf_misselection_rate",
+                "cf_topk_overlap", "cf_utility_regret"])
 
     train_metrics = [m for m in per_round_metrics if m["task"] == "train"]
     summary = {
@@ -527,6 +606,12 @@ def main():
             [m["utility_regret"] for m in train_metrics]),
         "mean_true_selected_train": _safe_mean(
             [m["mean_true_selected"] for m in train_metrics]),
+        # self-relative counterfactual (this selector with stale vs true factors)
+        "mean_cf_misselection_rate": _safe_mean(
+            [m["cf_misselection_rate"] for m in cf_metrics]),
+        "mean_cf_utility_regret": _safe_mean(
+            [m["cf_utility_regret"] for m in cf_metrics]),
+        "n_cf_rounds": len(cf_metrics),
     }
     with open(os.path.join(out_dir, "oracle_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2)
