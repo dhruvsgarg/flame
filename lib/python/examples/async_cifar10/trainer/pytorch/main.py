@@ -660,6 +660,10 @@ class PyTorchCifar10Trainer(Trainer):
         total_batches_processed = 0
         final_loss = None
         self._grad_norm_epoch1 = None
+        # Reset per-round local training accuracy (FedDance's A_m reads this via
+        # MessageType.LOCAL_ACCURACY; harmless for other selectors). Also
+        # initializes the accumulators, so no init_oort_variables dependency.
+        self.reset_local_accuracy()
         _gpu_start = time.time()
         for epoch in range(1, self.epochs + 1):
             epoch_batches, epoch_loss = self._train_epoch(epoch)
@@ -817,6 +821,9 @@ class PyTorchCifar10Trainer(Trainer):
                 # Calculate statistical utility of a trainer while
                 # calculating loss
                 loss = self.oort_loss(output, target, epoch, batch_idx)
+
+            # accumulate per-round local training accuracy (FedDance A_m signal)
+            self.update_local_accuracy(output, target)
 
             loss.backward()
 

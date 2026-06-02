@@ -309,10 +309,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 # Populate round statistics vars
                 self._round_update_values["staleness"].append(update_staleness_val)
                 self._round_update_values["stat_utility"].append(stat_utility)
+                # PROP_ROUND_DURATION is only populated by the Oort stack; on the
+                # base (fedavg / feddance) flow it's unset -> guard against None.
+                _rd = channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION)
                 self._round_update_values["trainer_speed"].append(
-                    channel.get_end_property(
-                        end_id=end, key=PROP_ROUND_DURATION
-                    ).total_seconds()
+                    _rd.total_seconds() if _rd is not None else 0.0
                 )
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
@@ -326,7 +327,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 trainer_speed_s=list(
                     self._round_update_values.get("trainer_speed", [])
                 ),
-                contributing_trainers=list(self.cache.keys()),
+                contributing_trainers=list(self.cache),  # diskcache iterates keys
             )
             telemetry.emit(ev, **fields)
 
@@ -364,8 +365,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
+        # data_id / iteration_per_data_id are FwdLLM-only; default them so
+        # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
+        # AttributeError here.
         self.fwd_llm_stage = FwdLLMStage(
-            self._round, self.data_id, self.iteration_per_data_id
+            self._round,
+            getattr(self, "data_id", 0),
+            getattr(self, "iteration_per_data_id", 0),
         )
 
         channel = self.cm.get_by_tag(tag)
