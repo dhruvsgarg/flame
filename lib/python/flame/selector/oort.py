@@ -271,6 +271,9 @@ class OortSelector(AbstractSelector):
 
         self._select_run_counter += 1
         for selected_end_id in self.selected_ends:
+            # in-flight ids may not be in the current eligible `ends`; skip them
+            if selected_end_id not in ends:
+                continue
             end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
             end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
             end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
@@ -360,7 +363,9 @@ class OortSelector(AbstractSelector):
             p=over_cutoff_utility_probs,
         )
 
-        return selected_ends
+        # np.random.choice yields np.str_ entries; cast to plain str so the
+        # ids match the python-str keys of the ``ends`` dict downstream.
+        return [str(e) for e in selected_ends]
 
     def sample_by_speed(
         self, unexplored_end_ids: list[str], num_of_ends: int
@@ -369,7 +374,13 @@ class OortSelector(AbstractSelector):
 
         # Oort paper prioritizes unexplored ends with faster system
         # speed We initially implement to perform random here
-        return np.random.choice(unexplored_end_ids, size=num_of_ends, replace=False)
+        # Cast np.str_ -> str so ids match the python-str keys of ``ends``.
+        return [
+            str(e)
+            for e in np.random.choice(
+                unexplored_end_ids, size=num_of_ends, replace=False
+            )
+        ]
 
     def pacer(self) -> None:
         """
@@ -501,7 +512,9 @@ class OortSelector(AbstractSelector):
     def save_exploited_utility_history(
         self, ends: dict[str, End], exploit_end_ids: list[str]
     ) -> None:
-        if not exploit_end_ids:
+        # exploit_end_ids may be a numpy array (from sample_by_util); use len()
+        # so the emptiness check doesn't raise "truth value ambiguous".
+        if len(exploit_end_ids) == 0:
             return
         total = sum(
             ends[eid].get_property(PROP_STAT_UTILITY) for eid in exploit_end_ids
@@ -516,6 +529,10 @@ class OortSelector(AbstractSelector):
 
     def increment_selected_count_on_selected_ends(self, ends: dict[str, End]) -> None:
         for end_id in self.selected_ends:
+            # selected_ends may hold in-flight ids no longer in the current
+            # eligible `ends`; skip those rather than KeyError.
+            if end_id not in ends:
+                continue
             count = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
             ends[end_id].set_property(PROP_SELECTED_COUNT, count + 1)
 

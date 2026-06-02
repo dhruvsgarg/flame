@@ -16,6 +16,7 @@
 """horizontal FL top level aggregator."""
 
 import logging
+import os
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -481,6 +482,79 @@ class TopAggregator(Role, metaclass=ABCMeta):
             model_name = f"{self.config.job.name}-{self.config.job.job_id}"
             self.registry_client.save_model(model_name, self.model)
 
+    def save_round_checkpoint(self):
+        """Periodically checkpoint the global model for the offline oracle.
+
+        Writes a plain ``state_dict`` (decoupled from the model class location)
+        tagged with round + sim/wall time to ``<run>/checkpoints/`` (sibling of
+        the ``telemetry/`` dir). The post-run ``oracle_misselection.py`` script
+        recomputes each trainer's *true* current utility on its
+        deterministically-unlocked data from these checkpoints, so we can
+        measure mis-selection against the selector's stale belief.
+
+        Self-contained (lazy config load) so it works identically whether the
+        async stack overrides ``internal_init`` or not. Gated by the
+        ``checkpoint`` hyperparameter and a no-op unless enabled. Telemetry-grade:
+        must never break the training loop.
+        """
+        try:
+            if not getattr(self, "_checkpoint_cfg_loaded", False):
+                ckpt_cfg = (
+                    getattr(self.config.hyperparameters, "checkpoint", None) or {}
+                )
+                self._checkpoint_enabled = (
+                    str(ckpt_cfg.get("enabled", "False")) == "True"
+                )
+                self._checkpoint_every_n = int(
+                    ckpt_cfg.get("every_n_rounds", 10) or 10
+                )
+                tdir = os.environ.get("FLAME_TELEMETRY_DIR")
+                self._checkpoint_dir = (
+                    os.path.join(os.path.dirname(tdir.rstrip("/")), "checkpoints")
+                    if tdir
+                    else None
+                )
+                self._checkpoint_cfg_loaded = True
+
+            if not self._checkpoint_enabled or not self._checkpoint_dir:
+                return
+            if self.model is None or self.framework != MLFramework.PYTORCH:
+                return
+            if self._checkpoint_every_n > 1 and (
+                self._round % self._checkpoint_every_n != 0
+            ):
+                return
+
+            import torch
+
+            # Aggregator sim-clock at this round: the virtual clock in simulated
+            # mode (same clock that stamps trainers' sim_send_ts), else wall
+            # elapsed. The oracle feeds this into _visible_sample_count.
+            if self.simulated and hasattr(self, "_vclock"):
+                sim_time_s = float(self._vclock.now)
+            else:
+                sim_time_s = float(time.time() - self.agg_start_time_ts)
+
+            os.makedirs(self._checkpoint_dir, exist_ok=True)
+            path = os.path.join(
+                self._checkpoint_dir, f"round_{self._round:05d}.pt"
+            )
+            torch.save(
+                {
+                    "round": int(self._round),
+                    "sim_time_s": sim_time_s,
+                    "wall_ts": time.time(),
+                    "time_mode": self.time_mode,
+                    "state_dict": self.model.state_dict(),
+                },
+                path,
+            )
+            logger.info(
+                f"Saved round checkpoint: {path} (sim_time_s={sim_time_s:.2f})"
+            )
+        except Exception as e:  # checkpointing must never break training
+            logger.warning(f"save_round_checkpoint failed (non-fatal): {e}")
+
     def update_metrics(self, metrics: dict[str, float]):
         """Update metrics."""
         self.metrics = self.metrics | metrics
@@ -590,6 +664,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             task_save_model = Tasklet("save_model", self.save_model)
 
+            task_checkpoint = Tasklet("checkpoint", self.save_round_checkpoint)
+
         # create a loop object with loop exit condition function
         loop = Loop(loop_check_fn=lambda: self._work_done)
         (
@@ -603,6 +679,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 >> task_eval
                 >> task_analysis
                 >> task_save_metrics
+                >> task_checkpoint
                 >> task_increment_round
                 >> task_get_heartbeat
             )

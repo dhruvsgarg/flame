@@ -254,6 +254,15 @@ class PyTorchCifar10Aggregator(TopAggregator):
 
     def evaluate(self) -> None:
         """Evaluate (test) a model."""
+        # Gate eval cadence to match the async stack (evalEveryNRounds) instead
+        # of evaluating every round: the full test-set pass is the dominant
+        # per-round cost at n300, and an every-round eval makes sync runs
+        # intractable. Always eval round 1 (baseline) and every Nth round.
+        eval_every = (
+            getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
+        )
+        if self._round != 1 and (self._round % eval_every != 0):
+            return
         self.model.eval()
         test_loss = 0
         correct = 0

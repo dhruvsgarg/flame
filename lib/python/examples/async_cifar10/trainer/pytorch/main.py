@@ -659,6 +659,7 @@ class PyTorchCifar10Trainer(Trainer):
 
         total_batches_processed = 0
         final_loss = None
+        self._grad_norm_epoch1 = None
         _gpu_start = time.time()
         for epoch in range(1, self.epochs + 1):
             epoch_batches, epoch_loss = self._train_epoch(epoch)
@@ -715,6 +716,23 @@ class PyTorchCifar10Trainer(Trainer):
             + sim_round_duration
         )
 
+        # ||trained - received global||: update magnitude this round. At this
+        # point self.weights still holds the received global (the later
+        # _send_weights tasklet runs _update_weights); the model holds the
+        # trained weights. Float params only (skip int buffers). Non-fatal.
+        delta_weight_l2 = None
+        try:
+            ref = getattr(self, "weights", None)
+            if ref is not None:
+                _sq = 0.0
+                for k, v in self.model.state_dict().items():
+                    if k in ref and torch.is_floating_point(v):
+                        d = v.detach().float() - ref[k].detach().float().to(v.device)
+                        _sq += float(torch.sum(d * d).item())
+                delta_weight_l2 = math.sqrt(_sq)
+        except Exception as e:
+            logger.debug(f"delta_weight_l2 compute failed: {e}")
+
         if telemetry.is_enabled():
             visible = (
                 self._visible_sample_count()
@@ -734,6 +752,7 @@ class PyTorchCifar10Trainer(Trainer):
                 if isinstance(self._stat_utility, (int, float))
                 else float(getattr(self._stat_utility, "item", lambda: 0.0)()),
                 final_loss=final_loss,
+                delta_weight_l2=delta_weight_l2,
                 extra={
                     "sim_completion_ts": self._sim_completion_ts,
                     "sim_send_ts": float(self._sim_send_ts) if self._sim_send_ts is not None else None,
@@ -741,6 +760,8 @@ class PyTorchCifar10Trainer(Trainer):
                     "training_budget_s": _modeled_delay_s,
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,
+                    "grad_norm_epoch1": self._grad_norm_epoch1,
+                    "task_to_perform": getattr(self, "task_to_perform", None),
                 },
             )
             telemetry.emit(ev, **fields)
@@ -779,7 +800,11 @@ class PyTorchCifar10Trainer(Trainer):
 
         batches_processed = 0
         last_loss = None
-        
+        # Accumulate per-step gradient L2 on epoch 1 (telemetry: relate update
+        # magnitude to amount of unlocked data under streaming).
+        _grad_norm_accum = 0.0
+        _grad_norm_batches = 0
+
         for batch_idx, (data, target) in enumerate(self.train_loader):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
@@ -794,9 +819,18 @@ class PyTorchCifar10Trainer(Trainer):
                 loss = self.oort_loss(output, target, epoch, batch_idx)
 
             loss.backward()
+
+            if epoch == 1:
+                _gsq = 0.0
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        _gsq += float(p.grad.detach().norm(2).item()) ** 2
+                _grad_norm_accum += math.sqrt(_gsq)
+                _grad_norm_batches += 1
+
             self.optimizer.step()
             batches_processed += 1
-            
+
             # Detach tensors to break computation graph and free memory
             # Log every batch for small trainers, every 100 for large trainers
             num_batches = len(self.train_loader)
@@ -823,6 +857,13 @@ class PyTorchCifar10Trainer(Trainer):
         # normalize statistical utility of a trainer based on the size
         # of the dataset
         self.normalize_stat_utility(epoch)
+
+        if epoch == 1:
+            self._grad_norm_epoch1 = (
+                _grad_norm_accum / _grad_norm_batches
+                if _grad_norm_batches
+                else None
+            )
         
         # Aggressive memory cleanup after epoch
         if torch.cuda.is_available():

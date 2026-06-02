@@ -20,6 +20,7 @@ Default output is ``<telemetry_dir>/../plots``.
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import os
@@ -274,6 +275,196 @@ def plot_util_disparity(records, out_dir) -> list[str]:
     return saved
 
 
+# --- streaming / mis-selection / comm-cost helpers --------------------------
+
+
+def _visible_fraction(r: dict) -> Optional[float]:
+    vs, ts = r.get("visible_samples"), r.get("total_samples")
+    if vs is None or not ts:
+        return None
+    return vs / ts
+
+
+def accuracy_by_round(records) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for r in by_event(records, EVENT_AGG_EVAL):
+        a = r.get("test-accuracy")
+        if a is not None:
+            out[int(r.get("round", 0))] = a
+    return out
+
+
+def sim_time_by_round(records) -> dict[int, float]:
+    """round -> max sim_completion_ts seen at/under that round (sim wall time)."""
+    best: dict[int, float] = {}
+    for r in by_event(records, EVENT_TRAINER_ROUND):
+        rd = int(r.get("round", 0))
+        sc = r.get("sim_completion_ts")
+        if sc is None:
+            sc = r.get("sim_round_duration_s")
+        if sc is None:
+            continue
+        best[rd] = max(best.get(rd, 0.0), float(sc))
+    # make monotonic cumulative
+    out: dict[int, float] = {}
+    run = 0.0
+    for rd in sorted(best):
+        run = max(run, best[rd])
+        out[rd] = run
+    return out
+
+
+def cumulative_comm_by_round(records) -> tuple[list[int], list[float]]:
+    """Cumulative communication in model-equivalents vs round.
+
+    Per selected trainer: train = 2 (download model + upload delta),
+    eval = 1 (download model; scalar utility upload ~= 0). Felix's eval-selector
+    rows are charged automatically; OORT/REFL (no eval-distribute) have none.
+    """
+    per_round: dict[int, float] = defaultdict(float)
+    for r in by_event(records, EVENT_SELECTION):
+        rd = int(r.get("round", 0))
+        n = len(r.get("chosen") or [])
+        cost = 2.0 * n if r.get("task", "train") == "train" else 1.0 * n
+        per_round[rd] += cost
+    rounds = sorted(per_round)
+    cum, run = [], 0.0
+    for rd in rounds:
+        run += per_round[rd]
+        cum.append(run)
+    return rounds, cum
+
+
+def comm_vs_accuracy_series(records) -> tuple[list[float], list[float]]:
+    """(cumulative model-equivalents, accuracy) aligned by round."""
+    rounds, cum = cumulative_comm_by_round(records)
+    cum_at = {}
+    for rd, c in zip(rounds, cum):
+        cum_at[rd] = c
+    acc = accuracy_by_round(records)
+    xs, ys = [], []
+    running = 0.0
+    for rd in sorted(acc):
+        # comm accumulated up to this round
+        ups = [c for r, c in cum_at.items() if r <= rd]
+        running = max(ups) if ups else running
+        xs.append(running)
+        ys.append(acc[rd])
+    return xs, ys
+
+
+def time_to_target(records, target: float) -> dict:
+    """First round/wall/sim time the test accuracy reaches ``target``."""
+    evs = sorted(by_event(records, EVENT_AGG_EVAL), key=lambda r: r.get("round", 0))
+    start_ts = min((r.get("ts") for r in records if r.get("ts")), default=None)
+    sim_map = sim_time_by_round(records)
+    for r in evs:
+        a = r.get("test-accuracy")
+        if a is not None and a >= target:
+            rd = int(r.get("round", 0))
+            wall = (r.get("ts") - start_ts) if (r.get("ts") and start_ts) else None
+            return {"round": rd, "wall_s": wall, "sim_s": sim_map.get(rd),
+                    "accuracy": a, "reached": True}
+    return {"round": None, "wall_s": None, "sim_s": None,
+            "accuracy": None, "reached": False}
+
+
+def load_oracle_misselection(telemetry_dir: str) -> list[dict]:
+    """Read <run>/analysis/oracle_misselection.csv (run = parent of telemetry)."""
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    path = os.path.join(run_dir, "analysis", "oracle_misselection.csv")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path) as fh:
+        for r in csv.DictReader(fh):
+            rows.append(r)
+    return rows
+
+
+def _floats(rows, key):
+    out = []
+    for r in rows:
+        v = r.get(key)
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            out.append(None)
+    return out
+
+
+# --- new single-run plots ---------------------------------------------------
+
+
+def plot_data_unlock_effects(records, out_dir) -> list[str]:
+    """delta_weight_l2 / final_loss / stat_utility vs visible_fraction."""
+    rows = by_event(records, EVENT_TRAINER_ROUND)
+    saved = []
+    specs = [
+        ("delta_weight_l2", "update L2 norm", "update_norm_vs_visible.png",
+         "Update magnitude vs unlocked-data fraction"),
+        ("final_loss", "final training loss", "loss_vs_visible.png",
+         "Training loss vs unlocked-data fraction"),
+        ("stat_utility", "statistical utility", "utility_vs_visible.png",
+         "Statistical utility vs unlocked-data fraction"),
+    ]
+    for key, ylab, fname, title in specs:
+        xs, ys = [], []
+        for r in rows:
+            vf = _visible_fraction(r)
+            y = r.get(key)
+            if vf is None or y is None:
+                continue
+            xs.append(vf)
+            ys.append(y)
+        if not xs:
+            continue
+        p = ph.scatter_plot(xs, ys, None, "visible fraction (unlocked data)",
+                            ylab, title, out_dir, fname)
+        if p:
+            saved.append(p)
+    return saved
+
+
+def plot_comm_vs_accuracy(records, out_dir) -> list[str]:
+    xs, ys = comm_vs_accuracy_series(records)
+    if not xs:
+        return []
+    p = ph.line_plot(
+        {"accuracy": (xs, ys)}, "cumulative comm (model-equivalents)", "accuracy",
+        "Communication cost vs accuracy", out_dir, "comm_vs_accuracy.png",
+    )
+    return [p] if p else []
+
+
+def plot_misselection(records, out_dir, telemetry_dir) -> list[str]:
+    rows = [r for r in load_oracle_misselection(telemetry_dir)
+            if r.get("task") == "train"]
+    if not rows:
+        return []
+    rows.sort(key=lambda r: float(r.get("round", 0)))
+    xs = _floats(rows, "round")
+    series = {
+        "misselection_rate (1 - top-k overlap)": (xs, _floats(rows, "misselection_rate")),
+        "utility_regret (normalized units)": (xs, _floats(rows, "utility_regret")),
+    }
+    saved = []
+    p = ph.line_plot(series, "round", "value",
+                     "Mis-selection over time (from oracle)",
+                     out_dir, "misselection_over_time.png")
+    if p:
+        saved.append(p)
+    gap_series = {
+        "believed - true (selected)": (xs, _floats(rows, "believed_minus_true_gap")),
+    }
+    p = ph.line_plot(gap_series, "round", "utility gap",
+                     "Believed-minus-true utility gap (selected set)",
+                     out_dir, "utility_belief_gap.png")
+    if p:
+        saved.append(p)
+    return saved
+
+
 def write_summary(records, out_dir, telemetry_dir) -> str:
     counts = Counter(r.get("event") for r in records)
     n_trainers = len({r.get("end_id") for r in records if r.get("role") == "trainer"})
@@ -309,12 +500,19 @@ def analyze(telemetry_dir: str, out_dir: Optional[str] = None) -> list[str]:
         plot_selection_frequency,
         plot_trainer_time_breakdown,
         plot_util_disparity,
+        plot_data_unlock_effects,
+        plot_comm_vs_accuracy,
     ]
     for fn in plotters:
         try:
             saved.extend(fn(records, out_dir))
         except Exception as e:  # one bad plot must not stop the rest
             print("  (plot %s failed: %s)" % (fn.__name__, e))
+    # mis-selection plots need the oracle CSV next to the telemetry dir
+    try:
+        saved.extend(plot_misselection(records, out_dir, telemetry_dir))
+    except Exception as e:
+        print("  (plot plot_misselection failed: %s)" % e)
     saved.append(write_summary(records, out_dir, telemetry_dir))
     print("wrote %d artifact(s) to %s" % (len(saved), out_dir))
     for p in saved:
@@ -365,14 +563,148 @@ def compare(dirs: list[str], labels: Optional[list[str]], out_dir: str) -> list[
     return saved
 
 
+def compare_streaming(
+    dirs: list[str], labels: Optional[list[str]], out_dir: str, target: float = 0.6
+) -> list[str]:
+    """Cross-baseline streaming comparison (felix vs oort vs refl, etc.).
+
+    Produces: accuracy overlay, time-to-target table+bars, comm-vs-accuracy,
+    mean true-utility of selected set, mis-selection over time, streamed/full
+    utility ratio, and update-norm vs visible-fraction -- all overlaid by run.
+    """
+    if labels is None or len(labels) != len(dirs):
+        labels = [
+            os.path.basename(os.path.dirname(os.path.abspath(d))) or d for d in dirs
+        ]
+    os.makedirs(out_dir, exist_ok=True)
+    saved: list[str] = []
+
+    acc_series: dict = {}
+    comm_acc_series: dict = {}
+    true_util_series: dict = {}
+    missel_series: dict = {}
+    regret_series: dict = {}
+    util_ratio_series: dict = {}
+    delta_vis_series: dict = {}
+    ttt_rows: list[dict] = []
+
+    for label, d in zip(labels, dirs):
+        recs = load_events(d)
+
+        acc = accuracy_by_round(recs)
+        if acc:
+            rs = sorted(acc)
+            acc_series[label] = (rs, [acc[r] for r in rs])
+
+        xs, ys = comm_vs_accuracy_series(recs)
+        if xs:
+            comm_acc_series[label] = (xs, ys)
+
+        ttt = time_to_target(recs, target)
+        ttt_rows.append({"label": label, **ttt})
+
+        # util disparity: mean streamed/full ratio per round
+        ud = by_event(recs, EVENT_UTIL_DISPARITY)
+        if ud:
+            by_round: dict[int, list[float]] = defaultdict(list)
+            for r in ud:
+                v = r.get("utility_ratio")
+                if v is not None:
+                    by_round[int(r.get("round", 0))].append(v)
+            rs = sorted(by_round)
+            util_ratio_series[label] = (
+                rs, [sum(by_round[r]) / len(by_round[r]) for r in rs]
+            )
+
+        # update-norm vs visible-fraction (binned mean over 20 bins)
+        tr = by_event(recs, EVENT_TRAINER_ROUND)
+        pts = [(_visible_fraction(r), r.get("delta_weight_l2")) for r in tr]
+        pts = [(a, b) for a, b in pts if a is not None and b is not None]
+        if pts:
+            bins: dict[int, list[float]] = defaultdict(list)
+            for vf, dn in pts:
+                bins[min(19, int(vf * 20))].append(dn)
+            bxs = sorted(bins)
+            delta_vis_series[label] = (
+                [(b + 0.5) / 20 for b in bxs],
+                [sum(bins[b]) / len(bins[b]) for b in bxs],
+            )
+
+        # oracle-derived mis-selection metrics (train task)
+        orows = [
+            r for r in load_oracle_misselection(d) if r.get("task") == "train"
+        ]
+        if orows:
+            orows.sort(key=lambda r: float(r.get("round", 0)))
+            oxs = _floats(orows, "round")
+            true_util_series[label] = (oxs, _floats(orows, "mean_true_selected"))
+            missel_series[label] = (oxs, _floats(orows, "misselection_rate"))
+            regret_series[label] = (oxs, _floats(orows, "utility_regret"))
+
+    def _line(series, xl, yl, title, fname):
+        p = ph.line_plot(series, xl, yl, title, out_dir, fname)
+        if p:
+            saved.append(p)
+
+    _line(acc_series, "round", "accuracy",
+          "Accuracy vs round (target=%.0f%%)" % (target * 100),
+          "compare_accuracy.png")
+    _line(comm_acc_series, "cumulative comm (model-equivalents)", "accuracy",
+          "Communication cost vs accuracy", "compare_comm_vs_accuracy.png")
+    _line(true_util_series, "round", "mean true utility of selected set",
+          "Selected-set true utility (oracle)", "compare_true_utility_selected.png")
+    _line(missel_series, "round", "mis-selection rate (1 - top-k overlap)",
+          "Mis-selection rate over time (oracle)", "compare_misselection.png")
+    _line(regret_series, "round", "utility regret",
+          "Selection utility regret over time (oracle)", "compare_utility_regret.png")
+    _line(util_ratio_series, "round", "streamed / full utility ratio",
+          "Streamed-vs-full utility ratio (1.0 = no disparity)",
+          "compare_util_disparity.png")
+    _line(delta_vis_series, "visible fraction (unlocked data)", "mean update L2 norm",
+          "Update magnitude vs unlocked data", "compare_delta_norm_vs_visible.png")
+
+    # time-to-target table + bars
+    ttt_path = os.path.join(out_dir, "compare_time_to_target.csv")
+    with open(ttt_path, "w", newline="") as fh:
+        w = csv.DictWriter(
+            fh, fieldnames=["label", "reached", "round", "wall_s", "sim_s", "accuracy"]
+        )
+        w.writeheader()
+        for r in ttt_rows:
+            w.writerow({k: r.get(k) for k in
+                        ["label", "reached", "round", "wall_s", "sim_s", "accuracy"]})
+    saved.append(ttt_path)
+    cats = [r["label"] for r in ttt_rows if r.get("round") is not None]
+    if cats:
+        vals = [r["round"] for r in ttt_rows if r.get("round") is not None]
+        p = ph.bar_plot(cats, vals, "rounds to target",
+                        "Rounds to reach %.0f%% accuracy" % (target * 100),
+                        out_dir, "compare_time_to_target_rounds.png")
+        if p:
+            saved.append(p)
+
+    print("wrote %d streaming-comparison artifact(s) to %s" % (len(saved), out_dir))
+    for p in saved:
+        print("  %s" % p)
+    return saved
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("telemetry_dir", nargs="?", help="run telemetry directory")
     parser.add_argument("--out", help="output plots directory")
     parser.add_argument("--compare", nargs="+", help="telemetry dirs to compare")
-    parser.add_argument("--labels", nargs="+", help="labels for --compare dirs")
+    parser.add_argument("--compare-streaming", nargs="+",
+                        help="telemetry dirs for the streaming mis-selection comparison")
+    parser.add_argument("--labels", nargs="+", help="labels for --compare* dirs")
+    parser.add_argument("--target", type=float, default=0.6,
+                        help="target accuracy for time-to-target (default 0.6)")
     args = parser.parse_args()
 
+    if args.compare_streaming:
+        out = args.out or "compare_plots"
+        compare_streaming(args.compare_streaming, args.labels, out, args.target)
+        return
     if args.compare:
         out = args.out or "compare_plots"
         compare(args.compare, args.labels, out)

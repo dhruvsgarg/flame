@@ -1023,6 +1023,7 @@ class TopAggregator(SyncTopAgg):
                 >> c.tasklet("evaluate")
                 >> c.tasklet("analysis")
                 >> c.tasklet("save_metrics")
+                >> c.tasklet("checkpoint")
                 >> c.tasklet("inc_round")
             )
             >> c.tasklet("inform_end_of_training")
