@@ -230,6 +230,7 @@ experiments:
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
+        selector: {kwargs: {aggr_num: 10}}
     execution: *exec
 
   - name: refl_n300_alpha0.1_syn0_ctrl
@@ -268,4 +269,5 @@ experiments:
           aggGoal: 10
           checkpoint: {enabled: "True", every_n_rounds: 10}
           trackTrainerAvail: {trace: syn_0}
+        selector: {kwargs: {aggr_num: 10}}
     execution: *exec

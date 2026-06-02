@@ -135,6 +135,7 @@ experiments:
           evalEveryNRounds: 5
           checkpoint: {enabled: "True", every_n_rounds: 5}
           trackTrainerAvail: {trace: syn_0}
+        selector: {kwargs: {aggr_num: 5}}
     execution: *exec
 
   - name: feddance_quickpilot_n32

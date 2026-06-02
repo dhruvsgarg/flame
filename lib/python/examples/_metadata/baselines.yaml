@@ -59,6 +59,7 @@ baselines:
       selector:
         sort: refl_oort
         kwargs:
+          aggr_num: 10  # per-round selection count (OortSelector requires it); override per experiment to match agg_goal
           avail_priority: 1
           blacklist_rounds: 50
           pacer_step: 20
