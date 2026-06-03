@@ -585,14 +585,22 @@ class Trainer(Role, metaclass=ABCMeta):
         """Accumulate top-1 classification accuracy. Override for non-classification tasks."""
         with torch.no_grad():
             pred = output.argmax(dim=-1)
-            self._local_accuracy_correct += int((pred == target).sum().item())
+            # Accumulate the correct-count on-device and defer the single
+            # GPU->CPU sync to finalize_local_accuracy(). A per-batch .item()
+            # here forces a synchronization every batch, which stalls badly when
+            # many trainers share one GPU (the sync waits on the shared queue).
+            # numel() is a Python int from the tensor shape (no sync).
+            self._local_accuracy_correct = (
+                self._local_accuracy_correct + (pred == target).sum()
+            )
             self._local_accuracy_total += int(target.numel())
 
     def finalize_local_accuracy(self) -> None:
+        correct = self._local_accuracy_correct
+        if torch.is_tensor(correct):
+            correct = int(correct.item())  # one sync per round, not per batch
         if self._local_accuracy_total > 0:
-            self._local_accuracy = (
-                self._local_accuracy_correct / self._local_accuracy_total
-            )
+            self._local_accuracy = correct / self._local_accuracy_total
         else:
             self._local_accuracy = 0.0
 

@@ -242,12 +242,24 @@ class PyTorchCifar10Trainer(Trainer):
             f"(every_n_rounds={self.util_cf_every_n}, sample_size={self.util_cf_sample_size})"
         )
 
-        # Initialize memory profiler
+        # Initialize memory profiler. Off by default: its per-round heap walks
+        # (gc.collect + 3x gc.get_objects() with a per-object torch.is_tensor
+        # check) dominate per-round wall time at high trainer-per-host
+        # concurrency. Enable only when chasing a leak via the
+        # `memory_profiling_enabled: "True"` hyperparameter.
+        _mp = getattr(self.config.hyperparameters, "memory_profiling_enabled", False)
+        self.memory_profiling_enabled = (
+            _mp if isinstance(_mp, bool) else str(_mp).strip().lower() == "true"
+        )
         self.memory_profiler = MemoryProfiler(
             trainer_id=str(self.trainer_id),
-            log_interval_rounds=5  # Detailed logs every 5 rounds
+            log_interval_rounds=5,  # Detailed logs every 5 rounds
+            enabled=self.memory_profiling_enabled,
         )
-        logger.info(f"Trainer {self.trainer_id}: Memory profiler initialized")
+        logger.info(
+            f"Trainer {self.trainer_id}: Memory profiler "
+            f"{'ENABLED' if self.memory_profiling_enabled else 'DISABLED (default)'}"
+        )
 
     def check_and_sleep(self):
         """Induce transient unavailability"""
@@ -563,18 +575,21 @@ class PyTorchCifar10Trainer(Trainer):
 
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
-        
-        # Log memory before training round
+        # Per-phase timing: time from train() entry to the start of the GPU
+        # compute loop (setup/avail/loader-rebuild overhead). Reported in
+        # [TRAIN_CYCLE] + telemetry so the breakdown is first-class.
+        _phase_train_entry = time.time()
+
+        # Log memory before training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_before_round()
-        
-        # Aggressive cleanup before training to prevent memory buildup
-        if hasattr(self, '_round') and self._round > 1:
-            # Clear CUDA cache to reclaim GPU memory
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            # Force garbage collection
-            gc.collect()
-        
+
+        # NOTE: we deliberately do NOT call torch.cuda.empty_cache()/gc.collect()
+        # per round here. With many trainers co-located on one GPU, empty_cache
+        # forces a CUDA sync and frees the caching allocator's blocks, so the
+        # next round re-allocates from the driver (serialized across processes)
+        # — it inflates per-round time instead of helping. The allocator reuses
+        # freed blocks within a process on its own.
+
         if self.task_to_perform != "train":
             logger.info(f"Trainer {self.trainer_id} is not required to train")
             return
@@ -665,6 +680,8 @@ class PyTorchCifar10Trainer(Trainer):
         # initializes the accumulators, so no init_oort_variables dependency.
         self.reset_local_accuracy()
         _gpu_start = time.time()
+        # Setup/avail/loader-rebuild overhead before the compute loop.
+        _pre_train_s = _gpu_start - _phase_train_entry
         for epoch in range(1, self.epochs + 1):
             epoch_batches, epoch_loss = self._train_epoch(epoch)
             total_batches_processed += epoch_batches
@@ -672,6 +689,8 @@ class PyTorchCifar10Trainer(Trainer):
                 final_loss = epoch_loss
         # real GPU/compute time for this round, excluding any simulated delay
         _real_gpu_time_s = time.time() - _gpu_start
+        # Post-compute overhead (cleanup, delta-l2, telemetry) starts here.
+        _phase_post_start = time.time()
 
         # Log training completion summary
         loss_str = f"{final_loss:.6f}" if final_loss is not None else "N/A"
@@ -685,17 +704,13 @@ class PyTorchCifar10Trainer(Trainer):
         # aggregator
         self.dataset_size = len(self.train_loader.dataset)
         
-        # Aggressive memory cleanup after training
-        # Clear optimizer state to prevent accumulation
+        # Drop grads (cheap, frees their memory for reuse within this process).
+        # We intentionally skip empty_cache()/gc.collect() here — see the note
+        # at the top of train(): they hurt under co-located concurrency.
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             self.optimizer.zero_grad(set_to_none=True)
-        
-        # Clear CUDA cache and force garbage collection
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        
-        # Log memory after training round
+
+        # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
 
         _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
@@ -724,18 +739,28 @@ class PyTorchCifar10Trainer(Trainer):
         # point self.weights still holds the received global (the later
         # _send_weights tasklet runs _update_weights); the model holds the
         # trained weights. Float params only (skip int buffers). Non-fatal.
+        # Telemetry-only: skip entirely when telemetry is off, and accumulate
+        # the squared-diff on-device so we sync once (not once per parameter).
         delta_weight_l2 = None
-        try:
-            ref = getattr(self, "weights", None)
-            if ref is not None:
-                _sq = 0.0
-                for k, v in self.model.state_dict().items():
-                    if k in ref and torch.is_floating_point(v):
-                        d = v.detach().float() - ref[k].detach().float().to(v.device)
-                        _sq += float(torch.sum(d * d).item())
-                delta_weight_l2 = math.sqrt(_sq)
-        except Exception as e:
-            logger.debug(f"delta_weight_l2 compute failed: {e}")
+        if telemetry.is_enabled():
+            try:
+                ref = getattr(self, "weights", None)
+                if ref is not None:
+                    _sq = None
+                    for k, v in self.model.state_dict().items():
+                        if k in ref and torch.is_floating_point(v):
+                            d = v.detach().float() - ref[k].detach().float().to(v.device)
+                            s = torch.sum(d * d)
+                            _sq = s if _sq is None else _sq + s
+                    if _sq is not None:
+                        delta_weight_l2 = math.sqrt(float(_sq.item()))
+            except Exception as e:
+                logger.debug(f"delta_weight_l2 compute failed: {e}")
+
+        # Post-compute overhead so far (cleanup + delta-l2), before the modeled
+        # sleep. Together with _pre_train_s and _real_gpu_time_s this is the
+        # full trainer-side breakdown of where a round's wall time goes.
+        _post_train_s = time.time() - _phase_post_start
 
         if telemetry.is_enabled():
             visible = (
@@ -767,6 +792,8 @@ class PyTorchCifar10Trainer(Trainer):
                     "grad_norm_epoch1": self._grad_norm_epoch1,
                     "task_to_perform": getattr(self, "task_to_perform", None),
                     "lr": current_lr,
+                    "pre_train_s": _pre_train_s,
+                    "post_train_s": _post_train_s,
                 },
             )
             telemetry.emit(ev, **fields)
@@ -783,6 +810,7 @@ class PyTorchCifar10Trainer(Trainer):
                 f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
                 f"time_mode=simulated: wall={_cycle_elapsed:.2f}s "
                 f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
                 f"virtual_advance={sim_round_duration:.2f}s "
                 f"{'OVERRUN' if _overran else 'OK'} "
                 f"sct={self._sim_completion_ts:.2f}"
@@ -792,6 +820,7 @@ class PyTorchCifar10Trainer(Trainer):
                 f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
                 f"time_mode=real: wall={_cycle_elapsed:.2f}s "
                 f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
                 f"sleep={_remaining_time:.2f}s total={sim_round_duration:.1f}s "
                 f"{'OVERRUN' if _overran else 'OK'}"
             )
@@ -828,13 +857,18 @@ class PyTorchCifar10Trainer(Trainer):
 
             loss.backward()
 
-            if epoch == 1:
-                _gsq = 0.0
+            # Epoch-1 gradient L2 (telemetry only): one fused GPU reduction and
+            # a single .item() sync per batch, instead of a .item() per param
+            # (which forced ~12 GPU->CPU syncs/batch on the shared-GPU queue).
+            if epoch == 1 and telemetry.is_enabled():
+                _gsq = None
                 for p in self.model.parameters():
                     if p.grad is not None:
-                        _gsq += float(p.grad.detach().norm(2).item()) ** 2
-                _grad_norm_accum += math.sqrt(_gsq)
-                _grad_norm_batches += 1
+                        s = p.grad.detach().pow(2).sum()
+                        _gsq = s if _gsq is None else _gsq + s
+                if _gsq is not None:
+                    _grad_norm_accum += float(_gsq.sqrt().item())
+                    _grad_norm_batches += 1
 
             self.optimizer.step()
             batches_processed += 1
@@ -855,12 +889,10 @@ class PyTorchCifar10Trainer(Trainer):
                     f"\tloss: {loss_val:.6f}"
                 )
             
-            # Clear references to free memory
+            # Drop references so the graph/activations can be freed; the
+            # caching allocator reuses the blocks for the next batch without
+            # an explicit (and, under co-location, costly) empty_cache().
             del output, data, target, loss
-            
-            # Periodic CUDA cache clearing during training
-            if batch_idx % 50 == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
         # normalize statistical utility of a trainer based on the size
         # of the dataset
@@ -872,16 +904,11 @@ class PyTorchCifar10Trainer(Trainer):
                 if _grad_norm_batches
                 else None
             )
-        
-        # Aggressive memory cleanup after epoch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        
-        # Log memory after first epoch
+
+        # Log memory after first epoch (no-op unless profiling enabled)
         if epoch == 1:
             self.memory_profiler.log_component_memory(f"epoch_{epoch}", "END")
-        
+
         return batches_processed, last_loss
 
     def evaluate(self) -> None:
