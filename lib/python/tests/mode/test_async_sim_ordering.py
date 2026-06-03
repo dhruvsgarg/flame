@@ -78,6 +78,9 @@ def _make_agg():
     agg._vclock = VirtualClock()
     agg._sim_buffer = SimReorderBuffer()
     agg._sim_committed = set()
+    # _sim_recv_min consults _sim_pending_commit to release cross-round-blocked
+    # ends; the real __init__ sets it, which __new__ bypasses here.
+    agg._sim_pending_commit = set()
     return agg
 
 
