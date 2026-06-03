@@ -84,6 +84,29 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
+        # Optional deterministic seeding for real/sim parity. The selector runs
+        # in this (the aggregator) process and draws from the process-global
+        # np.random / random RNGs, so seeding here makes selection reproducible
+        # across runs/modes (given identical decision-point ordering). Also
+        # seeds torch for reproducible model init. seed=None (default) preserves
+        # the legacy unseeded behaviour.
+        _seed = getattr(self.config.hyperparameters, "seed", None)
+        if _seed is not None:
+            import random as _random
+
+            _seed = int(_seed)
+            np.random.seed(_seed)
+            _random.seed(_seed)
+            try:
+                import torch as _torch
+
+                _torch.manual_seed(_seed)
+                if _torch.cuda.is_available():
+                    _torch.cuda.manual_seed_all(_seed)
+            except Exception:
+                pass
+            logger.info(f"[SEED] aggregator seeded RNGs with seed={_seed}")
+
         # global variable for plugin manager
         self.plugin_manager = PluginManager()
         logger.info("Intializing Channel Manager in Top Aggregator for SYNC")

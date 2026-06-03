@@ -215,3 +215,92 @@ Config: `felix_n10_parity_real_vs_sim.yaml` — 10 trainers, `syn_0` availabilit
 
 **Expected improvement in next run:** staleness mean should drop to ~1.0 (matching real), participation skew should narrow, and Jaccard should improve toward ≥0.7. Selection will not be bit-for-bit identical because OORT's RNG is unseeded; statistical distributions across trainers should match.
 6. Regression: `real`-mode decisions unchanged vs. pre-Task-2 baseline (same seed). Note a convergence prerequisite from Task 1 findings — confirm felix actually learns on a known-good config before reading equivalence into accuracy curves.
+
+---
+
+# Task 3 — Real/Sim parity hardening (do after the trainer-overhead fix)
+
+## Context & prior evidence
+
+Two things must hold for `simulated` to be a trustworthy fast proxy for `real`:
+the wall-clock is bounded by GPU compute only (Task 2 — done), **and** the
+decisions/events are equivalent to `real`. The 2026-05-30 smoke (table above)
+showed the decision side was *not* yet equivalent (Jaccard 0.48, utility KS
+0.81), root-caused to the pre-`_sim_pending_commit` release-before-commit bug
+(fixed, **never re-verified e2e**) compounded by **unseeded selector RNG**.
+
+Separately, the **trainer-overhead fix** (commit "Eliminate per-round trainer
+overhead…") matters for parity: it removes the profiler/`empty_cache`/`gc`
+inflation of `real_gpu_time_s`, so `max(gpu, D)` is now ≈ `D` (no spurious
+overruns), which makes the OORT speed signal — and therefore selection — far
+more comparable across modes. Re-baseline parity *after* that fix.
+
+## Is "exact same event order, just faster" the right goal?
+
+Only for quantities that are a deterministic function of the logical timeline.
+`real` mode is itself **non-deterministic run-to-run**, so it is not a single
+ground truth — it is a distribution. Split the goal:
+
+- **Deterministic-matchable → require EXACT match** (given identical seed +
+  well-separated `D` + low contention so physical arrival == sim-completion
+  order): commit/aggregation order per model version (by `sim_completion_ts =
+  sim_send_ts + D`); staleness sequence (`agg_round − trainer_version`);
+  OORT-visible trainer speed (`max(gpu, D)`); availability/eligibility at a
+  logical time.
+- **Irreducibly non-deterministic → distributional match + invariants only:**
+  (1) **selector RNG** — `np.random.choice`/`random.sample` are unseeded (9 call
+  sites across `selector/oort.py`+`async_oort.py`); different draws every run in
+  *both* modes, so selection parity is impossible without seeding, and even
+  seeded it needs identical RNG-consumption order (solid in scripted tests,
+  fragile live); (2) **real-GPU jitter at near-ties** — `D` within jitter
+  reorders physically in `real` but is deterministic (`(sct, end_id)`) in `sim`;
+  (3) **physical MQTT arrival under contention** — `real` pops by arrival, the
+  very thing `sim` repairs, so real-under-contention is itself non-reproducible.
+
+**Therefore:** exact match is well-posed/testable only in a deterministic
+scripted/seeded, well-separated-`D`, low-contention regime. Elsewhere, assert
+sim's *distributions* match real within tolerance **and** sim obeys the same
+*invariants* real does. "Reasonable non-determinism" = exactly (1)–(3).
+
+## Phased implementation (sequential)
+
+- **Phase 0 — Seedability (code; prerequisite).** Add a `seed` hyperparameter
+  threaded to `np.random.seed`/`random.seed` (selector init) + `torch.manual_seed`
+  + aggregator init. (Trainer data shuffle already seeds by `trainer_id`.)
+  Without this no exact selection parity is possible.
+- **Phase 1 — Pure unit** (extend [tests/sim/test_virtual_clock.py](../../tests/sim/test_virtual_clock.py)):
+  `SimReorderBuffer.pop_min` order-invariance under insertion permutations,
+  tie-break by end-id, `clear`/`discard`; `VirtualClock` monotonicity/no-backward.
+- **Phase 2 — Aggregator commit-logic integration** (extend
+  [tests/mode/test_async_sim_ordering.py](../../tests/mode/test_async_sim_ordering.py); no MQTT/GPU):
+  multi-round **staleness sequence** vs hand-computed reference; **agg_goal**
+  accounting (exactly K/round, nothing lost/double-counted); **pending-commit
+  invariant** (one in-flight update/trainer; regression guard for the
+  `_sim_pending_commit` fix); **real-path vs sim-path equivalence** (same scripted
+  scenario, fixed well-separated `D`, seeded selection → identical commit order +
+  staleness). This is the core "replay" guarantee at logic level.
+- **Phase 3 — Selector determinism** (new `tests/selector/test_selection_determinism.py`):
+  seeded RNG + fixed candidate/utility/speed state → `select()` returns identical
+  chosen sets across repeated calls and across real/sim config.
+- **Phase 4 — End-to-end parity** (refactor + opt-in pytest): extract
+  `compare_parity.py`'s 9 checks into an importable `parity_checks.py`; new pytest
+  marked `slow`, gated by `FLAME_E2E=1`, that runs a tiny **seeded** scenario in
+  both modes and asserts Jaccard ≥ 0.9, staleness KS ≤ 0.2, aggregation-sequence
+  match, sim_send_ts correctness (check 8), GPU-budget respected (check 9), and
+  sim wall-clock < real. Default `pytest` skips it.
+- **Phase 5 — Stress / limits** (scripts + configs): real-vs-sim at rising
+  contention (cluster `D` → near-ties; large `agg_goal`/`c`; availability churn)
+  to map where sim stays faithful vs degrades to distributional-only.
+
+## Sim-run sanity-check list (assert in checks/tests)
+
+vclock monotone non-decreasing · `sim_send_ts` non-null & increasing · every
+commit `sct ≥ sim_send_ts` · commit order == ascending `sct` · exactly
+`agg_goal` commits/round and buffer fully drains (no lost/double updates) · one
+in-flight update/trainer · staleness ≥ 0 and matches real within tol · selection
+matches real within tol (exact when seeded) · **no real sleeps** (wall ≪ Σ D) and
+GPU budget respected · final acc/loss within tol of real.
+
+## Verification order
+Phase 0 → 1,2,3 (fast, default pytest) → regenerate a **seeded** real/sim pair to
+refresh the live snapshot → Phase 4 (extract + e2e pytest) → Phase 5 (stress).

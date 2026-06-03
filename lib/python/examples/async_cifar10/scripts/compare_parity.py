@@ -34,97 +34,17 @@ from typing import Optional
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-def short(end_id: str) -> str:
-    return end_id[-4:] if end_id else "None"
-
-
-def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
-    """Load all trainer_*.jsonl files from a telemetry dir.
-
-    Returns {short_id: {"task_recv": [...], "trainer_round": [...]}}
-    """
-    if not telemetry_dir:
-        return {}
-    d = Path(telemetry_dir)
-    result = {}
-    for f in sorted(d.glob("trainer_*.jsonl")):
-        short_id = f.stem[-4:]  # last 4 hex chars
-        task_recv_evs, trainer_round_evs = [], []
-        with open(f) as fp:
-            for line in fp:
-                try:
-                    e = json.loads(line.strip())
-                except json.JSONDecodeError:
-                    continue
-                ev = e.get("event")
-                if ev == "task_recv":
-                    task_recv_evs.append(e)
-                elif ev == "trainer_round":
-                    trainer_round_evs.append(e)
-        result[short_id] = {"task_recv": task_recv_evs, "trainer_round": trainer_round_evs}
-    return result
-
-
-def load_agg_jsonl(path: str) -> dict:
-    """Parse an aggregator telemetry JSONL into typed lists."""
-    selection_train: list[dict] = []   # task=train selection events
-    agg_rounds: list[dict] = []        # per-update aggregation events
-    agg_evals: list[dict] = []         # per-round evaluation events
-
-    with open(path) as f:
-        for line in f:
-            e = json.loads(line.strip())
-            ev = e.get("event")
-            if ev == "selection" and e.get("task") == "train":
-                selection_train.append(e)
-            elif ev == "agg_round":
-                agg_rounds.append(e)
-            elif ev == "agg_eval":
-                agg_evals.append(e)
-
-    # Sort by round then ts
-    selection_train.sort(key=lambda x: (x["round"], x["ts"]))
-    agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
-    agg_evals.sort(key=lambda x: x["round"])
-
-    return {
-        "selection_train": selection_train,
-        "agg_rounds": agg_rounds,
-        "agg_evals": agg_evals,
-    }
-
-
-def ks_stat(a: list[float], b: list[float]) -> float:
-    """Two-sample Kolmogorov–Smirnov statistic (no scipy needed)."""
-    if not a or not b:
-        return float("nan")
-    combined = sorted(set(a + b))
-    na, nb = len(a), len(b)
-    sa, sb = sorted(a), sorted(b)
-    ia = ib = 0
-    d = 0.0
-    for v in combined:
-        while ia < na and sa[ia] <= v:
-            ia += 1
-        while ib < nb and sb[ib] <= v:
-            ib += 1
-        d = max(d, abs(ia / na - ib / nb))
-    return d
-
-
-def mean_std(vals: list[float]) -> tuple[float, float]:
-    if not vals:
-        return float("nan"), float("nan")
-    m = sum(vals) / len(vals)
-    v = sum((x - m) ** 2 for x in vals) / len(vals)
-    return m, math.sqrt(v)
-
-
-def jaccard(a: set, b: set) -> float:
-    if not a and not b:
-        return 1.0
-    return len(a & b) / len(a | b)
+# Loaders + stats helpers are the canonical implementations in parity_checks.py
+# (single source of truth shared with the pytest suite). Imported here so the
+# CLI report and the automated parity tests parse/compute identically.
+from parity_checks import (  # noqa: E402
+    short,
+    jaccard,
+    ks_stat,
+    mean_std,
+    load_agg_jsonl,
+    load_trainer_jsonl_dir,
+)
 
 
 # ── check functions ───────────────────────────────────────────────────────────
