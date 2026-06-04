@@ -304,3 +304,46 @@ GPU budget respected · final acc/loss within tol of real.
 ## Verification order
 Phase 0 → 1,2,3 (fast, default pytest) → regenerate a **seeded** real/sim pair to
 refresh the live snapshot → Phase 4 (extract + e2e pytest) → Phase 5 (stress).
+
+## Cross-baseline coverage (sync + async)
+
+Parity must hold for all async_cifar10 baselines: async (felix=async_oort,
+fedbuff) + sync (fedavg=random, oort, refl=refl_oort, feddance). FluxTune is out
+of scope.
+
+**Sync sim-ordering (implemented).** The sync aggregator previously ignored sim
+mode (committed `first_k` by physical arrival even in `simulated`). Now
+`TopAggregator._sync_sim_recv_first_k` ([syncfl/top_aggregator.py]) buffers the
+selected ends' updates and commits the `first_k` with the SMALLEST
+`sim_completion_ts` (the k that would finish first in real), advancing `T_v` to
+the k-th smallest and sourcing `PROP_ROUND_DURATION` from `SIM_ROUND_DURATION`.
+Aggregation math is order-independent (weighted average), so parity needs only
+the right committed *set* + round duration. Covered by
+`tests/mode/test_sync_sim_ordering.py` (commit-set == k-smallest-sct,
+independent of arrival; round-duration from sim time; fewer-than-k responders).
+
+**Determinism (all selectors).** `tests/selector/test_selection_determinism.py`
+covers FedBuff + Oort; the same seeded-RNG contract applies to random /
+refl_oort / feddance / async_oort (all draw from the process-global RNG seeded
+in Phase 0).
+
+## Open issue (characterized, NOT yet fixed): async sim over-selection
+
+Live seeded e2e parity on **felix** (async_oort) shows the invariants hold
+(sim_send_ts non-null+increasing, virtual-clock monotone, agg_goal cycles, GPU
+budget) **but selection/staleness diverge badly**: per-round selection ~5 in
+real vs **19–21 in sim**, staleness mean **1.16 real vs ~8.6 sim** (KS ~0.77).
+
+Root cause (diagnosed): in `simulated` mode trainers don't sleep, so every
+selected trainer returns immediately and `_sim_recv_min` buffers *all* returned
+recv-state ends while committing only `agg_goal` per round — so the in-flight
+buffer (and thus blocked-pending set) grows toward N across rounds (observed
+`[SIM_PENDING] blocked` climbing 7→43), inflating staleness. A targeted fix
+(keeping pending-commit trainers occupying a concurrency slot in
+`selected_ends`, which FedBuff/async_oort refill via
+`extra = c − len(selected_ends)`) did **not** resolve it — the growth is driven
+by the buffer-fill draining slower than it fills, not just the slot accounting —
+so it was reverted rather than shipped unverified. This needs a focused pass:
+bound the sim in-flight/buffer to `c` (don't buffer beyond the concurrency the
+real path would have in flight), then re-verify with the seeded e2e test. The
+sync path is unaffected (fixed batch of `first_k` per round).

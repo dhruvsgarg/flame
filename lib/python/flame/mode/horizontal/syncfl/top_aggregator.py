@@ -19,7 +19,7 @@ import logging
 import os
 import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 
 from diskcache import Cache
@@ -53,7 +53,7 @@ from flame.selector.properties import (
 )
 from flame import telemetry
 from flame.telemetry.events import build_agg_eval, build_agg_round
-from flame.sim import VirtualClock
+from flame.sim import VirtualClock, SimReorderBuffer
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,14 @@ logger = logging.getLogger(__name__)
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
 TAG_HEARTBEAT = "heartbeat_recv"
+
+# Simulated-mode receive bounds (sync): how long to keep draining selected ends
+# before committing, and the per-probe wait. In simulated mode trainers do not
+# sleep, so available responders land in a tiny physical window; we collect them
+# and commit the first_k with the smallest sim_completion_ts (the k that would
+# finish first in real mode), independent of physical arrival jitter.
+SYNC_SIM_RECV_DEADLINE_S = 30
+SYNC_SIM_RECV_FILL_TIMEOUT_S = 0.5
 
 
 class TopAggregator(Role, metaclass=ABCMeta):
@@ -265,6 +273,63 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"but got message of type {msg}"
                 )
 
+    def _sync_sim_recv_first_k(self, channel, ends, first_k):
+        """Simulated mode: commit the first_k updates with the SMALLEST
+        sim_completion_ts (the k that would physically finish first in real),
+        independent of arrival jitter, and advance the virtual clock to the
+        k-th smallest. Returns an ascending-sct list of (msg, metadata); also
+        stamps each committed end's PROP_ROUND_DURATION from SIM_ROUND_DURATION
+        so OORT/REFL see the correct simulated speed.
+
+        Sync aggregation is order-independent (weighted average), so parity only
+        requires the right *set* of k committers and the round duration.
+        """
+        buf = SimReorderBuffer()
+        ends = list(ends)
+        deadline = time.time() + SYNC_SIM_RECV_DEADLINE_S
+        while len(buf) < len(ends) and time.time() < deadline:
+            pending = [e for e in ends if not buf.has(e) and channel.has(e)]
+            if not pending:
+                break
+            got_any = False
+            for msg, md in channel.recv_fifo(
+                pending, first_k=len(pending),
+                timeout=SYNC_SIM_RECV_FILL_TIMEOUT_S,
+            ):
+                if not msg:
+                    break  # per-probe timeout: nothing more ready this pass
+                end = md[0]
+                sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                sct = float(sct) if sct is not None else self._vclock.now
+                buf.add(end, sct, (msg, md))
+                got_any = True
+            # Once we have at least k and a pass added nothing new, the rest are
+            # unavailable/quiet — stop waiting (real mode would time them out).
+            if len(buf) >= first_k and not got_any:
+                break
+
+        committed = []
+        for _ in range(min(first_k, len(buf))):
+            popped = buf.pop_min()
+            if popped is None:
+                break
+            end, sct, (msg, md) = popped
+            self._vclock.advance(sct)
+            _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+            if _srd is not None:
+                channel.set_end_property(end, PROP_ROUND_DURATION,
+                                         timedelta(seconds=float(_srd)))
+            elif _sst is not None:
+                channel.set_end_property(end, PROP_ROUND_DURATION,
+                                         timedelta(seconds=max(0.0, sct - float(_sst))))
+            logger.info(
+                f"[SYNC_SIM_RECV] committed {end[-4:]} sct={sct:.1f} "
+                f"T_v={self._vclock.now:.1f}"
+            )
+            committed.append((msg, md))
+        return committed
+
     def _aggregate_weights(self, tag: str) -> None:
         logger.info("Agg weights inside top_aggregator syncfl")
         channel = self.cm.get_by_tag(tag)
@@ -280,8 +345,18 @@ class TopAggregator(Role, metaclass=ABCMeta):
             f"Waiting for first_k={first_k} responses from {len(channel.ends())} selected trainers"
         )
 
+        # simulated: commit k-smallest-sim_completion_ts (reorder by sim time);
+        # real: commit the first_k by physical arrival (authentic baseline).
+        if self.simulated:
+            _resolved_k = first_k if first_k > 0 else len(channel.ends())
+            updates = self._sync_sim_recv_first_k(
+                channel, channel.ends(), _resolved_k
+            )
+        else:
+            updates = channel.recv_fifo(channel.ends(), first_k=first_k)
+
         # receive local model parameters from trainers
-        for msg, metadata in channel.recv_fifo(channel.ends(), first_k=first_k):
+        for msg, metadata in updates:
             end, timestamp = metadata
             if not msg:
                 logger.debug(f"No data from {end}; skipping it")
