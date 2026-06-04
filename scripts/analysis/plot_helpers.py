@@ -262,6 +262,25 @@ def signed_bar(categories, values, x_label, y_label, title, out_dir, file_name,
     return _save(fig, out_dir, file_name, stamp)
 
 
+def signed_bar_line(x, bar_values, line_values, x_label, bar_label, line_label,
+                    title, out_dir, file_name, stamp=None):
+    """Signed bars (green/red) on the primary axis + a line on a secondary axis
+    — e.g. per-eval accuracy delta (bars) with cumulative accuracy (line)."""
+    if not len(bar_values):
+        return None
+    fig, ax1 = plt.subplots()
+    v = np.asarray(bar_values, float)
+    ax1.bar(x, v, color=["#2ca02c" if b >= 0 else "#d62728" for b in v], alpha=0.7)
+    ax1.axhline(0, color="0.3", lw=1)
+    ax1.set_xlabel(x_label); ax1.set_ylabel(bar_label)
+    ax2 = ax1.twinx()
+    ax2.plot(x, line_values, color="#1f77b4", lw=2, marker="o", ms=3, label=line_label)
+    ax2.set_ylabel(line_label, color="#1f77b4")
+    ax2.tick_params(axis="y", labelcolor="#1f77b4")
+    ax1.set_title(title); ax1.grid(True, axis="y", alpha=0.3)
+    return _save(fig, out_dir, file_name, stamp)
+
+
 def cdf_plot(values, x_label, title, out_dir, file_name, stamp=None):
     vals = [v for v in values if v is not None]
     if not vals:
@@ -358,16 +377,32 @@ def bar_plot(categories, values, y_label, title, out_dir, file_name, stamp=None)
 
 
 def heatmap(matrix, x_label, y_label, title, out_dir, file_name, stamp=None,
-            cmap="viridis", cbar_label=None, yticklabels=None):
-    """Trainer x round style heatmap (matrix: rows=y, cols=x)."""
+            cmap="viridis", cbar_label=None, yticklabels=None, discrete=None):
+    """Trainer x round style heatmap (matrix: rows=y, cols=x).
+
+    discrete: optional [(value, label, color), ...] for categorical states —
+    renders a discrete colormap + a legend instead of a continuous colorbar.
+    """
     m = np.asarray(matrix, dtype=float)
     if m.size == 0:
         return None
     fig, ax = plt.subplots(figsize=(8, max(3, m.shape[0] * 0.12)))
-    im = ax.imshow(m, aspect="auto", interpolation="nearest", cmap=cmap)
-    cb = fig.colorbar(im, ax=ax)
-    if cbar_label:
-        cb.set_label(cbar_label, fontsize=12)
+    if discrete:
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        from matplotlib.patches import Patch
+        vals = [v for v, _, _ in discrete]
+        cmap_d = ListedColormap([c for _, _, c in discrete])
+        bounds = [vals[0] - 0.5] + [v + 0.5 for v in vals]
+        ax.imshow(m, aspect="auto", interpolation="nearest", cmap=cmap_d,
+                  norm=BoundaryNorm(bounds, cmap_d.N))
+        ax.legend(handles=[Patch(facecolor=c, edgecolor="0.4", label=lab)
+                           for _, lab, c in discrete],
+                  fontsize=9, loc="center left", bbox_to_anchor=(1.01, 0.5))
+    else:
+        im = ax.imshow(m, aspect="auto", interpolation="nearest", cmap=cmap)
+        cb = fig.colorbar(im, ax=ax)
+        if cbar_label:
+            cb.set_label(cbar_label, fontsize=12)
     if yticklabels is not None and len(yticklabels) <= 40:
         ax.set_yticks(range(len(yticklabels)))
         ax.set_yticklabels(yticklabels, fontsize=6)

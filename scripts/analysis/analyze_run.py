@@ -265,12 +265,14 @@ def perf_plots(records, out, stamp, tdir):
                              "Test accuracy over sim-time", d,
                              "accuracy_over_simtime.pdf", stamp=stamp, target=0.6)
             if p: saved.append(p)
-        # accuracy gain per eval
+        # accuracy gain per eval (bars) + overall accuracy (secondary axis) so
+        # both the per-eval delta and the absolute trajectory are visible.
         gains = [acc[rs[i]] - acc[rs[i - 1]] for i in range(1, len(rs))]
         if gains:
-            p = ph.signed_bar(rs[1:], gains, "round", "Δ accuracy / eval",
-                              "Accuracy gain per eval (red=regression)", d,
-                              "accuracy_gain_per_eval.pdf", stamp=stamp)
+            p = ph.signed_bar_line(rs[1:], gains, [acc[r] for r in rs[1:]],
+                                   "round", "Δ accuracy / eval", "test accuracy",
+                                   "Accuracy gain per eval (bars) + overall accuracy (line)",
+                                   d, "accuracy_gain_per_eval.pdf", stamp=stamp)
             if p: saved.append(p)
     if loss:
         rs = sorted(loss)
@@ -363,6 +365,19 @@ def sanity_plots(records, out, stamp, tdir):
                          "Trainer runtime residual (>0 = slower than budget)", d,
                          "trainer_runtime_residual_hist.pdf", stamp=stamp, vline=0.0)
         if p: saved.append(p)
+        # Response-lateness CDF. NOTE the residual above compares *GPU* time to
+        # budget, so "early" just means the GPU finished early — the trainer
+        # still SLEEPS to fill the budget. The true response time is
+        # max(gpu, D), so lateness = response - budget is 0 (on-time) or >0
+        # (overrun); it is never negative. This CDF shows the lateness extent.
+        resp_dev = [r.get("sim_round_duration_s") - r.get("training_budget_s")
+                    for r in tr if r.get("sim_round_duration_s") is not None
+                    and r.get("training_budget_s") is not None]
+        if resp_dev:
+            p = ph.cdf_plot(resp_dev, "lateness = response - budget (s); 0 = on-time",
+                            "Trainer response-lateness CDF (sleeps fill budget; never early)",
+                            d, "trainer_response_lateness_cdf.pdf", stamp=stamp)
+            if p: saved.append(p)
 
     # per-trainer early/ontime/late counts
     counts = defaultdict(lambda: {"early": 0, "ontime": 0, "late": 0})
@@ -649,22 +664,45 @@ def _participation_heatmap(records, d, stamp):
     rounds = sorted(set(trained) | set(evalsel))
     if not trainers or not rounds:
         return []
+    # Per-trainer availability per round (forward-filled from avail_change), so
+    # idle cells can distinguish "available, not picked" from "unavailable".
+    unavail = defaultdict(dict)  # trainer -> {round: True if UN_AVL}
+    ac = defaultdict(list)
+    for r in by_event(records, EVENT_AVAIL_CHANGE):
+        ac[str(r.get("end_id"))].append((int(r.get("round", 0)),
+                                         str(r.get("new_state", ""))))
+    for t, evs in ac.items():
+        evs.sort()
+        cur = None
+        for rd, st in evs:
+            cur = st
+            unavail[t][rd] = ("UN_AVL" in cur)
     idx = {t: i for i, t in enumerate(trainers)}
     ridx = {r: j for j, r in enumerate(rounds)}
+    # 0 not-selected, 1 eval, 2 train, 3 unavailable (not selected),
+    # 4 selected-but-unavailable. Availability forward-filled across rounds.
     m = np.zeros((len(trainers), len(rounds)))
-    for r, ts in evalsel.items():
-        for t in ts:
-            if t in idx:
-                m[idx[t], ridx[r]] = 1
-    for r, ts in trained.items():
-        for t in ts:
-            if t in idx:
-                m[idx[t], ridx[r]] = 2
+    for t in trainers:
+        last_un = False
+        for r in rounds:
+            if r in unavail.get(t, {}):
+                last_un = unavail[t][r]
+            sel = (t in evalsel.get(r, set())) or (t in trained.get(r, set()))
+            if t in trained.get(r, set()):
+                v = 4 if last_un else 2
+            elif t in evalsel.get(r, set()):
+                v = 4 if last_un else 1
+            else:
+                v = 3 if last_un else 0
+            m[idx[t], ridx[r]] = v
     yl = [t[-3:] for t in trainers] if len(trainers) <= 40 else None
-    p = ph.heatmap(m, "round", "trainer",
-                   "Participation (0=idle, 1=eval, 2=train)", d,
-                   "participation_heatmap.pdf", stamp=stamp, cmap="viridis",
-                   cbar_label="activity", yticklabels=yl)
+    p = ph.heatmap(m, "round", "trainer", "Participation per trainer x round", d,
+                   "participation_heatmap.pdf", stamp=stamp, yticklabels=yl,
+                   discrete=[(0, "not selected", "#cfcfcf"),
+                             (1, "eval", "#9ecae1"),
+                             (2, "train", "#a1d99b"),
+                             (3, "unavailable", "#fcae91"),
+                             (4, "selected but unavail", "#fd8d3c")])
     return [p] if p else []
 
 
@@ -789,6 +827,27 @@ def system_plots(records, out, stamp, tdir):
         p = ph.stacked_bar(cats, segs, "mean seconds / round",
                            "Trainer time breakdown (gpu / sim-delay / wait)", d,
                            "trainer_time_breakdown.pdf", stamp=stamp)
+        if p: saved.append(p)
+    # aggregate round-time split across ALL trainers per round (setup / GPU /
+    # post-cleanup / modeled sleep) — the system-level view of where a round's
+    # wall time goes. Uses pre_train_s/post_train_s (telemetry); absent fields
+    # default to 0 so older runs degrade gracefully.
+    split_rd = defaultdict(lambda: defaultdict(list))
+    for r in by_event(records, EVENT_TRAINER_ROUND):
+        rd = int(r.get("round", 0))
+        split_rd[rd]["pre (setup)"].append(r.get("pre_train_s") or 0.0)
+        split_rd[rd]["gpu compute"].append(r.get("real_gpu_time_s") or 0.0)
+        split_rd[rd]["post (cleanup)"].append(r.get("post_train_s") or 0.0)
+        split_rd[rd]["sleep (budget)"].append(r.get("remaining_time_s") or 0.0)
+    if split_rd:
+        rr = sorted(split_rd)
+        _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        series = {k: [_m(split_rd[r][k]) for r in rr]
+                  for k in ("pre (setup)", "gpu compute", "post (cleanup)", "sleep (budget)")}
+        p = ph.stacked_area(rr, series, "round",
+                            "mean seconds / round (across trainers)",
+                            "Trainer round-time split (mean across trainers)", d,
+                            "trainer_time_split_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
     # queue depth
     inflight = [(int(r.get("round", 0)), r.get("updates_in_queue")) for r in
