@@ -341,19 +341,25 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # For REFL/Oort with overcommitment: wait for aggGoal responses, not all selected
         agg_goal = self.config.hyperparameters.aggregation_goal
         first_k = agg_goal if agg_goal and agg_goal > 0 else 0
+
+        # ends() can be None transiently before selections populate (notably in
+        # simulated mode where distribute/aggregate run back-to-back) — skip and
+        # retry rather than crash on len(None).
+        ends = channel.ends()
+        if not ends:
+            time.sleep(0.5)
+            return
         logger.info(
-            f"Waiting for first_k={first_k} responses from {len(channel.ends())} selected trainers"
+            f"Waiting for first_k={first_k} responses from {len(ends)} selected trainers"
         )
 
         # simulated: commit k-smallest-sim_completion_ts (reorder by sim time);
         # real: commit the first_k by physical arrival (authentic baseline).
         if self.simulated:
-            _resolved_k = first_k if first_k > 0 else len(channel.ends())
-            updates = self._sync_sim_recv_first_k(
-                channel, channel.ends(), _resolved_k
-            )
+            _resolved_k = first_k if first_k > 0 else len(ends)
+            updates = self._sync_sim_recv_first_k(channel, ends, _resolved_k)
         else:
-            updates = channel.recv_fifo(channel.ends(), first_k=first_k)
+            updates = channel.recv_fifo(ends, first_k=first_k)
 
         # receive local model parameters from trainers
         for msg, metadata in updates:
@@ -424,7 +430,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     agg_obs[eid] = _rd.total_seconds() if hasattr(_rd, "total_seconds") else _rd
             ev, fields = build_agg_round(
                 round_num=self._round,
-                in_flight=len(channel.ends()),
+                in_flight=len(channel.ends() or []),
                 staleness=list(self._round_update_values.get("staleness", [])),
                 stat_utility=list(self._round_update_values.get("stat_utility", [])),
                 trainer_speed_s=list(
@@ -445,7 +451,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             deepcopy(self.weights),
             self.cache,
             total=total,
-            num_trainers=len(channel.ends()),
+            num_trainers=len(channel.ends() or []),
         )
         if global_weights is None:
             logger.debug("failed model aggregation")
@@ -493,6 +499,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
         selected_ends = channel.ends()
+        if not selected_ends:
+            # ends() can be None/empty before trainers join + get selected
+            # (notably in simulated mode where the loop spins without sleeps).
+            time.sleep(0.5)
+            return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         for idx, end in enumerate(selected_ends):
