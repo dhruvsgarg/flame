@@ -292,6 +292,35 @@ def agg_goal_cycles_ok(agg: dict, agg_goal: int) -> dict:
     return {"ok": not bad_rounds, "rounds_over_goal": bad_rounds}
 
 
+def commit_sequence(agg: dict) -> list:
+    """Mode-agnostic *logical* sequence of committed updates: one entry per
+    aggregated update in (round, agg_goal_count) order — no wall-clock. If sim
+    faithfully mimics real ordering, the two sequences match; the first mismatch
+    localizes a control/ordering bug independent of timing."""
+    evs = sorted(agg["agg_rounds"], key=lambda e: (e["round"], e.get("agg_goal_count", 0)))
+    seq = []
+    for e in evs:
+        ends = e.get("contributing_trainers", [])
+        stales = e.get("staleness", [])
+        for i, end in enumerate(ends):
+            seq.append({"round": e["round"], "end": short(end),
+                        "staleness": stales[i] if i < len(stales) else None})
+    return seq
+
+
+def first_divergence(real_agg: dict, sim_agg: dict, ctx: int = 2) -> dict:
+    """First index where the real vs sim commit sequences differ (by end+round),
+    with a small context window around it. ``index=None`` => sequences agree on
+    the shared prefix (lengths may still differ)."""
+    rs, ss = commit_sequence(real_agg), commit_sequence(sim_agg)
+    for i in range(min(len(rs), len(ss))):
+        if (rs[i]["end"], rs[i]["round"]) != (ss[i]["end"], ss[i]["round"]):
+            lo = max(0, i - ctx)
+            return {"index": i, "real": rs[lo:i + ctx + 1], "sim": ss[lo:i + ctx + 1],
+                    "real_len": len(rs), "sim_len": len(ss)}
+    return {"index": None, "real_len": len(rs), "sim_len": len(ss)}
+
+
 def run_all_parity(real_agg: dict, sim_agg: dict,
                    real_trainers: dict, sim_trainers: dict,
                    agg_goal: int = 0, max_rounds: Optional[int] = None) -> dict:

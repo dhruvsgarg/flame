@@ -114,6 +114,26 @@ class TestSimInvariants:
         assert not pc.agg_goal_cycles_ok(bad, agg_goal=2)["ok"]
 
 
+class TestLogicalSequence:
+    def test_commit_sequence_order(self):
+        a = _agg(agg_rounds=[
+            _round(2, ["b"], [1], agg_goal_count=2),
+            _round(2, ["a"], [0], agg_goal_count=1),  # earlier in logical order
+        ])
+        seq = pc.commit_sequence(a)
+        assert [s["end"] for s in seq] == ["a", "b"]  # sorted by agg_goal_count
+
+    def test_first_divergence_localizes(self):
+        real = _agg(agg_rounds=[_round(1, ["a"], [0], 1), _round(1, ["b"], [0], 2)])
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0], 1), _round(1, ["c"], [5], 2)])
+        d = pc.first_divergence(real, sim)
+        assert d["index"] == 1  # first mismatch at the 2nd committed update
+
+    def test_first_divergence_none_when_equal(self):
+        a = _agg(agg_rounds=[_round(1, ["a"], [0], 1), _round(1, ["b"], [0], 2)])
+        assert pc.first_divergence(a, a)["index"] is None
+
+
 def test_run_all_parity_smoke():
     a = _agg(selection=[_sel(1, ["a", "b"])],
              agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])
