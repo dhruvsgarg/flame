@@ -394,6 +394,11 @@ class Trainer(Role, metaclass=ABCMeta):
         if _budget is not None:
             msg[MessageType.TRAINING_BUDGET_S] = float(_budget)
 
+        # Stamp wall-clock send time so aggregator can decompose wall_lag_s into
+        # training_elapsed (agg_send→trainer_send) vs MQTT delivery (trainer_send→agg_recv).
+        _wall_send_ts = time.time()
+        msg[MessageType.WALL_SEND_TS] = _wall_send_ts
+
         channel.send(end, msg)
 
         if self.task_to_perform == "train":
@@ -405,6 +410,7 @@ class Trainer(Role, metaclass=ABCMeta):
             logger.info(
                 f"[TRAINER_SEND_WEIGHTS] Sent weights for trainer_id: {self.trainer_id}, "
                 f"model_version: {self._round}, "
+                f"wall_send_ts={_wall_send_ts:.3f}, "
                 f"_updates_returned_upto_round: {self._updates_returned_upto_round}, "
                 f"stat_utility: {self._stat_utility}, dataset_size: {self.dataset_size}"
             )

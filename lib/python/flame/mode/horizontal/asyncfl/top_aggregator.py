@@ -428,6 +428,21 @@ class TopAggregator(SyncTopAgg):
                         f"[SEND_RECV_LAG_HIGH] end={end} version={recv_wts_version} "
                         f"wall_lag_s={wall_lag_s:.1f}s — possible MQTT backlog"
                     )
+                # Decompose wall_lag_s into training elapsed vs MQTT delivery.
+                # WALL_SEND_TS is the trainer's wall-clock unix ts at channel.send().
+                _wst = msg.get(MessageType.WALL_SEND_TS)
+                if _wst is not None and not self.simulated:
+                    _agg_sent_unix = sent_wts_ts.timestamp() if hasattr(sent_wts_ts, "timestamp") else None
+                    _agg_recv_unix = recv_wts_ts.timestamp() if hasattr(recv_wts_ts, "timestamp") else None
+                    if _agg_sent_unix is not None and _agg_recv_unix is not None:
+                        _train_elapsed_s = float(_wst) - _agg_sent_unix
+                        _mqtt_lag_s = _agg_recv_unix - float(_wst)
+                        logger.info(
+                            f"[MQTT_DELIVERY_LAG] end={end} version={recv_wts_version} "
+                            f"train_elapsed_s={_train_elapsed_s:.3f} "
+                            f"mqtt_lag_s={_mqtt_lag_s:.3f} "
+                            f"wall_lag_s={wall_lag_s:.3f}"
+                        )
 
                 _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
                 if _budget_s > 0:

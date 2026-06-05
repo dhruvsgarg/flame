@@ -83,3 +83,4 @@ class MessageType(Enum):
     SIM_COMPLETION_TS = 35  # sim_send_ts + max(gpu, D); reorder buffer commits by this
     SIM_ROUND_DURATION = 36  # max(gpu_time, D) = true round cost; mirrors real recv_ts-sent_ts for OORT speed utility
     TRAINING_BUDGET_S = 37   # trainer's configured total round budget (training_delay_s)
+    WALL_SEND_TS = 38        # wall-clock unix timestamp (float) when trainer calls channel.send()

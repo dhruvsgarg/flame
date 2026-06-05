@@ -381,6 +381,61 @@ class TopAggregator(Role, metaclass=ABCMeta):
             logger.info(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
+            # Send→recv lag: mirrors asyncFL's [SEND_RECV_LAG] so the same
+            # post-processing/plots work for both sync and async baselines.
+            _send_prop = channel.get_end_property(end, PROP_ROUND_START_TIME)
+            if _send_prop is not None:
+                # PROP_ROUND_START_TIME is stored as (round, datetime)
+                _sent_ts = _send_prop[1] if isinstance(_send_prop, tuple) else _send_prop
+                recv_ts = timestamp if isinstance(timestamp, datetime) else datetime.now()
+                wall_lag_s = (recv_ts - _sent_ts).total_seconds()
+                logger.info(
+                    f"[SEND_RECV_LAG] end={end} version={self._round} "
+                    f"wall_lag_s={wall_lag_s:.3f}"
+                )
+                _lag_warn = 30.0 if not self.simulated else 10.0
+                if wall_lag_s > _lag_warn:
+                    logger.warning(
+                        f"[SEND_RECV_LAG_HIGH] end={end} version={self._round} "
+                        f"wall_lag_s={wall_lag_s:.1f}s — possible MQTT backlog"
+                    )
+                # Decompose wall_lag_s into training elapsed vs MQTT delivery.
+                # WALL_SEND_TS is the trainer's wall-clock unix ts at channel.send().
+                _wst = msg.get(MessageType.WALL_SEND_TS)
+                if _wst is not None and not self.simulated:
+                    _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
+                    _agg_recv_unix = recv_ts.timestamp() if hasattr(recv_ts, "timestamp") else None
+                    if _agg_sent_unix is not None and _agg_recv_unix is not None:
+                        _train_elapsed_s = float(_wst) - _agg_sent_unix
+                        _mqtt_lag_s = _agg_recv_unix - float(_wst)
+                        logger.info(
+                            f"[MQTT_DELIVERY_LAG] end={end} version={self._round} "
+                            f"train_elapsed_s={_train_elapsed_s:.3f} "
+                            f"mqtt_lag_s={_mqtt_lag_s:.3f} "
+                            f"wall_lag_s={wall_lag_s:.3f}"
+                        )
+                _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+                if _budget_s > 0:
+                    if self.simulated:
+                        _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+                        _sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                        if _sst is not None and _sct is not None:
+                            _virt_elapsed = float(_sct) - float(_sst)
+                            if _virt_elapsed <= 0.0:
+                                logger.warning(
+                                    f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={self._round} "
+                                    f"budget={_budget_s:.1f}s overrun: "
+                                    f"virtual_elapsed={_virt_elapsed:.2f}s"
+                                )
+                    else:
+                        if wall_lag_s > _budget_s:
+                            logger.warning(
+                                f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={self._round} "
+                                f"budget={_budget_s:.1f}s overrun: wall_lag={wall_lag_s:.2f}s "
+                                f"(excess={wall_lag_s - _budget_s:.2f}s). "
+                                f"Reduce trainers-per-GPU or add GPUs."
+                            )
+
             logger.debug(f"received message in agg_weights {msg} from {end}")
 
             if MessageType.WEIGHTS in msg:
@@ -638,16 +693,21 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._round += 1
         self._work_done = self._round > self._rounds
 
-        # Optional wall-clock cap: stop once max_runtime_s has elapsed since the
-        # aggregator started (e.g. after streaming data is fully unlocked, so we
-        # don't keep training past the point of interest). Applies to sync + async
-        # (both increment rounds through here).
+        # Optional runtime cap: stop once max_runtime_s has elapsed.
+        # In simulated mode use the virtual clock (vclock_now = simulated seconds
+        # elapsed) so the run covers max_runtime_s of *virtual* time, not wall
+        # time. In real mode use wall-clock elapsed.
         _max_rt = getattr(self.config.hyperparameters, "max_runtime_s", None)
         if _max_rt:
-            elapsed = time.time() - self.agg_start_time_ts
+            if self.simulated and hasattr(self, "_vclock"):
+                elapsed = float(self._vclock.now)
+                clock_label = "sim"
+            else:
+                elapsed = time.time() - self.agg_start_time_ts
+                clock_label = "wall"
             if elapsed > float(_max_rt):
                 logger.info(
-                    f"max_runtime_s={_max_rt}s reached (elapsed={elapsed:.0f}s) "
+                    f"max_runtime_s={_max_rt}s reached ({clock_label}_elapsed={elapsed:.0f}s) "
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True

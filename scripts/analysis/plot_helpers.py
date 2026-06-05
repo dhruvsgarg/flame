@@ -143,13 +143,35 @@ def _legend(ax, n_series):
         ax.legend(fontsize=12, frameon=True)
 
 
+def no_data_plot(title, out_dir, file_name, stamp=None,
+                 note="not applicable / no events for this baseline"):
+    """Produce a placeholder PDF so every expected plot exists for every run.
+
+    A missing plot is ambiguous (did the metric not fire, or did the code
+    crash?). A placeholder makes the absence explicit and visible.
+    "NO DATA" is drawn in large red text so it is impossible to miss when
+    scanning a plot directory — prompting investigation of whether the
+    metric genuinely didn't fire or the value is truly zero.
+    """
+    fig, ax = plt.subplots()
+    ax.text(0.5, 0.62, "NO DATA", ha="center", va="center",
+            fontsize=36, color="red", fontweight="bold",
+            transform=ax.transAxes)
+    ax.text(0.5, 0.38, note, ha="center", va="center",
+            fontsize=11, color="0.4", transform=ax.transAxes,
+            style="italic")
+    ax.set_title(title)
+    ax.set_axis_off()
+    return _save(fig, out_dir, file_name, stamp)
+
+
 # --- core figures (names preserved for existing callers) --------------------
 
 
 def line_plot(series, x_label, y_label, title, out_dir, file_name,
               stamp=None, logy=False, target=None):
     if not series:
-        return None
+        return no_data_plot(title, out_dir, file_name, stamp)
     fig, ax = plt.subplots()
     plotted = False
     for label, (xs, ys) in series.items():
@@ -160,7 +182,7 @@ def line_plot(series, x_label, y_label, title, out_dir, file_name,
         plotted = True
     if not plotted:
         plt.close(fig)
-        return None
+        return no_data_plot(title, out_dir, file_name, stamp)
     if target is not None:
         ax.axhline(target, ls="--", color="0.5", lw=1)
     if logy:
@@ -219,7 +241,7 @@ def scatter_diag(x, y, x_label, y_label, title, out_dir, file_name, stamp=None,
 def hist_plot(values, x_label, title, out_dir, file_name, stamp=None, vline=0.0):
     vals = [v for v in values if v is not None]
     if not vals:
-        return None
+        return no_data_plot(title, out_dir, file_name, stamp)
     fig, ax = plt.subplots()
     arr = np.asarray(vals, float)
     counts, bins, patches = ax.hist(arr, bins=min(40, max(8, len(arr) // 5)),
@@ -284,7 +306,7 @@ def signed_bar_line(x, bar_values, line_values, x_label, bar_label, line_label,
 def cdf_plot(values, x_label, title, out_dir, file_name, stamp=None):
     vals = [v for v in values if v is not None]
     if not vals:
-        return None
+        return no_data_plot(title, out_dir, file_name, stamp)
     arr = np.sort(np.asarray(vals, dtype=float))
     y = np.arange(1, len(arr) + 1) / len(arr)
     fig, ax = plt.subplots()
@@ -308,7 +330,7 @@ def cdf_multi(series, x_label, title, out_dir, file_name, stamp=None):
               for lab, vals in series.items()}
     series = {lab: vals for lab, vals in series.items() if vals}
     if not series:
-        return None
+        return no_data_plot(title, out_dir, file_name, stamp)
     fig, ax = plt.subplots()
     for lab, vals in series.items():
         arr = np.sort(np.asarray(vals, dtype=float))

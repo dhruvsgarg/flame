@@ -28,6 +28,7 @@ import csv
 import glob
 import json
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from typing import Optional
@@ -234,6 +235,80 @@ def load_oracle_counterfactual(telemetry_dir):
     p = os.path.join(os.path.dirname(os.path.abspath(telemetry_dir)),
                      "analysis", "oracle_counterfactual.csv")
     return list(csv.DictReader(open(p))) if os.path.exists(p) else []
+
+
+_LAG_RE = re.compile(r"\[SEND_RECV_LAG\] end=(\S+) version=(\d+) wall_lag_s=([0-9.]+)")
+_OVERRUN_RE = re.compile(r"\[TIMING_OVERRUN_AGG\]")
+
+
+def parse_send_recv_lags(telemetry_dir: str) -> tuple[list[float], int]:
+    """Parse SEND_RECV_LAG and TIMING_OVERRUN_AGG lines from the aggregator log.
+
+    Returns (wall_lags, overrun_count). Returns ([], 0) if no log is found or
+    no matching lines exist — callers should handle the empty case gracefully.
+    """
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    if not logs:
+        return [], 0
+    lags: list[float] = []
+    overruns = 0
+    with open(logs[0]) as fh:
+        for line in fh:
+            m = _LAG_RE.search(line)
+            if m:
+                lags.append(float(m.group(3)))
+            if _OVERRUN_RE.search(line):
+                overruns += 1
+    return lags, overruns
+
+
+_OVERRUN_EXCESS_RE = re.compile(
+    r"\[TIMING_OVERRUN_AGG\].*excess=([0-9.]+)s"
+)
+
+_MQTT_LAG_RE = re.compile(
+    r"\[MQTT_DELIVERY_LAG\] end=(\S+) version=(\d+) "
+    r"train_elapsed_s=([0-9.-]+) mqtt_lag_s=([0-9.-]+) wall_lag_s=([0-9.]+)"
+)
+
+
+def _parse_mqtt_delivery_lags(telemetry_dir: str) -> tuple[list[float], list[float]]:
+    """Parse [MQTT_DELIVERY_LAG] lines from the aggregator log.
+
+    Returns (train_elapsed_list, mqtt_lag_list). Each element corresponds to
+    one trainer update. Returns ([], []) if no log or no matching lines.
+    train_elapsed_s = time from agg sending model to trainer calling channel.send()
+    mqtt_lag_s      = time from trainer send to aggregator receiving the update
+    """
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    if not logs:
+        return [], []
+    train_elapsed: list[float] = []
+    mqtt_lags: list[float] = []
+    with open(logs[0]) as fh:
+        for line in fh:
+            m = _MQTT_LAG_RE.search(line)
+            if m:
+                train_elapsed.append(float(m.group(3)))
+                mqtt_lags.append(float(m.group(4)))
+    return train_elapsed, mqtt_lags
+
+
+def _parse_overrun_excesses(telemetry_dir: str) -> list[float]:
+    """Parse overrun excess (wall_lag - budget) from [TIMING_OVERRUN_AGG] lines."""
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    if not logs:
+        return []
+    excesses: list[float] = []
+    with open(logs[0]) as fh:
+        for line in fh:
+            m = _OVERRUN_EXCESS_RE.search(line)
+            if m:
+                excesses.append(float(m.group(1)))
+    return excesses
 
 
 def _spearman(a, b):
@@ -454,6 +529,32 @@ def sanity_plots(records, out, stamp, tdir):
                          "overrun_rate_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
 
+    # Budget slack CDF: remaining_time_s is the sleep a trainer takes to fill its
+    # training budget when the GPU finished early (remaining = budget - gpu > 0).
+    # A fat tail here means many trainers are sleeping long = budget is too loose.
+    # Zero means the trainer overran (no sleep). Plotting per-mode (real vs sim)
+    # helps identify whether the budget is well-calibrated.
+    slack_by_mode = defaultdict(list)
+    for r in tr:
+        rt = r.get("remaining_time_s")
+        if rt is None:
+            continue
+        mode = str(r.get("time_mode", "unknown"))
+        slack_by_mode[mode].append(float(rt))
+    all_slack = [v for vals in slack_by_mode.values() for v in vals]
+    if all_slack:
+        if len(slack_by_mode) > 1:
+            p = ph.cdf_multi({f"{k} (n={len(v)})": v for k, v in slack_by_mode.items()},
+                             "remaining_time_s (sleep to fill budget; 0 = overrun)",
+                             "Budget slack CDF by time mode (remaining_time_s)", d,
+                             "budget_slack_cdf.pdf", stamp=stamp)
+        else:
+            p = ph.cdf_plot(all_slack,
+                            "remaining_time_s (sleep to fill budget; 0 = overrun)",
+                            "Budget slack CDF (remaining_time_s; 0 = overrun/on-time)", d,
+                            "budget_slack_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+
     # aggregator-observed vs trainer-reported response time (overhead sanity):
     # if a trainer returns in 10s but the aggregator only processes it at 14s,
     # the 4s overhead shows up here (points above the diagonal).
@@ -564,6 +665,55 @@ def sanity_plots(records, out, stamp, tdir):
                          "Selection/aggregation count consistency", d,
                          "selection_count_consistency.pdf", stamp=stamp)
         if p: saved.append(p)
+
+    # Pre-train setup time CDF: time from train() entry to GPU compute start
+    # (data loader rebuild, availability check). Large values mean GPU queue
+    # contention — many co-located processes waiting to start the kernel.
+    pre_train_vals = [r.get("pre_train_s") for r in by_event(records, EVENT_TRAINER_ROUND)
+                      if r.get("pre_train_s") is not None]
+    p = ph.cdf_plot(pre_train_vals, "pre_train_s (setup → GPU start)",
+                    f"Pre-train setup time CDF (n={len(pre_train_vals)})",
+                    d, "pre_train_s_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # GPU compute time CDF: actual on-device time. Compared with budget this
+    # directly shows how often the GPU overshoots its modelled training_delay_s.
+    gpu_vals = [r.get("real_gpu_time_s") for r in by_event(records, EVENT_TRAINER_ROUND)
+                if r.get("real_gpu_time_s") is not None
+                and str(r.get("task_to_perform", "train")) == "train"]
+    p = ph.cdf_plot(gpu_vals, "real_gpu_time_s",
+                    f"GPU compute time CDF — train rounds (n={len(gpu_vals)})",
+                    d, "gpu_compute_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # SEND_RECV_LAG CDF: wall-clock time between aggregator sending a task and
+    # receiving the gradient back. Instrumented in BOTH sync and async aggregators
+    # so this plot is present for every baseline. When no events are found the
+    # plot is produced as a "no data" placeholder — never silently absent.
+    wall_lags, overrun_cnt = parse_send_recv_lags(tdir)
+    lag_title_suffix = (f"n={len(wall_lags)}, timing_overruns={overrun_cnt}"
+                        if wall_lags else "no events in agg log")
+    p = ph.cdf_plot(wall_lags,
+                    "wall_lag_s (agg send → grad recv)",
+                    f"Send-recv lag CDF ({lag_title_suffix})",
+                    d, "send_recv_lag_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+    p = ph.hist_plot(wall_lags,
+                     "wall_lag_s (agg send → grad recv)",
+                     f"Send-recv lag histogram ({lag_title_suffix})",
+                     d, "send_recv_lag_hist.pdf", stamp=stamp, vline=None)
+    if p: saved.append(p)
+
+    # Overrun magnitude CDF: for every update where wall_lag > budget, what is
+    # the excess (wall_lag - budget)?  Separates "slightly late" from "stuck for
+    # minutes". Parsed from [TIMING_OVERRUN_AGG] lines.
+    overrun_excesses = _parse_overrun_excesses(tdir)
+    p = ph.cdf_plot(overrun_excesses,
+                    "excess = wall_lag - budget (s)",
+                    f"Timing-overrun excess CDF (n={len(overrun_excesses)}; "
+                    f"0 = no overruns)",
+                    d, "timing_overrun_excess_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
     return saved
 
 
@@ -1003,6 +1153,70 @@ def system_plots(records, out, stamp, tdir):
                          "round", "updates in queue", "Async queue depth over rounds",
                          d, "queue_depth_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
+
+    # Send-recv lag over rounds: median wall_lag per round, parsed from the
+    # aggregator log. Now instrumented in BOTH sync and async aggregators, so
+    # this plot exists for all baselines (placeholder when no events).
+    wall_lags, _overruns = parse_send_recv_lags(tdir)
+    rd_lags: dict[int, list[float]] = defaultdict(list)
+    if wall_lags:
+        run_dir = os.path.dirname(os.path.abspath(tdir))
+        agg_logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+        _lag_re = re.compile(
+            r"increment_round.*round (\d+)"
+        )
+        _lag_entry_re = re.compile(
+            r"\[SEND_RECV_LAG\] end=\S+ version=\d+ wall_lag_s=([0-9.]+)"
+        )
+        if agg_logs:
+            current_round = 0
+            with open(agg_logs[0]) as fh:
+                for line in fh:
+                    rm = _lag_re.search(line)
+                    if rm:
+                        current_round = int(rm.group(1))
+                    lm = _lag_entry_re.search(line)
+                    if lm:
+                        rd_lags[current_round].append(float(lm.group(1)))
+    _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
+    lag_series = {}
+    if rd_lags:
+        rr_lag = sorted(rd_lags)
+        lag_series["median wall_lag_s"] = (rr_lag, [_m(rd_lags[r]) for r in rr_lag])
+    p = ph.line_plot(
+        lag_series,
+        "round", "median wall_lag_s (send→recv)",
+        f"Send-recv lag over rounds (n={len(wall_lags)}, overruns={_overruns})",
+        d, "send_recv_lag_over_rounds.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # MQTT delivery lag decomposition: wall_lag_s = train_elapsed + mqtt_lag.
+    # train_elapsed = time from agg sending model to trainer calling send().
+    # mqtt_lag      = time from trainer send() to agg receiving the gradient.
+    # Available only in real mode (WALL_SEND_TS not stamped in sim).
+    train_elapsed_vals, mqtt_lag_vals = _parse_mqtt_delivery_lags(tdir)
+    _n_decomp = len(mqtt_lag_vals)
+    p = ph.cdf_plot(mqtt_lag_vals, "mqtt_lag_s (trainer send → agg recv)",
+                    f"MQTT delivery lag CDF (n={_n_decomp}; 0=sim/no data)",
+                    d, "mqtt_delivery_lag_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # Multi-series CDF: wall_lag vs train_elapsed vs mqtt_lag.
+    # Tells you which component dominates and whether the bottleneck is
+    # GPU contention (large train_elapsed) or broker backlog (large mqtt_lag).
+    decomp_series: dict[str, list[float]] = {}
+    if wall_lags:
+        decomp_series[f"wall_lag_s (n={len(wall_lags)})"] = sorted(wall_lags)
+    if train_elapsed_vals:
+        decomp_series[f"train_elapsed_s (n={len(train_elapsed_vals)})"] = sorted(train_elapsed_vals)
+    if mqtt_lag_vals:
+        decomp_series[f"mqtt_lag_s (n={len(mqtt_lag_vals)})"] = sorted(mqtt_lag_vals)
+    p = ph.cdf_multi(decomp_series,
+                     "seconds",
+                     "Wall-lag decomposition: total vs train vs MQTT CDF",
+                     d, "wall_lag_decomposition_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
     return saved
 
 
