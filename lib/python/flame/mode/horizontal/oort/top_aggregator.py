@@ -18,8 +18,10 @@
 import logging
 import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Tuple
+
+from flame.sim import SimReorderBuffer
 
 from flame.channel import VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
@@ -33,6 +35,7 @@ from flame.selector.oort import (
     PROP_STAT_UTILITY,
     PROP_LAST_EVAL_ROUND,
 )
+from flame.selector.properties import PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
@@ -40,9 +43,65 @@ from flame.telemetry.events import build_agg_round
 
 logger = logging.getLogger(__name__)
 
+# per-end probe wait when filling the simulated reorder buffer
+OORT_SIM_RECV_FILL_TIMEOUT_S = 0.5
+
 
 class TopAggregator(BaseTopAggregator):
     """Oort Top level Aggregator implements an ML aggregation role."""
+
+    def _oort_sim_recv(self, channel, end_ids):
+        """Simulated recv for the oort stack, with cross-round straggler carry.
+
+        Probes not-yet-buffered in-flight ends into a PERSISTENT reorder buffer,
+        then yields buffered updates in ascending sim_completion_ts (advancing the
+        virtual clock and stamping each end's PROP_ROUND_DURATION from
+        SIM_ROUND_DURATION). It is a GENERATOR so the caller's existing
+        "stop once aggr_num *accepted*" loop drives consumption — exactly mirroring
+        real mode, where recv_fifo keeps delivering (and the loop cleans stale
+        stragglers along the way) until aggr_num fresh updates land.
+
+        The buffer persists across rounds: an overcommitment straggler (selected
+        but not in this round's top by completion time) stays buffered and yields
+        in a LATER round as a stale update, matching real (where it arrives late).
+        Carrying it (vs the syncfl helper's per-call local buffer that drops it)
+        is what makes sim staleness match real for REFL (which accepts stale), and
+        keeps in-flight bounded — the straggler is finally cleaned instead of
+        accumulating in selected_ends and inflating per-round selection. A popped
+        end leaves the buffer, so a later re-selection re-probes its fresh update.
+        Updates the caller doesn't consume (it broke early) stay buffered."""
+        if not hasattr(self, "_sim_buffer"):
+            self._sim_buffer = SimReorderBuffer()
+        buf = self._sim_buffer
+        for e in [e for e in end_ids if not buf.has(e)]:
+            for msg, md in channel.recv_fifo(
+                [e], 1, timeout=OORT_SIM_RECV_FILL_TIMEOUT_S
+            ):
+                if not msg:
+                    break
+                actual_end = md[0]
+                sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                sct = float(sct) if sct is not None else self._vclock.now
+                buf.add(actual_end, sct, (msg, md))
+
+        while True:
+            popped = buf.pop_min()
+            if popped is None:
+                return
+            end, sct, (msg, md) = popped
+            self._vclock.advance(sct)
+            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+            _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            if _srd is not None:
+                channel.set_end_property(
+                    end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
+                )
+            elif _sst is not None:
+                channel.set_end_property(
+                    end, PROP_ROUND_DURATION,
+                    timedelta(seconds=max(0.0, sct - float(_sst))),
+                )
+            yield msg, md
 
     def _aggregate_weights(self, tag: str) -> None:
         """
@@ -100,7 +159,18 @@ class TopAggregator(BaseTopAggregator):
 
         received_end_count = 0
 
-        for msg, metadata in channel.recv_fifo(end_ids, aggr_num):
+        # simulated: commit the aggr_num updates with the smallest
+        # sim_completion_ts (the k that would physically finish first in real),
+        # reordering away physical arrival jitter and advancing the virtual
+        # clock. Uses a persistent buffer so overcommitment stragglers carry
+        # across rounds and commit late as stale (mirroring real). real: receive
+        # by physical FIFO arrival (authentic baseline).
+        if self.simulated:
+            _recv = self._oort_sim_recv(channel, end_ids)
+        else:
+            _recv = channel.recv_fifo(end_ids, aggr_num)
+
+        for msg, metadata in _recv:
             end, _ = metadata
 
             if not msg:
@@ -187,8 +257,9 @@ class TopAggregator(BaseTopAggregator):
                 break
 
         # running the second loop to aggregate up to aggr_num updates
-        # from trainers
-        while received_end_count < aggr_num:
+        # from trainers. Real mode only: the sim path above already returned the
+        # aggr_num smallest-sct updates in one shot (re-probing would block).
+        while not self.simulated and received_end_count < aggr_num:
             for msg, metadata in channel.recv_fifo(end_ids, 1):
                 end, _ = metadata
 
@@ -382,7 +453,9 @@ class TopAggregator(BaseTopAggregator):
 
         # this call waits for at least one peer to join this channel
         channel.await_join()
-        
+        # then wait for the configured cohort so real/sim select from the same pool
+        self._await_min_trainers(channel)
+
         # Get desired number of trainers
         aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         overcommitment = getattr(channel._selector, 'overcommitment', 1.3)
@@ -529,17 +602,24 @@ class TopAggregator(BaseTopAggregator):
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
 
-            channel.send(
-                end,
-                {
-                    MessageType.WEIGHTS: weights_to_device(
-                        self.weights, DeviceType.CPU
-                    ),
-                    MessageType.ROUND: self._round,
-                    MessageType.MODEL_VERSION: self._round,
-                    MessageType.TASK_TO_PERFORM: task_to_perform,
-                },
-            )
+            msg = {
+                MessageType.WEIGHTS: weights_to_device(
+                    self.weights, DeviceType.CPU
+                ),
+                MessageType.ROUND: self._round,
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.TASK_TO_PERFORM: task_to_perform,
+            }
+            # simulated mode: stamp the virtual send time so the trainer reports
+            # sim_completion_ts = sim_send_ts + D; the sim recv path then commits
+            # the aggr_num smallest sim_completion_ts (ordering by simulated, not
+            # physical, arrival) and advances the virtual clock.
+            if self.simulated:
+                sim_send_ts = self._vclock.now
+                msg[MessageType.SIM_SEND_TS] = sim_send_ts
+                channel.set_end_property(end, PROP_SIM_SEND_TS, sim_send_ts)
+
+            channel.send(end, msg)
 
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
@@ -551,9 +631,11 @@ class TopAggregator(BaseTopAggregator):
         logger.debug(f"received data from {end}")
 
         # calculate round duration for this end, if the round number
-        # information is identical with round_start_time
+        # information is identical with round_start_time. In simulated mode the
+        # sim recv path already set PROP_ROUND_DURATION from SIM_ROUND_DURATION;
+        # the physical wall-clock delta here is ~0 (no sleeps), so don't clobber.
         round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
-        if round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
+        if not self.simulated and round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
             channel.set_end_property(
                 end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
             )

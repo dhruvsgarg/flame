@@ -86,7 +86,17 @@ def check_selection_parity(real: dict, sim: dict, max_rounds: Optional[int]) -> 
     mean_j = sum(jaccards) / len(jaccards) if jaccards else float("nan")
     exact_pct = exact_match / len(rounds) * 100 if rounds else 0.0
 
-    status = PASS if mean_j >= 0.7 else (WARN if mean_j >= 0.4 else FAIL)
+    # Exact per-round selection is enforced only for deterministic selectors;
+    # stochastic ones sample from a join-order-dependent candidate list so it
+    # can't match across real/sim (participation_parity is the enforced invariant).
+    # Mirror parity_checks: gate to WARN (report, don't FAIL) for stochastic.
+    from parity_checks import DETERMINISTIC_SELECTORS, _selector_name  # noqa: E402
+    selector = _selector_name(real, sim)
+    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    if gated:
+        status = WARN
+    else:
+        status = PASS if mean_j >= 0.7 else (WARN if mean_j >= 0.4 else FAIL)
 
     # Find rounds with lowest Jaccard
     worst = sorted(per_round_detail, key=lambda x: x[3])[:5]

@@ -59,6 +59,17 @@ except Exception:  # pragma: no cover
     EVENT_AVAIL_CHANGE = "avail_change"
 
 
+# Communication is reported in MEGABYTES. One model = MODEL_PARAM_COUNT fp32
+# params; a train round moves it down (agg->trainer) AND up (trainer->agg) = 2x,
+# an eval round moves it down only = 1x. MODEL_PARAM_COUNT is the async_cifar10
+# `Net` (3 conv + 3 fc; conv1 3->64, conv2 64->128, conv3 128->256, fc 1024->128->
+# 256->10) = 537,610 params -> ~2.15 MB/model. Override via --model-params if the
+# Net changes; the value only scales the comm axes linearly.
+MODEL_PARAM_COUNT = 537610
+BYTES_PER_PARAM = 4
+MODEL_MB = MODEL_PARAM_COUNT * BYTES_PER_PARAM / 1e6
+
+
 def load_events(telemetry_dir: str) -> list[dict]:
     """Load all JSONL records from a telemetry directory."""
     records: list[dict] = []
@@ -132,18 +143,51 @@ def sim_time_by_round(records):
 
 
 def cumulative_comm_by_round(records):
-    """Cumulative comm in model-equivalents (train=2, eval=1 per chosen)."""
+    """Cumulative comm in MEGABYTES (train=2x model, eval=1x model, per chosen)."""
     per_round = defaultdict(float)
     for r in by_event(records, EVENT_SELECTION):
         rd = int(r.get("round", 0))
         n = len(r.get("chosen") or [])
-        per_round[rd] += 2.0 * n if r.get("task", "train") == "train" else 1.0 * n
+        eq = 2.0 * n if r.get("task", "train") == "train" else 1.0 * n
+        per_round[rd] += eq * MODEL_MB
     rounds = sorted(per_round)
     cum, run = [], 0.0
     for rd in rounds:
         run += per_round[rd]
         cum.append(run)
     return rounds, cum
+
+
+def comm_breakdown_by_round(records):
+    """Per-round communication split by task AND direction, in MB, plus message
+    and discard counts — the apples-to-apples comm picture (#17).
+
+    down (agg->trainer) = the full model to every CHOSEN end (selection events).
+    up   (trainer->agg) for TRAIN = the full model back from each COMMITTED end
+        (agg_round.contributing_trainers); for EVAL only a tiny stat-utility
+        scalar comes back (~0 MB, so eval up is omitted from MB but counted as a
+        message). discarded(train) = chosen - committed = sent-but-unused this
+        round (overcommitment slack / stragglers).
+    Returns {round: {train_down_mb, train_up_mb, eval_down_mb,
+                     msgs_down, msgs_up, discarded}}."""
+    chosen = defaultdict(lambda: {"train": 0, "eval": 0})
+    for s in by_event(records, EVENT_SELECTION):
+        chosen[int(s.get("round", 0))][s.get("task", "train")] += len(s.get("chosen") or [])
+    committed = defaultdict(int)  # train updates returned (per round)
+    for a in by_event(records, EVENT_AGG_ROUND):
+        committed[int(a.get("round", 0))] += len(a.get("contributing_trainers") or [])
+    out = {}
+    for rd in sorted(set(chosen) | set(committed)):
+        ctr = chosen[rd]["train"]; cev = chosen[rd]["eval"]; up = committed[rd]
+        out[rd] = {
+            "train_down_mb": ctr * MODEL_MB,
+            "train_up_mb": up * MODEL_MB,
+            "eval_down_mb": cev * MODEL_MB,
+            "msgs_down": ctr + cev,
+            "msgs_up": up + cev,  # eval returns a (tiny) utility message too
+            "discarded": max(0, ctr - up),
+        }
+    return out
 
 
 def comm_vs_accuracy_series(records):
@@ -379,20 +423,24 @@ def sanity_plots(records, out, stamp, tdir):
                             d, "trainer_response_lateness_cdf.pdf", stamp=stamp)
             if p: saved.append(p)
 
-    # per-trainer early/ontime/late counts
-    counts = defaultdict(lambda: {"early": 0, "ontime": 0, "late": 0})
+    # per-trainer late-FRACTION histogram (replaces a per-trainer bar that was
+    # unreadable at 300 trainers). One value per trainer = its overran-rounds /
+    # total-rounds; the hist annotates aggregate P50/P90/P99 across trainers.
+    counts = defaultdict(lambda: {"late": 0, "total": 0})
     for r in tr:
         e = r.get("training_budget_s"); a = r.get("real_gpu_time_s")
         if e is None or a is None:
             continue
         tid = str(r.get("end_id", "?"))[-3:]
-        counts[tid]["late" if r.get("overran") else ("early" if a < e else "ontime")] += 1
+        counts[tid]["total"] += 1
+        if r.get("overran"):
+            counts[tid]["late"] += 1
     if counts:
-        cats = sorted(counts, key=lambda t: -counts[t]["late"])
-        segs = {k: [counts[c][k] for c in cats] for k in ("early", "ontime", "late")}
-        p = ph.stacked_bar(cats, segs, "rounds",
-                           "Per-trainer early / on-time / late counts", d,
-                           "trainer_early_late_counts.pdf", stamp=stamp, horizontal=True)
+        late_frac = [counts[t]["late"] / counts[t]["total"]
+                     for t in counts if counts[t]["total"]]
+        p = ph.hist_plot(late_frac, "per-trainer late fraction (overran rounds / total)",
+                         "Per-trainer overrun fraction (aggregate P50/P90/P99)", d,
+                         "trainer_late_fraction_hist.pdf", stamp=stamp, vline=None)
         if p: saved.append(p)
 
     # overrun rate over rounds
@@ -434,10 +482,16 @@ def sanity_plots(records, out, stamp, tdir):
                             "Aggregator-observed vs trainer-reported response", d,
                             "runtime_agg_vs_trainer.pdf", stamp=stamp)
         if p: saved.append(p)
-        p = ph.hist_plot([y - x for x, y in zip(xs, ys)],
+        overhead = [y - x for x, y in zip(xs, ys)]
+        p = ph.hist_plot(overhead,
                          "aggregator overhead = observed - reported (s)",
                          "Aggregator processing/network overhead", d,
                          "runtime_overhead_hist.pdf", stamp=stamp, vline=0.0)
+        if p: saved.append(p)
+        # CDF of the same overhead — reads the tail (P90/P99) at a glance.
+        p = ph.cdf_plot(overhead, "aggregator overhead = observed - reported (s)",
+                        "Aggregator overhead CDF", d,
+                        "runtime_overhead_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # expected vs actual utility (believed vs true)
@@ -568,10 +622,21 @@ def selection_plots(records, out, stamp, tdir):
                          d, "selection_coverage.pdf", stamp=stamp)
         if p: saved.append(p)
     if freq:
-        items = freq.most_common()
-        p = ph.bar_plot([k[-3:] for k, _ in items], [v for _, v in items],
-                        "times selected", "Selection frequency per trainer", d,
-                        "selection_frequency_hist.pdf", stamp=stamp)
+        # Lorenz curve of selection inequality (replaces a per-trainer bar that
+        # was unreadable at 300 trainers). Level 1: overall. Level 2: split by
+        # availability — trainers that were EVER unavailable vs always-available
+        # (degenerate/absent for syn_0, where everyone is always available).
+        ever_unavail = {
+            str(r.get("end_id")) for r in by_event(records, EVENT_AVAIL_CHANGE)
+            if str(r.get("new_state", "")).lower() not in ("", "avl_train", "available")
+        }
+        series = {"all trainers": list(freq.values())}
+        if ever_unavail and any(t in ever_unavail for t in freq):
+            series["always-available"] = [v for t, v in freq.items() if t not in ever_unavail]
+            series["ever-unavailable"] = [v for t, v in freq.items() if t in ever_unavail]
+        p = ph.lorenz_plot(series,
+                           "Selection fairness (Lorenz; lower Gini = more equal)", d,
+                           "selection_fairness_lorenz.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # exploration factor over rounds
@@ -627,6 +692,49 @@ def selection_plots(records, out, stamp, tdir):
                          "round", "avg believed utility of picked",
                          "Picked clients: avg utility per round", d,
                          "selected_speed_utility_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # #14: separate CDFs of the picked clients' believed SPEED and believed
+    # UTILITY (over all picks), plus expected-vs-actual utility — the believed
+    # value at selection vs the trainer's actual stat_utility that round.
+    all_sp, all_bel = [], []
+    exp_act = {"believed (at selection)": [], "actual (trainer stat_utility)": []}
+    actual_util = {}  # (round, end3) -> stat_utility
+    for r in by_event(records, EVENT_TRAINER_ROUND):
+        if r.get("stat_utility") is not None:
+            actual_util[(int(r.get("round", 0)), str(r.get("end_id", ""))[-3:])] = float(r["stat_utility"])
+    for s in sel:
+        if s.get("task", "train") != "train":
+            continue
+        pt = s.get("per_trainer") or {}
+        rd = int(s.get("round", 0))
+        for c in (s.get("chosen") or []):
+            info = pt.get(str(c)) or {}
+            if info.get("speed_s") is not None:
+                all_sp.append(float(info["speed_s"]))
+            bel = info.get("believed_I", info.get("utility"))
+            if bel is not None:
+                all_bel.append(float(bel))
+                act = actual_util.get((rd, str(c)[-3:]))
+                if act is not None:
+                    exp_act["believed (at selection)"].append(float(bel))
+                    exp_act["actual (trainer stat_utility)"].append(act)
+    cdfs = {}
+    if all_sp:
+        cdfs["speed (s)"] = all_sp
+    if cdfs:
+        p = ph.cdf_multi(cdfs, "value", "Picked-client speed distribution (CDF)", d,
+                         "selected_speed_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if all_bel:
+        p = ph.cdf_multi({"believed utility": all_bel}, "utility",
+                         "Picked-client utility distribution (CDF)", d,
+                         "selected_utility_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if exp_act["actual (trainer stat_utility)"]:
+        p = ph.cdf_multi(exp_act, "utility",
+                         "Picked-client utility: expected (believed) vs actual", d,
+                         "selected_utility_expected_vs_actual_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # participation heatmap (trainer x round: 0 idle, 1 eval-selected, 2 trained)
@@ -791,25 +899,35 @@ def system_plots(records, out, stamp, tdir):
     xs, ys = comm_vs_accuracy_series(records)
     if xs:
         p = ph.line_plot({"accuracy": (xs, ys)},
-                         "cumulative comm (model-equivalents)", "test accuracy",
-                         "Communication cost vs accuracy", d,
+                         "cumulative comm (MB)", "test accuracy",
+                         f"Communication cost vs accuracy (model={MODEL_MB:.2f} MB)", d,
                          "comm_vs_accuracy.pdf", stamp=stamp)
         if p: saved.append(p)
-    # per-round comm split train vs eval
-    split = defaultdict(lambda: {"train": 0.0, "eval": 0.0})
-    for s in by_event(records, EVENT_SELECTION):
-        n = len(s.get("chosen") or [])
-        if s.get("task", "train") == "train":
-            split[int(s.get("round", 0))]["train"] += 2.0 * n
-        else:
-            split[int(s.get("round", 0))]["eval"] += 1.0 * n
-    if split:
-        rr = sorted(split)
-        p = ph.stacked_area(rr, {"train (down+up)": [split[r]["train"] for r in rr],
-                                 "eval (down)": [split[r]["eval"] for r in rr]},
-                            "round", "comm (model-equivalents)",
-                            "Per-round communication: train vs eval", d,
-                            "comm_per_round_train_vs_eval.pdf", stamp=stamp)
+    # per-round comm split by task AND direction (MB): train down / train up /
+    # eval down (eval up is a tiny utility scalar, ~0 MB). #17.
+    cb = comm_breakdown_by_round(records)
+    if cb:
+        rr = sorted(cb)
+        td = [cb[r]["train_down_mb"] for r in rr]
+        tu = [cb[r]["train_up_mb"] for r in rr]
+        ed = [cb[r]["eval_down_mb"] for r in rr]
+        tot = sum(td) + sum(tu) + sum(ed)
+        p = ph.stacked_area(rr, {"train down (agg->tr)": td,
+                                 "train up (tr->agg)": tu,
+                                 "eval down (agg->tr)": ed},
+                            "round", "comm (MB)",
+                            f"Per-round comm by task+direction "
+                            f"(total {tot:.0f} MB: train {sum(td) + sum(tu):.0f}, eval {sum(ed):.0f})",
+                            d, "comm_per_round_train_vs_eval.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # message counts: sent (down), returned (up), discarded (sent-but-unused)
+        p = ph.stacked_area(rr, {"returned (up)": [cb[r]["msgs_up"] for r in rr],
+                                 "discarded (sent, unused)": [cb[r]["discarded"] for r in rr]},
+                            "round", "messages / round",
+                            f"Message accounting (down {sum(cb[r]['msgs_down'] for r in rr)}, "
+                            f"up {sum(cb[r]['msgs_up'] for r in rr)}, "
+                            f"discarded {sum(cb[r]['discarded'] for r in rr)})",
+                            d, "comm_message_accounting.pdf", stamp=stamp)
         if p: saved.append(p)
     # trainer time breakdown (mean per trainer)
     agg = defaultdict(lambda: {"gpu": [], "sim": [], "wait": []})
@@ -848,6 +966,32 @@ def system_plots(records, out, stamp, tdir):
                             "mean seconds / round (across trainers)",
                             "Trainer round-time split (mean across trainers)", d,
                             "trainer_time_split_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # #19: whole-run overall split as a single stacked bar (the area above,
+        # collapsed over all rounds) — one glanceable "where did time go" summary.
+        allv = defaultdict(list)
+        for rd in rr:
+            for k in series:
+                allv[k].extend(split_rd[rd][k])
+        overall = {k: [_m(allv[k])] for k in series}
+        p = ph.stacked_bar(["whole run"], overall, "mean seconds / round",
+                           "Trainer round-time split (whole-run mean)", d,
+                           "trainer_time_split_overall.pdf", stamp=stamp)
+        if p: saved.append(p)
+    # #13: trainer compute time split by task (train vs eval) — per-round GPU
+    # seconds grouped by task_to_perform, aggregate distribution as a CDF (train
+    # and eval cost differently; eval is forward-only).
+    comp_by_task = defaultdict(list)
+    for r in by_event(records, EVENT_TRAINER_ROUND):
+        g = r.get("real_gpu_time_s")
+        if g is not None:
+            comp_by_task[str(r.get("task_to_perform", "train"))].append(float(g))
+    series_ct = {f"{k} (n={len(v)}, mean={sum(v) / len(v):.2f}s)": sorted(v)
+                 for k, v in comp_by_task.items() if v}
+    if series_ct:
+        p = ph.cdf_multi(series_ct, "trainer GPU compute (s)",
+                         "Trainer compute time by task (train vs eval)", d,
+                         "compute_time_by_task_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
     # queue depth
     inflight = [(int(r.get("round", 0)), r.get("updates_in_queue")) for r in
@@ -955,7 +1099,7 @@ def compare_streaming(dirs, labels, out_dir, target=0.6):
         if p: saved.append(p)
 
     _l(acc_series, "round", "test accuracy", "Accuracy across runs", "compare_accuracy.pdf", target=target)
-    _l(comm_acc, "cumulative comm (model-equiv)", "test accuracy", "Comm vs accuracy", "compare_comm_vs_accuracy.pdf")
+    _l(comm_acc, "cumulative comm (MB)", "test accuracy", "Comm vs accuracy", "compare_comm_vs_accuracy.pdf")
     _l(true_util, "round", "mean true utility of selected", "Selected-set true utility", "compare_true_utility_selected.pdf")
     _l(missel, "round", "mis-selection rate", "Mis-selection (oracle top-k)", "compare_misselection.pdf")
     _l(regret, "round", "utility regret", "Selection regret (oracle)", "compare_utility_regret.pdf")
@@ -990,7 +1134,13 @@ def main():
                         help="telemetry dirs for cross-run comparison")
     parser.add_argument("--labels", nargs="+", help="labels for --compare-streaming dirs")
     parser.add_argument("--target", type=float, default=0.6)
+    parser.add_argument("--model-params", type=int, default=None,
+                        help="param count for MB comm conversion (default: async_cifar10 Net)")
     args = parser.parse_args()
+    if args.model_params:
+        global MODEL_PARAM_COUNT, MODEL_MB
+        MODEL_PARAM_COUNT = args.model_params
+        MODEL_MB = MODEL_PARAM_COUNT * BYTES_PER_PARAM / 1e6
     if args.compare_streaming:
         compare_streaming(args.compare_streaming, args.labels, args.out or "compare_plots", args.target)
         return

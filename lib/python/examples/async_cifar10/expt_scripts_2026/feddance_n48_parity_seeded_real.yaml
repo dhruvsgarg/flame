@@ -1,16 +1,14 @@
-# Real/sim PARITY config (REAL mode), seeded & deterministic regime.
-# 48 trainers / 2 GPUs (low contention), alpha0.1, syn_0 (always available),
-# NO streaming (stable per-trainer data -> stable utility), seeded selector RNG
-# so selection is reproducible. Run this and the _sim twin (same seed), then:
-#   FLAME_E2E_REAL_DIR=<real run> FLAME_E2E_SIM_DIR=<sim run> FLAME_E2E_AGG_GOAL=5 \
-#     pytest lib/python/tests/mode/test_real_sim_e2e_parity.py -v
-# or scripts/compare_parity.py for the full report.
+# Sync-baseline real/sim PARITY config (REAL mode), seeded.
+# FedDance (feddance selector V_m*I_m*A_m + fedavg optimizer on the BASE syncfl
+# stack, client_notify availability, not oracular). 48 trainers / 2 GPUs,
+# alpha0.1, syn_0, seeded. aggr_num=5 == agg_goal. Trainer use_oort_loss_fn=True
+# (I_m) + local-accuracy (A_m) come from the baseline catalog. Run with _sim twin.
 
 experiments:
-  - name: felix_n48_parity_seeded_real
-    description: "Real/sim parity (real), seeded, 48 trainers/2 GPUs, alpha0.1 syn_0, no streaming."
+  - name: feddance_n48_parity_seeded_real
+    description: "Sync (feddance) real/sim parity (real), seeded, 48 trainers/2 GPUs."
 
-    baseline: felix
+    baseline: feddance
 
     trainer:
       num_trainers: 48
@@ -25,20 +23,16 @@ experiments:
       hyperparameters:
         batchSize: 32
         learningRate: 0.001
-      config_overrides:
-        hyperparameters:
-          client_notify:
-            trace: syn_0
 
     aggregator:
       config_template: ../_metadata/aggregator_base.json
-      selector: async_oort
+      selector: feddance
       tracking_mode: client_notify
       agg_goal: 5
       log_to_wandb: false
       config_overrides:
         job:
-          id: felix_n48_parity_seeded_real
+          id: feddance_n48_parity_seeded_real
         hyperparameters:
           batchSize: 32
           learningRate: 0.001
@@ -49,8 +43,7 @@ experiments:
           max_runtime_s: 1200
         selector:
           kwargs:
-            c: 8
-            aggGoal: 5
+            aggr_num: 5
 
     execution:
       num_gpus: 2

@@ -83,6 +83,11 @@ def test_agg_goal_cycles(results):
 # ── distributional parity (seeded-run tolerances) ───────────────────────────
 
 def test_selection_parity(results):
+    # Enforced only for deterministic selectors; for stochastic ones (all shipped
+    # selectors today) this is gated to a report — exact per-round selection can't
+    # match across real/sim (join-order-dependent candidate ordering + RNG), so
+    # participation-frequency parity below is the enforced selection invariant.
+    # See parity_checks.DETERMINISTIC_SELECTORS for the full rationale.
     assert results["selection"]["ok"], results["selection"]
 
 

@@ -1,16 +1,13 @@
-# Real/sim PARITY config (SIMULATED mode), seeded & deterministic regime.
-# 48 trainers / 2 GPUs (low contention), alpha0.1, syn_0 (always available),
-# NO streaming (stable per-trainer data -> stable utility), seeded selector RNG
-# so selection is reproducible. Run this and the _sim twin (same seed), then:
-#   FLAME_E2E_REAL_DIR=<real run> FLAME_E2E_SIM_DIR=<sim run> FLAME_E2E_AGG_GOAL=5 \
-#     pytest lib/python/tests/mode/test_sim_sim_e2e_parity.py -v
-# or scripts/compare_parity.py for the full report.
+# Async-baseline real/sim PARITY config (REAL mode), seeded.
+# FedBuff (fedbuff selector, uniform async + fedbuff optimizer, async stack).
+# 48 trainers / 2 GPUs, alpha0.1, syn_0, seeded. Concurrency c=8, aggGoal=5
+# (overcommit so the sim reorder-by-sct buffer is exercised). Run with _sim twin.
 
 experiments:
-  - name: felix_n48_parity_seeded_sim
-    description: "Real/sim parity (sim), seeded, 48 trainers/2 GPUs, alpha0.1 syn_0, no streaming."
+  - name: fedbuff_n48_parity_seeded_real
+    description: "Async (fedbuff) real/sim parity (real), seeded, 48 trainers/2 GPUs."
 
-    baseline: felix
+    baseline: fedbuff
 
     trainer:
       num_trainers: 48
@@ -21,7 +18,7 @@ experiments:
       availability:
         mode: syn_0
       enable_training_delays: true
-      time_mode: simulated
+      time_mode: real
       hyperparameters:
         batchSize: 32
         learningRate: 0.001
@@ -32,13 +29,13 @@ experiments:
 
     aggregator:
       config_template: ../_metadata/aggregator_base.json
-      selector: async_oort
-      tracking_mode: client_notify
+      selector: fedbuff
+      tracking_mode: default
       agg_goal: 5
       log_to_wandb: false
       config_overrides:
         job:
-          id: felix_n48_parity_seeded_sim
+          id: fedbuff_n48_parity_seeded_real
         hyperparameters:
           batchSize: 32
           learningRate: 0.001

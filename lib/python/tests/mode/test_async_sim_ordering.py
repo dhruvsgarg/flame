@@ -17,6 +17,20 @@ from flame.mode.message import MessageType
 from flame.sim import SimReorderBuffer, VirtualClock
 
 
+class _FakeEnd:
+    """Minimal end with the get/set_property surface _sim_recv_min touches
+    (it resets buffered ends' KEY_END_STATE so the selector keeps their slot)."""
+
+    def __init__(self):
+        self._props = {}
+
+    def get_property(self, key):
+        return self._props.get(key)
+
+    def set_property(self, key, value):
+        self._props[key] = value
+
+
 class FakeChannel:
     """Minimal channel: queued (end -> msg) delivered in a fixed arrival order.
 
@@ -28,6 +42,7 @@ class FakeChannel:
     def __init__(self, inflight, arrival_order):
         self._inflight = set(inflight)
         self._queue = list(arrival_order)  # list of (end_id, sct)
+        self._ends = {e: _FakeEnd() for e in self._inflight}
 
     def has(self, end_id):
         return end_id in self._inflight

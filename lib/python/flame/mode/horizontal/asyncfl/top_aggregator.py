@@ -217,12 +217,25 @@ class TopAggregator(SyncTopAgg):
             f"[SIM_RECV] committed end={_end[-4:]} sct={sct:.1f} "
             f"T_v={self._vclock.now:.1f} buf={len(self._sim_buffer)}"
         )
+        # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
+        # popped one — the rest are buffered yet still in-flight. _handle_recv_state
+        # strips RECVD ends from selected_ends (freeing their concurrency slot),
+        # which would let the selector over-select to N. Reset the still-buffered
+        # ends back to NONE so they keep their in-flight slot until they commit;
+        # to_probe already skips them via _sim_buffer.has(), so they aren't re-recv'd.
+        for _buf_end in self._sim_buffer.pending_ends():
+            if channel.has(_buf_end):
+                channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         # Release trainer that was blocked waiting for this cross-round commit.
+        # Free its concurrency slot too (selected_ends), now that it committed,
+        # so the next selection can refill it — the slot was held since round end.
         if _end in self._sim_pending_commit:
             self._sim_pending_commit.discard(_end)
             sel = channel._selector
             if _end in sel.all_selected:
                 del sel.all_selected[_end]
+            if sel.requester in sel.selected_ends:
+                sel.selected_ends[sel.requester].discard(_end)
             if channel.has(_end):
                 channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
@@ -315,14 +328,15 @@ class TopAggregator(SyncTopAgg):
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.
 
-            # add trainer to list of ends that have replied with eval
-            # updates capture telemetry on trainer participation in
-            # rounds
-            channel._selector.trainer_eval_recv_ends.append(end)
-            logger.debug(
-                f"After appending {end} to trainer_eval_recv_ends: "
-                f"{channel._selector.trainer_eval_recv_ends}"
-            )
+            # add trainer to list of ends that have replied with eval updates
+            # (async_oort tracks these for its round-end cleanup; other async
+            # selectors e.g. fedbuff don't define the list — skip for them).
+            if hasattr(channel._selector, "trainer_eval_recv_ends"):
+                channel._selector.trainer_eval_recv_ends.append(end)
+                logger.debug(
+                    f"After appending {end} to trainer_eval_recv_ends: "
+                    f"{channel._selector.trainer_eval_recv_ends}"
+                )
 
             # Remove end from selected_ends and set its state to none
             # so that it can be selected for training in this round.
@@ -762,12 +776,18 @@ class TopAggregator(SyncTopAgg):
             # Block every trainer with a pending buffer entry from re-selection.
             # cleanup_recvd_ends may have freed them early; re-block here so the
             # real-mode invariant holds: one in-flight update per trainer at a time.
+            # Crucially, KEEP them in selected_ends: concurrency is budgeted as
+            # extra = c - len(selected_ends), so a buffered-but-uncommitted update
+            # must hold its slot until it actually commits — exactly like real
+            # mode. Dropping it here frees a phantom slot the selector refills
+            # with a NEW trainer, so in-flight grows toward N each round (the
+            # over-selection bug). The slot is released on commit in _sim_recv_min.
             for end_id in pending_in_buffer:
                 self._sim_pending_commit.add(end_id)
                 if end_id not in sel.all_selected:
                     sel.all_selected[end_id] = time.time()
-                if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
-                    sel.selected_ends[requester].discard(end_id)
+                if requester in sel.selected_ends:
+                    sel.selected_ends[requester].add(end_id)
             if pending_in_buffer:
                 logger.info(
                     f"[SIM_PENDING] round={self._round} blocked {len(pending_in_buffer)} "
@@ -780,8 +800,14 @@ class TopAggregator(SyncTopAgg):
         picked_trainer_is_available = True
 
         if end in self.trainer_unavail_durations.keys():
-            # get aggregator seconds from start
-            agg_time_since_start_s = time.time() - self.agg_start_time_ts
+            # aggregator seconds from start, on the trace's timeline: virtual
+            # clock in simulated mode (wall-clock would barely advance vs the
+            # sim timeline, so every unavailability window would be missed),
+            # wall-clock in real mode. Mirrors the trainer-side _sim_now() path.
+            agg_time_since_start_s = (
+                self._vclock.now if self.simulated
+                else time.time() - self.agg_start_time_ts
+            )
 
             curr_trainer_unavail_list = self.trainer_unavail_durations[end]
 
@@ -896,6 +922,8 @@ class TopAggregator(SyncTopAgg):
             return
 
         channel.await_join()
+        # wait for the configured cohort so real/sim select from the same pool
+        self._await_min_trainers(channel)
         self._update_weights()
 
         # Brief pause so channel state settles before selector runs.

@@ -89,6 +89,38 @@ single ground truth. Split:
 ### Baselines (must all work — FluxTune out of scope)
 - async: **felix**=async_oort selector + fedbuff optimizer; **fedbuff**=fedbuff selector.
 - sync: **fedavg**=random selector; **oort**=oort; **refl**=refl_oort; **feddance**=feddance.
+
+### CROSS-BASELINE PARITY SWEEP — all 6 baselines pass e2e 7/7 [DONE]
+Seeded real/sim pairs now exist for every baseline (`<baseline>_n48_parity_seeded_{real,sim}.yaml`,
+seed=1234, n48/2GPU, alpha0.1/syn_0, agg_goal=5). 12-round sweep + `compare_parity` +
+`test_real_sim_e2e_parity` → **all 6 pass 7/7**. Stacks: fedavg/feddance use `syncfl`
+(`horizontal/top_aggregator` re-exports it); felix/fedbuff use `asyncfl`; oort/refl use the
+separate `horizontal/oort/top_aggregator` (overrides distribute/aggregate). Fixes landed:
+- **fedbuff eval crash** — async aggregator appended to `selector.trainer_eval_recv_ends`
+  (async_oort-only); guarded with `hasattr` (asyncfl/top_aggregator). Other selector attrs it
+  touches (all_selected/selected_ends/requester/ordered_updates_recv_ends/remove_from_selected_ends/
+  reset_end_state_to_none/_cleanup_removed_ends) all exist on fedbuff.
+- **oort/refl sim-ordering** — the oort stack had ZERO `simulated` handling (committed by physical
+  arrival, no vclock). Added: `sim_send_ts` stamping in distribute; sim aggregate commits via the
+  inherited sim machinery; `_handle_weights_msg` no longer overwrites round_duration with wall-clock
+  in sim. Result: oort staleness 0/0; sim_send_ts + round-duration parity pass.
+- **oort/refl cross-round straggler carry** — `_oort_sim_recv` is a GENERATOR backed by a PERSISTENT
+  `_sim_buffer`: overcommitment (1.3×) stragglers carry across rounds and commit late as stale
+  (REFL accepts → real 0.93 / sim 0.75, was 0.81 / 0.02). The caller's "stop at aggr_num accepted"
+  loop drains stale stragglers too, so in-flight stays bounded (oort `chosen` 6–7, was growing 6→37).
+- **JOIN BARRIER (`min_trainers_to_start`)** — `_await_min_trainers` (syncfl base, called by all three
+  distribute paths) blocks once at startup until N ends join. Trainers are real processes that spawn/
+  join over wall-clock in BOTH modes (sim only virtualizes training sleeps); without it sim raced
+  ahead of joins and selected from a half-filled pool (sim ncand 4→40 vs real 48). Now ncand=48 from
+  round 0 in both. Set to 48 in all 12 parity configs.
+- **Selection-parity gate** — even with matched pools + seed, exact per-round selection still differs:
+  selectors sample from a candidate LIST ordered by channel-JOIN order (physical, varies run-to-run),
+  so the same seed draws a different subset, then RNG cascades. This is the residual "irreducible"
+  part — but participation-FREQUENCY parity holds. `parity_checks.selection_parity` now gates the
+  Jaccard check (informational) for stochastic selectors via `DETERMINISTIC_SELECTORS` (empty;
+  add a selector once it sorts candidates before sampling), and `participation_parity` is the enforced
+  selection invariant. All other checks (staleness, participation, round-duration, sim_send_ts, GPU,
+  convergence, agg_goal cycles, vclock monotonicity) are enforced and pass for every baseline.
 - `random` selector context: its SEND/RECV channel **state** is the *buffered
   concurrency pattern* (FwdLLM/async): SEND=pick new trainers to send to,
   RECV=return in-flight set to receive from. Stateless sync FL never sets it →
@@ -96,33 +128,58 @@ single ground truth. Split:
   a fully-duplicated dead `select()` method. fedavg now runs on the sync stack
   (validated: no KeyError, 40 real rounds).
 
-### OPEN ISSUE A — async (felix) sim over-selection [characterized, NOT fixed]
-Seeded e2e on felix: invariants hold, but per-round selection ~5 real vs **19–21
-sim**, staleness mean **1.16 real vs ~8.6 sim** (KS ~0.77). Root cause: under
-no-sleep, every selected trainer returns immediately and `_sim_recv_min` buffers
-*all* returned recv-state ends while committing only `agg_goal`/round, so the
-in-flight buffer (and `[SIM_PENDING] blocked` count) grows toward N across rounds
-(observed climbing 7→43), inflating staleness. A targeted slot-accounting fix
-(keep pending in `selected_ends` so `extra=c-len(selected_ends)` doesn't
-over-refill) did NOT resolve it — the growth is the buffer-fill draining slower
-than it fills, not just slot accounting. **Reverted, not shipped.** `first_divergence`
-on the felix runs localizes the first control divergence to **commit #1**
-(selection-level RNG desync from differing candidate sets), before staleness
-blows up. NEXT: bound the sim in-flight/buffer to `c` (don't buffer beyond the
-concurrency the real path would have in flight), then re-verify with the seeded
-e2e test + `first_divergence`.
+### OPEN ISSUE A — async (felix) sim over-selection [FIXED]
+Symptom: per-round selection ~5 real vs **19–21 sim**, staleness mean **1.16 real
+vs ~8.6 sim** (KS ~0.77); `[SIM_PENDING] blocked` climbing 7→43 toward N.
+**Two-part root cause (both in concurrency slot-accounting, asyncfl):**
+concurrency is budgeted as `extra = c − len(selected_ends)` while candidate
+exclusion uses `all_selected` (two separate structures). (1) The round-end sim
+bookkeeping discarded buffered-but-uncommitted ends from `selected_ends` (kept
+them only in `all_selected`) → their slot freed but they couldn't be re-picked →
+selector refilled with NEW trainers → in-flight grew each round. (2) Even after
+keeping them in `selected_ends`, `_handle_recv_state` strips every end in
+`VAL_END_STATE_RECVD` from `selected_ends` — and `recv_fifo` marks an end RECVD
+the moment its message is *buffered*, though only 1 is *committed* per aggregate.
+So buffered-not-committed ends were stripped on the next aggregate, re-opening the
+phantom slots. **Fix (3 edits, `asyncfl/top_aggregator.py`):** (a) round-end:
+keep pending-buffer ends in `selected_ends` (`.add`, not discard); (b) on commit
+in `_sim_recv_min`, release the slot (discard from `selected_ends`); (c) in
+`_sim_recv_min`, after popping, reset the still-buffered ends' channel state from
+RECVD back to NONE so `_handle_recv_state` leaves them in `selected_ends`
+(`to_probe` already skips them via `_sim_buffer.has`, so no re-recv). **Verified**
+(felix seeded real+sim, 12-round shortened pair, seed=1234): `[SIM_PENDING]`
+stable at 5–7 (was →43); per-round selection ~5–7 sim vs 5 real (was 19–21);
+staleness **1.03 real / 1.3 sim — PASS** (was 8.6); commit counts 60/60 match;
+`compare_parity` PASS on staleness/participation/round-duration/sim_send_ts/GPU/
+convergence; e2e **6/7 PASS**. The remaining FAIL (`test_selection_parity`,
+Jaccard 0.162) is the documented IRREDUCIBLE divergence: `first_divergence` shows
+both modes commit 0370 first then diverge at **commit #1** from selector-RNG
+desync (real & sim see different candidate sets at near-ties — the
+"irreducibly non-deterministic" selector-RNG class in the framing above; even
+real-vs-real won't match exactly). Unit test note: `test_async_sim_ordering`'s
+`FakeChannel` gained a minimal `_ends`/`_FakeEnd` to model the END_STATE the
+reset in (c) touches.
 
-### OPEN ISSUE B — sync (fedavg) sim aggregation does not commit [new, NOT fixed]
-After the None-guards (`8ac0d535`), the sync sim run no longer crashes and
-distribute works (8+ sends), but `_sync_sim_recv_first_k` produced **0
-`[SYNC_SIM_RECV]` commits** in ~5 min and no rounds completed. Likely the
-fill-loop isn't receiving the selected ends' updates against the real channel
-(fake-channel test passes, live differs — same class of gap as the crash). NEXT:
-reproduce, add a debug log of `len(buf)` / `pending` per pass in
-`_sync_sim_recv_first_k`, and check whether `channel.recv_fifo(pending,
-first_k=len(pending), timeout=...)` is delivering against the real channel state
-(the real channel needs ends in RECV state; the random/sync distribute may leave
-them in a different state than the helper assumes).
+### OPEN ISSUE B — sync (fedavg) sim aggregation does not commit [FIXED]
+**Root cause (not the recv helper):** the sync aggregator drove BOTH distribute
+and aggregate through plain `channel.ends()`, which defaults to **SEND** state.
+The `random` selector is stateful (buffered concurrency): a SEND call means
+"pick NEW trainers to send to." So distribute filled concurrency (c=8 sends), and
+aggregate's second SEND call computed `required = c − 8 = 0` → returned `None` →
+`_aggregate_weights` early-returned BEFORE ever calling recv. Log signature: many
+`Agg weights` calls but **0** `Waiting for first_k` / `[SYNC_SIM_RECV]`. The
+recv-against-real-channel hypothesis was wrong — aggregation bailed one step
+earlier. (Real had the same bug; it blocked on `recv_fifo` instead of spinning.)
+**Fix:** mirror the async stack — distribute uses `channel.ends(VAL_CH_STATE_SEND,
+task)`, aggregate uses `channel.ends(VAL_CH_STATE_RECV)` so the random selector
+returns its in-flight `selected_ends`; the two telemetry/optimizer `ends()` calls
+use RECV too. Stateless selectors (oort/refl/feddance/default) ignore the state
+arg → no change for them. **Verified:** fedavg seeded real+sim 10-round pair both
+complete all rounds (real 1→10 rounds, sim 0→41 commits); `compare_parity.py`
+PASSes staleness/participation/convergence/round-duration/sim_send_ts/GPU; all 7
+`test_real_sim_e2e_parity` PASS. (Remaining `compare_parity` FAILs #1/#2 are a
+separate gap — the random selector emits **0 `selection` telemetry events** on the
+sync stack, so Jaccard is nan; #3 agg-sequence checks order, irrelevant for sync.)
 
 ### How to verify parity
 Seeded config pairs exist: `felix_n48_parity_seeded_{real,sim}.yaml`,
@@ -183,32 +240,58 @@ same outputs. **Test:** `python scripts/analysis/analyze_run.py <run>/telemetry
   trainers) — system-level view; visually confirms the overhead fix.
 - #4 acc-gain per eval now overlays overall accuracy on a secondary axis.
 
-### TODO plot items (with intended approach)
-- **#5/#6 (deeper):** per-step overhead distributions at trainer AND aggregator;
-  agg-observed vs actual trainer compute+response (a `runtime_agg_vs_trainer`
-  scatter already exists — make it an explicit overhead CDF + aggregate stats).
-- **#7** runtime-overhead histogram → add aggregate P50/P90/P99 annotation; make
-  readable.
-- **#9** per-trainer early/late counts (giant bar) → replace with a histogram of
-  per-trainer late-fraction + aggregate stats.
-- **#13** participation: add per-trainer AND aggregate compute-time stats split
-  by eval/train.
-- **#14** speed_utility: split into separate CDFs of utility and of speed; and
-  split expected (selection-criteria value) vs actual trainer stat_utility at
-  that time.
-- **#15** selection-frequency histogram (unreadable) → drop the aggregator;
-  Lorenz curve / Gini for fairness, at two levels (overall + by availability),
-  related to each trainer's data-split size.
-- **#16** comm `comm_per_round_train_vs_eval`: use **megabytes** (model param
-  count × 4 bytes × #ends; train=down+up=2×, eval=down=1×) instead of
-  "model-equivalents"; add total annotation + aggregate stats.
-- **#17 (needs NEW telemetry):** track MB moved + message counts agg→trainer and
-  trainer→agg; sanity counts of weights sent, responses received, discarded,
-  unused. Add to `agg_round`/a new event. The selector mostly doesn't know these.
-- **#18** comm_vs_accuracy: replace "model-equivalents" x-axis with MB (same
-  conversion as #16).
-- **#19 (extend):** also an aggregator-side step time breakdown + an overall
-  (whole-run) stacked bar, not only the over-rounds area.
+### Plot items — DONE this pass (analyzer at repo-root `scripts/analysis/`)
+- **#5/#6** — added `system/.. runtime_overhead_cdf.pdf` (CDF of aggregator
+  observed−reported overhead) alongside the existing scatter + hist.
+- **#7** — `hist_plot` now annotates **P50/P90/P99** (was P50/P90); applies to
+  the runtime-overhead hist and every histogram.
+- **#9** — `trainer_early_late_counts.pdf` (300-wide bar) replaced by
+  `sanity/trainer_late_fraction_hist.pdf`: one value per trainer (overran/total),
+  with aggregate P50/P90/P99.
+- **#15** — `selection_frequency_hist.pdf` (per-trainer bar) replaced by
+  `selection/selection_fairness_lorenz.pdf`: Lorenz curve(s) + Gini, two levels
+  (overall + always-available vs ever-unavailable when a trace has unavailability;
+  degenerate for syn_0). New `plot_helpers.lorenz_plot`.
+- **#16/#18** — comm now in **MEGABYTES** (`MODEL_MB` = 537,610 params × 4 B ≈
+  2.15 MB; train=2×, eval=1× per chosen). `cumulative_comm_by_round`,
+  `comm_per_round_train_vs_eval` (+ total-MB annotation), `comm_vs_accuracy`, and
+  the `compare_streaming` axis all use MB. Override via `--model-params`.
+
+### Plot items — DONE (second pass)
+- **#13** — `system/compute_time_by_task_cdf.pdf`: trainer GPU compute CDF split
+  by `task_to_perform` (train vs eval), n + mean per task.
+- **#14** — `selection/selected_speed_cdf.pdf`, `selected_utility_cdf.pdf`, and
+  `selected_utility_expected_vs_actual_cdf.pdf` (believed-at-selection vs the
+  trainer's actual stat_utility that round). New `plot_helpers.cdf_multi`.
+- **#17 (no new telemetry needed — derived):** `comm_per_round_train_vs_eval.pdf`
+  is now split by task AND direction (train down / train up / eval down; eval up
+  is a ~0-MB utility scalar) in MB; new `comm_message_accounting.pdf` shows
+  messages returned vs **discarded** (chosen−committed, the overcommit slack).
+  `comm_breakdown_by_round()` derives it all from selection (down) + agg_round
+  contributing (up) — no hot-path instrumentation, so zero risk to long runs.
+- **#19** — `system/trainer_time_split_overall.pdf`: whole-run mean trainer
+  time split as one stacked bar (collapses the over-rounds area). (A true
+  aggregator-internal step breakdown would still need aggregator step telemetry.)
+
+### Overnight n300 run — infra READY
+- **Configs:** `expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_OVERNIGHT_node{1,2}.yaml`
+  — each runs sim THEN real per baseline (node1 felix+oort, node2 refl+feddance),
+  BOTH with the join barrier (min_start=290, tmo=600) so sim/real select from the
+  same pool and are directly comparable. (Generated by merging STREAMING+SIMULATED.)
+- **Robust runner:** `run_experiment_batch` is now non-interactive when stdin
+  isn't a TTY (or `FLAME_BATCH_CONTINUE_ON_ERROR=1`) — a failed run is logged and
+  the batch proceeds; new `_sweep_stragglers()` runs in a `finally` between
+  experiments to hard-kill leftover trainer/aggregator procs (matches only the
+  example mains, never the runner) and wait for GPU to drain. Post-run analyzer is
+  already best-effort (never raises), so a plot bug can't kill a run.
+- **Runner/smoke:** `scripts/overnight_run.sh {smoke | run node1 | run node2}`.
+  smoke = 48-trainer / 4-round version of all 8 node experiments.
+- **Comparison:** `scripts/compare_overnight.sh` → per-baseline sim-vs-real
+  (`compare_parity`) + cross-baseline sim-plot/real-plot
+  (`analyze_run --compare-streaming`) under `/tmp/overnight_compare`.
+- **Verified mode-consistency for n300:** data-streaming + availability use the
+  vclock in sim (oracular agg-side path fixed); felix eval-select frequency equal
+  sim/real; oort reject / refl accept-≤5 staleness preserved (mode-independent).
 
 ### Telemetry fields available now (for the above)
 `trainer_round`: real_gpu_time_s, sim_round_duration_s, wait_time_s,
@@ -223,16 +306,38 @@ Model size for MB: the `Net` in trainer/aggregator (compute param count once).
 ---
 
 ## Immediate next steps (suggested order)
-1. **Sync sim no-commit (Open B)** — add per-pass debug to `_sync_sim_recv_first_k`,
-   reproduce on `fedavg_n48_parity_seeded_sim.yaml`, fix recv against the real
-   channel, then run the fedavg seeded pair + e2e parity test. (Sync is the
-   simpler/structurally-bounded case; fixing it first informs the async one.)
-2. **Async over-selection (Open A)** — bound sim in-flight/buffer to `c`; verify
-   with seeded e2e + `first_divergence`.
-3. **Cross-baseline parity sweep** — seeded real/sim pairs for oort/refl/feddance
-   (configs needed; oort/refl need oracular traces, feddance needs use_oort_loss_fn).
-4. **Plots** — work the TODO list above; #16/#18 (MB) and #15 (fairness) and #9
-   (aggregate) are high-value/low-risk; #17 needs new telemetry.
+1. ~~**Sync sim no-commit (Open B)**~~ — DONE. Was a SEND/RECV channel-state bug
+   in the sync aggregator (distribute+aggregate both used SEND-default
+   `channel.ends()`); fixed by distribute→SEND, aggregate→RECV. Verified with the
+   fedavg seeded pair + e2e parity test (all 7 pass). Follow-up (optional): wire
+   `selection` telemetry for the random selector on the sync stack so
+   `compare_parity` checks #1/#2 (selection Jaccard, stat-utility) have events to
+   compare instead of nan.
+2. ~~**Async over-selection (Open A)**~~ — DONE. Two slot-accounting bugs in
+   `asyncfl/top_aggregator.py` (pending ends dropped from `selected_ends`;
+   buffered ends stripped as RECVD by `_handle_recv_state`). Fixed; staleness
+   8.6→1.3, selection 19–21→~5–7, e2e 6/7 (remaining FAIL is irreducible
+   selector RNG). Optional follow-up: `test_selection_parity` / `compare_parity`
+   check #1 are too strict for RNG selectors (felix/fedbuff) — gate them on a
+   "deterministic-selector" flag or relax to a distributional check, since exact
+   selection parity is unattainable even real-vs-real for these baselines.
+3. ~~**Cross-baseline parity sweep**~~ — DONE for all 6 (fedavg/feddance/fedbuff/
+   felix/oort/refl), e2e 7/7 each. See "CROSS-BASELINE PARITY SWEEP" above for the
+   fixes (fedbuff eval guard, oort/refl sim-ordering + straggler carry, join
+   barrier, selection-parity gate). Optional follow-ups: (a) make a selector sort
+   its candidate list before sampling to earn EXACT selection parity (then add it
+   to `DETERMINISTIC_SELECTORS`); (b) the launcher lingers ~min after the
+   experiment finishes (non-daemon shutdown) — runs complete but `timeout`-reap;
+   worth a clean shutdown. Sweep harness: `/tmp/parity_sweep.sh <baselines...>`.
+4. ~~**Plots**~~ — high-value items DONE: #16/#18 (MB), #15 (Lorenz/Gini fairness),
+   #9 (late-fraction hist), #7 (P99), #5/#6 (overhead CDF). Remaining: #13, #14,
+   #17 (needs new telemetry), #19-extend (see "Plot items — STILL TODO").
+5. **n300 in sim** — `min_trainers_to_start`/`min_trainers_join_timeout_s` wired
+   (configurable join barrier); `*_SIMULATED_node{1,2}.yaml` created (min_start=290,
+   tmo=600). Oracular availability now uses the vclock in sim (was wall-clock, so
+   traces other than syn_0 were ignored in sim). Data-streaming + felix eval-select
+   frequency verified mode-consistent. Baseline staleness semantics (oort reject /
+   refl accept ≤5) are in `_aggregate_weights` → mode-independent, respected in sim.
 
 ## Constraints to honor
 Minimize code AND comment bloat (keep the PR diff small); deletions of dead code

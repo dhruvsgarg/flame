@@ -234,7 +234,7 @@ def hist_plot(values, x_label, title, out_dir, file_name, stamp=None, vline=0.0)
                             ha="center", va="bottom", fontsize=7, color="0.3")
     if vline is not None:
         ax.axvline(vline, color="red", ls="--", lw=1.5)
-    for q, lab in [(0.5, "P50"), (0.9, "P90")]:
+    for q, lab in [(0.5, "P50"), (0.9, "P90"), (0.99, "P99")]:
         xv = float(np.quantile(arr, q))
         ax.axvline(xv, color="0.3", ls=":", lw=1)
         ax.annotate(f"{lab}={xv:.3g}", (xv, 0), textcoords="offset points",
@@ -297,6 +297,27 @@ def cdf_plot(values, x_label, title, out_dir, file_name, stamp=None):
     ax.set_xlabel(x_label)
     ax.set_ylabel("CDF")
     ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    return _save(fig, out_dir, file_name, stamp)
+
+
+def cdf_multi(series, x_label, title, out_dir, file_name, stamp=None):
+    """Overlay multiple CDFs (one per label) for apples-to-apples comparison.
+    ``series`` is {label: [values...]}. Each curve gets its own color + legend."""
+    series = {lab: [v for v in vals if v is not None]
+              for lab, vals in series.items()}
+    series = {lab: vals for lab, vals in series.items() if vals}
+    if not series:
+        return None
+    fig, ax = plt.subplots()
+    for lab, vals in series.items():
+        arr = np.sort(np.asarray(vals, dtype=float))
+        y = np.arange(1, len(arr) + 1) / len(arr)
+        ax.plot(arr, y, lw=2, label=lab)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("CDF")
+    ax.set_title(title)
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     return _save(fig, out_dir, file_name, stamp)
 
@@ -426,4 +447,37 @@ def dual_axis_line(x, y1, y2, x_label, y1_label, y2_label, title, out_dir,
     ax2.tick_params(axis="y", labelcolor="#d62728")
     ax1.set_title(title)
     ax1.grid(True, alpha=0.3)
+    return _save(fig, out_dir, file_name, stamp)
+
+
+def lorenz_plot(series, title, out_dir, file_name, stamp=None):
+    """Lorenz curve(s) of selection-count inequality. ``series`` is
+    {label: [counts...]}; each label gets a curve x=cumulative fraction of
+    trainers (sorted ascending), y=cumulative fraction of selections, with its
+    Gini in the legend. The diagonal is perfect equality (Gini 0); the more the
+    curve bows below it, the more concentrated the selections. Compact regardless
+    of trainer count — the readable replacement for a 300-bar frequency chart."""
+    def gini(a):
+        a = np.sort(np.asarray(a, float))
+        if a.size == 0 or a.sum() == 0:
+            return 0.0
+        n = len(a)
+        return float((2 * np.arange(1, n + 1) - n - 1).dot(a) / (n * a.sum()))
+
+    curves = {lab: c for lab, c in series.items() if len(c) > 0 and sum(c) > 0}
+    if not curves:
+        return None
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], color="0.5", ls="--", lw=1, label="equality")
+    for lab, counts in curves.items():
+        a = np.sort(np.asarray(counts, float))
+        cum = np.cumsum(a) / a.sum()
+        x = np.arange(1, len(a) + 1) / len(a)
+        ax.plot(np.concatenate([[0], x]), np.concatenate([[0], cum]), lw=2,
+                label=f"{lab} (Gini={gini(counts):.2f}, n={len(counts)})")
+    ax.set_xlabel("cumulative fraction of trainers (least- to most-selected)")
+    ax.set_ylabel("cumulative fraction of selections")
+    ax.set_title(title)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
     return _save(fig, out_dir, file_name, stamp)

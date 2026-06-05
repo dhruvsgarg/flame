@@ -33,6 +33,7 @@ from flame.common.util import (
     weights_to_device,
     weights_to_model_device,
 )
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
@@ -69,6 +70,11 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # finish first in real mode), independent of physical arrival jitter.
 SYNC_SIM_RECV_DEADLINE_S = 30
 SYNC_SIM_RECV_FILL_TIMEOUT_S = 0.5
+
+# Startup join barrier: how long to wait for the trainer cohort to join before
+# the first selection (see _await_min_trainers). Bounded so a crashed/slow
+# trainer can't deadlock startup.
+MIN_TRAINERS_JOIN_TIMEOUT_S = 180
 
 
 class TopAggregator(Role, metaclass=ABCMeta):
@@ -342,10 +348,14 @@ class TopAggregator(Role, metaclass=ABCMeta):
         agg_goal = self.config.hyperparameters.aggregation_goal
         first_k = agg_goal if agg_goal and agg_goal > 0 else 0
 
+        # RECV state: receive from the in-flight set we already sent to. A
+        # buffered selector (random) returns its selected_ends here rather than
+        # picking new trainers (SEND would return none once concurrency is full,
+        # stalling aggregation); stateless selectors ignore the state.
         # ends() can be None transiently before selections populate (notably in
         # simulated mode where distribute/aggregate run back-to-back) — skip and
         # retry rather than crash on len(None).
-        ends = channel.ends()
+        ends = channel.ends(VAL_CH_STATE_RECV)
         if not ends:
             time.sleep(0.5)
             return
@@ -430,7 +440,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     agg_obs[eid] = _rd.total_seconds() if hasattr(_rd, "total_seconds") else _rd
             ev, fields = build_agg_round(
                 round_num=self._round,
-                in_flight=len(channel.ends() or []),
+                in_flight=len(channel.ends(VAL_CH_STATE_RECV) or []),
                 staleness=list(self._round_update_values.get("staleness", [])),
                 stat_utility=list(self._round_update_values.get("stat_utility", [])),
                 trainer_speed_s=list(
@@ -451,7 +461,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             deepcopy(self.weights),
             self.cache,
             total=total,
-            num_trainers=len(channel.ends() or []),
+            num_trainers=len(channel.ends(VAL_CH_STATE_RECV) or []),
         )
         if global_weights is None:
             logger.debug("failed model aggregation")
@@ -473,6 +483,47 @@ class TopAggregator(Role, metaclass=ABCMeta):
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
 
+    def _await_min_trainers(self, channel) -> None:
+        """One-shot startup barrier: block until ``min_trainers_to_start`` ends
+        have joined the channel before the first selection.
+
+        Trainers are real processes that spawn + join over wall-clock time in
+        BOTH real and simulated mode — simulated only virtualizes training
+        *sleeps*, not process startup. Without this barrier, simulated mode races
+        through the early rounds before the cohort finishes joining, so the
+        selector picks from a partially-joined pool and selection diverges from
+        real (which, pacing at true speed, sees the full pool by then). Waiting
+        for the same join threshold in both modes makes the candidate set — and
+        hence the seeded selection — match. Bounded by a timeout so a crashed or
+        slow trainer cannot deadlock startup; runs once (it is a startup-only
+        concern, and gating every round would stall on any mid-run dropout)."""
+        if getattr(self, "_join_barrier_done", False):
+            return
+        min_start = getattr(self.config.hyperparameters, "min_trainers_to_start", None)
+        if not min_start or int(min_start) <= 0:
+            self._join_barrier_done = True
+            return
+        min_start = int(min_start)
+        # Allow override: large cohorts (e.g. n300 at sleep_between_spawns=1s take
+        # ~5 min to all spawn/join) need a longer wait than the default.
+        timeout_s = float(getattr(
+            self.config.hyperparameters, "min_trainers_join_timeout_s",
+            MIN_TRAINERS_JOIN_TIMEOUT_S))
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            n = len(channel._ends)
+            if n >= min_start:
+                logger.info(f"[JOIN_BARRIER] {n}/{min_start} trainers joined; starting")
+                self._join_barrier_done = True
+                return
+            logger.info(f"[JOIN_BARRIER] waiting for {min_start} trainers to join; have {n}")
+            time.sleep(1.0)
+        logger.warning(
+            f"[JOIN_BARRIER] timed out after {timeout_s:.0f}s; "
+            f"proceeding with {len(channel._ends)}/{min_start} trainers"
+        )
+        self._join_barrier_done = True
+
     @timer_decorator
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
@@ -491,6 +542,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         # this call waits for at least one peer to join this channel
         channel.await_join()
+        # then wait for the configured cohort so real/sim select from the same pool
+        self._await_min_trainers(channel)
 
         # before distributing weights, update it from global model
         self._update_weights()
@@ -498,7 +551,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
-        selected_ends = channel.ends()
+        # SEND state: pick (new) trainers to send the model to. With a buffered
+        # selector (random) this fills concurrency; stateless selectors ignore
+        # the state and return their normal selection.
+        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         if not selected_ends:
             # ends() can be None/empty before trainers join + get selected
             # (notably in simulated mode where the loop spins without sleeps).
@@ -715,8 +771,16 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         # Ensure trainer_event_dict exists
         if self.trainer_event_dict is not None:
-            # Get aggregator time since start
-            agg_time_since_start_s = time.time() - self.agg_start_time_ts
+            # Aggregator time since start, on the SAME timeline the trace's event
+            # timestamps live on. In simulated mode that is the virtual clock
+            # (sim-seconds); wall-clock would be a few seconds total while the
+            # virtual timeline spans the whole trace, making every window look
+            # available. Trainer-side availability already keys off _sim_now()
+            # (sim_send_ts); this mirrors it for the aggregator-side oracular path.
+            agg_time_since_start_s = (
+                self._vclock.now if self.simulated
+                else time.time() - self.agg_start_time_ts
+            )
 
             for trainer_id, event_dict in list(self.trainer_event_dict.items()):
                 logger.debug(
