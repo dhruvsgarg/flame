@@ -68,6 +68,9 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # sleep, so available responders land in a tiny physical window; we collect them
 # and commit the first_k with the smallest sim_completion_ts (the k that would
 # finish first in real mode), independent of physical arrival jitter.
+# Real MQTT delivery overhead (agg→trainer + trainer→agg) expected in both real
+# and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
+_NETWORK_SLACK_S = 2.0
 SYNC_SIM_RECV_DEADLINE_S = 30
 SYNC_SIM_RECV_FILL_TIMEOUT_S = 0.5
 
@@ -374,6 +377,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # receive local model parameters from trainers
         for msg, metadata in updates:
             end, timestamp = metadata
+            _t_msg_start = datetime.now()  # start of per-message processing (vii)
             if not msg:
                 logger.debug(f"No data from {end}; skipping it")
                 continue
@@ -393,27 +397,28 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"[SEND_RECV_LAG] end={end} version={self._round} "
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
-                _lag_warn = 30.0 if not self.simulated else 10.0
-                if wall_lag_s > _lag_warn:
-                    logger.warning(
-                        f"[SEND_RECV_LAG_HIGH] end={end} version={self._round} "
-                        f"wall_lag_s={wall_lag_s:.1f}s — possible MQTT backlog"
-                    )
-                # Decompose wall_lag_s into training elapsed vs MQTT delivery.
-                # WALL_SEND_TS is the trainer's wall-clock unix ts at channel.send().
-                _wst = msg.get(MessageType.WALL_SEND_TS)
-                if _wst is not None and not self.simulated:
-                    _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
-                    _agg_recv_unix = recv_ts.timestamp() if hasattr(recv_ts, "timestamp") else None
-                    if _agg_sent_unix is not None and _agg_recv_unix is not None:
-                        _train_elapsed_s = float(_wst) - _agg_sent_unix
-                        _mqtt_lag_s = _agg_recv_unix - float(_wst)
-                        logger.info(
-                            f"[MQTT_DELIVERY_LAG] end={end} version={self._round} "
-                            f"train_elapsed_s={_train_elapsed_s:.3f} "
-                            f"mqtt_lag_s={_mqtt_lag_s:.3f} "
-                            f"wall_lag_s={wall_lag_s:.3f}"
-                        )
+                # Full per-message lag decomposition into 6 components.
+                _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
+                _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
+                _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+                _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
+                _agg_recv_unix = recv_ts.timestamp() if hasattr(recv_ts, "timestamp") else None
+                _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
+                _compute = f"{float(_rcs):.3f}" if _rcs is not None else "-"
+                _post_wait = f"{float(_wst) - float(_wrt) - float(_rcs):.3f}" if (_wst and _wrt and _rcs is not None) else "-"
+                _mqtt_lag = f"{_agg_recv_unix - float(_wst):.3f}" if (_wst and _agg_recv_unix) else "-"
+                _queue_wait = f"{(_t_msg_start - recv_ts).total_seconds():.3f}"
+                _process = f"{(datetime.now() - _t_msg_start).total_seconds():.3f}"
+                logger.info(
+                    f"[LAG_DECOMP] end={end} version={self._round} "
+                    f"wall_lag_s={wall_lag_s:.3f} "
+                    f"agg_to_trainer_s={_agg_to_trainer} "
+                    f"compute_s={_compute} "
+                    f"post_wait_s={_post_wait} "
+                    f"mqtt_lag_s={_mqtt_lag} "
+                    f"queue_wait_s={_queue_wait} "
+                    f"process_s={_process}"
+                )
                 _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
                 if _budget_s > 0:
                     if self.simulated:
@@ -421,18 +426,21 @@ class TopAggregator(Role, metaclass=ABCMeta):
                         _sct = msg.get(MessageType.SIM_COMPLETION_TS)
                         if _sst is not None and _sct is not None:
                             _virt_elapsed = float(_sct) - float(_sst)
-                            if _virt_elapsed <= 0.0:
+                            if _virt_elapsed > _budget_s:
                                 logger.warning(
                                     f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={self._round} "
                                     f"budget={_budget_s:.1f}s overrun: "
-                                    f"virtual_elapsed={_virt_elapsed:.2f}s"
+                                    f"virtual_elapsed={_virt_elapsed:.2f}s "
+                                    f"(excess={_virt_elapsed - _budget_s:.2f}s). "
+                                    f"Reduce trainers-per-GPU or add GPUs."
                                 )
                     else:
-                        if wall_lag_s > _budget_s:
+                        if wall_lag_s > _budget_s + _NETWORK_SLACK_S:
                             logger.warning(
                                 f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={self._round} "
-                                f"budget={_budget_s:.1f}s overrun: wall_lag={wall_lag_s:.2f}s "
-                                f"(excess={wall_lag_s - _budget_s:.2f}s). "
+                                f"budget={_budget_s:.1f}s+slack={_NETWORK_SLACK_S:.1f}s "
+                                f"overrun: wall_lag={wall_lag_s:.2f}s "
+                                f"(excess={wall_lag_s - _budget_s - _NETWORK_SLACK_S:.2f}s). "
                                 f"Reduce trainers-per-GPU or add GPUs."
                             )
 
@@ -711,6 +719,19 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True
+            # Failsafe: in sim mode the primary check is virtual time, but if
+            # vclock advancement is broken the run can hang indefinitely.
+            # Hard-stop at max_runtime_s real wall seconds regardless.
+            if self.simulated and not self._work_done:
+                _wall_elapsed = time.time() - self.agg_start_time_ts
+                if _wall_elapsed > float(_max_rt):
+                    logger.warning(
+                        f"[WALL_CLOCK_FAILSAFE] max_runtime_s={_max_rt}s wall-clock cap "
+                        f"reached (wall_elapsed={_wall_elapsed:.0f}s, "
+                        f"vclock={self._vclock.now:.0f}s) at round {self._round}; "
+                        f"stopping run (vclock may be stalled)."
+                    )
+                    self._work_done = True
 
         channel = self.cm.get_by_tag(self.dist_tag)
         if not channel:

@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 # per-end probe wait when filling the simulated reorder buffer
 OORT_SIM_RECV_FILL_TIMEOUT_S = 0.5
+# Real MQTT delivery overhead (agg→trainer + trainer→agg) expected in both real
+# and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
+_NETWORK_SLACK_S = 2.0
 
 
 class TopAggregator(BaseTopAggregator):
@@ -598,9 +601,16 @@ class TopAggregator(BaseTopAggregator):
                 f"Setting channel property {PROP_ROUND_START_TIME} for "
                 f"end {end}. For round {self._round} at time: {datetime.now()}"
             )
+            _send_ts = datetime.now()
             channel.set_end_property(
-                end, PROP_ROUND_START_TIME, (self._round, datetime.now())
+                end, PROP_ROUND_START_TIME, (self._round, _send_ts)
             )
+            # Per-version send timestamp so stale-update SEND_RECV_LAG can use
+            # the original send time for version N even when the aggregator has
+            # already moved to a later round (which would overwrite PROP_ROUND_START_TIME).
+            if not hasattr(self, "_oort_sent_version_ts"):
+                self._oort_sent_version_ts: dict = {}
+            self._oort_sent_version_ts.setdefault(end, {})[self._round] = _send_ts
 
             msg = {
                 MessageType.WEIGHTS: weights_to_device(
@@ -626,6 +636,7 @@ class TopAggregator(BaseTopAggregator):
     ) -> int:
         end = metadata[0]
         timestamp = metadata[1]
+        _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
         logger.info(f"[MSG_PROCESSING] Processing message from end ...{end[-8:]}, round={self._round}, msg_version={msg.get(MessageType.MODEL_VERSION, 'N/A')}")
         logger.debug(f"received data from {end}")
@@ -639,6 +650,70 @@ class TopAggregator(BaseTopAggregator):
             channel.set_end_property(
                 end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
             )
+
+        # Per-version send-time lookup so stale updates (version N arriving in
+        # round M > N) use the correct send timestamp for version N, not the
+        # overwritten PROP_ROUND_START_TIME from the later re-selection.
+        _msg_version = msg.get(MessageType.MODEL_VERSION, self._round)
+        _sent_version_ts = getattr(self, "_oort_sent_version_ts", {})
+        _sent_ts = _sent_version_ts.get(end, {}).get(_msg_version)
+        if _sent_ts is None and isinstance(round_start_time_tup, tuple):
+            # Fallback: if we somehow lack the per-version entry (e.g. process
+            # resumed mid-run), use PROP_ROUND_START_TIME only when the version
+            # matches so we don't measure the wrong round's lag.
+            if round_start_time_tup[0] == _msg_version:
+                _sent_ts = round_start_time_tup[1]
+        if _sent_ts is not None:
+            _recv_ts = timestamp if isinstance(timestamp, datetime) else datetime.now()
+            wall_lag_s = (_recv_ts - _sent_ts).total_seconds()
+            logger.info(
+                f"[SEND_RECV_LAG] end={end} version={_msg_version} "
+                f"wall_lag_s={wall_lag_s:.3f}"
+            )
+            # Full per-message lag decomposition into 6 components.
+            _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
+            _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
+            _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+            _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
+            _agg_recv_unix = _recv_ts.timestamp() if hasattr(_recv_ts, "timestamp") else None
+            _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
+            _compute = f"{float(_rcs):.3f}" if _rcs is not None else "-"
+            _post_wait = f"{float(_wst) - float(_wrt) - float(_rcs):.3f}" if (_wst and _wrt and _rcs is not None) else "-"
+            _mqtt_lag = f"{_agg_recv_unix - float(_wst):.3f}" if (_wst and _agg_recv_unix) else "-"
+            _queue_wait = f"{(_t_msg_start - _recv_ts).total_seconds():.3f}"
+            _process = f"{(datetime.now() - _t_msg_start).total_seconds():.3f}"
+            logger.info(
+                f"[LAG_DECOMP] end={end} version={_msg_version} "
+                f"wall_lag_s={wall_lag_s:.3f} "
+                f"agg_to_trainer_s={_agg_to_trainer} "
+                f"compute_s={_compute} "
+                f"post_wait_s={_post_wait} "
+                f"mqtt_lag_s={_mqtt_lag} "
+                f"queue_wait_s={_queue_wait} "
+                f"process_s={_process}"
+            )
+            _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+            if _budget_s > 0:
+                if self.simulated:
+                    # sim overrun: virtual round duration > budget.
+                    # ROUND_COMPUTE_S = max(gpu, D) = SIM_ROUND_DURATION.
+                    if _rcs is not None and float(_rcs) > _budget_s:
+                        logger.warning(
+                            f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={_msg_version} "
+                            f"budget={_budget_s:.1f}s overrun: "
+                            f"virtual_elapsed={float(_rcs):.2f}s "
+                            f"(excess={float(_rcs) - _budget_s:.2f}s). "
+                            f"Reduce trainers-per-GPU or add GPUs."
+                        )
+                else:
+                    if wall_lag_s > _budget_s + _NETWORK_SLACK_S:
+                        logger.warning(
+                            f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={_msg_version} "
+                            f"budget={_budget_s:.1f}s+slack={_NETWORK_SLACK_S:.1f}s "
+                            f"overrun: wall_lag={wall_lag_s:.2f}s "
+                            f"(excess={wall_lag_s - _budget_s - _NETWORK_SLACK_S:.2f}s). "
+                            f"Reduce trainers-per-GPU or add GPUs."
+                        )
 
         if MessageType.WEIGHTS in msg:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)

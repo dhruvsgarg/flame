@@ -167,6 +167,9 @@ class Trainer(Role, metaclass=ABCMeta):
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
         msg, _ = channel.recv(end)
+        # Stamp as early as possible so the aggregator can measure
+        # the agg→trainer delivery leg (i).
+        self._wall_recv_ts = time.time()
 
         if not msg:
             logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
@@ -394,8 +397,20 @@ class Trainer(Role, metaclass=ABCMeta):
         if _budget is not None:
             msg[MessageType.TRAINING_BUDGET_S] = float(_budget)
 
-        # Stamp wall-clock send time so aggregator can decompose wall_lag_s into
-        # training_elapsed (agg_send→trainer_send) vs MQTT delivery (trainer_send→agg_recv).
+        # Modeled round compute: max(real_gpu_time, training_delay_s). Stamped
+        # unconditionally (real + sim) so the aggregator can decompose the
+        # trainer-side lag into delivery + compute + post-wait in both modes.
+        _compute_s = getattr(self, "_sim_round_duration", None)
+        if _compute_s is not None:
+            msg[MessageType.ROUND_COMPUTE_S] = float(_compute_s)
+
+        # Trainer recv timestamp: when channel.recv() returned the distributed
+        # weights. Used by the aggregator for the agg→trainer delivery leg (i).
+        _wrt = getattr(self, "_wall_recv_ts", None)
+        if _wrt is not None:
+            msg[MessageType.WALL_RECV_TS] = float(_wrt)
+
+        # Stamp wall-clock send time so aggregator can decompose wall_lag_s.
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
 

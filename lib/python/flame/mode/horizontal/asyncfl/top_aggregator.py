@@ -51,6 +51,9 @@ from flame.selector.oort import (
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
+# Real MQTT delivery overhead (agg→trainer + trainer→agg) expected in both real
+# and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
+_NETWORK_SLACK_S = 2.0
 
 # Max wall-clock to block on one async receive before skipping the cycle and
 # re-selecting; guards against hanging when all in-flight trainers go quiet.
@@ -275,6 +278,7 @@ class TopAggregator(SyncTopAgg):
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
             return
+        _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
         # NOTE: Only 2 types of messages are expected here: (i) model
         # updates after task_to_perform=TRAIN with weights or (ii)
@@ -376,7 +380,13 @@ class TopAggregator(SyncTopAgg):
                 f"during aggregation"
             )
         else:
-            recv_wts_ts = datetime.now()
+            # Use the MQTT arrival timestamp (captured when the message first landed
+            # in the per-trainer rxq) so that wall_lag_s measures actual
+            # send→receive latency, not commit latency. In sim mode the reorder
+            # buffer delays commit by several real seconds after MQTT delivery;
+            # using datetime.now() here would inflate the lag measurement by the
+            # entire buffer-wait duration and fire false SEND_RECV_LAG_HIGH alerts.
+            recv_wts_ts = timestamp if isinstance(timestamp, datetime) else datetime.now()
             recv_wts_version = msg[MessageType.MODEL_VERSION]
 
             # check0- verify that this recvd version was sent to
@@ -422,47 +432,53 @@ class TopAggregator(SyncTopAgg):
                     f"[SEND_RECV_LAG] end={end} version={recv_wts_version} "
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
-                _lag_warn_threshold_s = 30.0 if not self.simulated else 10.0
-                if wall_lag_s > _lag_warn_threshold_s:
-                    logger.warning(
-                        f"[SEND_RECV_LAG_HIGH] end={end} version={recv_wts_version} "
-                        f"wall_lag_s={wall_lag_s:.1f}s — possible MQTT backlog"
-                    )
-                # Decompose wall_lag_s into training elapsed vs MQTT delivery.
-                # WALL_SEND_TS is the trainer's wall-clock unix ts at channel.send().
-                _wst = msg.get(MessageType.WALL_SEND_TS)
-                if _wst is not None and not self.simulated:
-                    _agg_sent_unix = sent_wts_ts.timestamp() if hasattr(sent_wts_ts, "timestamp") else None
-                    _agg_recv_unix = recv_wts_ts.timestamp() if hasattr(recv_wts_ts, "timestamp") else None
-                    if _agg_sent_unix is not None and _agg_recv_unix is not None:
-                        _train_elapsed_s = float(_wst) - _agg_sent_unix
-                        _mqtt_lag_s = _agg_recv_unix - float(_wst)
-                        logger.info(
-                            f"[MQTT_DELIVERY_LAG] end={end} version={recv_wts_version} "
-                            f"train_elapsed_s={_train_elapsed_s:.3f} "
-                            f"mqtt_lag_s={_mqtt_lag_s:.3f} "
-                            f"wall_lag_s={wall_lag_s:.3f}"
-                        )
+                # Full per-message lag decomposition into 6 components.
+                _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
+                _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
+                _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+                _agg_sent_unix = sent_wts_ts.timestamp() if hasattr(sent_wts_ts, "timestamp") else None
+                _agg_recv_unix = recv_wts_ts.timestamp() if hasattr(recv_wts_ts, "timestamp") else None
+                _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
+                _compute = f"{float(_rcs):.3f}" if _rcs is not None else "-"
+                _post_wait = f"{float(_wst) - float(_wrt) - float(_rcs):.3f}" if (_wst and _wrt and _rcs is not None) else "-"
+                _mqtt_lag = f"{_agg_recv_unix - float(_wst):.3f}" if (_wst and _agg_recv_unix) else "-"
+                _queue_wait = f"{(_t_msg_start - recv_wts_ts).total_seconds():.3f}"
+                _process = f"{(datetime.now() - _t_msg_start).total_seconds():.3f}"
+                logger.info(
+                    f"[LAG_DECOMP] end={end} version={recv_wts_version} "
+                    f"wall_lag_s={wall_lag_s:.3f} "
+                    f"agg_to_trainer_s={_agg_to_trainer} "
+                    f"compute_s={_compute} "
+                    f"post_wait_s={_post_wait} "
+                    f"mqtt_lag_s={_mqtt_lag} "
+                    f"queue_wait_s={_queue_wait} "
+                    f"process_s={_process}"
+                )
 
                 _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
                 if _budget_s > 0:
                     if self.simulated:
+                        # sim overrun: virtual round duration exceeded budget.
+                        # virtual_elapsed = SIM_COMPLETION_TS - SIM_SEND_TS = SIM_ROUND_DURATION.
                         _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
                         _sct = msg.get(MessageType.SIM_COMPLETION_TS)
                         if _sst is not None and _sct is not None:
                             _virt_elapsed = float(_sct) - float(_sst)
-                            if _virt_elapsed <= 0.0:
+                            if _virt_elapsed > _budget_s:
                                 logger.warning(
                                     f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={recv_wts_version} "
-                                    f"budget={_budget_s:.1f}s overrun: virtual_elapsed={_virt_elapsed:.2f}s. "
+                                    f"budget={_budget_s:.1f}s overrun: "
+                                    f"virtual_elapsed={_virt_elapsed:.2f}s "
+                                    f"(excess={_virt_elapsed - _budget_s:.2f}s). "
                                     f"Reduce trainers-per-GPU or add GPUs."
                                 )
                     else:
-                        if wall_lag_s > _budget_s:
+                        if wall_lag_s > _budget_s + _NETWORK_SLACK_S:
                             logger.warning(
                                 f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={recv_wts_version} "
-                                f"budget={_budget_s:.1f}s overrun: wall_lag={wall_lag_s:.2f}s "
-                                f"(excess={wall_lag_s - _budget_s:.2f}s). "
+                                f"budget={_budget_s:.1f}s+slack={_NETWORK_SLACK_S:.1f}s "
+                                f"overrun: wall_lag={wall_lag_s:.2f}s "
+                                f"(excess={wall_lag_s - _budget_s - _NETWORK_SLACK_S:.2f}s). "
                                 f"Reduce trainers-per-GPU or add GPUs."
                             )
 

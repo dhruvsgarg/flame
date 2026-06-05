@@ -267,33 +267,48 @@ _OVERRUN_EXCESS_RE = re.compile(
     r"\[TIMING_OVERRUN_AGG\].*excess=([0-9.]+)s"
 )
 
-_MQTT_LAG_RE = re.compile(
-    r"\[MQTT_DELIVERY_LAG\] end=(\S+) version=(\d+) "
-    r"train_elapsed_s=([0-9.-]+) mqtt_lag_s=([0-9.-]+) wall_lag_s=([0-9.]+)"
+# [LAG_DECOMP] replaces the old [MQTT_DELIVERY_LAG] with a 6-component breakdown.
+# Any field can be '-' when the required trainer-side timestamp was absent.
+_LAG_DECOMP_RE = re.compile(
+    r"\[LAG_DECOMP\] end=(\S+) version=(\d+) "
+    r"wall_lag_s=([0-9.-]+) "
+    r"agg_to_trainer_s=([0-9.-]+|-) "
+    r"compute_s=([0-9.-]+|-) "
+    r"post_wait_s=([0-9.-]+|-) "
+    r"mqtt_lag_s=([0-9.-]+|-) "
+    r"queue_wait_s=([0-9.-]+|-) "
+    r"process_s=([0-9.-]+|-)"
 )
 
 
-def _parse_mqtt_delivery_lags(telemetry_dir: str) -> tuple[list[float], list[float]]:
-    """Parse [MQTT_DELIVERY_LAG] lines from the aggregator log.
+def _parse_lag_decomp(telemetry_dir: str) -> dict[str, list[float]]:
+    """Parse [LAG_DECOMP] lines from the aggregator log.
 
-    Returns (train_elapsed_list, mqtt_lag_list). Each element corresponds to
-    one trainer update. Returns ([], []) if no log or no matching lines.
-    train_elapsed_s = time from agg sending model to trainer calling channel.send()
-    mqtt_lag_s      = time from trainer send to aggregator receiving the update
+    Returns a dict keyed by component name; each value is a list of floats
+    (one per update where that component was available). '-' entries are dropped.
+    Keys: wall_lag_s, agg_to_trainer_s, compute_s, post_wait_s,
+          mqtt_lag_s, queue_wait_s, process_s
     """
     run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
     logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    result: dict[str, list[float]] = {
+        k: [] for k in ("wall_lag_s", "agg_to_trainer_s", "compute_s",
+                         "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
+    }
     if not logs:
-        return [], []
-    train_elapsed: list[float] = []
-    mqtt_lags: list[float] = []
+        return result
+    keys = ("wall_lag_s", "agg_to_trainer_s", "compute_s",
+            "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
     with open(logs[0]) as fh:
         for line in fh:
-            m = _MQTT_LAG_RE.search(line)
-            if m:
-                train_elapsed.append(float(m.group(3)))
-                mqtt_lags.append(float(m.group(4)))
-    return train_elapsed, mqtt_lags
+            m = _LAG_DECOMP_RE.search(line)
+            if not m:
+                continue
+            for i, k in enumerate(keys):
+                v = m.group(i + 3)
+                if v != "-":
+                    result[k].append(float(v))
+    return result
 
 
 def _parse_overrun_excesses(telemetry_dir: str) -> list[float]:
@@ -1040,6 +1055,109 @@ def insights_plots(records, out, stamp, tdir):
 
 
 # ==========================================================================
+# resource monitor parsing
+# ==========================================================================
+
+_RE_RESOURCE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"         # timestamp
+    r".*?RAM:\s*([\d.]+)GB / ([\d.]+)GB \(([\d.]+)%\)"  # RAM
+    r".*?Swap:\s*([\d.]+)GB \(([\d.]+)%\)"               # Swap
+)
+_RE_GPU = re.compile(
+    r"GPU(\d+):\s*([\d.]+)/([\d.]+)GB \(([\d.]+)%\) Util:(\d+)%"
+)
+
+
+def parse_resource_log(run_dir: str) -> list[dict]:
+    """Parse the *_resources.log in run_dir.  Returns a list of dicts with
+    keys: timestamp_s (epoch float), ram_gb, ram_pct, swap_gb, swap_pct,
+    and gpu_N_mem_gb / gpu_N_mem_pct / gpu_N_util_pct per GPU index N."""
+    candidates = glob.glob(os.path.join(run_dir, "*_resources.log"))
+    if not candidates:
+        return []
+    rows = []
+    with open(candidates[0], encoding="utf-8") as fh:
+        for line in fh:
+            m = _RE_RESOURCE.match(line)
+            if not m:
+                continue
+            ts_str, ram_gb, ram_total_gb, ram_pct, swap_gb, swap_pct = m.groups()
+            from datetime import datetime as _dt
+            ts = _dt.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
+            row: dict = {
+                "timestamp_s": ts,
+                "ram_gb": float(ram_gb),
+                "ram_pct": float(ram_pct),
+                "swap_gb": float(swap_gb),
+                "swap_pct": float(swap_pct),
+            }
+            for gm in _RE_GPU.finditer(line):
+                idx, mem_gb, mem_total_gb, mem_pct, util_pct = gm.groups()
+                n = int(idx)
+                row[f"gpu_{n}_mem_gb"] = float(mem_gb)
+                row[f"gpu_{n}_mem_pct"] = float(mem_pct)
+                row[f"gpu_{n}_util_pct"] = float(util_pct)
+            rows.append(row)
+    return rows
+
+
+def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
+    """Generate RAM and GPU resource usage plots from the run's *_resources.log."""
+    rows = parse_resource_log(run_dir)
+    if not rows:
+        return []
+    d = _sub(out, "system")
+    saved = []
+
+    t0 = rows[0]["timestamp_s"]
+    times = [(r["timestamp_s"] - t0) / 60.0 for r in rows]  # minutes since start
+
+    # RAM over time
+    ram_vals = [r["ram_gb"] for r in rows]
+    swap_vals = [r["swap_gb"] for r in rows]
+    ram_series = {"RAM used (GB)": (times, ram_vals)}
+    if any(s > 0.05 for s in swap_vals):
+        ram_series["Swap used (GB)"] = (times, swap_vals)
+    p = ph.line_plot(ram_series, "time (min)", "GB",
+                     "RAM usage over time", d, "resource_ram_over_time.pdf",
+                     stamp=stamp)
+    if p:
+        saved.append(p)
+
+    # GPU utilization over time (one series per GPU)
+    gpu_indices = sorted({int(k.split("_")[1]) for k in rows[0] if k.startswith("gpu_") and k.endswith("_util_pct")})
+    if gpu_indices:
+        util_series = {}
+        for n in gpu_indices:
+            key = f"gpu_{n}_util_pct"
+            vals = [r.get(key, 0.0) for r in rows]
+            if any(v > 0 for v in vals):
+                util_series[f"GPU{n} util%"] = (times, vals)
+        if not util_series:
+            # all zeros — include one flat series so the plot is visible
+            util_series["GPU util% (all 0)"] = (times, [0.0] * len(times))
+        p = ph.line_plot(util_series, "time (min)", "util (%)",
+                         "GPU utilization over time", d, "resource_gpu_util_over_time.pdf",
+                         stamp=stamp)
+        if p:
+            saved.append(p)
+
+        # GPU memory over time
+        mem_series = {}
+        for n in gpu_indices:
+            key = f"gpu_{n}_mem_gb"
+            vals = [r.get(key, 0.0) for r in rows]
+            mem_series[f"GPU{n} mem (GB)"] = (times, vals)
+        p = ph.line_plot(mem_series, "time (min)", "memory (GB)",
+                         "GPU memory usage over time", d, "resource_gpu_mem_over_time.pdf",
+                         stamp=stamp)
+        if p:
+            saved.append(p)
+
+    return saved
+
+
+# ==========================================================================
 # system/
 # ==========================================================================
 
@@ -1190,30 +1308,43 @@ def system_plots(records, out, stamp, tdir):
         d, "send_recv_lag_over_rounds.pdf", stamp=stamp)
     if p: saved.append(p)
 
-    # MQTT delivery lag decomposition: wall_lag_s = train_elapsed + mqtt_lag.
-    # train_elapsed = time from agg sending model to trainer calling send().
-    # mqtt_lag      = time from trainer send() to agg receiving the gradient.
-    # Available only in real mode (WALL_SEND_TS not stamped in sim).
-    train_elapsed_vals, mqtt_lag_vals = _parse_mqtt_delivery_lags(tdir)
-    _n_decomp = len(mqtt_lag_vals)
-    p = ph.cdf_plot(mqtt_lag_vals, "mqtt_lag_s (trainer send → agg recv)",
-                    f"MQTT delivery lag CDF (n={_n_decomp}; 0=sim/no data)",
-                    d, "mqtt_delivery_lag_cdf.pdf", stamp=stamp)
-    if p: saved.append(p)
+    # Full lag decomposition from [LAG_DECOMP]: 6 components per update.
+    # (i) agg_to_trainer: agg channel.send → trainer channel.recv (network delivery out)
+    # (ii) compute: max(gpu_time, training_delay_s) — modeled round cost
+    # (iii) post_wait: trainer channel.recv + compute → trainer channel.send (overhead + sleep)
+    # (iv) mqtt_lag: trainer channel.send → MQTT arrival at agg (network delivery back)
+    # (v+vi) queue_wait: MQTT arrival → aggregator dequeues (sim buffer wait; ~0 real)
+    # (vii) process: aggregator per-message overhead (property sets, logging)
+    decomp = _parse_lag_decomp(tdir)
+    _n_decomp = len(decomp["wall_lag_s"])
 
-    # Multi-series CDF: wall_lag vs train_elapsed vs mqtt_lag.
-    # Tells you which component dominates and whether the bottleneck is
-    # GPU contention (large train_elapsed) or broker backlog (large mqtt_lag).
+    # Individual CDFs for each component
+    _comp_labels = {
+        "agg_to_trainer_s": "agg→trainer delivery (s)",
+        "compute_s":         "trainer compute max(gpu,D) (s)",
+        "post_wait_s":       "post-compute wait (s)",
+        "mqtt_lag_s":        "trainer→agg MQTT delivery (s)",
+        "queue_wait_s":      "sim buffer / queue wait (s)",
+        "process_s":         "agg per-msg processing (s)",
+    }
+    for key, xlabel in _comp_labels.items():
+        vals = decomp[key]
+        if vals:
+            p = ph.cdf_plot(vals, xlabel,
+                            f"Lag component: {key} CDF (n={len(vals)})",
+                            d, f"lag_decomp_{key}_cdf.pdf", stamp=stamp)
+            if p: saved.append(p)
+
+    # Multi-series CDF: all components + total for visual comparison.
     decomp_series: dict[str, list[float]] = {}
-    if wall_lags:
-        decomp_series[f"wall_lag_s (n={len(wall_lags)})"] = sorted(wall_lags)
-    if train_elapsed_vals:
-        decomp_series[f"train_elapsed_s (n={len(train_elapsed_vals)})"] = sorted(train_elapsed_vals)
-    if mqtt_lag_vals:
-        decomp_series[f"mqtt_lag_s (n={len(mqtt_lag_vals)})"] = sorted(mqtt_lag_vals)
+    if decomp["wall_lag_s"]:
+        decomp_series[f"wall_lag_s (n={_n_decomp})"] = sorted(decomp["wall_lag_s"])
+    for key, xlabel in _comp_labels.items():
+        if decomp[key]:
+            decomp_series[f"{key} (n={len(decomp[key])})"] = sorted(decomp[key])
     p = ph.cdf_multi(decomp_series,
                      "seconds",
-                     "Wall-lag decomposition: total vs train vs MQTT CDF",
+                     "Wall-lag 6-component decomposition CDF",
                      d, "wall_lag_decomposition_cdf.pdf", stamp=stamp)
     if p: saved.append(p)
 
@@ -1254,6 +1385,10 @@ def analyze(telemetry_dir, out_dir=None):
             saved.extend(fn(records, out_dir, stamp, telemetry_dir))
         except Exception as e:
             print("  (%s failed: %s)" % (fn.__name__, e))
+    try:
+        saved.extend(resource_plots(out_dir, stamp, run_dir))
+    except Exception as e:
+        print("  (resource_plots failed: %s)" % e)
     saved.append(write_summary(records, out_dir, telemetry_dir))
     print("wrote %d artifact(s) under %s" % (len(saved), out_dir))
     for p in saved:

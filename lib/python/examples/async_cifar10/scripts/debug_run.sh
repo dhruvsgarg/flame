@@ -6,8 +6,8 @@
 # short 1h debugging runs to isolate overrun root causes between baselines.
 #
 # Usage (run on each node separately):
-#   debug_run.sh --node node1 [--baselines felix] [--runtime-s 3600]
-#   debug_run.sh --node node2 [--baselines refl]  [--runtime-s 3600]
+#   debug_run.sh --node node1 [--baselines felix] [--runtime-s 1800]
+#   debug_run.sh --node node2 [--baselines refl]  [--runtime-s 1800]
 #   debug_run.sh smoke        # 48 trainers, 4 rounds, all baselines
 #
 # Node→baseline assignment (matches OVERNIGHT config split):
@@ -56,7 +56,7 @@ export FLAME_BATCH_CONTINUE_ON_ERROR=1
 
 # defaults
 NODE=""
-RUNTIME_S=3600
+RUNTIME_S=1800
 BASELINES="felix refl"
 
 usage() {
@@ -73,7 +73,7 @@ else
     case "$1" in
       --node)        NODE="$2"; shift 2 ;;
       --baselines)   BASELINES="$2"; shift 2 ;;
-      --runtime-s)   RUNTIME_S="$2"; shift 2 ;;
+      --runtime-s)   RUNTIME_S="$2"; shift 2 ;;  # overrides 1800s default
       *) usage ;;
     esac
   done
