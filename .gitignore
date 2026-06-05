@@ -101,6 +101,7 @@ specs/*
 
 # Experiment run outputs (telemetry / plots / logs) — generated, not source
 lib/python/examples/async_cifar10/experiments/run_*/
+lib/python/examples/async_cifar10/run_logs/
 # Stray trainer log + local Claude Code project dir
 temp_trainer.log
 .claude/
