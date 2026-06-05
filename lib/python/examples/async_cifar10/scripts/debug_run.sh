@@ -51,7 +51,7 @@ echo "conda: base=$CB env=$ENVNAME python=$(which python)"
 EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$EX" || exit 1
 SCR=expt_scripts_2026
-LOGDIR="$EX/run_logs/debug"; mkdir -p "$LOGDIR"
+LOGDIR=/tmp/debug_run_logs; mkdir -p "$LOGDIR"
 export FLAME_BATCH_CONTINUE_ON_ERROR=1
 
 # defaults
