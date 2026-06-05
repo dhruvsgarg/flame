@@ -8,10 +8,31 @@
 #   compare_overnight.sh            # auto-discovers latest run dir per (baseline,mode)
 # Output: /tmp/overnight_compare/{parity_<baseline>.txt, sim_cross/, real_cross/}
 set -u
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate dg_flame
-EX=/home/dgarg39/flame/lib/python/examples/async_cifar10
+
+# --- robust conda activation (handles non-default install locations) ---
+ENVNAME="${FLAME_CONDA_ENV:-dg_flame}"
+CB=""
+if command -v conda >/dev/null 2>&1; then
+  CB="$(conda info --base 2>/dev/null)"
+elif [ -n "${CONDA_EXE:-}" ]; then
+  CB="$(dirname "$(dirname "$CONDA_EXE")")"
+fi
+if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
+  for c in "$HOME/miniconda3" "/coc/scratch/${USER%??}/miniconda3" \
+           "/coc/scratch/$USER/miniconda3" "$HOME/anaconda3" /opt/conda; do
+    [ -f "$c/etc/profile.d/conda.sh" ] && CB="$c" && break
+  done
+fi
+if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
+  echo "ERROR: conda not found. Activate '$ENVNAME' yourself or set CONDA_EXE." >&2; exit 1
+fi
+source "$CB/etc/profile.d/conda.sh"
+conda activate "$ENVNAME" || { echo "ERROR: 'conda activate $ENVNAME' failed" >&2; exit 1; }
+
+# paths derived from this script's location (portable across nodes)
+EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$EX" || exit 1
-ROOT=/home/dgarg39/flame
+ROOT="$(cd "$EX/../../../.." && pwd)"
 OUT=/tmp/overnight_compare; mkdir -p "$OUT"
 BASELINES="felix oort refl feddance"
 

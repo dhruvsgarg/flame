@@ -10,8 +10,30 @@
 # and hard-sweeps stragglers + waits for GPU to drain between experiments, so one
 # failed/hung run is cleaned off the system and the next proceeds. Logs per node.
 set -u
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate dg_flame
-EX=/home/dgarg39/flame/lib/python/examples/async_cifar10
+
+# --- robust conda activation (handles non-default install locations) ---
+ENVNAME="${FLAME_CONDA_ENV:-dg_flame}"
+CB=""
+if command -v conda >/dev/null 2>&1; then
+  CB="$(conda info --base 2>/dev/null)"
+elif [ -n "${CONDA_EXE:-}" ]; then
+  CB="$(dirname "$(dirname "$CONDA_EXE")")"
+fi
+if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
+  for c in "$HOME/miniconda3" "/coc/scratch/${USER%??}/miniconda3" \
+           "/coc/scratch/$USER/miniconda3" "$HOME/anaconda3" /opt/conda; do
+    [ -f "$c/etc/profile.d/conda.sh" ] && CB="$c" && break
+  done
+fi
+if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
+  echo "ERROR: conda not found. Activate '$ENVNAME' yourself or set CONDA_EXE." >&2; exit 1
+fi
+source "$CB/etc/profile.d/conda.sh"
+conda activate "$ENVNAME" || { echo "ERROR: 'conda activate $ENVNAME' failed" >&2; exit 1; }
+echo "conda: base=$CB env=$ENVNAME python=$(which python)"
+
+# repo example dir, derived from this script's location (portable across nodes)
+EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$EX" || exit 1
 SCR=expt_scripts_2026
 LOGDIR=/tmp/overnight_logs; mkdir -p "$LOGDIR"
