@@ -58,10 +58,14 @@ export FLAME_BATCH_CONTINUE_ON_ERROR=1
 NODE=""
 RUNTIME_S=1800
 BASELINES="felix refl"
+WALL_RUNTIME_S=""   # empty = 4*runtime_s (handled in make_debug_yaml)
 
 usage() {
-  echo "usage: $0 --node node1|node2 [--baselines 'felix refl'] [--runtime-s 3600]"
+  echo "usage: $0 --node node1|node2 [--baselines 'felix refl'] [--runtime-s 3600] [--wall-runtime-s 7200]"
   echo "       $0 smoke"
+  echo ""
+  echo "  --wall-runtime-s  wall-clock failsafe for sim mode (default: 4 * runtime_s)."
+  echo "                    Set generously so a legitimate slow run is not cut early."
   exit 2
 }
 
@@ -71,9 +75,10 @@ if [ "${1:-}" = "smoke" ]; then
 else
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --node)        NODE="$2"; shift 2 ;;
-      --baselines)   BASELINES="$2"; shift 2 ;;
-      --runtime-s)   RUNTIME_S="$2"; shift 2 ;;  # overrides 1800s default
+      --node)            NODE="$2"; shift 2 ;;
+      --baselines)       BASELINES="$2"; shift 2 ;;
+      --runtime-s)       RUNTIME_S="$2"; shift 2 ;;  # overrides 1800s default
+      --wall-runtime-s)  WALL_RUNTIME_S="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -82,12 +87,13 @@ fi
 
 # Generate a filtered+patched YAML from the OVERNIGHT source configs.
 # $1 = node (node1|node2), $2 = baselines (space-separated), $3 = runtime_s,
-# $4 = output path, [$5 = smoke: 1|0]
+# $4 = output path, [$5 = smoke: 1|0], [$6 = wall_runtime_s: int or ""]
 make_debug_yaml() {
-  python - "$SCR" "$1" "$2" "$3" "$4" "${5:-0}" <<'PY'
+  python - "$SCR" "$1" "$2" "$3" "$4" "${5:-0}" "${6:-}" <<'PY'
 import yaml, sys, copy
-scr, node, baselines_str, runtime_s, outpath, smoke = (
-    sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6] == "1"
+scr, node, baselines_str, runtime_s, outpath, smoke, wall_rt_arg = (
+    sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6] == "1",
+    sys.argv[7] if len(sys.argv) > 7 else ""
 )
 requested = set(baselines_str.lower().split())
 
@@ -106,6 +112,9 @@ for e in d["experiments"]:
     e = copy.deepcopy(e)
     h = e["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = runtime_s
+    # Decouple wall-clock failsafe from virtual budget (Task 3).
+    # Default to 4× the virtual budget so a legitimate sim run is not cut early.
+    h["max_wall_runtime_s"] = int(wall_rt_arg) if wall_rt_arg else 4 * runtime_s
     if smoke:
         e["trainer"]["num_trainers"] = 48
         h["rounds"] = 4
@@ -142,7 +151,7 @@ if [ "$NODE" = "smoke" ]; then
   echo "=== SMOKE DEBUG: 48 trainers, 4 rounds, baselines=${BASELINES} ==="
   for node in node1 node2; do
     cfg="$LOGDIR/dbg_smoke_${node}.yaml"
-    make_debug_yaml "$node" "$BASELINES" 240 "$cfg" 1
+    make_debug_yaml "$node" "$BASELINES" 240 "$cfg" 1 ""
     [ -f "$cfg" ] && run_node "dbg_smoke_$node" "$cfg"
   done
   echo "=== SMOKE RESULTS ==="
@@ -156,9 +165,9 @@ if [ "$NODE" = "smoke" ]; then
 fi
 
 # ---- normal run mode ----
-echo "=== DEBUG RUN: node=$NODE baselines='$BASELINES' runtime_s=$RUNTIME_S ==="
+echo "=== DEBUG RUN: node=$NODE baselines='$BASELINES' runtime_s=$RUNTIME_S wall_runtime_s=${WALL_RUNTIME_S:-auto} ==="
 cfg="$LOGDIR/debug_${NODE}.yaml"
-make_debug_yaml "$NODE" "$BASELINES" "$RUNTIME_S" "$cfg" 0
+make_debug_yaml "$NODE" "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$WALL_RUNTIME_S"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for node=$NODE baselines='$BASELINES'. Nothing to run."

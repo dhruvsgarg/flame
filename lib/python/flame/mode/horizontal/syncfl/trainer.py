@@ -19,6 +19,7 @@ import inspect
 import logging
 import math
 import time
+from contextlib import contextmanager
 
 import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -134,6 +135,18 @@ class Trainer(Role, metaclass=ABCMeta):
 
         self.task_to_perform = "train"
 
+        # Per-round phase timing accumulator; reset at each round boundary in _fetch_weights.
+        self._phase_times: dict = {}
+
+    @contextmanager
+    def _phase(self, name: str):
+        """Time a named phase and accumulate into self._phase_times."""
+        t0 = time.time()
+        try:
+            yield
+        finally:
+            self._phase_times[name] = self._phase_times.get(name, 0.0) + (time.time() - t0)
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -144,6 +157,9 @@ class Trainer(Role, metaclass=ABCMeta):
             f"### FETCH WEIGHTS start for tag: {tag}, "
             f"trainer_id: {self.trainer_id}, current_model_version: {self._round}"
         )
+
+        # Reset per-round phase accumulator at the round boundary.
+        self._phase_times = {}
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
@@ -166,10 +182,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        _recv_wall_start = time.time()
         msg, _ = channel.recv(end)
         # Stamp as early as possible so the aggregator can measure
         # the agg→trainer delivery leg (i).
         self._wall_recv_ts = time.time()
+        self._phase_times["mqtt_fetch_s"] = self._wall_recv_ts - _recv_wall_start
 
         if not msg:
             logger.debug(f"NO msg received for trainer_id {self.trainer_id}")
@@ -225,8 +243,12 @@ class Trainer(Role, metaclass=ABCMeta):
             # self._load_model_onto_gpu()
 
             # Update the model
-            self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            self._update_model()
+            with self._phase("weights_to_ram_s"):
+                self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            with self._phase("weights_to_gpu_s"):
+                self._update_model()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
         if MessageType.SIM_SEND_TS in msg:
@@ -358,24 +380,29 @@ class Trainer(Role, metaclass=ABCMeta):
         if self.task_to_perform == "train":
             # trainer is expected to train and it is also available to
             # train - best case
-            self._update_weights()
+            with self._phase("weights_from_gpu_s"):
+                # model.state_dict() copies GPU tensors to CPU; sync for timing accuracy.
+                self._update_weights()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
-            delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
+            with self._phase("post_cpu_s"):
+                delta_weights = self._delta_weights_fn(self.weights, self.prev_weights)
 
-            delta_weights = self.privacy.apply_dp_fn(delta_weights)
+                delta_weights = self.privacy.apply_dp_fn(delta_weights)
 
-            self.regularizer.update()
+                self.regularizer.update()
 
-            self.finalize_local_accuracy()
+                self.finalize_local_accuracy()
 
-            msg = {
-                MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
-                MessageType.DATASET_SIZE: self.dataset_size,
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
-                MessageType.STAT_UTILITY: self._stat_utility,
-                MessageType.LOCAL_ACCURACY: self._local_accuracy,
-            }
+                msg = {
+                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                    MessageType.DATASET_SIZE: self.dataset_size,
+                    MessageType.MODEL_VERSION: self._round,
+                    MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
+                    MessageType.STAT_UTILITY: self._stat_utility,
+                    MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._round,
@@ -414,7 +441,8 @@ class Trainer(Role, metaclass=ABCMeta):
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
 
-        channel.send(end, msg)
+        with self._phase("mqtt_send_s"):
+            channel.send(end, msg)
 
         if self.task_to_perform == "train":
             # To allow the trainer to participate in eval AND train in

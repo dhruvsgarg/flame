@@ -332,7 +332,12 @@ class PyTorchCifar10Trainer(Trainer):
     def initialize(self) -> None:
         """Initialize role."""
         self.memory_profiler.log_component_memory("initialize", "BEFORE")
-        
+
+        # Honour single-thread pinning set by the spawner via OMP_NUM_THREADS=1.
+        if os.environ.get("OMP_NUM_THREADS") == "1":
+            torch.set_num_threads(1)
+            logger.info(f"Trainer {self.trainer_id}: torch.set_num_threads(1) (cpu_pinning active)")
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
@@ -792,8 +797,14 @@ class PyTorchCifar10Trainer(Trainer):
                     "grad_norm_epoch1": self._grad_norm_epoch1,
                     "task_to_perform": getattr(self, "task_to_perform", None),
                     "lr": current_lr,
-                    "pre_train_s": _pre_train_s,
-                    "post_train_s": _post_train_s,
+                    # Per-phase taxonomy (CPU vs GPU breakdown for Task 1 analysis).
+                    # Train-loop phases (this file):
+                    "pre_train_s": _pre_train_s,      # CPU: setup/avail/loader before GPU loop
+                    "gpu_compute_s": _real_gpu_time_s, # GPU: actual forward+backward compute
+                    "sleep_s": _remaining_time,        # wall: modeled-delay sleep (real mode)
+                    "post_train_s": _post_train_s,     # CPU: cleanup+delta-l2 after GPU loop
+                    # Channel/weights phases (syncfl/trainer.py via _phase_times):
+                    **getattr(self, "_phase_times", {}),
                 },
             )
             telemetry.emit(ev, **fields)

@@ -706,6 +706,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # elapsed) so the run covers max_runtime_s of *virtual* time, not wall
         # time. In real mode use wall-clock elapsed.
         _max_rt = getattr(self.config.hyperparameters, "max_runtime_s", None)
+        # max_wall_runtime_s decouples the sim failsafe from the virtual budget
+        # so a fast-GPU run doesn't trigger the failsafe before vclock reaches max_runtime_s.
+        _max_wall_rt = getattr(self.config.hyperparameters, "max_wall_runtime_s", None)
         if _max_rt:
             if self.simulated and hasattr(self, "_vclock"):
                 elapsed = float(self._vclock.now)
@@ -719,19 +722,33 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True
-            # Failsafe: in sim mode the primary check is virtual time, but if
-            # vclock advancement is broken the run can hang indefinitely.
-            # Hard-stop at max_runtime_s real wall seconds regardless.
+            # Failsafe: in sim mode the primary check is virtual time; use a
+            # generous wall-clock guard (max_wall_runtime_s, default 4×virtual
+            # budget) so a legitimate slow run is not cut before vclock reaches T.
             if self.simulated and not self._work_done:
                 _wall_elapsed = time.time() - self.agg_start_time_ts
-                if _wall_elapsed > float(_max_rt):
+                _failsafe_s = float(_max_wall_rt) if _max_wall_rt else 4.0 * float(_max_rt)
+                if _wall_elapsed > _failsafe_s:
                     logger.warning(
-                        f"[WALL_CLOCK_FAILSAFE] max_runtime_s={_max_rt}s wall-clock cap "
-                        f"reached (wall_elapsed={_wall_elapsed:.0f}s, "
-                        f"vclock={self._vclock.now:.0f}s) at round {self._round}; "
-                        f"stopping run (vclock may be stalled)."
+                        f"[WALL_CLOCK_FAILSAFE] wall failsafe={_failsafe_s:.0f}s reached "
+                        f"(wall_elapsed={_wall_elapsed:.0f}s, "
+                        f"vclock={self._vclock.now:.0f}s, max_runtime_s={_max_rt}s) "
+                        f"at round {self._round}; stopping run (vclock may be stalled)."
                     )
                     self._work_done = True
+
+        # Periodic virtual-clock progress log (sim mode only).
+        if self.simulated and hasattr(self, "_vclock"):
+            _now = getattr(self, "_last_vclock_log_wall_ts", 0.0)
+            if time.time() - _now >= 30.0:
+                _wall_e = time.time() - self.agg_start_time_ts
+                _v = float(self._vclock.now)
+                _speedup = _v / _wall_e if _wall_e > 0 else 0.0
+                logger.info(
+                    f"[VCLOCK_PROGRESS] vclock={_v:.1f}s wall={_wall_e:.1f}s "
+                    f"speedup={_speedup:.2f}x round={self._round}"
+                )
+                self._last_vclock_log_wall_ts = time.time()
 
         channel = self.cm.get_by_tag(self.dist_tag)
         if not channel:
