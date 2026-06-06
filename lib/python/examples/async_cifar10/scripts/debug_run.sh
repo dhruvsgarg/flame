@@ -56,7 +56,7 @@ export FLAME_BATCH_CONTINUE_ON_ERROR=1
 
 # defaults
 NODE=""
-RUNTIME_S=1800
+RUNTIME_S=10800
 BASELINES="felix refl"
 SIM_WALL_CEILING_S=""  # empty = max_runtime_s (1×, tight guard; sim should be faster than real)
 
