@@ -338,6 +338,17 @@ class PyTorchCifar10Trainer(Trainer):
             torch.set_num_threads(1)
             logger.info(f"Trainer {self.trainer_id}: torch.set_num_threads(1) (cpu_pinning active)")
 
+        # Report actual post-fork placement so pinning can be verified from logs.
+        try:
+            _cpu_cores = sorted(os.sched_getaffinity(0))
+        except AttributeError:
+            _cpu_cores = []
+        _gpu_env = os.environ.get("CUDA_VISIBLE_DEVICES", "unset")
+        logger.info(
+            f"[PLACEMENT] trainer={self.trainer_id} "
+            f"gpu={_gpu_env} cpu_cores={_cpu_cores}"
+        )
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)

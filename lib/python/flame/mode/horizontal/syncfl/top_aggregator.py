@@ -706,8 +706,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # elapsed) so the run covers max_runtime_s of *virtual* time, not wall
         # time. In real mode use wall-clock elapsed.
         _max_rt = getattr(self.config.hyperparameters, "max_runtime_s", None)
-        # max_wall_runtime_s decouples the sim failsafe from the virtual budget
-        # so a fast-GPU run doesn't trigger the failsafe before vclock reaches max_runtime_s.
+        # sim_wall_ceiling_s: tight wall-clock guard for sim mode (iii-b).
+        # A sim run should finish in <= max_runtime_s wall (it runs faster than
+        # real when the parity bug is fixed). Default = max_runtime_s (1×).
+        # Separate from max_wall_runtime_s (kept for backward compat, used as
+        # secondary fallback if sim_wall_ceiling_s is absent).
+        _sim_wall_ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
         _max_wall_rt = getattr(self.config.hyperparameters, "max_wall_runtime_s", None)
         if _max_rt:
             if self.simulated and hasattr(self, "_vclock"):
@@ -722,31 +726,41 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True
-            # Failsafe: in sim mode the primary check is virtual time; use a
-            # generous wall-clock guard (max_wall_runtime_s, default 4×virtual
-            # budget) so a legitimate slow run is not cut before vclock reaches T.
+            # Failsafe: in sim mode the primary check is virtual time.
+            # sim_wall_ceiling_s (default = max_runtime_s = 1×) caps the wall time
+            # a sim may use — a well-behaved sim finishes in ≤ real-mode wall time.
             if self.simulated and not self._work_done:
                 _wall_elapsed = time.time() - self.agg_start_time_ts
-                _failsafe_s = float(_max_wall_rt) if _max_wall_rt else 4.0 * float(_max_rt)
+                if _sim_wall_ceil:
+                    _failsafe_s = float(_sim_wall_ceil)
+                elif _max_wall_rt:
+                    _failsafe_s = float(_max_wall_rt)
+                else:
+                    _failsafe_s = float(_max_rt)  # default: 1× virtual budget
                 if _wall_elapsed > _failsafe_s:
                     logger.warning(
-                        f"[WALL_CLOCK_FAILSAFE] wall failsafe={_failsafe_s:.0f}s reached "
+                        f"[SIM_WALL_CEILING] sim_wall_ceiling={_failsafe_s:.0f}s reached "
                         f"(wall_elapsed={_wall_elapsed:.0f}s, "
                         f"vclock={self._vclock.now:.0f}s, max_runtime_s={_max_rt}s) "
-                        f"at round {self._round}; stopping run (vclock may be stalled)."
+                        f"at round {self._round}. "
+                        f"Sim is slower than real — investigate per-round parity (bug iii-c). "
+                        f"Stopping run."
                     )
                     self._work_done = True
 
         # Periodic virtual-clock progress log (sim mode only).
+        # sim_rate = vclock/wall (virtual-seconds per wall-second; < 1 when sim is slow).
+        # wall_speedup is computed post-hoc in compare_clock_parity.py as real_wall/sim_wall
+        # for matched virtual time — that is the true "sim is faster/slower than real" measure.
         if self.simulated and hasattr(self, "_vclock"):
             _now = getattr(self, "_last_vclock_log_wall_ts", 0.0)
             if time.time() - _now >= 30.0:
                 _wall_e = time.time() - self.agg_start_time_ts
                 _v = float(self._vclock.now)
-                _speedup = _v / _wall_e if _wall_e > 0 else 0.0
+                _sim_rate = _v / _wall_e if _wall_e > 0 else 0.0
                 logger.info(
                     f"[VCLOCK_PROGRESS] vclock={_v:.1f}s wall={_wall_e:.1f}s "
-                    f"speedup={_speedup:.2f}x round={self._round}"
+                    f"sim_rate={_sim_rate:.3f} (virtual-s/wall-s) round={self._round}"
                 )
                 self._last_vclock_log_wall_ts = time.time()
 

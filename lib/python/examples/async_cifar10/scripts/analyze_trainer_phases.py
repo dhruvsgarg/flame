@@ -2,9 +2,11 @@
 """Analyze per-phase trainer timing from trainer_round telemetry.
 
 Reads telemetry/trainer_*.jsonl from one or more run directories and produces:
-  Plot A: stacked bar — CPU-bound phases averaged per round
-  Plot B: stacked bar — GPU-bound phases averaged per round
-  Plot C: per-trainer heatmap of total round time (to localize spikes)
+  Plot A: stacked bar — CPU-bound phases averaged per round  (+ P50/P90/P99)
+  Plot B: stacked bar — GPU-bound phases averaged per round  (+ P50/P90/P99)
+  Plot C: per-trainer heatmap of total round time (localize spikes)
+  Plot D: CDF per CPU phase across all trainer-round observations
+  Plot E: CDF per GPU phase across all trainer-round observations
 
 Output PNGs land in <run_dir>/plots/.
 
@@ -19,6 +21,13 @@ import json
 import os
 import sys
 from collections import defaultdict
+
+# Allow importing from the plotters package whether the script is run directly
+# or via python -m.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from plotters._annot import annotate_percentiles, flush_percentile_table
 
 # ── phase taxonomy ──────────────────────────────────────────────────────────
 CPU_PHASES = [
@@ -63,7 +72,7 @@ def load_events(run_dir: str) -> list[dict]:
     return events
 
 
-def _percentile(sorted_vals: list[float], p: float) -> float:
+def _pct(sorted_vals: list[float], p: float) -> float:
     if not sorted_vals:
         return 0.0
     idx = max(0, min(len(sorted_vals) - 1, int(len(sorted_vals) * p / 100)))
@@ -71,7 +80,7 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
 
 
 def aggregate_phases(events: list[dict]) -> dict[int, dict[str, dict]]:
-    """Return {round -> {phase -> {"mean", "p50", "p90", "max"}}}."""
+    """Return {round -> {phase -> {"mean", "p50", "p90", "p99", "max"}}}."""
     by_round: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for ev in events:
         r = ev.get("round", 0)
@@ -87,23 +96,32 @@ def aggregate_phases(events: list[dict]) -> dict[int, dict[str, dict]]:
             sv = sorted(vals)
             result[r][ph] = {
                 "mean": sum(sv) / len(sv),
-                "p50": _percentile(sv, 50),
-                "p90": _percentile(sv, 90),
+                "p50": _pct(sv, 50),
+                "p90": _pct(sv, 90),
+                "p99": _pct(sv, 99),
                 "max": sv[-1],
+                "vals": sv,
             }
     return result
 
 
+def collect_phase_vals(events: list[dict]) -> dict[str, list[float]]:
+    """Flat list of all observed values per phase (for CDFs)."""
+    out: dict[str, list[float]] = defaultdict(list)
+    for ev in events:
+        for ph in ALL_PHASES:
+            v = ev.get(ph)
+            if v is not None:
+                out[ph].append(float(v))
+    return dict(out)
+
+
 def _heatmap_data(events: list[dict]) -> tuple[list, list, list[list]]:
-    """Return (rounds, trainer_ids, matrix[trainer][round]) of total round time."""
     total_s_by: dict[str, dict[int, float]] = defaultdict(dict)
     for ev in events:
         r = ev.get("round", 0)
-        tid = str(ev.get("trainer_id", ev.get("end_id", "?")))
-        # sum all known phases as proxy for total (falls back to real_gpu_time_s)
-        total = sum(
-            float(ev.get(ph, 0.0) or 0.0) for ph in ALL_PHASES
-        )
+        tid = str(ev.get("end_id", ev.get("trainer_id", "?")))
+        total = sum(float(ev.get(ph, 0.0) or 0.0) for ph in ALL_PHASES)
         if total == 0.0:
             total = float(ev.get("real_gpu_time_s", 0.0) or 0.0)
         total_s_by[tid][r] = total
@@ -114,6 +132,14 @@ def _heatmap_data(events: list[dict]) -> tuple[list, list, list[list]]:
         for t in trainers
     ]
     return rounds, trainers, matrix
+
+
+def _cdf_xy(vals):
+    sv = sorted(v for v in vals if v is not None)
+    n = len(sv)
+    if not n:
+        return [], []
+    return sv, [(i + 1) / n for i in range(n)]
 
 
 def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
@@ -133,13 +159,15 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
         print(f"  No rounds to plot for {label}.", file=sys.stderr)
         return
 
+    phase_vals = collect_phase_vals(events)
+
     def _series(phase_list):
         return {
             ph: np.array([agg[r].get(ph, {}).get("mean", 0.0) for r in rounds])
             for ph in phase_list
         }
 
-    # ── Plot A: CPU phases ────────────────────────────────────────────────
+    # ── Plot A: CPU stacked bar + total P50/P90 band ──────────────────────
     fig, ax = plt.subplots(figsize=(12, 5))
     cpu_s = _series(CPU_PHASES)
     bottom = np.zeros(len(rounds))
@@ -148,10 +176,19 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
         if vals.sum() > 0:
             ax.bar(rounds, vals, bottom=bottom, label=ph, color=color, width=0.8)
             bottom += vals
+    # P90 line of total CPU time across all rounds
+    all_cpu_totals = [
+        sum(float(ev.get(ph, 0.0) or 0.0) for ph in CPU_PHASES) for ev in events
+    ]
+    if all_cpu_totals:
+        p90_cpu = _pct(sorted(all_cpu_totals), 90)
+        ax.axhline(p90_cpu, color="black", ls="--", lw=1, label=f"P90 total CPU={p90_cpu:.2f}s")
+        p50_cpu = _pct(sorted(all_cpu_totals), 50)
+        ax.axhline(p50_cpu, color="gray", ls=":", lw=1, label=f"P50 total CPU={p50_cpu:.2f}s")
     ax.set_xlabel("Round")
     ax.set_ylabel("Time (s)")
-    ax.set_title(f"CPU phases per round — {label}")
-    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(f"CPU phases per round (mean) — {label}")
+    ax.legend(loc="upper right", fontsize=7)
     ax.set_xlim(left=min(rounds) - 0.5)
     fig.tight_layout()
     out = os.path.join(run_dir, "plots", f"trainer_phases_cpu_{label}.png")
@@ -159,7 +196,7 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
     plt.close(fig)
     print(f"  Wrote {out}")
 
-    # ── Plot B: GPU phases ────────────────────────────────────────────────
+    # ── Plot B: GPU stacked bar ───────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(12, 5))
     gpu_s = _series(GPU_PHASES)
     bottom = np.zeros(len(rounds))
@@ -168,10 +205,18 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
         if vals.sum() > 0:
             ax.bar(rounds, vals, bottom=bottom, label=ph, color=color, width=0.8)
             bottom += vals
+    all_gpu_totals = [
+        sum(float(ev.get(ph, 0.0) or 0.0) for ph in GPU_PHASES) for ev in events
+    ]
+    if all_gpu_totals:
+        p90_gpu = _pct(sorted(all_gpu_totals), 90)
+        ax.axhline(p90_gpu, color="black", ls="--", lw=1, label=f"P90 total GPU={p90_gpu:.2f}s")
+        p50_gpu = _pct(sorted(all_gpu_totals), 50)
+        ax.axhline(p50_gpu, color="gray", ls=":", lw=1, label=f"P50 total GPU={p50_gpu:.2f}s")
     ax.set_xlabel("Round")
     ax.set_ylabel("Time (s)")
-    ax.set_title(f"GPU phases per round — {label}")
-    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(f"GPU phases per round (mean) — {label}")
+    ax.legend(loc="upper right", fontsize=7)
     ax.set_xlim(left=min(rounds) - 0.5)
     fig.tight_layout()
     out = os.path.join(run_dir, "plots", f"trainer_phases_gpu_{label}.png")
@@ -183,18 +228,16 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
     if plot_heatmap and events:
         hm_rounds, hm_trainers, matrix = _heatmap_data(events)
         if hm_rounds and hm_trainers:
-            mat = np.array(matrix, dtype=float)
+            mat = __import__("numpy").array(matrix, dtype=float)
             fig, ax = plt.subplots(figsize=(max(8, len(hm_rounds) * 0.15),
                                              max(4, len(hm_trainers) * 0.08)))
             im = ax.imshow(mat, aspect="auto", cmap="YlOrRd", interpolation="nearest")
             ax.set_xlabel("Round")
             ax.set_ylabel("Trainer")
             ax.set_title(f"Total round time heatmap — {label}")
-            ax.set_xticks(range(0, len(hm_rounds), max(1, len(hm_rounds) // 20)))
-            ax.set_xticklabels(
-                [str(hm_rounds[i]) for i in range(0, len(hm_rounds), max(1, len(hm_rounds) // 20))],
-                fontsize=7,
-            )
+            step = max(1, len(hm_rounds) // 20)
+            ax.set_xticks(range(0, len(hm_rounds), step))
+            ax.set_xticklabels([str(hm_rounds[i]) for i in range(0, len(hm_rounds), step)], fontsize=7)
             ax.set_yticks([])
             fig.colorbar(im, ax=ax, label="Total round time (s)")
             fig.tight_layout()
@@ -203,30 +246,71 @@ def plot_run(run_dir: str, label: str, agg: dict[int, dict[str, dict]],
             plt.close(fig)
             print(f"  Wrote {out}")
 
+    # ── Plot D: CDF per CPU phase ─────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for ph, color in zip(CPU_PHASES, CPU_COLORS):
+        vals = phase_vals.get(ph, [])
+        if not vals:
+            continue
+        xs, ys = _cdf_xy(vals)
+        ax.plot(xs, ys, color=color, label=ph, lw=1.5)
+        annotate_percentiles(ax, vals, color=color, label=ph, below=True)
+    ax.set_xlabel("Phase duration (s)")
+    ax.set_ylabel("CDF")
+    ax.set_title(f"CPU phase CDF — {label}")
+    ax.legend(loc="lower right", fontsize=7)
+    ax.set_ylim(0, 1.05)
+    flush_percentile_table(ax)
+    fig.tight_layout()
+    out = os.path.join(run_dir, "plots", f"trainer_phases_cdf_cpu_{label}.png")
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Wrote {out}")
+
+    # ── Plot E: CDF per GPU phase ─────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for ph, color in zip(GPU_PHASES, GPU_COLORS):
+        vals = phase_vals.get(ph, [])
+        if not vals:
+            continue
+        xs, ys = _cdf_xy(vals)
+        ax.plot(xs, ys, color=color, label=ph, lw=1.5)
+        annotate_percentiles(ax, vals, color=color, label=ph, below=True)
+    ax.set_xlabel("Phase duration (s)")
+    ax.set_ylabel("CDF")
+    ax.set_title(f"GPU phase CDF — {label}")
+    ax.legend(loc="lower right", fontsize=7)
+    ax.set_ylim(0, 1.05)
+    flush_percentile_table(ax)
+    fig.tight_layout()
+    out = os.path.join(run_dir, "plots", f"trainer_phases_cdf_gpu_{label}.png")
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Wrote {out}")
+
 
 def print_summary(label: str, agg: dict[int, dict[str, dict]]) -> None:
-    print(f"\n{'='*70}")
+    print(f"\n{'='*72}")
     print(f"  {label}  —  {len(agg)} rounds")
-    print(f"  {'Phase':<22} {'mean(s)':>9} {'p50':>7} {'p90':>7} {'max':>7}")
-    print(f"  {'-'*22} {'-'*9} {'-'*7} {'-'*7} {'-'*7}")
-    # average across all rounds
-    from collections import defaultdict
+    print(f"  {'Phase':<22} {'mean(s)':>9} {'p50':>7} {'p90':>7} {'p99':>7} {'max':>7}")
+    print(f"  {'-'*22} {'-'*9} {'-'*7} {'-'*7} {'-'*7} {'-'*7}")
     acc: dict[str, list[float]] = defaultdict(list)
     for r_data in agg.values():
         for ph, stats in r_data.items():
-            acc[ph].append(stats["mean"])
+            acc[ph].extend(stats["vals"])
     for ph in ALL_PHASES:
         vals = acc.get(ph, [])
         if not vals:
             continue
         sv = sorted(vals)
         mn = sum(sv) / len(sv)
-        p50 = _percentile(sv, 50)
-        p90 = _percentile(sv, 90)
+        p50 = _pct(sv, 50)
+        p90 = _pct(sv, 90)
+        p99 = _pct(sv, 99)
         mx = sv[-1]
         group = "CPU " if ph in CPU_PHASES else ("GPU " if ph in GPU_PHASES else "wall")
-        print(f"  [{group}] {ph:<18} {mn:>9.3f} {p50:>7.3f} {p90:>7.3f} {mx:>7.3f}")
-    print(f"{'='*70}")
+        print(f"  [{group}] {ph:<18} {mn:>9.3f} {p50:>7.3f} {p90:>7.3f} {p99:>7.3f} {mx:>7.3f}")
+    print(f"{'='*72}")
 
 
 def main() -> None:
@@ -234,21 +318,12 @@ def main() -> None:
         description="Analyze per-phase trainer timing from trainer_round telemetry"
     )
     parser.add_argument("run_dirs", nargs="*", help="Run directories to analyze")
-    parser.add_argument(
-        "--compare", nargs="+", metavar="RUN_DIR",
-        help="Compare two or more run directories side by side",
-    )
-    parser.add_argument(
-        "--labels", nargs="+", metavar="LABEL",
-        help="Short labels for the compared runs (same order as --compare)",
-    )
-    parser.add_argument(
-        "--heatmap", action="store_true", default=True,
-        help="Emit per-trainer round-time heatmap (default: on)",
-    )
-    parser.add_argument(
-        "--no-heatmap", dest="heatmap", action="store_false",
-    )
+    parser.add_argument("--compare", nargs="+", metavar="RUN_DIR",
+                        help="Compare two or more run directories side by side")
+    parser.add_argument("--labels", nargs="+", metavar="LABEL",
+                        help="Short labels for the compared runs (same order as --compare)")
+    parser.add_argument("--heatmap", action="store_true", default=True)
+    parser.add_argument("--no-heatmap", dest="heatmap", action="store_false")
     args = parser.parse_args()
 
     runs = args.compare or args.run_dirs

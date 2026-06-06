@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Compare virtual-time trajectories between a real run and a simulated run.
 
-Reads aggregator JSONL telemetry from two run directories and produces:
-  1. Per-round virtual-time deviation (real wall-elapsed vs sim vclock).
-  2. Sim wall speedup (virtual_budget / sim_wall_time).
-  3. Whether the sim was cut by the wall failsafe or stopped correctly at vclock≈T.
+Two distinct "speedup" concepts (both printed clearly):
 
-The key invariant: for both real and sim modes the virtual-time value at each
-round should follow the same trajectory.  For real mode virtual-time = wall
-elapsed; for sim mode virtual-time = vclock.now.
+  sim_rate     = vclock / wall_sim   — virtual-seconds per sim wall-second.
+                 < 1 means sim is computing slower than real-time.
+                 This does NOT say whether sim finishes a given virtual task
+                 faster than real; it just measures how fast vclock ticks.
+
+  wall_speedup = real_wall(V) / sim_wall(V)  — for matched virtual time V,
+                 how much less wall time sim uses.  > 1 means sim is faster
+                 than real (correct behaviour).  This is the true "sim speed
+                 advantage" and what we care about for experiment efficiency.
 
 Usage:
     python compare_clock_parity.py <real_run_dir> <sim_run_dir> [options]
@@ -18,10 +21,14 @@ Usage:
 import argparse
 import glob
 import json
-import math
 import os
 import sys
 from collections import defaultdict
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from plotters._annot import annotate_percentiles, flush_percentile_table
 
 
 def load_agg_events(run_dir: str) -> list[dict]:
@@ -63,52 +70,35 @@ def load_trainer_events(run_dir: str) -> list[dict]:
     return events
 
 
-def extract_vclock_progress(events: list[dict]) -> list[tuple[int, float, float]]:
-    """Extract (round, vclock_s, wall_s) from VCLOCK_PROGRESS log lines embedded
-    as run_meta or other events, or from agg_round events that carry vclock_now."""
+def _agg_round_timeline(events: list[dict]) -> list[tuple[int, float, float]]:
+    """Return (round, ts, max_trainer_speed_s) from agg_round events, sorted by round.
+
+    ts is the absolute wall timestamp of the aggregation event.
+    max_trainer_speed_s is the committed k-th trainer's speed (= vclock advance in sim).
+    """
     result = []
     for ev in events:
-        # agg_round events may carry vclock_now
-        if ev.get("event") == "agg_round":
-            r = ev.get("round")
-            vclock = ev.get("vclock_now")
-            wall = ev.get("wall_elapsed_s")
-            if r is not None and vclock is not None and wall is not None:
-                result.append((int(r), float(vclock), float(wall)))
+        if ev.get("event") != "agg_round":
+            continue
+        r = ev.get("round")
+        ts = ev.get("ts")
+        speed = ev.get("trainer_speed_s")
+        if r is None or ts is None:
+            continue
+        max_speed = max(speed) if speed else None
+        result.append((int(r), float(ts), max_speed))
     return sorted(result, key=lambda x: x[0])
 
 
-def extract_round_wall_times(events: list[dict]) -> dict[int, float]:
-    """For real mode: map round -> wall_elapsed_s from agg_round events."""
-    result = {}
+def detect_failsafe_triggered(events: list[dict]) -> tuple[bool, str]:
+    """Return (triggered, reason_tag) from aggregator log markers."""
     for ev in events:
-        if ev.get("event") == "agg_round":
-            r = ev.get("round")
-            wall = ev.get("wall_elapsed_s")
-            if r is not None and wall is not None:
-                result[int(r)] = float(wall)
-    return result
-
-
-def extract_sim_completion_by_round(trainer_events: list[dict]) -> dict[int, list[float]]:
-    """Map round -> [sim_completion_ts, ...] from trainer_round events."""
-    by_round: dict[int, list[float]] = defaultdict(list)
-    for ev in trainer_events:
-        r = ev.get("round")
-        sct = ev.get("sim_completion_ts")
-        if r is not None and sct is not None:
-            by_round[int(r)].append(float(sct))
-    return dict(by_round)
-
-
-def detect_failsafe_triggered(events: list[dict]) -> bool:
-    """Check aggregator log for WALL_CLOCK_FAILSAFE being the stop reason."""
-    for ev in events:
-        if ev.get("event") == "run_meta":
-            stop = ev.get("stop_reason", "")
-            if "WALL_CLOCK_FAILSAFE" in str(stop):
-                return True
-    return False
+        stop = ev.get("stop_reason", "")
+        if "SIM_WALL_CEILING" in str(stop):
+            return True, "SIM_WALL_CEILING"
+        if "WALL_CLOCK_FAILSAFE" in str(stop):
+            return True, "WALL_CLOCK_FAILSAFE"
+    return False, ""
 
 
 def report(
@@ -116,160 +106,171 @@ def report(
     sim_dir: str,
     real_events: list[dict],
     sim_events: list[dict],
-    real_trainers: list[dict],
-    sim_trainers: list[dict],
     tolerance: float,
     out_dir: str,
 ) -> None:
     real_label = os.path.basename(real_dir.rstrip("/"))
     sim_label = os.path.basename(sim_dir.rstrip("/"))
 
-    # Real mode: virtual time = wall elapsed at each round
-    real_wall_by_round = extract_round_wall_times(real_events)
-    # Sim mode: virtual time = vclock at each round
-    sim_vclock_progress = extract_vclock_progress(sim_events)
+    real_tl = _agg_round_timeline(real_events)
+    sim_tl = _agg_round_timeline(sim_events)
 
-    # Detect failsafe
-    sim_failsafe = detect_failsafe_triggered(sim_events)
-
-    # Sim completion times from trainer telemetry (sanity check on vclock)
-    sim_sct = extract_sim_completion_by_round(sim_trainers)
-    real_sct = extract_sim_completion_by_round(real_trainers)
+    sim_failsafe, failsafe_tag = detect_failsafe_triggered(sim_events)
 
     print(f"\n{'='*72}")
     print(f"  Clock parity: real={real_label}  sim={sim_label}")
     print(f"{'='*72}")
-    print(f"  Sim failsafe triggered: {'YES (bug — sim stopped at wall, not vclock)' if sim_failsafe else 'NO (correct)'}")
+    print(f"  Sim wall-ceiling triggered: "
+          f"{'YES [' + failsafe_tag + '] — sim stopped at wall, not vclock' if sim_failsafe else 'NO (correct)'}")
 
-    # Wall time for sim
-    sim_wall = None
-    if sim_events:
-        wall_vals = [ev.get("wall_elapsed_s") for ev in sim_events
-                     if ev.get("event") == "agg_round" and ev.get("wall_elapsed_s")]
-        if wall_vals:
-            sim_wall = max(float(v) for v in wall_vals)
-    sim_vclock_final = None
-    if sim_vclock_progress:
-        sim_vclock_final = sim_vclock_progress[-1][1]
-    elif sim_sct:
-        # approximate vclock from max sim_completion_ts
-        all_sct = [v for vals in sim_sct.values() for v in vals]
-        if all_sct:
-            sim_vclock_final = max(all_sct)
+    # ── Compute cumulative virtual time for both modes ──────────────────
+    # Real mode: virtual_time = wall elapsed since round-0 timestamp.
+    # Sim mode:  virtual_time = cumulative sum of max(trainer_speed_s) per round
+    #            (= sum of vclock advances; each advance = kth committed sct).
+    real_ts0 = real_tl[0][1] if real_tl else None
+    real_vt_by_round: dict[int, float] = {}
+    if real_ts0:
+        for r, ts, _ in real_tl:
+            real_vt_by_round[r] = ts - real_ts0
 
-    if sim_wall and sim_vclock_final:
-        speedup = sim_vclock_final / sim_wall
-        print(f"  Sim speedup: vclock={sim_vclock_final:.0f}s / wall={sim_wall:.0f}s = {speedup:.2f}x")
-    else:
-        print(f"  Sim speedup: insufficient data (vclock={sim_vclock_final}, wall={sim_wall})")
+    sim_vclock: float = 0.0
+    sim_vt_by_round: dict[int, float] = {}
+    for r, ts, max_speed in sim_tl:
+        if max_speed is not None:
+            sim_vclock += max_speed
+        sim_vt_by_round[r] = sim_vclock
 
-    # Per-round virtual-time deviation
-    if real_wall_by_round and sim_vclock_progress:
+    # Wall time for each mode (last ts - first ts)
+    real_wall_total = (real_tl[-1][1] - real_tl[0][1]) if len(real_tl) >= 2 else None
+    sim_wall_total = (sim_tl[-1][1] - sim_tl[0][1]) if len(sim_tl) >= 2 else None
+    real_vclock_final = max(real_vt_by_round.values()) if real_vt_by_round else None
+    sim_vclock_final = max(sim_vt_by_round.values()) if sim_vt_by_round else None
+
+    # sim_rate = vclock / wall  (virtual-s per wall-s, NOT the wall speedup)
+    if sim_wall_total and sim_vclock_final:
+        sim_rate = sim_vclock_final / sim_wall_total
+        print(f"\n  sim_rate = {sim_vclock_final:.0f}s vclock / {sim_wall_total:.0f}s wall"
+              f" = {sim_rate:.3f} virtual-s/wall-s")
+        print(f"  (sim_rate < 1 means sim ticks slower than real-time; "
+              f"doesn't directly imply sim is slower than real for the same task)")
+
+    # wall_speedup: for matched virtual time V, real_wall(V) / sim_wall(V)
+    # We match at the sim's final vclock (= V_matched).
+    if real_vt_by_round and sim_vclock_final:
+        # find real wall elapsed when vclock first reaches sim's final vclock
+        V_matched = sim_vclock_final
+        real_wall_at_V = None
+        for r in sorted(real_vt_by_round):
+            if real_vt_by_round[r] >= V_matched:
+                real_wall_at_V = real_vt_by_round[r]
+                break
+        if real_wall_at_V and sim_wall_total:
+            wall_speedup = real_wall_at_V / sim_wall_total
+            print(f"\n  wall_speedup = real_wall({V_matched:.0f}s vclock) / sim_wall"
+                  f" = {real_wall_at_V:.0f}s / {sim_wall_total:.0f}s"
+                  f" = {wall_speedup:.2f}x")
+            verdict = "FASTER (correct)" if wall_speedup > 1 else "SLOWER (bug iii-c)"
+            print(f"  Sim is {verdict} than real for the same virtual work.")
+
+    # ── Per-round virtual-time deviation ───────────────────────────────────
+    common = sorted(set(real_vt_by_round) & set(sim_vt_by_round))
+    if common:
+        deviations = []
         print(f"\n  Per-round virtual-time comparison (tolerance={tolerance*100:.0f}%):")
-        print(f"  {'Round':>6}  {'real_vt':>9}  {'sim_vt':>9}  {'deviation':>10}  {'OK?':>5}")
-        common_rounds = sorted(
-            set(real_wall_by_round.keys()) &
-            {r for r, _, _ in sim_vclock_progress}
-        )
+        print(f"  {'Round':>6}  {'real_vt':>9}  {'sim_vt':>9}  {'dev%':>7}  {'OK?':>5}")
         violations = []
-        for r in common_rounds:
-            real_vt = real_wall_by_round[r]
-            # find closest sim round
-            sim_vt_row = next(((vt, w) for rr, vt, w in sim_vclock_progress if rr == r), None)
-            if sim_vt_row is None:
-                continue
-            sim_vt = sim_vt_row[0]
-            if real_vt > 0:
-                dev = abs(sim_vt - real_vt) / real_vt
-            else:
-                dev = 0.0
+        step = max(1, len(common) // 30)
+        for r in common:
+            real_vt = real_vt_by_round[r]
+            sim_vt = sim_vt_by_round[r]
+            dev = abs(sim_vt - real_vt) / real_vt if real_vt > 0 else 0.0
+            deviations.append(dev)
             ok = dev <= tolerance
             if not ok:
                 violations.append((r, real_vt, sim_vt, dev))
-            if r % max(1, len(common_rounds) // 20) == 0 or not ok:
-                print(f"  {r:>6}  {real_vt:>9.1f}  {sim_vt:>9.1f}  {dev*100:>9.1f}%  {'OK' if ok else 'WARN':>5}")
+            if r % step == 0 or not ok:
+                print(f"  {r:>6}  {real_vt:>9.1f}  {sim_vt:>9.1f}  {dev*100:>6.1f}%  {'OK' if ok else 'WARN':>5}")
         if violations:
-            print(f"\n  VIOLATIONS (>{tolerance*100:.0f}%): {len(violations)} rounds")
-            for r, rv, sv, d in violations[:10]:
-                print(f"    round={r} real_vt={rv:.1f} sim_vt={sv:.1f} dev={d*100:.1f}%")
+            print(f"\n  VIOLATIONS (>{tolerance*100:.0f}%): {len(violations)} / {len(common)} rounds")
         else:
-            print(f"\n  All {len(common_rounds)} compared rounds within {tolerance*100:.0f}% tolerance.")
+            print(f"\n  All {len(common)} rounds within {tolerance*100:.0f}% tolerance.")
     else:
-        print("\n  Insufficient vclock_now data in telemetry for per-round comparison.")
-        print("  (Add vclock_now to agg_round events or rely on VCLOCK_PROGRESS logs.)")
+        print("\n  No common rounds to compare — check telemetry.")
 
-    # Plot
-    _plot(real_dir, sim_dir, real_label, sim_label, real_wall_by_round,
-          sim_vclock_progress, out_dir)
+    _plot(real_dir, sim_dir, real_label, sim_label,
+          real_vt_by_round, sim_vt_by_round, out_dir)
 
 
 def _plot(real_dir, sim_dir, real_label, sim_label,
-          real_wall: dict[int, float], sim_vclock: list[tuple],
+          real_vt: dict[int, float], sim_vt: dict[int, float],
           out_dir: str) -> None:
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import numpy as np
     except ImportError:
         return
 
     os.makedirs(out_dir, exist_ok=True)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    c_real, c_sim = "#4e79a7", "#e15759"
 
-    # Left: virtual-time trajectory
+    # Left: virtual-time trajectory per round
     ax = axes[0]
-    if real_wall:
-        rounds_r = sorted(real_wall.keys())
-        ax.plot(rounds_r, [real_wall[r] for r in rounds_r],
-                label=f"{real_label} (real: wall elapsed)", color="#4e79a7", lw=1.5)
-    if sim_vclock:
-        rounds_s = [r for r, _, _ in sim_vclock]
-        vclocks = [v for _, v, _ in sim_vclock]
-        ax.plot(rounds_s, vclocks,
-                label=f"{sim_label} (sim: vclock)", color="#e15759", lw=1.5, ls="--")
+    if real_vt:
+        rs = sorted(real_vt)
+        ax.plot(rs, [real_vt[r] for r in rs], color=c_real,
+                lw=1.5, label=f"{real_label} (real: wall elapsed = virtual time)")
+        annotate_percentiles(ax, list(real_vt.values()), color=c_real,
+                             label=real_label, below=True)
+    if sim_vt:
+        rs = sorted(sim_vt)
+        ax.plot(rs, [sim_vt[r] for r in rs], color=c_sim, ls="--",
+                lw=1.5, label=f"{sim_label} (sim: cumulative vclock)")
+        annotate_percentiles(ax, list(sim_vt.values()), color=c_sim,
+                             label=sim_label, below=True)
     ax.set_xlabel("Round")
-    ax.set_ylabel("Virtual time (s)")
-    ax.set_title("Virtual-time trajectory per round")
+    ax.set_ylabel("Cumulative virtual time (s)")
+    ax.set_title("Virtual-time trajectory per round\n(P50/P90/P99 in table below)")
     ax.legend(fontsize=8)
+    flush_percentile_table(ax)
 
-    # Right: sim wall elapsed vs vclock
+    # Right: per-round advance comparison (real wall Δ vs sim vclock Δ)
     ax2 = axes[1]
-    if sim_vclock:
-        walls = [w for _, _, w in sim_vclock]
-        vcs = [v for _, v, _ in sim_vclock]
-        ax2.plot(walls, vcs, color="#59a14f", lw=1.5)
-        # ideal line: vclock == wall (1× speedup)
-        mx = max(max(walls), max(vcs)) if walls else 1
-        ax2.plot([0, mx], [0, mx], "k--", lw=0.8, label="1× speedup")
-        ax2.set_xlabel("Wall elapsed (s)")
-        ax2.set_ylabel("vclock (s)")
-        ax2.set_title(f"{sim_label}: vclock vs wall")
-        ax2.legend(fontsize=8)
+    if real_vt:
+        rounds_r = sorted(real_vt)
+        adv_r = [real_vt[rounds_r[i]] - real_vt[rounds_r[i-1]]
+                 for i in range(1, len(rounds_r))]
+        ax2.plot(rounds_r[1:], adv_r, color=c_real, lw=1, alpha=0.7,
+                 label=f"{real_label} Δvt/round")
+    if sim_vt:
+        rounds_s = sorted(sim_vt)
+        adv_s = [sim_vt[rounds_s[i]] - sim_vt[rounds_s[i-1]]
+                 for i in range(1, len(rounds_s))]
+        ax2.plot(rounds_s[1:], adv_s, color=c_sim, lw=1, alpha=0.7, ls="--",
+                 label=f"{sim_label} Δvclock/round")
+    ax2.set_xlabel("Round")
+    ax2.set_ylabel("Virtual-time advance per round (s)")
+    ax2.set_title("Per-round virtual-time advance\n(should match for parity)")
+    ax2.legend(fontsize=8)
 
     fig.tight_layout()
     out = os.path.join(out_dir, f"clock_parity_{real_label}_vs_{sim_label}.png")
-    fig.savefig(out, dpi=120)
+    fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"\n  Plot: {out}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Compare virtual-time trajectories between a real and a simulated run"
-    )
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("positional", nargs="*", help="real_run_dir sim_run_dir")
-    parser.add_argument("--real", metavar="DIR", help="Real-mode run directory")
-    parser.add_argument("--sim", metavar="DIR", help="Simulated-mode run directory")
-    parser.add_argument(
-        "--tolerance", type=float, default=0.05,
-        help="Per-round virtual-time deviation tolerance (default: 0.05 = 5%%)",
-    )
-    parser.add_argument(
-        "--out-dir", metavar="DIR", default=None,
-        help="Output directory for plots (default: sim_run_dir/plots/)",
-    )
+    parser.add_argument("--real", metavar="DIR")
+    parser.add_argument("--sim", metavar="DIR")
+    parser.add_argument("--tolerance", type=float, default=0.05,
+                        help="Per-round virtual-time deviation tolerance (default 5%%)")
+    parser.add_argument("--out-dir", metavar="DIR", default=None)
     args = parser.parse_args()
 
     real_dir = args.real
@@ -284,16 +285,13 @@ def main() -> None:
 
     print(f"Loading real run:  {real_dir}")
     real_events = load_agg_events(real_dir)
-    real_trainers = load_trainer_events(real_dir)
-    print(f"  {len(real_events)} agg events, {len(real_trainers)} trainer_round events")
+    print(f"  {len(real_events)} agg events")
 
     print(f"Loading sim run:   {sim_dir}")
     sim_events = load_agg_events(sim_dir)
-    sim_trainers = load_trainer_events(sim_dir)
-    print(f"  {len(sim_events)} agg events, {len(sim_trainers)} trainer_round events")
+    print(f"  {len(sim_events)} agg events")
 
-    report(real_dir, sim_dir, real_events, sim_events, real_trainers, sim_trainers,
-           args.tolerance, out_dir)
+    report(real_dir, sim_dir, real_events, sim_events, args.tolerance, out_dir)
 
 
 if __name__ == "__main__":

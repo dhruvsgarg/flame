@@ -47,6 +47,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import os as _os, sys as _sys
+_SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _SCRIPT_DIR not in _sys.path:
+    _sys.path.insert(0, _SCRIPT_DIR)
+from plotters._annot import annotate_percentiles, flush_percentile_table
+
 # Lateness buckets (seconds over budget) for the count histogram.
 BUCKETS = [(-1e9, 0), (0, 1), (1, 2), (2, 5), (5, 10), (10, 20), (20, 60), (60, 1e9)]
 BUCKET_LABELS = ["on time", "0-1", "1-2", "2-5", "5-10", "10-20", "20-60", "60+"]
@@ -240,6 +246,7 @@ def plot(runs, out_path):
         tdev = [max(0.0, r["trainer_dev"]) for r in recs]
         adev = [max(0.0, r["agg_dev"]) for r in recs if "agg_dev" in r]
         trans = [r["transport"] for r in recs if "transport" in r]
+        _colors = {"trainer": "#4e79a7", "agg": "#e15759", "transport": "#59a14f"}
         for series, name, style in [
             (tdev, "trainer", "-"),
             (adev, "agg", "--"),
@@ -247,13 +254,17 @@ def plot(runs, out_path):
         ]:
             xs, ys = _cdf_xy(series)
             if xs:
-                axc.plot(xs, ys, style, label=f"{label} · {name}")
+                c = _colors.get(name, "gray")
+                axc.plot(xs, ys, style, color=c, label=f"{label} · {name}")
+                annotate_percentiles(axc, series, color=c,
+                                     label=f"{label}·{name}", below=True)
     axc.set_xlabel("deviation from expected time D (s over budget)")
     axc.set_ylabel("cumulative fraction of responses")
-    axc.set_title("CDF of timing-deviation extent")
+    axc.set_title("CDF of timing-deviation extent\n(P50/P90/P99 in table below)")
     axc.set_ylim(0, 1.02)
     axc.grid(alpha=0.3)
     axc.legend(fontsize=8)
+    flush_percentile_table(axc)
     # log-x helps when a few outliers dominate; guard against all-zero
     try:
         axc.set_xscale("symlog", linthresh=1.0)

@@ -218,3 +218,180 @@ at `vclock≈T`, not at the wall failsafe.
 
 All telemetry additions are optional/backward-compatible; all toggles default to
 preserve current behavior except `--cpu_pinning` (default `on`).
+
+---
+---
+
+# ROUND 2 — corrections after the first real/sim runs (n300, alpha0.1, syn0, stream)
+
+Tasks 1–3 above are **implemented** (commit `9e2c789c`). Four runs were done and
+reveal real bugs + missing plots. Evidence below is from
+`experiments/run_20260606_*` (refl & felix, real & sim). **Do not implement from
+this file; design only — implement in a fresh context.**
+
+## Evidence summary (what the runs actually showed)
+
+| run            | rounds | wall span | stop reason                          | clock |
+|----------------|--------|-----------|--------------------------------------|-------|
+| refl **real**  | 515    | ~30.1 min | `max_runtime_s=1800 reached (wall=1802s)` ✅ | wall=virtual |
+| refl **sim**   | 1001+  | ~35.1 min (still short of vclock=1800) | ran toward `vclock=1800` ❌ overshoots wall | vclock=1514 @ wall=2102 |
+| felix real     | 114    | ~30 min   | wall cap                              | — |
+| felix sim      | 126    | ~21 min   | —                                     | — |
+
+`[VCLOCK_PROGRESS]` for refl sim climbs `speedup=0.05x → 0.72x` and **plateaus
+at 0.72x** (vclock=1514s at wall=2102s). Per-round: real ≈ **3.5 virtual-s/round**
+(1800s/515), sim ≈ **1.5 virtual-s/round** (1514s/1001). Same baseline, **different
+virtual-seconds per round between modes** — the core parity bug.
+
+## (iii) Clock correctness — confirmed bugs
+
+**Conceptual answer to the question:** there are exactly two clocks. (1) **true
+wall clock** = real elapsed process time; (2) **vclock** = the in-process
+simulated-time estimate. There is no third "wallclock estimate." In **real**
+mode vclock is unused and wall *is* the simulated timeline by construction; in
+**simulated** mode vclock is the timeline and wall is just how long the
+simulation took to compute. The `VCLOCK_PROGRESS` line's `wall` is the true wall.
+
+**Bug iii-a — `speedup` is mislabeled / misleading.**
+`[VCLOCK_PROGRESS]` prints `speedup = vclock/wall` (the *simulation rate*:
+virtual-sec per wall-sec). For refl that is `0.72x`, which reads as "sim slower
+than real" — yet sim completes a given *amount of virtual time* in **less wall**
+than real (real needs ~1505s wall to reach vclock=1514; sim needs ~1001s →
+**true speedup ≈ 1.5x**). The user saw exactly this contradiction ("sim faster
+but logs say slower").
+- Fix: stop calling `vclock/wall` "speedup." Print two clearly-named quantities:
+  `sim_rate=vclock/wall` (virtual-s per wall-s) **and**, separately in the parity
+  tool, `wall_speedup = real_wall(V) / sim_wall(V)` for matched virtual time `V`.
+  Document both in `compare_clock_parity.py`.
+
+**Bug iii-b — sim run overshoots the wall budget by 10s of minutes.**
+Sim stops at `vclock ≥ max_runtime_s` (=1800 virtual). Because `sim_rate<1`
+(0.72), reaching vclock=1800 takes ~41 min wall — the "runtime exceeds 30 min by
+tens of minutes" symptom. Root cause is **bug iii-c** (sim_rate should be >1, so
+this wouldn't happen if parity were right), but add a guard regardless:
+- Keep the virtual stop (`vclock ≥ max_runtime_s`) **and** keep the wall failsafe,
+  but make the wall failsafe budget *meaningfully tighter* than `4×` for sim —
+  e.g. configurable `sim_wall_ceiling_s` (default `≈ max_runtime_s`, i.e. "a sim
+  run may not take longer in wall than the equivalent real run would"), logged
+  loudly when hit. The `4×max_runtime_s` default is too loose and let refl run to
+  35+ min unflagged.
+
+**Bug iii-c — per-round virtual-time parity violation (the real problem).**
+Real advances 3.5 virtual-s/round; sim advances 1.5. The difference is **harness
+overhead** (selection over 300 ends, MQTT broadcast, recv-poll timeouts —
+`recv_fifo: no message within timeout=0.5s` appears repeatedly): in real mode
+this overhead is *inside* wall and therefore *inside* the (wall=virtual)
+timeline; in sim mode vclock advances only by the modeled `max(gpu, D)` and
+excludes it. So the two modes define "a round's duration" differently.
+- Investigate + decide the **canonical round-duration definition** and make both
+  modes use it. Two candidate fixes (pick after measuring):
+  1. **Real mode reports modeled duration** (like sim): set real-mode
+     `PROP_ROUND_DURATION`/round-advance from `max(gpu, D)` (already computed,
+     [main.py:730](trainer/pytorch/main.py#L730)) instead of raw `recv−send`, so
+     harness overhead is excluded from *both* timelines. Risk: real wall no longer
+     equals virtual time (breaks the "real = authentic pace" identity).
+  2. **Sim mode adds measured per-round harness overhead** to vclock (advance by
+     `max(gpu,D)` **+** observed aggregator-loop overhead for that round). Keeps
+     real authentic; makes sim faithfully include the same overhead real pays.
+  - Recommend (2): preserves real-mode semantics and makes sim match real
+    per-round. Quantify the overhead from the existing 6-component `LAG_DECOMP`
+    so it is sourced, not guessed.
+- Check for **all baselines** (felix=async, refl/oort=sync) and both aggregator
+  loops (`asyncfl` and `syncfl` `increment_round` / `_sync_sim_recv_first_k`).
+
+**Bug iii-d — aggregation-per-round wall higher in real than sim; over-selection?**
+refl real round→round gap ~3.5s vs sim ~1s. Partly expected (real sleeps), but
+`selection` events show `num_chosen=13, in_flight=13` with `agg_goal=10` at
+round 0 — possible **over-selection** (selecting more than the goal each round).
+- Investigate: log/plot `num_chosen`, `num_eligible`, `in_flight`, `agg_goal`,
+  `agg_goal_count` per round for both modes; confirm whether refl selects beyond
+  the goal and whether that inflates real round time (more concurrent slow
+  trainers → higher max). Source from the `selection`/`agg_round` telemetry (both
+  present), not deduced.
+
+## (iv) Real-vs-sim sanity-check script with unit tests
+
+New `scripts/sanity_check_real_sim.py`: given **two run names/dirs of the same
+baseline** (one real, one sim), run a battery of `unittest`/`pytest` assertions
+quantifying how closely sim matches real. Sourced entirely from logs+telemetry.
+Tests (each prints the measured value + pass/fail + tolerance):
+- **T1 virtual-time per round**: mean & p90 |Δ| between real round-duration and
+  sim vclock-advance, matched by `round`/`model_version` (catches bug iii-c).
+- **T2 wall_speedup > 1**: sim reaches matched virtual time in less wall (catches
+  iii-a/iii-b). Report the number, not just pass/fail.
+- **T3 selection parity**: per-round `num_chosen`/`in_flight` distributions match
+  (catches iii-d / over-selection drift between modes).
+- **T4 staleness CDF** (async): KS-style distance between real & sim staleness.
+- **T5 trainer-speed ordering**: the set/order of committed (fastest-k) trainers
+  per round agrees within tolerance.
+- **T6 final accuracy/loss trajectory** vs round within tolerance.
+- **T7 stop semantics**: real stopped at `wall≈max_runtime_s`; sim stopped at
+  `vclock≈max_runtime_s` and `sim_wall ≤ sim_wall_ceiling_s`.
+- CLI: `sanity_check_real_sim.py --real <name|dir> --sim <name|dir>` resolving
+  names against `experiments/`. Must run today against the four
+  `run_20260606_*` dirs (refl + felix) and report the current failures as the
+  baseline to fix.
+
+## (i) Percentile annotations on all CDFs and line plots
+
+Every CDF and every line plot must annotate **P50, P90, P99** in the **line's
+own color**. When multiple series crowd the annotations, move the numbers to a
+**legend/table block below the plot** (still color-keyed). Apply to:
+`analyze_trainer_phases.py`, `compare_clock_parity.py`, `analyze_send_recv_lag.py`,
+`analyze_timing_overrun.py`, and the existing `scripts/plotters/` CDFs.
+- Implement once as a shared helper (e.g. `scripts/plotters/_annot.py`:
+  `annotate_percentiles(ax, sorted_vals, color, label, below=False)`) and call it
+  from every plot, so the style is uniform.
+
+## (ii) CPU/GPU pinning verification plots + trainer self-report
+
+**Trainer must log its actual placement** (it currently logs only
+`torch.set_num_threads(1)`, [main.py:338-339](trainer/pytorch/main.py#L338-L339)).
+Add at `initialize()`: read `CUDA_VISIBLE_DEVICES` and
+`sorted(os.sched_getaffinity(0))` and log
+`[PLACEMENT] trainer=<id> gpu=<CUDA_VISIBLE_DEVICES> cpu_cores=<list>` — so the
+real, post-`preexec_fn` affinity is captured from the process itself (ground
+truth, not the spawner's intent).
+- New plots in a `scripts/analyze_pinning.py`, **parsed from the `[PLACEMENT]`
+  log lines** (and/or the spawner's trainer→(gpu,core) table):
+  - **Histogram A**: count of trainers per CPU core (even distribution check).
+  - **Histogram B**: count of trainers per GPU.
+  - Flag imbalance (max-min > 1 bucket) explicitly.
+- **trainer_time_split_over_rounds → add a CDF variant**: alongside the existing
+  stacked-bar per-round means in `analyze_trainer_phases.py`, add a CDF with one
+  line per phase (CPU plot; GPU plot), each annotated with P50/P90/P99 per (i).
+
+## (+) Training-dynamics timeline plot (across baselines)
+
+Single line plot over time with one series each for trainer counts in states:
+**training / in-flight / idle / unavailable / AVL_TRAIN / AVL_EVAL** — to see how
+dynamics differ across baselines.
+- **Data source caveat:** the aggregator's `selection.avail_composition` is
+  currently `{"UNKNOWN": 290}` — server-side ends lack `PROP_AVL_STATE`
+  ([selector/__init__.py:104](../../flame/selector/__init__.py#L104)), so it is
+  **not** a usable source. Per "get info from logs, don't deduce":
+  - `AVL_TRAIN`/`AVL_EVAL`/`UN_AVL` counts: reconstruct from the trainer-side
+    `avail_change` telemetry (already emitted, [events.py:211](../../flame/telemetry/events.py#L211))
+    or the `"Changed the availability status ..."` trainer-log lines — step the
+    per-trainer state forward over time and count.
+  - `in_flight` / `training`: from aggregator `selection`/`agg_round` events
+    (`in_flight`, `chosen`) and `[TRAINER_SEND_WEIGHTS]` send timestamps.
+  - `idle`: total − (training + in-flight + unavailable).
+  - Secondary fix (optional but correct): populate `PROP_AVL_STATE` on
+    aggregator ends so `avail_composition` is real, giving a single clean source.
+- Put in a `scripts/analyze_dynamics_timeline.py`; `--compare` overlays baselines.
+  X-axis selectable: wall for real, vclock for sim (so curves are comparable).
+
+## Round-2 deliverables
+- ☐ iii-a: rename/clarify `sim_rate` vs `wall_speedup`; fix `VCLOCK_PROGRESS`.
+- ☐ iii-b: `sim_wall_ceiling_s` guard (default ≈ `max_runtime_s`), loud on hit.
+- ☐ iii-c: canonical round-duration; make real & sim agree per round (recommend
+  sim adds measured harness overhead); verify all baselines + both agg loops.
+- ☐ iii-d: investigate refl over-selection (`num_chosen` vs `agg_goal`); plot.
+- ☐ iv: `sanity_check_real_sim.py` (T1–T7) + run against the four 0606 runs.
+- ☐ i: shared `annotate_percentiles` (P50/P90/P99, colored, below-if-crowded) on
+  all CDFs/lines.
+- ☐ ii: `[PLACEMENT]` trainer log + `analyze_pinning.py` (CPU-core & GPU
+  histograms); CDF variant of trainer time-split.
+- ☐ +: `analyze_dynamics_timeline.py` (state counts over time, cross-baseline);
+  optionally populate aggregator-side `PROP_AVL_STATE`.
