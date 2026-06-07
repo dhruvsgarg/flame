@@ -47,7 +47,7 @@ experiments:
           every_n_rounds: 10
       selector:
         kwargs:
-          c: 10
+          c: 30
           aggGoal: 10
   execution:
     num_gpus: 8

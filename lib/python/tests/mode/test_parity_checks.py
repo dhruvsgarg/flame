@@ -140,3 +140,236 @@ def test_run_all_parity_smoke():
     tr = {"aa": {"task_recv": [], "trainer_round": []}}
     res = pc.run_all_parity(a, a, tr, tr, agg_goal=2)
     assert all(v["ok"] for v in res.values())
+
+
+# ── §3.H clock / throughput new checks ──────────────────────────────────────
+
+def _round_speed(round_, contributing, staleness, agg_goal_count=1,
+                 vclock=None, ts=0.0, speed=None):
+    """Helper: agg_round event with optional vclock_now and trainer_speed_s."""
+    e = _round(round_, contributing, staleness, agg_goal_count, vclock, ts)
+    if speed is not None:
+        e["trainer_speed_s"] = speed if isinstance(speed, list) else [speed]
+    return e
+
+
+class TestVclockTelemetryPresent:
+    def test_present_passes(self):
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0], vclock=10.0)])
+        r = pc.vclock_telemetry_present(sim)
+        assert r["ok"]
+
+    def test_absent_fails(self):
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0])])  # no vclock_now
+        r = pc.vclock_telemetry_present(sim)
+        assert not r["ok"] and "ZERO vclock_now" in r["note"]
+
+
+class TestThroughputParity:
+    def _make_matched_pair(self):
+        """Build real + sim where both do ~10 rounds in 100s of their respective time."""
+        # real: 10 rounds, wall 0..100 s (10 s/round)
+        real_rounds = [
+            _round(r, ["a"], [0], ts=float(r * 10))
+            for r in range(1, 11)
+        ]
+        real = _agg(agg_rounds=real_rounds)
+        # sim: 10 rounds, vclock 0..100 s (10 s/round virtual)
+        sim_rounds = [
+            _round(r, ["a"], [0], vclock=float(r * 10), ts=float(r * 1))
+            for r in range(1, 11)
+        ]
+        sim = _agg(agg_rounds=sim_rounds)
+        return real, sim
+
+    def test_matched_passes(self):
+        real, sim = self._make_matched_pair()
+        r = pc.throughput_parity(real, sim, tol_rel=0.10)
+        assert r["ok"], r
+
+    def test_diverged_fails(self):
+        """Motivating case: sim does 41 rounds in 410 s vclock; real does 67 in 670 s wall."""
+        # sim: 41 rounds, 26 s/round virtual → 41/1066 throughput
+        sim_rounds = [_round(r, ["a"], [0], vclock=float(r * 26), ts=float(r))
+                      for r in range(1, 42)]
+        # real: 67 rounds, 15.6 s/round wall → 67/1045 throughput
+        real_rounds = [_round(r, ["a"], [0], ts=float(r * 15.6))
+                       for r in range(1, 68)]
+        real = _agg(agg_rounds=real_rounds)
+        sim = _agg(agg_rounds=sim_rounds)
+        r = pc.throughput_parity(real, sim, tol_rel=0.10)
+        assert not r["ok"], r
+
+    def test_no_vclock_fails(self):
+        real = _agg(agg_rounds=[_round(1, ["a"], [0], ts=10.0)])
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0])])  # no vclock
+        r = pc.throughput_parity(real, sim)
+        assert not r["ok"] and "K10" in r.get("note", "")
+
+
+class TestPerRoundAdvanceParity:
+    def test_matched_passes(self):
+        # Both advance 10s per round
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
+                                  for r in range(1, 11)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 10), ts=float(r))
+                                 for r in range(1, 11)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert r["ok"], r
+
+    def test_diverged_fails(self):
+        # sim: 26 s/round vclock; real: 15 s/round wall → 73% relative diff
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 15))
+                                  for r in range(1, 11)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 26), ts=float(r))
+                                 for r in range(1, 11)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert not r["ok"], r
+
+
+class TestOverlapFactor:
+    def test_matched_passes(self):
+        # Both: speed=20s, advance=15s → overlap ≈ 1.33 for both
+        real = _agg(agg_rounds=[
+            _round_speed(r, ["a"], [0], ts=float(r * 15), speed=20.0)
+            for r in range(1, 11)
+        ])
+        sim = _agg(agg_rounds=[
+            _round_speed(r, ["a"], [0], vclock=float(r * 15), ts=float(r), speed=20.0)
+            for r in range(1, 11)
+        ])
+        r = pc.overlap_factor(real, sim, tol=0.3)
+        assert r["ok"], r
+
+    def test_no_overlap_sim_fails(self):
+        # sim: speed≈advance (1.0 overlap); real: speed=20, advance=12 (1.67 overlap)
+        real = _agg(agg_rounds=[
+            _round_speed(r, ["a"], [0], ts=float(r * 12), speed=20.0)
+            for r in range(1, 11)
+        ])
+        sim = _agg(agg_rounds=[
+            _round_speed(r, ["a"], [0], vclock=float(r * 20), ts=float(r), speed=20.0)
+            for r in range(1, 11)
+        ])
+        r = pc.overlap_factor(real, sim, tol=0.3)
+        assert not r["ok"], r
+
+
+class TestTotalCommitsParity:
+    def test_matched_passes(self):
+        # Both: 5 commits spanning 0-40s of their respective time
+        # real: ts = 0,10,20,30,40  (wall_elapsed=40); sim: vclock = 0,10,20,30,40
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float((r - 1) * 10))
+                                  for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float((r - 1) * 10),
+                                       ts=float(r))
+                                 for r in range(1, 6)])
+        r = pc.total_commits_parity(real, sim, tol_rel=0.05)
+        assert r["ok"], r
+
+    def test_diverged_fails(self):
+        # sim: 3 commits, vclock 0,10,20 → final_vclock=20
+        # real: 6 commits at ts 0,5,10,15,20,25 → wall_elapsed=25, V=min(20,25)=20
+        # n_sim: vclock ≤ 20 → 3; n_real: ts-t0=0,5,10,15,20,25 ≤ 20 → 5 → diverged
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float((r - 1) * 5))
+                                  for r in range(1, 7)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float((r - 1) * 10),
+                                       ts=float(r))
+                                 for r in range(1, 4)])
+        r = pc.total_commits_parity(real, sim, tol_rel=0.02)
+        assert not r["ok"], r
+
+
+class TestTerminalStateParity:
+    def test_matched_passes(self):
+        # Sim: 10 rounds in 100s vclock; Real: 10 rounds in 100s wall
+        real = _agg(agg_rounds=[_round(r, ["a", "b"], [0, 0], ts=float(r * 10))
+                                  for r in range(1, 11)])
+        sim = _agg(agg_rounds=[_round(r, ["a", "b"], [0, 0], vclock=float(r * 10),
+                                       ts=float(r))
+                                 for r in range(1, 11)])
+        r = pc.terminal_state_parity(real, sim)
+        assert r["ok"], r
+
+    def test_diverged_fails(self):
+        # sim: 5 rounds in 130s vclock; real: 10 rounds in 100s wall
+        # V = min(130, 100) = 100; sim has 4 rounds ≤100, real has 10
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
+                                  for r in range(1, 11)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 26),
+                                       ts=float(r))
+                                 for r in range(1, 6)])
+        r = pc.terminal_state_parity(real, sim, rounds_tol=0.10)
+        assert not r["ok"], r
+
+
+class TestTrainerSpeedParity:
+    def test_identical_passes(self):
+        rounds_with_speed = [
+            _round_speed(r, ["a"], [0], speed=28.0) for r in range(1, 6)
+        ]
+        agg = _agg(agg_rounds=rounds_with_speed)
+        r = pc.trainer_speed_parity(agg, agg, ks_tol=0.1)
+        assert r["ok"]
+
+    def test_diverged_fails(self):
+        real_rounds = [_round_speed(r, ["a"], [0], speed=11.0) for r in range(1, 11)]
+        sim_rounds = [_round_speed(r, ["a"], [0], speed=7.0) for r in range(1, 11)]
+        real = _agg(agg_rounds=real_rounds)
+        sim = _agg(agg_rounds=sim_rounds)
+        r = pc.trainer_speed_parity(real, sim, ks_tol=0.1)
+        assert not r["ok"]
+
+
+class TestBudgetNotCap:
+    def test_no_cap_provided_skips(self):
+        a = _agg(agg_rounds=[_round(100, ["a"], [0], ts=100.0)])
+        r = pc.budget_not_cap(a, a)
+        assert r["ok"]
+
+    def test_under_cap_passes(self):
+        a = _agg(agg_rounds=[_round(50, ["a"], [0], ts=100.0)])
+        r = pc.budget_not_cap(a, a, rounds_cap=1000)
+        assert r["ok"]
+
+    def test_hit_cap_warns(self):
+        a = _agg(agg_rounds=[_round(1000, ["a"], [0], ts=100.0)])
+        r = pc.budget_not_cap(a, a, rounds_cap=1000, budget_s=10800.0)
+        assert not r["ok"] and r.get("warnings")
+
+
+class TestRunAllParityExtended:
+    """Smoke test: run_all_parity returns a result for every expected new key."""
+
+    _NEW_KEYS = [
+        "vclock_telemetry", "throughput", "per_round_advance",
+        "overlap_factor", "total_commits", "terminal_state",
+        "trainer_speed",
+    ]
+
+    def test_new_keys_present(self):
+        a = _agg(
+            selection=[_sel(1, ["a", "b"])],
+            agg_rounds=[
+                _round_speed(r, ["a"], [0], vclock=float(r * 10),
+                              ts=float(r), speed=12.0)
+                for r in range(1, 6)
+            ],
+        )
+        tr = {"aa": {"task_recv": [], "trainer_round": []}}
+        res = pc.run_all_parity(a, a, tr, tr, agg_goal=2)
+        for key in self._NEW_KEYS:
+            assert key in res, f"missing key: {key}"
+
+    def test_overall_verdict_fails_on_k2(self):
+        """A pair where sim overcharges virtual time should fail overall verdict."""
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 15))
+                                  for r in range(1, 68)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 26),
+                                       ts=float(r))
+                                 for r in range(1, 42)])
+        tr: dict = {}
+        res = pc.run_all_parity(real, sim, tr, tr)
+        passed, failures, _ = pc.overall_verdict(res)
+        assert not passed
+        assert "throughput" in failures or "per_round_advance" in failures

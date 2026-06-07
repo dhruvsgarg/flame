@@ -124,6 +124,9 @@ for e in d["experiments"]:
         h["min_trainers_join_timeout_s"] = 120
         e["name"] = "dbg_smoke_" + e["name"]
     else:
+        # High round cap so the 3h wall/vclock budget (max_runtime_s) is the
+        # binding stop condition, not an early round-count termination.
+        h["rounds"] = 20000
         e["name"] = f"dbg_{e['name']}"
     e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
     kept.append(e)

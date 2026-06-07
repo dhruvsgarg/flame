@@ -38,7 +38,7 @@ experiments:
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
-        rounds: 1000
+        rounds: 20000
         max_runtime_s: 12600
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
@@ -49,7 +49,7 @@ experiments:
           every_n_rounds: 10
       selector:
         kwargs:
-          c: 10
+          c: 30
           aggGoal: 10
   execution:
     num_gpus: 8
@@ -99,7 +99,7 @@ experiments:
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
-        rounds: 1000
+        rounds: 20000
         max_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 10
@@ -110,7 +110,7 @@ experiments:
         min_trainers_join_timeout_s: 600
       selector:
         kwargs:
-          c: 10
+          c: 30
           aggGoal: 10
   execution:
     num_gpus: 8
@@ -164,7 +164,7 @@ experiments:
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
-        rounds: 1000
+        rounds: 20000
         max_runtime_s: 12600
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
@@ -229,7 +229,7 @@ experiments:
       hyperparameters:
         batchSize: 10
         learningRate: 0.01
-        rounds: 1000
+        rounds: 20000
         max_runtime_s: 12600
         aggGoal: 10
         checkpoint:
