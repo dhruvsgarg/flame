@@ -1,12 +1,12 @@
 #!/bin/bash
 # Post-run comparison for the overnight n300 runs. Two views:
 #   1. PER-BASELINE sim-vs-real tracking (the only apples-to-apples pairing):
-#      compare_parity.py for each baseline's sim run dir vs its real run dir.
+#      parity_check.py for each baseline's sim run dir vs its real run dir.
 #   2. CROSS-BASELINE, separately for sim and for real (one plot set each):
 #      analyze_run.py --compare-streaming over the 4 runs of a mode.
 #
 #   compare_overnight.sh            # auto-discovers latest run dir per (baseline,mode)
-# Output: /tmp/overnight_compare/{parity_<baseline>.txt, sim_cross/, real_cross/}
+# Output: /tmp/overnight_compare/{parity_<baseline>.txt, parity_<baseline>.json, sim_cross/, real_cross/}
 set -u
 
 # --- robust conda activation (handles non-default install locations) ---
@@ -46,9 +46,9 @@ for b in $BASELINES; do
     echo "  $b: missing run dir (real='$dr' sim='$ds')"; continue
   fi
   echo "  $b: real=$(basename "$dr") sim=$(basename "$ds")"
-  python scripts/compare_parity.py \
-    --real "$dr"/telemetry/aggregator_*.jsonl --sim "$ds"/telemetry/aggregator_*.jsonl \
-    --real-trainer-dir "$dr"/telemetry/ --sim-trainer-dir "$ds"/telemetry/ \
+  python scripts/parity_check.py \
+    --real "$dr" --sim "$ds" \
+    --json-out "$OUT/parity_${b}.json" \
     > "$OUT/parity_${b}.txt" 2>&1
   grep -E "\[OK\]|\[!!\]|\[XX\]|CHECKS" "$OUT/parity_${b}.txt" | sed 's/^/      /'
 done

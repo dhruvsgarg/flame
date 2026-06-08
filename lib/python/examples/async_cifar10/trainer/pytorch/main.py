@@ -808,13 +808,10 @@ class PyTorchCifar10Trainer(Trainer):
                     "grad_norm_epoch1": self._grad_norm_epoch1,
                     "task_to_perform": getattr(self, "task_to_perform", None),
                     "lr": current_lr,
-                    # Per-phase taxonomy (CPU vs GPU breakdown for Task 1 analysis).
-                    # Train-loop phases (this file):
-                    "pre_train_s": _pre_train_s,      # CPU: setup/avail/loader before GPU loop
-                    "gpu_compute_s": _real_gpu_time_s, # GPU: actual forward+backward compute
-                    "sleep_s": _remaining_time,        # wall: modeled-delay sleep (real mode)
-                    "post_train_s": _post_train_s,     # CPU: cleanup+delta-l2 after GPU loop
-                    # Channel/weights phases (syncfl/trainer.py via _phase_times):
+                    "pre_train_s": _pre_train_s,
+                    "gpu_compute_s": _real_gpu_time_s,
+                    "sleep_s": _remaining_time,
+                    "post_train_s": _post_train_s,
                     **getattr(self, "_phase_times", {}),
                 },
             )
@@ -1011,19 +1008,7 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initiate_heartbeat(self) -> None:
         while True:
-            # heartbeats are sent from a different thread. Ideally
-            # heartbeats and sleep should have happened on the same
-            # thread but in the current scenario, both threads need to
-            # be put to sleep whenever the trainer is marked to be
-            # unavailable.
-
-            # issue: if i use check_and_sleep here as well, it will
-            # modify existing data struct HACK: duplicate
-            # check_and_sleep as dup_check_and_sleep and operate on a
-            # duplicate data structure
-
-            # TODO: DG Need to fix that arg isnt being used to
-            # enable/disable this
+            # dup_check_and_sleep operates on a copy to avoid mutating state on the heartbeat thread
             time.sleep(self.heartbeats_second_freq)
             self.dup_check_and_sleep()
             logger.debug("Initiating send heartbeat to aggregator")
