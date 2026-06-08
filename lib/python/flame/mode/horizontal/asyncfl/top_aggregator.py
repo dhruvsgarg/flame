@@ -184,18 +184,8 @@ class TopAggregator(SyncTopAgg):
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
     def _sim_recv_min(self, channel, recv_ends):
-        """Buffer all in-flight updates, then commit the smallest sim_completion_ts.
-
-        Completion barrier (PARITY.md §6): physical arrival time carries no
-        information in sim mode — only sim_completion_ts does. So we drain the
-        whole un-buffered in-flight set in ONE event-driven recv_fifo pass (it
-        yields FIFO as messages land and returns after a short silence), then pop
-        the minimum sim_completion_ts. Because sim trainers don't sleep, the set
-        lands within ~real-compute+mqtt latency, so the barrier waits exactly that
-        long — not a fixed 0.5s/end — and never commits a min before a smaller-sct
-        straggler is in hand. Ordering/staleness/vclock are unchanged vs the old
-        per-end poll; only wall drops.
-        """
+        """Barrier: drain the in-flight set in one recv_fifo pass, then commit the
+        smallest sim_completion_ts (never before a smaller straggler is in)."""
         to_probe = [
             e for e in recv_ends
             if not self._sim_buffer.has(e) and e not in self._sim_committed
@@ -229,9 +219,7 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
-        # [SIM_BARRIER] is the direct speedup metric: barrier_wait_s should track
-        # wall_lag_s (≈ real compute+mqtt), not the old ~0.79s/commit pacing.
-        logger.info(
+        logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
             f"barrier_wait_s={barrier_wait:.3f} probed={len(to_probe)} "
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
@@ -974,8 +962,8 @@ class TopAggregator(SyncTopAgg):
         self._await_min_trainers(channel)
         self._update_weights()
 
-        # Brief pause so channel state settles before selector runs.
-        time.sleep(0.1)
+        if not self.simulated:
+            time.sleep(0.1)  # let channel state settle before selection (real only)
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
@@ -995,10 +983,8 @@ class TopAggregator(SyncTopAgg):
             return
 
         ends_list = list(ends)
-        # [DISTRIBUTE_TIMING] instrumentation: wall in the send loop excluding the
-        # stagger sleeps, to localize the post-stagger bottleneck (MQTT publish of
-        # the 2 MB model per send). See PARITY.md §6.
-        _send_t0 = time.time(); _stag_acc = 0.0
+        _cpu_weights = weights_to_device(self.weights, DeviceType.CPU)  # once, reused
+        _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
         for idx, end in enumerate(ends_list):
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
@@ -1023,15 +1009,12 @@ class TopAggregator(SyncTopAgg):
             )
 
             msg = {
-                MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+                MessageType.WEIGHTS: _cpu_weights,
                 MessageType.ROUND: self._round,
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.TASK_TO_PERFORM: task_to_perform,
             }
-            # Stamp virtual send-time so trainer can compute sim_completion_ts correctly.
-            # Without this, _sim_send_ts stays None on the trainer → _sim_now()=0 →
-            # sim_completion_ts = D for all trainers regardless of when task was dispatched,
-            # collapsing the reorder buffer to sort by tiny GPU-time differences only.
+            # Stamp virtual send-time so trainer computes sim_completion_ts.
             if self.simulated:
                 sim_send_ts = self._vclock.now
                 msg[MessageType.SIM_SEND_TS] = sim_send_ts
@@ -1054,14 +1037,9 @@ class TopAggregator(SyncTopAgg):
                 self._round
             ] = datetime.now()
 
-            # Stagger sends to pace the MQTT broker. Pure wall-pacing — does not
-            # affect sim-time ordering (sim_send_ts is vclock-stamped; commits
-            # ordered by sim_completion_ts). Sim uses _sim_send_stagger_s
-            # (default 0.0 → removed, see PARITY.md §6); real keeps 0.5s.
-            if idx < len(ends_list) - 1:
-                _stag = self._sim_send_stagger_s if self.simulated else 0.5
-                if _stag > 0:
-                    time.sleep(_stag); _stag_acc += _stag
+            # Broker pacing only (no effect on sim-time ordering); 0 = off.
+            if idx < len(ends_list) - 1 and self._send_stagger_s > 0:
+                time.sleep(self._send_stagger_s); _stag_acc += self._send_stagger_s
         if ends_list:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(ends_list)} "

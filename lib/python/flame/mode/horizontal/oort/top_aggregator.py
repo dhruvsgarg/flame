@@ -74,13 +74,8 @@ class TopAggregator(BaseTopAggregator):
         if not hasattr(self, "_sim_buffer"):
             self._sim_buffer = SimReorderBuffer()
         buf = self._sim_buffer
-        # Completion barrier (PARITY.md §6): drain the WHOLE un-buffered selected
-        # set in ONE event-driven recv_fifo pass — it yields FIFO as messages
-        # land and returns after a short silence — instead of probing each end
-        # with a fixed 0.5s timeout. Since sim trainers don't sleep, the set
-        # arrives within ~real compute+mqtt latency, so this releases that fast.
-        # The yield-loop below already commits in ascending sim_completion_ts
-        # order from the fully-filled buffer, so ordering/staleness are unchanged.
+        # Barrier: drain the whole un-buffered set in one recv_fifo pass; the
+        # yield-loop below commits in ascending sim_completion_ts order.
         to_probe = [e for e in end_ids if not buf.has(e)]
         barrier_t0 = time.time()
         drained_all = True

@@ -176,11 +176,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._sim_commit_overhead_s = float(
             getattr(self.config.hyperparameters, "sim_commit_overhead_s", 0.0) or 0.0
         )
-        # Wall stagger between weight sends (sim only); 0.0 = none. Real mode
-        # keeps its hardcoded 0.5s. Pure wall-pacing, no effect on sim-time
-        # ordering. See PARITY.md §6.
-        self._sim_send_stagger_s = float(
-            getattr(self.config.hyperparameters, "sim_send_stagger_s", 0.0) or 0.0
+        # Wall stagger between weight sends (both modes); pure broker pacing.
+        self._send_stagger_s = float(
+            getattr(self.config.hyperparameters, "send_stagger_s", 0.0) or 0.0
         )
 
         self.framework = get_ml_framework_in_use()
@@ -293,29 +291,14 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 )
 
     def _advance_sim_clock(self, sct: float) -> None:
-        """Advance the virtual clock to a committed update's sim_completion_ts,
-        then charge the configured per-commit overhead.
-
-        ``sim_commit_overhead_s`` is charged once per committed update (the
-        aggregator serializes the agg→trainer→agg MQTT round-trip), so a round
-        of K commits advances the clock by up to ``K * overhead`` beyond compute
-        when completions cluster, and by ~``overhead`` when compute already
-        spreads them out. Shared by the syncfl/oort/asyncfl commit paths.
-        Default 0.0 → identical to prior behavior.
-        """
+        """Advance vclock to a commit's sim_completion_ts + per-commit overhead."""
         self._vclock.advance(sct)
         overhead = getattr(self, "_sim_commit_overhead_s", 0.0)
         if overhead > 0.0:
             self._vclock.advance(self._vclock.now + overhead)
 
-    # ── sim recv completion-barrier helpers (shared by syncfl/oort/asyncfl) ──
-    # The barrier (drain the in-flight set, then commit by sim_completion_ts) is
-    # what paces the common path — it releases as soon as the actual updates
-    # arrive (≈ real compute + mqtt), since sim trainers don't sleep. These two
-    # constants only size the DEAD-END ceiling (an end that never answers); they
-    # never gate responsive trainers. Adaptive: max(floor, factor × EMA of the
-    # observed full-drain wall) so it tracks real compute/contention, not a fixed
-    # 0.5s. See PARITY.md §6.
+    # Recv-barrier dead-end ceiling: max(floor, factor * EMA of full-drain wall).
+    # Bounds the wait for a non-responding end only; never paces responders.
     SIM_RECV_GRACE_FLOOR_S = 2.0
     SIM_RECV_GRACE_FACTOR = 4.0
 
@@ -324,7 +307,6 @@ class TopAggregator(Role, metaclass=ABCMeta):
                    self.SIM_RECV_GRACE_FACTOR * getattr(self, "_sim_fill_ema", 0.0))
 
     def _note_sim_fill(self, barrier_wait: float, drained_all: bool) -> None:
-        """Update the EMA of the actual full-drain wall (real compute+mqtt)."""
         if not drained_all:
             return
         prev = getattr(self, "_sim_fill_ema", 0.0)
@@ -341,14 +323,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
         Sync aggregation is order-independent (weighted average), so parity only
         requires the right *set* of k committers and the round duration.
         """
-        # Completion barrier (PARITY.md §6): drain the WHOLE selected set in ONE
-        # event-driven recv_fifo pass (yields FIFO as messages land, returns
-        # after a short silence) instead of looping with fixed 0.5s waits. Only
-        # once the set is buffered do we pick the first_k smallest sim_completion_ts
-        # — guaranteeing we never pick a larger-sct update while a smaller one is
-        # still in flight. Sim trainers don't sleep, so the set arrives within
-        # ~real compute+mqtt and the barrier releases that fast; the grace is the
-        # dead-end ceiling only.
+        # Barrier: drain the whole selected set in one recv_fifo pass, then pick
+        # the first_k smallest sim_completion_ts (never before a smaller is in).
         buf = SimReorderBuffer()
         ends = [e for e in ends if channel.has(e)]
         barrier_t0 = time.time()
@@ -681,15 +657,14 @@ class TopAggregator(Role, metaclass=ABCMeta):
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
-        # [DISTRIBUTE_TIMING] wall in the send loop excluding stagger — localizes
-        # the post-stagger bottleneck (MQTT publish of the 2 MB model). PARITY.md §6.
-        _send_t0 = time.time(); _stag_acc = 0.0
+        _cpu_weights = weights_to_device(self.weights, DeviceType.CPU)  # once, reused
+        _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
         for idx, end in enumerate(selected_ends):
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
             msg = {
-                MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+                MessageType.WEIGHTS: _cpu_weights,
                 MessageType.ROUND: self._round,
                 MessageType.DATASAMPLER_METADATA: datasampler_metadata,
                 MessageType.MODEL_VERSION: self._round,
@@ -708,15 +683,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
 
-            # Stagger sends to pace the MQTT broker. Pure wall-pacing — does not
-            # affect sim-time ordering (commits are ordered by sim_completion_ts).
-            # Sim uses _sim_send_stagger_s (default 0.0 → removed, PARITY.md §6);
-            # real keeps 0.5s. NB: sync bursts the whole selected/overcommit set
-            # (~13-67) at stagger=0, so watch the mqtt-drop sanity plot.
-            if idx < len(selected_ends) - 1:  # Don't sleep after last send
-                _stag = self._sim_send_stagger_s if self.simulated else 0.5
-                if _stag > 0:
-                    time.sleep(_stag); _stag_acc += _stag
+            # Broker pacing only (no effect on commit ordering); 0 = off.
+            if idx < len(selected_ends) - 1 and self._send_stagger_s > 0:
+                time.sleep(self._send_stagger_s); _stag_acc += self._send_stagger_s
         if selected_ends:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
