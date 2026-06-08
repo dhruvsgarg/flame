@@ -500,3 +500,47 @@ Next bottleneck (post-stagger): the remaining ~3.7s/round is the real MQTT publi
 of the 2 MB model, re-serialized per send (~15 identical sends/round). The new
 `[DISTRIBUTE_TIMING]` log isolates it; the likely fix is to serialize the model
 once per round and reuse the payload for all sends.
+
+### Wall-time accounting (felix sim, Jun8: 2115s / 316 rounds = 6.7s/round)
+
+| component | wall | % | status |
+|---|---|---|---|
+| distribute send-stagger (0.2s x 4744 sends) | 949s | 45% | FIXED (send_stagger_s=0) |
+| recv barrier (0.019s x 4661 commits) | 89s | 4% | already fast (barrier fix) |
+| distribute settle sleep (0.1s/round) | ~31s | 1.5% | FIXED (gated to real) |
+| weights_to_device per send (re-converted ~15x/round) | TBD | TBD | FIXED (hoisted once/round) |
+| MQTT publish + cloudpickle of 2MB model, per send | TBD | TBD | OPEN |
+| deepcopy(self.weights) + optimizer.do, per commit | TBD | TBD | OPEN |
+| _update_weights/distribute, selection, scheduling | TBD | TBD | OPEN |
+| **remaining (unmeasured)** | **~1046s** | **~49%** | split by [DISTRIBUTE_TIMING] on re-run |
+
+We account for ~51% explicitly (and fixed the stagger+settle). The other ~49%
+is the distribute send-loop + aggregate region; the `[DISTRIBUTE_TIMING]` log
+(send_wall_s, excl stagger) splits it on the next run. Principle: only
+aggregator-side serialized costs (hidden behind the trainer sleep in real, but
+on the critical path in sim) raise sim_rate; target those.
+
+### Next optimization tasks (ranked; status before re-run)
+
+1. **[MEASURE] split the remaining ~49%** — re-run, then
+   `grep DISTRIBUTE_TIMING <agg log>`: if send_wall_s dominates -> MQTT/pickle is
+   next; else -> aggregate (deepcopy/optimizer). Gates tasks 2/3. *PENDING RE-RUN.*
+2. **[OPT] serialize the 2MB model once/round** — channel.send cloudpickles per
+   send; pre-serialize once and reuse the payload for all sends. Expected: cuts
+   per-send pickle. Risk: channel-API change. *PLANNED (gated on #1=send-loop).*
+3. **[OPT] avoid per-commit deepcopy(self.weights)** in optimizer.do — copy once
+   per round or use a preallocated buffer. Risk: optimizer semantics. *PLANNED
+   (gated on #1=aggregate).*
+4. **[INVESTIGATE] _update_weights per distribute** — confirm it isn't redundant
+   work each distribute call. *PLANNED.*
+5. **[BACKLOG] reduce MQTT payload** — 2MB/model; compression or delta-encoding.
+   Bigger change, helps both modes. *BACKLOG.*
+6. **[BACKLOG] trainer fetch-pickup latency** — notify_trainer_avail polls avail
+   every 1s; may add up to 1s to task pickup. Low priority for syn_0. *BACKLOG.*
+
+Parity-correctness tasks (separate from speedup):
+- **felix staleness 2x** (sim 5.06 vs real 2.48) — investigate after speedup lands.
+- **felix per_round_advance KS** — distribution shape (means match); constant
+  per-commit overhead can't reproduce real's variable spread. Low priority.
+- **refl selection drift** — should shrink once the 0.24 overhead aligns round
+  counts; re-check trainer_speed/eligibility/participation after re-run.
