@@ -995,6 +995,10 @@ class TopAggregator(SyncTopAgg):
             return
 
         ends_list = list(ends)
+        # [DISTRIBUTE_TIMING] instrumentation: wall in the send loop excluding the
+        # stagger sleeps, to localize the post-stagger bottleneck (MQTT publish of
+        # the 2 MB model per send). See PARITY.md §6.
+        _send_t0 = time.time(); _stag_acc = 0.0
         for idx, end in enumerate(ends_list):
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
@@ -1050,9 +1054,20 @@ class TopAggregator(SyncTopAgg):
                 self._round
             ] = datetime.now()
 
-            # Stagger sends: shorter interval in sim (no real sleeps) vs real mode.
+            # Stagger sends to pace the MQTT broker. Pure wall-pacing — does not
+            # affect sim-time ordering (sim_send_ts is vclock-stamped; commits
+            # ordered by sim_completion_ts). Sim uses _sim_send_stagger_s
+            # (default 0.0 → removed, see PARITY.md §6); real keeps 0.5s.
             if idx < len(ends_list) - 1:
-                time.sleep(0.2 if self.simulated else 0.5)
+                _stag = self._sim_send_stagger_s if self.simulated else 0.5
+                if _stag > 0:
+                    time.sleep(_stag); _stag_acc += _stag
+        if ends_list:
+            logger.info(
+                f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(ends_list)} "
+                f"send_wall_s={time.time() - _send_t0 - _stag_acc:.3f} "
+                f"(excl stagger={_stag_acc:.2f}s)"
+            )
 
     def compose(self) -> None:
         """Compose role with tasklets."""

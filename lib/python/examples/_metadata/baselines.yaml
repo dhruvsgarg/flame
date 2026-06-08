@@ -45,9 +45,9 @@ baselines:
           type: "NA"
         # Per-commit MQTT/dispatch overhead the max(gpu,D) timing model omits.
         # No-op in real mode; charged on the virtual clock per committed update
-        # in sim mode. Derived from Jun7 parity: (7.97-2.17)/10 = 0.58s/commit
-        # (PARITY.md §5 CRITICAL-1). Re-tune if the K3b residual changes.
-        simCommitOverheadSeconds: 0.58
+        # in sim mode. Jun8 parity: 0.58 slightly over-charged (sim adv 8.56 >
+        # real 7.77, residual -0.08/commit) -> retuned to 0.50 (PARITY.md section 6).
+        simCommitOverheadSeconds: 0.50
     trainer:
       hyperparameters:
         client_notify:
@@ -86,9 +86,13 @@ baselines:
         trackTrainerAvail:
           enabled: "True"
           type: ORACULAR
-        # See felix note. Sync gap is smaller: Jun7 derived ~0.115s/commit
-        # (PARITY.md §5 MEDIUM-1). No-op in real mode. Re-tune after re-run.
-        simCommitOverheadSeconds: 0.115
+        # See felix note. Jun8 parity: with 0.115 the sim still under-charged
+        # (advance sim 1.64 < real 2.91; residual +0.127/commit) -> sim ran 1380
+        # rounds vs real 824, which drives REFL's selection drift (more rounds ->
+        # exploration decays further -> faster trainers picked -> trainer_speed/
+        # eligibility/participation diverge). Bumped 0.115 -> 0.24 (=0.115+0.127)
+        # to close the advance gap and the round-count cascade (PARITY.md section 6).
+        simCommitOverheadSeconds: 0.24
     trainer:
       hyperparameters:
         client_notify:

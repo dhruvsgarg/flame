@@ -1367,6 +1367,61 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
 # ==========================================================================
 
 
+_SEND_RE = re.compile(r"sending weights to \S+ (?:with )?model_version[=:] ?(\d+)")
+
+
+def mqtt_delivery_plots(records, out, stamp, tdir):
+    """MQTT delivery sanity (both modes): cumulative weight DISPATCHES (parsed
+    from the aggregator log) vs cumulative trainer RECEPTIONS (task_recv events).
+
+    With the send-stagger removed the aggregator bursts the whole batch at once;
+    if the broker drops messages, dispatched-but-never-received accumulates and
+    the gap rises without bound. A healthy run keeps the gap ≈ in-flight count
+    (it never grows), so this is the guard for stagger=0.
+    """
+    d = _sub(out, "system"); saved = []
+    run_dir = os.path.dirname(os.path.abspath(tdir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    sends_by_round: dict[int, int] = defaultdict(int)
+    if logs:
+        with open(logs[0]) as fh:
+            for line in fh:
+                m = _SEND_RE.search(line)
+                if m:
+                    sends_by_round[int(m.group(1))] += 1
+    if not sends_by_round:
+        return saved  # no agg log → nothing to check
+    recvs_by_round: dict[int, int] = defaultdict(int)
+    for r in records:
+        if r.get("event") == "task_recv":
+            rd = r.get("round")
+            if rd is not None:
+                recvs_by_round[int(rd)] += 1
+    rounds = sorted(r for r in (set(sends_by_round) | set(recvs_by_round)) if r >= 1)
+    cs = cr = 0
+    xs, cum_send, cum_recv, cum_gap = [], [], [], []
+    for r in rounds:
+        cs += sends_by_round.get(r, 0); cr += recvs_by_round.get(r, 0)
+        xs.append(r); cum_send.append(cs); cum_recv.append(cr); cum_gap.append(cs - cr)
+    gap = cs - cr
+    pct = (100.0 * gap / cs) if cs else 0.0
+    p = ph.line_plot(
+        {"cumulative dispatched (agg)": (xs, cum_send),
+         "cumulative received (task_recv)": (xs, cum_recv)},
+        "round", "cumulative messages",
+        f"MQTT delivery: dispatched={cs} received={cr} "
+        f"gap={gap} ({pct:.1f}%) — gap≈in-flight is healthy, growth=drops",
+        d, "mqtt_delivery_accounting.pdf", stamp=stamp)
+    if p: saved.append(p)
+    p = ph.line_plot(
+        {"dispatched − received": (xs, cum_gap)},
+        "round", "cumulative dispatched − received",
+        "MQTT undelivered gap over rounds (flat ≈ in-flight = healthy; rising = drops)",
+        d, "mqtt_undelivered_gap_over_rounds.pdf", stamp=stamp)
+    if p: saved.append(p)
+    return saved
+
+
 def sim_speedup_plots(records, out, stamp, tdir):
     """Simulator-only debug plots (real runs get explicit no-data placeholders):
       • sim_speedup_factor_over_time — vclock/wall (1.0 = real-equivalent, >1 faster)
@@ -1729,7 +1784,7 @@ def analyze(telemetry_dir, out_dir=None):
     stamp = ph.config_stamp(run_dir)
     saved = []
     for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
-               system_plots, sim_speedup_plots):
+               system_plots, sim_speedup_plots, mqtt_delivery_plots):
         try:
             saved.extend(fn(records, out_dir, stamp, telemetry_dir))
         except Exception as e:

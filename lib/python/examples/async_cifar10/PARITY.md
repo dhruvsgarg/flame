@@ -475,3 +475,28 @@ caveat disappears. Real mode untouched.
    collapses ~10–30×. A `selected-but-correct` guard: assert the committed
    `sim_completion_ts` sequence is non-decreasing and identical to a pre-fix
    replay on the same telemetry inputs.
+
+### Jun8 re-run findings — barrier worked, distribute stagger was next
+
+The barrier fix landed: sim recv is now ~0.019s/commit (was ~0.79s), total ~89s.
+But sim wall only improved ~5x (felix sim_rate 0.27 -> 1.28) because the bottleneck
+moved to `_distribute_weights`, which slept a fixed `time.sleep` between every
+weight send (async 0.2s/send, sync 0.5s/send, not shortened for sim). On felix
+that was 4744 sends x 0.2s = 949s = 45% of sim wall. Same wall-pacing anti-pattern
+as the old recv poll; same fix: `sim_send_stagger_s` (default 0.0 in sim, real
+keeps 0.5s). Guarded by `system/mqtt_delivery_accounting.pdf` (dispatched vs
+received; a growing positive gap = broker drops at stagger=0).
+
+Per-baseline parity after the Jun8 run:
+- felix: near parity. throughput/terminal/convergence PASS; overhead retuned
+  0.58 -> 0.50 (it slightly over-charged). Remaining: staleness 2x, per_round
+  advance KS (shape).
+- refl: under-charges (advance sim 1.64 < real 2.91) -> ran 1380 rounds vs real
+  824 -> selection drift (faster trainers picked) -> trainer_speed/eligibility/
+  participation diverge. Overhead bumped 0.115 -> 0.24 (=0.115 + measured 0.127
+  residual) to close the advance gap and the round-count cascade.
+
+Next bottleneck (post-stagger): the remaining ~3.7s/round is the real MQTT publish
+of the 2 MB model, re-serialized per send (~15 identical sends/round). The new
+`[DISTRIBUTE_TIMING]` log isolates it; the likely fix is to serialize the model
+once per round and reuse the payload for all sends.

@@ -176,6 +176,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._sim_commit_overhead_s = float(
             getattr(self.config.hyperparameters, "sim_commit_overhead_s", 0.0) or 0.0
         )
+        # Wall stagger between weight sends (sim only); 0.0 = none. Real mode
+        # keeps its hardcoded 0.5s. Pure wall-pacing, no effect on sim-time
+        # ordering. See PARITY.md §6.
+        self._sim_send_stagger_s = float(
+            getattr(self.config.hyperparameters, "sim_send_stagger_s", 0.0) or 0.0
+        )
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -675,6 +681,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
+        # [DISTRIBUTE_TIMING] wall in the send loop excluding stagger — localizes
+        # the post-stagger bottleneck (MQTT publish of the 2 MB model). PARITY.md §6.
+        _send_t0 = time.time(); _stag_acc = 0.0
         for idx, end in enumerate(selected_ends):
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
@@ -699,11 +708,21 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
 
-            # Add small delay between sends to distribute MQTT broker load
-            # This prevents overwhelming the broker with many concurrent large messages
-            # and allows the event loop to process keepalive packets
+            # Stagger sends to pace the MQTT broker. Pure wall-pacing — does not
+            # affect sim-time ordering (commits are ordered by sim_completion_ts).
+            # Sim uses _sim_send_stagger_s (default 0.0 → removed, PARITY.md §6);
+            # real keeps 0.5s. NB: sync bursts the whole selected/overcommit set
+            # (~13-67) at stagger=0, so watch the mqtt-drop sanity plot.
             if idx < len(selected_ends) - 1:  # Don't sleep after last send
-                time.sleep(0.5)
+                _stag = self._sim_send_stagger_s if self.simulated else 0.5
+                if _stag > 0:
+                    time.sleep(_stag); _stag_acc += _stag
+        if selected_ends:
+            logger.info(
+                f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
+                f"send_wall_s={time.time() - _send_t0 - _stag_acc:.3f} "
+                f"(excl stagger={_stag_acc:.2f}s)"
+            )
 
     def inform_end_of_training(self) -> None:
         """Inform all the trainers that the training is finished."""

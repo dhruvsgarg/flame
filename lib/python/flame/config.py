@@ -183,6 +183,15 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0
     )
+    # Wall-clock stagger between per-trainer weight sends in _distribute_weights.
+    # It only paces the MQTT broker; it does not affect sim-time ordering
+    # (sim_send_ts is stamped from the vclock, commits ordered by
+    # sim_completion_ts). Default 0.0 in sim removes ~45% of sim wall (PARITY.md
+    # §6). Real mode keeps its own fixed 0.5s pacing. Raise this if the
+    # mqtt-drop sanity plot shows undelivered dispatches. See PARITY.md §6.
+    sim_send_stagger_s: t.Optional[float] = Field(
+        alias="simSendStaggerSeconds", default=0.0
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
