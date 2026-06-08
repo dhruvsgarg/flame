@@ -139,7 +139,13 @@ def test_run_all_parity_smoke():
              agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])
     tr = {"aa": {"task_recv": [], "trainer_round": []}}
     res = pc.run_all_parity(a, a, tr, tr, agg_goal=2)
-    assert all(v["ok"] for v in res.values())
+    # Identical inputs ⇒ no parity check fails. field_coverage may flag the
+    # deliberately-sparse fixture's missing telemetry fields (a coverage signal,
+    # not a parity divergence), and data-less checks SKIP — both are excluded.
+    for name, v in res.items():
+        if name == "field_coverage" or v.get("status") == "SKIP":
+            continue
+        assert v["ok"], f"{name}: {v}"
 
 
 # ── §3.H clock / throughput new checks ──────────────────────────────────────
@@ -370,6 +376,7 @@ class TestRunAllParityExtended:
                                  for r in range(1, 42)])
         tr: dict = {}
         res = pc.run_all_parity(real, sim, tr, tr)
-        passed, failures, _ = pc.overall_verdict(res)
+        passed, roots, downstream, _warnings = pc.overall_verdict(res)
         assert not passed
+        failures = set(roots) | set(downstream)
         assert "throughput" in failures or "per_round_advance" in failures

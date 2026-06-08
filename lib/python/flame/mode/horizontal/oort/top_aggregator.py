@@ -43,8 +43,6 @@ from flame.telemetry.events import build_agg_round
 
 logger = logging.getLogger(__name__)
 
-# per-end probe wait when filling the simulated reorder buffer
-OORT_SIM_RECV_FILL_TIMEOUT_S = 0.5
 # Real MQTT delivery overhead (agg→trainer + trainer→agg) expected in both real
 # and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
 _NETWORK_SLACK_S = 2.0
@@ -76,16 +74,35 @@ class TopAggregator(BaseTopAggregator):
         if not hasattr(self, "_sim_buffer"):
             self._sim_buffer = SimReorderBuffer()
         buf = self._sim_buffer
-        for e in [e for e in end_ids if not buf.has(e)]:
+        # Completion barrier (PARITY.md §6): drain the WHOLE un-buffered selected
+        # set in ONE event-driven recv_fifo pass — it yields FIFO as messages
+        # land and returns after a short silence — instead of probing each end
+        # with a fixed 0.5s timeout. Since sim trainers don't sleep, the set
+        # arrives within ~real compute+mqtt latency, so this releases that fast.
+        # The yield-loop below already commits in ascending sim_completion_ts
+        # order from the fully-filled buffer, so ordering/staleness are unchanged.
+        to_probe = [e for e in end_ids if not buf.has(e)]
+        barrier_t0 = time.time()
+        drained_all = True
+        if to_probe:
+            grace = self._sim_recv_grace_s()
             for msg, md in channel.recv_fifo(
-                [e], 1, timeout=OORT_SIM_RECV_FILL_TIMEOUT_S
+                to_probe, first_k=len(to_probe), timeout=grace
             ):
-                if not msg:
+                if not msg:  # no more ready (grace expired or set drained)
                     break
                 actual_end = md[0]
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(actual_end, sct, (msg, md))
+            drained_all = all(buf.has(e) for e in to_probe)
+        barrier_wait = time.time() - barrier_t0
+        if to_probe:
+            self._note_sim_fill(barrier_wait, drained_all)
+            logger.info(
+                f"[SIM_BARRIER] probed={len(to_probe)} "
+                f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
+            )
 
         while True:
             popped = buf.pop_min()

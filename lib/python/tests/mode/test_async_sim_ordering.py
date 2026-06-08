@@ -51,21 +51,24 @@ class FakeChannel:
         return list(self._inflight)
 
     def recv_fifo(self, end_ids, first_k=0, timeout=None):
-        # Find and remove the first queued message whose end is in end_ids,
-        # then yield it. The eager pop means next() leaves the queue consistent.
-        end_ids = set(end_ids)
-        for i, (end_id, sct) in enumerate(self._queue):
-            if end_id in end_ids:
+        # Model the real recv_fifo: drain ALL currently-ready messages whose end
+        # is in end_ids (FIFO across the set) in a single call, then signal "no
+        # more ready" with (None, ...). The barrier drain relies on this set-wide
+        # behavior; yielding one-at-a-time would misrepresent the real API.
+        ids = set(end_ids)
+        i = 0
+        while i < len(self._queue):
+            end_id, sct = self._queue[i]
+            if end_id in ids:
                 self._queue.pop(i)
                 yield (
                     {MessageType.WEIGHTS: f"w_{end_id}",
                      MessageType.SIM_COMPLETION_TS: sct},
                     (end_id, None),
                 )
-                return
-        # Nothing found: yield nothing (caller gets StopIteration on next())
-        return
-        yield  # make this a generator
+            else:
+                i += 1
+        yield (None, ("", None))  # nothing more ready this pass
 
 
 class _ConcreteAgg(TopAggregator):

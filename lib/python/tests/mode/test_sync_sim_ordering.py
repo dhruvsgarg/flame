@@ -128,12 +128,12 @@ class TestSyncSimRecvFirstK:
         assert ch.get_end_property("t2", PROP_ROUND_DURATION).total_seconds() == 5.0
         assert ch.get_end_property("t5", PROP_ROUND_DURATION).total_seconds() == 8.0
 
-    def test_fewer_responders_than_k(self, monkeypatch):
+    def test_fewer_responders_than_k(self):
         # Only 2 of the 5 selected ever respond. Real mode's recv_fifo(first_k=3)
-        # would block forever; sim waits to the deadline then commits what it has
-        # (the 2 smallest by sct). Shrink the deadline so the test is fast.
-        import flame.mode.horizontal.syncfl.top_aggregator as agg_mod
-        monkeypatch.setattr(agg_mod, "SYNC_SIM_RECV_DEADLINE_S", 0.3)
+        # would block forever; the sim barrier drains what's ready (the recv_fifo
+        # returns (None,...) once nothing more is queued) and commits the 2
+        # smallest by sct. No fixed deadline needed — the grace is the dead-end
+        # ceiling and the fake signals "no more ready" immediately.
         agg = _make_agg()
         ch = FakeSyncChannel(SCTS, arrival_order=["t1", "t2"])  # only 2 queued
         committed = _committed_ends(agg, ch, first_k=3)

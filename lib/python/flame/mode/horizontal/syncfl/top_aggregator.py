@@ -71,8 +71,6 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # Real MQTT delivery overhead (agg→trainer + trainer→agg) expected in both real
 # and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
 _NETWORK_SLACK_S = 2.0
-SYNC_SIM_RECV_DEADLINE_S = 30
-SYNC_SIM_RECV_FILL_TIMEOUT_S = 0.5
 
 # Startup join barrier: how long to wait for the trainer cohort to join before
 # the first selection (see _await_min_trainers). Bounded so a crashed/slow
@@ -304,6 +302,28 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if overhead > 0.0:
             self._vclock.advance(self._vclock.now + overhead)
 
+    # ── sim recv completion-barrier helpers (shared by syncfl/oort/asyncfl) ──
+    # The barrier (drain the in-flight set, then commit by sim_completion_ts) is
+    # what paces the common path — it releases as soon as the actual updates
+    # arrive (≈ real compute + mqtt), since sim trainers don't sleep. These two
+    # constants only size the DEAD-END ceiling (an end that never answers); they
+    # never gate responsive trainers. Adaptive: max(floor, factor × EMA of the
+    # observed full-drain wall) so it tracks real compute/contention, not a fixed
+    # 0.5s. See PARITY.md §6.
+    SIM_RECV_GRACE_FLOOR_S = 2.0
+    SIM_RECV_GRACE_FACTOR = 4.0
+
+    def _sim_recv_grace_s(self) -> float:
+        return max(self.SIM_RECV_GRACE_FLOOR_S,
+                   self.SIM_RECV_GRACE_FACTOR * getattr(self, "_sim_fill_ema", 0.0))
+
+    def _note_sim_fill(self, barrier_wait: float, drained_all: bool) -> None:
+        """Update the EMA of the actual full-drain wall (real compute+mqtt)."""
+        if not drained_all:
+            return
+        prev = getattr(self, "_sim_fill_ema", 0.0)
+        self._sim_fill_ema = (0.7 * prev + 0.3 * barrier_wait) if prev else barrier_wait
+
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST
         sim_completion_ts (the k that would physically finish first in real),
@@ -315,29 +335,35 @@ class TopAggregator(Role, metaclass=ABCMeta):
         Sync aggregation is order-independent (weighted average), so parity only
         requires the right *set* of k committers and the round duration.
         """
+        # Completion barrier (PARITY.md §6): drain the WHOLE selected set in ONE
+        # event-driven recv_fifo pass (yields FIFO as messages land, returns
+        # after a short silence) instead of looping with fixed 0.5s waits. Only
+        # once the set is buffered do we pick the first_k smallest sim_completion_ts
+        # — guaranteeing we never pick a larger-sct update while a smaller one is
+        # still in flight. Sim trainers don't sleep, so the set arrives within
+        # ~real compute+mqtt and the barrier releases that fast; the grace is the
+        # dead-end ceiling only.
         buf = SimReorderBuffer()
-        ends = list(ends)
-        deadline = time.time() + SYNC_SIM_RECV_DEADLINE_S
-        while len(buf) < len(ends) and time.time() < deadline:
-            pending = [e for e in ends if not buf.has(e) and channel.has(e)]
-            if not pending:
-                break
-            got_any = False
-            for msg, md in channel.recv_fifo(
-                pending, first_k=len(pending),
-                timeout=SYNC_SIM_RECV_FILL_TIMEOUT_S,
-            ):
-                if not msg:
-                    break  # per-probe timeout: nothing more ready this pass
+        ends = [e for e in ends if channel.has(e)]
+        barrier_t0 = time.time()
+        drained_all = True
+        if ends:
+            grace = self._sim_recv_grace_s()
+            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=grace):
+                if not msg:  # no more ready (grace expired or set drained)
+                    break
                 end = md[0]
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
-                got_any = True
-            # Once we have at least k and a pass added nothing new, the rest are
-            # unavailable/quiet — stop waiting (real mode would time them out).
-            if len(buf) >= first_k and not got_any:
-                break
+            drained_all = all(buf.has(e) for e in ends)
+        barrier_wait = time.time() - barrier_t0
+        if ends:
+            self._note_sim_fill(barrier_wait, drained_all)
+            logger.info(
+                f"[SIM_BARRIER] probed={len(ends)} first_k={first_k} "
+                f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
+            )
 
         committed = []
         for _ in range(min(first_k, len(buf))):

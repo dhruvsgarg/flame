@@ -183,22 +183,32 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
-    # Short per-end probe timeout: how long we wait for one trainer's MQTT
-    # message before moving on. Not the training wait — just queue delivery jitter.
-    SIM_RECV_FILL_TIMEOUT_S = 0.5
-
     def _sim_recv_min(self, channel, recv_ends):
-        """Fill the reorder buffer from un-buffered, un-committed ends; pop and
-        commit the entry with the smallest sim_completion_ts."""
+        """Buffer all in-flight updates, then commit the smallest sim_completion_ts.
+
+        Completion barrier (PARITY.md §6): physical arrival time carries no
+        information in sim mode — only sim_completion_ts does. So we drain the
+        whole un-buffered in-flight set in ONE event-driven recv_fifo pass (it
+        yields FIFO as messages land and returns after a short silence), then pop
+        the minimum sim_completion_ts. Because sim trainers don't sleep, the set
+        lands within ~real-compute+mqtt latency, so the barrier waits exactly that
+        long — not a fixed 0.5s/end — and never commits a min before a smaller-sct
+        straggler is in hand. Ordering/staleness/vclock are unchanged vs the old
+        per-end poll; only wall drops.
+        """
         to_probe = [
             e for e in recv_ends
             if not self._sim_buffer.has(e) and e not in self._sim_committed
         ]
-        for e in to_probe:
-            msg, metadata = next(
-                channel.recv_fifo([e], 1, timeout=self.SIM_RECV_FILL_TIMEOUT_S)
-            )
-            if msg is not None:
+        barrier_t0 = time.time()
+        drained_all = True
+        if to_probe:
+            grace = self._sim_recv_grace_s()
+            for msg, metadata in channel.recv_fifo(
+                to_probe, first_k=len(to_probe), timeout=grace
+            ):
+                if msg is None:  # no more ready (grace expired or set drained)
+                    break
                 # metadata[0] is the actual sender; may differ from probed end
                 # if a stale recv task delivered a different end's message first.
                 actual_end = metadata[0]
@@ -206,19 +216,25 @@ class TopAggregator(SyncTopAgg):
                 if sct is None:
                     sct = self._vclock.now
                 self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+            drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+        barrier_wait = time.time() - barrier_t0
+        if to_probe:
+            self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit.
         popped = self._sim_buffer.pop_min()
         if popped is None:
-            time.sleep(0.5)
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
-        logger.debug(
-            f"[SIM_RECV] committed end={_end[-4:]} sct={sct:.1f} "
-            f"T_v={self._vclock.now:.1f} buf={len(self._sim_buffer)}"
+        # [SIM_BARRIER] is the direct speedup metric: barrier_wait_s should track
+        # wall_lag_s (≈ real compute+mqtt), not the old ~0.79s/commit pacing.
+        logger.info(
+            f"[SIM_BARRIER] end={_end[-4:]} barrier_wait_s={barrier_wait:.3f} "
+            f"probed={len(to_probe)} buf_depth={len(self._sim_buffer)} "
+            f"sct={sct:.1f} T_v={self._vclock.now:.1f}"
         )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state

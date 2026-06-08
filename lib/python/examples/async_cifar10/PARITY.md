@@ -350,3 +350,128 @@ Expect it to clear after K3b; re-run to confirm before treating as independent.
 | P3 ks_tol → 0.05 | speed should match tightly post-fix | `trainer_speed_parity` |
 | A4 duty-cycle | per-trainer on/off windows | new check; needs avail_change |
 | K3a/K3b enforced | formula vs overhead split | new Stage-1 checks |
+
+---
+
+## §6  Simulator wall-speedup — decouple sim-time ordering from wall-waiting
+
+**Status: IMPLEMENTED (validate wall-speedup on next run).** Scope: felix (asyncfl)
++ refl (oort/syncfl). Goal: make sim mode actually faster than real *without
+changing any logical result* (commit order, staleness, throughput, vclock,
+telemetry all byte-identical — only wall-clock drops).
+
+**Shipped:** completion-barrier set-drain in the three sim recv helpers
+(`asyncfl._sim_recv_min`, `oort._oort_sim_recv`, `syncfl._sync_sim_recv_first_k`):
+one event-driven `recv_fifo(set, first_k=len, timeout=grace)` instead of per-end
+0.5s polling; shared adaptive grace + `[SIM_BARRIER]` instrumentation in the
+syncfl base (`_sim_recv_grace_s`, `_note_sim_fill`); the 0.5s empty-spin removed.
+Guarded by `test_async/sync_sim_ordering` (commit-order invariant, unchanged) and
+new `test_sim_barrier.py` (asserts the single set-drain across all 3 stacks +
+adaptive grace). Measure on next run: `[SIM_BARRIER] barrier_wait_s` should track
+`wall_lag_s` (≈0.16s), sim `queue_wait_s` → ~0.
+
+### The problem (measured, Jun7 — `[LAG_DECOMP]` agg log, both modes)
+Sim wall ≈ real wall (felix: 10,494s ≈ 10,486s) → **zero speedup**, which defeats
+the point of simulating. The decomposition pinpoints why:
+
+| component | real | sim | meaning |
+|---|---|---|---|
+| `wall_lag_s` (round-trip) | 12.2s | **0.16s** | agg-send → agg-recv |
+| `mqtt_lag_s` | 0.02s | 0.02s | trainer-send → agg-receive |
+| `compute_s` (modeled) | 12.1s | 12.2s | reported max(gpu,D), *not* slept in sim |
+| `queue_wait_s` | 8.25s | **85.7s** | agg-**received** → agg-**processed** |
+
+Key reading: in sim the trainer round-trip is **0.16s** (no sleep — updates
+physically arrive almost instantly), but each update then **sits 85s in the
+reorder buffer** before being committed. So arrival is NOT the bottleneck — the
+**commit/pop rate is**. With ~10 commits/round over 7.9s/round that is **~0.79s
+of wall per commit**, which is exactly the `_sim_recv_min` pacing:
+- async `_sim_recv_min` calls `recv_fifo([e], 1, timeout=0.5)` **per end**,
+  sequentially — each un-arrived probe burns 0.5s, repeated per commit.
+- plus `time.sleep(0.5)` on an empty buffer.
+- sync/oort use the same 0.5s fill timeout (`*_SIM_RECV_FILL_TIMEOUT_S`).
+
+The updates are **already in the buffer at 0.16s**; the 0.5s pacing meters how
+fast we drain them and buys **zero** correctness (everything needed is present).
+That metering is the entire ~8s/round.
+
+### The principle
+In simulated mode **physical arrival time carries no information** — correctness
+depends only on `sim_completion_ts = sim_send_ts + max(gpu, D)`, which the trainer
+computes independently of when its message physically lands. Therefore the
+aggregator must:
+1. order/commit purely by `sim_completion_ts` (it already does — KEEP), and
+2. wait in wall-clock **only long enough to have the information for the next
+   correct commit** — i.e. until every in-flight update that *could* carry a
+   smaller `sim_completion_ts` has been received — **never on a fixed clock**.
+
+The current code violates (2): it waits fixed 0.5s windows regardless of whether
+the needed messages already arrived. Since sim trainers don't sleep, the whole
+in-flight set lands within a tiny wall window (~MQTT delivery); the fix is to
+wait on the **set**, not the clock.
+
+### The fix (both stacks, minimal + local to the 3 recv helpers)
+1. **Event-driven set-drain.** Replace per-end polling with a single
+   `recv_fifo(in_flight_set, first_k=len(set), timeout=SHORT)` call — `recv_fifo`
+   already yields messages FIFO as they arrive across the whole set and returns
+   after a short silence. Stop misusing it one-end-at-a-time.
+2. **Completion barrier, not a timer.** Commit by `sim_completion_ts` once the
+   barrier holds:
+   - async (felix): pop min sct; it is safe to commit S once every in-flight end
+     is buffered (or provably has `sim_send_ts ≥ S`). Repeat to `agg_goal`,
+     refilling `c` after each pop.
+   - sync (refl/oort): once all (overcommitted) selected ends are buffered, take
+     the `first_k` smallest sct. (sync already drains the set; just make the wait
+     barrier-based instead of a fixed 0.5s.)
+3. **Remove the 0.5s empty-spin.** Keep only a SHORT bounded grace (the lone
+   fallback for genuinely non-responding ends: unavailable/departed) so
+   availability-aware traces still terminate. For syn_0 (all available) the
+   barrier completes immediately. The grace is sized to *max plausible real
+   compute* (e.g. a running max of observed `wall_lag_s` × a factor), NOT a fixed
+   0.5s — it never paces the common path, only catches dead ends.
+4. **Instrument the barrier (so we can prove it).** Today `queue_wait_s` conflates
+   buffer residency with pop pacing. Add a per-commit log of the *actual barrier
+   wait* (wall from "drain started" to "all expected in-flight buffered") and the
+   buffer depth at pop. This is the metric the fix must drive toward ~`wall_lag_s`
+   (≈0.16s) and away from the ~0.79s/commit pacing — measured, not assumed.
+
+### Why correctness/parity is preserved (the argument)
+- The commit **sequence** is a pure function of `{sim_send_ts, sim_completion_ts,
+  in-flight set}` — none of which this change touches. Same min-sct (async) /
+  first-k-smallest-sct (sync) → identical logical output.
+- The barrier makes "is the current min final?" **exact** (wait for the actual
+  set) instead of **approximate** (wait 0.5s and hope). It is therefore *more*
+  correct under MQTT jitter, not less — the old timer could in principle commit
+  before a smaller-sct straggler arrived; the barrier cannot.
+- vclock advance (+`sim_commit_overhead_s`), staleness, participation, selection,
+  stat_utility, and all telemetry derive from the commit sequence → unchanged.
+- Cross-round straggler carry (refl overcommitment persistent buffer) is
+  preserved; the barrier counts already-buffered carried updates.
+
+### Why this is the right fix (vs alternatives)
+- Changes only **wall-pacing**, not logic → near-zero parity risk, and the
+  existing ordering tests (`test_sync_sim_ordering`, `test_async_sim_ordering`)
+  are the exact regression guard for the invariant we rely on.
+- Minimal/local (3 recv helpers); no new simulator architecture.
+- Uses the recv API as intended (set-drain) instead of fighting it (per-end poll).
+- A full discrete-event rewrite (no broker, jump to next completion) would be
+  faster still but is a large change with real parity risk — unjustified when the
+  measured bottleneck is purely the poll loop.
+
+### Expected outcome
+sim wall/round 8s → ~MQTT-bound (~0.1–0.5s) ⇒ ~10–30× sim speedup; `sim_rate`
+flips from ~1 to ≫1 (sim finally earns its name) and the `--sim-wall-ceiling-s`
+caveat disappears. Real mode untouched.
+
+### Validation
+1. `test_sync_sim_ordering` + `test_async_sim_ordering` pass unchanged
+   (commit-order invariant).
+2. New test: identical commit sequence + vclock trajectory given the same inputs,
+   with materially lower wall — i.e. logic-invariant, wall-variant.
+3. Re-run felix+refl real/sim; parity checker shows the SAME vclock/staleness/
+   throughput as a pre-fix sim run, only wall drops (K-tier checks unchanged).
+4. Direct metric: the new per-commit barrier-wait should fall from ~0.79s to
+   ~`wall_lag_s` (≈0.16s), and sim `queue_wait_s` from ~86s to ~0; sim wall
+   collapses ~10–30×. A `selected-but-correct` guard: assert the committed
+   `sim_completion_ts` sequence is non-decreasing and identical to a pre-fix
+   replay on the same telemetry inputs.
