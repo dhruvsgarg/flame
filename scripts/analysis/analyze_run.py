@@ -340,6 +340,39 @@ def _parse_overrun_excesses(telemetry_dir: str) -> list[float]:
     return excesses
 
 
+_SIM_BARRIER_ROUND_RE = re.compile(r"\[SIM_BARRIER\].*?round=(\d+)")
+_SIM_BARRIER_WAIT_RE = re.compile(r"\[SIM_BARRIER\].*?barrier_wait_s=([0-9.]+)")
+
+
+def _parse_sim_barrier(telemetry_dir: str):
+    """Parse [SIM_BARRIER] lines (sim recv path only) from the aggregator log.
+
+    Returns (waits, by_round). barrier_wait_s is the wall time the sim aggregator
+    spent draining the in-flight set before committing — the direct speedup metric
+    (should track wall_lag_s ≈ compute+mqtt, not the old ~0.79s/commit pacing).
+    Empty for real runs (the real recv path emits no [SIM_BARRIER]).
+    """
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    waits: list[float] = []
+    by_round: dict[int, list[float]] = defaultdict(list)
+    if not logs:
+        return waits, by_round
+    with open(logs[0]) as fh:
+        for line in fh:
+            if "[SIM_BARRIER]" not in line:
+                continue
+            mw = _SIM_BARRIER_WAIT_RE.search(line)
+            if not mw:
+                continue
+            w = float(mw.group(1))
+            waits.append(w)
+            mr = _SIM_BARRIER_ROUND_RE.search(line)
+            if mr:
+                by_round[int(mr.group(1))].append(w)
+    return waits, by_round
+
+
 def _spearman(a, b):
     import numpy as np
     a = np.asarray(a, float); b = np.asarray(b, float)
@@ -1334,6 +1367,107 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
 # ==========================================================================
 
 
+def sim_speedup_plots(records, out, stamp, tdir):
+    """Simulator-only debug plots (real runs get explicit no-data placeholders):
+      • sim_speedup_factor_over_time — vclock/wall (1.0 = real-equivalent, >1 faster)
+      • sim_barrier_wait_cdf / _over_rounds — the recv barrier wall (PARITY.md §6)
+      • sim_vclock_advance_decomp_over_rounds — Δvclock vs modeled compute (K3b)
+    These are the levers for debugging the speedup fix and the clock-tier parity
+    checks (K2/K3/K3b/sim_rate); see PARITY.md §6.
+    """
+    d = _sub(out, "system"); saved = []
+    ar = by_event(records, EVENT_AGG_ROUND)
+    is_sim = any(r.get("vclock_now") is not None for r in ar)
+
+    def _nd(fn, title, note):
+        p = ph.no_data_plot(title, d, fn, stamp=stamp, note=note)
+        if p:
+            saved.append(p)
+
+    # ── speedup factor over time: vclock / wall ──
+    if is_sim:
+        pairs = sorted((r["ts"], r["vclock_now"]) for r in ar
+                       if r.get("ts") is not None and r.get("vclock_now") is not None)
+        if len(pairs) >= 2:
+            t0 = pairs[0][0]
+            xs, ys = [], []
+            for t, v in pairs[1:]:  # skip first (wall≈0 → div blow-up)
+                dt = t - t0
+                if dt > 0:
+                    xs.append(dt); ys.append(v / dt)
+            p = ph.line_plot(
+                {"sim speedup (vclock/wall)": (xs, ys)}, "wall time (s)",
+                "speedup factor (virtual-s / wall-s)",
+                "Sim speedup over real (1.0 = real-equivalent; >1 = faster than real)",
+                d, "sim_speedup_factor_over_time.pdf", stamp=stamp, target=1.0)
+            if p:
+                saved.append(p)
+    else:
+        _nd("sim_speedup_factor_over_time.pdf",
+            "Sim speedup over real (real run: N/A)",
+            "real mode has no virtual clock; speedup is defined for sim runs only")
+
+    # ── barrier wait: CDF + over rounds ──
+    waits, by_round = _parse_sim_barrier(tdir)
+    if waits:
+        p = ph.cdf_plot(waits, "barrier_wait_s (sim recv set-drain)",
+                        f"Sim recv barrier wait CDF (n={len(waits)})", d,
+                        "sim_barrier_wait_cdf.pdf", stamp=stamp)
+        if p:
+            saved.append(p)
+        rr = sorted(r for r in by_round if r >= 1)
+        if rr:
+            _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
+            p = ph.line_plot(
+                {"mean barrier_wait_s": (rr, [_m(by_round[r]) for r in rr])},
+                "round", "barrier_wait_s",
+                "Sim recv barrier wait over rounds (target ≈ wall_lag = compute+mqtt)",
+                d, "sim_barrier_wait_over_rounds.pdf", stamp=stamp, clip_outliers=True)
+            if p:
+                saved.append(p)
+    else:
+        note = "[SIM_BARRIER] is emitted only by the simulated recv path"
+        _nd("sim_barrier_wait_cdf.pdf", "Sim recv barrier wait CDF (real run: N/A)", note)
+        _nd("sim_barrier_wait_over_rounds.pdf",
+            "Sim recv barrier wait over rounds (real run: N/A)", note)
+
+    # ── per-round vclock advance vs modeled compute (debugs K3b overhead) ──
+    if is_sim:
+        by_v, by_spd = {}, {}
+        for r in ar:
+            rd = r.get("round")
+            if rd is None or rd < 1:
+                continue
+            if r.get("vclock_now") is not None:
+                if rd not in by_v or r.get("ts", 0) > by_v[rd][1]:
+                    by_v[rd] = (r["vclock_now"], r.get("ts", 0))
+            sp = r.get("trainer_speed_s") or []
+            if sp:
+                by_spd[rd] = max(by_spd.get(rd, 0.0), max(sp))
+        rr = sorted(by_v)
+        if len(rr) >= 2:
+            xr, adv, comp = [], [], []
+            for i in range(1, len(rr)):
+                xr.append(rr[i])
+                adv.append(max(0.0, by_v[rr[i]][0] - by_v[rr[i - 1]][0]))
+                comp.append(by_spd.get(rr[i], float("nan")))
+            p = ph.line_plot(
+                {"Δvclock/round (actual advance)": (xr, adv),
+                 "max committed speed (modeled compute)": (xr, comp)},
+                "round", "seconds",
+                "Sim per-round vclock advance vs modeled compute "
+                "(gap = per-commit overhead + overlap)",
+                d, "sim_vclock_advance_decomp_over_rounds.pdf", stamp=stamp,
+                clip_outliers=True)
+            if p:
+                saved.append(p)
+    else:
+        _nd("sim_vclock_advance_decomp_over_rounds.pdf",
+            "Sim per-round vclock advance (real run: N/A)",
+            "virtual-clock advance is defined for sim runs only")
+    return saved
+
+
 def system_plots(records, out, stamp, tdir):
     d = _sub(out, "system"); saved = []
     xs, ys = comm_vs_accuracy_series(records)
@@ -1470,6 +1604,26 @@ def system_plots(records, out, stamp, tdir):
                          d, "queue_depth_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
 
+    # staleness over rounds + CDF (both modes; debugs U3 staleness parity).
+    stale_by_round = defaultdict(list); all_stale = []
+    for r in by_event(records, EVENT_AGG_ROUND):
+        for s in (r.get("staleness") or []):
+            if s is not None:
+                stale_by_round[int(r.get("round", 0))].append(float(s))
+                all_stale.append(float(s))
+    if all_stale:
+        p = ph.cdf_plot(all_stale, "staleness (rounds behind)",
+                        f"Update staleness CDF (n={len(all_stale)})", d,
+                        "staleness_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        rr = sorted(r for r in stale_by_round if r >= 1)
+        _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        p = ph.line_plot(
+            {"mean staleness": (rr, [_m(stale_by_round[r]) for r in rr])},
+            "round", "staleness (rounds behind)", "Update staleness over rounds",
+            d, "staleness_over_rounds.pdf", stamp=stamp, clip_outliers=True)
+        if p: saved.append(p)
+
     # Send-recv lag over rounds: median wall_lag per round, parsed from the
     # aggregator log. Now instrumented in BOTH sync and async aggregators, so
     # this plot exists for all baselines (placeholder when no events).
@@ -1574,7 +1728,8 @@ def analyze(telemetry_dir, out_dir=None):
         return []
     stamp = ph.config_stamp(run_dir)
     saved = []
-    for fn in (perf_plots, sanity_plots, selection_plots, insights_plots, system_plots):
+    for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
+               system_plots, sim_speedup_plots):
         try:
             saved.extend(fn(records, out_dir, stamp, telemetry_dir))
         except Exception as e:

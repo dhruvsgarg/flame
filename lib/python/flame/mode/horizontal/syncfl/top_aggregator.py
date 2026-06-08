@@ -361,8 +361,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if ends:
             self._note_sim_fill(barrier_wait, drained_all)
             logger.info(
-                f"[SIM_BARRIER] probed={len(ends)} first_k={first_k} "
-                f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
+                f"[SIM_BARRIER] round={getattr(self, '_round', -1)} probed={len(ends)} "
+                f"first_k={first_k} barrier_wait_s={barrier_wait:.3f} "
+                f"buf_depth={len(buf)}"
             )
 
         committed = []

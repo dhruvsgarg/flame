@@ -232,9 +232,10 @@ class TopAggregator(SyncTopAgg):
         # [SIM_BARRIER] is the direct speedup metric: barrier_wait_s should track
         # wall_lag_s (≈ real compute+mqtt), not the old ~0.79s/commit pacing.
         logger.info(
-            f"[SIM_BARRIER] end={_end[-4:]} barrier_wait_s={barrier_wait:.3f} "
-            f"probed={len(to_probe)} buf_depth={len(self._sim_buffer)} "
-            f"sct={sct:.1f} T_v={self._vclock.now:.1f}"
+            f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
+            f"barrier_wait_s={barrier_wait:.3f} probed={len(to_probe)} "
+            f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
+            f"T_v={self._vclock.now:.1f}"
         )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state

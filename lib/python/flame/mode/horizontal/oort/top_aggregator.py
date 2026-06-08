@@ -100,7 +100,7 @@ class TopAggregator(BaseTopAggregator):
         if to_probe:
             self._note_sim_fill(barrier_wait, drained_all)
             logger.info(
-                f"[SIM_BARRIER] probed={len(to_probe)} "
+                f"[SIM_BARRIER] round={getattr(self, '_round', -1)} probed={len(to_probe)} "
                 f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
             )
 
