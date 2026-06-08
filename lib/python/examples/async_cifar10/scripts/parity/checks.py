@@ -239,6 +239,95 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# §3.A  Availability / eligibility  (A1–A2)
+# ═══════════════════════════════════════════════════════════════════
+
+def avail_composition_parity(real: dict, sim: dict,
+                              tol_rel: float = 0.20) -> dict:
+    """A1 [DIST]: Per-round avail_composition counts match across modes.
+
+    avail_composition is a dict {state: count} on each selection event.
+    Typical states: TRAIN, EVAL, UNAVAIL, UNKNOWN.
+    Compares mean per-state count across rounds.
+    """
+    def collect(sel_events):
+        by_key: dict = {}
+        n = 0
+        for e in sel_events:
+            comp = e.get("avail_composition")
+            if not comp:
+                continue
+            n += 1
+            for k, v in comp.items():
+                by_key.setdefault(k, []).append(v)
+        return by_key, n
+
+    r_by_key, r_n = collect(real["selection_train"])
+    s_by_key, s_n = collect(sim["selection_train"])
+    if not r_by_key or not s_by_key:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no avail_composition in telemetry"}
+
+    all_keys = sorted(set(r_by_key) | set(s_by_key))
+    violations, per_key = [], {}
+    for k in all_keys:
+        r_vals = r_by_key.get(k, [0])
+        s_vals = s_by_key.get(k, [0])
+        r_mean = sum(r_vals) / len(r_vals)
+        s_mean = sum(s_vals) / len(s_vals)
+        ref = max(r_mean, s_mean, 1.0)
+        rel = abs(r_mean - s_mean) / ref
+        per_key[k] = {"real_mean": round(r_mean, 1), "sim_mean": round(s_mean, 1),
+                      "rel_diff": round(rel, 3)}
+        if rel > tol_rel:
+            violations.append(k)
+    return {
+        "ok": len(violations) == 0,
+        "tier": "DIST",
+        "rounds_real": r_n,
+        "rounds_sim": s_n,
+        "per_state": per_key,
+        "violations": violations,
+        "tol_rel": tol_rel,
+    }
+
+
+def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
+    """A2 [DIST]: num_eligible and num_candidates distributions match across modes."""
+    def collect(sel_events):
+        eligible, candidates = [], []
+        for e in sel_events:
+            ne = e.get("num_eligible")
+            nc = e.get("num_candidates")
+            if ne is not None:
+                eligible.append(ne)
+            if nc is not None:
+                candidates.append(nc)
+        return eligible, candidates
+
+    r_el, r_ca = collect(real["selection_train"])
+    s_el, s_ca = collect(sim["selection_train"])
+    if not r_el and not r_ca:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no num_eligible/num_candidates in telemetry"}
+
+    ks_el = ks_stat(r_el, s_el) if r_el and s_el else float("nan")
+    ks_ca = ks_stat(r_ca, s_ca) if r_ca and s_ca else float("nan")
+    r_el_mean = sum(r_el) / len(r_el) if r_el else float("nan")
+    s_el_mean = sum(s_el) / len(s_el) if s_el else float("nan")
+    ok = (math.isnan(ks_el) or ks_el <= warn_ks) and (math.isnan(ks_ca) or ks_ca <= warn_ks)
+    return {
+        "ok": ok,
+        "tier": "DIST",
+        "ks_eligible": round(ks_el, 3) if not math.isnan(ks_el) else None,
+        "ks_candidates": round(ks_ca, 3) if not math.isnan(ks_ca) else None,
+        "real_mean_eligible": round(r_el_mean, 1) if not math.isnan(r_el_mean) else None,
+        "sim_mean_eligible": round(s_el_mean, 1) if not math.isnan(s_el_mean) else None,
+        "warn_ks": warn_ks,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # §3.B  Selection  (S1–S5)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -297,6 +386,64 @@ def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
         "rounds_compared": len(rounds),
         "mean_jaccard": round(mean_j, 3) if js else None,
         "exact_match_frac": round(exact / len(js), 3) if js else None,
+    }
+
+
+def selection_detail_parity(real: dict, sim: dict,
+                              tol_chosen: float = 0.05,
+                              tol_inflight: float = 0.15) -> dict:
+    """S3/S4 [DIST]: num_chosen, in_flight, effective_c mean parity across modes.
+
+    num_chosen and in_flight are enforced (DIST); effective_c is diagnostic only.
+    """
+    def collect(sel_events):
+        chosen, inflight, eff_c = [], [], []
+        for e in sel_events:
+            nc = e.get("num_chosen")
+            inf = e.get("in_flight")
+            ec = e.get("effective_c")
+            if nc is not None:
+                chosen.append(nc)
+            if inf is not None:
+                inflight.append(inf)
+            if ec is not None:
+                eff_c.append(ec)
+        return chosen, inflight, eff_c
+
+    r_ch, r_inf, r_ec = collect(real["selection_train"])
+    s_ch, s_inf, s_ec = collect(sim["selection_train"])
+    if not r_ch:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no num_chosen in selection telemetry"}
+
+    def mean_or_nan(xs):
+        return sum(xs) / len(xs) if xs else float("nan")
+
+    r_ch_m = mean_or_nan(r_ch)
+    s_ch_m = mean_or_nan(s_ch)
+    r_inf_m = mean_or_nan(r_inf)
+    s_inf_m = mean_or_nan(s_inf)
+    r_ec_m = mean_or_nan(r_ec)
+    s_ec_m = mean_or_nan(s_ec)
+
+    rel_chosen = abs(r_ch_m - s_ch_m) / max(r_ch_m, s_ch_m, 1) if not math.isnan(r_ch_m) else 0.0
+    rel_inflight = abs(r_inf_m - s_inf_m) / max(r_inf_m, s_inf_m, 1) if (
+        not math.isnan(r_inf_m) and not math.isnan(s_inf_m)) else 0.0
+
+    ok = rel_chosen <= tol_chosen and rel_inflight <= tol_inflight
+    return {
+        "ok": ok,
+        "tier": "DIST",
+        "real_mean_chosen": round(r_ch_m, 2) if not math.isnan(r_ch_m) else None,
+        "sim_mean_chosen": round(s_ch_m, 2) if not math.isnan(s_ch_m) else None,
+        "rel_diff_chosen": round(rel_chosen, 3),
+        "real_mean_inflight": round(r_inf_m, 2) if not math.isnan(r_inf_m) else None,
+        "sim_mean_inflight": round(s_inf_m, 2) if not math.isnan(s_inf_m) else None,
+        "rel_diff_inflight": round(rel_inflight, 3),
+        "real_mean_effective_c": round(r_ec_m, 2) if not math.isnan(r_ec_m) else None,
+        "sim_mean_effective_c": round(s_ec_m, 2) if not math.isnan(s_ec_m) else None,
+        "tol_chosen": tol_chosen,
+        "tol_inflight": tol_inflight,
     }
 
 
@@ -1026,6 +1173,360 @@ def gpu_budget_ok(trainers: dict, warn_overrun_frac: float = 0.25) -> dict:
     }
 
 
+_PHASE_FIELDS = ("pre_train_s", "gpu_compute_s", "mqtt_fetch_s",
+                 "weights_to_gpu_s", "weights_to_ram_s", "post_train_s")
+
+
+def trainer_phase_parity(real_trainers: dict, sim_trainers: dict) -> dict:
+    """T_phase [DIAG]: Per-phase timing distribution comparison (real vs sim).
+
+    Collects trainer_round phase fields across all trainers and reports KS +
+    mean for each.  Purely diagnostic — helps isolate WHERE real/sim time
+    diverges (e.g. mqtt_fetch_s real>>sim explains vclock under-charge).
+    """
+    def collect_phases(trainers: dict) -> dict:
+        out: dict = {f: [] for f in _PHASE_FIELDS}
+        for _tid, d in trainers.items():
+            for e in d.get("trainer_round", []):
+                for f in _PHASE_FIELDS:
+                    v = e.get(f)
+                    if v is not None and v >= 0:
+                        out[f].append(v)
+        return out
+
+    r_phases = collect_phases(real_trainers)
+    s_phases = collect_phases(sim_trainers)
+
+    has_data = any(r_phases[f] for f in _PHASE_FIELDS)
+    if not has_data:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no phase timing fields in trainer telemetry"}
+
+    per_phase = {}
+    for f in _PHASE_FIELDS:
+        rv, sv = r_phases[f], s_phases[f]
+        if not rv and not sv:
+            continue
+        r_mean = sum(rv) / len(rv) if rv else float("nan")
+        s_mean = sum(sv) / len(sv) if sv else float("nan")
+        ks = ks_stat(rv, sv) if rv and sv else float("nan")
+        per_phase[f] = {
+            "real_mean_s": round(r_mean, 3) if not math.isnan(r_mean) else None,
+            "sim_mean_s": round(s_mean, 3) if not math.isnan(s_mean) else None,
+            "ks": round(ks, 3) if not math.isnan(ks) else None,
+        }
+
+    return {"ok": True, "tier": "DIAG", "per_phase": per_phase}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §3.0  Telemetry coverage  (TC1)  — Stage 0 gate
+# ═══════════════════════════════════════════════════════════════════
+
+# (label, event_source, field, mode_expected)
+#   event_source ∈ {"agg", "sel", "trainer_round", "task_recv"}
+#   mode_expected ∈ {"both", "sim", "real"} — where the field must be present
+_COVERAGE_SPEC = [
+    ("agg_round.vclock_now",            "agg",           "vclock_now",            "sim"),
+    ("agg_round.trainer_speed_s",       "agg",           "trainer_speed_s",       "both"),
+    ("agg_round.staleness",             "agg",           "staleness",             "both"),
+    ("agg_round.stat_utility",          "agg",           "stat_utility",          "both"),
+    ("agg_round.contributing_trainers", "agg",           "contributing_trainers", "both"),
+    ("selection.num_eligible",          "sel",           "num_eligible",          "both"),
+    ("selection.avail_composition",     "sel",           "avail_composition",     "both"),
+    ("selection.num_chosen",            "sel",           "num_chosen",            "both"),
+    ("trainer_round.gpu_compute_s",     "trainer_round", "gpu_compute_s",         "both"),
+    ("trainer_round.training_budget_s", "trainer_round", "training_budget_s",     "both"),
+    ("task_recv.sim_send_ts",           "task_recv",     "sim_send_ts",           "sim"),
+]
+
+
+def field_coverage(real_agg: dict, sim_agg: dict,
+                   real_trainers: dict, sim_trainers: dict) -> dict:
+    """TC1 [INV]: every field a downstream check reads must be present in the
+    modes that need it.
+
+    Generalizes K10: a single coverage matrix turns "9 mysterious SKIPs"
+    into "these fields are absent in sim".  FAIL-LOUD when an expected field
+    has zero density in a mode that requires it.
+    """
+    def _density(events: list, field: str) -> Optional[float]:
+        if not events:
+            return None
+        n = sum(1 for e in events if e.get(field) not in (None, [], {}))
+        return n / len(events)
+
+    def _agg_evs(agg, src):
+        return agg["agg_rounds"] if src == "agg" else agg["selection_train"]
+
+    def _tr_evs(tr, src):
+        return [e for d in tr.values() for e in d.get(src, [])]
+
+    matrix: dict = {}
+    violations: list = []
+    for label, src, field, mode in _COVERAGE_SPEC:
+        if src in ("agg", "sel"):
+            rd = _density(_agg_evs(real_agg, src), field)
+            sd = _density(_agg_evs(sim_agg, src), field)
+        else:
+            rd = _density(_tr_evs(real_trainers, src), field)
+            sd = _density(_tr_evs(sim_trainers, src), field)
+        matrix[label] = {
+            "real": round(rd, 3) if rd is not None else None,
+            "sim": round(sd, 3) if sd is not None else None,
+            "expect": mode,
+        }
+        if mode in ("both", "real") and not rd:
+            violations.append(f"{label}(real)")
+        if mode in ("both", "sim") and not sd:
+            violations.append(f"{label}(sim)")
+    return {"ok": not violations, "tier": "INV",
+            "matrix": matrix, "violations": violations}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §3.1  Clock-model decomposition  (K3a / K3b)  — Stage 1
+# ═══════════════════════════════════════════════════════════════════
+
+def modeled_compute_advance(real: dict, sim: dict) -> dict:
+    """K3a [DIAG]: per-mode, compare per-round advance to per-round max
+    committed trainer_speed_s (the modeled *compute* component).
+
+    advance − max_speed = the implied per-round overhead (real) or
+    overlap/overhead net (sim).  Reporting both modes side-by-side isolates
+    whether the gap K3/K2 see is compute-formula vs overhead vs overlap.
+    """
+    def _stats(agg: dict, use_vclock: bool):
+        adv = _per_round_advances(agg["agg_rounds"], use_vclock=use_vclock)
+        spd = _per_round_max_speed(agg["agg_rounds"])
+        if not adv or not spd:
+            return None
+        return sum(adv) / len(adv), sum(spd.values()) / len(spd)
+
+    s = _stats(sim, use_vclock=True)
+    r = _stats(real, use_vclock=False)
+    if not s or not r:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "insufficient advance/speed data (K10 may be blocking sim)"}
+    return {
+        "ok": True, "tier": "DIAG",
+        "sim_mean_advance_s": round(s[0], 2),
+        "sim_mean_max_speed_s": round(s[1], 2),
+        "sim_implied_overhead_s": round(s[0] - s[1], 2),
+        "real_mean_advance_s": round(r[0], 2),
+        "real_mean_max_speed_s": round(r[1], 2),
+        "real_implied_overhead_s": round(r[0] - r[1], 2),
+    }
+
+
+def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
+                      agg_goal: int = 0) -> dict:
+    """K3b [EXACT]: real_mean_advance − sim_mean_advance ≈ 0.
+
+    The decisive Stage-1 mechanism check: the per-round wall→vclock residual
+    is the per-commit MQTT/dispatch overhead the sim omits (CRITICAL-1).
+    Reports implied per-commit overhead = residual / agg_goal.
+    """
+    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)
+    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=False)
+    if not sim_adv:
+        has_vclock = any(e.get("vclock_now") is not None for e in sim["agg_rounds"])
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": ("K10: no vclock advances in sim agg_round events"
+                         if not has_vclock
+                         else "fewer than 2 sim rounds — too short to measure")}
+    if not real_adv:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "fewer than 2 real rounds — too short to measure"}
+    sim_mean = sum(sim_adv) / len(sim_adv)
+    real_mean = sum(real_adv) / len(real_adv)
+    residual = real_mean - sim_mean
+    rel = abs(residual) / real_mean if real_mean > 0 else 0.0
+    per_commit = (residual / agg_goal) if agg_goal else None
+    return {
+        "ok": rel <= tol_rel,
+        "tier": "EXACT",
+        "real_mean_advance_s": round(real_mean, 2),
+        "sim_mean_advance_s": round(sim_mean, 2),
+        "residual_s": round(residual, 2),
+        "rel": round(rel, 3),
+        "tol_rel": tol_rel,
+        "implied_per_commit_overhead_s": (round(per_commit, 3)
+                                          if per_commit is not None else None),
+        "agg_goal": agg_goal or None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §3.2x  Availability time-base & duty-cycle  (A3 / A4)  — Stage 2
+# ═══════════════════════════════════════════════════════════════════
+
+def avail_timebase_parity(real: dict, sim: dict,
+                          n_bins: int = 10, tol_rel: float = 0.20) -> dict:
+    """A3 [DIST]: num_eligible trajectory aligned by run progress (round/maxround).
+
+    If the availability trace is indexed by a different time-base in each mode
+    (sim=vclock, real=wall — the REFL HIGH-1 bug), the eligible-count curve vs
+    normalized progress diverges even when the clock advance looks fine.
+    """
+    def _traj(sel):
+        by_round: dict = {}
+        for e in sel:
+            ne = e.get("num_eligible")
+            if ne is None:
+                continue
+            by_round.setdefault(e["round"], []).append(ne)
+        if not by_round:
+            return None
+        maxr = max(by_round)
+        bins: list = [[] for _ in range(n_bins)]
+        for r, vals in by_round.items():
+            frac = r / maxr if maxr else 0.0
+            idx = min(n_bins - 1, int(frac * n_bins))
+            bins[idx].append(sum(vals) / len(vals))
+        return [(sum(b) / len(b) if b else None) for b in bins]
+
+    rt, st = _traj(real["selection_train"]), _traj(sim["selection_train"])
+    if not rt or not st:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no num_eligible trajectory"}
+    per_bin, diffs = [], []
+    for i in range(n_bins):
+        rv, sv = rt[i], st[i]
+        if rv is None or sv is None:
+            per_bin.append(None)
+            continue
+        rel = abs(rv - sv) / max(rv, sv, 1.0)
+        diffs.append(rel)
+        per_bin.append(round(rel, 3))
+    max_rel = max(diffs) if diffs else float("nan")
+    return {
+        "ok": math.isnan(max_rel) or max_rel <= tol_rel,
+        "tier": "DIST",
+        "max_rel_diff": round(max_rel, 3) if not math.isnan(max_rel) else None,
+        "per_bin_rel_diff": per_bin,
+        "tol_rel": tol_rel,
+    }
+
+
+def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
+    """A4 [DIST]: per-trainer availability duty-cycle parity.
+
+    Requires avail_change telemetry (on/off transitions per trainer), which
+    the current loader does not surface — SKIP placeholder per the append-only
+    growth rule; activates automatically once that telemetry exists.
+    """
+    def _has_avail_change(tr):
+        return any(d.get("avail_change") for d in tr.values())
+
+    if not _has_avail_change(real_trainers) and not _has_avail_change(sim_trainers):
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "avail_change telemetry not available; A4 inactive"}
+    # Telemetry present: compare per-trainer on-fraction.
+    def _on_frac(tr):
+        out = {}
+        for tid, d in tr.items():
+            evs = d.get("avail_change", [])
+            if not evs:
+                continue
+            on = sum(1 for e in evs if e.get("available"))
+            out[tid] = on / len(evs)
+        return out
+
+    rf, sf = _on_frac(real_trainers), _on_frac(sim_trainers)
+    keys = set(rf) | set(sf)
+    diffs = [abs(rf.get(k, 0.0) - sf.get(k, 0.0)) for k in keys]
+    max_diff = max(diffs) if diffs else 0.0
+    return {"ok": max_diff <= 0.2, "tier": "DIST",
+            "max_dutycycle_diff": round(max_diff, 3), "n_trainers": len(keys)}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §3.4x  Training input control & per-phase split  (T2 / T_*)  — Stage 4
+# ═══════════════════════════════════════════════════════════════════
+
+def training_budget_parity(real_trainers: dict, sim_trainers: dict,
+                           ks_tol: float = 0.1) -> dict:
+    """T2 [DIST]: training_budget_s distribution match (control: the *input*
+    to the trainer speed model)."""
+    def _vals(tr):
+        out = []
+        for d in tr.values():
+            for e in d.get("trainer_round", []):
+                v = e.get("training_budget_s")
+                if v is not None and v >= 0:
+                    out.append(float(v))
+        return out
+
+    rv, sv = _vals(real_trainers), _vals(sim_trainers)
+    if not rv or not sv:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no training_budget_s in telemetry"}
+    ks = ks_stat(rv, sv)
+    rm, _ = mean_std(rv)
+    sm, _ = mean_std(sv)
+    return {"ok": ks <= ks_tol, "tier": "DIST",
+            "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+            "real_mean_s": round(rm, 2), "sim_mean_s": round(sm, 2),
+            "n_real": len(rv), "n_sim": len(sv)}
+
+
+def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
+                        ks_tol: float = 0.25) -> dict:
+    """T_* [DIST]: one independent KS check per training phase.
+
+    Splits the trainer_phase DIAG blob so the report says exactly which phase
+    diverges ("mqtt_fetch off, rest match") instead of "timing is off".
+    Returns {phase_<name>: result_dict}.
+    """
+    def _collect(tr, field):
+        out = []
+        for d in tr.values():
+            for e in d.get("trainer_round", []):
+                v = e.get(field)
+                if v is not None and v >= 0:
+                    out.append(float(v))
+        return out
+
+    results: dict = {}
+    for f in _PHASE_FIELDS:
+        key = "phase_" + (f[:-2] if f.endswith("_s") else f)
+        rv, sv = _collect(real_trainers, f), _collect(sim_trainers, f)
+        if not rv or not sv:
+            results[key] = {"ok": True, "tier": "DIST", "status": "SKIP",
+                            "note": f"no {f} in telemetry", "phase": f}
+            continue
+        ks = ks_stat(rv, sv)
+        rm, _ = mean_std(rv)
+        sm, _ = mean_std(sv)
+        results[key] = {"ok": ks <= ks_tol, "tier": "DIST", "phase": f,
+                        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+                        "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §3.8x  Loss curve  (C2)  — Stage 8
+# ═══════════════════════════════════════════════════════════════════
+
+def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15) -> dict:
+    """C2 [DIST]: loss curve by FL round, asserted independently of accuracy."""
+    def _curve(evs):
+        return {e["round"]: e.get("test-loss") for e in evs}
+
+    rc, sc = _curve(real["agg_evals"]), _curve(sim["agg_evals"])
+    rounds = sorted(set(rc) & set(sc))
+    diffs = [abs(rc[r] - sc[r]) for r in rounds
+             if rc[r] is not None and sc[r] is not None]
+    if not diffs:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no overlapping loss evals"}
+    avg = sum(diffs) / len(diffs)
+    return {"ok": avg <= loss_tol, "tier": "DIST",
+            "avg_loss_diff": round(avg, 4),
+            "eval_rounds_compared": len(diffs), "loss_tol": loss_tol}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §4  Consolidated run_all_parity (extended)
 # ═══════════════════════════════════════════════════════════════════
@@ -1038,97 +1539,217 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    budget_s: Optional[float] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
-    Extended from the original to include the §3.H clock/throughput checks
-    (K2/K3/K4/K8/K10/U2/P3) alongside the original checks.
-    Backward-compatible: callers that pass only real_agg/sim_agg/trainers/agg_goal
-    still get the original results plus the new ones.
+    Ordered HIGH → MID → LOW so coarse failures surface first:
+      §0 Budget / stop-condition sanity
+      §1 High-level counts (rounds, commits)
+      §2 Convergence (accuracy / loss)
+      §3 Availability (composition, eligibility)
+      §4 Selection (detail, Jaccard, participation)
+      §5 Updates / staleness
+      §6 Clock & throughput (gating check first)
+      §7 Trainer timing & sim invariants
+      §8 Statistical utility
     """
     results: dict = {}
 
-    # ── §3.H: clock gate — check K10 first so downstream clock checks can SKIP ──
+    # ── Stage 0 Telemetry coverage (gate) ──
+    results["field_coverage"] = field_coverage(
+        real_agg, sim_agg, real_trainers, sim_trainers)
     results["vclock_telemetry"] = vclock_telemetry_present(sim_agg)
 
-    # ── §3.H: clock invariants ──
+    # ── Stage 1 Clock model (control → mechanism → emergent) ──
     results["sim_commit_monotone"] = sim_commit_order_monotone(sim_agg)
     results["sim_rate"] = sim_rate_ok(sim_agg)
-
-    # ── §3.H: parity checks (headline new checks) ──
-    results["throughput"] = throughput_parity(real_agg, sim_agg)
-    results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
+    results["trainer_speed"] = trainer_speed_parity(real_agg, sim_agg)
+    results["modeled_compute_advance"] = modeled_compute_advance(real_agg, sim_agg)
+    results["overhead_residual"] = overhead_residual(
+        real_agg, sim_agg, agg_goal=agg_goal)
     results["overlap_factor"] = overlap_factor(real_agg, sim_agg)
-    results["total_commits"] = total_commits_parity(real_agg, sim_agg)
-    results["terminal_state"] = terminal_state_parity(real_agg, sim_agg)
-    results["budget_not_cap"] = budget_not_cap(
-        real_agg, sim_agg, rounds_cap=rounds_cap, budget_s=budget_s)
+    results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
+    results["throughput"] = throughput_parity(real_agg, sim_agg)
 
-    # ── §3.B: selection ──
+    # ── Stage 2 Availability ──
+    results["avail_composition"] = avail_composition_parity(real_agg, sim_agg)
+    results["eligibility"] = eligibility_parity(real_agg, sim_agg)
+    results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg)
+    results["duty_cycle"] = duty_cycle_parity(real_trainers, sim_trainers)
+
+    # ── Stage 3 Selection ──
+    results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
+    results["participation"] = participation_parity(real_agg, sim_agg)
     results["selection"] = selection_parity(real_agg, sim_agg, max_rounds)
 
-    # ── §3.D: updates ──
-    results["aggregation_sequence"] = aggregation_sequence_parity(
-        real_agg, sim_agg, max_rounds)
-    results["staleness"] = staleness_parity(real_agg, sim_agg)
-    results["inter_arrival_order"] = inter_arrival_order_parity(real_agg, sim_agg)
-
-    # ── §3.E: processing ──
-    results["participation"] = participation_parity(real_agg, sim_agg)
-    results["trainer_speed"] = trainer_speed_parity(real_agg, sim_agg)
-
-    # ── §3.F: utility ──
-    results["utility"] = utility_parity(real_agg, sim_agg)
-
-    # ── §3.G: convergence ──
-    results["convergence"] = convergence_parity(real_agg, sim_agg)
-
-    # ── §3.C: sim-mode trainer invariants ──
-    results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
+    # ── Stage 4 Dispatch & training ──
+    results["training_budget"] = training_budget_parity(real_trainers, sim_trainers)
+    results.update(trainer_phase_split(real_trainers, sim_trainers))
+    results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
+    results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
 
+    # ── Stage 5 Update return & ordering ──
+    results["inter_arrival_order"] = inter_arrival_order_parity(real_agg, sim_agg)
     if agg_goal:
         results["agg_goal_cycles_real"] = agg_goal_cycles_ok(real_agg, agg_goal)
         results["agg_goal_cycles_sim"] = agg_goal_cycles_ok(sim_agg, agg_goal)
+
+    # ── Stage 6 Aggregation ──
+    results["staleness"] = staleness_parity(real_agg, sim_agg)
+    results["aggregation_sequence"] = aggregation_sequence_parity(
+        real_agg, sim_agg, max_rounds)
+
+    # ── Stage 7 Statistical utility ──
+    results["utility"] = utility_parity(real_agg, sim_agg)
+
+    # ── Stage 8 Emergent outcomes ──
+    results["terminal_state"] = terminal_state_parity(real_agg, sim_agg)
+    results["total_commits"] = total_commits_parity(real_agg, sim_agg)
+    results["convergence"] = convergence_parity(real_agg, sim_agg)
+    results["convergence_loss"] = convergence_loss_parity(real_agg, sim_agg)
+
+    # ── Stage 9 Budget / stop sanity ──
+    results["budget_not_cap"] = budget_not_cap(
+        real_agg, sim_agg, rounds_cap=rounds_cap, budget_s=budget_s)
+    results["failsafe"] = failsafe_ok(sim_agg, budget_s=budget_s)
 
     return results
 
 
 # ═══════════════════════════════════════════════════════════════════
-# §5  Overall verdict
+# §5  Causal registry  (stage / role / deps)  — single source of truth
 # ═══════════════════════════════════════════════════════════════════
+#
+# Each result key maps to its rung on the parity ladder.  STAGE drives
+# diagnosis ordering; ROLE labels its localization purpose; DEPS lists the
+# upstream checks whose passing is required for this one to be meaningful.
+# TIER (enforcement) is read live from each result dict, not stored here.
+#
+#   role ∈ {"CONTROL", "MECHANISM", "EMERGENT", "DIAG"}
 
-_WARN_ONLY_CHECKS = {"budget_not_cap", "overlap_factor", "inter_arrival_order"}
-_DIST_CHECKS = {"selection", "aggregation_sequence", "staleness", "participation",
-                "trainer_speed", "utility", "convergence", "per_round_advance",
-                "inter_arrival_order"}
+CHECK_META: dict = {
+    # ── Stage 0 Telemetry coverage ──
+    "field_coverage":          {"stage": 0, "role": "CONTROL",  "deps": ()},
+    "vclock_telemetry":        {"stage": 0, "role": "CONTROL",  "deps": ("field_coverage",)},
+    # ── Stage 1 Clock model ──
+    "sim_commit_monotone":     {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
+    "sim_rate":                {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
+    "trainer_speed":           {"stage": 1, "role": "CONTROL",  "deps": ()},
+    "modeled_compute_advance": {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overlap_factor":          {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
+    "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
+    "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
+    # ── Stage 2 Availability ──
+    "avail_composition":       {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "eligibility":             {"stage": 2, "role": "MECHANISM", "deps": ("avail_composition",)},
+    "avail_timebase":          {"stage": 2, "role": "CONTROL",  "deps": ("per_round_advance",)},
+    "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
+    # ── Stage 3 Selection ──
+    "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
+    "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail",)},
+    "selection":               {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
+    # ── Stage 4 Dispatch & training ──
+    "training_budget":         {"stage": 4, "role": "CONTROL",  "deps": ()},
+    "phase_pre_train":         {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "phase_weights_to_gpu":    {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "phase_gpu_compute":       {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
+    "phase_mqtt_fetch":        {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "phase_weights_to_ram":    {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "phase_post_train":        {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
+    "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
+    "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
+    "sim_send_ts":             {"stage": 4, "role": "CONTROL",  "deps": ("vclock_telemetry",)},
+    # ── Stage 5 Update return & ordering ──
+    "inter_arrival_order":     {"stage": 5, "role": "MECHANISM", "deps": ("per_round_advance", "selection_detail")},
+    "agg_goal_cycles_real":    {"stage": 5, "role": "MECHANISM", "deps": ()},
+    "agg_goal_cycles_sim":     {"stage": 5, "role": "MECHANISM", "deps": ()},
+    # ── Stage 6 Aggregation ──
+    "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order")},
+    "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
+    "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
+    # ── Stage 7 Statistical utility ──
+    "utility":                 {"stage": 7, "role": "EMERGENT", "deps": ("participation", "phase_gpu_compute", "staleness")},
+    # ── Stage 8 Emergent outcomes ──
+    "terminal_state":          {"stage": 8, "role": "EMERGENT", "deps": ("throughput", "participation")},
+    "total_commits":           {"stage": 8, "role": "EMERGENT", "deps": ("throughput",)},
+    "convergence":             {"stage": 8, "role": "EMERGENT", "deps": ("utility", "terminal_state")},
+    "convergence_loss":        {"stage": 8, "role": "EMERGENT", "deps": ("utility", "terminal_state")},
+    # ── Stage 9 Budget / stop sanity (orthogonal) ──
+    "budget_not_cap":          {"stage": 9, "role": "DIAG",     "deps": ()},
+    "failsafe":                {"stage": 9, "role": "MECHANISM", "deps": ()},
+}
+
+# Checks whose FAIL is downgraded to WARN regardless of tier (expected-noisy).
+_WARN_ONLY_CHECKS = {"budget_not_cap", "inter_arrival_order"}
+
+
+def check_stage(name: str) -> int:
+    return CHECK_META.get(name, {}).get("stage", 99)
+
+
+def check_role(name: str) -> str:
+    return CHECK_META.get(name, {}).get("role", "")
+
+
+def _is_skipped(res: dict) -> bool:
+    note = res.get("note") or ""
+    return res.get("status") == "SKIP" or note.startswith("K10:")
+
+
+def _classify(name: str, res: dict, strict: bool, lenient: bool) -> str:
+    """One of {'pass','fail','warn','skip'} for a single check result."""
+    if _is_skipped(res):
+        return "skip"
+    if res.get("ok", True):
+        return "pass"
+    tier = res.get("tier", "DIST")
+    if name in _WARN_ONLY_CHECKS or tier == "DIAG":
+        return "fail" if strict else "warn"
+    if tier in ("EXACT", "INV"):
+        return "fail"
+    if tier == "DIST":
+        return "warn" if lenient else "fail"
+    return "fail"
+
+
+def _transitive_deps(name: str, _seen: Optional[set] = None) -> set:
+    """All upstream check names reachable from `name` via the dep graph."""
+    if _seen is None:
+        _seen = set()
+    for dep in CHECK_META.get(name, {}).get("deps", ()):
+        if dep not in _seen:
+            _seen.add(dep)
+            _transitive_deps(dep, _seen)
+    return _seen
 
 
 def overall_verdict(results: dict, strict: bool = False,
                     lenient: bool = False) -> tuple:
-    """Return (passed: bool, failures: list[str], warnings: list[str]).
+    """Return (passed, root_causes, downstream, warnings).
 
-    Enforcement:
-      EXACT/INV FAIL  → always overall FAIL
-      DIST FAIL       → FAIL unless --lenient
-      WARN-only       → never FAIL unless --strict
-      DIAG FAIL       → always a warning (never FAIL unless --strict)
+    Causal localization:
+      * A check is an enforced FAIL per tier/lenient/strict rules.
+      * Among failures, one whose transitive upstream chain contains another
+        failure is DOWNSTREAM; otherwise it is a ROOT-CAUSE.
+      * root_causes/downstream are sorted by ladder stage (lowest first).
+      * passed == (no enforced failures).
+
+    Back-compat: callers expecting the old 3-tuple can use
+    ``passed, root+downstream, warnings`` — see report.py.
     """
-    failures, warnings = [], []
-    for name, res in results.items():
-        if res.get("ok"):
-            continue
-        tier = res.get("tier", "DIST")
-        if name in _WARN_ONLY_CHECKS or tier == "DIAG":
-            if strict:
-                failures.append(name)
-            else:
-                warnings.append(name)
-        elif tier in ("EXACT", "INV"):
-            failures.append(name)
-        elif tier == "DIST":
-            if lenient:
-                warnings.append(name)
-            else:
-                failures.append(name)
+    statuses = {n: _classify(n, r, strict, lenient)
+                for n, r in results.items() if isinstance(r, dict)}
+    failed = {n for n, s in statuses.items() if s == "fail"}
+    warnings = sorted((n for n, s in statuses.items() if s == "warn"),
+                      key=check_stage)
+
+    roots, downstream = [], []
+    for n in failed:
+        if _transitive_deps(n) & failed:
+            downstream.append(n)
         else:
-            failures.append(name)
-    return not bool(failures), failures, warnings
+            roots.append(n)
+    roots.sort(key=lambda n: (check_stage(n), n))
+    downstream.sort(key=lambda n: (check_stage(n), n))
+    return (not failed), roots, downstream, warnings

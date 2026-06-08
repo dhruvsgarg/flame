@@ -297,4 +297,88 @@ those 250 trainers differs, giving rise to the 49 sim-only / 53 real-only diverg
   trainer-identity divergence in refl (R2) directly.
 
 These correspond exactly to the checks specified in `real-sim_parity_checker_plan.md`
-§3.H (K-series) and §3.A — confirming the plan's gap analysis was correct.
+S3.H (K-series) and S3.A -- confirming the plan's gap analysis was correct.
+
+---
+
+## 6. Round 2 checker results (updated parity_check.py, 2026-06-08)
+
+`scripts/parity/checks.py` was updated with new checks (A1/A2 availability, S3/S4
+selection detail, T_phase trainer timing) and reordered HIGH->MID->LOW. Run with
+`--agg-goal 10 --budget-s 10800`.
+
+### FELIX (jun7) — updated check results
+
+| Check | Result | Key values |
+|---|---|---|
+| K9 budget_not_cap | PASS | real max_round=1317, sim=1328 |
+| K5 failsafe | PASS | wall=10494s / 10800s budget |
+| K8 terminal_state | **FAIL** | V=2880s: sim=1328 rounds, real=364 (rel_diff=0.73) |
+| U2 total_commits | **FAIL** | sim=13280 vs real=3648 at V=2880s (rel_diff=0.73) |
+| C1 convergence | **FAIL** | avg_acc_diff=0.083 (>0.05) |
+| A1 avail_composition | PASS | both: 300 AVL_TRAIN, 0 unavailable |
+| A2 eligibility | PASS | KS=0.0, mean=300 both (all trainers always eligible) |
+| S3/4 selection_detail | **FAIL** | num_chosen: real=0.69 sim=0.61 (rel_diff=0.079); in_flight~31 both; effective_c=30.0 both |
+| S1 Jaccard | PASS (gated) | mean_jaccard=0.024 (stochastic expected) |
+| S2 participation | PASS | avg_diff=7.46 |
+| U3 staleness | **FAIL** | real=2.53 sim=10.32 KS=0.59 |
+| P1 aggregation_seq | **FAIL** | set_match=0.0 (stochastic) |
+| K10 vclock present | PASS | 13280/13280 events |
+| K2 throughput | **FAIL** | sim=2.17s/round real=7.96s/round rel_diff=0.73 |
+| K3 per_round_advance | **FAIL** | sim mean=2.28s real=7.97s KS=0.91 |
+| K4 overlap factor | WARN | sim=12.4x real=3.4x (expected: sim has no overhead model) |
+| P3 trainer_speed | PASS | KS=0.093, both mean~12.2s (speed model correct) |
+| T_phase | PASS/DIAG | pre/post ~0.001s both; gpu_compute real=0.284s sim=0.097s; mqtt_fetch real=106s sim=97s |
+| F1-3 utility | **FAIL** | max_KS=1.0 (downstream of staleness divergence) |
+
+**FELIX root cause confirmed**: vclock sim_rate=0.274 (only 2880s in 10494s wall).
+Trainer speed model is correct (P3 PASS, both mean=12.2s). The 5.8s gap per round
+(7.97s real - 2.17s sim) is NOT from training duration (mqtt_fetch close, 97s vs 106s).
+It comes from per-dispatch system overhead (weights_send + receive latency) that sim
+doesn't model in the vclock advance. Since K=10 commits per round, ~0.58s of weight
+dispatch latency per commit needs to be added to vclock advance.
+
+effective_c=30.0 for both modes confirms c=30 config is active.
+
+### REFL (jun7) — updated check results
+
+| Check | Result | Key values |
+|---|---|---|
+| K9 budget_not_cap | PASS | real=3800, sim=4777 rounds |
+| K5 failsafe | PASS | wall=10505s / 10800s budget |
+| K8 terminal_state | SKIP | K10 blocks (no vclock_now in sim) |
+| U2 total_commits | SKIP | K10 blocks |
+| C1 convergence | PASS | avg_acc_diff=0.038 (<0.05) -- REFL convergence close! |
+| A1 avail_composition | PASS | both: UNKNOWN=300 (avail_state not in REFL selection events) |
+| A2 eligibility | **FAIL** | KS=0.384 (>0.2), real_mean=247.6 sim_mean=250.3 |
+| S3/4 selection_detail | PASS | num_chosen=13 both; in_flight~65 both |
+| S2 participation | **FAIL** | avg_diff=165.46, max_diff=441 |
+| P1 aggregation_seq | **FAIL** | trainer set divergence per round |
+| U3 staleness | PASS | real=2.97 sim=2.65 KS=0.104 -- good! |
+| K10 vclock present | **FAIL** | 0/4777 events have vclock_now (sync path missing) |
+| K2/K3/K7/K8 | SKIP | all blocked by K10 |
+| P3 trainer_speed | **FAIL** | KS=0.268 real_mean=6.29s sim_mean=5.14s |
+| T_phase | PASS/DIAG | mqtt_fetch real=24.2s sim=25.1s (close); gpu_compute real=0.191s sim=0.12s |
+| F1-3 utility | **FAIL** | max_KS=1.0 (only 195/300 trainers have common rounds) |
+
+**REFL root cause confirmed by A2**: num_eligible KS=0.384 directly measures the
+trainer pool divergence (syn_0 trace indexed by vclock in sim vs wall-time in real).
+This is the first time a check quantifies this. The participation divergence (avg_diff=165)
+is the downstream consequence. Despite this, convergence is close (PASS) because REFL
+is less sensitive to trainer identity than async FL.
+
+T_phase insight: trainer_speed gap (1.15s: 6.29 real - 5.14 sim) is not from mqtt_fetch
+(both ~24-25s). It's per-trainer dispatch overhead (~0.1s/trainer x 10 commits = ~1s/round).
+
+### Updated ordered fix list
+
+1. **Fix vclock advance model (FELIX)**: Add per-dispatch weight send/receive latency to
+   vclock advance in async sim aggregator (~0.58s/commit, inferred from 5.8s/round gap
+   with K=10). This should collapse K2/K3/K4/K8/U2/staleness/utility/convergence failures.
+
+2. **Add vclock_now to sync aggregator path (REFL)**: Stamp vclock_now on agg_round events
+   in the syncfl sim path. Unlocks K1/K2/K3/K7/K8/U2 for REFL.
+
+3. **Fix availability trace replay (REFL)**: syn_0 indexed by vclock in sim vs wall in real.
+   Fix: index by round number, or verify both use the same time basis.
+   Should collapse A2/participation/aggregation_sequence failures.

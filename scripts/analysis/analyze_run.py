@@ -144,10 +144,18 @@ def sim_time_by_round(records):
 
 
 def cumulative_comm_by_round(records):
-    """Cumulative comm in MEGABYTES (train=2x model, eval=1x model, per chosen)."""
+    """Cumulative comm in MEGABYTES (train=2x model, eval=1x model, per chosen).
+
+    Round 0 is the pre-training selection warmup (the selector retries while
+    trainers join — tens of thousands of selection events that are not real
+    model dispatches), so it is excluded to avoid a spurious comm spike that
+    dwarfs every real round.
+    """
     per_round = defaultdict(float)
     for r in by_event(records, EVENT_SELECTION):
         rd = int(r.get("round", 0))
+        if rd < 1:
+            continue
         n = len(r.get("chosen") or [])
         eq = 2.0 * n if r.get("task", "train") == "train" else 1.0 * n
         per_round[rd] += eq * MODEL_MB
@@ -173,10 +181,16 @@ def comm_breakdown_by_round(records):
                      msgs_down, msgs_up, discarded}}."""
     chosen = defaultdict(lambda: {"train": 0, "eval": 0})
     for s in by_event(records, EVENT_SELECTION):
-        chosen[int(s.get("round", 0))][s.get("task", "train")] += len(s.get("chosen") or [])
+        rd = int(s.get("round", 0))
+        if rd < 1:  # skip round-0 selection warmup (see cumulative_comm_by_round)
+            continue
+        chosen[rd][s.get("task", "train")] += len(s.get("chosen") or [])
     committed = defaultdict(int)  # train updates returned (per round)
     for a in by_event(records, EVENT_AGG_ROUND):
-        committed[int(a.get("round", 0))] += len(a.get("contributing_trainers") or [])
+        rd = int(a.get("round", 0))
+        if rd < 1:
+            continue
+        committed[rd] += len(a.get("contributing_trainers") or [])
     out = {}
     for rd in sorted(set(chosen) | set(committed)):
         ctr = chosen[rd]["train"]; cev = chosen[rd]["eval"]; up = committed[rd]
@@ -425,8 +439,19 @@ def perf_plots(records, out, stamp, tdir):
     if acc and unlocked:
         rs = [r for r in sorted(acc) if r in unlocked]
         if rs:
-            p = ph.line_plot({"accuracy": ([unlocked[r] for r in rs], [acc[r] for r in rs])},
-                             "mean visible fraction (data unlocked)", "test accuracy",
+            # Plot accuracy AS A FUNCTION OF data unlocked: sort points by the
+            # x value (visible fraction) so the line is a proper relationship
+            # curve, not connected in round order. Under streaming, visible
+            # fraction rises monotonically with time, so this is essentially
+            # accuracy-over-time re-indexed by data availability; sorting just
+            # guarantees a left-to-right curve even where the per-round mean
+            # fraction plateaus or dips slightly.
+            pts = sorted((unlocked[r], acc[r]) for r in rs)
+            xs_u = [x for x, _ in pts]
+            ys_a = [y for _, y in pts]
+            p = ph.line_plot({"accuracy": (xs_u, ys_a)},
+                             "mean visible fraction (data unlocked), sorted ascending",
+                             "test accuracy",
                              "Accuracy vs amount of data unlocked", d,
                              "accuracy_vs_data_unlocked.pdf", stamp=stamp)
             if p: saved.append(p)
@@ -667,18 +692,26 @@ def sanity_plots(records, out, stamp, tdir):
     sel = by_event(records, EVENT_SELECTION)
     sel_by_round = defaultdict(int)
     for s in sel:
-        if s.get("task", "train") == "train":
+        # Drop round 0 (pre-training selection warmup: tens of thousands of
+        # retry events that otherwise dominate the y-axis).
+        if s.get("task", "train") == "train" and int(s.get("round", 0)) >= 1:
             sel_by_round[int(s.get("round", 0))] += len(s.get("chosen") or [])
-    contrib = {int(r.get("round", 0)): len(r.get("contributing_trainers") or [])
-               for r in ar}
+    # Sum across agg_round events per round: async emits one event per commit,
+    # so a dict-comprehension would overwrite and show 1 instead of agg_goal.
+    contrib = defaultdict(int)
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd >= 1:
+            contrib[rd] += len(r.get("contributing_trainers") or [])
     if sel_by_round:
         rr = sorted(set(sel_by_round) | set(contrib))
         series = {"chosen (train)": (rr, [sel_by_round.get(r, 0) for r in rr])}
         if contrib:
             series["contributing"] = (rr, [contrib.get(r, 0) for r in rr])
         p = ph.line_plot(series, "round", "trainer count",
-                         "Selection/aggregation count consistency", d,
-                         "selection_count_consistency.pdf", stamp=stamp)
+                         "Selection/aggregation count consistency (round 0 warmup excluded)",
+                         d, "selection_count_consistency.pdf", stamp=stamp,
+                         clip_outliers=True)
         if p: saved.append(p)
 
     # Pre-train setup time CDF: time from train() entry to GPU compute start
@@ -763,6 +796,14 @@ def selection_plots(records, out, stamp, tdir):
                          "selected_vs_pool_utility.pdf", stamp=stamp)
         if p: saved.append(p)
 
+    # Total trainer population (for coverage % and Lorenz padding): every
+    # trainer that ever reported a round or an availability change, unioned with
+    # everyone ever selected.
+    population = ({str(r.get("end_id")) for r in by_event(records, EVENT_TRAINER_ROUND)}
+                 | {str(r.get("end_id")) for r in by_event(records, EVENT_AVAIL_CHANGE)})
+    population.discard("None")
+    population.discard("")
+
     # cumulative unique selected + Gini
     freq = Counter()
     cum_unique, seen, xs = [], set(), []
@@ -772,6 +813,7 @@ def selection_plots(records, out, stamp, tdir):
             seen.add(str(c))
         xs.append(int(s.get("round", 0)))
         cum_unique.append(len(seen))
+    population |= set(freq)
     if xs:
         import numpy as np
         def gini(counts):
@@ -781,10 +823,16 @@ def selection_plots(records, out, stamp, tdir):
             n = len(a)
             return float((2 * np.arange(1, n + 1) - n - 1).dot(a) / (n * a.sum()))
         # gini computed over running frequency snapshots is heavy; report final + curve of unique
-        p = ph.line_plot({"cumulative unique selected": (xs, cum_unique)}, "round",
-                         "unique trainers selected",
-                         "Selection coverage (cumulative unique, Gini=%.2f)" % gini(list(freq.values())),
-                         d, "selection_coverage.pdf", stamp=stamp)
+        pop_n = len(population) or max(cum_unique)
+        cum_pct = [100.0 * u / pop_n for u in cum_unique]
+        # Dual axis: raw unique count (left) + % of the n-trainer population (right).
+        p = ph.dual_axis_line(
+            xs, cum_unique, cum_pct, "round",
+            "unique trainers selected",
+            f"% of population (n={pop_n})",
+            f"Selection coverage: {len(seen)}/{pop_n} "
+            f"({100.0 * len(seen) / pop_n:.0f}%) ever selected, Gini={gini(list(freq.values())):.2f}",
+            d, "selection_coverage.pdf", stamp=stamp)
         if p: saved.append(p)
     if freq:
         # Lorenz curve of selection inequality (replaces a per-trainer bar that
@@ -795,12 +843,18 @@ def selection_plots(records, out, stamp, tdir):
             str(r.get("end_id")) for r in by_event(records, EVENT_AVAIL_CHANGE)
             if str(r.get("new_state", "")).lower() not in ("", "avl_train", "available")
         }
-        series = {"all trainers": list(freq.values())}
-        if ever_unavail and any(t in ever_unavail for t in freq):
-            series["always-available"] = [v for t, v in freq.items() if t not in ever_unavail]
-            series["ever-unavailable"] = [v for t, v in freq.items() if t in ever_unavail]
+        # Pad to the FULL population so never-selected trainers count as zeros —
+        # otherwise n is just the count of ever-selected trainers (e.g. 225/300)
+        # and the Lorenz/Gini understate real inequality. The 75 trainers that
+        # were never picked are exactly the inequality the curve should show.
+        counts_all = {t: freq.get(t, 0) for t in population}
+        series = {"all trainers": list(counts_all.values())}
+        if ever_unavail and any(t in ever_unavail for t in population):
+            series["always-available"] = [v for t, v in counts_all.items() if t not in ever_unavail]
+            series["ever-unavailable"] = [v for t, v in counts_all.items() if t in ever_unavail]
         p = ph.lorenz_plot(series,
-                           "Selection fairness (Lorenz; lower Gini = more equal)", d,
+                           f"Selection fairness (Lorenz; n={len(population)} population, "
+                           f"lower Gini = more equal)", d,
                            "selection_fairness_lorenz.pdf", stamp=stamp)
         if p: saved.append(p)
 
@@ -843,20 +897,45 @@ def selection_plots(records, out, stamp, tdir):
             spd[rd] = sum(sp) / len(sp)
         if uu:
             utl[rd] = sum(uu) / len(uu)
+    def _smooth(ys, w=15):
+        """Centered rolling mean so the noisy per-round trace is legible."""
+        import numpy as np
+        a = np.asarray(ys, float)
+        if len(a) < 3:
+            return a
+        w = min(w, len(a) if len(a) % 2 else len(a) - 1)
+        w = max(3, w | 1)  # odd window
+        kern = np.ones(w) / w
+        return np.convolve(a, kern, mode="same")
+
     both = sorted(set(spd) & set(utl))
     if both:
-        p = ph.dual_axis_line(both, [spd[r] for r in both], [utl[r] for r in both],
-                              "round", "avg speed of picked (s)",
-                              "avg believed utility of picked",
-                              "Picked clients: avg speed & utility per round", d,
+        p = ph.dual_axis_line(both, _smooth([spd[r] for r in both]),
+                              _smooth([utl[r] for r in both]),
+                              "round", "avg speed of picked (s, smoothed)",
+                              "avg believed utility of picked (smoothed)",
+                              "Picked clients: avg speed & utility per round "
+                              "(rolling mean, w=15)", d,
                               "selected_speed_utility_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # CDF equivalent: distribution of the per-round averages (far easier to
+        # read than the raw jagged time series).
+        p = ph.cdf_multi({"avg speed of picked (s)": [spd[r] for r in both],
+                          "avg believed utility of picked": [utl[r] for r in both]},
+                         "per-round average value",
+                         "Picked clients: per-round avg speed & utility (CDF)", d,
+                         "selected_speed_utility_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
     elif utl:  # e.g. FedDance has no speed factor
         rr = sorted(utl)
-        p = ph.line_plot({"avg believed utility of picked": (rr, [utl[r] for r in rr])},
-                         "round", "avg believed utility of picked",
-                         "Picked clients: avg utility per round", d,
+        p = ph.line_plot({"avg believed utility of picked": (rr, _smooth([utl[r] for r in rr]))},
+                         "round", "avg believed utility of picked (smoothed)",
+                         "Picked clients: avg utility per round (rolling mean, w=15)", d,
                          "selected_speed_utility_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+        p = ph.cdf_plot([utl[r] for r in rr], "per-round avg believed utility",
+                        "Picked clients: per-round avg utility (CDF)", d,
+                        "selected_speed_utility_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # #14: separate CDFs of the picked clients' believed SPEED and believed
@@ -904,6 +983,9 @@ def selection_plots(records, out, stamp, tdir):
 
     # participation heatmap (trainer x round: 0 idle, 1 eval-selected, 2 trained)
     saved += _participation_heatmap(records, d, stamp)
+    # per-trainer & aggregate state-fraction plots (available / train / eval /
+    # idle / unavailable)
+    saved += _state_fraction_plots(records, d, stamp)
 
     # availability composition
     per_round = {}
@@ -971,12 +1053,92 @@ def _participation_heatmap(records, d, stamp):
     yl = [t[-3:] for t in trainers] if len(trainers) <= 40 else None
     p = ph.heatmap(m, "round", "trainer", "Participation per trainer x round", d,
                    "participation_heatmap.pdf", stamp=stamp, yticklabels=yl,
-                   discrete=[(0, "not selected", "#cfcfcf"),
-                             (1, "eval", "#9ecae1"),
-                             (2, "train", "#a1d99b"),
-                             (3, "unavailable", "#fcae91"),
-                             (4, "selected but unavail", "#fd8d3c")])
+                   discrete=[(0, "not selected", "#ededed"),
+                             (1, "eval", "#3182bd"),
+                             (2, "train", "#31a354"),
+                             (3, "unavailable", "#fdae6b"),
+                             (4, "selected but unavail", "#e6550d")])
     return [p] if p else []
+
+
+def _state_fraction_plots(records, d, stamp):
+    """Per-trainer and aggregate fraction-of-time in each state.
+
+    Exclusive per (trainer, round) states: train, eval, idle (available but not
+    picked), unavailable. 'available' fraction = train+eval+idle. Produces:
+      • aggregate single stacked bar (population mean) — the headline split;
+      • per-trainer horizontal stacked bar (every trainer's split);
+      • across-trainer CDFs of fraction-available and fraction-training.
+    """
+    import numpy as np
+    trained = defaultdict(set)
+    for r in by_event(records, EVENT_TRAINER_ROUND):
+        trained[int(r.get("round", 0))].add(str(r.get("end_id")))
+    evalsel = defaultdict(set)
+    for s in by_event(records, EVENT_SELECTION):
+        if s.get("task") == "eval":
+            for c in (s.get("chosen") or []):
+                evalsel[int(s.get("round", 0))].add(str(c))
+    # availability forward-fill (round -> is-unavailable per trainer)
+    ac = defaultdict(list)
+    for r in by_event(records, EVENT_AVAIL_CHANGE):
+        ac[str(r.get("end_id"))].append((int(r.get("round", 0)),
+                                         "UN_AVL" in str(r.get("new_state", ""))))
+    trainers = sorted({t for s in trained.values() for t in s}
+                      | {t for s in evalsel.values() for t in s}
+                      | set(ac))
+    rounds = sorted(set(trained) | set(evalsel))
+    rounds = [r for r in rounds if r >= 1]
+    if not trainers or not rounds:
+        return []
+    # per-trainer exclusive counts
+    cats = ["train", "eval", "idle", "unavailable"]
+    counts = {t: {c: 0 for c in cats} for t in trainers}
+    avail_count = {t: 0 for t in trainers}
+    for t in trainers:
+        evs = sorted(ac.get(t, []))
+        ei, un = 0, False
+        for r in rounds:
+            while ei < len(evs) and evs[ei][0] <= r:
+                un = evs[ei][1]; ei += 1
+            if not un:
+                avail_count[t] += 1
+            if t in trained.get(r, set()):
+                counts[t]["train"] += 1
+            elif t in evalsel.get(r, set()):
+                counts[t]["eval"] += 1
+            elif un:
+                counts[t]["unavailable"] += 1
+            else:
+                counts[t]["idle"] += 1
+    R = len(rounds)
+    saved = []
+    seg_colors = {"train": "#31a354", "eval": "#3182bd",
+                  "idle": "#bdbdbd", "unavailable": "#e6550d"}
+    # 1) aggregate population-mean split (single stacked bar, annotated)
+    agg = {c: [float(np.mean([counts[t][c] / R for t in trainers]))] for c in cats}
+    p = ph.stacked_bar(["population mean"], agg, "fraction of rounds",
+                       "Trainer state split — population mean (per round)", d,
+                       "trainer_state_fraction_aggregate.pdf", stamp=stamp,
+                       annotate=True, colors=seg_colors)
+    if p: saved.append(p)
+    # 2) per-trainer split (horizontal stacked bar; sorted by training fraction)
+    order = sorted(trainers, key=lambda t: counts[t]["train"] / R, reverse=True)
+    yl = [t[-3:] for t in order]
+    segs = {c: [counts[t][c] / R for t in order] for c in cats}
+    p = ph.stacked_bar(yl, segs, "fraction of rounds",
+                       "Trainer state split — per trainer (sorted by train fraction)",
+                       d, "trainer_state_fraction_per_trainer.pdf", stamp=stamp,
+                       horizontal=True, colors=seg_colors)
+    if p: saved.append(p)
+    # 3) across-trainer CDFs: fraction-available & fraction-training
+    p = ph.cdf_multi({"fraction available": [avail_count[t] / R for t in trainers],
+                      "fraction training": [counts[t]["train"] / R for t in trainers]},
+                     "fraction of rounds (per trainer)",
+                     "Across-trainer distribution of availability & training", d,
+                     "trainer_state_fraction_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+    return saved
 
 
 # ==========================================================================
@@ -1110,49 +1272,59 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
     saved = []
 
     t0 = rows[0]["timestamp_s"]
-    times = [(r["timestamp_s"] - t0) / 60.0 for r in rows]  # minutes since start
+    times = [r["timestamp_s"] - t0 for r in rows]  # SECONDS since start
+    # Note: x-resolution is bounded by the resource sampler interval
+    # (execution.monitoring.check_interval_seconds); plotting in seconds just
+    # stops the minute-bucketing from hiding within-minute variation.
+    sample_dt = (times[1] - times[0]) if len(times) > 1 else 0
+    xlab = f"time (s, sampled every ~{sample_dt:.0f}s)" if sample_dt else "time (s)"
 
-    # RAM over time
+    # RAM over time — GB and %
     ram_vals = [r["ram_gb"] for r in rows]
     swap_vals = [r["swap_gb"] for r in rows]
     ram_series = {"RAM used (GB)": (times, ram_vals)}
     if any(s > 0.05 for s in swap_vals):
         ram_series["Swap used (GB)"] = (times, swap_vals)
-    p = ph.line_plot(ram_series, "time (min)", "GB",
-                     "RAM usage over time", d, "resource_ram_over_time.pdf",
+    p = ph.line_plot(ram_series, xlab, "GB", "RAM usage over time", d,
+                     "resource_ram_over_time.pdf", stamp=stamp)
+    if p: saved.append(p)
+    ram_pct_series = {"RAM used (%)": (times, [r["ram_pct"] for r in rows])}
+    if any(r.get("swap_pct", 0) > 0.05 for r in rows):
+        ram_pct_series["Swap used (%)"] = (times, [r.get("swap_pct", 0) for r in rows])
+    p = ph.line_plot(ram_pct_series, xlab, "% of total",
+                     "RAM usage over time (%)", d, "resource_ram_pct_over_time.pdf",
                      stamp=stamp)
-    if p:
-        saved.append(p)
+    if p: saved.append(p)
 
-    # GPU utilization over time (one series per GPU)
+    # GPU utilization over time (one series per GPU; already a %)
     gpu_indices = sorted({int(k.split("_")[1]) for k in rows[0] if k.startswith("gpu_") and k.endswith("_util_pct")})
     if gpu_indices:
         util_series = {}
         for n in gpu_indices:
-            key = f"gpu_{n}_util_pct"
-            vals = [r.get(key, 0.0) for r in rows]
+            vals = [r.get(f"gpu_{n}_util_pct", 0.0) for r in rows]
             if any(v > 0 for v in vals):
                 util_series[f"GPU{n} util%"] = (times, vals)
         if not util_series:
-            # all zeros — include one flat series so the plot is visible
             util_series["GPU util% (all 0)"] = (times, [0.0] * len(times))
-        p = ph.line_plot(util_series, "time (min)", "util (%)",
+        p = ph.line_plot(util_series, xlab, "util (%)",
                          "GPU utilization over time", d, "resource_gpu_util_over_time.pdf",
                          stamp=stamp)
-        if p:
-            saved.append(p)
+        if p: saved.append(p)
 
-        # GPU memory over time
-        mem_series = {}
-        for n in gpu_indices:
-            key = f"gpu_{n}_mem_gb"
-            vals = [r.get(key, 0.0) for r in rows]
-            mem_series[f"GPU{n} mem (GB)"] = (times, vals)
-        p = ph.line_plot(mem_series, "time (min)", "memory (GB)",
+        # GPU memory over time — GB and %
+        mem_series = {f"GPU{n} mem (GB)": (times, [r.get(f"gpu_{n}_mem_gb", 0.0) for r in rows])
+                      for n in gpu_indices}
+        p = ph.line_plot(mem_series, xlab, "memory (GB)",
                          "GPU memory usage over time", d, "resource_gpu_mem_over_time.pdf",
                          stamp=stamp)
-        if p:
-            saved.append(p)
+        if p: saved.append(p)
+        mem_pct_series = {f"GPU{n} mem%": (times, [r.get(f"gpu_{n}_mem_pct", 0.0) for r in rows])
+                          for n in gpu_indices}
+        if any(any(v > 0 for v in s[1]) for s in mem_pct_series.values()):
+            p = ph.line_plot(mem_pct_series, xlab, "% of total",
+                             "GPU memory usage over time (%)", d,
+                             "resource_gpu_mem_pct_over_time.pdf", stamp=stamp)
+            if p: saved.append(p)
 
     return saved
 
@@ -1166,8 +1338,13 @@ def system_plots(records, out, stamp, tdir):
     d = _sub(out, "system"); saved = []
     xs, ys = comm_vs_accuracy_series(records)
     if xs:
-        p = ph.line_plot({"accuracy": (xs, ys)},
-                         "cumulative comm (MB)", "test accuracy",
+        # Auto-scale the comm axis to GB once values get large (>1 GB) for
+        # readability; otherwise keep MB.
+        unit, scale = ("MB", 1.0)
+        if xs and max(xs) >= 1000.0:
+            unit, scale = ("GB", 1000.0)
+        p = ph.line_plot({"accuracy": ([x / scale for x in xs], ys)},
+                         f"cumulative comm ({unit})", "test accuracy",
                          f"Communication cost vs accuracy (model={MODEL_MB:.2f} MB)", d,
                          "comm_vs_accuracy.pdf", stamp=stamp)
         if p: saved.append(p)
@@ -1214,6 +1391,18 @@ def system_plots(records, out, stamp, tdir):
                            "Trainer time breakdown (gpu / sim-delay / wait)", d,
                            "trainer_time_breakdown.pdf", stamp=stamp)
         if p: saved.append(p)
+        # CDF companion: the per-trainer-round bars above are unreadable at 300
+        # trainers, so also show the distribution of each component across all
+        # trainer-rounds (annotated P50/P90/P99).
+        gpu_all = [v for c in cats for v in agg[c]["gpu"]]
+        sim_all = [max(0.0, s - g) for c in cats
+                   for s, g in zip(agg[c]["sim"], agg[c]["gpu"])]
+        wait_all = [v for c in cats for v in agg[c]["wait"]]
+        p = ph.cdf_multi({"gpu": gpu_all, "sim-delay": sim_all, "wait": wait_all},
+                         "seconds / trainer-round",
+                         "Trainer time breakdown (CDF across trainer-rounds)", d,
+                         "trainer_time_breakdown_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
     # aggregate round-time split across ALL trainers per round (setup / GPU /
     # post-cleanup / modeled sleep) — the system-level view of where a round's
     # wall time goes. Uses pre_train_s/post_train_s (telemetry); absent fields
@@ -1227,24 +1416,33 @@ def system_plots(records, out, stamp, tdir):
         split_rd[rd]["sleep (budget)"].append(r.get("remaining_time_s") or 0.0)
     if split_rd:
         rr = sorted(split_rd)
+        _comp_keys = ("pre (setup)", "gpu compute", "post (cleanup)", "sleep (budget)")
         _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
-        series = {k: [_m(split_rd[r][k]) for r in rr]
-                  for k in ("pre (setup)", "gpu compute", "post (cleanup)", "sleep (budget)")}
+        series = {k: [_m(split_rd[r][k]) for r in rr] for k in _comp_keys}
         p = ph.stacked_area(rr, series, "round",
                             "mean seconds / round (across trainers)",
                             "Trainer round-time split (mean across trainers)", d,
                             "trainer_time_split_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
-        # #19: whole-run overall split as a single stacked bar (the area above,
-        # collapsed over all rounds) — one glanceable "where did time go" summary.
+        # CDF companion of the over-rounds split: distribution of each component
+        # across all trainer-rounds (annotated), readable where the area plot is not.
         allv = defaultdict(list)
         for rd in rr:
-            for k in series:
+            for k in _comp_keys:
                 allv[k].extend(split_rd[rd][k])
-        overall = {k: [_m(allv[k])] for k in series}
+        p = ph.cdf_multi({k: allv[k] for k in _comp_keys if any(allv[k])},
+                         "seconds / trainer-round",
+                         "Trainer round-time split (CDF across trainer-rounds)", d,
+                         "trainer_time_split_over_rounds_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # #19: whole-run overall split as a single stacked bar (the area above,
+        # collapsed over all rounds) — one glanceable "where did time go" summary,
+        # with exact per-segment seconds annotated.
+        overall = {k: [_m(allv[k])] for k in _comp_keys}
         p = ph.stacked_bar(["whole run"], overall, "mean seconds / round",
                            "Trainer round-time split (whole-run mean)", d,
-                           "trainer_time_split_overall.pdf", stamp=stamp)
+                           "trainer_time_split_overall.pdf", stamp=stamp,
+                           annotate=True)
         if p: saved.append(p)
     # #13: trainer compute time split by task (train vs eval) — per-round GPU
     # seconds grouped by task_to_perform, aggregate distribution as a CDF (train
@@ -1280,32 +1478,28 @@ def system_plots(records, out, stamp, tdir):
     if wall_lags:
         run_dir = os.path.dirname(os.path.abspath(tdir))
         agg_logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-        _lag_re = re.compile(
-            r"increment_round.*round (\d+)"
-        )
+        # The round is the model `version` stamped on each SEND_RECV_LAG line —
+        # the previous code keyed off an "increment_round ... round N" line that
+        # appears only once, so every lag landed in round 0. version=N == round N.
         _lag_entry_re = re.compile(
-            r"\[SEND_RECV_LAG\] end=\S+ version=\d+ wall_lag_s=([0-9.]+)"
+            r"\[SEND_RECV_LAG\] end=\S+ version=(\d+) wall_lag_s=([0-9.]+)"
         )
         if agg_logs:
-            current_round = 0
             with open(agg_logs[0]) as fh:
                 for line in fh:
-                    rm = _lag_re.search(line)
-                    if rm:
-                        current_round = int(rm.group(1))
                     lm = _lag_entry_re.search(line)
                     if lm:
-                        rd_lags[current_round].append(float(lm.group(1)))
+                        rd_lags[int(lm.group(1))].append(float(lm.group(2)))
     _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
     lag_series = {}
     if rd_lags:
-        rr_lag = sorted(rd_lags)
-        lag_series["median wall_lag_s"] = (rr_lag, [_m(rd_lags[r]) for r in rr_lag])
+        rr_lag = sorted(r for r in rd_lags if r >= 1)
+        lag_series["mean wall_lag_s"] = (rr_lag, [_m(rd_lags[r]) for r in rr_lag])
     p = ph.line_plot(
         lag_series,
-        "round", "median wall_lag_s (send→recv)",
+        "round", "mean wall_lag_s (send→recv)",
         f"Send-recv lag over rounds (n={len(wall_lags)}, overruns={_overruns})",
-        d, "send_recv_lag_over_rounds.pdf", stamp=stamp)
+        d, "send_recv_lag_over_rounds.pdf", stamp=stamp, clip_outliers=True)
     if p: saved.append(p)
 
     # Full lag decomposition from [LAG_DECOMP]: 6 components per update.

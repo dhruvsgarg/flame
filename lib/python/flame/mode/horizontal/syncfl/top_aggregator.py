@@ -172,6 +172,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
         )
         self.simulated = self.time_mode == "simulated"
         self._vclock = VirtualClock()
+        # Per-commit overhead charged on the virtual clock (sim mode). Models the
+        # MQTT/dispatch latency real mode pays per committed update that the
+        # max(gpu, D) timing model omits. Default 0.0 → identical to prior runs.
+        self._sim_commit_overhead_s = float(
+            getattr(self.config.hyperparameters, "sim_commit_overhead_s", 0.0) or 0.0
+        )
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -282,6 +288,22 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"but got message of type {msg}"
                 )
 
+    def _advance_sim_clock(self, sct: float) -> None:
+        """Advance the virtual clock to a committed update's sim_completion_ts,
+        then charge the configured per-commit overhead.
+
+        ``sim_commit_overhead_s`` is charged once per committed update (the
+        aggregator serializes the agg→trainer→agg MQTT round-trip), so a round
+        of K commits advances the clock by up to ``K * overhead`` beyond compute
+        when completions cluster, and by ~``overhead`` when compute already
+        spreads them out. Shared by the syncfl/oort/asyncfl commit paths.
+        Default 0.0 → identical to prior behavior.
+        """
+        self._vclock.advance(sct)
+        overhead = getattr(self, "_sim_commit_overhead_s", 0.0)
+        if overhead > 0.0:
+            self._vclock.advance(self._vclock.now + overhead)
+
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST
         sim_completion_ts (the k that would physically finish first in real),
@@ -323,7 +345,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             if popped is None:
                 break
             end, sct, (msg, md) = popped
-            self._vclock.advance(sct)
+            self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_ROUND_DURATION)
             if _srd is not None:
@@ -511,6 +533,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 ),
                 contributing_trainers=list(self.cache),  # diskcache iterates keys
                 agg_observed_s=agg_obs or None,
+                extra={"vclock_now": self._vclock.now if self.simulated else None},
             )
             telemetry.emit(ev, **fields)
 

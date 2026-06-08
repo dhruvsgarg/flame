@@ -55,7 +55,7 @@ def _run_pair(real_dir: str, sim_dir: str,
         _sys.path.insert(0, _script_dir)
 
     from parity.checks import (
-        load_run_dir, run_all_parity, first_divergence, failsafe_ok,
+        load_run_dir, run_all_parity, first_divergence,
     )
     from parity.report import print_report, write_json, write_plot
 
@@ -83,11 +83,11 @@ def _run_pair(real_dir: str, sim_dir: str,
         budget_s=budget_s,
     )
 
-    # Add first_divergence as a summary entry for the report
-    results["first_divergence_summary"] = first_divergence(real_agg, sim_agg)
-
-    # Add failsafe check (needs budget_s; skips gracefully if absent)
-    results["failsafe"] = failsafe_ok(sim_agg, budget_s=budget_s)
+    # Add first_divergence as a diagnostic summary entry (always ok — index=0 is expected for async)
+    fd = first_divergence(real_agg, sim_agg)
+    fd["ok"] = True
+    fd["tier"] = "DIAG"
+    results["first_divergence_summary"] = fd
 
     passed = print_report(results, strict=strict, lenient=lenient,
                           real_label=real_label, sim_label=sim_label)

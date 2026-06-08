@@ -214,7 +214,7 @@ class TopAggregator(SyncTopAgg):
             time.sleep(0.5)
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
-        self._vclock.advance(sct)
+        self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
         logger.debug(
             f"[SIM_RECV] committed end={_end[-4:]} sct={sct:.1f} "

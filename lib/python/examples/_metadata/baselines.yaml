@@ -43,6 +43,11 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
+        # Per-commit MQTT/dispatch overhead the max(gpu,D) timing model omits.
+        # No-op in real mode; charged on the virtual clock per committed update
+        # in sim mode. Derived from Jun7 parity: (7.97-2.17)/10 = 0.58s/commit
+        # (PARITY.md §5 CRITICAL-1). Re-tune if the K3b residual changes.
+        simCommitOverheadSeconds: 0.58
     trainer:
       hyperparameters:
         client_notify:
@@ -81,6 +86,9 @@ baselines:
         trackTrainerAvail:
           enabled: "True"
           type: ORACULAR
+        # See felix note. Sync gap is smaller: Jun7 derived ~0.115s/commit
+        # (PARITY.md §5 MEDIUM-1). No-op in real mode. Re-tune after re-run.
+        simCommitOverheadSeconds: 0.115
     trainer:
       hyperparameters:
         client_notify:

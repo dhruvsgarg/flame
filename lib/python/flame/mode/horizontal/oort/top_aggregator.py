@@ -92,7 +92,7 @@ class TopAggregator(BaseTopAggregator):
             if popped is None:
                 return
             end, sct, (msg, md) = popped
-            self._vclock.advance(sct)
+            self._advance_sim_clock(sct)
             _srd = msg.get(MessageType.SIM_ROUND_DURATION)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             if _srd is not None:
@@ -371,6 +371,7 @@ class TopAggregator(BaseTopAggregator):
                 trainer_speed_s=speeds,
                 contributing_trainers=contrib,
                 agg_observed_s=agg_obs or None,
+                extra={"vclock_now": self._vclock.now if self.simulated else None},
             )
             telemetry.emit(ev, **fields)
 

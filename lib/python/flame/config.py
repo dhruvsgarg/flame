@@ -176,6 +176,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )
+    # Per-commit overhead (sim mode): models the agg→trainer→agg MQTT/dispatch
+    # latency real mode incurs per committed update but the max(gpu, D) timing
+    # model omits. Charged once per commit on the virtual clock. Default 0.0
+    # → no behavior change. See PARITY.md §5 (CRITICAL-1 / MEDIUM-1).
+    sim_commit_overhead_s: t.Optional[float] = Field(
+        alias="simCommitOverheadSeconds", default=0.0
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
