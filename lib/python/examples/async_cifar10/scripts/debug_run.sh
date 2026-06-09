@@ -72,7 +72,14 @@ usage() {
 
 # parse args
 if [ "${1:-}" = "smoke" ]; then
-  NODE="smoke"
+  NODE="smoke"; shift
+  BASELINES="felix oort refl feddance"   # smoke default: validate all
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --baselines) BASELINES="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
 else
   while [[ $# -gt 0 ]]; do
     case "$1" in
