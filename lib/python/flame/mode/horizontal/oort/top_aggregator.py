@@ -605,44 +605,39 @@ class TopAggregator(BaseTopAggregator):
             f"Will aggregate when {min(aggr_num, len(selected_ends))} updates received."
         )
 
-        # send out global model parameters to trainers
+        # Same model goes to every recipient this round; build + serialize once.
+        _sim_send_ts = self._vclock.now if self.simulated else None
+        msg = {
+            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.ROUND: self._round,
+            MessageType.MODEL_VERSION: self._round,
+            MessageType.TASK_TO_PERFORM: task_to_perform,
+        }
+        if self.simulated:
+            msg[MessageType.SIM_SEND_TS] = _sim_send_ts
+        _payload = channel.dumps(msg)
+        _send_t0 = time.time()
         for end in selected_ends:
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
-            )
-            logger.debug(
-                f"Setting channel property {PROP_ROUND_START_TIME} for "
-                f"end {end}. For round {self._round} at time: {datetime.now()}"
             )
             _send_ts = datetime.now()
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, _send_ts)
             )
-            # Per-version send timestamp so stale-update SEND_RECV_LAG can use
-            # the original send time for version N even when the aggregator has
-            # already moved to a later round (which would overwrite PROP_ROUND_START_TIME).
+            # Per-version send timestamp so stale-update SEND_RECV_LAG can use the
+            # original send time for version N even after the round advances.
             if not hasattr(self, "_oort_sent_version_ts"):
                 self._oort_sent_version_ts: dict = {}
             self._oort_sent_version_ts.setdefault(end, {})[self._round] = _send_ts
-
-            msg = {
-                MessageType.WEIGHTS: weights_to_device(
-                    self.weights, DeviceType.CPU
-                ),
-                MessageType.ROUND: self._round,
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.TASK_TO_PERFORM: task_to_perform,
-            }
-            # simulated mode: stamp the virtual send time so the trainer reports
-            # sim_completion_ts = sim_send_ts + D; the sim recv path then commits
-            # the aggr_num smallest sim_completion_ts (ordering by simulated, not
-            # physical, arrival) and advances the virtual clock.
             if self.simulated:
-                sim_send_ts = self._vclock.now
-                msg[MessageType.SIM_SEND_TS] = sim_send_ts
-                channel.set_end_property(end, PROP_SIM_SEND_TS, sim_send_ts)
-
-            channel.send(end, msg)
+                channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
+            channel.send_payload(end, _payload)
+        if selected_ends:
+            logger.info(
+                f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
+                f"send_wall_s={time.time() - _send_t0:.3f}"
+            )
 
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
