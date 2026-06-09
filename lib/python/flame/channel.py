@@ -361,6 +361,23 @@ class Channel(object):
 
         _, status = run_async(_put(), self._backend.loop())
 
+    def dumps(self, message) -> bytes:
+        """Serialize a message once for reuse across sends (see send_payload)."""
+        return cloudpickle.dumps(message)
+
+    def send_payload(self, end_id, payload):
+        """Send a pre-serialized payload (from dumps) — avoids re-pickling the
+        same message per recipient when broadcasting one model to many ends."""
+
+        async def _put():
+            if not self.has(end_id):
+                return
+            self.mc.accumulate("bytes", "send", len(payload))
+            await self._ends[end_id].put(payload)
+
+        _, status = run_async(_put(), self._backend.loop())
+        return status
+
     def send(self, end_id, message):
         """Send a message to an end in a blocking call fashion."""
 

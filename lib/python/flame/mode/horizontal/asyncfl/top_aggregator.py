@@ -983,7 +983,17 @@ class TopAggregator(SyncTopAgg):
             return
 
         ends_list = list(ends)
-        _cpu_weights = weights_to_device(self.weights, DeviceType.CPU)  # once, reused
+        # Same model goes to every recipient this round; build + serialize once.
+        _sim_send_ts = self._vclock.now if self.simulated else None
+        msg = {
+            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.ROUND: self._round,
+            MessageType.MODEL_VERSION: self._round,
+            MessageType.TASK_TO_PERFORM: task_to_perform,
+        }
+        if self.simulated:
+            msg[MessageType.SIM_SEND_TS] = _sim_send_ts
+        _payload = channel.dumps(msg)
         _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
         for idx, end in enumerate(ends_list):
             if end in self._track_trainer_version_duration_s:
@@ -1007,23 +1017,9 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
-
-            msg = {
-                MessageType.WEIGHTS: _cpu_weights,
-                MessageType.ROUND: self._round,
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.TASK_TO_PERFORM: task_to_perform,
-            }
-            # Stamp virtual send-time so trainer computes sim_completion_ts.
             if self.simulated:
-                sim_send_ts = self._vclock.now
-                msg[MessageType.SIM_SEND_TS] = sim_send_ts
-                channel.set_end_property(end, PROP_SIM_SEND_TS, sim_send_ts)
-                logger.debug(
-                    f"[SIM_SEND] end={end[-4:]} round={self._round} sim_send_ts={sim_send_ts:.2f}"
-                )
-
-            channel.send(end, msg)
+                channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
+            channel.send_payload(end, _payload)
 
             if end not in self._track_trainer_version_duration_s:
                 self._track_trainer_version_duration_s[end] = {

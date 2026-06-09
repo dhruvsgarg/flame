@@ -59,6 +59,19 @@ from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
 
+
+class MemCache(dict):
+    """In-memory drop-in for the diskcache API the aggregators/optimizers use
+    (iterkeys/pop/reset). Avoids per-commit 2 MB disk I/O; optimizers pop entries
+    after consuming them, so memory stays bounded."""
+
+    def iterkeys(self):
+        return iter(list(self.keys()))
+
+    def reset(self, *args, **kwargs):
+        return None
+
+
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
 TAG_HEARTBEAT = "heartbeat_recv"
@@ -145,9 +158,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         # disk cache is used for saving memory in case model is large
         # automatic eviction of disk cache is disabled with cull_limit
         # 0
-        self.cache = Cache()
-        self.cache.reset("size_limit", 1e15)
-        self.cache.reset("cull_limit", 0)
+        self.cache = MemCache()  # in-memory; optimizers pop after consuming
 
         self.optimizer = optimizer_provider.get(
             self.config.optimizer.sort, **self.config.optimizer.kwargs
@@ -657,26 +668,26 @@ class TopAggregator(Role, metaclass=ABCMeta):
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
-        _cpu_weights = weights_to_device(self.weights, DeviceType.CPU)  # once, reused
+        # Same model goes to every recipient this round; build + serialize once.
+        _sim_send_ts = self._vclock.now if self.simulated else None
+        msg = {
+            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.ROUND: self._round,
+            MessageType.DATASAMPLER_METADATA: datasampler_metadata,
+            MessageType.MODEL_VERSION: self._round,
+            MessageType.TASK_TO_PERFORM: task_to_perform,
+        }
+        if self.simulated:
+            msg[MessageType.SIM_SEND_TS] = _sim_send_ts
+        _payload = channel.dumps(msg)
         _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
         for idx, end in enumerate(selected_ends):
             logger.info(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
-            msg = {
-                MessageType.WEIGHTS: _cpu_weights,
-                MessageType.ROUND: self._round,
-                MessageType.DATASAMPLER_METADATA: datasampler_metadata,
-                MessageType.MODEL_VERSION: self._round,
-                MessageType.TASK_TO_PERFORM: task_to_perform,
-            }
-            # simulated mode: stamp the virtual send time so the trainer can
-            # report sim_completion_ts = sim_send_ts + D back to us.
             if self.simulated:
-                sim_send_ts = self._vclock.now
-                msg[MessageType.SIM_SEND_TS] = sim_send_ts
-                channel.set_end_property(end, PROP_SIM_SEND_TS, sim_send_ts)
-            channel.send(end, msg)
+                channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
+            channel.send_payload(end, _payload)
             # register round start time on each end for round duration
             # measurement.
             channel.set_end_property(
@@ -847,7 +858,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     str(ckpt_cfg.get("enabled", "False")) == "True"
                 )
                 self._checkpoint_every_n = int(
-                    ckpt_cfg.get("every_n_rounds", 10) or 10
+                    ckpt_cfg.get("every_n_rounds", 50) or 50
                 )
                 tdir = os.environ.get("FLAME_TELEMETRY_DIR")
                 self._checkpoint_dir = (
@@ -880,19 +891,24 @@ class TopAggregator(Role, metaclass=ABCMeta):
             path = os.path.join(
                 self._checkpoint_dir, f"round_{self._round:05d}.pt"
             )
-            torch.save(
-                {
-                    "round": int(self._round),
-                    "sim_time_s": sim_time_s,
-                    "wall_ts": time.time(),
-                    "time_mode": self.time_mode,
-                    "state_dict": self.model.state_dict(),
-                },
-                path,
-            )
-            logger.info(
-                f"Saved round checkpoint: {path} (sim_time_s={sim_time_s:.2f})"
-            )
+            # Snapshot to CPU on the main thread (consistent), write off the
+            # critical path in a daemon thread.
+            blob = {
+                "round": int(self._round),
+                "sim_time_s": sim_time_s,
+                "wall_ts": time.time(),
+                "time_mode": self.time_mode,
+                "state_dict": {k: v.detach().to("cpu", copy=True)
+                               for k, v in self.model.state_dict().items()},
+            }
+            import threading
+
+            def _write(p=path, b=blob):
+                try:
+                    torch.save(b, p)
+                except Exception as e:
+                    logger.warning(f"checkpoint write failed (non-fatal): {e}")
+            threading.Thread(target=_write, daemon=True).start()
         except Exception as e:  # checkpointing must never break training
             logger.warning(f"save_round_checkpoint failed (non-fatal): {e}")
 

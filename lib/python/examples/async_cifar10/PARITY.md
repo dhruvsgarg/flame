@@ -577,3 +577,27 @@ distribute 15ms + ~230ms/commit aggregate. The 230ms is the new target:
 Order: do shared fidelity-neutral cuts (#1, checkpoint) -> re-run -> re-tune
 overhead to the final real baseline -> then chase remaining DIST-tier parity
 (felix staleness 2x, refl selection drift).
+
+### Jun8 (post-1800) - exhausted shared aggregator optimizations
+
+All fidelity-neutral, shared (help real + sim), tuned for sim's exposed path:
+- **DONE in-memory cache** - self.cache: diskcache -> MemCache (dict with
+  iterkeys/pop/reset). Removes per-commit 2 MB disk I/O; optimizers already
+  pop after consuming, so memory stays bounded (no leak).
+- **DONE serialize-once sends** - the same model goes to every recipient in a
+  distribute call; build + `channel.dumps()` once, `channel.send_payload()` per
+  end (skips re-pickling 2 MB per send). Big for sync/refl (13-67 sends/call).
+- **DONE eval/checkpoint/util_counterfactual -> every 50** (was 10): config
+  defaults + OVERNIGHT node1/node2 yamls. Cuts the periodic episodic stalls.
+- **DONE checkpoint off critical path** - snapshot state_dict to CPU on the main
+  thread, torch.save in a daemon thread. Disk write no longer blocks the round.
+- **FLOOR** per-commit 2 MB deserialize + optimizer.do - left as-is (necessary
+  ML work; convergence fidelity depends on it).
+
+Deferred to the END (after the next run stabilizes the real baseline):
+- **re-tune sim_commit_overhead_s** to the new real per-round advance. The
+  constant is fitted to real, which keeps moving as shared costs are removed, so
+  this is the last step. From Jun8-1800 (pre these cuts): felix ~0.32,
+  refl ~0.21 - recompute from the next run's overhead_residual, do not apply yet.
+- **refl selection drift** (trainer_speed/eligibility) - DIST-tier, revisit after.
+- **felix staleness 2x** - DIST-tier, revisit after.
