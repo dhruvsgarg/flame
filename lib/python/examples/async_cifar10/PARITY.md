@@ -4,15 +4,41 @@ Living document for the async_cifar10 parity checker.
 Kept in sync with `scripts/parity/checks.py` (check functions),
 `scripts/parity/report.py` (stage grouping + verdict), and the pytest suite.
 
-**How to run:**
+**Real/sim comparator — give the two run dirs, get a report JSON:**
 ```bash
 cd lib/python/examples/async_cifar10
+# single baseline: point at the real + sim run dirs
 PYTHONIOENCODING=utf-8 python scripts/parity_check.py \
   --real experiments/<real_run_dir> \
   --sim  experiments/<sim_run_dir> \
-  --agg-goal 10 --budget-s 10800 --json-out /tmp/parity_<baseline>.json
+  --agg-goal 10 --budget-s <runtime_s> --json-out experiments/parity_<baseline>_<tag>.json
+
+# all baselines at once: auto-discovers the latest real/sim pair per tag
+PYTHONIOENCODING=utf-8 python scripts/parity_check.py --batch \
+  --experiments-dir experiments --baselines felix oort refl feddance \
+  --agg-goal 10 --budget-s <runtime_s> --json-out experiments/parity.json
 ```
-For runs without vclock (REFL sim currently), add `--lenient` to see non-clock checks.
+`--budget-s` = the run's `--runtime-s` (e.g. 12600 for 3.5h). Add `--lenient` to
+demote DIST fails to warnings; prints a stage-grouped report + root-cause banner.
+Per-run plots: `python ../../../scripts/analysis/analyze_run.py <run>/telemetry`.
+
+**Readiness/regression tests** (no cluster; run under lib/python):
+`pytest tests/mode/test_baseline_readiness.py tests/mode/test_sim_barrier.py
+tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
+tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
+cache, serialize-once, sim-recv barrier ordering, and the overhead model.
+
+### Current status (Jun 8 EOD)
+- **Speedup done** (felix sim_rate 0.27 -> 2.5x; refl -> 1.7x): removed recv-poll,
+  distribute stagger, per-send model re-serialize, disk-backed cache; eval/
+  checkpoint -> 50, checkpoint off the critical path. All shared (help real+sim),
+  fidelity-neutral, in the shared base -> cover all 6 baselines.
+- **Floor reached**: remaining sim wall is the necessary per-commit 2 MB
+  deserialize + optimizer aggregation.
+- **Deferred to final fine-tune** (after the real baseline stops moving):
+  re-tune `sim_commit_overhead_s` to the new real per-round advance (recompute
+  from `overhead_residual`); then chase DIST-tier parity (felix staleness 2x,
+  refl/feddance selection drift).
 
 ---
 
