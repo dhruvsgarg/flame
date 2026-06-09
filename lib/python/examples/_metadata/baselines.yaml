@@ -43,11 +43,13 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
-        # Per-commit MQTT/dispatch overhead the max(gpu,D) timing model omits.
-        # No-op in real mode; charged on the virtual clock per committed update
-        # in sim mode. Jun8 parity: 0.58 slightly over-charged (sim adv 8.56 >
-        # real 7.77, residual -0.08/commit) -> retuned to 0.50 (PARITY.md section 6).
-        simCommitOverheadSeconds: 0.50
+        # Per-commit MQTT/dispatch overhead the max(gpu,D) model omits; charged on
+        # the virtual clock per committed update (no-op in real). MUST stay below
+        # the async sct-progression rate (~0.31s/commit = vclock/round / agg_goal)
+        # or the reorder buffer backs up: updates commit past their completion ts
+        # -> staleness + round-count inflate. Jun9: 0.50 (> 0.31) over-charged
+        # (sim 1557 rounds vs real 2595, staleness 9.3 vs 2.8) -> 0.16 (PARITY.md).
+        simCommitOverheadSeconds: 0.16
     trainer:
       hyperparameters:
         client_notify:
@@ -86,13 +88,10 @@ baselines:
         trackTrainerAvail:
           enabled: "True"
           type: ORACULAR
-        # See felix note. Jun8 parity: with 0.115 the sim still under-charged
-        # (advance sim 1.64 < real 2.91; residual +0.127/commit) -> sim ran 1380
-        # rounds vs real 824, which drives REFL's selection drift (more rounds ->
-        # exploration decays further -> faster trainers picked -> trainer_speed/
-        # eligibility/participation diverge). Bumped 0.115 -> 0.24 (=0.115+0.127)
-        # to close the advance gap and the round-count cascade (PARITY.md section 6).
-        simCommitOverheadSeconds: 0.24
+        # See felix note (overhead must stay below the sct-progression rate).
+        # Jun9: 0.24 over-charged (sim 4031 rounds vs real 7254, residual
+        # -0.14/commit) -> 0.10 (PARITY.md).
+        simCommitOverheadSeconds: 0.10
     trainer:
       hyperparameters:
         client_notify:

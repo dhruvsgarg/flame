@@ -86,6 +86,7 @@ class TopAggregator(SyncTopAgg):
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
         self._sim_pending_commit: set = set()
+        self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
 
         self._prev_distribute_weights_success = False
 
@@ -206,6 +207,9 @@ class TopAggregator(SyncTopAgg):
                 if sct is None:
                     sct = self._vclock.now
                 self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+                if not hasattr(self, "_sim_enqueue_round"):
+                    self._sim_enqueue_round = {}
+                self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
             drained_all = all(self._sim_buffer.has(e) for e in to_probe)
         barrier_wait = time.time() - barrier_t0
         if to_probe:
@@ -632,6 +636,12 @@ class TopAggregator(SyncTopAgg):
 
             if telemetry.is_enabled():
                 _sct_recv = msg.get(MessageType.SIM_COMPLETION_TS)
+                # Buffer health (sim): commit_gap_s = how far the vclock has run
+                # PAST this update's completion ts (>0 => reorder buffer backed up,
+                # the staleness-inflation signature); residence_rounds = rounds it
+                # sat buffered. inflight = concurrent in-flight (both modes).
+                _enq_round = self._sim_enqueue_round.pop(end, self._round) if self.simulated else None
+                _commit_gap_s = (self._vclock.now - float(_sct_recv)) if (self.simulated and _sct_recv is not None) else None
                 ev, fields = build_agg_round(
                     round_num=self._round,
                     agg_goal=self._agg_goal,
@@ -645,6 +655,10 @@ class TopAggregator(SyncTopAgg):
                     extra={
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
                         "vclock_now": self._vclock.now if self.simulated else None,
+                        "commit_gap_s": _commit_gap_s,
+                        "buf_depth": len(self._sim_buffer) if self.simulated else None,
+                        "residence_rounds": (self._round - _enq_round) if _enq_round is not None else None,
+                        "inflight": self._updates_in_queue,
                     },
                 )
                 telemetry.emit(ev, **fields)

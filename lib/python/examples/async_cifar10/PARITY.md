@@ -246,27 +246,45 @@ pass*. "Dep" = upstream prerequisites.
 
 ---
 
-## §3  Next tasks (sim-real parity)
+## §3  Root cause: overhead-driven buffer backup (felix staleness + rounds)
 
-1. **Re-tune `sim_commit_overhead_s` (do first; trivial, in `_metadata/baselines.yaml`).**
-   The knob compensated for real-mode costs since optimized away, so it now
-   over-charges. Recompute `new = current - overhead_residual.implied_per_commit`:
-   felix 0.50 -> ~0.16, refl 0.24 -> ~0.10 (oort/feddance stay 0.0 -- already pass).
-   Apply, re-run, confirm throughput / terminal_state / total_commits clear for
-   felix/refl. Hold until no further real-side optimization is planned (else re-do).
+Jun9 trace of felix overnight sim found the rounds gap AND the staleness gap share
+one cause. `_advance_sim_clock(sct) = max(now, sct) + sim_commit_overhead_s`. In
+async the `sct` frontier advances only ~0.31 s/commit (overlap-compressed:
+vclock/round 3.1 / agg_goal 10). felix overhead **0.50 > 0.31**, so every commit
+adds more vclock than the frontier moves -> the reorder buffer backs up: updates
+commit long AFTER their completion ts. Evidence: `T_v - sct` median **118 s**
+(mean 548), **100%** of commits late; overhead alone (0.50 x 25199 commits) =
+12600 s = the entire vclock span. Result: staleness sim **9.3** vs real 2.8, and
+the vclock over-charges -> sim does 1557 rounds vs real 2595 -> lower final
+accuracy (39% vs 51%). refl (0.24 ~= 0.31) borderline (4.0 vs 3.1); oort/feddance
+(0) unaffected -> that's why they already passed.
 
+**Fixes applied (Jun9):**
+- **Overhead re-tuned below the sct rate** — felix 0.50 -> 0.16, refl 0.24 -> 0.10
+  (`_metadata/baselines.yaml`). Fixes rounds AND staleness together.
+- **Staleness telemetry** — async `agg_round` now carries `commit_gap_s`
+  (`vclock - sct`; >0 = buffer backed up), `buf_depth`, `residence_rounds`,
+  `inflight`. After the re-tune `commit_gap_s` should collapse to ~0.
+- **Eval off the critical path** — `evaluate()` now snapshots weights and runs the
+  test-set forward pass in a daemon thread (base `_eval_snapshot_model`/`_eval_emit`,
+  3 mains), so async isn't penalised by per-eval pauses (more rounds -> more evals).
+
+## §4  Next tasks (sim-real parity)
+
+1. **Validate the re-tune (45-min felix+refl run).** Confirm `commit_gap_s` ~0,
+   staleness ~= real, rounds/terminal_state/total_commits clear. Then sweep oort/
+   feddance to confirm no regression (they were already 0).
 2. **Lazy weight-deserialize on the sync recv barrier (next speedup bottleneck).**
-   Overnight per-round barrier: refl 688ms, oort 878ms, feddance 1200ms -- it
-   `cloudpickle.loads` the WHOLE in-flight set (~N x 2 MB, N ~= 13-67) but commits
-   only K=10-13 (~5x waste). Have the trainer send `sim_completion_ts` as a small
-   header so the aggregator ranks and deserializes ONLY the committed K. Sync-only
-   (async already deserializes one-at-a-time -> barrier 52ms).
+   Per-round barrier refl 688ms / oort 878ms / feddance 1200ms `cloudpickle.loads`
+   the WHOLE in-flight set (~N x 2 MB, N ~= 13-67) but commits only K=10-13 (~5x
+   waste). Send `sim_completion_ts` as a small header so only the committed K are
+   deserialized. Sync-only (async already deserializes one-at-a-time).
+3. **Residual DIST parity (after #1).** If felix staleness still > real with
+   overhead at the sct rate, the deeper cause is sim's sct frontier advancing
+   slower than real wall (3.1 vs 4.85 /round); refl selection drift likely
+   downstream of the round count -- re-check after #1.
 
-3. **DIST-tier parity (after #1).** felix staleness (sim 9.3 vs real 2.8);
-   refl/oort/feddance selection drift (`trainer_speed`/`eligibility`/`participation`
-   -- sim commits a different/faster set). Partly downstream of the round-count
-   mismatch; re-check after the re-tune.
-
-Per-commit cost driving #1/#2 (overnight sim, direct telemetry):
-`system/agg_commit_timing_cdf.pdf` (cache_store=0; optimizer floor 18-100ms),
-`[SIM_BARRIER]`, `[DISTRIBUTE_TIMING]`.
+Telemetry to read: `agg_round.commit_gap_s/buf_depth/residence_rounds` (sim),
+`[SIM_BARRIER]` (`sct`/`T_v`), `[LAG_DECOMP]` (`queue_wait_s`, both modes),
+`system/agg_commit_timing_cdf.pdf`.

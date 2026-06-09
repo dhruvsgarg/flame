@@ -932,6 +932,52 @@ class TopAggregator(Role, metaclass=ABCMeta):
             ev, fields = build_agg_eval(round_num=self._round, metrics=metrics)
             telemetry.emit(ev, **fields)
 
+    def _eval_snapshot_model(self):
+        """Snapshot current weights into a reused eval model (main thread, cheap)
+        so the full test-set forward pass can run OFF the aggregator's critical
+        path. The synchronous eval was a per-round pause that penalised async
+        baselines (more rounds -> more pauses). Returns the eval model, or None to
+        skip when a prior async eval is still running (no thread pile-up)."""
+        if getattr(self, "_eval_inflight", False):
+            logger.debug("prior async eval still running; skipping this eval")
+            return None
+        try:
+            import copy
+            if getattr(self, "_eval_model", None) is None:
+                self._eval_model = copy.deepcopy(self.model)
+            self._eval_model.load_state_dict(self.model.state_dict())
+            self._eval_inflight = True
+            return self._eval_model
+        except Exception as e:  # eval must never break training
+            logger.warning(f"eval snapshot failed (non-fatal): {e}")
+            self._eval_inflight = False
+            return None
+
+    def _eval_emit(self, round_num, test_loss, test_accuracy):
+        """Emit agg_eval telemetry (tagged with the captured round) + wandb from
+        the eval thread. telemetry.emit is lock-guarded, so this is thread-safe."""
+        try:
+            logger.info(
+                f"[ASYNC_EVAL] round={round_num} test_loss={test_loss} "
+                f"test_accuracy={test_accuracy}"
+            )
+            if telemetry.is_enabled():
+                ev, fields = build_agg_eval(
+                    round_num=round_num,
+                    metrics={"test-loss": test_loss, "test-accuracy": test_accuracy},
+                )
+                telemetry.emit(ev, **fields)
+            if hasattr(self, "loss_list"):
+                self.loss_list.append(test_loss)
+            if getattr(self, "log_to_wandb", False):
+                try:
+                    import wandb
+                    wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
+                except Exception:
+                    pass
+        finally:
+            self._eval_inflight = False
+
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
             self.model.load_state_dict(self.weights)

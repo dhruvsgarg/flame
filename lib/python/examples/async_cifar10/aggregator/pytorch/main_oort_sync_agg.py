@@ -259,37 +259,34 @@ class PyTorchCifar10Aggregator(TopAggregator):
         )
         if self._round != 1 and (self._round % eval_every != 0):
             return
-        self.model.eval()
-        test_loss = 0
-        correct = 0
-        with torch.no_grad():
-            for data, target in self.test_loader:
-                data, target = data.to(self.device), target.to(self.device)
-                output = self.model(data)
-                test_loss += F.nll_loss(
-                    output, target, reduction="sum"
-                ).item()  # sum up batch loss
-                pred = output.argmax(
-                    dim=1, keepdim=True
-                )  # get the index of the max log-probability
-                correct += pred.eq(target.view_as(pred)).sum().item()
+        # Off the critical path: snapshot weights now, run the test-set forward
+        # pass in a daemon thread so the aggregator keeps progressing.
+        eval_model = self._eval_snapshot_model()
+        if eval_model is None:
+            return  # prior async eval still running
+        round_num = self._round
+        test_loader, device = self.test_loader, self.device
 
-        total = len(self.test_loader.dataset)
-        test_loss /= total
-        test_accuracy = correct / total
+        def _job():
+            try:
+                eval_model.eval()
+                test_loss = 0
+                correct = 0
+                with torch.no_grad():
+                    for data, target in test_loader:
+                        data, target = data.to(device), target.to(device)
+                        output = eval_model(data)
+                        test_loss += F.nll_loss(output, target, reduction="sum").item()
+                        pred = output.argmax(dim=1, keepdim=True)
+                        correct += pred.eq(target.view_as(pred)).sum().item()
+                total = len(test_loader.dataset)
+                self._eval_emit(round_num, test_loss / total, correct / total)
+            except Exception as e:  # eval must never break training
+                logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
+                self._eval_inflight = False
 
-        logger.info(
-            f"Test loss: {test_loss}, test accuracy: "
-            f"{correct}/{total} ({test_accuracy})"
-        )
-
-        self.update_metrics({"test-loss": test_loss, "test-accuracy": test_accuracy})
-
-        if self.log_to_wandb:
-            wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
-        self.loss_list.append(test_loss)
-
-        logger.debug(f"loss list at cifar agg: {self.loss_list}")
+        import threading
+        threading.Thread(target=_job, daemon=True).start()
 
     def get_curr_unavail_trainers(self) -> list:
         """Return trainer IDs currently in UN_AVL state based on oracular traces."""
