@@ -544,3 +544,36 @@ Parity-correctness tasks (separate from speedup):
   per-commit overhead can't reproduce real's variable spread. Low priority.
 - **refl selection drift** — should shrink once the 0.24 overhead aligns round
   counts; re-check trainer_speed/eligibility/participation after re-run.
+
+### Jun8 18:00 re-run: speedup landed; real baseline shifted
+
+Speedup worked: felix sim_rate 1.28 -> 2.49 (wall 2115 -> 1085s); refl 0.95 ->
+1.70 (2396 -> 1590s). Distribute 949 -> 54s, barrier ~284s, no mqtt drops.
+
+NEW fidelity regression (expected mid-optimization): removing the stagger from
+*real* too sped REAL up (felix advance 7.77 -> 5.68 s/round; real rounds
+308 -> 423). So the real reference moved and the fitted overhead is now
+mis-tuned -> throughput/terminal/per_round_advance regressed (were passing).
+Lesson: the per-commit overhead is a constant fitted to the real baseline, so
+**re-tune it LAST**, after all shared-cost optimizations stop moving real.
+Pending re-tune (do last): felix 0.50 -> ~0.32, refl 0.24 -> ~0.21.
+refl round-count cascade is fixed (860 vs 850; throughput rel 0.43 -> 0.105);
+its trainer_speed/eligibility selection drift persists (separate, DIST-tier).
+
+Wall now (felix sim 1085s / 3640 commits = 0.30s/commit): barrier 52ms +
+distribute 15ms + ~230ms/commit aggregate. The 230ms is the new target:
+
+1. **[OPT] self.cache is diskcache (disk-backed)** -- `self.cache[end]=tres`
+   writes the 2 MB update to disk every commit and the optimizer reads it back.
+   Swap to an in-memory dict (only `.reset()` is diskcache-specific; verify
+   cache is cleared per round so memory stays bounded). Fidelity-neutral, shared
+   cost, on the sim critical path. *TOP NEXT.*
+2. **[OPT] per-round eval/checkpoint** -- eval every 10 rounds (real test-set
+   forward pass; needed for convergence check, keep) and checkpoint every 10
+   (2 MB disk write; analysis-only -> disable in sim). *checkpoint: easy win.*
+3. **[FLOOR] per-commit 2 MB deserialize + optimizer.do** -- necessary ML work
+   for convergence fidelity; the floor for real-execution-with-vclock.
+
+Order: do shared fidelity-neutral cuts (#1, checkpoint) -> re-run -> re-tune
+overhead to the final real baseline -> then chase remaining DIST-tier parity
+(felix staleness 2x, refl selection drift).
