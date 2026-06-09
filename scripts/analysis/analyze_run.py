@@ -373,6 +373,31 @@ def _parse_sim_barrier(telemetry_dir: str):
     return waits, by_round
 
 
+_AGG_CACHE_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?cache_store_s=([0-9.]+)")
+_AGG_OPT_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?optimizer_s=([0-9.]+)")
+
+
+def _parse_agg_commit_timing(telemetry_dir: str):
+    """Parse [AGG_COMMIT_TIMING] (both modes): per-commit/round aggregate cost
+    split into cache_store_s (was disk IO, now in-memory) and optimizer_s
+    (deserialize+aggregate floor). Returns (cache_store, optimizer)."""
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    cs, opt = [], []
+    if not logs:
+        return cs, opt
+    with open(logs[0]) as fh:
+        for line in fh:
+            if "[AGG_COMMIT_TIMING]" not in line:
+                continue
+            m1 = _AGG_CACHE_RE.search(line); m2 = _AGG_OPT_RE.search(line)
+            if m1:
+                cs.append(float(m1.group(1)))
+            if m2:
+                opt.append(float(m2.group(1)))
+    return cs, opt
+
+
 def _spearman(a, b):
     import numpy as np
     a = np.asarray(a, float); b = np.asarray(b, float)
@@ -1648,6 +1673,19 @@ def system_plots(records, out, stamp, tdir):
                          "Trainer compute time by task (train vs eval)", d,
                          "compute_time_by_task_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
+    # aggregate per-commit cost: cache store (in-memory) vs optimizer (floor).
+    _cs, _opt = _parse_agg_commit_timing(tdir)
+    if _cs or _opt:
+        series = {}
+        if _cs:
+            series[f"cache_store_s (n={len(_cs)})"] = _cs
+        if _opt:
+            series[f"optimizer_s (n={len(_opt)})"] = _opt
+        p = ph.cdf_multi(series, "seconds per commit/round",
+                         "Aggregate commit cost: cache store vs optimizer", d,
+                         "agg_commit_timing_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+
     # queue depth
     inflight = [(int(r.get("round", 0)), r.get("updates_in_queue")) for r in
                 by_event(records, EVENT_AGG_ROUND) if r.get("updates_in_queue") is not None]

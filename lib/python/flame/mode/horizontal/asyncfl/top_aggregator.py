@@ -614,8 +614,9 @@ class TopAggregator(SyncTopAgg):
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
             tres = TrainResult(weights, count, version, stat_utility)
-            # save training result from trainer in a disk cache
-            self.cache[end] = tres
+            _cs0 = time.time()
+            self.cache[end] = tres   # in-memory (MemCache)
+            self._agg_cache_store_s = time.time() - _cs0
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             update_staleness_val = self._round - tres.version
             logger.info(
@@ -686,12 +687,20 @@ class TopAggregator(SyncTopAgg):
             #         discarding") return
 
             logger.info("proceeding to agg weights")
+            _opt0 = time.time()
             self._agg_goal_weights = self.optimizer.do(
                 self._agg_goal_weights,
                 self.cache,
                 total=count,
                 version=self._round,
                 staleness_factor=0.0,
+            )
+            # [AGG_COMMIT_TIMING] per-commit aggregate cost: cache store (was disk
+            # IO, now in-memory) + optimizer; complements SIM_BARRIER/DISTRIBUTE.
+            logger.info(
+                f"[AGG_COMMIT_TIMING] round={self._round} "
+                f"cache_store_s={getattr(self, '_agg_cache_store_s', 0.0):.4f} "
+                f"optimizer_s={time.time() - _opt0:.4f}"
             )
             # increment agg goal count
             self._agg_goal_cnt += 1

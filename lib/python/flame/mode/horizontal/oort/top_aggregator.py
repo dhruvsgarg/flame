@@ -388,9 +388,18 @@ class TopAggregator(BaseTopAggregator):
             telemetry.emit(ev, **fields)
 
         # optimizer conducts optimization (in this case, aggregation)
+        _opt0 = time.time()
         global_weights = self.optimizer.do(
             deepcopy(self.weights), self.cache, total=total
         )
+        # [AGG_COMMIT_TIMING] per-round aggregate cost (cache store in-memory +
+        # optimizer + weight deepcopy).
+        logger.info(
+            f"[AGG_COMMIT_TIMING] round={self._round} "
+            f"cache_store_s={getattr(self, '_agg_cache_store_s', 0.0):.4f} "
+            f"optimizer_s={time.time() - _opt0:.4f}"
+        )
+        self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
             time.sleep(1)
@@ -783,9 +792,11 @@ class TopAggregator(BaseTopAggregator):
                 end_id=end
             )
             
-            # Save training result from trainer in a disk cache
-            self.cache[end] = tres
-            
+            _cs0 = time.time()
+            self.cache[end] = tres   # in-memory (MemCache)
+            self._agg_cache_store_s = (
+                getattr(self, "_agg_cache_store_s", 0.0) + time.time() - _cs0)
+
             logger.debug(
                 f"Created TrainResult for {end}: staleness={update_staleness_val}, "
                 f"stat_utility={stat_utility}, round_duration={round_duration_seconds}"

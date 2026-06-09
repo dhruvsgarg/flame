@@ -518,7 +518,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
             if weights is not None and count > 0:
                 total += count
                 tres = TrainResult(weights, count)
-                self.cache[end] = tres
+                _cs0 = time.time()
+                self.cache[end] = tres   # in-memory (MemCache)
+                self._agg_cache_store_s = (
+                    getattr(self, "_agg_cache_store_s", 0.0) + time.time() - _cs0)
 
                 if channel._selector is not None:
                     channel._selector.on_update_received(end, msg, self._round)
@@ -563,12 +566,21 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._reset_aggregator_stats()
 
         # optimizer conducts optimization (in this case, aggregation)
+        _opt0 = time.time()
         global_weights = self.optimizer.do(
             deepcopy(self.weights),
             self.cache,
             total=total,
             num_trainers=len(channel.ends(VAL_CH_STATE_RECV) or []),
         )
+        # [AGG_COMMIT_TIMING] per-round aggregate cost (sync aggregates the whole
+        # cache once/round): cache store (in-memory) + optimizer + weight deepcopy.
+        logger.info(
+            f"[AGG_COMMIT_TIMING] round={self._round} "
+            f"cache_store_s={getattr(self, '_agg_cache_store_s', 0.0):.4f} "
+            f"optimizer_s={time.time() - _opt0:.4f}"
+        )
+        self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
             time.sleep(1)
