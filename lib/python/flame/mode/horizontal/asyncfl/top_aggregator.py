@@ -23,7 +23,11 @@ import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
 from flame.common.constants import DeviceType
-from flame.common.util import weights_to_device, weights_to_model_device
+from flame.common.util import (
+    materialize_weights,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.mode.composer import CloneComposer
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
@@ -295,8 +299,12 @@ class TopAggregator(SyncTopAgg):
         # info on stat_utility. Else, throw an error.
 
         # Case #1: Message after task_to_perform=TRAIN. This will
-        # contain stat_utility too but will processed later.
-        if MessageType.WEIGHTS in msg:
+        # contain stat_utility too but will processed later. A train update may
+        # carry weights as raw bytes (WEIGHTS_BYTES, lazy-deserialize) instead of
+        # a live tensor — both mean "this is a model update", so check for either;
+        # otherwise a train update (which also has STAT_UTILITY) would misroute to
+        # the eval branch below.
+        if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
             logger.debug(
                 f"[AGG_RECV_WEIGHTS] received model updates from {end} "
                 f"with trainer_model_version={msg[MessageType.MODEL_VERSION]}, "
@@ -590,8 +598,11 @@ class TopAggregator(SyncTopAgg):
         else:
             self._updates_recevied[end] += 1
 
-        # Process the weights and send to optimizer
-        if MessageType.WEIGHTS in msg:
+        # Process the weights and send to optimizer. Lazy-deserialize: restore
+        # the tensor from WEIGHTS_BYTES (only paid for this committed update);
+        # default None so an eval-only/malformed message can't UnboundLocalError.
+        weights = None
+        if materialize_weights(msg) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
         if MessageType.DATASET_SIZE in msg:

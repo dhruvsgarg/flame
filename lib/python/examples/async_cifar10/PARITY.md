@@ -331,20 +331,30 @@ implied_per_commit=0.155s). The `overhead_residual` check directly gives the fix
    - feddance: advance KS-shape, add `trainer_speed_s` telemetry to real feddance
      runs (field missing from real, causing DIST fail on a missing-data artifact)
 
-3. **[DONE] Lazy weight-deserialize on the sync recv barrier (refl speedup).**
-   Trainer (sim mode): pre-serializes weights as `WEIGHTS_BYTES` (raw cloudpickle
-   bytes) in outer message dict instead of the live tensor. Aggregator barrier drains
-   all N outer dicts cheaply (bytes-copy, not tensor-reconstruct), builds SCT priority
-   queue, pops K minimum → calls `cloudpickle.loads(WEIGHTS_BYTES)` only for K.
-   Expected: refl barrier 688ms × (1 - (N-K)/N) ≈ 688ms × 0.2 + fixed = ~200ms;
-   per-round wall ~1.5s → ~1.0s; refl speedup 1.18x → **~1.8–2.2x**.
-   Implementation: `MessageType.WEIGHTS_BYTES=41`, `syncfl/trainer.py` (pre-serialize),
-   `syncfl/top_aggregator.py` (lazy deserialize in `_sync_sim_recv_first_k`).
-   TODO: validate refl sim_rate after overnight run.
+3. **[DONE → BUGFIX Jun10] Lazy weight-deserialize, now unified across all paths.**
+   Trainers ship the weight update as `WEIGHTS_BYTES` (raw cloudpickle bytes) instead
+   of a live tensor, so the aggregator reconstructs the tensor only for the K updates
+   it commits, not the N-K it discards. (The channel's recv otherwise eagerly
+   `cloudpickle.loads` every received tensor — even surplus/stale ones.)
 
-   TODO: Also check oort trainer (oort uses its own `_distribute_weights` via
-   `oort/top_aggregator.py`) — does oort sim barrier also benefit? oort uses
-   `syncfl._sync_sim_recv_first_k` via inheritance so YES, it benefits too.
+   **Regression found Jun10 (095102/095139):** the original change only handled bytes
+   in `syncfl._sync_sim_recv_first_k`. The earlier note's claim that "oort benefits via
+   inheritance" was WRONG — refl/oort and felix/async use their *own* recv/handle paths
+   (`_oort_sim_recv`, `_sim_recv_min`, their own `_handle_weights_msg`), which still read
+   `MessageType.WEIGHTS`. Result: **refl** raised `UnboundLocalError` (weights only bound
+   inside `if WEIGHTS in msg`) → aggregator died on the first round-1 update; **felix**
+   silently never counted updates (async read skipped) → 0 aggregations, no accuracy,
+   60 GB spin telemetry. Real mode unaffected (the bytes swap was `if simulated`).
+
+   **Fix (Option B, unified):** trainers always send `WEIGHTS_BYTES` (both real+sim, so
+   real overcommit also skips discarded reconstructions); every up-path aggregator read
+   goes through `common.util.materialize_weights(msg)` (bytes→WEIGHTS in place,
+   idempotent, backward compatible with live-tensor messages, returns None for eval-only
+   updates) + a defensive `weights = None` default; the async train-vs-eval router now
+   keys off `WEIGHTS or WEIGHTS_BYTES`. Touches: `common/util.py`, `syncfl/trainer.py`,
+   and the up-path reads in syncfl/asyncfl/oort tops + syncfl/asyncfl/eager middles +
+   eager top. Guarded by `tests/mode/test_weights_bytes_roundtrip.py`.
+   TODO: validate refl/felix sim_rate + accuracy after the next run.
 
 4. **[DONE] Feddance `trainer_speed_s` telemetry fix.**
    Base `syncfl` stack never set `PROP_ROUND_DURATION` (only oort overlay did).

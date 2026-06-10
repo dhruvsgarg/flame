@@ -30,6 +30,7 @@ from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
 from flame.common.util import (
     MLFramework,
     get_ml_framework_in_use,
+    materialize_weights,
     valid_frameworks,
     weights_to_device,
     weights_to_model_device,
@@ -503,7 +504,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             logger.debug(f"received message in agg_weights {msg} from {end}")
 
-            if MessageType.WEIGHTS in msg:
+            # Lazy-deserialize: restore the tensor from WEIGHTS_BYTES if the sim
+            # barrier didn't already (real sync arrives here with bytes). Default
+            # None so an eval-only/malformed message can't UnboundLocalError.
+            weights = None
+            if materialize_weights(msg) is not None:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
             if MessageType.DATASET_SIZE in msg:

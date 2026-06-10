@@ -25,7 +25,11 @@ from flame.sim import SimReorderBuffer
 
 from flame.channel import VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
-from flame.common.util import weights_to_device, weights_to_model_device
+from flame.common.util import (
+    materialize_weights,
+    weights_to_device,
+    weights_to_model_device,
+)
 from flame.mode.message import MessageType
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
@@ -732,7 +736,12 @@ class TopAggregator(BaseTopAggregator):
                             f"Reduce trainers-per-GPU or add GPUs."
                         )
 
-        if MessageType.WEIGHTS in msg:
+        # Lazy-deserialize: restore the tensor from WEIGHTS_BYTES (only paid for
+        # this committed update). weights defaults to None so an eval-only or
+        # malformed message can never UnboundLocalError at the `weights is not
+        # None` check below.
+        weights = None
+        if materialize_weights(msg) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
         if MessageType.DATASET_SIZE in msg:
