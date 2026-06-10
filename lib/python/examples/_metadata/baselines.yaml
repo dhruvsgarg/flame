@@ -45,11 +45,11 @@ baselines:
           type: "NA"
         # Per-commit MQTT/dispatch overhead the max(gpu,D) model omits; charged on
         # the virtual clock per committed update (no-op in real). MUST stay below
-        # the async sct-progression rate (~0.31s/commit = vclock/round / agg_goal)
-        # or the reorder buffer backs up: updates commit past their completion ts
-        # -> staleness + round-count inflate. Jun9: 0.50 (> 0.31) over-charged
-        # (sim 1557 rounds vs real 2595, staleness 9.3 vs 2.8) -> 0.16 (PARITY.md).
-        simCommitOverheadSeconds: 0.16
+        # the inter-sct gap from heterogeneous budgets (~1.9s/commit with 5-56s range)
+        # or the reorder buffer backs up. Jun9: 0.50 over-charged (sim 1557 vs real 2595
+        # rounds) -> 0.16 under-charged (advance 2.98 vs 4.52s, staleness 13 vs 2.8 rounds,
+        # overhead_residual=1.55s = 0.155/commit missing) -> 0.315 = 0.16 + 1.55/K.
+        simCommitOverheadSeconds: 0.315
     trainer:
       hyperparameters:
         client_notify:

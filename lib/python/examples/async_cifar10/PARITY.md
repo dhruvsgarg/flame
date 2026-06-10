@@ -28,28 +28,37 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Current status (Jun 9)
+### Current status (Jun 9 — evening run 201709; oort/feddance from 094917)
 
-**Speedup: done.** sim_rate now felix 4.3x, refl 2.5x, oort 12x, feddance 18x
-(felix was 0.27x). Removed across all 6 baselines: recv-poll, distribute stagger,
-per-send model re-serialize (incl. oort/refl's own `_distribute_weights`),
-disk-backed update cache (-> in-memory MemCache, `cache_store_s`=0). eval/checkpoint
--> 50, checkpoint off the critical path. Floor = per-commit 2 MB deserialize + optimizer.
+**Speedup: done.** Removed across all baselines: recv-poll, distribute stagger,
+per-send model re-serialize, disk-backed update cache (→ in-memory MemCache).
+Eval/checkpoint off the critical path. Floor = per-commit 2 MB deserialize + optimizer.
 
-**Overnight parity (3.5h, n=300, syn_0; via `scripts/parity_batch.py`):**
+**Cross-baseline scorecard** (`parity_batch.py`, 3.5h / n=300 / syn_0):
 
-| baseline | sim_rate | rounds real/sim | rounds diff | acc diff (tol .05) | overhead/commit | rounds parity |
-|---|---|---|---|---|---|---|
-| feddance | 18.4 | 365/370   | 0.9% | 0.029 | 0.0  | OK  |
-| oort     | 12.0 | 666/701   | 2.6% | 0.033 | 0.0  | OK  |
-| felix    | 4.3  | 2595/1557 | 41%  | 0.019 | 0.50 (resid -0.34/commit) | OFF |
-| refl     | 2.5  | 7254/4031 | 46%  | 0.064 | 0.24 (resid -0.14/commit) | OFF |
+| baseline | run | sim_rate | rounds real→sim | advance real/sim | staleness real/sim | acc diff | overhead | blocking fail |
+|---|---|---|---|---|---|---|---|---|
+| feddance | 094917 | 18.4x | 365→370 (+1.4%) | 33.85/34.11s | 183.0/185.5 (ks=0.01) | 0.029 ✓ | 0.0 | advance KS-shape (0.57), trainer_speed absent in real |
+| oort     | 094917 | 12.0x | 666→701 (+5.3%) | 18.49/17.98s | 0/0 | 0.033 ✓ | 0.0 | terminal trainers 255/286 (10.8%); total_commits 2.6% (tol 2%) |
+| refl     | 201709 | **1.18x** | 8161→8435 (+3.4%) | 1.51/1.49s | 3.07/3.02 ✓ | 0.021 ✓ | 0.10 | eligibility KS=0.48, loss_diff=0.16, speedup low (§4/#2) |
+| felix    | 201709 | **2.28x** | 2719→4230 (+55%) | 4.52/2.98s | 2.79→**12.97** | 0.073 ✗ | 0.16→**0.315** | advance 34% low → rounds+staleness cascades (§3b) |
 
-**Read:** accuracy parity is good everywhere (refl 0.064 marginally over). Rounds
-parity is near-perfect for the two baselines at overhead=0 (oort, feddance) and off
-for the two with a fitted overhead (felix, refl): the knob now OVER-charges the
-vclock (sim does FEWER rounds than real) because real got faster as we optimized it
-too. -> re-tune the overhead down (Next tasks #1).
+**Per-baseline status:**
+
+- **feddance**: essentially passing. Per-round advance KS high (0.57) despite
+  mean match (33.85≈34.11); distribution shape differs — low priority. Real
+  telemetry missing `trainer_speed_s` field (real_mean=0.0) — telemetry gap, not
+  a sim bug. No action before overnight run.
+- **oort**: near-pass. terminal_state trainers at matched V: 255 sim vs 286 real
+  (10.8%, tol 5%); total_commits 2.6% over tol. Rounds themselves 5.3% off (tol
+  10%). Likely noise at this run length (~700 rounds). Recheck after overnight.
+- **refl**: rounds/staleness/advance pass. Remaining DIST fails: eligibility KS=0.48
+  (eligible set shifts — downstream of availability trace time-base mismatch A3),
+  loss_diff=0.16 (marginal vs tol 0.15), participation/aggregation_sequence/utility
+  diverge (downstream of eligibility). **Speedup 1.18x is the main gap** — §4/#2
+  (lazy deserialize) would bring it to ~2.2x with no parity cost.
+- **felix**: all major metrics blocked on overhead under-charge (0.16 → **0.315**
+  applied tonight). See §3b. Expect overnight run to pass rounds + staleness + acc.
 
 ---
 
@@ -248,43 +257,96 @@ pass*. "Dep" = upstream prerequisites.
 
 ## §3  Root cause: overhead-driven buffer backup (felix staleness + rounds)
 
-Jun9 trace of felix overnight sim found the rounds gap AND the staleness gap share
+### §3a — Over-charge (Jun9 morning, overhead=0.50)
+
+Jun9 morning trace: felix overnight sim found rounds gap AND staleness gap share
 one cause. `_advance_sim_clock(sct) = max(now, sct) + sim_commit_overhead_s`. In
 async the `sct` frontier advances only ~0.31 s/commit (overlap-compressed:
 vclock/round 3.1 / agg_goal 10). felix overhead **0.50 > 0.31**, so every commit
-adds more vclock than the frontier moves -> the reorder buffer backs up: updates
+adds more vclock than the frontier moves → the reorder buffer backs up: updates
 commit long AFTER their completion ts. Evidence: `T_v - sct` median **118 s**
-(mean 548), **100%** of commits late; overhead alone (0.50 x 25199 commits) =
+(mean 548), **100%** of commits late; overhead alone (0.50 × 25199 commits) =
 12600 s = the entire vclock span. Result: staleness sim **9.3** vs real 2.8, and
-the vclock over-charges -> sim does 1557 rounds vs real 2595 -> lower final
-accuracy (39% vs 51%). refl (0.24 ~= 0.31) borderline (4.0 vs 3.1); oort/feddance
-(0) unaffected -> that's why they already passed.
+the vclock over-charges → sim does 1557 rounds vs real 2595 → lower final
+accuracy (39% vs 51%). refl (0.24 ~= 0.31) borderline; oort/feddance (0) unaffected.
 
-**Fixes applied (Jun9):**
-- **Overhead re-tuned below the sct rate** — felix 0.50 -> 0.16, refl 0.24 -> 0.10
-  (`_metadata/baselines.yaml`). Fixes rounds AND staleness together.
+**Fixes applied (Jun9 morning):**
+- **Overhead re-tuned** — felix 0.50 → 0.16, refl 0.24 → 0.10 (`_metadata/baselines.yaml`).
 - **Staleness telemetry** — async `agg_round` now carries `commit_gap_s`
-  (`vclock - sct`; >0 = buffer backed up), `buf_depth`, `residence_rounds`,
-  `inflight`. After the re-tune `commit_gap_s` should collapse to ~0.
-- **Eval off the critical path** — `evaluate()` now snapshots weights and runs the
-  test-set forward pass in a daemon thread (base `_eval_snapshot_model`/`_eval_emit`,
-  3 mains), so async isn't penalised by per-eval pauses (more rounds -> more evals).
+  (`vclock - sct`; >0 = buffer backed up), `buf_depth`, `residence_rounds`, `inflight`.
+- **Eval off the critical path** — `evaluate()` snapshots weights and runs the
+  test-set forward pass in a daemon thread, so async isn't penalised by per-eval pauses.
+
+### §3b — Under-charge (Jun9 evening, overhead=0.16 → 0.315)
+
+Jun9 evening 201709 run showed overhead=0.16 **under-charges**: advance fell to
+2.98s vs real 4.52s (overhead_residual: residual=1.55s, rel=0.342,
+implied_per_commit=0.155s). The `overhead_residual` check directly gives the fix:
+`0.16 + 1.55 / K=10 = 0.315`.
+
+**Root cause cascade from under-charge:**
+
+1. **advance 2.98s << real 4.52s** → too many rounds (4230 sim vs 2719 real, +55%).
+2. **Staleness inflates in two ways:**
+   - Baseline: `training_budget / advance = 12.16 / 2.98 = 4.1` rounds vs real
+     `12.0 / 4.52 = 2.65`; even without buffer backup, sim staleness is 55% higher.
+   - Partial buffer backup: with heterogeneous budgets (5–56s), slow trainers' scts
+     fall behind the vclock by many rounds, further inflating mean staleness.
+   - Combined: sim staleness 12.97 vs real 2.79.
+3. **`queue_wait_s` P50 = 13.1s in sim (vs real 0.7s) is a physical-time artifact,
+   not a cause.** `queue_wait_s = _t_msg_start (datetime.now()) − recv_wts_ts (MQTT
+   arrival)`. In sim, ALL updates drain into `_sim_buffer` in one barrier call (~0.3s
+   physical after dispatch), but are popped one-per-commit over K rounds. An update
+   with staleness S rounds has `queue_wait_s ≈ S × wall_per_round ≈ 13 × 1.31 ≈ 17s`.
+   Fixing advance (not queue draining logic) is the correct lever.
+4. **Accuracy diverges** (0.073) because wrong round count → different aggregation
+   trajectory.
+
+**Fix applied (Jun9 evening):** felix overhead 0.16 → **0.315** in `_metadata/baselines.yaml`.
+
+**Predicted outcomes for overnight run:**
+- advance: 4.52s ≈ real ✓ → rounds: ~2788 ≈ real 2719 ✓
+- staleness: 12.16 / 4.52 ≈ 2.7 rounds ≈ real 2.79 ✓
+- buffer backup: inter-sct gap ≈ 1.9s (het. budgets) >> 0.315 → no backup
+- sim_rate: ~3.4x (up from 2.28x; fewer rounds × same wall/round)
+- queue_wait_s: ~2.7 × 1.31 ≈ 3.5s (residual ~2.8s gap vs real 0.7s from
+  `SIM_RECV_GRACE_FLOOR_S=2.0` — expected artifact, not a bug)
 
 ## §4  Next tasks (sim-real parity)
 
-1. **Validate the re-tune (45-min felix+refl run).** Confirm `commit_gap_s` ~0,
-   staleness ~= real, rounds/terminal_state/total_commits clear. Then sweep oort/
-   feddance to confirm no regression (they were already 0).
-2. **Lazy weight-deserialize on the sync recv barrier (next speedup bottleneck).**
-   Per-round barrier refl 688ms / oort 878ms / feddance 1200ms `cloudpickle.loads`
-   the WHOLE in-flight set (~N x 2 MB, N ~= 13-67) but commits only K=10-13 (~5x
-   waste). Send `sim_completion_ts` as a small header so only the committed K are
-   deserialized. Sync-only (async already deserializes one-at-a-time).
-3. **Residual DIST parity (after #1).** If felix staleness still > real with
-   overhead at the sct rate, the deeper cause is sim's sct frontier advancing
-   slower than real wall (3.1 vs 4.85 /round); refl selection drift likely
-   downstream of the round count -- re-check after #1.
+1. **[OVERNIGHT] Validate felix overhead=0.315 (3.5h run, tonight).** Checks to pass:
+   - `overhead_residual`: residual_s ≈ 0, rel < 0.10 ✓
+   - `per_round_advance`: sim ≈ 4.52s, ks < 0.2 ✓
+   - `throughput`: sim rounds ≈ real 2719 (tol 10%) ✓
+   - `staleness`: sim_mean ≈ 2.79 (tol KS < 0.2) ✓
+   - `terminal_state` + `total_commits`: pass ✓
+   - `convergence`: acc_diff < 0.05 ✓
+   - `commit_gap_s` in telemetry: should collapse to ~0 (no backup)
+   - `queue_wait_s` P50 in `[LAG_DECOMP]`: expect ~3–4s sim (down from 13.1s);
+     residual gap vs real 0.7s is the `SIM_RECV_GRACE_FLOOR_S=2.0` artifact.
+   - `sim_rate`: expect ~3.4x (up from 2.28x)
 
-Telemetry to read: `agg_round.commit_gap_s/buf_depth/residence_rounds` (sim),
-`[SIM_BARRIER]` (`sct`/`T_v`), `[LAG_DECOMP]` (`queue_wait_s`, both modes),
+2. **[OVERNIGHT] Validate oort/feddance no regression.** Recheck:
+   - oort: terminal_state trainers ratio (was 10.8% at 094917 — recheck after longer run)
+   - feddance: advance KS-shape, add `trainer_speed_s` telemetry to real feddance
+     runs (field missing from real, causing DIST fail on a missing-data artifact)
+
+3. **[BLOCKED on #1] Lazy weight-deserialize on the sync recv barrier (refl speedup).**
+   Per-round barrier deserializes WHOLE in-flight set (~N × 2 MB, N ≈ 13–67) but
+   commits only K=10–13 (~5× waste). Send `sim_completion_ts` as a small header so
+   only the committed K are deserialized. Expected: refl speedup 1.18x → ~2.2x.
+   Sync-only (async already deserializes one-at-a-time).
+
+4. **[AFTER #3] Refl eligibility drift (KS=0.48).** Eligible set diverges between
+   real and sim. Likely downstream of availability trace time-base mismatch (A3):
+   sim indexes the trace by vclock, real by wall clock — at lower vclock rate (sim)
+   different trace windows are hit. Fix: remap trace lookup to virtual time in sim.
+   Recheck once speedup improves (more vclock coverage → smaller A3 mismatch).
+
+5. **[ONGOING] Logging / plot improvements.** Reduce experiment-mode log verbosity
+   (move non-essential events to DEBUG/trace tier); improve plot generation time and
+   relevance (separate experiment vs diagnostic plots).
+
+Telemetry to read after overnight: `agg_round.commit_gap_s/buf_depth/residence_rounds`
+(sim), `[SIM_BARRIER]` (`sct`/`T_v`), `[LAG_DECOMP]` (`queue_wait_s`, both modes),
 `system/agg_commit_timing_cdf.pdf`.

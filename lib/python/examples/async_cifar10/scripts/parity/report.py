@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from typing import Optional
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from .checks import overall_verdict, check_role, check_stage
 
