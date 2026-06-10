@@ -163,6 +163,12 @@ if [ "$NODE" = "smoke" ]; then
   echo "=== SMOKE DEBUG: 48 trainers, 4 rounds, baselines=${BASELINES} ==="
   for node in node1 node2; do
     cfg="$LOGDIR/dbg_smoke_${node}.yaml"
+    # Clear any stale config from a previous invocation: when the requested
+    # baselines don't match this node, make_debug_yaml exits WITHOUT writing
+    # $cfg, and a leftover file would otherwise be re-run (e.g. `--baselines
+    # refl` re-running a stale node1 felix config). rm-first guarantees a node
+    # with no matching baseline is skipped.
+    rm -f "$cfg"
     make_debug_yaml "$node" "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S"
     [ -f "$cfg" ] && run_node "dbg_smoke_$node" "$cfg"
   done
@@ -179,6 +185,9 @@ fi
 # ---- normal run mode ----
 echo "=== DEBUG RUN: node=$NODE baselines='$BASELINES' runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} ==="
 cfg="$LOGDIR/debug_${NODE}.yaml"
+# Clear any stale config so a no-match run is skipped (not silently re-running
+# a previous baseline's leftover config). See smoke loop above.
+rm -f "$cfg"
 make_debug_yaml "$NODE" "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S"
 
 if [ ! -f "$cfg" ]; then
