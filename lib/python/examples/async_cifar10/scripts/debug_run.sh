@@ -59,11 +59,16 @@ NODE=""
 RUNTIME_S=10800
 BASELINES="felix refl"
 SIM_WALL_CEILING_S=""  # empty = max_runtime_s (1×, tight guard; sim should be faster than real)
+MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 
 usage() {
-  echo "usage: $0 --node node1|node2 [--baselines 'felix refl'] [--runtime-s 3600] [--sim-wall-ceiling-s 2700]"
-  echo "       $0 smoke"
+  echo "usage: $0 --node node1|node2 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700]"
+  echo "       $0 smoke [--baselines ...] [--mode sim|real|both]"
   echo ""
+  echo "  --mode                which time_mode variant(s) to run for each baseline:"
+  echo "                        'sim' (only the simulated run), 'real' (only the real run),"
+  echo "                        or 'both' (default, runs both sequentially). Lets you split"
+  echo "                        e.g. felix-sim on one node and felix-real on another."
   echo "  --sim-wall-ceiling-s  wall-clock ceiling for sim mode (default: = runtime_s)."
   echo "                        A well-behaved sim finishes in <= real-mode wall time."
   echo "                        Fires [SIM_WALL_CEILING] warning + stops when exceeded."
@@ -77,6 +82,7 @@ if [ "${1:-}" = "smoke" ]; then
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --baselines) BASELINES="$2"; shift 2 ;;
+      --mode)      MODE="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -86,6 +92,7 @@ else
       --node)                NODE="$2"; shift 2 ;;
       --baselines)           BASELINES="$2"; shift 2 ;;
       --runtime-s)           RUNTIME_S="$2"; shift 2 ;;
+      --mode)                MODE="$2"; shift 2 ;;
       --sim-wall-ceiling-s)  SIM_WALL_CEILING_S="$2"; shift 2 ;;
       --wall-runtime-s)      SIM_WALL_CEILING_S="$2"; shift 2 ;;  # backward compat alias
       *) usage ;;
@@ -93,18 +100,38 @@ else
   done
   [ -z "$NODE" ] && usage
 fi
+case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (got '$MODE')" >&2; exit 2 ;; esac
 
 # Generate a filtered+patched YAML from the OVERNIGHT source configs.
 # $1 = node (node1|node2), $2 = baselines (space-separated), $3 = runtime_s,
-# $4 = output path, [$5 = smoke: 1|0], [$6 = sim_wall_ceiling_s: int or ""]
+# $4 = output path, [$5 = smoke: 1|0], [$6 = sim_wall_ceiling_s: int or ""],
+# [$7 = mode: sim|real|both]
 make_debug_yaml() {
-  python - "$SCR" "$1" "$2" "$3" "$4" "${5:-0}" "${6:-}" <<'PY'
+  python - "$SCR" "$1" "$2" "$3" "$4" "${5:-0}" "${6:-}" "${7:-both}" <<'PY'
 import yaml, sys, copy
 scr, node, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6] == "1",
     sys.argv[7] if len(sys.argv) > 7 else ""
 )
+mode = (sys.argv[8] if len(sys.argv) > 8 else "both").lower()
 requested = set(baselines_str.lower().split())
+
+
+def exp_mode(e):
+    """sim | real for an experiment, from its time_mode field (preferred) or its
+    name suffix (_sim / _real)."""
+    tm = str((e.get("trainer") or {}).get("time_mode") or "").lower()
+    if tm.startswith("sim"):
+        return "sim"
+    if tm == "real":
+        return "real"
+    n = e.get("name", "").lower()
+    if n.endswith("_real"):
+        return "real"
+    if n.endswith("_sim"):
+        return "sim"
+    return "unknown"
+
 
 src = f"{scr}/felix_oort_refl_feddance_alpha0.1_OVERNIGHT_{node}.yaml"
 try:
@@ -117,6 +144,8 @@ kept = []
 for e in d["experiments"]:
     bl = e.get("baseline", "").lower()
     if bl not in requested:
+        continue
+    if mode != "both" and exp_mode(e) != mode:
         continue
     e = copy.deepcopy(e)
     h = e["aggregator"]["config_overrides"]["hyperparameters"]
@@ -139,7 +168,8 @@ for e in d["experiments"]:
     kept.append(e)
 
 if not kept:
-    print(f"WARNING: no experiments matched baselines={baselines_str} on {node}", flush=True)
+    print(f"WARNING: no experiments matched baselines={baselines_str} mode={mode} "
+          f"on {node}", flush=True)
     sys.exit(0)
 
 d["experiments"] = kept
@@ -169,7 +199,7 @@ if [ "$NODE" = "smoke" ]; then
     # refl` re-running a stale node1 felix config). rm-first guarantees a node
     # with no matching baseline is skipped.
     rm -f "$cfg"
-    make_debug_yaml "$node" "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S"
+    make_debug_yaml "$node" "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE"
     [ -f "$cfg" ] && run_node "dbg_smoke_$node" "$cfg"
   done
   echo "=== SMOKE RESULTS ==="
@@ -183,12 +213,12 @@ if [ "$NODE" = "smoke" ]; then
 fi
 
 # ---- normal run mode ----
-echo "=== DEBUG RUN: node=$NODE baselines='$BASELINES' runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} ==="
+echo "=== DEBUG RUN: node=$NODE baselines='$BASELINES' mode=$MODE runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} ==="
 cfg="$LOGDIR/debug_${NODE}.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config). See smoke loop above.
 rm -f "$cfg"
-make_debug_yaml "$NODE" "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S"
+make_debug_yaml "$NODE" "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for node=$NODE baselines='$BASELINES'. Nothing to run."
