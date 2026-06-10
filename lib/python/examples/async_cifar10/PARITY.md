@@ -331,21 +331,44 @@ implied_per_commit=0.155s). The `overhead_residual` check directly gives the fix
    - feddance: advance KS-shape, add `trainer_speed_s` telemetry to real feddance
      runs (field missing from real, causing DIST fail on a missing-data artifact)
 
-3. **[BLOCKED on #1] Lazy weight-deserialize on the sync recv barrier (refl speedup).**
-   Per-round barrier deserializes WHOLE in-flight set (~N × 2 MB, N ≈ 13–67) but
-   commits only K=10–13 (~5× waste). Send `sim_completion_ts` as a small header so
-   only the committed K are deserialized. Expected: refl speedup 1.18x → ~2.2x.
-   Sync-only (async already deserializes one-at-a-time).
+3. **[DONE] Lazy weight-deserialize on the sync recv barrier (refl speedup).**
+   Trainer (sim mode): pre-serializes weights as `WEIGHTS_BYTES` (raw cloudpickle
+   bytes) in outer message dict instead of the live tensor. Aggregator barrier drains
+   all N outer dicts cheaply (bytes-copy, not tensor-reconstruct), builds SCT priority
+   queue, pops K minimum → calls `cloudpickle.loads(WEIGHTS_BYTES)` only for K.
+   Expected: refl barrier 688ms × (1 - (N-K)/N) ≈ 688ms × 0.2 + fixed = ~200ms;
+   per-round wall ~1.5s → ~1.0s; refl speedup 1.18x → **~1.8–2.2x**.
+   Implementation: `MessageType.WEIGHTS_BYTES=41`, `syncfl/trainer.py` (pre-serialize),
+   `syncfl/top_aggregator.py` (lazy deserialize in `_sync_sim_recv_first_k`).
+   TODO: validate refl sim_rate after overnight run.
 
-4. **[AFTER #3] Refl eligibility drift (KS=0.48).** Eligible set diverges between
+   TODO: Also check oort trainer (oort uses its own `_distribute_weights` via
+   `oort/top_aggregator.py`) — does oort sim barrier also benefit? oort uses
+   `syncfl._sync_sim_recv_first_k` via inheritance so YES, it benefits too.
+
+4. **[DONE] Feddance `trainer_speed_s` telemetry fix.**
+   Base `syncfl` stack never set `PROP_ROUND_DURATION` (only oort overlay did).
+   Fix: `syncfl/top_aggregator.py` sets it from `wall_lag_s` (recv − dispatch ts) in
+   real mode when not already set. Feddance real telemetry `trainer_speed_s` was 0.0;
+   after fix it will reflect actual round duration.
+   TODO: verify feddance `trainer_speed` DIST check passes after overnight run.
+
+5. **[AFTER OVERNIGHT] Refl eligibility drift (KS=0.48).** Eligible set diverges between
    real and sim. Likely downstream of availability trace time-base mismatch (A3):
    sim indexes the trace by vclock, real by wall clock — at lower vclock rate (sim)
    different trace windows are hit. Fix: remap trace lookup to virtual time in sim.
    Recheck once speedup improves (more vclock coverage → smaller A3 mismatch).
 
-5. **[ONGOING] Logging / plot improvements.** Reduce experiment-mode log verbosity
-   (move non-essential events to DEBUG/trace tier); improve plot generation time and
-   relevance (separate experiment vs diagnostic plots).
+6. **[DONE] Log level cleanup.** Moved to DEBUG: all `channel.py` recv_fifo trace
+   logs, `asyncfl/syncfl` per-commit/per-recv details (`[AGG_RECV_WEIGHTS]`,
+   `[AGG_RECV_EVAL]`, `[AGG_START]`, "proceeding to agg weights", "agg_goal reached",
+   "aggregation finished", "_agg_training_stats", "Avg training time",
+   `[SIM_PENDING]`, "sending weights to {end}", "received data from {end}").
+   Kept at INFO: `[AGG_ROUND]`, `[LAG_DECOMP]`, `[SEND_RECV_LAG]`, `[SIM_BARRIER]`,
+   `[SYNC_SIM_RECV]`, `[AGG_COMMIT_TIMING]`, `[DISTRIBUTE_TIMING]`, `[TRAIN_CYCLE]`,
+   and staleness/participation summaries every 100 rounds.
+   TODO: plot improvements — reduce CDFs to ~8 parity-relevant plots, batch
+   per-trainer figures into one call; profile `analyze_run.py` to find slow path.
 
 Telemetry to read after overnight: `agg_round.commit_gap_s/buf_depth/residence_rounds`
 (sim), `[SIM_BARRIER]` (`sct`/`T_v`), `[LAG_DECOMP]` (`queue_wait_s`, both modes),

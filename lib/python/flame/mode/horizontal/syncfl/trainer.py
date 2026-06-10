@@ -19,6 +19,8 @@ import inspect
 import logging
 import math
 import time
+
+import cloudpickle
 from contextlib import contextmanager
 
 import torch
@@ -419,6 +421,15 @@ class Trainer(Role, metaclass=ABCMeta):
             msg[MessageType.SIM_ROUND_DURATION] = getattr(
                 self, "_sim_round_duration", 0.0
             )
+            # Lazy-deserialize: pre-serialize weights to raw bytes so the sync
+            # sim barrier can build the SCT priority queue across all N in-flight
+            # trainers without paying the full tensor-reconstruction cost for the
+            # N-K that won't be committed this round.  The aggregator calls
+            # cloudpickle.loads only for the K committed pops.
+            if MessageType.WEIGHTS in msg:
+                msg[MessageType.WEIGHTS_BYTES] = cloudpickle.dumps(
+                    msg.pop(MessageType.WEIGHTS)
+                )
 
         _budget = getattr(self, "_training_budget_s", None)
         if _budget is not None:

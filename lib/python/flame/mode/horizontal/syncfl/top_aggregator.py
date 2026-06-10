@@ -20,6 +20,7 @@ import os
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
+import cloudpickle
 import numpy as np
 
 from diskcache import Cache
@@ -365,6 +366,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
             if popped is None:
                 break
             end, sct, (msg, md) = popped
+            # Lazy deserialize: trainer pre-serialized weights as raw bytes so
+            # N-K non-committed messages didn't pay tensor-reconstruction cost.
+            # Reconstruct only for this committed update.
+            if MessageType.WEIGHTS_BYTES in msg:
+                msg[MessageType.WEIGHTS] = cloudpickle.loads(
+                    msg.pop(MessageType.WEIGHTS_BYTES)
+                )
             self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_ROUND_DURATION)
@@ -382,7 +390,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         return committed
 
     def _aggregate_weights(self, tag: str) -> None:
-        logger.info("Agg weights inside top_aggregator syncfl")
+        logger.debug("Agg weights inside top_aggregator syncfl")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
@@ -404,7 +412,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if not ends:
             time.sleep(0.5)
             return
-        logger.info(
+        logger.debug(
             f"Waiting for first_k={first_k} responses from {len(ends)} selected trainers"
         )
 
@@ -424,7 +432,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 logger.debug(f"No data from {end}; skipping it")
                 continue
 
-            logger.info(f"received data from {end}")
+            logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
             # Send→recv lag: mirrors asyncFL's [SEND_RECV_LAG] so the same
@@ -439,6 +447,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"[SEND_RECV_LAG] end={end} version={self._round} "
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
+                # Base syncfl stack (fedavg/feddance) doesn't set PROP_ROUND_DURATION
+                # — only the oort overlay does. Fill it from wall_lag_s so
+                # trainer_speed_s telemetry is populated for all sync baselines.
+                if not self.simulated and channel.get_end_property(end, PROP_ROUND_DURATION) is None:
+                    channel.set_end_property(
+                        end, PROP_ROUND_DURATION, timedelta(seconds=wall_lag_s)
+                    )
                 # Full per-message lag decomposition into 6 components.
                 _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
                 _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
@@ -562,7 +577,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         self._compute_aggregator_stats()
         if self._round % 5 == 0:
-            logger.info(f"_agg_training_stats: {self._agg_training_stats}")
+            logger.debug(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
 
         # optimizer conducts optimization (in this case, aggregation)
@@ -694,7 +709,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         _payload = channel.dumps(msg)
         _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
         for idx, end in enumerate(selected_ends):
-            logger.info(
+            logger.debug(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
             if self.simulated:

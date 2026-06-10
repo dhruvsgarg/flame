@@ -259,7 +259,7 @@ class TopAggregator(SyncTopAgg):
         This method is overriden from one in synchronous top
         aggregator (..top_aggregator).
         """
-        logger.info(f"[AGG_START] Agg weights inside top_aggregator asyncfl, current model_version={self._round}")
+        logger.debug(f"[AGG_START] Agg weights inside top_aggregator asyncfl, current model_version={self._round}")
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug("No channel found")
@@ -297,7 +297,7 @@ class TopAggregator(SyncTopAgg):
         # Case #1: Message after task_to_perform=TRAIN. This will
         # contain stat_utility too but will processed later.
         if MessageType.WEIGHTS in msg:
-            logger.info(
+            logger.debug(
                 f"[AGG_RECV_WEIGHTS] received model updates from {end} "
                 f"with trainer_model_version={msg[MessageType.MODEL_VERSION]}, "
                 f"agg_current_version={self._round}"
@@ -322,7 +322,7 @@ class TopAggregator(SyncTopAgg):
 
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
-            logger.info(
+            logger.debug(
                 f"[AGG_RECV_EVAL] received eval message from {end}, "
                 f"with stat_utility={msg[MessageType.STAT_UTILITY]}, "
                 f"trainer_model_version={msg[MessageType.MODEL_VERSION]}, "
@@ -610,7 +610,7 @@ class TopAggregator(SyncTopAgg):
             )
             stat_utility = msg[MessageType.STAT_UTILITY]
 
-        logger.info(
+        logger.debug(
             f"Received weights from {end}. It was trained on model version {version}, with {count} samples. Returned stat utility {stat_utility}"
         )
 
@@ -623,7 +623,7 @@ class TopAggregator(SyncTopAgg):
             self._agg_cache_store_s = time.time() - _cs0
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             update_staleness_val = self._round - tres.version
-            logger.info(
+            logger.debug(
                 f"Received update from {end}. agg_version: {self._round}, trainer version: {tres.version}, update_staleness_val: {update_staleness_val}"
             )
 
@@ -700,7 +700,7 @@ class TopAggregator(SyncTopAgg):
             #         logger.debug("stale update from worker,
             #         discarding") return
 
-            logger.info("proceeding to agg weights")
+            logger.debug("proceeding to agg weights")
             _opt0 = time.time()
             self._agg_goal_weights = self.optimizer.do(
                 self._agg_goal_weights,
@@ -734,7 +734,7 @@ class TopAggregator(SyncTopAgg):
         # set global weights, by adding scaled aggregated weights with
         # aggregation goal
         if self._agg_goal_cnt == self._agg_goal:
-            logger.info(
+            logger.debug(
                 f"agg_goal={self._agg_goal} reached, round={self._round}"
             )
             for trainer_update in self._per_round_update_list:
@@ -765,7 +765,7 @@ class TopAggregator(SyncTopAgg):
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
 
-        logger.info(
+        logger.debug(
             f"====== aggregation finished for round {self._round}, "
             f"self._agg_goal_cnt: {self._agg_goal_cnt}, self._updates_recevied: "
             f"{self._updates_recevied}, self._trainer_participation_in_round_count: "
@@ -788,14 +788,14 @@ class TopAggregator(SyncTopAgg):
 
         self._compute_aggregator_stats()
         if self._round % 5 == 0:
-            logger.info(f"_agg_training_stats: {self._agg_training_stats}")
+            logger.debug(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
 
         # per trainer analytics
         if self._round % 100 == 0:
             for k, v in self._per_trainer_staleness_track.items():
                 trainer_staleness_arr = np.array(v)
-                logger.info(
+                logger.debug(
                     f"Trainer {k} staleness info. Min {np.min(trainer_staleness_arr)}, "
                     f"Max {np.max(trainer_staleness_arr)}, "
                     f"Avg {np.mean(trainer_staleness_arr)}, "
@@ -810,7 +810,7 @@ class TopAggregator(SyncTopAgg):
         avg_training_time = total_training_time_all_trainers / len(
             self._track_trainer_version_duration_s
         )
-        logger.info(
+        logger.debug(
             f"Avg training time {avg_training_time} across "
             f"{len(self._track_trainer_version_duration_s)} trainers"
         )
@@ -848,7 +848,7 @@ class TopAggregator(SyncTopAgg):
                 if requester in sel.selected_ends:
                     sel.selected_ends[requester].add(end_id)
             if pending_in_buffer:
-                logger.info(
+                logger.debug(
                     f"[SIM_PENDING] round={self._round} blocked {len(pending_in_buffer)} "
                     f"trainer(s) pending buffer commit: {[e[-4:] for e in pending_in_buffer]}"
                 )
@@ -1034,7 +1034,7 @@ class TopAggregator(SyncTopAgg):
                         f"[SELECTION_CHECK] {end} has {len(unreturned)} unreturned versions: {unreturned}"
                     )
 
-            logger.info(
+            logger.debug(
                 f"sending weights to {end} model_version={self._round} task={task_to_perform}"
             )
             channel.set_end_property(
