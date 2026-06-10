@@ -342,55 +342,72 @@ this is now the lowest broken rung for felix.
 | `residence_rounds` mean / max | **9.75 / 392** | n/a |
 | `concurrency` / `in_flight` | 30 / 31 | 30 / 31 |
 
-**The arithmetic closes:** sim staleness = base (`training_budget/advance` = 12.16/4.95
-≈ **2.5**) + buffer residence (`commit_gap_s/advance` = 25.3/4.95 ≈ **5**) ≈ **7.2** =
-observed 7.19. So the excess ~4.7 rounds is *entirely* buffer residence, not the clock.
+**Mechanism — NOT buffer residence; it is late PHYSICAL arrival vs a decoupled
+clock.** Bucketing the felix-sim commits by `commit_gap_s` settles it: the
+high-staleness commits have `residence_rounds ≈ 0` but `commit_gap_s = 40–300s`, and
+`corr(commit_gap, residence) ≈ −0.06`. So they did **not** sit in the buffer — they
+were enqueued and committed in the **same** round, but their completion time was
+40–300 virtual-seconds in the past. They are **late physical arrivals**:
 
-**Mechanism (the actual root cause).** It is **not** over-selection — `concurrency=30`
-and `in_flight≈31` are identical in sim and real. The difference is the commit path:
+| `commit_gap_s` | `residence_rounds` (p50) | staleness |
+|---|---|---|
+| 0–2s | 2 | 2.6 |
+| 5–15s | 4 | 4.0 |
+| 40–100s | **0** | 15.1 |
+| 100–300s | **0** | 27.9 |
 
-- **Real async** (`_aggregate_weights` → `next(channel.recv_fifo(recv_ends, 1, …))`)
-  commits each update on **physical arrival**, in arrival order, with no global sort and
-  no buffer. Residence ≈ 0; staleness = training-time-in-rounds only.
-- **Sim async** (`_sim_recv_min`) drains the **entire** in-flight set (`to_probe` = all
-  ~C=30 in-flight) into `SimReorderBuffer` to guarantee a strict global **minimum-SCT**
-  commit order, then pops **one** min per call (agg_goal=10 pops/round → version++). So
-  ~28 completed updates sit in the buffer; a high-SCT (slow-trainer) update waits behind
-  the commit frontier for many rounds (`residence` up to 392) before it is the min and
-  pops. That wait — `commit_gap_s` median ~10s, mean 25s ≈ 5 rounds — is added to its
-  staleness. Real never pays it because real does not globally sort; it commits whatever
-  arrived next.
+Why does a sim update arrive "late" relative to its own completion? Because **the sim
+trainer does not sleep its budget** — it computes fast (real GPU ms) and stamps a
+*future* `sim_completion_ts = dispatch_vclock + budget`. The message therefore lands
+physically ~immediately, normally *before* its sct (buffered, committed when the vclock
+reaches sct, `commit_gap ≈ 0`). But under GPU contention (300 trainers / few GPUs) a
+trainer's real round-trip can exceed the wall time it takes the fast vclock to reach its
+sct (≈ `budget/advance × wall_per_round` ≈ 15s for a 56s budget). Then its message is
+drained **after** the clock already advanced past its sct — committed out of completion
+order, with `staleness = current_version − trained_version` inflated by `commit_gap/advance`.
 
-In short: **the sim is stricter than real.** Real commits in arrival order (≈ but ≠
-completion order); the sim enforces global min-SCT order over the whole in-flight set,
-and that ordering wait is the staleness real never incurs.
+`concurrency=30` is identical in sim and real, so this is **not** over-selection, and
+**not** the reorder buffer (residence ≈ 0 for the bad commits). It is the virtual clock
+advancing **past in-flight updates that have not arrived yet**, because the sim's
+physical execution (real wall-time) is decoupled from the virtual clock.
 
-**Fix direction (the §4 felix task).** Make the sim buffer behave like FedBuff's
-hold-K-then-flush instead of hold-C-pop-1:
-- bound the reorder buffer near **agg_goal K**, not concurrency **C** — i.e. commit the
-  K smallest-SCT as a **batch** and advance the version once, rather than draining all C
-  and dribbling one pop per call; **or**
-- relax the global min-SCT guarantee to an **arrival-order-with-small-reorder-window**
-  that matches real's looser ordering, keeping the buffer shallow.
+**Why real doesn't have it:** in real the trainer *actually takes* its budget wall-time,
+so each update arrives at its true completion and the model version is exactly right at
+that moment — real "waits" implicitly. Charging `current_version − trained_version` is
+correct there.
 
-Either drops `commit_gap_s` → ~0 and staleness → ~base (≈2.5–2.7 ≈ real). Both change
-commit ordering/throughput, so they need a careful design pass + `test_async_sim_ordering`
-+ a parity recheck (staleness KS, throughput, terminal_state must stay matched). The new
-`plots/aggregation/{buffer_health_over_rounds,commit_gap_cdf,residence_rounds_cdf}` are
-the instruments to watch the fix land.
+**Fix — IMPLEMENTED (Jun10): the ordering gate in `_sim_recv_min`.** Make the sim wait
+for the modeled completion the way real does: **do not commit the buffered earliest
+update while an un-arrived in-flight trainer is EXPECTED to complete earlier.** The
+aggregator already knows each in-flight trainer's expected completion =
+`PROP_SIM_SEND_TS` (dispatch vclock) + `PROP_ROUND_DURATION` (its last-known duration);
+`_min_outstanding_expected_sct` takes the min over not-yet-arrived ends, and
+`_safe_to_commit(buffered_min, min_expected, slack)` holds the commit (loops/keeps
+draining) until the buffered min is truly the next completion (within `_SIM_ORDER_SLACK_S
+= 2.0s`). A `RECV_TIMEOUT_WAIT_S` failsafe bounds the wait so a dead trainer can't
+deadlock. This keeps commits in true completion order → the vclock no longer races past
+in-flight updates → `commit_gap_s → ~0` and `staleness → budget/advance ≈ real`, with
+**no version re-labeling** (the earlier band-aid that adjusted `trained_version` was
+reverted — staleness stays `current_version − trained_version` by definition). Guarded by
+`tests/mode/test_sim_recv_ordering_gate.py`; smoke (4 rounds) shows `commit_gap_s` mean
+0.7 (was 25.3 at 45-min). Tradeoff: the sim waits for slow physical arrivals, so it runs
+somewhat below the previous 3.59× — the price of matching real's ordering. Watch with
+`plots/aggregation/{buffer_health_over_rounds,commit_gap_cdf,staleness_vs_speed}`;
+validate `staleness` KS + `throughput` on the next 45-min run.
 
 ## §4  Next tasks (sim-real parity)
 
-1. **[ROOT-CAUSED — felix staleness, the top priority] Reorder-buffer residence (§3c).**
-   advance/overhead/rounds/accuracy now pass; staleness 7.19 vs 2.79 is **entirely**
-   buffer residence (`commit_gap_s` mean 25s ≈ 5 rounds added on top of base ≈ 2.5).
-   Mechanism: `_sim_recv_min` drains all C=30 in-flight into `SimReorderBuffer` and pops
-   one min-SCT per call; real commits on arrival. **Fix:** bound the buffer to agg_goal K
-   and commit the K-min as a batch (FedBuff hold-K-then-flush), or relax global min-SCT to
-   an arrival-order-with-small-window. Must keep `test_async_sim_ordering` green and
-   recheck staleness-KS / throughput / terminal_state. Watch with the new
-   `plots/aggregation/{buffer_health_over_rounds,commit_gap_cdf,residence_rounds_cdf}`.
-   *(Design + implement next; this is the headline felix item.)*
+1. **[IMPLEMENTED — felix staleness; validate on the next 45-min run] Ordering gate (§3c).**
+   Root cause was NOT buffer residence but late physical arrival vs a decoupled clock:
+   the sim trainer stamps a future sct and the vclock advanced past in-flight updates
+   before their (contention-delayed) message arrived → out-of-order commit → inflated
+   `current_version − trained_version`. Fix shipped in `_sim_recv_min`: hold the commit
+   of the buffered earliest update while an un-arrived in-flight trainer is expected to
+   complete earlier (`_min_outstanding_expected_sct` + `_safe_to_commit`, slack 2.0s,
+   `RECV_TIMEOUT_WAIT_S` failsafe). The earlier `trained_version` band-aid was **reverted**.
+   Checks to pass next run: `staleness` sim_mean ≈ 2.8 (KS < 0.2), `commit_gap_s` → ~0,
+   `throughput`/`terminal_state` still matched (watch for a slower sim_rate — the gate
+   waits for slow arrivals). Guarded by `tests/mode/test_sim_recv_ordering_gate.py`.
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance

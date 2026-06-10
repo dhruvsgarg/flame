@@ -63,6 +63,12 @@ _NETWORK_SLACK_S = 2.0
 # re-selecting; guards against hanging when all in-flight trainers go quiet.
 RECV_TIMEOUT_WAIT_S = 30
 
+# Sim ordering gate (§3c): commit the buffered min only if no un-arrived in-flight
+# trainer is expected to complete more than this many virtual-seconds earlier.
+# Absorbs round-duration-estimate noise so we don't over-wait on tiny differences;
+# small enough that residual out-of-order staleness is < ~1 round.
+_SIM_ORDER_SLACK_S = 2.0
+
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -188,36 +194,94 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
+    @staticmethod
+    def _safe_to_commit(buffered_min, min_expected, slack):
+        """True iff the buffered earliest-completing update can commit now: there
+        is something buffered, and no un-arrived in-flight trainer is expected to
+        complete more than ``slack`` virtual-seconds earlier. Pure → unit-tested."""
+        if buffered_min is None:
+            return False
+        if min_expected is None:
+            return True
+        return buffered_min <= min_expected + slack
+
+    def _min_outstanding_expected_sct(self, channel, recv_ends):
+        """Smallest EXPECTED sim_completion_ts among in-flight trainers not yet
+        received this round, from each one's dispatch vclock (PROP_SIM_SEND_TS)
+        plus its last-known round duration (PROP_ROUND_DURATION). None when no
+        such trainer has a known duration (e.g. all first-rounders). Used to keep
+        the virtual clock from advancing past an update that is still legitimately
+        in flight — see §3c of PARITY.md."""
+        get_prop = getattr(channel, "get_end_property", None)
+        if get_prop is None:
+            return None
+        best = None
+        for e in recv_ends:
+            if self._sim_buffer.has(e) or e in self._sim_committed:
+                continue
+            sst = get_prop(e, PROP_SIM_SEND_TS)
+            dur = get_prop(e, PROP_ROUND_DURATION)
+            if sst is None or dur is None:
+                continue
+            try:
+                exp = float(sst) + dur.total_seconds()
+            except AttributeError:
+                exp = float(sst) + float(dur)
+            best = exp if best is None else min(best, exp)
+        return best
+
     def _sim_recv_min(self, channel, recv_ends):
-        """Barrier: drain the in-flight set in one recv_fifo pass, then commit the
-        smallest sim_completion_ts (never before a smaller straggler is in)."""
-        to_probe = [
-            e for e in recv_ends
-            if not self._sim_buffer.has(e) and e not in self._sim_committed
-        ]
+        """Barrier: commit the smallest sim_completion_ts, and — the §3c fix —
+        never commit a buffered update while an in-flight trainer is EXPECTED to
+        complete earlier (its message is still arriving). In sim the trainer does
+        not sleep its budget; it computes fast and stamps a FUTURE completion ts,
+        so a physically-delayed message (GPU contention / MQTT) can otherwise be
+        committed AFTER the clock already advanced past its sct → out-of-order
+        commit → inflated staleness. Real waits implicitly (the trainer actually
+        takes its budget); this makes the sim wait for the modeled completion too.
+        A wall-clock failsafe (RECV_TIMEOUT_WAIT_S) bounds the wait so a dead
+        trainer cannot deadlock the run."""
         barrier_t0 = time.time()
+        deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
-        if to_probe:
-            grace = self._sim_recv_grace_s()
-            for msg, metadata in channel.recv_fifo(
-                to_probe, first_k=len(to_probe), timeout=grace
-            ):
-                if msg is None:  # no more ready (grace expired or set drained)
-                    break
-                # metadata[0] is the actual sender; may differ from probed end
-                # if a stale recv task delivered a different end's message first.
-                actual_end = metadata[0]
-                sct = msg.get(MessageType.SIM_COMPLETION_TS)
-                if sct is None:
-                    sct = self._vclock.now
-                self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
-                if not hasattr(self, "_sim_enqueue_round"):
-                    self._sim_enqueue_round = {}
-                self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
-            drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+        probed = 0
+        while True:
+            to_probe = [
+                e for e in recv_ends
+                if not self._sim_buffer.has(e) and e not in self._sim_committed
+            ]
+            probed = max(probed, len(to_probe))
+            if to_probe:
+                grace = self._sim_recv_grace_s()
+                for msg, metadata in channel.recv_fifo(
+                    to_probe, first_k=len(to_probe), timeout=grace
+                ):
+                    if msg is None:  # no more ready (grace expired or set drained)
+                        break
+                    # metadata[0] is the actual sender; may differ from probed end
+                    # if a stale recv task delivered a different end's message first.
+                    actual_end = metadata[0]
+                    sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                    if sct is None:
+                        sct = self._vclock.now
+                    self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+                    if not hasattr(self, "_sim_enqueue_round"):
+                        self._sim_enqueue_round = {}
+                    self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
+                drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+            # Ordering gate: only commit the buffered minimum if no un-arrived
+            # in-flight trainer is expected to complete earlier (within a small
+            # slack to absorb duration-estimate noise). Otherwise loop and keep
+            # waiting for that earlier update, up to the failsafe deadline.
+            buffered_min = self._sim_buffer.peek_min_ts()
+            min_expected = self._min_outstanding_expected_sct(channel, recv_ends)
+            safe = self._safe_to_commit(buffered_min, min_expected, _SIM_ORDER_SLACK_S)
+            if safe or time.time() >= deadline:
+                break
+            if buffered_min is None and not to_probe:
+                break  # nothing buffered and nothing in flight to wait for
         barrier_wait = time.time() - barrier_t0
-        if to_probe:
-            self._note_sim_fill(barrier_wait, drained_all)
+        self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit.
@@ -227,11 +291,12 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
+        _commit_gap = self._vclock.now - sct
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
-            f"barrier_wait_s={barrier_wait:.3f} probed={len(to_probe)} "
+            f"barrier_wait_s={barrier_wait:.3f} probed={probed} "
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
-            f"T_v={self._vclock.now:.1f}"
+            f"T_v={self._vclock.now:.1f} commit_gap_s={_commit_gap:.1f}"
         )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state
