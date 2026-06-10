@@ -260,8 +260,25 @@ class ExperimentRunner:
             # exit cleanly. Without this, wait_all()'s per-trainer timeout fires
             # immediately after spawn and kills trainers every 30s regardless of
             # whether training is still in progress.
-            print("  waiting for aggregator to finish...")
-            self.aggregator_spawner.process.wait()
+            # Watchdog: the aggregator self-stops at max_runtime_s (real) /
+            # sim_wall_ceiling_s (sim). If it instead DEADLOCKS (MQTT/barrier) it
+            # would block this wait forever and hang the whole batch — the most
+            # likely "stuck run" cause. Bound the wait at the run's own budget +
+            # a generous grace (join/startup/eval-drain) and hard-kill on timeout
+            # so the batch proceeds to _cleanup/_sweep_stragglers instead of hanging.
+            hp = agg_cfg.get("hyperparameters", {}) or {}
+            try:
+                budget_s = max(float(hp.get("max_runtime_s") or 0.0),
+                               float(hp.get("sim_wall_ceiling_s") or 0.0))
+            except (TypeError, ValueError):
+                budget_s = 0.0
+            watchdog_s = (budget_s + 1200.0) if budget_s > 0 else None
+            wd_msg = f"{watchdog_s:.0f}s" if watchdog_s else "no limit"
+            print(f"  waiting for aggregator to finish... (watchdog {wd_msg})")
+            if not self.aggregator_spawner.wait(timeout=watchdog_s):
+                print(f"  ⚠ aggregator still running after watchdog {wd_msg} — "
+                      f"assuming deadlock; killing it (run budget was {budget_s:.0f}s)")
+                self.aggregator_spawner.terminate()
             print("  aggregator done, waiting for trainers to exit...")
             self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
             print("\nexperiment completed.")
@@ -284,6 +301,12 @@ class ExperimentRunner:
 
         batch = load_experiment_config(config_file)
         print(f"loaded {len(batch.experiments)} experiments from {config_file}")
+        # Start from a clean slate: a previous invocation (or a crash) can leave
+        # orphan trainer/aggregator processes holding GPUs and MQTT state that
+        # poison the first experiment. _sweep_stragglers runs only BETWEEN runs,
+        # so sweep once up front too (covers the first experiment).
+        print("pre-batch cleanup: sweeping any stale trainer/aggregator processes...")
+        self._sweep_stragglers()
         # Overnight/CI-safe: when stdin is not a TTY (or FLAME_BATCH_CONTINUE_ON_ERROR
         # is set) a failed experiment is logged and the batch proceeds to the next,
         # rather than blocking on input(). run_experiment already cleans up its own

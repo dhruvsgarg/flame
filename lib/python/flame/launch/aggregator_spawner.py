@@ -129,6 +129,21 @@ class AggregatorSpawner:
         print(f"  ⚠ Timeout waiting for aggregator")
         return self.is_running()
 
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """Block until the aggregator process exits, or ``timeout`` seconds pass.
+
+        Returns True if the process exited, False if the timeout fired while it
+        was still running (deadlock guard — caller should then ``terminate``).
+        ``timeout=None`` blocks indefinitely (legacy behavior).
+        """
+        if not self.process:
+            return True
+        try:
+            self.process.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
     def terminate(self):
         """Terminate aggregator process."""
         if self.process:
