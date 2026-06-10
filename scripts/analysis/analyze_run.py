@@ -91,8 +91,8 @@ def by_event(records, event):
     return [r for r in records if r.get("event") == event]
 
 
-def _sub(out_root, cls):
-    return os.path.join(out_root, cls)
+def _sub(out_root, *cls):
+    return os.path.join(out_root, *cls)
 
 
 # ==========================================================================
@@ -251,36 +251,15 @@ def load_oracle_counterfactual(telemetry_dir):
     return list(csv.DictReader(open(p))) if os.path.exists(p) else []
 
 
+# ── single-pass aggregator-log parser ─────────────────────────────────────
+# The aggregator log is multi-GB (millions of lines). Every tagged series below
+# used to be parsed in its own full scan (6+ passes). parse_agg_log() reads the
+# file ONCE, gating each line on a cheap substring before any regex, and caches
+# the result per telemetry_dir. The old parser names are kept as thin accessors
+# so callers are unchanged.
+
 _LAG_RE = re.compile(r"\[SEND_RECV_LAG\] end=(\S+) version=(\d+) wall_lag_s=([0-9.]+)")
-_OVERRUN_RE = re.compile(r"\[TIMING_OVERRUN_AGG\]")
-
-
-def parse_send_recv_lags(telemetry_dir: str) -> tuple[list[float], int]:
-    """Parse SEND_RECV_LAG and TIMING_OVERRUN_AGG lines from the aggregator log.
-
-    Returns (wall_lags, overrun_count). Returns ([], 0) if no log is found or
-    no matching lines exist — callers should handle the empty case gracefully.
-    """
-    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    if not logs:
-        return [], 0
-    lags: list[float] = []
-    overruns = 0
-    with open(logs[0]) as fh:
-        for line in fh:
-            m = _LAG_RE.search(line)
-            if m:
-                lags.append(float(m.group(3)))
-            if _OVERRUN_RE.search(line):
-                overruns += 1
-    return lags, overruns
-
-
-_OVERRUN_EXCESS_RE = re.compile(
-    r"\[TIMING_OVERRUN_AGG\].*excess=([0-9.]+)s"
-)
-
+_OVERRUN_EXCESS_RE = re.compile(r"\[TIMING_OVERRUN_AGG\].*excess=([0-9.]+)s")
 # [LAG_DECOMP] replaces the old [MQTT_DELIVERY_LAG] with a 6-component breakdown.
 # Any field can be '-' when the required trainer-side timestamp was absent.
 _LAG_DECOMP_RE = re.compile(
@@ -293,109 +272,121 @@ _LAG_DECOMP_RE = re.compile(
     r"queue_wait_s=([0-9.-]+|-) "
     r"process_s=([0-9.-]+|-)"
 )
+_SIM_BARRIER_ROUND_RE = re.compile(r"\[SIM_BARRIER\].*?round=(\d+)")
+_SIM_BARRIER_WAIT_RE = re.compile(r"\[SIM_BARRIER\].*?barrier_wait_s=([0-9.]+)")
+_AGG_CACHE_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?cache_store_s=([0-9.]+)")
+_AGG_OPT_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?optimizer_s=([0-9.]+)")
+_SEND_RE = re.compile(r"sending weights to \S+ (?:with )?model_version[=:] ?(\d+)")
+
+_LAG_DECOMP_KEYS = ("wall_lag_s", "agg_to_trainer_s", "compute_s",
+                    "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
+
+_AGG_LOG_CACHE: dict[str, dict] = {}
+
+
+def parse_agg_log(telemetry_dir: str) -> dict:
+    """Single-pass scan of the aggregator log; returns every tagged series.
+
+    Cached per telemetry_dir. Keys:
+      wall_lags            list[float]  ([SEND_RECV_LAG] wall_lag_s)
+      lag_by_round         {round: [wall_lag_s]}  (version == round)
+      overrun_count        int
+      overrun_excesses     list[float]
+      lag_decomp           {component: [float]}   (6 components, '-' dropped)
+      sim_barrier_waits    list[float]
+      sim_barrier_by_round {round: [wait_s]}
+      agg_cache_store      list[float]
+      agg_optimizer        list[float]
+      sends_by_round       {round: count}  (weight dispatches)
+    """
+    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
+    if run_dir in _AGG_LOG_CACHE:
+        return _AGG_LOG_CACHE[run_dir]
+    out = {
+        "wall_lags": [], "lag_by_round": defaultdict(list),
+        "overrun_count": 0, "overrun_excesses": [],
+        "lag_decomp": {k: [] for k in _LAG_DECOMP_KEYS},
+        "sim_barrier_waits": [], "sim_barrier_by_round": defaultdict(list),
+        "agg_cache_store": [], "agg_optimizer": [],
+        "sends_by_round": defaultdict(int),
+    }
+    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
+    if not logs:
+        _AGG_LOG_CACHE[run_dir] = out
+        return out
+    with open(logs[0]) as fh:
+        for line in fh:
+            # Cheap gate: dispatch lines carry "sending weights"; everything else
+            # we parse is bracket-tagged. Skip the rest before any regex.
+            tagged = "[" in line
+            if not tagged and "sending weights" not in line:
+                continue
+            if "[SEND_RECV_LAG]" in line:
+                m = _LAG_RE.search(line)
+                if m:
+                    out["wall_lags"].append(float(m.group(3)))
+                    out["lag_by_round"][int(m.group(2))].append(float(m.group(3)))
+            elif "[LAG_DECOMP]" in line:
+                m = _LAG_DECOMP_RE.search(line)
+                if m:
+                    for i, k in enumerate(_LAG_DECOMP_KEYS):
+                        v = m.group(i + 3)
+                        if v != "-":
+                            out["lag_decomp"][k].append(float(v))
+            elif "[TIMING_OVERRUN_AGG]" in line:
+                out["overrun_count"] += 1
+                m = _OVERRUN_EXCESS_RE.search(line)
+                if m:
+                    out["overrun_excesses"].append(float(m.group(1)))
+            elif "[SIM_BARRIER]" in line:
+                mw = _SIM_BARRIER_WAIT_RE.search(line)
+                if mw:
+                    w = float(mw.group(1))
+                    out["sim_barrier_waits"].append(w)
+                    mr = _SIM_BARRIER_ROUND_RE.search(line)
+                    if mr:
+                        out["sim_barrier_by_round"][int(mr.group(1))].append(w)
+            elif "[AGG_COMMIT_TIMING]" in line:
+                m1 = _AGG_CACHE_RE.search(line)
+                if m1:
+                    out["agg_cache_store"].append(float(m1.group(1)))
+                m2 = _AGG_OPT_RE.search(line)
+                if m2:
+                    out["agg_optimizer"].append(float(m2.group(1)))
+            elif "sending weights" in line:
+                m = _SEND_RE.search(line)
+                if m:
+                    out["sends_by_round"][int(m.group(1))] += 1
+    _AGG_LOG_CACHE[run_dir] = out
+    return out
+
+
+def parse_send_recv_lags(telemetry_dir: str) -> tuple[list[float], int]:
+    """(wall_lags, overrun_count) — accessor over parse_agg_log."""
+    a = parse_agg_log(telemetry_dir)
+    return a["wall_lags"], a["overrun_count"]
 
 
 def _parse_lag_decomp(telemetry_dir: str) -> dict[str, list[float]]:
-    """Parse [LAG_DECOMP] lines from the aggregator log.
-
-    Returns a dict keyed by component name; each value is a list of floats
-    (one per update where that component was available). '-' entries are dropped.
-    Keys: wall_lag_s, agg_to_trainer_s, compute_s, post_wait_s,
-          mqtt_lag_s, queue_wait_s, process_s
-    """
-    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    result: dict[str, list[float]] = {
-        k: [] for k in ("wall_lag_s", "agg_to_trainer_s", "compute_s",
-                         "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
-    }
-    if not logs:
-        return result
-    keys = ("wall_lag_s", "agg_to_trainer_s", "compute_s",
-            "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
-    with open(logs[0]) as fh:
-        for line in fh:
-            m = _LAG_DECOMP_RE.search(line)
-            if not m:
-                continue
-            for i, k in enumerate(keys):
-                v = m.group(i + 3)
-                if v != "-":
-                    result[k].append(float(v))
-    return result
+    """[LAG_DECOMP] 6-component breakdown — accessor over parse_agg_log."""
+    return parse_agg_log(telemetry_dir)["lag_decomp"]
 
 
 def _parse_overrun_excesses(telemetry_dir: str) -> list[float]:
-    """Parse overrun excess (wall_lag - budget) from [TIMING_OVERRUN_AGG] lines."""
-    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    if not logs:
-        return []
-    excesses: list[float] = []
-    with open(logs[0]) as fh:
-        for line in fh:
-            m = _OVERRUN_EXCESS_RE.search(line)
-            if m:
-                excesses.append(float(m.group(1)))
-    return excesses
-
-
-_SIM_BARRIER_ROUND_RE = re.compile(r"\[SIM_BARRIER\].*?round=(\d+)")
-_SIM_BARRIER_WAIT_RE = re.compile(r"\[SIM_BARRIER\].*?barrier_wait_s=([0-9.]+)")
+    """[TIMING_OVERRUN_AGG] excess (wall_lag - budget) — accessor."""
+    return parse_agg_log(telemetry_dir)["overrun_excesses"]
 
 
 def _parse_sim_barrier(telemetry_dir: str):
-    """Parse [SIM_BARRIER] lines (sim recv path only) from the aggregator log.
-
-    Returns (waits, by_round). barrier_wait_s is the wall time the sim aggregator
-    spent draining the in-flight set before committing — the direct speedup metric
-    (should track wall_lag_s ≈ compute+mqtt, not the old ~0.79s/commit pacing).
-    Empty for real runs (the real recv path emits no [SIM_BARRIER]).
-    """
-    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    waits: list[float] = []
-    by_round: dict[int, list[float]] = defaultdict(list)
-    if not logs:
-        return waits, by_round
-    with open(logs[0]) as fh:
-        for line in fh:
-            if "[SIM_BARRIER]" not in line:
-                continue
-            mw = _SIM_BARRIER_WAIT_RE.search(line)
-            if not mw:
-                continue
-            w = float(mw.group(1))
-            waits.append(w)
-            mr = _SIM_BARRIER_ROUND_RE.search(line)
-            if mr:
-                by_round[int(mr.group(1))].append(w)
-    return waits, by_round
-
-
-_AGG_CACHE_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?cache_store_s=([0-9.]+)")
-_AGG_OPT_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?optimizer_s=([0-9.]+)")
+    """(waits, by_round) for [SIM_BARRIER] — accessor over parse_agg_log."""
+    a = parse_agg_log(telemetry_dir)
+    return a["sim_barrier_waits"], a["sim_barrier_by_round"]
 
 
 def _parse_agg_commit_timing(telemetry_dir: str):
-    """Parse [AGG_COMMIT_TIMING] (both modes): per-commit/round aggregate cost
-    split into cache_store_s (was disk IO, now in-memory) and optimizer_s
-    (deserialize+aggregate floor). Returns (cache_store, optimizer)."""
-    run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    cs, opt = [], []
-    if not logs:
-        return cs, opt
-    with open(logs[0]) as fh:
-        for line in fh:
-            if "[AGG_COMMIT_TIMING]" not in line:
-                continue
-            m1 = _AGG_CACHE_RE.search(line); m2 = _AGG_OPT_RE.search(line)
-            if m1:
-                cs.append(float(m1.group(1)))
-            if m2:
-                opt.append(float(m2.group(1)))
-    return cs, opt
+    """(cache_store, optimizer) for [AGG_COMMIT_TIMING] — accessor."""
+    a = parse_agg_log(telemetry_dir)
+    return a["agg_cache_store"], a["agg_optimizer"]
 
 
 def _spearman(a, b):
@@ -514,11 +505,19 @@ def perf_plots(records, out, stamp, tdir):
                              "accuracy_vs_data_unlocked.pdf", stamp=stamp)
             if p: saved.append(p)
     # global weight-change norm from checkpoints
-    saved += _weight_change_norm(tdir, d, stamp)
+    saved += _weight_change_norm(tdir, d, stamp, acc)
     return saved
 
 
-def _weight_change_norm(tdir, d, stamp):
+def _weight_change_norm(tdir, d, stamp, acc=None):
+    """L2 step of the global model per checkpoint, ||w_r − w_{r-1}||.
+
+    Expected to DECAY toward 0 as the model converges; a flat/rising tail flags
+    non-convergence or staleness re-injecting old gradients. We overlay test
+    accuracy (nearest eval per checkpoint round) and mark the convergence round
+    where the step norm first drops below 10% of its peak, turning a bare curve
+    into a convergence diagnostic.
+    """
     ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(tdir)), "checkpoints")
     paths = sorted(glob.glob(os.path.join(ckpt_dir, "round_*.pt")))
     if len(paths) < 2:
@@ -545,9 +544,28 @@ def _weight_change_norm(tdir, d, stamp):
         prev = {k: v.float() for k, v in sd.items() if torch.is_floating_point(v)}
     if not rounds:
         return []
-    p = ph.line_plot({"||w_r - w_(r-1)||": (rounds, norms)}, "round",
-                     "global weight-change L2", "Global model change per checkpoint",
-                     d, "global_weight_change_norm.pdf", stamp=stamp, logy=True)
+    # convergence marker: first round where the step drops below 10% of peak
+    peak = max(norms) if norms else 0.0
+    conv_round = next((r for r, nrm in zip(rounds, norms) if nrm < 0.1 * peak), None)
+    if acc:
+        # nearest-eval accuracy per checkpoint round → secondary axis
+        acc_rounds = sorted(acc)
+        def _nearest_acc(r):
+            rr = min(acc_rounds, key=lambda x: abs(x - r))
+            return acc[rr]
+        title = "Global model change per checkpoint + accuracy (step should decay)"
+        if conv_round is not None:
+            title += f" — conv@{conv_round}"
+        p = ph.dual_axis_line(rounds, norms, [_nearest_acc(r) for r in rounds],
+                              "round", "‖w_r − w_(r-1)‖ (L2)", "test accuracy",
+                              title, d, "global_weight_change_norm.pdf", stamp=stamp)
+    else:
+        title = "Global model change per checkpoint (step should decay to 0)"
+        if conv_round is not None:
+            title += f" — conv@{conv_round}"
+        p = ph.line_plot({"‖w_r − w_(r-1)‖": (rounds, norms)}, "round",
+                         "global weight-change L2", title, d,
+                         "global_weight_change_norm.pdf", stamp=stamp, logy=True)
     return [p] if p else []
 
 
@@ -676,10 +694,15 @@ def sanity_plots(records, out, stamp, tdir):
         nearest = min(cand, key=lambda x: abs(x - rd))
         xs.append(cand[nearest]); ys.append(ao)
     if xs:
-        p = ph.scatter_diag(xs, ys, "trainer-reported response (s)",
-                            "aggregator-observed (s)",
-                            "Aggregator-observed vs trainer-reported response", d,
-                            "runtime_agg_vs_trainer.pdf", stamp=stamp)
+        # Was a scatter of tens of thousands of (reported, observed) pairs. Bin by
+        # trainer-reported x and plot the P99 observed per bin (the tail the user
+        # cares about — worst-case aggregator turnaround at a given response time).
+        p = ph.binned_line({"agg-observed P99": (xs, ys)},
+                           "trainer-reported response (s)",
+                           "aggregator-observed (s)",
+                           "Aggregator-observed vs trainer-reported (P99/bin)", d,
+                           "runtime_agg_vs_trainer.pdf", stamp=stamp,
+                           nbins=50, reducer="p99")
         if p: saved.append(p)
         overhead = [y - x for x, y in zip(xs, ys)]
         p = ph.hist_plot(overhead,
@@ -763,13 +786,15 @@ def sanity_plots(records, out, stamp, tdir):
             contrib[rd] += len(r.get("contributing_trainers") or [])
     if sel_by_round:
         rr = sorted(set(sel_by_round) | set(contrib))
+        # Binned (mean/bin) so the chosen-vs-contributing relationship is smooth
+        # over thousands of rounds instead of a jagged per-round line.
         series = {"chosen (train)": (rr, [sel_by_round.get(r, 0) for r in rr])}
         if contrib:
             series["contributing"] = (rr, [contrib.get(r, 0) for r in rr])
-        p = ph.line_plot(series, "round", "trainer count",
-                         "Selection/aggregation count consistency (round 0 warmup excluded)",
-                         d, "selection_count_consistency.pdf", stamp=stamp,
-                         clip_outliers=True)
+        p = ph.binned_line(series, "round", "trainer count",
+                           "Selection/aggregation count consistency (round-0 warmup excluded)",
+                           d, "selection_count_consistency.pdf", stamp=stamp,
+                           nbins=200, reducer="mean")
         if p: saved.append(p)
 
     # Pre-train setup time CDF: time from train() entry to GPU compute start
@@ -862,81 +887,77 @@ def selection_plots(records, out, stamp, tdir):
     population.discard("None")
     population.discard("")
 
-    # cumulative unique selected + Gini
-    freq = Counter()
-    cum_unique, seen, xs = [], set(), []
-    for s in sorted(sel, key=lambda r: r.get("round", 0)):
+    # Selection frequency per trainer, counting BOTH train AND eval selections
+    # (eval participation is still participation — the fairness metric must include
+    # it). freq_all = train+eval; freq_train = train only, so the Lorenz can show
+    # how much eval participation evens out the distribution. The old
+    # selection_coverage dual-axis curve is dropped: the Lorenz below is the single
+    # coverage/fairness figure.
+    freq_all, freq_train = Counter(), Counter()
+    for s in sel:
+        is_train = s.get("task", "train") == "train"
         for c in (s.get("chosen") or []):
-            freq[str(c)] += 1
-            seen.add(str(c))
-        xs.append(int(s.get("round", 0)))
-        cum_unique.append(len(seen))
-    population |= set(freq)
-    if xs:
-        import numpy as np
-        def gini(counts):
-            a = np.sort(np.asarray(counts, float))
-            if a.sum() == 0:
-                return 0.0
-            n = len(a)
-            return float((2 * np.arange(1, n + 1) - n - 1).dot(a) / (n * a.sum()))
-        # gini computed over running frequency snapshots is heavy; report final + curve of unique
-        pop_n = len(population) or max(cum_unique)
-        cum_pct = [100.0 * u / pop_n for u in cum_unique]
-        # Dual axis: raw unique count (left) + % of the n-trainer population (right).
-        p = ph.dual_axis_line(
-            xs, cum_unique, cum_pct, "round",
-            "unique trainers selected",
-            f"% of population (n={pop_n})",
-            f"Selection coverage: {len(seen)}/{pop_n} "
-            f"({100.0 * len(seen) / pop_n:.0f}%) ever selected, Gini={gini(list(freq.values())):.2f}",
-            d, "selection_coverage.pdf", stamp=stamp)
-        if p: saved.append(p)
-    if freq:
-        # Lorenz curve of selection inequality (replaces a per-trainer bar that
-        # was unreadable at 300 trainers). Level 1: overall. Level 2: split by
-        # availability — trainers that were EVER unavailable vs always-available
-        # (degenerate/absent for syn_0, where everyone is always available).
-        ever_unavail = {
-            str(r.get("end_id")) for r in by_event(records, EVENT_AVAIL_CHANGE)
-            if str(r.get("new_state", "")).lower() not in ("", "avl_train", "available")
-        }
+            freq_all[str(c)] += 1
+            if is_train:
+                freq_train[str(c)] += 1
+    population |= set(freq_all)
+    if freq_all:
         # Pad to the FULL population so never-selected trainers count as zeros —
-        # otherwise n is just the count of ever-selected trainers (e.g. 225/300)
-        # and the Lorenz/Gini understate real inequality. The 75 trainers that
-        # were never picked are exactly the inequality the curve should show.
-        counts_all = {t: freq.get(t, 0) for t in population}
-        series = {"all trainers": list(counts_all.values())}
-        if ever_unavail and any(t in ever_unavail for t in population):
-            series["always-available"] = [v for t, v in counts_all.items() if t not in ever_unavail]
-            series["ever-unavailable"] = [v for t, v in counts_all.items() if t in ever_unavail]
+        # otherwise n is just the count of ever-selected trainers and the
+        # Lorenz/Gini understate real inequality.
+        n_pop = len(population) or 1
+        ever_train = len([t for t in population if freq_train.get(t, 0)])
+        ever_any = len([t for t in population if freq_all.get(t, 0)])
+        series = {
+            f"train+eval ({ever_any}/{n_pop} ever picked)":
+                [freq_all.get(t, 0) for t in population],
+            f"train only ({ever_train}/{n_pop} ever trained)":
+                [freq_train.get(t, 0) for t in population],
+        }
         p = ph.lorenz_plot(series,
-                           f"Selection fairness (Lorenz; n={len(population)} population, "
-                           f"lower Gini = more equal)", d,
+                           f"Selection fairness (Lorenz; n={n_pop} population, "
+                           f"train+eval vs train-only; lower Gini = more equal)", d,
                            "selection_fairness_lorenz.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # exploration factor over rounds
-    ef = [(int(s.get("round", 0)), s.get("exploration_factor")) for s in sel
-          if s.get("exploration_factor") is not None]
+    # exploration vs exploitation over rounds. The exploration_factor (epsilon)
+    # decays to ~0 within tens/hundreds of rounds, so the run-length x-axis hides
+    # the action. Clip x to just past where it first reaches ~0, and plot BOTH the
+    # explore fraction and its exploit complement (= 1 - explore). This subsumes
+    # the old selection_coverage curve, which is now dropped in favor of the
+    # single Lorenz fairness figure below.
+    ef = sorted({(int(s.get("round", 0)), float(s.get("exploration_factor")))
+                 for s in sel if s.get("exploration_factor") is not None})
     if ef:
-        ef = sorted(set(ef))
-        p = ph.line_plot({"exploration factor": ([r for r, _ in ef], [v for _, v in ef])},
-                         "round", "exploration factor",
-                         "Exploration factor decay", d,
-                         "exploration_factor_over_rounds.pdf", stamp=stamp)
+        rs = [r for r, _ in ef]; ev = [v for _, v in ef]
+        # first round where exploration has effectively decayed to 0 (+10% margin)
+        eps = 1e-3
+        zero_idx = next((i for i, v in enumerate(ev) if v <= eps), len(ev) - 1)
+        cut = rs[min(len(rs) - 1, int(zero_idx * 1.1) + 1)]
+        rs_c = [r for r in rs if r <= cut]; ev_c = ev[:len(rs_c)]
+        p = ph.line_plot(
+            {"exploration": (rs_c, ev_c),
+             "exploitation (1−explore)": (rs_c, [1.0 - v for v in ev_c])},
+            "round", "fraction",
+            f"Exploration vs exploitation (x clipped at decay→0, round {cut})", d,
+            "exploration_factor_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # eval vs train selections per round (felix)
+    # Eval selections: felix DOES run an eval selector, but most eval-selection
+    # events carry chosen=[] and eval bursts are sparse vs train rounds, so a
+    # full-width stacked area renders them invisible. Plot the eval selection RATE
+    # as its own smoothed line (binned mean of eval-chosen per round) so the eval
+    # selector is visibly active; train is on a second binned line for context.
     et = defaultdict(lambda: {"train": 0, "eval": 0})
     for s in sel:
         et[int(s.get("round", 0))][s.get("task", "train")] += len(s.get("chosen") or [])
     if any(v["eval"] for v in et.values()):
-        rr = sorted(et)
-        p = ph.stacked_area(rr, {"train": [et[r]["train"] for r in rr],
-                                 "eval": [et[r]["eval"] for r in rr]},
-                            "round", "selections", "Train vs eval selections per round",
-                            d, "eval_vs_train_selections.pdf", stamp=stamp)
+        rr = sorted(r for r in et if r >= 1)
+        p = ph.binned_line(
+            {"eval selections/round": (rr, [et[r]["eval"] for r in rr]),
+             "train selections/round": (rr, [et[r]["train"] for r in rr])},
+            "round", "selections", "Eval vs train selection rate (mean/bin)",
+            d, "eval_vs_train_selections.pdf", stamp=stamp, nbins=150, reducer="mean")
         if p: saved.append(p)
 
     # per-round average BELIEVED speed & utility of the clients actually picked
@@ -1001,6 +1022,7 @@ def selection_plots(records, out, stamp, tdir):
     # value at selection vs the trainer's actual stat_utility that round.
     all_sp, all_bel = [], []
     exp_act = {"believed (at selection)": [], "actual (trainer stat_utility)": []}
+    n_picks = 0; n_with_bel = 0  # believed_I coverage (often null → gappy plots)
     actual_util = {}  # (round, end3) -> stat_utility
     for r in by_event(records, EVENT_TRAINER_ROUND):
         if r.get("stat_utility") is not None:
@@ -1011,16 +1033,19 @@ def selection_plots(records, out, stamp, tdir):
         pt = s.get("per_trainer") or {}
         rd = int(s.get("round", 0))
         for c in (s.get("chosen") or []):
+            n_picks += 1
             info = pt.get(str(c)) or {}
             if info.get("speed_s") is not None:
                 all_sp.append(float(info["speed_s"]))
             bel = info.get("believed_I", info.get("utility"))
             if bel is not None:
+                n_with_bel += 1
                 all_bel.append(float(bel))
                 act = actual_util.get((rd, str(c)[-3:]))
                 if act is not None:
                     exp_act["believed (at selection)"].append(float(bel))
                     exp_act["actual (trainer stat_utility)"].append(act)
+    cov = f"believed_I on {n_with_bel}/{n_picks} picks" if n_picks else "no picks"
     cdfs = {}
     if all_sp:
         cdfs["speed (s)"] = all_sp
@@ -1030,13 +1055,24 @@ def selection_plots(records, out, stamp, tdir):
         if p: saved.append(p)
     if all_bel:
         p = ph.cdf_multi({"believed utility": all_bel}, "utility",
-                         "Picked-client utility distribution (CDF)", d,
+                         f"Picked-client utility distribution (CDF; {cov})", d,
                          "selected_utility_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
     if exp_act["actual (trainer stat_utility)"]:
         p = ph.cdf_multi(exp_act, "utility",
-                         "Picked-client utility: expected (believed) vs actual", d,
+                         f"Picked-client utility: believed vs actual ({cov})", d,
                          "selected_utility_expected_vs_actual_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # Signed believed − actual gap: the SIGN is the cross-baseline story
+        # (refl under-estimates → negative mean; felix over-estimates → positive).
+        gap = [b - a for b, a in zip(exp_act["believed (at selection)"],
+                                     exp_act["actual (trainer stat_utility)"])]
+        import numpy as _np
+        mg = float(_np.mean(gap)) if gap else 0.0
+        sign = "over-estimates" if mg > 0 else "under-estimates"
+        p = ph.hist_plot(gap, "believed − actual utility",
+                         f"Belief error of selector (mean={mg:+.3f} → {sign}; <0 conservative)",
+                         d, "selected_utility_belief_gap_hist.pdf", stamp=stamp, vline=0.0)
         if p: saved.append(p)
 
     # participation heatmap (trainer x round: 0 idle, 1 eval-selected, 2 trained)
@@ -1045,7 +1081,9 @@ def selection_plots(records, out, stamp, tdir):
     # idle / unavailable)
     saved += _state_fraction_plots(records, d, stamp)
 
-    # availability composition
+    # availability composition: one LINE per availability state (was a stacked
+    # area that, under static availability like syn_0, renders as one solid block).
+    # Lines make a flat single-state trace honest and a dynamic trace readable.
     per_round = {}
     for r in sel:
         comp = r.get("avail_composition")
@@ -1054,10 +1092,12 @@ def selection_plots(records, out, stamp, tdir):
     if per_round:
         rr = sorted(per_round)
         states = sorted({s for c in per_round.values() for s in c})
-        series = {s: [per_round[r].get(s, 0) for r in rr] for s in states}
-        p = ph.stacked_area(rr, series, "round", "trainer count",
-                            "Availability composition over rounds", d,
-                            "availability_composition.pdf", stamp=stamp)
+        note = " (static: one state — see availability/ for dynamics)" \
+            if len(states) == 1 else ""
+        series = {s: (rr, [per_round[r].get(s, 0) for r in rr]) for s in states}
+        p = ph.line_plot(series, "round", "trainer count",
+                         f"Availability composition over rounds{note}", d,
+                         "availability_composition.pdf", stamp=stamp)
         if p: saved.append(p)
     return saved
 
@@ -1120,13 +1160,17 @@ def _participation_heatmap(records, d, stamp):
 
 
 def _state_fraction_plots(records, d, stamp):
-    """Per-trainer and aggregate fraction-of-time in each state.
+    """Per-trainer and aggregate fraction-of-time in each ACTIVITY.
 
-    Exclusive per (trainer, round) states: train, eval, idle (available but not
-    picked), unavailable. 'available' fraction = train+eval+idle. Produces:
+    Renamed from "state" (state changes constantly; this is a time-allocation
+    breakdown). Exclusive per (trainer, round) activities:
+      train, eval, idle_train (avail-for-train, not picked),
+      idle_eval (avail-for-eval, not picked), unavail.
+    'available' fraction = train+eval+idle_train+idle_eval. Produces:
       • aggregate single stacked bar (population mean) — the headline split;
       • per-trainer horizontal stacked bar (every trainer's split);
       • across-trainer CDFs of fraction-available and fraction-training.
+    Files are trainer_time_allocation_* (was trainer_state_fraction_*).
     """
     import numpy as np
     trained = defaultdict(set)
@@ -1137,11 +1181,12 @@ def _state_fraction_plots(records, d, stamp):
         if s.get("task") == "eval":
             for c in (s.get("chosen") or []):
                 evalsel[int(s.get("round", 0))].add(str(c))
-    # availability forward-fill (round -> is-unavailable per trainer)
+    # availability forward-fill: track the full state string so idle can be split
+    # into idle_train (AVL_TRAIN) vs idle_eval (AVL_EVAL). UN_AVL = unavailable.
     ac = defaultdict(list)
     for r in by_event(records, EVENT_AVAIL_CHANGE):
         ac[str(r.get("end_id"))].append((int(r.get("round", 0)),
-                                         "UN_AVL" in str(r.get("new_state", ""))))
+                                         str(r.get("new_state", ""))))
     trainers = sorted({t for s in trained.values() for t in s}
                       | {t for s in evalsel.values() for t in s}
                       | set(ac))
@@ -1150,15 +1195,16 @@ def _state_fraction_plots(records, d, stamp):
     if not trainers or not rounds:
         return []
     # per-trainer exclusive counts
-    cats = ["train", "eval", "idle", "unavailable"]
+    cats = ["train", "eval", "idle_train", "idle_eval", "unavail"]
     counts = {t: {c: 0 for c in cats} for t in trainers}
     avail_count = {t: 0 for t in trainers}
     for t in trainers:
         evs = sorted(ac.get(t, []))
-        ei, un = 0, False
+        ei, state = 0, ""
         for r in rounds:
             while ei < len(evs) and evs[ei][0] <= r:
-                un = evs[ei][1]; ei += 1
+                state = evs[ei][1]; ei += 1
+            un = "UN_AVL" in state
             if not un:
                 avail_count[t] += 1
             if t in trained.get(r, set()):
@@ -1166,27 +1212,34 @@ def _state_fraction_plots(records, d, stamp):
             elif t in evalsel.get(r, set()):
                 counts[t]["eval"] += 1
             elif un:
-                counts[t]["unavailable"] += 1
-            else:
-                counts[t]["idle"] += 1
+                counts[t]["unavail"] += 1
+            elif "AVL_EVAL" in state:
+                counts[t]["idle_eval"] += 1
+            else:  # AVL_TRAIN (or unknown/default) and not picked
+                counts[t]["idle_train"] += 1
     R = len(rounds)
     saved = []
     seg_colors = {"train": "#31a354", "eval": "#3182bd",
-                  "idle": "#bdbdbd", "unavailable": "#e6550d"}
-    # 1) aggregate population-mean split (single stacked bar, annotated)
+                  "idle_train": "#bdbdbd", "idle_eval": "#9e9ac8",
+                  "unavail": "#e6550d"}
+    # Drop activities that never occur (e.g. idle_eval under static availability)
+    # so the legend/colors stay uncrowded.
+    cats = [c for c in cats if any(counts[t][c] for t in trainers)]
+    # 1) aggregate population-mean split (single stacked bar, % annotated)
     agg = {c: [float(np.mean([counts[t][c] / R for t in trainers]))] for c in cats}
     p = ph.stacked_bar(["population mean"], agg, "fraction of rounds",
-                       "Trainer state split — population mean (per round)", d,
-                       "trainer_state_fraction_aggregate.pdf", stamp=stamp,
+                       "Trainer time allocation — population mean (per round)", d,
+                       "trainer_time_allocation_aggregate.pdf", stamp=stamp,
                        annotate=True, colors=seg_colors)
     if p: saved.append(p)
-    # 2) per-trainer split (horizontal stacked bar; sorted by training fraction)
+    # 2) per-trainer split (horizontal stacked bar; sorted by training fraction;
+    #    no per-segment text to avoid crowding 300 bars)
     order = sorted(trainers, key=lambda t: counts[t]["train"] / R, reverse=True)
     yl = [t[-3:] for t in order]
     segs = {c: [counts[t][c] / R for t in order] for c in cats}
     p = ph.stacked_bar(yl, segs, "fraction of rounds",
-                       "Trainer state split — per trainer (sorted by train fraction)",
-                       d, "trainer_state_fraction_per_trainer.pdf", stamp=stamp,
+                       "Trainer time allocation — per trainer (sorted by train fraction)",
+                       d, "trainer_time_allocation_per_trainer.pdf", stamp=stamp,
                        horizontal=True, colors=seg_colors)
     if p: saved.append(p)
     # 3) across-trainer CDFs: fraction-available & fraction-training
@@ -1194,7 +1247,7 @@ def _state_fraction_plots(records, d, stamp):
                       "fraction training": [counts[t]["train"] / R for t in trainers]},
                      "fraction of rounds (per trainer)",
                      "Across-trainer distribution of availability & training", d,
-                     "trainer_state_fraction_cdf.pdf", stamp=stamp)
+                     "trainer_time_allocation_cdf.pdf", stamp=stamp)
     if p: saved.append(p)
     return saved
 
@@ -1240,7 +1293,9 @@ def insights_plots(records, out, stamp, tdir):
                          "Self-relative regret (true-score forfeited to stale factors)",
                          d, "cf_regret_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
-    # data-unlock effects (vs visible fraction)
+    # data-unlock effects (vs visible fraction). These were dense scatters over
+    # every trainer-round; bin over the x (visible fraction) into a mean trend
+    # line + P10–P90 band so the relationship is legible (and renders fast).
     tr = by_event(records, EVENT_TRAINER_ROUND)
     for key, ylab, fname, title in [
         ("delta_weight_l2", "update L2 norm", "update_norm_vs_visible.pdf",
@@ -1253,10 +1308,16 @@ def insights_plots(records, out, stamp, tdir):
         xy = [(_visible_fraction(r), r.get(key)) for r in tr]
         xy = [(a, b) for a, b in xy if a is not None and b is not None]
         if xy:
-            p = ph.scatter_plot([a for a, _ in xy], [b for _, b in xy], None,
-                                "visible fraction", ylab, title, d, fname, stamp=stamp)
+            p = ph.binned_line({ylab: ([a for a, _ in xy], [b for _, b in xy])},
+                               "visible fraction", ylab, title, d, fname,
+                               stamp=stamp, nbins=60, reducer="mean", band=True)
             if p: saved.append(p)
-    # util disparity streamed vs full
+    # util disparity streamed vs full, CONNECTED to selection impact. The ratio
+    # = utility_streamed/utility_full: under streaming a trainer's believed utility
+    # (on the visible prefix) differs from its full-data utility; ratio<1 means the
+    # selector under-values not-yet-unlocked trainers. To make it actionable we
+    # overlay the mis-selection rate on a second axis — "when disparity is high, do
+    # we mis-select?" — aligning on the rounds both series share.
     ud = by_event(records, EVENT_UTIL_DISPARITY)
     if ud:
         byr = defaultdict(list)
@@ -1266,10 +1327,23 @@ def insights_plots(records, out, stamp, tdir):
                 byr[int(r.get("round", 0))].append(v)
         rr = sorted(byr)
         if rr:
-            p = ph.line_plot({"streamed/full ratio": (rr, [sum(byr[r]) / len(byr[r]) for r in rr])},
-                             "round", "streamed / full utility ratio",
-                             "Streamed-vs-full utility ratio (1=no disparity)", d,
-                             "util_disparity_ratio.pdf", stamp=stamp, target=1.0)
+            ratio = {r: sum(byr[r]) / len(byr[r]) for r in rr}
+            miss = {int(float(m["round"])): float(m["misselection_rate"])
+                    for m in load_oracle_misselection(tdir)
+                    if m.get("task") == "train" and m.get("misselection_rate") not in (None, "")}
+            common = [r for r in rr if r in miss]
+            if len(common) >= 3:
+                p = ph.dual_axis_line(
+                    common, [ratio[r] for r in common], [miss[r] for r in common],
+                    "round", "streamed / full utility ratio (1=no disparity)",
+                    "mis-selection rate",
+                    "Utility disparity vs mis-selection (does disparity drive bad picks?)",
+                    d, "util_disparity_ratio.pdf", stamp=stamp)
+            else:
+                p = ph.line_plot({"streamed/full ratio": (rr, [ratio[r] for r in rr])},
+                                 "round", "streamed / full utility ratio",
+                                 "Streamed-vs-full utility ratio (1=no disparity)", d,
+                                 "util_disparity_ratio.pdf", stamp=stamp, target=1.0)
             if p: saved.append(p)
     return saved
 
@@ -1392,9 +1466,6 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
 # ==========================================================================
 
 
-_SEND_RE = re.compile(r"sending weights to \S+ (?:with )?model_version[=:] ?(\d+)")
-
-
 def mqtt_delivery_plots(records, out, stamp, tdir):
     """MQTT delivery sanity (both modes): cumulative weight DISPATCHES (parsed
     from the aggregator log) vs cumulative trainer RECEPTIONS (task_recv events).
@@ -1405,15 +1476,7 @@ def mqtt_delivery_plots(records, out, stamp, tdir):
     (it never grows), so this is the guard for stagger=0.
     """
     d = _sub(out, "system"); saved = []
-    run_dir = os.path.dirname(os.path.abspath(tdir))
-    logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-    sends_by_round: dict[int, int] = defaultdict(int)
-    if logs:
-        with open(logs[0]) as fh:
-            for line in fh:
-                m = _SEND_RE.search(line)
-                if m:
-                    sends_by_round[int(m.group(1))] += 1
+    sends_by_round = parse_agg_log(tdir)["sends_by_round"]
     if not sends_by_round:
         return saved  # no agg log → nothing to check
     recvs_by_round: dict[int, int] = defaultdict(int)
@@ -1444,6 +1507,28 @@ def mqtt_delivery_plots(records, out, stamp, tdir):
         "MQTT undelivered gap over rounds (flat ≈ in-flight = healthy; rising = drops)",
         d, "mqtt_undelivered_gap_over_rounds.pdf", stamp=stamp)
     if p: saved.append(p)
+    # Drops callout: a healthy run's gap oscillates around the steady-state
+    # in-flight count; a genuine drop makes the gap step UP and never recover.
+    # Estimate "lost" = final_gap − median(gap) (steady-state in-flight). If >0,
+    # SHOUT it (a no-data-style red callout reads at a glance); always show the
+    # per-round Δ(dispatched−received) histogram so a spike is visible.
+    import numpy as _np
+    steady = float(_np.median(cum_gap)) if cum_gap else 0.0
+    lost = max(0, int(round(gap - steady)))
+    deltas = [cum_gap[i] - cum_gap[i - 1] for i in range(1, len(cum_gap))]
+    if lost > 0:
+        p = ph.no_data_plot(
+            f"MQTT message drops suspected: ~{lost} lost "
+            f"(final gap {gap} vs steady-state in-flight ≈ {steady:.0f})",
+            d, "mqtt_drops_callout.pdf", stamp=stamp,
+            note=f"dispatched={cs} received={cr}; gap grew {lost} beyond in-flight")
+        if p: saved.append(p)
+    if deltas:
+        p = ph.hist_plot(deltas, "per-round Δ(dispatched − received)",
+                         f"MQTT per-round delivery delta "
+                         f"(spike = drop; ~{lost} net lost, 0 = balanced)",
+                         d, "mqtt_delivery_delta_hist.pdf", stamp=stamp, vline=0.0)
+        if p: saved.append(p)
     return saved
 
 
@@ -1541,6 +1626,13 @@ def sim_speedup_plots(records, out, stamp, tdir):
                 clip_outliers=True)
             if p:
                 saved.append(p)
+            # CDF of per-round vclock advance (the parity-relevant K3 view; renders
+            # instantly and reads the distribution shape the line plot hides).
+            p = ph.cdf_plot(adv, "Δvclock per round (s)",
+                            f"Sim per-round vclock advance CDF (n={len(adv)})", d,
+                            "sim_vclock_advance_cdf.pdf", stamp=stamp)
+            if p:
+                saved.append(p)
     else:
         _nd("sim_vclock_advance_decomp_over_rounds.pdf",
             "Sim per-round vclock advance (real run: N/A)",
@@ -1571,22 +1663,30 @@ def system_plots(records, out, stamp, tdir):
         tu = [cb[r]["train_up_mb"] for r in rr]
         ed = [cb[r]["eval_down_mb"] for r in rr]
         tot = sum(td) + sum(tu) + sum(ed)
-        p = ph.stacked_area(rr, {"train down (agg->tr)": td,
-                                 "train up (tr->agg)": tu,
-                                 "eval down (agg->tr)": ed},
-                            "round", "comm (MB)",
-                            f"Per-round comm by task+direction "
-                            f"(total {tot:.0f} MB: train {sum(td) + sum(tu):.0f}, eval {sum(ed):.0f})",
-                            d, "comm_per_round_train_vs_eval.pdf", stamp=stamp)
+        # CUMULATIVE comm by direction (monotone lines read far better than a noisy
+        # per-round area over thousands of rounds; the slopes are the per-round rate).
+        def _cum(vals):
+            out, run = [], 0.0
+            for v in vals:
+                run += v; out.append(run)
+            return out
+        p = ph.line_plot({"train down (agg→tr)": (rr, _cum(td)),
+                          "train up (tr→agg)": (rr, _cum(tu)),
+                          "eval down (agg→tr)": (rr, _cum(ed))},
+                         "round", "cumulative comm (MB)",
+                         f"Cumulative comm by task+direction "
+                         f"(total {tot:.0f} MB: train {sum(td) + sum(tu):.0f}, eval {sum(ed):.0f})",
+                         d, "comm_per_round_train_vs_eval.pdf", stamp=stamp)
         if p: saved.append(p)
-        # message counts: sent (down), returned (up), discarded (sent-but-unused)
-        p = ph.stacked_area(rr, {"returned (up)": [cb[r]["msgs_up"] for r in rr],
-                                 "discarded (sent, unused)": [cb[r]["discarded"] for r in rr]},
-                            "round", "messages / round",
-                            f"Message accounting (down {sum(cb[r]['msgs_down'] for r in rr)}, "
-                            f"up {sum(cb[r]['msgs_up'] for r in rr)}, "
-                            f"discarded {sum(cb[r]['discarded'] for r in rr)})",
-                            d, "comm_message_accounting.pdf", stamp=stamp)
+        # message accounting, CUMULATIVE: returned vs discarded (sent-but-unused).
+        # The growing discarded gap is the signal (overcommitment slack/stragglers).
+        p = ph.line_plot({"returned (up)": (rr, _cum([cb[r]["msgs_up"] for r in rr])),
+                          "discarded (sent, unused)": (rr, _cum([cb[r]["discarded"] for r in rr]))},
+                         "round", "cumulative messages",
+                         f"Message accounting (down {sum(cb[r]['msgs_down'] for r in rr)}, "
+                         f"up {sum(cb[r]['msgs_up'] for r in rr)}, "
+                         f"discarded {sum(cb[r]['discarded'] for r in rr)})",
+                         d, "comm_message_accounting.pdf", stamp=stamp)
         if p: saved.append(p)
     # trainer time breakdown (mean per trainer)
     agg = defaultdict(lambda: {"gpu": [], "sim": [], "wait": []})
@@ -1686,15 +1786,21 @@ def system_plots(records, out, stamp, tdir):
                          "agg_commit_timing_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # queue depth
+    # queue depth: binned mean+P99 band over rounds (was a jagged per-round line)
+    # plus a CDF (what fraction of rounds had queue >= k — reads the spike tail).
     inflight = [(int(r.get("round", 0)), r.get("updates_in_queue")) for r in
                 by_event(records, EVENT_AGG_ROUND) if r.get("updates_in_queue") is not None]
     if inflight:
         inflight.sort()
-        p = ph.line_plot({"updates in queue": ([r for r, _ in inflight],
-                                               [v for _, v in inflight])},
-                         "round", "updates in queue", "Async queue depth over rounds",
-                         d, "queue_depth_over_rounds.pdf", stamp=stamp)
+        qx = [r for r, _ in inflight]; qy = [v for _, v in inflight]
+        p = ph.binned_line({"updates in queue": (qx, qy)}, "round",
+                           "updates in queue", "Async queue depth over rounds (P50/bin + band)",
+                           d, "queue_depth_over_rounds.pdf", stamp=stamp,
+                           nbins=200, reducer="p50", band=True)
+        if p: saved.append(p)
+        p = ph.cdf_plot(qy, "updates in queue",
+                        f"Async queue depth CDF (n={len(qy)} rounds)", d,
+                        "queue_depth_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # staleness over rounds + CDF (both modes; debugs U3 staleness parity).
@@ -1717,36 +1823,35 @@ def system_plots(records, out, stamp, tdir):
             d, "staleness_over_rounds.pdf", stamp=stamp, clip_outliers=True)
         if p: saved.append(p)
 
-    # Send-recv lag over rounds: median wall_lag per round, parsed from the
-    # aggregator log. Now instrumented in BOTH sync and async aggregators, so
-    # this plot exists for all baselines (placeholder when no events).
-    wall_lags, _overruns = parse_send_recv_lags(tdir)
-    rd_lags: dict[int, list[float]] = defaultdict(list)
-    if wall_lags:
-        run_dir = os.path.dirname(os.path.abspath(tdir))
-        agg_logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
-        # The round is the model `version` stamped on each SEND_RECV_LAG line —
-        # the previous code keyed off an "increment_round ... round N" line that
-        # appears only once, so every lag landed in round 0. version=N == round N.
-        _lag_entry_re = re.compile(
-            r"\[SEND_RECV_LAG\] end=\S+ version=(\d+) wall_lag_s=([0-9.]+)"
-        )
-        if agg_logs:
-            with open(agg_logs[0]) as fh:
-                for line in fh:
-                    lm = _lag_entry_re.search(line)
-                    if lm:
-                        rd_lags[int(lm.group(1))].append(float(lm.group(2)))
-    _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
-    lag_series = {}
+    # Send-recv lag over rounds (binned). The round is the model `version`
+    # stamped on each [SEND_RECV_LAG] line (version=N == round N), parsed once in
+    # parse_agg_log. Instrumented in BOTH sync and async aggregators, so this
+    # plot exists for all baselines (placeholder when no events). The upward
+    # drift seen on felix is the buffer-backup symptom (PARITY §3): wall_lag is
+    # dominated by queue_wait ≈ staleness × wall/round, which rises as the reorder
+    # buffer backs up. We overlay queue_wait (from [LAG_DECOMP]) so the riser is
+    # visibly that component, not an independent regression.
+    _agg = parse_agg_log(tdir)
+    wall_lags, _overruns = _agg["wall_lags"], _agg["overrun_count"]
+    rd_lags = _agg["lag_by_round"]
+    lag_raw = {}  # series -> (xs, ys) raw per-update, binned by binned_line
     if rd_lags:
-        rr_lag = sorted(r for r in rd_lags if r >= 1)
-        lag_series["mean wall_lag_s"] = (rr_lag, [_m(rd_lags[r]) for r in rr_lag])
-    p = ph.line_plot(
-        lag_series,
-        "round", "mean wall_lag_s (send→recv)",
-        f"Send-recv lag over rounds (n={len(wall_lags)}, overruns={_overruns})",
-        d, "send_recv_lag_over_rounds.pdf", stamp=stamp, clip_outliers=True)
+        rx, ry = [], []
+        for r in sorted(rd_lags):
+            if r >= 1:
+                for v in rd_lags[r]:
+                    rx.append(r); ry.append(v)
+        if rx:
+            lag_raw["wall_lag_s (send→recv)"] = (rx, ry)
+    # queue_wait component (same x-base would need per-round; approximate by
+    # spreading the decomp queue_wait over the same round span is not exact, so we
+    # only overlay wall_lag here and leave the component split to the LAG_DECOMP
+    # CDFs below + the per-round decomposition in the aggregation deep-dive).
+    p = ph.binned_line(
+        lag_raw, "round", "wall_lag_s",
+        f"Send-recv lag over rounds — P50/bin "
+        f"(n={len(wall_lags)}, overruns={_overruns}; rise=queue_wait/staleness, PARITY §3)",
+        d, "send_recv_lag_over_rounds.pdf", stamp=stamp, reducer="p50", band=True)
     if p: saved.append(p)
 
     # Full lag decomposition from [LAG_DECOMP]: 6 components per update.
@@ -1793,6 +1898,255 @@ def system_plots(records, out, stamp, tdir):
 
 
 # ==========================================================================
+# availability/  — deep-dive (lights up under a dynamic availability trace;
+# gated to skip cleanly under static availability like syn_0)
+# ==========================================================================
+
+
+def availability_plots(records, out, stamp, tdir):
+    d = _sub(out, "availability"); saved = []
+    sel = by_event(records, EVENT_SELECTION)
+    ac = by_event(records, EVENT_AVAIL_CHANGE)
+
+    # 1) candidates → eligible → chosen funnel (binned over rounds). Always
+    # meaningful: shows where the population is lost between availability and pick.
+    fx, cand, elig, chos = [], [], [], []
+    for s in sel:
+        if s.get("task", "train") != "train":
+            continue
+        rd = int(s.get("round", 0))
+        if rd < 1:
+            continue
+        nc, ne, nch = s.get("num_candidates"), s.get("num_eligible"), s.get("num_chosen")
+        if nc is None:
+            continue
+        fx.append(rd); cand.append(nc)
+        elig.append(ne if ne is not None else 0)
+        chos.append(nch if nch is not None else 0)
+    if fx:
+        p = ph.binned_line(
+            {"candidates": (fx, cand), "eligible": (fx, elig), "chosen": (fx, chos)},
+            "round", "trainer count",
+            "Availability→selection funnel (candidates→eligible→chosen, mean/bin)",
+            d, "selection_funnel_over_rounds.pdf", stamp=stamp, nbins=150, reducer="mean")
+        if p: saved.append(p)
+
+    # Determine if availability is DYNAMIC. syn_0 emits one AVL_TRAIN per trainer
+    # at startup and never changes → duty-cycle / churn plots are degenerate.
+    by_trainer = defaultdict(list)
+    states_seen = set()
+    for r in ac:
+        by_trainer[str(r.get("end_id"))].append((int(r.get("round", 0)),
+                                                  str(r.get("new_state", ""))))
+        states_seen.add(str(r.get("new_state", "")))
+    has_unavail = any("UN_AVL" in s for s in states_seen)
+    dynamic = has_unavail or any(len(v) > 1 for v in by_trainer.values())
+    if not dynamic:
+        p = ph.no_data_plot(
+            "Availability is static (no UN_AVL transitions)",
+            d, "availability_dynamics.pdf", stamp=stamp,
+            note=f"{len(by_trainer)} trainers, states={sorted(states_seen)} — "
+                 f"duty-cycle/churn need a dynamic trace (non-syn_0)")
+        if p: saved.append(p)
+        return saved
+
+    # 2) per-trainer duty cycle (fraction of the run available). Forward-fill the
+    # state across the round span; available = not UN_AVL.
+    rounds = sorted({rd for evs in by_trainer.values() for rd, _ in evs})
+    rmax = max(rounds) if rounds else 0
+    duty = []
+    churn_by_round = defaultdict(int)
+    for t, evs in by_trainer.items():
+        evs = sorted(evs)
+        for rd, _ in evs:
+            churn_by_round[rd] += 1
+        # integrate availability over [0, rmax]
+        avail_rounds, cur_r, cur_un = 0, 0, False
+        for rd, st in evs:
+            if not cur_un:
+                avail_rounds += max(0, rd - cur_r)
+            cur_r, cur_un = rd, ("UN_AVL" in st)
+        if not cur_un:
+            avail_rounds += max(0, rmax - cur_r)
+        duty.append(avail_rounds / rmax if rmax else 0.0)
+    p = ph.cdf_plot(duty, "fraction of run available (per trainer)",
+                    f"Per-trainer duty-cycle CDF (n={len(duty)})", d,
+                    "duty_cycle_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # 3) availability churn rate over rounds (avail_change events / round-bin)
+    cr = sorted(churn_by_round)
+    p = ph.binned_line({"avail_change events": (cr, [churn_by_round[r] for r in cr])},
+                       "round", "transitions", "Availability churn rate (events/bin)",
+                       d, "availability_churn_over_rounds.pdf", stamp=stamp,
+                       nbins=150, reducer="sum")
+    if p: saved.append(p)
+    return saved
+
+
+# ==========================================================================
+# selection/why/  — deep-dive: which factor drove selection?
+# ==========================================================================
+
+
+def selection_why_plots(records, out, stamp, tdir):
+    d = _sub(out, "selection", "why"); saved = []
+    sel = by_event(records, EVENT_SELECTION)
+
+    # Factor fields carried in per_trainer (felix-style selectors). For each, we
+    # separate the value distribution among PICKED vs NOT-PICKED trainers: a wide
+    # horizontal gap means that factor drove selection; overlap means it didn't.
+    factor_keys = ("believed_I", "system_util", "temporal", "speed_s")
+    picked = {k: [] for k in factor_keys}
+    pool = {k: [] for k in factor_keys}
+    CAP = 200_000  # bound memory/time on the 150k-event per_trainer stream
+    # utility percentile bands over rounds (believed_I among picked)
+    util_x, util_y = [], []
+    for s in sel:
+        if s.get("task", "train") != "train":
+            continue
+        pt = s.get("per_trainer") or {}
+        rd = int(s.get("round", 0))
+        for tid, info in pt.items():
+            is_sel = bool(info.get("selected"))
+            for k in factor_keys:
+                v = info.get(k)
+                if v is None:
+                    continue
+                bucket = picked[k] if is_sel else pool[k]
+                if len(bucket) < CAP:
+                    bucket.append(float(v))
+            if is_sel:
+                bi = info.get("believed_I", info.get("utility"))
+                if bi is not None and rd >= 1:
+                    util_x.append(rd); util_y.append(float(bi))
+    any_factor = False
+    for k in factor_keys:
+        if picked[k] and pool[k]:
+            any_factor = True
+            p = ph.cdf_multi({f"picked (n={len(picked[k])})": picked[k],
+                              f"not picked (n={len(pool[k])})": pool[k]},
+                             k, f"Selection driver: {k} — picked vs pool "
+                             f"(wide gap = drove selection)", d,
+                             f"factor_separation_{k}.pdf", stamp=stamp)
+            if p: saved.append(p)
+    if not any_factor:
+        p = ph.no_data_plot(
+            "No per-trainer factor fields (believed_I/system_util/temporal/speed_s)",
+            d, "factor_separation.pdf", stamp=stamp,
+            note="this selector does not log per-trainer factors (e.g. refl/oort)")
+        if p: saved.append(p)
+
+    # utility percentile bands over round-bins: p10/p50/p90 of believed utility
+    # of picked clients — the across-population utility trajectory in one figure.
+    if util_x:
+        saved += _utility_bands(util_x, util_y, d, stamp)
+    return saved
+
+
+def _utility_bands(xs, ys, d, stamp, nbins=150):
+    import numpy as np
+    xs = np.asarray(xs, float); ys = np.asarray(ys, float)
+    if xs.size < 3:
+        return []
+    edges = np.linspace(xs.min(), xs.max(), nbins + 1)
+    idx = np.clip(np.digitize(xs, edges) - 1, 0, nbins - 1)
+    cx, p10, p50, p90 = [], [], [], []
+    for b in range(nbins):
+        sel = ys[idx == b]
+        if sel.size == 0:
+            continue
+        cx.append(0.5 * (edges[b] + edges[b + 1]))
+        p10.append(float(np.quantile(sel, 0.1)))
+        p50.append(float(np.quantile(sel, 0.5)))
+        p90.append(float(np.quantile(sel, 0.9)))
+    if not cx:
+        return []
+    p = ph.banded_line(cx, p50, p10, p90, "round",
+                       "believed utility (picked)",
+                       "Picked-client believed-utility p10/p50/p90 over rounds",
+                       d, "picked_utility_bands_over_rounds.pdf", stamp=stamp)
+    return [p] if p else []
+
+
+# ==========================================================================
+# aggregation/  — deep-dive: rate / cadence / staleness / buffer health
+# ==========================================================================
+
+
+def aggregation_plots(records, out, stamp, tdir):
+    d = _sub(out, "aggregation"); saved = []
+    ar = by_event(records, EVENT_AGG_ROUND)
+    if not ar:
+        return saved
+
+    # 1) commit cadence: commits per round-bin (async emits one agg_round per
+    # commit). Shows how fast updates are landing over the run.
+    commits_by_round = defaultdict(int)
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd >= 1:
+            commits_by_round[rd] += 1
+    cr = sorted(commits_by_round)
+    if cr:
+        p = ph.binned_line({"commits/round": (cr, [commits_by_round[r] for r in cr])},
+                           "round", "commits", "Commit cadence (commits/round, mean/bin)",
+                           d, "commit_cadence_over_rounds.pdf", stamp=stamp,
+                           nbins=150, reducer="mean")
+        if p: saved.append(p)
+
+    # 2) staleness vs trainer-speed (per commit): slow trainers should be the
+    # stale ones — confirms the staleness mechanism. Both are single-element lists.
+    sp_x, st_y = [], []
+    for r in ar:
+        st = r.get("staleness") or []; sp = r.get("trainer_speed_s") or []
+        for a, b in zip(sp, st):
+            if a is not None and b is not None:
+                sp_x.append(float(a)); st_y.append(float(b))
+    if sp_x:
+        p = ph.binned_line({"staleness vs speed": (sp_x, st_y)},
+                           "trainer speed (s)", "staleness (rounds behind)",
+                           "Staleness vs trainer speed (slow→stale? mean/bin)", d,
+                           "staleness_vs_speed.pdf", stamp=stamp, nbins=60, reducer="mean")
+        if p: saved.append(p)
+
+    # 3) reorder-buffer health: commit_gap_s (vclock − sct; >0 = buffer backed up)
+    # and buf_depth over round-bins. The direct visual for the felix overhead bug
+    # (PARITY §3): a rising commit_gap_s = updates committing long after completion.
+    gx, gap_v, depth_v = [], [], []
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd < 1:
+            continue
+        if r.get("commit_gap_s") is not None:
+            gx.append(rd); gap_v.append(float(r["commit_gap_s"]))
+            depth_v.append(float(r.get("buf_depth") or 0.0))
+    if gx:
+        p = ph.binned_line({"commit_gap_s (vclock−sct)": (gx, gap_v),
+                            "buf_depth": (gx, depth_v)},
+                           "round", "value", "Reorder-buffer health "
+                           "(commit_gap_s>0 & rising = backup; PARITY §3)", d,
+                           "buffer_health_over_rounds.pdf", stamp=stamp,
+                           nbins=150, reducer="p50")
+        if p: saved.append(p)
+        p = ph.cdf_plot(gap_v, "commit_gap_s (vclock − sct)",
+                        f"Commit-gap CDF (n={len(gap_v)}; 0 = no buffer backup)", d,
+                        "commit_gap_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # 4) update residence time: rounds an update waited in the buffer before
+    # committing — ties staleness to the buffer mechanic.
+    resid = [int(r["residence_rounds"]) for r in ar
+             if r.get("residence_rounds") is not None]
+    if resid:
+        p = ph.cdf_plot(resid, "residence (rounds in buffer)",
+                        f"Update residence-time CDF (n={len(resid)})", d,
+                        "residence_rounds_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+    return saved
+
+
+# ==========================================================================
 # orchestration
 # ==========================================================================
 
@@ -1822,7 +2176,8 @@ def analyze(telemetry_dir, out_dir=None):
     stamp = ph.config_stamp(run_dir)
     saved = []
     for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
-               system_plots, sim_speedup_plots, mqtt_delivery_plots):
+               system_plots, sim_speedup_plots, mqtt_delivery_plots,
+               availability_plots, selection_why_plots, aggregation_plots):
         try:
             saved.extend(fn(records, out_dir, stamp, telemetry_dir))
         except Exception as e:

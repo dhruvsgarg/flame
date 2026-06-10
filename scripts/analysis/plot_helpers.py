@@ -288,6 +288,82 @@ def banded_line(x, mean, lo, hi, x_label, y_label, title, out_dir, file_name,
     return _save(fig, out_dir, file_name, stamp)
 
 
+def _bin_reduce(xs, ys, nbins, reducer):
+    """Bucket (xs, ys) into ~nbins equal-width x-bins; reduce ys per bin.
+
+    Returns (bin_centers, reduced, lo, hi) where lo/hi are the P10/P90 of each
+    bin (for an optional band). Bins with no points are dropped. ``reducer`` is
+    one of "mean", "p50", "p90", "p99", "max", "sum".
+    """
+    pairs = [(float(a), float(b)) for a, b in zip(xs, ys)
+             if a is not None and b is not None]
+    if not pairs:
+        return [], [], [], []
+    xs = np.asarray([a for a, _ in pairs], float)
+    ys = np.asarray([b for _, b in pairs], float)
+    lo_x, hi_x = float(xs.min()), float(xs.max())
+    if hi_x <= lo_x:
+        return [float(xs.mean())], [float(ys.mean())], [float(ys.min())], [float(ys.max())]
+    nb = max(1, min(int(nbins), len(xs)))
+    edges = np.linspace(lo_x, hi_x, nb + 1)
+    idx = np.clip(np.digitize(xs, edges) - 1, 0, nb - 1)
+    _red = {
+        "mean": np.mean, "max": np.max, "sum": np.sum,
+        "p50": lambda a: np.quantile(a, 0.5),
+        "p90": lambda a: np.quantile(a, 0.9),
+        "p99": lambda a: np.quantile(a, 0.99),
+    }[reducer]
+    cx, cy, clo, chi = [], [], [], []
+    for b in range(nb):
+        sel = ys[idx == b]
+        if sel.size == 0:
+            continue
+        cx.append(0.5 * (edges[b] + edges[b + 1]))
+        cy.append(float(_red(sel)))
+        clo.append(float(np.quantile(sel, 0.1)))
+        chi.append(float(np.quantile(sel, 0.9)))
+    return cx, cy, clo, chi
+
+
+def binned_line(series, x_label, y_label, title, out_dir, file_name, stamp=None,
+                nbins=200, reducer="mean", band=False, target=None, logy=False):
+    """Density-reducing line plot: the single fix for "scatter too dense / line
+    too noisy / too slow to render".  ``series`` = {label: (xs, ys)} (raw, un-binned).
+    Each series is bucketed into ~``nbins`` equal-width x-bins and reduced by
+    ``reducer`` ("mean"|"p50"|"p90"|"p99"|"max"|"sum"). ``band``: shade P10-P90 per
+    bin (only for a single series, to avoid clutter)."""
+    series = {lab: (xs, ys) for lab, (xs, ys) in (series or {}).items()
+              if xs is not None and ys is not None and len(xs)}
+    if not series:
+        return no_data_plot(title, out_dir, file_name, stamp)
+    fig, ax = plt.subplots()
+    single = len(series) == 1
+    plotted = False
+    for i, (lab, (xs, ys)) in enumerate(series.items()):
+        cx, cy, clo, chi = _bin_reduce(xs, ys, nbins, reducer)
+        if not cx:
+            continue
+        color = color_for(lab) or MULTI_COLORS[i % len(MULTI_COLORS)]
+        ax.plot(cx, cy, lw=1.8, label=lab, color=color)
+        if band and single:
+            ax.fill_between(cx, clo, chi, color=color, alpha=0.18,
+                            label="P10–P90")
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return no_data_plot(title, out_dir, file_name, stamp)
+    if target is not None:
+        ax.axhline(target, ls="--", color="0.5", lw=1)
+    if logy:
+        ax.set_yscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(f"{y_label} ({reducer}/bin)")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    _legend(ax, len(series) + (1 if band and single else 0))
+    return _save(fig, out_dir, file_name, stamp)
+
+
 def scatter_diag(x, y, x_label, y_label, title, out_dir, file_name, stamp=None,
                  groups=None, group_labels=None):
     """Scatter with y=x reference diagonal (expected-vs-actual style)."""
