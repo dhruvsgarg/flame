@@ -91,7 +91,10 @@ baselines:
         # See felix note (overhead must stay below the sct-progression rate).
         # Jun9: 0.24 over-charged (sim 4031 rounds vs real 7254, residual
         # -0.14/commit) -> 0.10 (PARITY.md).
-        simCommitOverheadSeconds: 0.10
+        # Jun10: after the lazy-deserialize barrier speedup (sim_rate 1.18->2.31x),
+        # 0.10 now OVER-charges: advance 1.74 vs real 1.48 (residual -0.26,
+        # implied -0.026/commit) -> 0.10 + (-0.26/K=10) = 0.074.
+        simCommitOverheadSeconds: 0.074
     trainer:
       hyperparameters:
         client_notify:
