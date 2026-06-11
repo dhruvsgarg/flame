@@ -63,12 +63,6 @@ _NETWORK_SLACK_S = 2.0
 # re-selecting; guards against hanging when all in-flight trainers go quiet.
 RECV_TIMEOUT_WAIT_S = 30
 
-# Sim ordering gate (§3c): commit the buffered min only if no un-arrived in-flight
-# trainer is expected to complete more than this many virtual-seconds earlier.
-# Absorbs round-duration-estimate noise so we don't over-wait on tiny differences;
-# small enough that residual out-of-order staleness is < ~1 round.
-_SIM_ORDER_SLACK_S = 2.0
-
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -194,107 +188,47 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
-    @staticmethod
-    def _safe_to_commit(buffered_min, min_expected, slack):
-        """True iff the buffered earliest-completing update can commit now: there
-        is something buffered, and no un-arrived in-flight trainer is expected to
-        complete more than ``slack`` virtual-seconds earlier. Pure → unit-tested."""
-        if buffered_min is None:
-            return False
-        if min_expected is None:
-            return True
-        return buffered_min <= min_expected + slack
-
-    def _min_outstanding_expected_sct(self, channel, recv_ends):
-        """Smallest EXPECTED sim_completion_ts among in-flight trainers not yet
-        received this round, from each one's dispatch vclock (PROP_SIM_SEND_TS)
-        plus its last-known round duration (PROP_ROUND_DURATION). None when no
-        such trainer has a known duration (e.g. all first-rounders). Used to keep
-        the virtual clock from advancing past an update that is still legitimately
-        in flight — see §3c of PARITY.md."""
-        get_prop = getattr(channel, "get_end_property", None)
-        if get_prop is None:
-            self._gate_diag_last = (0, 0, 0, None)
-            return None
-        best = None
-        n_out = n_sst = n_dur = 0  # diagnostics: outstanding / with-send-ts / with-duration
-        for e in recv_ends:
-            if self._sim_buffer.has(e) or e in self._sim_committed:
-                continue
-            n_out += 1
-            sst = get_prop(e, PROP_SIM_SEND_TS)
-            dur = get_prop(e, PROP_ROUND_DURATION)
-            if sst is not None:
-                n_sst += 1
-            if dur is not None:
-                n_dur += 1
-            if sst is None or dur is None:
-                continue
-            try:
-                exp = float(sst) + dur.total_seconds()
-            except AttributeError:
-                exp = float(sst) + float(dur)
-            best = exp if best is None else min(best, exp)
-        self._gate_diag_last = (n_out, n_sst, n_dur, best)
-        return best
-
     def _sim_recv_min(self, channel, recv_ends):
-        """Barrier: commit the smallest sim_completion_ts, and — the §3c fix —
-        never commit a buffered update while an in-flight trainer is EXPECTED to
-        complete earlier (its message is still arriving). In sim the trainer does
-        not sleep its budget; it computes fast and stamps a FUTURE completion ts,
-        so a physically-delayed message (GPU contention / MQTT) can otherwise be
-        committed AFTER the clock already advanced past its sct → out-of-order
-        commit → inflated staleness. Real waits implicitly (the trainer actually
-        takes its budget); this makes the sim wait for the modeled completion too.
-        A wall-clock failsafe (RECV_TIMEOUT_WAIT_S) bounds the wait so a dead
-        trainer cannot deadlock the run."""
+        """Barrier: drain the in-flight set, then commit the smallest
+        sim_completion_ts. The virtual clock advances TO each committed completion
+        (vclock = max(vclock, sct) in _advance_sim_clock); with
+        sim_commit_overhead_s = 0 the clock therefore tracks completions rather
+        than a per-commit overhead ramp. The overhead-on-clock was the §3c root
+        cause: it ran the clock ahead of completions (overhead_cum dominated the
+        clock), inflating and drifting staleness. Periodic [SIM_CLOCK_DIAG]
+        verifies the clock is now sct-driven."""
+        to_probe = [
+            e for e in recv_ends
+            if not self._sim_buffer.has(e) and e not in self._sim_committed
+        ]
         barrier_t0 = time.time()
-        deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
-        probed = 0
-        while True:
-            to_probe = [
-                e for e in recv_ends
-                if not self._sim_buffer.has(e) and e not in self._sim_committed
-            ]
-            probed = max(probed, len(to_probe))
-            if to_probe:
-                grace = self._sim_recv_grace_s()
-                for msg, metadata in channel.recv_fifo(
-                    to_probe, first_k=len(to_probe), timeout=grace
-                ):
-                    if msg is None:  # no more ready (grace expired or set drained)
-                        break
-                    # metadata[0] is the actual sender; may differ from probed end
-                    # if a stale recv task delivered a different end's message first.
-                    actual_end = metadata[0]
-                    sct = msg.get(MessageType.SIM_COMPLETION_TS)
-                    if sct is None:
-                        sct = self._vclock.now
-                    # Diagnostic (#3): a trainer should be in-flight (and hence
-                    # buffered) at most once. If we re-add an end already buffered,
-                    # a prior update of its is being overwritten — flag it.
-                    if self._sim_buffer.has(actual_end):
-                        self._gate_dupadd = getattr(self, "_gate_dupadd", 0) + 1
-                    self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
-                    if not hasattr(self, "_sim_enqueue_round"):
-                        self._sim_enqueue_round = {}
-                    self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
-                drained_all = all(self._sim_buffer.has(e) for e in to_probe)
-            # Ordering gate: only commit the buffered minimum if no un-arrived
-            # in-flight trainer is expected to complete earlier (within a small
-            # slack to absorb duration-estimate noise). Otherwise loop and keep
-            # waiting for that earlier update, up to the failsafe deadline.
-            buffered_min = self._sim_buffer.peek_min_ts()
-            min_expected = self._min_outstanding_expected_sct(channel, recv_ends)
-            safe = self._safe_to_commit(buffered_min, min_expected, _SIM_ORDER_SLACK_S)
-            if safe or time.time() >= deadline:
-                break
-            if buffered_min is None and not to_probe:
-                break  # nothing buffered and nothing in flight to wait for
+        if to_probe:
+            grace = self._sim_recv_grace_s()
+            for msg, metadata in channel.recv_fifo(
+                to_probe, first_k=len(to_probe), timeout=grace
+            ):
+                if msg is None:  # no more ready (grace expired or set drained)
+                    break
+                # metadata[0] is the actual sender; may differ from probed end
+                # if a stale recv task delivered a different end's message first.
+                actual_end = metadata[0]
+                sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                if sct is None:
+                    sct = self._vclock.now
+                # Tripwire (#3): a trainer should be in-flight (hence buffered) at
+                # most once; re-adding an already-buffered end overwrites a prior
+                # update of its.
+                if self._sim_buffer.has(actual_end):
+                    self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
+                self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+                if not hasattr(self, "_sim_enqueue_round"):
+                    self._sim_enqueue_round = {}
+                self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
+            drained_all = all(self._sim_buffer.has(e) for e in to_probe)
         barrier_wait = time.time() - barrier_t0
-        self._note_sim_fill(barrier_wait, drained_all)
+        if to_probe:
+            self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit.
@@ -307,64 +241,32 @@ class TopAggregator(SyncTopAgg):
         _commit_gap = self._vclock.now - sct
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
-            f"barrier_wait_s={barrier_wait:.3f} probed={probed} "
+            f"barrier_wait_s={barrier_wait:.3f} probed={len(to_probe)} "
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
             f"T_v={self._vclock.now:.1f} commit_gap_s={_commit_gap:.1f}"
         )
-        # ── ordering-gate diagnostics (§3c) ────────────────────────────────
-        # Why does the gate (almost) never wait? Capture, at the moment of each
-        # commit, what _min_outstanding_expected_sct saw: how many trainers were
-        # outstanding (in-flight, not buffered) and how many had the properties
-        # the gate needs (PROP_SIM_SEND_TS / PROP_ROUND_DURATION). Aggregate every
-        # 500 commits as [SIM_GATE_DIAG]; for a LATE commit (gap>20s) emit the
-        # per-commit state as [SIM_GATE_LATE] so we can see whether an
-        # earlier-expected trainer was outstanding and the gate failed to wait.
-        n_out, n_sst, n_dur, _min_exp = getattr(self, "_gate_diag_last", (0, 0, 0, None))
-        if not hasattr(self, "_gate_diag"):
-            self._gate_diag = {"n": 0, "min_none": 0, "no_outstanding": 0,
-                               "sum_out": 0, "sum_sst": 0, "sum_dur": 0,
-                               "out_of_order": 0}
-        gd = self._gate_diag
-        gd["n"] += 1
-        gd["sum_out"] += n_out
-        gd["sum_sst"] += n_sst
-        gd["sum_dur"] += n_dur
-        if _min_exp is None:
-            gd["min_none"] += 1
-        if n_out == 0:
-            gd["no_outstanding"] += 1
-        # "out of order" = we committed sct while a known-expected trainer was due
-        # earlier (this is exactly what the gate should have prevented).
-        if _min_exp is not None and sct > _min_exp + _SIM_ORDER_SLACK_S:
-            gd["out_of_order"] += 1
-        if _commit_gap > 20.0:
+        # ── clock / completion-spacing diagnostics (§3c verification) ──────────
+        # With overhead=0 the clock should be sct-driven: overhead_cum ~ 0 and
+        # sct_adv_cum ~ vclock. buf_past (sct<=vclock, already completed) vs
+        # buf_future (sct>vclock, not yet completed but physically arrived early):
+        # a buffer full of FUTURE completions, committed early, is the remaining
+        # throughput/dispatch-spacing question (advance ~3.0 vs real 4.5).
+        self._sim_diag_n = getattr(self, "_sim_diag_n", 0) + 1
+        if self._sim_diag_n % 500 == 0:
+            _now = self._vclock.now
+            _scts = [ts for ts, _ in self._sim_buffer._items.values()]
+            _past = sum(1 for s in _scts if s <= _now)
+            _bmin = self._sim_buffer.peek_min_ts()
+            _lead = (_now - _bmin) if _bmin is not None else 0.0
             logger.info(
-                f"[SIM_GATE_LATE] round={getattr(self, '_round', -1)} end={_end[-4:]} "
-                f"sct={sct:.1f} commit_gap_s={_commit_gap:.1f} n_outstanding={n_out} "
-                f"n_with_sim_send_ts={n_sst} n_with_round_dur={n_dur} "
-                f"min_expected_sct={'None' if _min_exp is None else round(_min_exp, 1)} "
-                f"barrier_wait_s={barrier_wait:.3f}"
-            )
-        if gd["n"] % 500 == 0:
-            _n = gd["n"]
-            # Clock-drift split: is the growing commit_gap driven by accumulated
-            # per-commit overhead (which the sct timeline never receives), or by
-            # the buffer's earliest sct falling progressively behind the vclock?
-            _buf_min = self._sim_buffer.peek_min_ts()
-            _lead = (self._vclock.now - _buf_min) if _buf_min is not None else 0.0
-            logger.info(
-                f"[SIM_GATE_DIAG] commits={_n} round={getattr(self, '_round', -1)} "
-                f"frac_min_expected_None={gd['min_none'] / _n:.3f} "
-                f"frac_no_outstanding={gd['no_outstanding'] / _n:.3f} "
-                f"mean_n_outstanding={gd['sum_out'] / _n:.2f} "
-                f"mean_n_with_sim_send_ts={gd['sum_sst'] / _n:.2f} "
-                f"mean_n_with_round_dur={gd['sum_dur'] / _n:.2f} "
-                f"frac_committed_out_of_order={gd['out_of_order'] / _n:.3f} "
-                f"vclock={self._vclock.now:.0f} buf_min_sct={'-' if _buf_min is None else round(_buf_min)} "
-                f"vclock_lead_over_buf={_lead:.1f} "
+                f"[SIM_CLOCK_DIAG] commits={self._sim_diag_n} "
+                f"round={getattr(self, '_round', -1)} vclock={_now:.0f} "
                 f"overhead_cum={getattr(self, '_sim_overhead_cum', 0.0):.0f} "
                 f"sct_adv_cum={getattr(self, '_sim_sct_adv_cum', 0.0):.0f} "
-                f"dup_buffer_adds={getattr(self, '_gate_dupadd', 0)}"
+                f"vclock_lead_over_buf={_lead:.1f} buf_depth={len(_scts)} "
+                f"buf_past={_past} buf_future={len(_scts) - _past} "
+                f"commit_gap_s={_commit_gap:.1f} "
+                f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state

@@ -376,38 +376,60 @@ so each update arrives at its true completion and the model version is exactly r
 that moment — real "waits" implicitly. Charging `current_version − trained_version` is
 correct there.
 
-**Fix — IMPLEMENTED (Jun10): the ordering gate in `_sim_recv_min`.** Make the sim wait
-for the modeled completion the way real does: **do not commit the buffered earliest
-update while an un-arrived in-flight trainer is EXPECTED to complete earlier.** The
-aggregator already knows each in-flight trainer's expected completion =
-`PROP_SIM_SEND_TS` (dispatch vclock) + `PROP_ROUND_DURATION` (its last-known duration);
-`_min_outstanding_expected_sct` takes the min over not-yet-arrived ends, and
-`_safe_to_commit(buffered_min, min_expected, slack)` holds the commit (loops/keeps
-draining) until the buffered min is truly the next completion (within `_SIM_ORDER_SLACK_S
-= 2.0s`). A `RECV_TIMEOUT_WAIT_S` failsafe bounds the wait so a dead trainer can't
-deadlock. This keeps commits in true completion order → the vclock no longer races past
-in-flight updates → `commit_gap_s → ~0` and `staleness → budget/advance ≈ real`, with
-**no version re-labeling** (the earlier band-aid that adjusted `trained_version` was
-reverted — staleness stays `current_version − trained_version` by definition). Guarded by
-`tests/mode/test_sim_recv_ordering_gate.py`; smoke (4 rounds) shows `commit_gap_s` mean
-0.7 (was 25.3 at 45-min). Tradeoff: the sim waits for slow physical arrivals, so it runs
-somewhat below the previous 3.59× — the price of matching real's ordering. Watch with
-`plots/aggregation/{buffer_health_over_rounds,commit_gap_cdf,staleness_vs_speed}`;
-validate `staleness` KS + `throughput` on the next 45-min run.
+**Dead end — the ordering gate (reverted).** First attempt: make the sim wait for a
+not-yet-arrived in-flight trainer expected to complete earlier. The diagnostics killed
+it: `[SIM_GATE_DIAG]` showed `mean_n_outstanding = 0` on every line — there is NEVER an
+un-arrived trainer to wait for (messages arrive physically fast and are already
+buffered), so the gate never fired (`barrier_wait` p50 = 0) and staleness was unchanged.
+A `version_at(sct)` "re-label `trained_version`" band-aid was also tried and reverted
+(it masks the number; staleness must stay `current_version − trained_version`).
+
+**Root cause — IMPLEMENTED FIX (Jun10): the per-commit overhead had taken over the
+virtual clock.** `_advance_sim_clock` did `vclock = max(vclock, sct) + overhead`. The
+clock-split diagnostic is damning: by end-of-run `vclock = 3189s` decomposes into
+`overhead_cum = 3150` + `sct_adv_cum = 39` — i.e. **98.8% of the clock is accumulated
+overhead**, and `sct_adv_cum` froze at ~39 after round 43. The 0.315 overhead (×~10
+commits/round = 3.15 s/round) shoved the clock ahead of every completion, so the
+committed `sct` was always behind it (`max(vclock, sct) = vclock`, a no-op) and the
+trainers' actual completion times stopped driving the clock entirely. The clock became a
+pure overhead ramp with no relation to when trainers finish → staleness (clock-position
+at commit − at dispatch) was measured against a meaningless axis → inflated AND drifting
+(staleness 3.7→9.2, commit_gap 10→36 across rounds; real is flat ~2.8). `dup_buffer_adds
+= 0` ruled out re-selection.
+
+**Fix:** set felix `simCommitOverheadSeconds = 0` so `_advance_sim_clock` is just
+`vclock = max(vclock, sct)` — the clock TRACKS completions. The dead gate is removed; the
+clock-split + buffer past/future logging is kept as `[SIM_CLOCK_DIAG]` to verify (expect
+`overhead_cum ≈ 0`, `sct_adv_cum ≈ vclock`). 35 readiness/ordering tests pass.
+
+**Known consequence to validate:** the overhead was masking a real ~2.98 vs 4.52
+per-round-advance gap (the natural sim completion spacing is lower than real's). With
+overhead=0, staleness stops drifting and becomes `budget/advance` (consistent), but if
+advance lands ~3.0 the *throughput* will mismatch — that residual is a completion-spacing
+/ dispatch-timing issue (likely the `mqtt_fetch` 60s-real vs 23s-sim gap, plus whether
+the buffer holds FUTURE completions — `buf_future` in the diag), to be modeled in the
+trainer `sct`, NOT re-faked on the clock. The next 45-min felix run + `[SIM_CLOCK_DIAG]`
+tells us whether throughput needs that follow-up.
 
 ## §4  Next tasks (sim-real parity)
 
-1. **[IMPLEMENTED — felix staleness; validate on the next 45-min run] Ordering gate (§3c).**
-   Root cause was NOT buffer residence but late physical arrival vs a decoupled clock:
-   the sim trainer stamps a future sct and the vclock advanced past in-flight updates
-   before their (contention-delayed) message arrived → out-of-order commit → inflated
-   `current_version − trained_version`. Fix shipped in `_sim_recv_min`: hold the commit
-   of the buffered earliest update while an un-arrived in-flight trainer is expected to
-   complete earlier (`_min_outstanding_expected_sct` + `_safe_to_commit`, slack 2.0s,
-   `RECV_TIMEOUT_WAIT_S` failsafe). The earlier `trained_version` band-aid was **reverted**.
-   Checks to pass next run: `staleness` sim_mean ≈ 2.8 (KS < 0.2), `commit_gap_s` → ~0,
-   `throughput`/`terminal_state` still matched (watch for a slower sim_rate — the gate
-   waits for slow arrivals). Guarded by `tests/mode/test_sim_recv_ordering_gate.py`.
+1. **[IMPLEMENTED — felix staleness; validate on the next 45-min run] Overhead off the
+   clock (§3c).** Root cause: the per-commit overhead (0.315) had taken over the virtual
+   clock (`vclock = 98.8% overhead_cum`), decoupling it from completions and inflating +
+   drifting staleness. Fix: felix `simCommitOverheadSeconds = 0` so the clock tracks
+   completions (`vclock = max(vclock, sct)`); the dead ordering gate was removed and the
+   `version_at` band-aid reverted. Checks next run via `[SIM_CLOCK_DIAG]` + parity:
+   `staleness` stops drifting and ≈ `budget/advance` (no per-round growth), `commit_gap_s`
+   → ~0, `overhead_cum ≈ 0` / `sct_adv_cum ≈ vclock`. **Expect `per_round_advance` /
+   `throughput` to mismatch** (advance ~3.0 vs real 4.5) — that's the masked completion-
+   spacing gap, the follow-up (task 1b). Watch `buf_future` in the diag.
+
+1b. **[NEXT — felix throughput] Close the 2.98 vs 4.52 per-round-advance gap honestly.**
+   Once staleness is correct, the residual advance gap is a completion-spacing / dispatch-
+   timing issue (and the `mqtt_fetch` 60s-real vs 23s-sim phase divergence). Model the real
+   round-trip cost in the trainer `sct`, NOT on the clock. Diagnose with `[SIM_CLOCK_DIAG]`
+   `buf_past` vs `buf_future` (is the buffer full of not-yet-completed updates committed
+   early?) before designing.
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance

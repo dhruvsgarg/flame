@@ -43,13 +43,16 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
-        # Per-commit MQTT/dispatch overhead the max(gpu,D) model omits; charged on
-        # the virtual clock per committed update (no-op in real). MUST stay below
-        # the inter-sct gap from heterogeneous budgets (~1.9s/commit with 5-56s range)
-        # or the reorder buffer backs up. Jun9: 0.50 over-charged (sim 1557 vs real 2595
-        # rounds) -> 0.16 under-charged (advance 2.98 vs 4.52s, staleness 13 vs 2.8 rounds,
-        # overhead_residual=1.55s = 0.155/commit missing) -> 0.315 = 0.16 + 1.55/K.
-        simCommitOverheadSeconds: 0.315
+        # Jun10 (PARITY.md 3c): the per-commit overhead was charged on the VIRTUAL
+        # CLOCK (vclock = max(vclock, sct) + overhead). At 0.315 it dominated the
+        # clock entirely (diagnostics: vclock 3189s = overhead_cum 3150 + sct_adv_cum
+        # 39, i.e. 98.8% overhead) -- it decoupled the clock from trainer completions
+        # and made staleness inflate AND drift over rounds (5->10->20s). Set to 0 so
+        # the clock TRACKS completions (vclock = max(vclock, sct)); staleness then =
+        # the versions elapsed during a trainer's round-trip, as in real. Any residual
+        # per-round-advance gap is a completion-spacing/dispatch issue to model in the
+        # trainer sct, NOT to fake on the clock. (History: 0.50 -> 0.16 -> 0.315 -> 0.)
+        simCommitOverheadSeconds: 0.0
     trainer:
       hyperparameters:
         client_notify:
