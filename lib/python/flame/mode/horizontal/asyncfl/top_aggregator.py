@@ -63,6 +63,13 @@ _NETWORK_SLACK_S = 2.0
 # re-selecting; guards against hanging when all in-flight trainers go quiet.
 RECV_TIMEOUT_WAIT_S = 30
 
+# Eager rxq drain: after the first (grace-bounded) drain, re-probe and sweep up
+# any updates that reassembled during the pass, so the reorder buffer holds the
+# true global min-sct before committing (a ready-but-undrained update would
+# otherwise surface late, out of completion order). Bounded so we never spin.
+_SIM_DRAIN_MAX_PASSES = 4
+_SIM_DRAIN_SWEEP_S = 0.05  # short timeout for the sweep passes
+
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -197,14 +204,24 @@ class TopAggregator(SyncTopAgg):
         cause: it ran the clock ahead of completions (overhead_cum dominated the
         clock), inflating and drifting staleness. Periodic [SIM_CLOCK_DIAG]
         verifies the clock is now sct-driven."""
-        to_probe = [
-            e for e in recv_ends
-            if not self._sim_buffer.has(e) and e not in self._sim_committed
-        ]
         barrier_t0 = time.time()
         drained_all = True
-        if to_probe:
-            grace = self._sim_recv_grace_s()
+        probed = 0
+        # Eager drain: pull every currently-ready update into the buffer, then
+        # re-probe and sweep up any that reassembled during the pass, so the
+        # buffer holds the true global min-sct before we commit. Bounded.
+        for _pass in range(_SIM_DRAIN_MAX_PASSES):
+            to_probe = [
+                e for e in recv_ends
+                if not self._sim_buffer.has(e) and e not in self._sim_committed
+            ]
+            if not to_probe:
+                break
+            probed = max(probed, len(to_probe))
+            # First pass waits the full grace (for in-flight to arrive); sweep
+            # passes use a tiny timeout — they only collect what just reassembled.
+            grace = self._sim_recv_grace_s() if _pass == 0 else _SIM_DRAIN_SWEEP_S
+            n_before = len(self._sim_buffer)
             for msg, metadata in channel.recv_fifo(
                 to_probe, first_k=len(to_probe), timeout=grace
             ):
@@ -226,9 +243,10 @@ class TopAggregator(SyncTopAgg):
                     self._sim_enqueue_round = {}
                 self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
             drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+            if drained_all or len(self._sim_buffer) == n_before:
+                break  # everything is in, or nothing new arrived this pass
         barrier_wait = time.time() - barrier_t0
-        if to_probe:
-            self._note_sim_fill(barrier_wait, drained_all)
+        self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit.
@@ -241,7 +259,7 @@ class TopAggregator(SyncTopAgg):
         _commit_gap = self._vclock.now - sct
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
-            f"barrier_wait_s={barrier_wait:.3f} probed={len(to_probe)} "
+            f"barrier_wait_s={barrier_wait:.3f} probed={probed} "
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
             f"T_v={self._vclock.now:.1f} commit_gap_s={_commit_gap:.1f}"
         )
