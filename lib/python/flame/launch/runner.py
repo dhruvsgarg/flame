@@ -160,6 +160,19 @@ class ExperimentRunner:
             # UTF-8 child stdio so status glyphs don't crash on latin-1 locales.
             os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+            # CPU partition: reserve a few cores for the single, message-processing
+            # -bound aggregator so the 300 pinned trainers don't time-slice it
+            # (the aggregator's recv/chunk-reassembly throughput sets the sim's
+            # commit rate). Trainers pin to the remaining cores.
+            reserved_cores: set = set()
+            if hasattr(os, "sched_getaffinity"):
+                _all = sorted(os.sched_getaffinity(0))
+                _n = min(8, max(2, len(_all) // 8))
+                reserved_cores = set(_all[:_n])
+                print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
+                      f"aggregator {sorted(reserved_cores)}, "
+                      f"{len(_all) - len(reserved_cores)} for trainers")
+
             self.aggregator_spawner = AggregatorSpawner(log_file=agg_log)
             self.trainer_spawner = TrainerSpawner(
                 config_gen,
@@ -169,6 +182,7 @@ class ExperimentRunner:
                 # CLI-only knobs passed on the trainer command line.
                 time_mode=exp.trainer.time_mode,
                 battery_threshold=exp.trainer.battery_threshold,
+                reserved_cores=reserved_cores,
             )
 
             if exp.execution.monitoring.enabled and create_monitor_from_config is not None:
@@ -188,6 +202,7 @@ class ExperimentRunner:
                 config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
+                cpu_cores=reserved_cores,
             )
             if not self.aggregator_spawner.wait_until_ready(
                 exp.execution.aggregator_warmup_time
