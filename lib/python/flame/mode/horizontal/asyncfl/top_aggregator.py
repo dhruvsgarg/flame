@@ -214,13 +214,20 @@ class TopAggregator(SyncTopAgg):
         in flight — see §3c of PARITY.md."""
         get_prop = getattr(channel, "get_end_property", None)
         if get_prop is None:
+            self._gate_diag_last = (0, 0, 0, None)
             return None
         best = None
+        n_out = n_sst = n_dur = 0  # diagnostics: outstanding / with-send-ts / with-duration
         for e in recv_ends:
             if self._sim_buffer.has(e) or e in self._sim_committed:
                 continue
+            n_out += 1
             sst = get_prop(e, PROP_SIM_SEND_TS)
             dur = get_prop(e, PROP_ROUND_DURATION)
+            if sst is not None:
+                n_sst += 1
+            if dur is not None:
+                n_dur += 1
             if sst is None or dur is None:
                 continue
             try:
@@ -228,6 +235,7 @@ class TopAggregator(SyncTopAgg):
             except AttributeError:
                 exp = float(sst) + float(dur)
             best = exp if best is None else min(best, exp)
+        self._gate_diag_last = (n_out, n_sst, n_dur, best)
         return best
 
     def _sim_recv_min(self, channel, recv_ends):
@@ -298,6 +306,51 @@ class TopAggregator(SyncTopAgg):
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
             f"T_v={self._vclock.now:.1f} commit_gap_s={_commit_gap:.1f}"
         )
+        # ── ordering-gate diagnostics (§3c) ────────────────────────────────
+        # Why does the gate (almost) never wait? Capture, at the moment of each
+        # commit, what _min_outstanding_expected_sct saw: how many trainers were
+        # outstanding (in-flight, not buffered) and how many had the properties
+        # the gate needs (PROP_SIM_SEND_TS / PROP_ROUND_DURATION). Aggregate every
+        # 500 commits as [SIM_GATE_DIAG]; for a LATE commit (gap>20s) emit the
+        # per-commit state as [SIM_GATE_LATE] so we can see whether an
+        # earlier-expected trainer was outstanding and the gate failed to wait.
+        n_out, n_sst, n_dur, _min_exp = getattr(self, "_gate_diag_last", (0, 0, 0, None))
+        if not hasattr(self, "_gate_diag"):
+            self._gate_diag = {"n": 0, "min_none": 0, "no_outstanding": 0,
+                               "sum_out": 0, "sum_sst": 0, "sum_dur": 0,
+                               "out_of_order": 0}
+        gd = self._gate_diag
+        gd["n"] += 1
+        gd["sum_out"] += n_out
+        gd["sum_sst"] += n_sst
+        gd["sum_dur"] += n_dur
+        if _min_exp is None:
+            gd["min_none"] += 1
+        if n_out == 0:
+            gd["no_outstanding"] += 1
+        # "out of order" = we committed sct while a known-expected trainer was due
+        # earlier (this is exactly what the gate should have prevented).
+        if _min_exp is not None and sct > _min_exp + _SIM_ORDER_SLACK_S:
+            gd["out_of_order"] += 1
+        if _commit_gap > 20.0:
+            logger.info(
+                f"[SIM_GATE_LATE] round={getattr(self, '_round', -1)} end={_end[-4:]} "
+                f"sct={sct:.1f} commit_gap_s={_commit_gap:.1f} n_outstanding={n_out} "
+                f"n_with_sim_send_ts={n_sst} n_with_round_dur={n_dur} "
+                f"min_expected_sct={'None' if _min_exp is None else round(_min_exp, 1)} "
+                f"barrier_wait_s={barrier_wait:.3f}"
+            )
+        if gd["n"] % 500 == 0:
+            _n = gd["n"]
+            logger.info(
+                f"[SIM_GATE_DIAG] commits={_n} "
+                f"frac_min_expected_None={gd['min_none'] / _n:.3f} "
+                f"frac_no_outstanding={gd['no_outstanding'] / _n:.3f} "
+                f"mean_n_outstanding={gd['sum_out'] / _n:.2f} "
+                f"mean_n_with_sim_send_ts={gd['sum_sst'] / _n:.2f} "
+                f"mean_n_with_round_dur={gd['sum_dur'] / _n:.2f} "
+                f"frac_committed_out_of_order={gd['out_of_order'] / _n:.3f}"
+            )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state
         # strips RECVD ends from selected_ends (freeing their concurrency slot),
