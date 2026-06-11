@@ -63,12 +63,15 @@ _NETWORK_SLACK_S = 2.0
 # re-selecting; guards against hanging when all in-flight trainers go quiet.
 RECV_TIMEOUT_WAIT_S = 30
 
-# Eager rxq drain: after the first (grace-bounded) drain, re-probe and sweep up
-# any updates that reassembled during the pass, so the reorder buffer holds the
-# true global min-sct before committing (a ready-but-undrained update would
-# otherwise surface late, out of completion order). Bounded so we never spin.
-_SIM_DRAIN_MAX_PASSES = 4
-_SIM_DRAIN_SWEEP_S = 0.05  # short timeout for the sweep passes
+# Virtual-completion gate: each pass eagerly drains ready updates (grace-bounded
+# recv_fifo also waits, capturing messages that reassemble during the pass) and
+# then holds the commit while an in-flight trainer still stuck in the rxq is
+# EXPECTED to complete earlier than the buffered minimum. Bounded by both the
+# RECV_TIMEOUT_WAIT_S deadline and this pass cap so it never spins.
+_SIM_GATE_MAX_PASSES = 64
+# Gate slack: don't hold the commit for an in-flight trainer expected to complete
+# only marginally earlier (absorbs budget-estimate noise).
+_SIM_ORDER_SLACK_S = 2.0
 
 
 class TopAggregator(SyncTopAgg):
@@ -98,6 +101,15 @@ class TopAggregator(SyncTopAgg):
         self._sim_committed: set = set()
         self._sim_pending_commit: set = set()
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
+        # Virtual-completion gate (§3c): the aggregator's own record of each
+        # in-flight trainer's EXPECTED completion = dispatch vclock + its budget.
+        # Lets _sim_recv_min hold the clock at the earliest expected completion so
+        # it can't race past an update that has virtually completed but is still
+        # stuck in the rxq / chunk-reassembly layer (the straggler source).
+        self._sim_inflight_expected: dict = {}   # end -> expected sim_completion_ts
+        self._sim_trainer_dur: dict = {}         # end -> last observed sim_round_duration
+        self._sim_dur_running_mean: float = 12.0  # default budget for unseen trainers
+        self._sim_dur_n: int = 0
 
         self._prev_distribute_weights_success = False
 
@@ -204,47 +216,71 @@ class TopAggregator(SyncTopAgg):
         cause: it ran the clock ahead of completions (overhead_cum dominated the
         clock), inflating and drifting staleness. Periodic [SIM_CLOCK_DIAG]
         verifies the clock is now sct-driven."""
+        if not hasattr(self, "_sim_inflight_expected"):  # bare-init guard (tests)
+            self._sim_inflight_expected = {}
+            self._sim_trainer_dur = {}
+            self._sim_dur_running_mean = 12.0
+            self._sim_dur_n = 0
         barrier_t0 = time.time()
+        deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
         probed = 0
-        # Eager drain: pull every currently-ready update into the buffer, then
-        # re-probe and sweep up any that reassembled during the pass, so the
-        # buffer holds the true global min-sct before we commit. Bounded.
-        for _pass in range(_SIM_DRAIN_MAX_PASSES):
+        # Eager drain + virtual-completion gate: each pass pulls every ready update
+        # into the buffer (grace-bounded recv_fifo also WAITS, capturing messages
+        # that reassemble during the pass). Then the gate holds the commit while an
+        # in-flight trainer whose update is still stuck in the rxq is EXPECTED to
+        # complete earlier than the buffered minimum — so the clock can't race past
+        # a virtually-completed-but-undelivered update (the straggler source).
+        for _pass in range(_SIM_GATE_MAX_PASSES):
             to_probe = [
                 e for e in recv_ends
                 if not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
-            if not to_probe:
+            if to_probe:
+                probed = max(probed, len(to_probe))
+                grace = self._sim_recv_grace_s()
+                for msg, metadata in channel.recv_fifo(
+                    to_probe, first_k=len(to_probe), timeout=grace
+                ):
+                    if msg is None:  # no more ready (grace expired or set drained)
+                        break
+                    # metadata[0] is the actual sender; may differ from probed end
+                    # if a stale recv task delivered a different end's message first.
+                    actual_end = metadata[0]
+                    sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                    if sct is None:
+                        sct = self._vclock.now
+                    # Tripwire (#3): a trainer should be in-flight (hence buffered)
+                    # at most once; re-adding overwrites a prior update of its.
+                    if self._sim_buffer.has(actual_end):
+                        self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
+                    self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+                    if not hasattr(self, "_sim_enqueue_round"):
+                        self._sim_enqueue_round = {}
+                    self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
+                drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+            # Gate: earliest expected completion among un-drained in-flight trainers.
+            buffered_min = self._sim_buffer.peek_min_ts()
+            _stuck_end, min_stuck = None, None
+            for e, exp in self._sim_inflight_expected.items():
+                if self._sim_buffer.has(e) or e in self._sim_committed:
+                    continue  # already drained into the buffer, or committed
+                if min_stuck is None or exp < min_stuck:
+                    min_stuck, _stuck_end = exp, e
+            earlier_stuck = (buffered_min is not None and min_stuck is not None
+                             and min_stuck + _SIM_ORDER_SLACK_S < buffered_min)
+            if buffered_min is None and not to_probe:
+                break  # nothing to commit and nothing in flight
+            if not earlier_stuck:
+                break  # the buffered minimum is the true next completion
+            if time.time() >= deadline:
+                # A stuck trainer never arrived within the failsafe; stop waiting
+                # for it (treat as lost so it can't block future commits too) and
+                # commit the buffered min.
+                self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
+                self._sim_inflight_expected.pop(_stuck_end, None)
                 break
-            probed = max(probed, len(to_probe))
-            # First pass waits the full grace (for in-flight to arrive); sweep
-            # passes use a tiny timeout — they only collect what just reassembled.
-            grace = self._sim_recv_grace_s() if _pass == 0 else _SIM_DRAIN_SWEEP_S
-            n_before = len(self._sim_buffer)
-            for msg, metadata in channel.recv_fifo(
-                to_probe, first_k=len(to_probe), timeout=grace
-            ):
-                if msg is None:  # no more ready (grace expired or set drained)
-                    break
-                # metadata[0] is the actual sender; may differ from probed end
-                # if a stale recv task delivered a different end's message first.
-                actual_end = metadata[0]
-                sct = msg.get(MessageType.SIM_COMPLETION_TS)
-                if sct is None:
-                    sct = self._vclock.now
-                # Tripwire (#3): a trainer should be in-flight (hence buffered) at
-                # most once; re-adding an already-buffered end overwrites a prior
-                # update of its.
-                if self._sim_buffer.has(actual_end):
-                    self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
-                self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
-                if not hasattr(self, "_sim_enqueue_round"):
-                    self._sim_enqueue_round = {}
-                self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
-            drained_all = all(self._sim_buffer.has(e) for e in to_probe)
-            if drained_all or len(self._sim_buffer) == n_before:
-                break  # everything is in, or nothing new arrived this pass
+            # else: loop — keep draining/waiting for the earlier-expected stuck trainer
         barrier_wait = time.time() - barrier_t0
         self._note_sim_fill(barrier_wait, drained_all)
 
@@ -256,6 +292,14 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
+        # Gate bookkeeping: this trainer is no longer in flight; learn its budget
+        # (running mean refines the default for trainers not yet observed).
+        self._sim_inflight_expected.pop(_end, None)
+        _dur = m.get(MessageType.SIM_ROUND_DURATION) if isinstance(m, dict) else None
+        if _dur is not None:
+            self._sim_trainer_dur[_end] = float(_dur)
+            self._sim_dur_n += 1
+            self._sim_dur_running_mean += (float(_dur) - self._sim_dur_running_mean) / self._sim_dur_n
         _commit_gap = self._vclock.now - sct
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
@@ -283,7 +327,9 @@ class TopAggregator(SyncTopAgg):
                 f"sct_adv_cum={getattr(self, '_sim_sct_adv_cum', 0.0):.0f} "
                 f"vclock_lead_over_buf={_lead:.1f} buf_depth={len(_scts)} "
                 f"buf_past={_past} buf_future={len(_scts) - _past} "
-                f"commit_gap_s={_commit_gap:.1f} "
+                f"commit_gap_s={_commit_gap:.1f} barrier_wait_s={barrier_wait:.2f} "
+                f"inflight_tracked={len(self._sim_inflight_expected)} "
+                f"gate_failsafe={getattr(self, '_sim_gate_failsafe', 0)} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
@@ -1106,6 +1152,10 @@ class TopAggregator(SyncTopAgg):
             )
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
+                # Record this trainer's expected completion for the gate: dispatch
+                # vclock + its last-observed budget (running-mean default if unseen).
+                _budget = self._sim_trainer_dur.get(end, self._sim_dur_running_mean)
+                self._sim_inflight_expected[end] = _sim_send_ts + _budget
             channel.send_payload(end, _payload)
 
             if end not in self._track_trainer_version_duration_s:
