@@ -411,25 +411,84 @@ the buffer holds FUTURE completions — `buf_future` in the diag), to be modeled
 trainer `sct`, NOT re-faked on the clock. The next 45-min felix run + `[SIM_CLOCK_DIAG]`
 tells us whether throughput needs that follow-up.
 
+### §3d — Validation: overhead=0 + virtual-completion gate (Jun11, run 012226) — STILL DRIFTS
+
+Two fixes were live in this run: (a) `simCommitOverheadSeconds = 0` (§3c), and (b) a
+re-implemented **virtual-completion gate** in `asyncfl._sim_recv_min` that tracks
+per-trainer expected completion (`_sim_inflight_expected[end] = send_ts + dur`) and is
+supposed to make the clock wait for a still-in-flight trainer whose expected completion
+precedes the buffered minimum, rather than committing a far-future update and racing the
+clock past the laggard.
+
+**Result — the staleness drift is NOT fixed.** Telemetry (`agg_round.staleness`, n=13250),
+mean staleness by round-decile: `3.65 → 6.10 → 7.85 → 8.65 → 9.73 → 9.94 → 10.75 → 11.30
+→ 11.80 → 12.26`. Overall mean **9.21 vs real ~2.79** — monotonic, no plateau, same shape
+as before the fix. `commit_gap_s` rises 2 → 13 s and plateaus; `residence_rounds` ~11–12;
+final test-accuracy ~0.24 at round ~1300.
+
+**The §3c overhead fix held** (good): every `[SIM_CLOCK_DIAG]` shows `overhead_cum = 0`,
+`sct_adv_cum = vclock`, `dup_buffer_adds = 0`. So the clock is no longer an overhead ramp.
+But staleness still drifts, which means the overhead was a *contributing* inflator, not
+the whole mechanism.
+
+**The gate (b) is inert.** Every diag line: `barrier_wait_s ≈ 0`, `gate_failsafe = 0`. It
+never waits and never fires. Yet `buf_past` is routinely 1–10 per line and `commit_gap_s`
+spikes to 91 / 372 / 720 / 1625 / 2747 s with `vclock_lead_over_buf` spiking in lockstep.
+So updates with `sct << vclock` keep being committed — exactly what the gate was meant to
+prevent — but the gate's `_sim_inflight_expected` never flags them, because the per-trainer
+`dur` estimate (running mean ~12 s) places their expected completion in the near future,
+not "earlier than buffered_min." A straggler re-dispatched many rounds ago has a true sct
+deep in the past, but the gate predicts it near-now → no wait. The gate only catches
+laggards whose *predicted* completion is early, which is never the stragglers that matter.
+
+**Refined diagnosis (the actual mechanism).** Staleness drift is driven by **out-of-order
+commits of past-dated updates advancing the round/version counter without advancing the
+clock**: when a buf_past update commits, `vclock = max(vclock, sct) = vclock` (no-op), but
+`round` still increments. Many such commits pile version increments at a frozen clock, so
+every subsequently-measured update's `staleness = current_version − trained_version`
+inflates, and it compounds over rounds. The clock and the version counter are decoupled in
+the *opposite* direction from §3c: there it was clock-runs-ahead-of-completions; here it is
+version-runs-ahead-of-clock. The real fix must **keep version and clock coupled** — either
+the clock advances on every commit at the rate implied by completion spacing, or past-dated
+updates are committed at the clock position where their sct actually fell (so they do not
+retroactively inflate everyone else). The prediction-based gate cannot do this because it
+needs accurate per-trainer durations it does not have.
+
+**Status: PAUSED by user (Jun11)** to run experiments; revisit after. The gate code
+(993ff450) and `[SIM_CLOCK_DIAG]` instrumentation remain in tree — harmless (inert), and
+the diag is what diagnosed this. Decide on removal vs. fix when resuming (see §4.1).
+
 ## §4  Next tasks (sim-real parity)
 
-1. **[IMPLEMENTED — felix staleness; validate on the next 45-min run] Overhead off the
+1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the
    clock (§3c).** Root cause: the per-commit overhead (0.315) had taken over the virtual
-   clock (`vclock = 98.8% overhead_cum`), decoupling it from completions and inflating +
-   drifting staleness. Fix: felix `simCommitOverheadSeconds = 0` so the clock tracks
-   completions (`vclock = max(vclock, sct)`); the dead ordering gate was removed and the
-   `version_at` band-aid reverted. Checks next run via `[SIM_CLOCK_DIAG]` + parity:
-   `staleness` stops drifting and ≈ `budget/advance` (no per-round growth), `commit_gap_s`
-   → ~0, `overhead_cum ≈ 0` / `sct_adv_cum ≈ vclock`. **Expect `per_round_advance` /
-   `throughput` to mismatch** (advance ~3.0 vs real 4.5) — that's the masked completion-
-   spacing gap, the follow-up (task 1b). Watch `buf_future` in the diag.
+   clock (`vclock = 98.8% overhead_cum`). The overhead fix (`simCommitOverheadSeconds = 0`)
+   **landed and held** — run 012226 confirms `overhead_cum = 0`, `sct_adv_cum = vclock`.
+   **But staleness still drifts** (decile mean 3.65 → 12.26, overall 9.2 vs real 2.79; §3d).
+   So overhead was only a contributing inflator. The re-added virtual-completion gate
+   (993ff450) is **inert** (`barrier_wait_s ≈ 0`, `gate_failsafe = 0`) — its per-trainer
+   duration prediction never flags the deep-past stragglers, so buf_past updates keep
+   committing and racing version ahead of the clock.
 
-1b. **[NEXT — felix throughput] Close the 2.98 vs 4.52 per-round-advance gap honestly.**
-   Once staleness is correct, the residual advance gap is a completion-spacing / dispatch-
+   **Refined root cause (§3d):** out-of-order commit of a past-dated update increments the
+   round/version counter while `vclock = max(vclock, sct)` is a no-op → version drifts ahead
+   of the clock → `staleness = current_version − trained_version` inflates and compounds.
+   When resuming, the fix must **keep version and clock coupled**, NOT predict durations.
+   Two honest candidate designs to evaluate (do NOT band-aid the staleness number):
+   - **(i) Couple the clock to commits:** advance `vclock` by the empirical inter-completion
+     spacing on *every* commit (incl. past-dated ones), so N commits = N units of clock, and
+     version/clock stay locked. Risk: distorts the time-base for availability indexing.
+   - **(ii) Commit-at-sct ordering:** do not let a past-dated update increment the *current*
+     version; account it at the version that was current when its `sct` actually fell (a true
+     reorder, not a relabel of `trained_version`). This is the physically correct async
+     semantics and keeps staleness = real versions-elapsed.
+   Decide gate's fate then (remove if (ii), since reorder subsumes it). Keep `[SIM_CLOCK_DIAG]`.
+
+1b. **[STILL OPEN — felix throughput] Close the 2.98 vs 4.52 per-round-advance gap honestly.**
+   Blocked on 1 (staleness). The residual advance gap is a completion-spacing / dispatch-
    timing issue (and the `mqtt_fetch` 60s-real vs 23s-sim phase divergence). Model the real
    round-trip cost in the trainer `sct`, NOT on the clock. Diagnose with `[SIM_CLOCK_DIAG]`
-   `buf_past` vs `buf_future` (is the buffer full of not-yet-completed updates committed
-   early?) before designing.
+   `buf_past` vs `buf_future` before designing.
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance
