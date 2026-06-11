@@ -272,6 +272,11 @@ class TopAggregator(SyncTopAgg):
                     sct = msg.get(MessageType.SIM_COMPLETION_TS)
                     if sct is None:
                         sct = self._vclock.now
+                    # Diagnostic (#3): a trainer should be in-flight (and hence
+                    # buffered) at most once. If we re-add an end already buffered,
+                    # a prior update of its is being overwritten — flag it.
+                    if self._sim_buffer.has(actual_end):
+                        self._gate_dupadd = getattr(self, "_gate_dupadd", 0) + 1
                     self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
                     if not hasattr(self, "_sim_enqueue_round"):
                         self._sim_enqueue_round = {}
@@ -342,14 +347,24 @@ class TopAggregator(SyncTopAgg):
             )
         if gd["n"] % 500 == 0:
             _n = gd["n"]
+            # Clock-drift split: is the growing commit_gap driven by accumulated
+            # per-commit overhead (which the sct timeline never receives), or by
+            # the buffer's earliest sct falling progressively behind the vclock?
+            _buf_min = self._sim_buffer.peek_min_ts()
+            _lead = (self._vclock.now - _buf_min) if _buf_min is not None else 0.0
             logger.info(
-                f"[SIM_GATE_DIAG] commits={_n} "
+                f"[SIM_GATE_DIAG] commits={_n} round={getattr(self, '_round', -1)} "
                 f"frac_min_expected_None={gd['min_none'] / _n:.3f} "
                 f"frac_no_outstanding={gd['no_outstanding'] / _n:.3f} "
                 f"mean_n_outstanding={gd['sum_out'] / _n:.2f} "
                 f"mean_n_with_sim_send_ts={gd['sum_sst'] / _n:.2f} "
                 f"mean_n_with_round_dur={gd['sum_dur'] / _n:.2f} "
-                f"frac_committed_out_of_order={gd['out_of_order'] / _n:.3f}"
+                f"frac_committed_out_of_order={gd['out_of_order'] / _n:.3f} "
+                f"vclock={self._vclock.now:.0f} buf_min_sct={'-' if _buf_min is None else round(_buf_min)} "
+                f"vclock_lead_over_buf={_lead:.1f} "
+                f"overhead_cum={getattr(self, '_sim_overhead_cum', 0.0):.0f} "
+                f"sct_adv_cum={getattr(self, '_sim_sct_adv_cum', 0.0):.0f} "
+                f"dup_buffer_adds={getattr(self, '_gate_dupadd', 0)}"
             )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
         # popped one — the rest are buffered yet still in-flight. _handle_recv_state

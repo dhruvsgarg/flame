@@ -305,10 +305,17 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
     def _advance_sim_clock(self, sct: float) -> None:
         """Advance vclock to a commit's sim_completion_ts + per-commit overhead."""
+        before = self._vclock.now
         self._vclock.advance(sct)
+        from_sct = self._vclock.now - before  # advance contributed by the sct jump
         overhead = getattr(self, "_sim_commit_overhead_s", 0.0)
         if overhead > 0.0:
             self._vclock.advance(self._vclock.now + overhead)
+        # Drift diagnostics (§3c): split the vclock advance into its sct-frontier
+        # vs per-commit-overhead components. If commit_gap grows monotonically,
+        # overhead_cum (which the sct timeline never gets) is the prime suspect.
+        self._sim_overhead_cum = getattr(self, "_sim_overhead_cum", 0.0) + max(0.0, overhead)
+        self._sim_sct_adv_cum = getattr(self, "_sim_sct_adv_cum", 0.0) + max(0.0, from_sct)
 
     # Recv-barrier dead-end ceiling: max(floor, factor * EMA of full-drain wall).
     # Bounds the wait for a non-responding end only; never paces responders.
