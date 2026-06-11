@@ -82,6 +82,7 @@ class SelectorType(str, Enum):
     REFL_OORT = "refl_oort"  # REFL-enhanced Oort with priority selection and availability tracking
     ASYNC_RANDOM = "async_random"
     FEDDANCE = "feddance"  # FedDance: Poisson V_m, loss I_m, accuracy slope A_m, UCB exploration
+    ORACLE = "oracle"  # Streaming-misprioritization ceiling: greedy top-K by fresh true utility
 
 
 class DataSamplerType(str, Enum):
@@ -150,6 +151,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
     eval_every_n_rounds: t.Optional[int] = Field(alias="evalEveryNRounds", default=50)
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
+    # Target-accuracy stopping: stop once test accuracy stays >= target for
+    # `stable_evals_above_target` consecutive evals (resets on any dip). The
+    # existing `rounds` / `max_runtime_s` caps remain as the safety net so a
+    # non-converging run still terminates. None disables the rule.
+    target_accuracy: t.Optional[float] = Field(alias="targetAccuracy", default=None)
+    stable_evals_above_target: t.Optional[int] = Field(
+        alias="stableEvalsAboveTarget", default=20
+    )
     round_nudge_type: t.Optional[str] = Field(
         alias="roundNudgeType", default="last_train"
     )

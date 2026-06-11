@@ -175,6 +175,18 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._rounds = self.config.hyperparameters.rounds
         self._work_done = False
 
+        # Target-accuracy stopping: count consecutive evals at/above the target
+        # test accuracy; stop once we reach `stable_evals_above_target`. Reset on
+        # any dip. `rounds`/`max_runtime_s` remain the safety cap.
+        self._target_accuracy = getattr(
+            self.config.hyperparameters, "target_accuracy", None
+        )
+        self._stable_evals_above_target = (
+            getattr(self.config.hyperparameters, "stable_evals_above_target", 20)
+            or 20
+        )
+        self._consecutive_above_target = 0
+
         # Simulation time mode (replaces speedup_factor). "simulated": order
         # updates by a virtual clock fed by trainer-reported completion times;
         # "real": order by physical arrival (legacy/authentic baseline).
@@ -670,6 +682,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._join_barrier_done = True
 
     @timer_decorator
+    def _inject_oracle_utilities(self, channel, task_to_perform: str) -> None:
+        """Hook: overwrite candidate stat-utility with true current values before
+        selection (per-baseline online oracle). No-op in the base; example
+        aggregators that know the dataset override it. Must never raise."""
+        return
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -692,6 +710,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         # before distributing weights, update it from global model
         self._update_weights()
+
+        # Per-baseline online oracle: overwrite candidate stat-utility with the
+        # TRUE current value (computed from the just-updated global model) before
+        # the selector ranks. No-op unless oracle_utility_injection is enabled.
+        self._inject_oracle_utilities(channel, task_to_perform)
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
@@ -1002,8 +1025,32 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     wandb.log({"test_acc": test_accuracy, "test_loss": test_loss})
                 except Exception:
                     pass
+            self._check_target_stop(round_num, test_accuracy)
         finally:
             self._eval_inflight = False
+
+    def _check_target_stop(self, round_num, test_accuracy):
+        """Stop after `stable_evals_above_target` consecutive evals >= target.
+
+        Called from the eval path (a daemon thread in the async stack, but only
+        one eval is ever in flight, so the counter is touched by one thread at a
+        time and the bool store is GIL-atomic). Resets on any dip so the stop
+        reflects *sustained* accuracy, not a lucky spike.
+        """
+        target = getattr(self, "_target_accuracy", None)
+        if target is None:
+            return
+        if test_accuracy is not None and test_accuracy >= target:
+            self._consecutive_above_target += 1
+        else:
+            self._consecutive_above_target = 0
+        if self._consecutive_above_target >= self._stable_evals_above_target:
+            logger.info(
+                f"[TARGET_STOP] round={round_num} test_accuracy={test_accuracy} "
+                f">= target={target} for {self._consecutive_above_target} "
+                f"consecutive evals; stopping."
+            )
+            self._work_done = True
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:

@@ -514,6 +514,10 @@ class TopAggregator(BaseTopAggregator):
         # before distributing weights, update it from global model
         self._update_weights()
 
+        # Per-baseline online oracle: overwrite candidate stat-utility with true
+        # current values before the selector ranks. No-op unless enabled.
+        self._inject_oracle_utilities(channel, task_to_perform)
+
         # before invoking channel.ends() to select, set the
         # trainer_unavail if it isn't None
         if self.trainer_event_dict is not None:

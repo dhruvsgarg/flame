@@ -51,6 +51,29 @@ from memory_profiler import MemoryProfiler
 logger = logging.getLogger(__name__)
 
 
+def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
+    """Per-client streaming schedule (onset, span), deterministic in trainer_id.
+
+    Used for staggered data streaming so different clients' data arrives in
+    different sim-time windows. Mirrored EXACTLY in
+    scripts/analysis/oracle_misselection.py:stagger_params -- if you change the
+    derivation here, change it there too or the offline oracle will reconstruct
+    the wrong visible prefixes.
+
+        onset_s = onset_max_s * u1
+        span_s  = base_span_s * (1 + rate_jitter * (2*u2 - 1))   (>= base_span/4)
+
+    where u1, u2 in [0,1) come from disjoint 32-bit slices of
+    sha256(f"{trainer_id}:stagger").
+    """
+    h = hashlib.sha256(f"{trainer_id}:stagger".encode()).hexdigest()
+    u1 = int(h[0:8], 16) / 0xFFFFFFFF
+    u2 = int(h[8:16], 16) / 0xFFFFFFFF
+    onset_s = onset_max_s * u1
+    span_s = base_span_s * (1.0 + rate_jitter * (2.0 * u2 - 1.0))
+    return onset_s, max(base_span_s / 4.0, span_s)
+
+
 class Net(nn.Module):
     """Net class."""
 
@@ -224,10 +247,23 @@ class PyTorchCifar10Trainer(Trainer):
         self.data_streaming_full_after_s = float(
             ds_cfg.get("full_data_available_after_s", 0)
         )
+        # Optional staggered streaming: each client gets its OWN onset (start
+        # delay) and span (time to fill), derived deterministically from its
+        # trainer_id so the offline oracle can reconstruct the exact schedule.
+        # Uniform streaming is the special case onset=0, span=full_after_s.
+        stg = ds_cfg.get("stagger", {}) or {}
+        self.stream_stagger_enabled = str(stg.get("enabled", "False")) == "True"
+        self.stream_onset_max_s = float(stg.get("onset_max_s", 0.0))
+        self.stream_rate_jitter = float(stg.get("rate_jitter", 0.0))
+        self.stream_min_visible = int(stg.get("min_visible", 1) or 1)
+        # Defaults (overwritten per-client in load_data once trainer_id-seeded):
+        self._stream_onset_s = 0.0
+        self._stream_span_s = self.data_streaming_full_after_s
         logger.info(
             f"Trainer {self.trainer_id}: data streaming "
             f"{'ENABLED' if self.data_streaming_enabled else 'DISABLED'} "
-            f"(full_data_available_after_s={self.data_streaming_full_after_s})"
+            f"(full_data_available_after_s={self.data_streaming_full_after_s}, "
+            f"stagger={'ON' if self.stream_stagger_enabled else 'off'})"
         )
 
         uc_cfg = getattr(self.config.hyperparameters, "util_counterfactual", None) or {}
@@ -456,6 +492,20 @@ class PyTorchCifar10Trainer(Trainer):
             self._stream_total, generator=torch.Generator().manual_seed(seed)
         )
 
+        # Per-client streaming schedule (staggered onset + span). Mirrored EXACTLY
+        # in scripts/analysis/oracle_misselection.py:stagger_params -- keep in sync.
+        if self.stream_stagger_enabled and self.data_streaming_full_after_s > 0:
+            self._stream_onset_s, self._stream_span_s = _stagger_params(
+                self.trainer_id,
+                onset_max_s=self.stream_onset_max_s,
+                base_span_s=self.data_streaming_full_after_s,
+                rate_jitter=self.stream_rate_jitter,
+            )
+            logger.info(
+                f"Trainer {self.trainer_id}: staggered stream "
+                f"onset={self._stream_onset_s:.0f}s span={self._stream_span_s:.0f}s"
+            )
+
         # Build initial loader (full pool unless streaming is enabled)
         self._rebuild_stream_loader()
         gc.collect()
@@ -477,14 +527,22 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
     def _visible_sample_count(self) -> int:
-        """Samples unlocked so far: linear in sim-time, full after X sim-sec."""
+        """Samples unlocked so far: linear in sim-time, full after the client's span.
+
+        Uniform streaming: onset=0, span=full_after_s (one global horizon).
+        Staggered streaming: per-client onset/span (set in load_data) so different
+        clients' data arrives in different sim-time windows.
+        """
         if not self.data_streaming_enabled or self.data_streaming_full_after_s <= 0:
             return self._stream_total
-        # full_data_available_after_s is in sim-seconds; _sim_now() is sim-time
+        # *_after_s and onset/span are in sim-seconds; _sim_now() is sim-time
         # (wall-clock in real mode, stamped task time in simulated mode).
-        frac = min(1.0, self._sim_now() / self.data_streaming_full_after_s)
+        span = self._stream_span_s if self._stream_span_s > 0 else self.data_streaming_full_after_s
+        frac = min(1.0, max(0.0, (self._sim_now() - self._stream_onset_s) / span))
         n = math.floor(frac * self._stream_total)
-        return min(self._stream_total, max(1, n))  # >=1 so loader is non-empty
+        # >= stream_min_visible so the loader is non-empty even before onset.
+        floor_n = self.stream_min_visible if self.stream_stagger_enabled else 1
+        return min(self._stream_total, max(floor_n, n))
 
     def _rebuild_stream_loader(self) -> None:
         """Rebuild train_loader over the currently-visible prefix of the pool."""

@@ -1110,6 +1110,10 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             channel.properties["vclock_now"] = self._vclock.now
 
+        # Per-baseline online oracle: refresh candidate stat-utility to true values
+        # before selection. No-op unless oracle_utility_injection is enabled.
+        self._inject_oracle_utilities(channel, task_to_perform)
+
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")

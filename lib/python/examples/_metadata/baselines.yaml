@@ -59,6 +59,46 @@ baselines:
           enabled: "True"
         wait_until_next_avl: "True"
 
+  oracle:
+    description: >-
+      Oracle = streaming-misprioritization performance ceiling. Same async stack
+      as Felix (oracle selector + fedbuff optimizer), but run with c = num_trainers
+      and a large evalGoalFactor so EVERY client is evaluated on the current model
+      each round -> its reported utility is fresh (true), and the selector picks the
+      true top-K (no temporal/system/exploration terms, no overcommitment). Set
+      selector.kwargs.c = num_trainers and evalGoalFactor = num_trainers/aggGoal in
+      the experiment YAML.
+    example:
+      aggregator_main: aggregator/pytorch/main_asyncfl_agg.py
+    aggregator:
+      selector:
+        sort: oracle
+        kwargs:
+          evalGoalFactor: 5.0  # >= num_trainers/aggGoal so all clients are eval'd each round; override per experiment
+          selectType: default
+          roundNudgeType: last_train
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          dataset_name: cifar-10
+          agg_rate_conf:
+            type: new
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        simCommitOverheadSeconds: 0.0
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "True"
+        wait_until_next_avl: "True"
+        use_oort_loss_fn: "True"
+
   refl:
     description: >-
       REFL = refl_oort selector + refl optimizer with oracular availability

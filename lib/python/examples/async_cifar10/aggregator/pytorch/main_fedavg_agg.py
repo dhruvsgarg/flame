@@ -35,6 +35,10 @@ from flame.dataset import Dataset
 from flame.mode.horizontal.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
 
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from oracle_utility import OracleInjectMixin  # noqa: E402
+
 def initialize_wandb():
     wandb.init(
         project="ft-distr-ml",
@@ -86,7 +90,7 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=1)
 
 
-class PyTorchCifar10Aggregator(TopAggregator):
+class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
 
     def __init__(self, config: Config, log_to_wandb: bool = False) -> None:
@@ -112,6 +116,9 @@ class PyTorchCifar10Aggregator(TopAggregator):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = Net().to(self.device)
+        self._init_oracle_util(
+            _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                          "..", "..", "data"))
 
     def load_data(self) -> None:
         """Load a test dataset."""
