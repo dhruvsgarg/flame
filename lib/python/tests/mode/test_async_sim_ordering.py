@@ -19,16 +19,23 @@ from flame.sim import SimReorderBuffer, VirtualClock
 
 class _FakeEnd:
     """Minimal end with the get/set_property surface _sim_recv_min touches
-    (it resets buffered ends' KEY_END_STATE so the selector keeps their slot)."""
+    (it resets buffered ends' KEY_END_STATE so the selector keeps their slot).
 
-    def __init__(self):
+    `is_rxq_empty()` models physical readiness (§3j): the drain pulls any
+    in-flight end whose rxq is non-empty regardless of modeled completion."""
+
+    def __init__(self, ready_fn=None):
         self._props = {}
+        self._ready_fn = ready_fn  # callable -> True if a message has arrived
 
     def get_property(self, key):
         return self._props.get(key)
 
     def set_property(self, key, value):
         self._props[key] = value
+
+    def is_rxq_empty(self):
+        return True if self._ready_fn is None else not self._ready_fn()
 
 
 class FakeChannel:
@@ -42,7 +49,12 @@ class FakeChannel:
     def __init__(self, inflight, arrival_order):
         self._inflight = set(inflight)
         self._queue = list(arrival_order)  # list of (end_id, sct)
-        self._ends = {e: _FakeEnd() for e in self._inflight}
+        # An end's rxq is "non-empty" iff it has a message still queued — models
+        # physical arrival (§3j drains ready in-flight ends regardless of exp).
+        self._ends = {
+            e: _FakeEnd(ready_fn=(lambda e=e: any(q[0] == e for q in self._queue)))
+            for e in self._inflight
+        }
 
     def has(self, end_id):
         return end_id in self._inflight
@@ -272,3 +284,26 @@ class TestGateProbesLiveInflight:
         msg, (end, _) = agg._sim_recv_min(channel, ["A"])
         assert end == "A"
         assert agg._vclock.now == 2.0
+
+    def test_drains_ready_inflight_above_ceiling(self):
+        # §3j: a SLOW trainer whose modeled exp is far future (above the probe
+        # ceiling) but whose message has ALREADY ARRIVED must be drained NOW, so it
+        # buffers as a future and commits in sct-order — not drained-in late and
+        # committed past-dated (the residence~0, gap~45 staleness-tail signature).
+        #
+        # A pre-buffered entry makes the ceiling FINITE (buffered_min + slack); with
+        # an empty buffer the ceiling is +inf and everything drains regardless, so
+        # this non-empty-buffer setup is what isolates the §3j readiness admit.
+        agg = _make_agg()
+        agg._sim_inflight_expected = {"SLOW": 999.0}
+        agg._sim_buffer.add(
+            "A", 2.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 2.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"SLOW"}, arrival_order=[("SLOW", 5.0)])
+        # recv_ends empty; buffer min = 2.0 → ceiling = 4.0 < SLOW.exp (999), so the
+        # exp bound alone would NOT admit SLOW — only its rxq readiness does.
+        msg, (end, _) = agg._sim_recv_min(channel, [])
+        assert end == "A"                      # earliest still commits first
+        assert agg._sim_buffer.has("SLOW")     # SLOW was DRAINED, not lapped
+        assert agg._sim_buffer.peek_min_ts() == 5.0  # buffered as a future

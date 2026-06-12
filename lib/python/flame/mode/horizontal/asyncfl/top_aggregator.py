@@ -217,6 +217,19 @@ class TopAggregator(SyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
+    @staticmethod
+    def _sim_end_has_ready_msg(channel, end) -> bool:
+        """True if `end`'s rx queue holds a message (non-blocking readiness check).
+
+        Used by _sim_recv_min (§3j) to drain a physically-arrived in-flight update
+        regardless of its modeled completion time, so slow trainers are buffered as
+        futures rather than drained-in late and committed past-dated."""
+        try:
+            e = channel._ends.get(end)
+            return e is not None and not e.is_rxq_empty()
+        except Exception:
+            return False
+
     def _sim_recv_min(self, channel, recv_ends):
         """Barrier: drain the in-flight set, then commit the smallest
         sim_completion_ts. The virtual clock advances TO each committed completion
@@ -252,11 +265,21 @@ class TopAggregator(SyncTopAgg):
             # straggler was frequently NOT in to_probe, recv_fifo never waited for
             # it (barrier_wait~0), the gate spun to the pass cap, and the clock
             # committed past it (the past-dated commit that drifts staleness).
-            # Including it here lets recv_fifo actually block (its timeout is a
-            # real wait) for the trainer the gate is holding for, so updates
-            # commit in completion order and version stays coupled to the clock.
-            # Bounding the extra probes by the buffered minimum avoids blocking on
-            # far-future trainers that legitimately have not completed yet.
+            #
+            # §3j fix: draining must be gated by PHYSICAL readiness, not predicted
+            # completion. A SLOW trainer (budget 38-56s) has a far-future modeled
+            # `exp`, so the `exp <= _probe_ceiling` bound excluded it — yet its
+            # message had already physically arrived (wall_lag ~0.1s). It therefore
+            # sat undrained in the rxq while the clock advanced past its `sct`, and
+            # was finally drained ~45 vclock-s LATE → committed past-dated →
+            # staleness inflated 2-3.5x (33 vs real ~9 for the same budget). The
+            # tell: those commits have residence~0 (NOT buffer-resident) but gap~45.
+            # Fix: drain any in-flight end with a READY message (non-empty rxq)
+            # regardless of `exp`, so slow trainers buffer as proper FUTURES and
+            # commit in `sct` order. Keep the ceiling as a secondary admit so the
+            # gate can still wait (recv_fifo grace) for an expected-soon straggler
+            # whose fragments are mid-reassembly. recv_fifo on a ready end returns
+            # immediately, so this adds NO blocking.
             _bmin = self._sim_buffer.peek_min_ts()
             _probe_ceiling = (
                 _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
@@ -270,7 +293,7 @@ class TopAggregator(SyncTopAgg):
                 e for e, exp in self._sim_inflight_expected.items()
                 if e not in _seen and channel.has(e)
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
-                and exp <= _probe_ceiling
+                and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
             ]
             if to_probe:
                 probed = max(probed, len(to_probe))
