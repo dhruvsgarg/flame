@@ -500,6 +500,52 @@ spike — no new ordering logic needed, just the correct input.
   → the clamp can't wait that long without killing speedup → next attempt is candidate (ii)
   proper (commit-at-sct reorder / version_at(sct) incorporation), not prediction.
 
+### §3f — Run 221402 result + a relabel band-aid (TRIED & REVERTED) + corrected root cause (Jun12)
+
+**§3e predictor fix worked but did NOT fix the drift (run 221402).** Gate now fires
+(`gate_holds` 0→391k, `budget_mean=11.8`), but staleness still drifts (decile 3.53→11.74,
+mean 8.75 vs real 2.79). `barrier_wait_s≈0` on 25/36 lines: the gate spins without waiting.
+New diagnostics: completions are CLEAN (`overran=0%`, `gpu≈0.1s`, `sct=send_ts+budget`), yet
+`commit_gap` grows 30→230s and **59% of 18 239 commits are past-dated**, while
+`buf_depth≈concurrency`. Round-36 signature: `T_v=139` while updates with `sct=3..36` commit
+in one sweep — completed updates enter the reorder buffer *after* the clock passed their sct.
+
+**Band-aid tried and REVERTED (commit 61edc6de → d996d471).** Implemented "completion-frame
+staleness": `staleness = version_at(sct) − trained_version` via a monotone `_version_vclock_log`.
+**Why it was wrong (user caught it):** felix's optimizer is `fedbuff` with
+`agg_rate_conf.type="new", scale=0.4` — it computes `staleness = version − tres.version`
+**itself** (`fedbuff.py:187`) and weights every update by `alpha=1/(1+staleness)^0.25` (40% of
+the rate). So **staleness FEEDS THE MODEL** (the aggregator's `staleness_factor=0.0` is a
+different, ignored arg). The relabel only rewrote the telemetry number; the optimizer still
+used the inflated `self._round − tres.version`. It fixed nothing for the trajectory and created
+exactly the misleading two-value split to avoid. Reverted.
+
+**Corrected root cause — it is the COMMIT ORDER, and ONLY that (not advance, not selection):**
+- **Run 150131 (overhead=0.315) is the clincher:** `per_round_advance` 4.95≈real 4.52 and
+  `throughput` 667≈664 BOTH matched, `participation` passed (avg_diff 4.47) — yet staleness was
+  STILL **7.19 vs 2.79**. So the drift is independent of advance AND of selection.
+- Decomposition (consistent across runs): `staleness ≈ budget/advance (baseline) + out-of-order
+  inflation (drift)`. Run 221402: in-order commits (gap≤2, 66%) sit at the baseline
+  `11.7/2.64≈4.5`; the out-of-order tail pushes the mean to 8.75. Run 150131: baseline
+  `11.7/4.95≈2.4` + drift ≈4.8 = 7.2. The **drift (~4.5–4.8 rounds) is present regardless of
+  advance** — it is purely past-dated/out-of-order commits bumping the version without the clock.
+
+**The principled fix = fix the order at the source (NOT relabel).** When commits happen in
+completion order, `self._round` advances "only as much as needed", `version − tres.version` is
+naturally correct, and that ONE value feeds both the optimizer (alpha) and telemetry. Mechanism:
+a completed update enters the buffer after the clock advanced past its `sct`, so it commits
+out of order. The gate is meant to hold the clock for an earlier-expected in-flight trainer but
+can't — at commit time that trainer is not in the channel's RECV/probe set, so the gate spins
+(`barrier_wait≈0`) and commits the later update, lapping the straggler. Since messages arrive in
+~0.1s physically, the honest fix is to **keep version+clock coupled: never advance the clock /
+commit past the minimum modeled completion of any dispatched-uncommitted trainer, and make that
+trainer drainable so the (short) wait resolves.** Then advance baseline residual → §4.1b.
+
+**Open implementation question (next):** why is an in-flight, physically-arrived trainer not in
+`recv_ends`/`to_probe` at commit time? Crack the SEND→RECV state transition + selection so all
+in-flight ends are probeable; that lets the gate actually receive-and-order the earlier
+completion instead of spinning. Diagnostics to keep: §3e `pastdated_commits`/`gate_holds`.
+
 ## §4  Next tasks (sim-real parity)
 
 1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the
