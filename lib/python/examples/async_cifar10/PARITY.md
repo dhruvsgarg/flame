@@ -28,7 +28,15 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Current status (Jun 10 — felix/refl run 150131, 45-min; oort/feddance from Jun 9)
+### Current status (Jun 12 — felix sim 011141 vs fresh real 100106, 50-min)
+
+**Felix staleness FIXED — the §3g commit-order fix is validated (Jun 12).** Fresh
+50-min real run `100106` vs §3g sim `011141`: **U3 staleness PASS** (real 2.81 / sim 3.57,
+KS 0.09 ≤ 0.2) — down from 7.19 (§3c) with the drift gone (decile 2.86→4.20, flat).
+**C1 accuracy PASS** (diff 0.024), **C2 loss PASS** (0.012). The lowest broken rung has
+moved *down* the ladder to **per-round-advance** (K3b). See §3h (diagnosis) and **§3i**
+(corrected root cause + the `simCompletionLegSeconds` fix, implemented, awaiting run).
+Everything below is older context.
 
 **Aggregation correctness fixed (Jun 10).** The lazy-deserialize change had broken
 the sim weight path for the oort + asyncfl aggregators (refl crashed with
@@ -51,7 +59,8 @@ syn_0; oort/feddance still Jun-9 3.5h):
 | feddance | 094917 | 18.4x | 365→370 (+1.4%) | 33.85/34.11s | 183.0/185.5 (ks=0.01) | 0.029 ✓ | 0.0 | advance KS-shape (0.57), trainer_speed absent in real |
 | oort     | 094917 | 12.0x | 666→701 (+5.3%) | 18.49/17.98s | 0/0 | 0.033 ✓ | 0.0 | terminal trainers 255/286 (10.8%); total_commits 2.6% |
 | refl     | 150131 | **2.31x** | 2016→1887 (−6.4%) | 1.48/1.74s | 3.02/3.00 ✓ | 0.034 ✓ | 0.10→**0.074** | overhead over-charge (advance +15%) → throughput/terminal/commits; eligibility KS=0.27 |
-| felix    | 150131 | **3.59x** | 664→667 (+0.5%) | 4.52/4.95s | 2.79/**7.19** ✗ | **0.024** ✓ | 0.315 | **staleness — reorder-buffer residence (§3c)**; advance KS 0.37; total_commits 8.4% |
+| felix    | 100106/011141 | 2.75x | 626→815; @V 626→730 (+14%) | 4.32/**3.68s** | 2.81/3.57 ✓ (KS .09) | **0.024** ✓ | 0 | **advance/throughput — `mqtt_fetch` 57.5 vs 23.2s under-models round-trip → overlap 7.2 vs 6.4 → advance −15% (§3h)**; terminal/commits +14% (downstream) |
+| felix (old) | 150131 | 3.59x | 664→667 (+0.5%) | 4.52/4.95s | 2.79/**7.19** ✗ | 0.024 ✓ | 0.315 | superseded — staleness fixed by §3g, see row above |
 
 **Per-baseline status:**
 
@@ -66,11 +75,13 @@ syn_0; oort/feddance still Jun-9 3.5h):
   `overhead=0.10` now **over-charges** (advance 1.74 vs 1.48, residual −0.26) →
   throughput/terminal/total_commits fail. Retuned 0.10 → **0.074** (= 0.10 + −0.26/K);
   revalidate next run.
-- **felix** (Jun 10): **rounds (+0.5%), overhead, and convergence (0.073✗ → 0.024✓)
-  now PASS** — the §3b overhead=0.315 retune worked. **The one real remaining gap is
-  staleness: 7.19 vs real 2.79.** Root-caused (§3c) to reorder-buffer **residence**,
-  not the clock (advance/overhead now match). Secondary: advance KS-shape (0.37,
-  mean matches), total_commits 8.4% (downstream of staleness), utility (downstream).
+- **felix** (Jun 12): **staleness, accuracy, loss now PASS** (see §3h). The §3g
+  commit-order fix (probe the live in-flight set) killed the drift; staleness 7.19→3.57
+  (real 2.81). **The one real remaining gap is now per-round-advance** (3.68 vs 4.32,
+  K3b rel 0.148) driven by **`mqtt_fetch` under-modeling** (sim 23.2s vs real 57.5s):
+  the sim trainer's modeled completion (`sct = send_ts + max(gpu, budget)`) omits the
+  ~34s download/round-trip leg → completions bunch (overlap 7.2 vs real 6.4) → advance
+  too low → +14% rounds/terminal/commits @ matched budget (all downstream). Fix in §3h.
 
 ---
 
@@ -570,47 +581,127 @@ so the wait is short; genuine never-arrivers hit the existing `RECV_TIMEOUT_WAIT
 Guarded by `TestGateProbesLiveInflight` (commits the earliest in-flight even when absent from the
 recv snapshot; does NOT block on a far-future in-flight). 72 mode tests pass.
 
+### §3h — §3g VALIDATED: staleness PASS; lowest rung is now `mqtt_fetch`/advance (Jun12, sim 011141 vs fresh real 100106)
+
+**The §3g commit-order fix works.** Parity of §3g sim `011141` against a fresh 50-min real
+run `100106` (`parity_felix_20260612_100106.json`):
+
+| stage | check | real | sim | verdict |
+|---|---|---|---|---|
+| 6 | **U3 staleness** | 2.81 | **3.57** (KS 0.09) | **PASS** ✓ — was 7.19; drift gone (decile 2.86→4.20, flat) |
+| 8 | **C1 accuracy** | — | diff **0.024** | **PASS** ✓ |
+| 8 | **C2 loss** | — | diff **0.012** | **PASS** ✓ |
+| 1 | P3 trainer_speed | 11.79 | 11.63 (KS .09) | PASS ✓ |
+| 4 | T2 training_budget | 11.73 | 11.66 (KS .008) | PASS ✓ |
+| 1 | **K3b advance** | **4.32** | **3.68** (rel .148) | **FAIL** ✗ — lowest broken rung |
+| 4 | **`mqtt_fetch`** | **57.5s** | **23.2s** (KS .44) | **FAIL** ✗ — the cause of K3b |
+| 1 | K4 overlap (diag) | 6.39x | **7.22x** | sim over-overlaps |
+| 8 | K8/U2 @ V=2701 | 626 rd | **730 rd / +14%** | DOWN (of advance) |
+
+`sim_rate` 2.75x (honest reordering cost some speed vs the old 3.59x — acceptable, fidelity > speed).
+The gate never *blocks* (`gate_holds=0`, `barrier_wait≈0`): §3g works purely by **reordering** —
+all messages arrive physically in ~0.1s, so probing the live in-flight set just makes `recv_fifo`
+pop the **min-sct** buffered message first → in-order commits → low, flat staleness. No wait needed.
+
+**Root cause of the *remaining* gap — `mqtt_fetch` under-models the round-trip → advance too low.**
+Per-trainer *completion times* match (P3 speed 11.8≈11.6, T2 budget matches), yet advance is 15% low
+(3.68 vs 4.32). The discriminator is **overlap** (K4: sim 7.22 vs real 6.39): sim completions are
+**bunched**, real's are **spread**. Why: the sim trainer's modeled completion is
+`sct = sim_send_ts + max(gpu, training_delay_s)` (`trainer/pytorch/main.py:804-810`) — pure **compute**,
+no delivery leg. Real trainers spend **57.5s in `mqtt_fetch`** (the agg→trainer model-download over a
+congested broker, n=300) *before* compute; sim incurs only ~23s physical. So real starts are staggered
+by a wide, variable 57s download → completions de-correlate → less overlap (6.39) → higher advance.
+Sim starts compute ~immediately → completions synchronize → overlap 7.22 → advance 3.68 → +14% rounds
+at matched budget → K8/U2/throughput/utility/aggregation_sequence all FAIL **downstream** of this.
+
+**How much we stand to gain (ONE fix flips ~5 checks):** ⚠️ **The `mqtt_fetch→sct` prescription below
+was WRONG and is SUPERSEDED by §3i — do not follow it.** It assumed `mqtt_fetch` is on the
+version-relevant path; checking the data showed it is NOT (real `sim_round_duration_s` = compute only,
+staleness 2.81 = budget/advance), so adding it to `sct` would inflate staleness ~6×. The real lever is
+the ~2s post-compute **cycle** leg (§3i), not the 57s delivery. *[Original, retained for the audit trail:
+"model the missing delivery leg in `sct`; set `sim_round_duration += modeled_delivery_s` calibrated to
+the real `mqtt_fetch` distribution and its spread."]*
+
+**Note — A2 eligibility KS=0.998 is a checker artifact, not a divergence.** real `num_eligible` is a
+constant point-mass at 300; sim is 298.9 ± tiny. Means match; KS maxes out because one side has zero
+variance. Flagged as a "root cause" by the ladder but spurious — both modes have ~all-eligible. Either
+special-case point-mass distributions in A2 or ignore. Do **not** chase it.
+
+**Implementation pointers:** `sct` computed at `trainer/pytorch/main.py:804-810`; the aggregator's
+expected-completion predictor reads it as `_sim_inflight_expected` (`asyncfl/top_aggregator.py`).
+`mqtt_fetch_s` is recorded per-round at `syncfl/trainer.py:192` (`_wall_recv_ts − _recv_wall_start`) —
+that real distribution is the calibration target. U5 inter-arrival WARN (Spearman −0.47) is the
+expected signature of sct-order (not arrival-order) commits; gated WARN, leave it.
+
+### §3i — CORRECTED root cause + fix: sim per-trainer cycle was ~2s short (Jun12, awaiting run)
+
+**The §3h prescription (add `mqtt_fetch` to `sct`) was WRONG — caught before shipping.** Checking the
+data first: in the REAL run `sim_round_duration_s` = **11.7s (compute only), NOT including `mqtt_fetch`
+57.5s**, and real staleness 2.81 ≈ 11.7/4.32 = budget/advance. So `mqtt_fetch` is **not** version-relevant
+(it is mostly pre-dispatch availability/notify wait, already modeled by the availability trace — A3 PASS).
+Adding it to `sct` would have inflated staleness ~6×, breaking a passing check. The `phase_mqtt_fetch`
+FAIL is a benign sim-harness **wall-time** artifact (in-memory cache delivers faster); it is orthogonal
+to the virtual clock and does not affect any emergent parity — documented, not chased.
+
+**Actual root cause (Little's law, from emergent numbers only):**
+
+| | advance | commit_rate | effective cycle W=inflight/rate | staleness≈W/advance |
+|---|---|---|---|---|
+| REAL | 4.31 | 2.318/s | **13.31s** | 3.08 |
+| SIM  | 3.68 | 2.716/s | **11.32s** | 3.07 |
+
+Compute (version-relevant) is 11.7s in **both**. So the sim per-trainer **cycle is ~2s shorter** than
+real. The gap = real's **post-compute cycle leg**: buffer-residence `queue_wait_s` (real `LAG_DECOMP`
+mean 0.61s) + re-dispatch/re-selection latency (~1.0s) — the time between a trainer finishing compute and
+its next dispatch. The sim `sct = send_ts + compute` modeled **zero** of it, so by Little
+(advance = cycle·aggGoal/inflight) the sim advance under-charges 3.68 vs 4.32 → +14% rounds/terminal/
+commits. Crucially **staleness = cycle/advance is invariant to the leg** (both scale together), so the
+baseline (~3.07, already matching real) is undisturbed — this fixes advance/throughput WITHOUT touching
+the now-passing staleness.
+
+**Fix (IMPLEMENTED, §3c-sanctioned — model it in the trainer `sct`, NOT the clock):** new trainer
+hyperparameter **`simCompletionLegSeconds`** (`config.py`, alias → `sim_completion_leg_s`; default 0 =
+off). In `trainer/pytorch/main.py` the leg is added **only** to `_sim_completion_ts` (= when the update
+commits), NOT to `_sim_round_duration`/`TRAINING_BUDGET_S`/`ROUND_COMPUTE_S` — so `trainer_speed_s`, OORT
+utility, the gate predictor and the P3/T2 controls all keep pure compute; only the virtual clock (which
+advances to `sct`) sees the real cycle time. Felix set to **1.6s** (= measured real W_cycle 13.31 −
+compute 11.71). The asyncfl `[TIMING_OVERRUN_AGG]` check was repointed to read `SIM_ROUND_DURATION`
+(pure compute) instead of `sct − send` (which now carries the leg), so it still flags only GPU overrun.
+
+**A2 point-mass fix (IMPLEMENTED).** `eligibility_parity` now rescues a KS fail **only** when the means
+match within 2% AND a side is genuinely degenerate (CV < 0.01) — the real `num_eligible`-constant-300 vs
+sim-298.9 case. Verified: A2 now PASSES with note, dropped from root-causes. Guarded by
+`test_eligibility_pointmass_passes_on_mean` (passes on mean) + `test_eligibility_real_divergence_still_fails`
+(a true divergence is NOT masked). New guards: `simCompletionLegSeconds` alias mapping + felix carries
+leg>0 while overhead stays 0 (`test_baselines.py`). 56 mode/ladder/launch tests pass.
+
 **What the next felix run must show:**
-- **Order fixed:** `pastdated_commits` / `commit_gap` collapse toward 0; `gate_holds` now
-  correlates with real `barrier_wait_s` > 0 (genuine waits, not spins); `gate_failsafe` stays ~0.
-- **Staleness (raw, the one value):** drift gone; mean lands at the `budget/advance` baseline
-  (≈ 4.4 at advance 2.64), flat across deciles. Then the ONLY residual is advance → §4.1b.
-- **Watch speed:** the honest waits cost wall-time; if `sim_rate` drops a lot, stragglers are
-  process-scheduling-delayed (300 procs) more than expected — acceptable (fidelity > speed) but
-  note it. If `commit_gap` does NOT collapse, the straggler's modeled budget is still
-  mis-estimated (unseen-trainer default) → revisit the predictor default, not the probe.
+- **advance:** 3.68 → ~4.3 (K3b `overhead_residual` rel 0.148 → <0.1 PASS); rounds 815 → ~660; @V terminal
+  730→~626 and total_commits +14% → ~0 (K8/U2/throughput PASS).
+- **staleness:** stays PASS (~3.0 baseline, invariant to the leg); the residual vs real 2.81 is the §3g
+  out-of-order tail (p99 21 vs 9), a separate/smaller item — NOT addressed here, do not expect it to move.
+- **mqtt_fetch:** still FAILs (benign wall-time artifact); `trainer_speed_s`/P3/T2 must STAY passing
+  (leg kept out of compute). If P3 shifts, the leg leaked into `SIM_ROUND_DURATION` — bug.
+- **If advance overshoots/undershoots:** tune `simCompletionLegSeconds` (it is calibrated to measured real
+  W−compute; the ±0.4s ambiguity vs the advance-ratio estimate ~2.0s is expected — adjust on the run).
 
 ## §4  Next tasks (sim-real parity)
 
-1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the
-   clock (§3c).** Root cause: the per-commit overhead (0.315) had taken over the virtual
-   clock (`vclock = 98.8% overhead_cum`). The overhead fix (`simCommitOverheadSeconds = 0`)
-   **landed and held** — run 012226 confirms `overhead_cum = 0`, `sct_adv_cum = vclock`.
-   **But staleness still drifts** (decile mean 3.65 → 12.26, overall 9.2 vs real 2.79; §3d).
-   So overhead was only a contributing inflator. The re-added virtual-completion gate
-   (993ff450) is **inert** (`barrier_wait_s ≈ 0`, `gate_failsafe = 0`) — its per-trainer
-   duration prediction never flags the deep-past stragglers, so buf_past updates keep
-   committing and racing version ahead of the clock.
+1. **[DONE — Jun12, §3h] Felix staleness.** Fixed by §3g (probe the live in-flight set →
+   commit in sct order). Validated against fresh real `100106`: U3 staleness PASS (2.81 vs
+   3.57, KS 0.09), accuracy/loss PASS. Drift gone. The `simCommitOverheadSeconds = 0` fix
+   (§3c) and the live-inflight probe (§3g) both hold. Gate code + `[SIM_CLOCK_DIAG]` remain.
 
-   **Refined root cause (§3d):** out-of-order commit of a past-dated update increments the
-   round/version counter while `vclock = max(vclock, sct)` is a no-op → version drifts ahead
-   of the clock → `staleness = current_version − trained_version` inflates and compounds.
-   When resuming, the fix must **keep version and clock coupled**, NOT predict durations.
-   Two honest candidate designs to evaluate (do NOT band-aid the staleness number):
-   - **(i) Couple the clock to commits:** advance `vclock` by the empirical inter-completion
-     spacing on *every* commit (incl. past-dated ones), so N commits = N units of clock, and
-     version/clock stay locked. Risk: distorts the time-base for availability indexing.
-   - **(ii) Commit-at-sct ordering:** do not let a past-dated update increment the *current*
-     version; account it at the version that was current when its `sct` actually fell (a true
-     reorder, not a relabel of `trained_version`). This is the physically correct async
-     semantics and keeps staleness = real versions-elapsed.
-   Decide gate's fate then (remove if (ii), since reorder subsumes it). Keep `[SIM_CLOCK_DIAG]`.
-
-1b. **[STILL OPEN — felix throughput] Close the 2.98 vs 4.52 per-round-advance gap honestly.**
-   Blocked on 1 (staleness). The residual advance gap is a completion-spacing / dispatch-
-   timing issue (and the `mqtt_fetch` 60s-real vs 23s-sim phase divergence). Model the real
-   round-trip cost in the trainer `sct`, NOT on the clock. Diagnose with `[SIM_CLOCK_DIAG]`
-   `buf_past` vs `buf_future` before designing.
+1b. **[IMPLEMENTED — revalidate; §3i] Close the per-round-advance gap: 3.68 vs real 4.32.**
+   CORRECTED root cause (the §3h `mqtt_fetch→sct` idea was WRONG — it would break staleness;
+   see §3i): the sim per-trainer **cycle is ~2s shorter** than real (sim 11.3s vs real 13.3s;
+   compute 11.7s matches both). The gap = real's post-compute leg (buffer-residence queue_wait
+   0.6s + re-dispatch latency ~1.0s) that the sim `sct` omitted. **Fix applied:** new trainer
+   hyperparameter `simCompletionLegSeconds` (felix = 1.6s), added to the trainer `sct` ONLY
+   (not compute/budget); `simCommitOverheadSeconds` stays 0. Staleness baseline (= cycle/advance)
+   is invariant. Revalidate next run: K3b/throughput/terminal/total_commits → PASS; staleness
+   stays PASS; `phase_mqtt_fetch` still FAILs (benign wall-time artifact — NOT version-relevant,
+   left unmodeled by design). Tune the leg on the run if advance over/undershoots.
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance

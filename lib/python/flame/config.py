@@ -189,6 +189,16 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0
     )
+    # Sim-mode post-compute completion leg added to the trainer sct (NOT the clock;
+    # §3c/§3i). Models the real per-trainer cycle time that follows compute and
+    # precedes the trainer's next dispatch: buffer-residence (queue_wait_s) plus
+    # re-dispatch/re-selection latency. Real felix: cycle 13.3s vs compute 11.7s =>
+    # ~1.6s leg. Sim omits it, so its cycle is short => advance under-charges
+    # (Little: advance = cycle*aggGoal/inflight) without changing staleness
+    # (= cycle/advance, invariant). 0 = off. Calibrate to real (W_cycle - compute).
+    sim_completion_leg_s: t.Optional[float] = Field(
+        alias="simCompletionLegSeconds", default=0.0
+    )
     # Wall stagger between weight sends (both modes). 0 = none; guard via mqtt-drop plot.
     send_stagger_s: t.Optional[float] = Field(
         alias="sendStaggerSeconds", default=0.0

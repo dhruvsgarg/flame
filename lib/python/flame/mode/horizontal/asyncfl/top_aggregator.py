@@ -632,12 +632,12 @@ class TopAggregator(SyncTopAgg):
                 _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
                 if _budget_s > 0:
                     if self.simulated:
-                        # sim overrun: virtual round duration exceeded budget.
-                        # virtual_elapsed = SIM_COMPLETION_TS - SIM_SEND_TS = SIM_ROUND_DURATION.
-                        _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
-                        _sct = msg.get(MessageType.SIM_COMPLETION_TS)
-                        if _sst is not None and _sct is not None:
-                            _virt_elapsed = float(_sct) - float(_sst)
+                        # sim overrun: modeled compute exceeded budget (GPU contention).
+                        # Use SIM_ROUND_DURATION (= max(gpu, D), pure compute) — NOT
+                        # SIM_COMPLETION_TS - SIM_SEND_TS, which now also includes the
+                        # §3i post-compute completion leg and is not an overrun signal.
+                        _virt_elapsed = float(msg.get(MessageType.SIM_ROUND_DURATION, 0.0))
+                        if _virt_elapsed > 0.0:
                             if _virt_elapsed > _budget_s:
                                 logger.warning(
                                     f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={recv_wts_version} "

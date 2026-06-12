@@ -58,6 +58,15 @@ baselines:
         client_notify:
           enabled: "True"
         wait_until_next_avl: "True"
+        # Jun12 (PARITY.md §3i): sim per-trainer cycle was ~2s shorter than real
+        # (sim 11.3s vs real 13.3s; compute 11.7s matches both), so advance
+        # under-charged 3.68 vs 4.32 (Little: advance = cycle*aggGoal/inflight) and
+        # rounds/terminal/commits ran +14%. The gap = real's post-compute cycle leg
+        # (buffer-residence queue_wait ~0.6s + re-dispatch/re-selection latency ~1.0s)
+        # that the sim sct omitted. Added to the trainer sct (NOT the clock; §3c) as a
+        # completion leg = W_cycle(13.3) - compute(11.7) ~= 1.6s. Staleness baseline
+        # (= cycle/advance) is invariant; only advance/throughput are corrected.
+        simCompletionLegSeconds: 1.6
 
   oracle:
     description: >-

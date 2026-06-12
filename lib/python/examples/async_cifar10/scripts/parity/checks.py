@@ -23,6 +23,7 @@ import glob
 import json
 import math
 import os
+import statistics
 from pathlib import Path
 from typing import Optional
 
@@ -315,8 +316,31 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
     ks_ca = ks_stat(r_ca, s_ca) if r_ca and s_ca else float("nan")
     r_el_mean = sum(r_el) / len(r_el) if r_el else float("nan")
     s_el_mean = sum(s_el) / len(s_el) if s_el else float("nan")
-    ok = (math.isnan(ks_el) or ks_el <= warn_ks) and (math.isnan(ks_ca) or ks_ca <= warn_ks)
-    return {
+
+    # Point-mass guard: KS saturates to ~1 when one side has (near-)zero variance —
+    # e.g. real num_eligible is a constant 300 (all-eligible streaming) while sim is
+    # 298.9 ± tiny. The KS is then uninformative; the means are the right comparator.
+    # Rescue a KS fail ONLY when (a) the means match within a tight relative margin
+    # and (b) a side is genuinely degenerate (coefficient of variation below cv_floor),
+    # so a real eligible-set divergence is never masked. Kept tight on purpose.
+    MEAN_TOL_REL, CV_FLOOR = 0.02, 0.01
+
+    def _pointmass_match(rv, sv, ks):
+        if math.isnan(ks) or ks <= warn_ks or not rv or not sv:
+            return False
+        rm, sm = (sum(rv) / len(rv)), (sum(sv) / len(sv))
+        denom = max(abs(rm), abs(sm), 1.0)
+        if abs(rm - sm) / denom > MEAN_TOL_REL:
+            return False
+        cv = lambda v, m: (statistics.pstdev(v) / abs(m)) if (len(v) > 1 and m) else 0.0
+        return min(cv(rv, rm), cv(sv, sm)) < CV_FLOOR
+
+    pm_el = _pointmass_match(r_el, s_el, ks_el)
+    pm_ca = _pointmass_match(r_ca, s_ca, ks_ca)
+    ok_el = math.isnan(ks_el) or ks_el <= warn_ks or pm_el
+    ok_ca = math.isnan(ks_ca) or ks_ca <= warn_ks or pm_ca
+    ok = ok_el and ok_ca
+    out = {
         "ok": ok,
         "tier": "DIST",
         "ks_eligible": round(ks_el, 3) if not math.isnan(ks_el) else None,
@@ -325,6 +349,10 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
         "sim_mean_eligible": round(s_el_mean, 1) if not math.isnan(s_el_mean) else None,
         "warn_ks": warn_ks,
     }
+    if pm_el or pm_ca:
+        out["note"] = ("point-mass distribution: KS uninformative (zero-variance side), "
+                       "means match within {:.0%} — passed on mean".format(MEAN_TOL_REL))
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════

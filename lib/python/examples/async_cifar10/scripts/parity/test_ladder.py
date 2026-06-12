@@ -162,6 +162,41 @@ def test_avail_timebase_detects_trajectory_shift():
     assert not results["avail_timebase"]["ok"], "A3 should catch the shift"
 
 
+def test_eligibility_pointmass_passes_on_mean():
+    """A2: real num_eligible is a constant point-mass (300), sim 298.9 ± tiny.
+    KS saturates to ~1 but the means match — must PASS on the mean (PARITY.md §3i),
+    not raise a spurious FAIL."""
+    from parity.checks import eligibility_parity
+    import random
+    rng = random.Random(0)
+    real = {"selection_train": [{"num_eligible": 300, "num_candidates": 300}
+                                for _ in range(500)]}
+    # sim: occasionally one fewer eligible -> mean 298.9, tiny variance
+    sim = {"selection_train": [{"num_eligible": 300 - (1 if rng.random() < 0.5 else 0),
+                                "num_candidates": 300 - (1 if rng.random() < 0.5 else 0)}
+                               for _ in range(500)]}
+    res = eligibility_parity(real, sim)
+    assert res["ks_eligible"] is not None and res["ks_eligible"] > 0.2, "KS must be high"
+    assert res["ok"], "point-mass with matching means must pass"
+    assert "point-mass" in res.get("note", ""), "note should explain the rescue"
+
+
+def test_eligibility_real_divergence_still_fails():
+    """A2 guard: a genuine eligible-set divergence (different means, real spread)
+    must STILL FAIL — the point-mass rescue must not mask it."""
+    from parity.checks import eligibility_parity
+    import random
+    rng = random.Random(1)
+    real = {"selection_train": [{"num_eligible": rng.randint(250, 300),
+                                 "num_candidates": rng.randint(250, 300)}
+                                for _ in range(500)]}
+    sim = {"selection_train": [{"num_eligible": rng.randint(100, 150),
+                                "num_candidates": rng.randint(100, 150)}
+                               for _ in range(500)]}
+    res = eligibility_parity(real, sim)
+    assert not res["ok"], "a real eligible-set divergence must not be rescued"
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
