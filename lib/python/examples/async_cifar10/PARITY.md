@@ -458,6 +458,48 @@ needs accurate per-trainer durations it does not have.
 (993ff450) and `[SIM_CLOCK_DIAG]` instrumentation remain in tree — harmless (inert), and
 the diag is what diagnosed this. Decide on removal vs. fix when resuming (see §4.1).
 
+### §3e — Fix attempt: the gate predictor learned the WRONG quantity (Jun11, awaiting run)
+
+Resumed §3d. Re-tracing end-to-end pinned **why the gate is inert** to a concrete code
+bug, not a design dead-end: the gate's per-trainer expected-completion predictor
+(`_sim_inflight_expected[end] = sim_send_ts + budget`) learned `budget` from
+**`SIM_ROUND_DURATION`** — which is `max(gpu_time, modeled_budget)` (trainer
+`main.py:804`), i.e. **inflated by GPU contention**. Under contention a trainer's observed
+"budget" spikes, so its *next* expected completion is pushed into the future → the gate's
+`min_stuck < buffered_min` test never trips → the clock laps the in-flight straggler →
+its update commits **past-dated** (`sct << vclock`) → `_round` increments while
+`_advance_sim_clock` is a no-op → version drifts ahead of the clock → staleness inflates
+and compounds (the §3d drift).
+
+**The right predictor is `TRAINING_BUDGET_S`** (= the stable, contention-free modeled
+`training_delay_s`, already on the wire — the async aggregator reads it at
+`asyncfl/top_aggregator.py:606`). Since real `sct = send_ts + max(gpu, budget) ≥ send_ts +
+budget`, the modeled budget is a true **lower bound** on completion, so a gate clamped to
+it can hold the clock until a straggler can *plausibly* have finished, and never overshoot
+a real completion. This is what makes the EXISTING gate machinery fire on genuine
+stragglers (dispatched-long-ago, deep-past true sct) instead of being silenced by a GPU
+spike — no new ordering logic needed, just the correct input.
+
+**Changes (this commit):**
+- Predictor learns from `TRAINING_BUDGET_S` (fallback to `SIM_ROUND_DURATION` for old
+  msgs). Renamed `_sim_trainer_dur`→`_sim_trainer_budget`, `_sim_dur_*`→`_sim_budget_*`.
+- New `[SIM_CLOCK_DIAG]` fields to confirm/refute the hypothesis from the next logs:
+  `gate_holds` (gate should now actually fire — was ~0), `pastdated_commits`,
+  `pastdated_gap_cum`, `pastdated_gap_max` (should fall toward 0 if the fix works),
+  `budget_mean` (sanity: should ≈ real mean training_budget_s, NOT the contention-inflated
+  SIM_ROUND_DURATION mean).
+
+**What the next felix run tells us:**
+- **Fix works:** `gate_holds` > 0, `pastdated_commits`/`pastdated_gap_cum` collapse,
+  staleness stops drifting and lands ≈ `budget/advance` ≈ 2.7 (real 2.79). Watch
+  `barrier_wait_s` rises modestly (genuine holds) and whether `advance`/rounds stay matched
+  — if holding the clock pushes advance down and rounds up, that's the §4.1b throughput
+  residual surfacing, to model in the trainer `sct`, NOT re-fake on the clock.
+- **Fix insufficient:** if `gate_holds` > 0 but `pastdated_commits` stays high, the
+  stragglers arrive *physically after* the gate's failsafe deadline (`RECV_TIMEOUT_WAIT_S`)
+  → the clamp can't wait that long without killing speedup → next attempt is candidate (ii)
+  proper (commit-at-sct reorder / version_at(sct) incorporation), not prediction.
+
 ## §4  Next tasks (sim-real parity)
 
 1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the

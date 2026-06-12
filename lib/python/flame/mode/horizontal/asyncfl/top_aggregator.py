@@ -101,15 +101,25 @@ class TopAggregator(SyncTopAgg):
         self._sim_committed: set = set()
         self._sim_pending_commit: set = set()
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
-        # Virtual-completion gate (§3c): the aggregator's own record of each
-        # in-flight trainer's EXPECTED completion = dispatch vclock + its budget.
-        # Lets _sim_recv_min hold the clock at the earliest expected completion so
-        # it can't race past an update that has virtually completed but is still
-        # stuck in the rxq / chunk-reassembly layer (the straggler source).
+        # Virtual-completion gate (§3c/§3d): the aggregator's own record of each
+        # in-flight trainer's EXPECTED completion = dispatch vclock + its MODELED
+        # budget. Lets _sim_recv_min hold the clock at the earliest expected
+        # completion so it can't race past an update that has virtually completed
+        # but whose message hasn't been drained yet (the straggler source).
+        #
+        # §3d fix: the predictor learns each trainer's budget from the stable,
+        # contention-free TRAINING_BUDGET_S (= modeled training_delay_s), NOT from
+        # SIM_ROUND_DURATION (= max(gpu, budget), inflated by GPU contention). The
+        # modeled budget is a true LOWER BOUND on the real sct (sct = send_ts +
+        # max(gpu, budget) >= send_ts + budget), so clamping the clock to it can
+        # never overshoot a true completion. The old SIM_ROUND_DURATION predictor
+        # over-estimated under contention -> expected pushed into the future ->
+        # gate never fired -> the clock lapped in-flight stragglers -> past-dated
+        # commits inflated version-vs-clock and drifted staleness.
         self._sim_inflight_expected: dict = {}   # end -> expected sim_completion_ts
-        self._sim_trainer_dur: dict = {}         # end -> last observed sim_round_duration
-        self._sim_dur_running_mean: float = 12.0  # default budget for unseen trainers
-        self._sim_dur_n: int = 0
+        self._sim_trainer_budget: dict = {}      # end -> last observed TRAINING_BUDGET_S
+        self._sim_budget_running_mean: float = 12.0  # default budget for unseen trainers
+        self._sim_budget_n: int = 0
 
         self._prev_distribute_weights_success = False
 
@@ -218,9 +228,9 @@ class TopAggregator(SyncTopAgg):
         verifies the clock is now sct-driven."""
         if not hasattr(self, "_sim_inflight_expected"):  # bare-init guard (tests)
             self._sim_inflight_expected = {}
-            self._sim_trainer_dur = {}
-            self._sim_dur_running_mean = 12.0
-            self._sim_dur_n = 0
+            self._sim_trainer_budget = {}
+            self._sim_budget_running_mean = 12.0
+            self._sim_budget_n = 0
         barrier_t0 = time.time()
         deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
@@ -280,7 +290,10 @@ class TopAggregator(SyncTopAgg):
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
                 self._sim_inflight_expected.pop(_stuck_end, None)
                 break
-            # else: loop — keep draining/waiting for the earlier-expected stuck trainer
+            # else: HOLD — an in-flight trainer is expected to complete before the
+            # buffered min, so committing now would lap it (the past-dating source).
+            # Loop to keep draining/waiting for that earlier-expected stuck trainer.
+            self._sim_gate_holds = getattr(self, "_sim_gate_holds", 0) + 1
         barrier_wait = time.time() - barrier_t0
         self._note_sim_fill(barrier_wait, drained_all)
 
@@ -292,15 +305,29 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
-        # Gate bookkeeping: this trainer is no longer in flight; learn its budget
-        # (running mean refines the default for trainers not yet observed).
+        # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
+        # budget (running mean refines the default for trainers not yet observed).
+        # §3d: learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
+        # SIM_ROUND_DURATION (= max(gpu, budget), contention-inflated). The modeled
+        # budget is the stable lower bound the gate needs so it fires on genuine
+        # stragglers instead of being pushed into the future by a GPU spike.
         self._sim_inflight_expected.pop(_end, None)
-        _dur = m.get(MessageType.SIM_ROUND_DURATION) if isinstance(m, dict) else None
-        if _dur is not None:
-            self._sim_trainer_dur[_end] = float(_dur)
-            self._sim_dur_n += 1
-            self._sim_dur_running_mean += (float(_dur) - self._sim_dur_running_mean) / self._sim_dur_n
+        _budget = m.get(MessageType.TRAINING_BUDGET_S) if isinstance(m, dict) else None
+        if _budget is None and isinstance(m, dict):  # fallback for older messages
+            _budget = m.get(MessageType.SIM_ROUND_DURATION)
+        if _budget is not None:
+            self._sim_trainer_budget[_end] = float(_budget)
+            self._sim_budget_n += 1
+            self._sim_budget_running_mean += (float(_budget) - self._sim_budget_running_mean) / self._sim_budget_n
         _commit_gap = self._vclock.now - sct
+        # §3d metric: a "past-dated" commit is one the clock already lapped
+        # (sct < vclock by more than the gate slack) — exactly what inflates
+        # version-vs-clock and drifts staleness. The predictor fix should drive
+        # this count and the cumulative past-dating toward zero.
+        if _commit_gap > _SIM_ORDER_SLACK_S:
+            self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
+            self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
+            self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
             f"barrier_wait_s={barrier_wait:.3f} probed={probed} "
@@ -329,7 +356,12 @@ class TopAggregator(SyncTopAgg):
                 f"buf_past={_past} buf_future={len(_scts) - _past} "
                 f"commit_gap_s={_commit_gap:.1f} barrier_wait_s={barrier_wait:.2f} "
                 f"inflight_tracked={len(self._sim_inflight_expected)} "
+                f"gate_holds={getattr(self, '_sim_gate_holds', 0)} "
                 f"gate_failsafe={getattr(self, '_sim_gate_failsafe', 0)} "
+                f"pastdated_commits={getattr(self, '_sim_pastdated_commits', 0)} "
+                f"pastdated_gap_cum={getattr(self, '_sim_pastdated_gap_cum', 0.0):.0f} "
+                f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.0f} "
+                f"budget_mean={getattr(self, '_sim_budget_running_mean', 0.0):.1f} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
@@ -1157,8 +1189,11 @@ class TopAggregator(SyncTopAgg):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
                 # Record this trainer's expected completion for the gate: dispatch
-                # vclock + its last-observed budget (running-mean default if unseen).
-                _budget = self._sim_trainer_dur.get(end, self._sim_dur_running_mean)
+                # vclock + its last-observed MODELED budget (running-mean default if
+                # unseen). §3d: the modeled budget is a lower bound on the true sct,
+                # so the gate holds the clock until this trainer can plausibly have
+                # completed, never lapping it.
+                _budget = self._sim_trainer_budget.get(end, self._sim_budget_running_mean)
                 self._sim_inflight_expected[end] = _sim_send_ts + _budget
             channel.send_payload(end, _payload)
 
