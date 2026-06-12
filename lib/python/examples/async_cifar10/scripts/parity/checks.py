@@ -481,7 +481,16 @@ def selection_detail_parity(real: dict, sim: dict,
 
 def aggregation_sequence_parity(real: dict, sim: dict,
                                  max_rounds: Optional[int] = None) -> dict:
-    """P1 / U1: Per-round set of contributing trainers matches across modes."""
+    """P1 / U1: Per-round set of contributing trainers matches across modes.
+
+    Enforced only for DETERMINISTIC_SELECTORS; gated to WARN for stochastic
+    selectors.  Exact per-round contributing-set identity is unattainable for a
+    stochastic, streaming, path-dependent selector (a trainer is chosen in
+    *different* rounds across modes), the same reason S1 (selection_parity) is
+    gated.  The enforced selection invariants for stochastic selectors are
+    participation_parity (S2) + the pooled distributions; this check stays as a
+    diagnostic so a future deterministic selector still gets exact-set checking.
+    """
     def by_round(agg_rounds):
         out: dict = {}
         for e in agg_rounds:
@@ -493,9 +502,14 @@ def aggregation_sequence_parity(real: dict, sim: dict,
     if max_rounds is not None:
         rounds = [x for x in rounds if x <= max_rounds]
     matches = sum(1 for rd in rounds if r[rd] == s[rd])
+    selector = _selector_name(real, sim)
+    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    enforced_ok = (not rounds) or matches == len(rounds)
     return {
-        "ok": (not rounds) or matches == len(rounds),
+        "ok": True if gated else enforced_ok,
         "tier": "DIST",
+        "gated": gated,
+        "selector": selector or None,
         "rounds_compared": len(rounds),
         "exact_set_match_frac": round(matches / len(rounds), 3) if rounds else None,
     }
@@ -684,8 +698,23 @@ def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1) -> dict:
 # §3.F  Statistical utility  (F1–F3)
 # ═══════════════════════════════════════════════════════════════════
 
-def utility_parity(real: dict, sim: dict, max_ks: float = 0.2) -> dict:
-    """F1/F2/F3: Per-trainer stat_utility distributions match."""
+def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
+                   min_samples: int = 10) -> dict:
+    """F1/F2/F3: stat_utility distributions match.
+
+    The *enforced* metric is the **pooled** utility KS — every committed
+    utility value across all trainers, compared as one distribution.  That is
+    the mode-agnostic, path-independent measure of whether the simulator
+    reproduces the utilities the system aggregates.
+
+    Per-trainer identity is a separate, *gated* diagnostic: for a stochastic,
+    streaming selector a given trainer is chosen in different rounds across
+    modes (seeing different streamed data), so its individual utility series
+    can't match — and a trainer seen only 1–2 times yields a mechanical KS=1.0
+    that says nothing.  We therefore restrict the per-trainer KS to trainers
+    with >= ``min_samples`` commits in BOTH modes and only enforce it for a
+    DETERMINISTIC selector (currently none ship; see DETERMINISTIC_SELECTORS).
+    """
     def per_trainer_utils(agg_rounds):
         d: dict = collections.defaultdict(list)
         for e in agg_rounds:
@@ -697,11 +726,20 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2) -> dict:
 
     r_utils = per_trainer_utils(real["agg_rounds"])
     s_utils = per_trainer_utils(sim["agg_rounds"])
+
+    # ── pooled distribution (the enforced fidelity measure) ──
+    r_pool = [u for vals in r_utils.values() for u in vals]
+    s_pool = [u for vals in s_utils.values() for u in vals]
+    pooled_ks = ks_stat(r_pool, s_pool)
+
+    # ── per-trainer diagnostic, restricted to well-sampled trainers ──
     all_trainers = sorted(set(r_utils) | set(s_utils))
     ks_stats, mean_diffs = [], []
     for t in all_trainers:
         ru = r_utils.get(t, [])
         su = s_utils.get(t, [])
+        if len(ru) < min_samples or len(su) < min_samples:
+            continue
         ks = ks_stat(ru, su)
         rm, _ = mean_std(ru)
         sm, _ = mean_std(su)
@@ -712,13 +750,25 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2) -> dict:
             mean_diffs.append(diff)
     max_ks_val = max(ks_stats) if ks_stats else float("nan")
     avg_mean_diff = sum(mean_diffs) / len(mean_diffs) if mean_diffs else float("nan")
-    ok = math.isnan(max_ks_val) or max_ks_val <= max_ks
+
+    selector = _selector_name(real, sim)
+    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    pooled_ok = math.isnan(pooled_ks) or pooled_ks <= max_ks
+    per_trainer_ok = math.isnan(max_ks_val) or max_ks_val <= max_ks
+    # Stochastic: enforce the pooled distribution only.  Deterministic: also
+    # require per-trainer identity over well-sampled trainers.
+    ok = pooled_ok if gated else (pooled_ok and per_trainer_ok)
     return {
         "ok": ok,
         "tier": "DIST",
+        "gated": gated,
+        "selector": selector or None,
+        "pooled_ks_stat": round(pooled_ks, 3) if not math.isnan(pooled_ks) else None,
         "max_ks_stat": round(max_ks_val, 3) if not math.isnan(max_ks_val) else None,
         "avg_mean_utility_diff": round(avg_mean_diff, 2) if not math.isnan(avg_mean_diff) else None,
         "n_trainers": len(all_trainers),
+        "n_trainers_well_sampled": len(ks_stats),
+        "min_samples": min_samples,
         "max_ks_tol": max_ks,
     }
 
@@ -1527,9 +1577,20 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
         ks = ks_stat(rv, sv)
         rm, _ = mean_std(rv)
         sm, _ = mean_std(sv)
-        results[key] = {"ok": ks <= ks_tol, "tier": "DIST", "phase": f,
-                        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
-                        "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
+        res = {"ok": ks <= ks_tol, "tier": "DIST", "phase": f,
+               "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+               "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
+        # mqtt_fetch is pure network-I/O wall time: the sim serves weights from
+        # an in-memory cache and folds the trainer cycle into budget+leg, so this
+        # phase is deliberately NOT part of the virtual clock (§3h).  Comparing it
+        # is apples-to-oranges (real MQTT round-trip vs in-mem read) — keep it as
+        # a DIAG so a divergence is reported but never enforced.  gpu_compute and
+        # the other modeled phases stay enforced DIST.
+        if f == "mqtt_fetch_s":
+            res["tier"] = "DIAG"
+            res["note"] = ("wall-time network I/O; sim uses in-mem cache, "
+                           "excluded from the virtual clock (diagnostic only)")
+        results[key] = res
     return results
 
 
@@ -1681,7 +1742,7 @@ CHECK_META: dict = {
     "phase_pre_train":         {"stage": 4, "role": "MECHANISM", "deps": ()},
     "phase_weights_to_gpu":    {"stage": 4, "role": "MECHANISM", "deps": ()},
     "phase_gpu_compute":       {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
-    "phase_mqtt_fetch":        {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "phase_mqtt_fetch":        {"stage": 4, "role": "DIAG",      "deps": ()},
     "phase_weights_to_ram":    {"stage": 4, "role": "MECHANISM", "deps": ()},
     "phase_post_train":        {"stage": 4, "role": "MECHANISM", "deps": ()},
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},

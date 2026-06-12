@@ -121,6 +121,14 @@ class TopAggregator(SyncTopAgg):
         self._sim_budget_running_mean: float = 12.0  # default budget for unseen trainers
         self._sim_budget_n: int = 0
 
+        # §3k post-commit re-dispatch gap: end -> vclock before which it stays out
+        # of selection (= its last commit sct + sim_redispatch_gap_s). Models the
+        # real finish->re-dispatch latency so it does NOT count toward staleness
+        # (which is set by the pre-commit holding) yet still spaces completions.
+        self._sim_cooldown_until: dict = {}
+        _gap = getattr(self.config.hyperparameters, "sim_redispatch_gap_s", 0.0)
+        self._sim_redispatch_gap_s: float = float(_gap) if _gap is not None else 0.0
+
         self._prev_distribute_weights_success = False
 
         self._per_trainer_last_heartbeat_ts = {}
@@ -354,6 +362,15 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
+        # §3k: start this end's post-commit re-dispatch cooldown. Held out of
+        # selection (in _distribute_weights) until vclock >= sct + gap, so it
+        # returns with a fresher model_version -- the gap spaces completions
+        # without counting toward this update's (already-recorded) staleness.
+        _gap = getattr(self, "_sim_redispatch_gap_s", 0.0)
+        if _gap > 0.0:
+            if not hasattr(self, "_sim_cooldown_until"):
+                self._sim_cooldown_until = {}
+            self._sim_cooldown_until[_end] = sct + _gap
         # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
         # budget (running mean refines the default for trainers not yet observed).
         # §3d: learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
@@ -1181,11 +1198,32 @@ class TopAggregator(SyncTopAgg):
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
-            channel.set_curr_unavailable_trainers(
-                trainer_unavail_list=curr_unavail_trainer_list
-            )
         else:
-            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+            curr_unavail_trainer_list = []
+
+        # §3k: exclude ends still in their post-commit re-dispatch cooldown so they
+        # rejoin selection only after vclock passes (their sct + gap), returning with
+        # a fresher model_version. Prune expired entries so the dict stays bounded.
+        _gap = getattr(self, "_sim_redispatch_gap_s", 0.0)
+        _cd = getattr(self, "_sim_cooldown_until", None)
+        if self.simulated and _gap > 0.0 and _cd:
+            _now = self._vclock.now
+            _cooling = [e for e, t in self._sim_cooldown_until.items() if t > _now]
+            for e in list(self._sim_cooldown_until):
+                if self._sim_cooldown_until[e] <= _now:
+                    del self._sim_cooldown_until[e]
+            if _cooling:
+                curr_unavail_trainer_list = list(
+                    set(curr_unavail_trainer_list) | set(_cooling)
+                )
+                logger.debug(
+                    f"[SIM_REDISPATCH_GAP] round={self._round} cooling={len(_cooling)} "
+                    f"gap={self._sim_redispatch_gap_s:.2f}s vclock={_now:.1f}"
+                )
+
+        channel.set_curr_unavailable_trainers(
+            trainer_unavail_list=curr_unavail_trainer_list
+        )
 
         # Expose current vclock to selector so it can attach it to selection events.
         if self.simulated:

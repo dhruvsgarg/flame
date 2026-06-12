@@ -189,15 +189,29 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0
     )
-    # Sim-mode post-compute completion leg added to the trainer sct (NOT the clock;
-    # §3c/§3i). Models the real per-trainer cycle time that follows compute and
-    # precedes the trainer's next dispatch: buffer-residence (queue_wait_s) plus
-    # re-dispatch/re-selection latency. Real felix: cycle 13.3s vs compute 11.7s =>
-    # ~1.6s leg. Sim omits it, so its cycle is short => advance under-charges
-    # (Little: advance = cycle*aggGoal/inflight) without changing staleness
-    # (= cycle/advance, invariant). 0 = off. Calibrate to real (W_cycle - compute).
+    # Sim-mode PRE-commit holding leg added to the trainer sct (NOT the clock;
+    # §3c/§3i/§3k). This is the part of the post-compute cycle that elapses BEFORE
+    # the update commits — buffer-residence (real queue_wait_s) + the agg->trainer
+    # delivery + return legs. Because the clock advances to sct and staleness =
+    # (commit_round - dispatch_round), this leg DOES count toward staleness
+    # (staleness ~= holding/advance, holding = compute + this leg). Measured real
+    # felix: queue_wait 0.61 + delivery 0.06 + post/mqtt 0.03 ~= 0.6s. The POST-commit
+    # re-dispatch latency goes in sim_redispatch_gap_s instead (it must NOT inflate
+    # staleness). 0 = off.
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
+    )
+    # Sim-mode POST-commit re-dispatch gap (§3k). Models the real latency between a
+    # trainer's update committing and that trainer's NEXT dispatch — re-selection +
+    # the agg->trainer model push. Implemented as a per-trainer cooldown: a just-
+    # committed end is held out of selection until vclock >= its sct + this gap, so
+    # it returns with a FRESHER model_version. Unlike sim_completion_leg_s this does
+    # NOT count toward the committing update's staleness (it elapses after commit),
+    # but it spaces completions (raises advance, de-bunches overlap) and preserves
+    # the full trainer cycle = compute + leg + gap. Real felix cycle 13.3s vs holding
+    # 11.79s => ~1.0-1.15s gap. 0 = off (instant re-dispatch, the pre-§3k behavior).
+    sim_redispatch_gap_s: t.Optional[float] = Field(
+        alias="simRedispatchGapSeconds", default=0.0
     )
     # Wall stagger between weight sends (both modes). 0 = none; guard via mqtt-drop plot.
     send_stagger_s: t.Optional[float] = Field(

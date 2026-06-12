@@ -248,6 +248,55 @@ class TestRealVsSimPathEquivalence:
             assert _staleness_seq(sim, self.SENT_VERSION, 2) == ref
 
 
+class TestRedispatchGap:
+    """§3k: the post-commit re-dispatch gap records a per-trainer cooldown
+    (sct + gap) at commit time. _distribute_weights consumes it to hold a
+    just-committed end out of selection until vclock passes the cooldown, so the
+    end returns with a fresher model_version and the gap does NOT inflate the
+    committing update's staleness (which is already set by the pre-commit sct).
+    """
+
+    def test_gap_off_records_no_cooldown(self):
+        # Default (gap unset / 0): the mechanism is inert — no cooldown bookkeeping.
+        durations = {"t1": 10.0, "t2": 5.0}
+        agg = _make_agg()
+        channel = FakeChannel(set(durations), [("t2", 5.0), ("t1", 10.0)])
+        _drain(agg, channel)
+        assert not getattr(agg, "_sim_cooldown_until", {})
+
+    def test_gap_on_records_cooldown_at_sct_plus_gap(self):
+        durations = {"t1": 10.0, "t2": 5.0, "t3": 25.0}
+        gap = 1.5
+        agg = _make_agg()
+        agg._sim_redispatch_gap_s = gap
+        agg._sim_cooldown_until = {}
+        channel = FakeChannel(set(durations),
+                              [("t3", 25.0), ("t2", 5.0), ("t1", 10.0)])
+        committed, _ = _drain(agg, channel)
+        # every committed end gets cooldown = its own sct + gap
+        assert agg._sim_cooldown_until == {
+            end: sct + gap for end, sct in committed
+        }
+        # cooldown is strictly in the future of each commit's sct (gap > 0)
+        for end, sct in committed:
+            assert agg._sim_cooldown_until[end] == pytest.approx(sct + gap)
+
+    def test_gap_does_not_change_commit_order_or_clock(self):
+        # The gap is a post-commit scheduling effect: it must not perturb the
+        # in-cycle commit order or the virtual clock advance.
+        durations = {"a": 3.0, "b": 1.0, "c": 2.0}
+        agg_off = _make_agg()
+        ch_off = FakeChannel(set(durations), [("a", 3.0), ("b", 1.0), ("c", 2.0)])
+        committed_off, tv_off = _drain(agg_off, ch_off)
+        agg_on = _make_agg()
+        agg_on._sim_redispatch_gap_s = 1.0
+        agg_on._sim_cooldown_until = {}
+        ch_on = FakeChannel(set(durations), [("a", 3.0), ("b", 1.0), ("c", 2.0)])
+        committed_on, tv_on = _drain(agg_on, ch_on)
+        assert committed_on == committed_off
+        assert tv_on == tv_off
+
+
 class TestGateProbesLiveInflight:
     """§3g: the gate must probe the LIVE in-flight set (_sim_inflight_expected),
     not just the recv_ends snapshot taken once per cycle. Otherwise it holds the

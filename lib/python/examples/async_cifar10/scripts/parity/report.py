@@ -194,15 +194,23 @@ def _fmt_metric(name: str, res: dict) -> list:
                 lines.append(f"         [!] {iss}")
     elif name == "utility":
         lines += [
-            f"         max_KS={res.get('max_ks_stat')} (<={res.get('max_ks_tol')})  "
-            f"avg_mean_diff={res.get('avg_mean_utility_diff')}  "
-            f"n_trainers={res.get('n_trainers')}",
+            f"         pooled_KS={res.get('pooled_ks_stat')} (<={res.get('max_ks_tol')})  "
+            f"[enforced]  gated(per-trainer)={res.get('gated')}",
+            f"         per-trainer max_KS={res.get('max_ks_stat')} "
+            f"(n>={res.get('min_samples')}: {res.get('n_trainers_well_sampled')}/"
+            f"{res.get('n_trainers')})  avg_mean_diff={res.get('avg_mean_utility_diff')}",
         ]
     elif name == "convergence":
         lines += [
             f"         eval_rounds={res.get('eval_rounds_compared')}  "
             f"avg_acc_diff={res.get('avg_accuracy_diff')} (<={res.get('acc_tol')})  "
             f"avg_loss_diff={res.get('avg_loss_diff')}",
+        ]
+    elif name == "aggregation_sequence":
+        lines += [
+            f"         exact_set_match_frac={res.get('exact_set_match_frac')}  "
+            f"rounds_compared={res.get('rounds_compared')}",
+            f"         selector={res.get('selector')}  gated(WARN)={res.get('gated')}",
         ]
     elif name == "inter_arrival_order":
         lines += [

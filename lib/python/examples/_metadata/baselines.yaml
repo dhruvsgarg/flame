@@ -53,20 +53,32 @@ baselines:
         # per-round-advance gap is a completion-spacing/dispatch issue to model in the
         # trainer sct, NOT to fake on the clock. (History: 0.50 -> 0.16 -> 0.315 -> 0.)
         simCommitOverheadSeconds: 0.0
+        # Jun12 (PARITY.md S3k): POST-commit re-dispatch gap. The original 1.6s leg
+        # (below) put the WHOLE real post-compute cycle BEFORE the commit, so it
+        # inflated staleness (sim 3.45 vs real 2.81 - staleness = holding/advance and
+        # the leg lengthened the holding). Measured real decomposition: holding
+        # (send->commit) = compute 11.71 + queue_wait 0.61 + delivery 0.09 = 11.79s,
+        # then a ~1.0-1.15s POST-commit re-dispatch leg (re-selection + model push)
+        # that does NOT count toward staleness. Split the 1.6: keep ~0.6 pre-commit
+        # (simCompletionLegSeconds below) and move ~1.0 here as a per-trainer cooldown
+        # that holds a just-committed end out of selection until vclock >= sct + gap.
+        # Total cycle (compute + 0.6 + 1.0 = compute + 1.6) is preserved, so advance/
+        # throughput stay matched; staleness drops to ~(compute+0.6)/advance ~= real.
+        simRedispatchGapSeconds: 1.0
     trainer:
       hyperparameters:
         client_notify:
           enabled: "True"
         wait_until_next_avl: "True"
-        # Jun12 (PARITY.md §3i): sim per-trainer cycle was ~2s shorter than real
-        # (sim 11.3s vs real 13.3s; compute 11.7s matches both), so advance
-        # under-charged 3.68 vs 4.32 (Little: advance = cycle*aggGoal/inflight) and
-        # rounds/terminal/commits ran +14%. The gap = real's post-compute cycle leg
-        # (buffer-residence queue_wait ~0.6s + re-dispatch/re-selection latency ~1.0s)
-        # that the sim sct omitted. Added to the trainer sct (NOT the clock; §3c) as a
-        # completion leg = W_cycle(13.3) - compute(11.7) ~= 1.6s. Staleness baseline
-        # (= cycle/advance) is invariant; only advance/throughput are corrected.
-        simCompletionLegSeconds: 1.6
+        # Jun12 (PARITY.md S3i/S3k): PRE-commit holding leg only. The real send->commit
+        # holding beyond compute is just the buffer-residence (real queue_wait ~0.61s)
+        # + agg->trainer delivery/return (~0.09s) ~= 0.6s. This is the part that DOES
+        # count toward staleness (clock advances to sct; staleness = holding/advance).
+        # The remaining ~1.0s of the real post-compute cycle is the POST-commit
+        # re-dispatch latency, modeled separately as simRedispatchGapSeconds (aggregator)
+        # so it spaces completions WITHOUT inflating staleness. Was 1.6 (whole cycle
+        # pre-commit) -> staleness over-charged 3.45 vs real 2.81; split fixes it.
+        simCompletionLegSeconds: 0.6
 
   oracle:
     description: >-
