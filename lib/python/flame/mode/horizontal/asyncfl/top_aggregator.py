@@ -242,9 +242,35 @@ class TopAggregator(SyncTopAgg):
         # complete earlier than the buffered minimum — so the clock can't race past
         # a virtually-completed-but-undelivered update (the straggler source).
         for _pass in range(_SIM_GATE_MAX_PASSES):
+            # Probe set = the recv_ends snapshot (taken once at the top of the
+            # cycle in _aggregate_weights) PLUS any LIVE in-flight trainer whose
+            # MODELED completion is at/before the current buffered minimum.
+            #
+            # §3g fix: the gate (below) holds the clock for the earliest-expected
+            # straggler taken from the live _sim_inflight_expected set, but
+            # to_probe was built ONLY from the stale recv_ends snapshot — so that
+            # straggler was frequently NOT in to_probe, recv_fifo never waited for
+            # it (barrier_wait~0), the gate spun to the pass cap, and the clock
+            # committed past it (the past-dated commit that drifts staleness).
+            # Including it here lets recv_fifo actually block (its timeout is a
+            # real wait) for the trainer the gate is holding for, so updates
+            # commit in completion order and version stays coupled to the clock.
+            # Bounding the extra probes by the buffered minimum avoids blocking on
+            # far-future trainers that legitimately have not completed yet.
+            _bmin = self._sim_buffer.peek_min_ts()
+            _probe_ceiling = (
+                _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
+            )
             to_probe = [
                 e for e in recv_ends
                 if not self._sim_buffer.has(e) and e not in self._sim_committed
+            ]
+            _seen = set(to_probe)
+            to_probe += [
+                e for e, exp in self._sim_inflight_expected.items()
+                if e not in _seen and channel.has(e)
+                and not self._sim_buffer.has(e) and e not in self._sim_committed
+                and exp <= _probe_ceiling
             ]
             if to_probe:
                 probed = max(probed, len(to_probe))

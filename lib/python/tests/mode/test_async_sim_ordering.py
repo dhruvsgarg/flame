@@ -99,6 +99,11 @@ def _make_agg():
     # _sim_recv_min consults _sim_pending_commit to release cross-round-blocked
     # ends; the real __init__ sets it, which __new__ bypasses here.
     agg._sim_pending_commit = set()
+    # Virtual-completion gate state (real __init__ sets these; __new__ bypasses).
+    agg._sim_inflight_expected = {}
+    agg._sim_trainer_budget = {}
+    agg._sim_budget_running_mean = 12.0
+    agg._sim_budget_n = 0
     return agg
 
 
@@ -219,6 +224,7 @@ class TestRealVsSimPathEquivalence:
             if arrival != self.COMPLETION_ORDER:
                 assert _real_path_drain(arrival) != sim
 
+
     def test_sim_staleness_independent_of_arrival(self):
         # staleness is a function of completion order, not arrival order — so
         # sim yields one canonical staleness sequence under any arrival jitter.
@@ -228,3 +234,41 @@ class TestRealVsSimPathEquivalence:
         for perm in itertools.permutations(self.SCENARIO.items()):
             sim = _sim_path_drain(list(perm))
             assert _staleness_seq(sim, self.SENT_VERSION, 2) == ref
+
+
+class TestGateProbesLiveInflight:
+    """§3g: the gate must probe the LIVE in-flight set (_sim_inflight_expected),
+    not just the recv_ends snapshot taken once per cycle. Otherwise it holds the
+    clock for the earliest-expected straggler but never probes it (it's absent
+    from the stale snapshot), spins, and commits past it — the past-dated commit
+    that decouples version from the clock and drifts staleness."""
+
+    def test_commits_earliest_inflight_absent_from_recv_snapshot(self):
+        agg = _make_agg()
+        # T has the earliest modeled completion but is NOT in the recv_ends
+        # snapshot we pass (mimics a trainer that entered RECV after the snapshot
+        # was taken at the top of _aggregate_weights).
+        agg._sim_inflight_expected = {"A": 10.0, "B": 15.0, "T": 1.0}
+        channel = FakeChannel(
+            inflight={"A", "B", "T"},
+            arrival_order=[("A", 10.0), ("B", 15.0), ("T", 1.0)],
+        )
+        msg, (end, _) = agg._sim_recv_min(channel, ["A", "B"])  # snapshot omits T
+        # The earliest completion is committed first and drives the clock — the
+        # gate pulled T in via the live in-flight set instead of lapping it.
+        assert end == "T"
+        assert msg[MessageType.SIM_COMPLETION_TS] == 1.0
+        assert agg._vclock.now == 1.0
+
+    def test_does_not_block_on_future_inflight(self):
+        # An in-flight trainer expected far in the FUTURE (beyond the buffered
+        # minimum) must NOT be waited for — we commit the ready earliest instead.
+        agg = _make_agg()
+        agg._sim_inflight_expected = {"A": 2.0, "FUT": 999.0}
+        channel = FakeChannel(
+            inflight={"A", "FUT"},
+            arrival_order=[("A", 2.0)],  # FUT has not arrived (and shouldn't block)
+        )
+        msg, (end, _) = agg._sim_recv_min(channel, ["A"])
+        assert end == "A"
+        assert agg._vclock.now == 2.0

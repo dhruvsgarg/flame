@@ -546,6 +546,40 @@ trainer drainable so the (short) wait resolves.** Then advance baseline residual
 in-flight ends are probeable; that lets the gate actually receive-and-order the earlier
 completion instead of spinning. Diagnostics to keep: §3e `pastdated_commits`/`gate_holds`.
 
+### §3g — Order fix: probe the LIVE in-flight set, not the stale recv_ends snapshot (Jun12, awaiting run)
+
+Found the concrete bug behind the inert gate. `recv_ends = channel.ends(VAL_CH_STATE_RECV)`
+is snapshotted **once** at the top of `_aggregate_weights` and passed down; `_sim_recv_min`
+built `to_probe` only from that snapshot. But the gate computes the earliest-expected straggler
+`min_stuck` from the **live** `_sim_inflight_expected`. So `min_stuck`'s end was routinely
+**absent from `to_probe`** → `recv_fifo` was never called on it (its `timeout` is a real block,
+but only for ends actually probed) → `barrier_wait≈0`, the gate spun to the pass cap, and the
+clock committed past the straggler (the past-dated commit). The user confirmed the intended
+state machine (a trainer is `RECV` for its whole in-flight life), so the straggler *is*
+receivable — the snapshot just didn't include it.
+
+**Fix:** build the probe set from the live in-flight set — `recv_ends` ∪ {in-flight ends the
+channel `has()` whose modeled completion ≤ buffered-min + slack}. Bounding by the buffered
+minimum means we only block for trainers that *should* complete before what we're about to
+commit, never for legitimately-future ones. Now `recv_fifo`'s timeout actually waits for the
+trainer the gate is holding for → updates commit in completion order → `self._round` advances in
+lockstep with the clock → `version − tres.version` (used by `fedbuff` for `alpha` AND reported
+as staleness — ONE value) is naturally correct. No relabel. Messages arrive in ~0.1s physically,
+so the wait is short; genuine never-arrivers hit the existing `RECV_TIMEOUT_WAIT_S` failsafe.
+
+Guarded by `TestGateProbesLiveInflight` (commits the earliest in-flight even when absent from the
+recv snapshot; does NOT block on a far-future in-flight). 72 mode tests pass.
+
+**What the next felix run must show:**
+- **Order fixed:** `pastdated_commits` / `commit_gap` collapse toward 0; `gate_holds` now
+  correlates with real `barrier_wait_s` > 0 (genuine waits, not spins); `gate_failsafe` stays ~0.
+- **Staleness (raw, the one value):** drift gone; mean lands at the `budget/advance` baseline
+  (≈ 4.4 at advance 2.64), flat across deciles. Then the ONLY residual is advance → §4.1b.
+- **Watch speed:** the honest waits cost wall-time; if `sim_rate` drops a lot, stragglers are
+  process-scheduling-delayed (300 procs) more than expected — acceptable (fidelity > speed) but
+  note it. If `commit_gap` does NOT collapse, the straggler's modeled budget is still
+  mis-estimated (unseen-trainer default) → revisit the predictor default, not the probe.
+
 ## §4  Next tasks (sim-real parity)
 
 1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the
