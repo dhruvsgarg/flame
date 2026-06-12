@@ -18,6 +18,7 @@
 import logging
 import time
 from datetime import datetime, timedelta
+from typing import Optional
 
 import numpy as np
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -120,6 +121,17 @@ class TopAggregator(SyncTopAgg):
         self._sim_trainer_budget: dict = {}      # end -> last observed TRAINING_BUDGET_S
         self._sim_budget_running_mean: float = 12.0  # default budget for unseen trainers
         self._sim_budget_n: int = 0
+
+        # Completion-frame staleness (§3f). Monotone log of (vclock, version) at
+        # each model-version publication, so we can answer "which model version was
+        # current when virtual-time = t?" via _version_at(t). The principled async
+        # staleness of an update is the number of versions published during its
+        # ACTUAL training interval [send_ts, sct] — i.e. version_at(sct) - trained
+        # version. The raw `self._round - trained_version` instead counts versions
+        # up to the *physical commit*, which the sim's receive/reorder pipeline
+        # delays well past sct (commit_gap grows 30->230s over a run), inflating
+        # and drifting staleness even though completions themselves are clean.
+        self._version_vclock_log: list = []  # [(vclock_at_publish, version)], monotone
 
         self._prev_distribute_weights_success = False
 
@@ -387,6 +399,35 @@ class TopAggregator(SyncTopAgg):
                 channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
+
+    def _record_version_vclock(self) -> None:
+        """Append (vclock, version) when the model version advances (§3f).
+
+        Called on each commit; appends only when `self._round` exceeds the last
+        logged version, so the log holds the vclock at which each version became
+        current. Monotone in both fields (version increments, vclock never moves
+        backward), so `_version_at` can bisect it."""
+        if not self.simulated:
+            return
+        if not self._version_vclock_log or self._version_vclock_log[-1][1] < self._round:
+            self._version_vclock_log.append((self._vclock.now, self._round))
+
+    def _version_at(self, t: float) -> Optional[int]:
+        """The model version that was current when virtual-time == ``t``.
+
+        = the largest logged version whose publication vclock <= t. Returns None
+        if ``t`` precedes the first logged version (caller falls back to raw)."""
+        log = self._version_vclock_log
+        if not log:
+            return None
+        lo, hi = 0, len(log)               # bisect_right on the vclock key
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if log[mid][0] <= t:
+                lo = mid + 1
+            else:
+                hi = mid
+        return log[lo - 1][1] if lo > 0 else None
 
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
@@ -764,9 +805,27 @@ class TopAggregator(SyncTopAgg):
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cache_store_s = time.time() - _cs0
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
-            update_staleness_val = self._round - tres.version
+
+            # Staleness = model versions published during the update's training.
+            # Raw counts versions up to the *physical commit*; in sim the receive/
+            # reorder pipeline delays the commit well past the update's true
+            # completion (sct), inflating and drifting this. The principled value
+            # (§3f) counts versions up to the update's true completion vclock=sct,
+            # i.e. version_at(sct) - trained_version. Identical to raw in real mode
+            # (in-order commits) and when commit_gap==0; strictly removes the
+            # reorder-pipeline inflation otherwise. We keep the raw value in
+            # telemetry so a run quantifies how much was pipeline artifact.
+            _stale_raw = self._round - tres.version
+            update_staleness_val = _stale_raw
+            _sct_recv = msg.get(MessageType.SIM_COMPLETION_TS) if isinstance(msg, dict) else None
+            if self.simulated and _sct_recv is not None:
+                self._record_version_vclock()
+                _ver_at_sct = self._version_at(float(_sct_recv))
+                if _ver_at_sct is not None:
+                    update_staleness_val = max(0, _ver_at_sct - tres.version)
             logger.debug(
-                f"Received update from {end}. agg_version: {self._round}, trainer version: {tres.version}, update_staleness_val: {update_staleness_val}"
+                f"Received update from {end}. agg_version: {self._round}, trainer version: {tres.version}, "
+                f"update_staleness_val: {update_staleness_val} (raw={_stale_raw})"
             )
 
             # Populate round statistics vars
@@ -777,7 +836,6 @@ class TopAggregator(SyncTopAgg):
             self._round_update_values["trainer_speed"].append(_trainer_speed_s)
 
             if telemetry.is_enabled():
-                _sct_recv = msg.get(MessageType.SIM_COMPLETION_TS)
                 # Buffer health (sim): commit_gap_s = how far the vclock has run
                 # PAST this update's completion ts (>0 => reorder buffer backed up,
                 # the staleness-inflation signature); residence_rounds = rounds it
@@ -798,6 +856,10 @@ class TopAggregator(SyncTopAgg):
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
                         "vclock_now": self._vclock.now if self.simulated else None,
                         "commit_gap_s": _commit_gap_s,
+                        # §3f: raw (physical-commit-frame) staleness, kept alongside
+                        # the principled completion-frame `staleness` so a run shows
+                        # how much of the old drift was receive/reorder artifact.
+                        "staleness_raw": _stale_raw,
                         "buf_depth": len(self._sim_buffer) if self.simulated else None,
                         "residence_rounds": (self._round - _enq_round) if _enq_round is not None else None,
                         "inflight": self._updates_in_queue,

@@ -500,6 +500,69 @@ spike — no new ordering logic needed, just the correct input.
   → the clamp can't wait that long without killing speedup → next attempt is candidate (ii)
   proper (commit-at-sct reorder / version_at(sct) incorporation), not prediction.
 
+### §3f — Run 221402 result + the principled fix: completion-frame staleness (Jun12)
+
+**The §3e predictor fix did its narrow job but did NOT fix the drift** — this is the
+"Fix insufficient" branch above. Run 221402 (`overhead=0`, modeled-budget predictor):
+- Predictor works: `gate_holds` 0 → **391k** (gate now fires), `budget_mean=11.8` (the
+  stable modeled budget, not the inflated `SIM_ROUND_DURATION`). `gate_failsafe=0`.
+- But staleness still drifts: decile mean **3.53 → 11.74**, overall **8.75** (real 2.79) —
+  ~unchanged from run 012226 (3.65 → 12.26). `barrier_wait_s ≈ 0` on 25/36 diag lines:
+  the gate **spins without waiting** (pass-cap, not failsafe), so it can't prevent the
+  past-dating — and it *fundamentally can't*, because waiting wall-time for a still-running
+  straggler every commit would destroy the speedup.
+
+**New, decisive diagnostics that relocate the root cause:**
+1. **Completions are CLEAN.** Trainer telemetry: `overran=0.0%`, `real_gpu_time≈0.1s`,
+   `sim_round_duration == training_budget` exactly. So `sct = sim_send_ts + modeled_budget`
+   with NO contention inflation. The earlier "late physical arrival under GPU contention"
+   story (§3c) does **not** apply to these runs — messages arrive in ~0.1s.
+2. **`commit_gap` (vclock − committed sct) grows monotonically** across the run:
+   round-band means 30 → 230 s, max 214 → 2911 s, **59% of all 18 239 commits past-dated**
+   (`gap>2`), while `buf_depth ≈ concurrency (30)` stays flat and `probed ≈ 1/commit`.
+   Round-36 smoking gun: `T_v=139` while 12 updates with `sct=3..36` are committed in one
+   sweep (`probed=12`, `buf_depth=39`) — i.e. **completed updates enter the reorder buffer
+   long AFTER the clock passed their sct**, so they commit massively past-dated.
+3. Staleness tracks `commit_gap` exactly: `staleness ≈ budget/advance + commit_gap/advance`.
+
+**Root cause (relocated):** not GPU contention, not the clock formula — it is the
+**receive/reorder pipeline**: a completed update sits un-received (not yet in the buffer)
+while the clock advances via other commits, then is drained late and committed out of
+completion order. Because `staleness = self._round − trained_version` counts versions up
+to the **physical commit**, this late/out-of-order commit inflates the number — and it
+compounds, because every late commit pushes `self._round` further ahead of the version
+that was actually current when the update completed. (Note `staleness_factor=0.0` in
+`optimizer.do` → staleness is a **measurement**, not a model input; the model trajectory
+is unaffected, so this is purely a fidelity-of-measurement bug.)
+
+**The principled fix (IMPLEMENTED, Jun12) — measure staleness in the completion frame.**
+An update's staleness is, by definition, the number of model versions published during its
+**actual training interval** `[sim_send_ts, sct]`. So charge it against the version that was
+current when it *truly completed* (`vclock = sct`), not the version inflated by the receive
+pipeline at physical-commit time:
+`staleness = version_at(sct) − trained_version`.
+This is the physically-correct async semantics and is **identical to the raw value in real
+mode** (commits are in-order there, so `version_at(sct) == self._round`) and whenever
+`commit_gap == 0`; it strictly removes the receive/reorder inflation otherwise. It is NOT
+the §3c reverted band-aid (which relabeled `trained_version` — a fact); here `trained_version`
+is untouched and the *incorporation reference* is moved to completion time.
+
+Implementation (`asyncfl/top_aggregator.py`): a monotone `_version_vclock_log` of
+`(vclock, version)` appended on each version bump (`_record_version_vclock`), and
+`_version_at(t)` bisects it. The raw value is kept in telemetry as `agg_round.staleness_raw`
+so the next run quantifies exactly how much of the 8.75 was pipeline artifact vs. genuine
+`budget/advance` baseline. Guarded by `TestCompletionFrameStaleness` (3 cases).
+
+**What this fixes / does NOT fix (the two causes are now cleanly separated):**
+- **Fixes the DRIFT.** Expected: `staleness` flat at ≈ `budget/advance` (no upward decile
+  trend), `staleness_raw` still drifts (showing the artifact removed). Predicted level
+  ≈ `11.7/2.64 ≈ 4.4`.
+- **Does NOT fix the advance/throughput gap** (`advance` 2.64 vs real 4.52). That residual
+  baseline (4.4 vs real 2.65 ≈ the 1.7× advance ratio) is §4.1b — model the real per-commit
+  round-trip/dispatch cost in the trainer `sct` so completions are spaced like real, NOT on
+  the clock. After §3f lands, the remaining staleness gap should be *exactly* the advance
+  ratio, confirming the decomposition.
+
 ## §4  Next tasks (sim-real parity)
 
 1. **[OPEN — felix staleness STILL drifts after §3c+gate (run 012226, §3d); PAUSED] Overhead off the
@@ -526,11 +589,22 @@ spike — no new ordering logic needed, just the correct input.
      semantics and keeps staleness = real versions-elapsed.
    Decide gate's fate then (remove if (ii), since reorder subsumes it). Keep `[SIM_CLOCK_DIAG]`.
 
-1b. **[STILL OPEN — felix throughput] Close the 2.98 vs 4.52 per-round-advance gap honestly.**
-   Blocked on 1 (staleness). The residual advance gap is a completion-spacing / dispatch-
-   timing issue (and the `mqtt_fetch` 60s-real vs 23s-sim phase divergence). Model the real
-   round-trip cost in the trainer `sct`, NOT on the clock. Diagnose with `[SIM_CLOCK_DIAG]`
-   `buf_past` vs `buf_future` before designing.
+   **UPDATE (§3e/§3f, Jun12):** predictor fix (§3e) made the gate fire (`gate_holds` 0→391k)
+   but did NOT fix the drift (run 221402). New diagnostics relocated the root cause: completions
+   are CLEAN (0% overrun, `sct=send_ts+budget`), but the **receive/reorder pipeline** commits
+   updates long after their `sct` (`commit_gap` 30→230s, 59% past-dated), inflating
+   `self._round − trained_version`. **Implemented candidate (ii) as completion-frame staleness:**
+   `staleness = version_at(sct) − trained_version` (`_version_at` bisects a monotone
+   `_version_vclock_log`). Awaiting the next run to confirm the drift flattens (`staleness` flat,
+   `staleness_raw` still drifts). The gate is now redundant for staleness but left in (inert,
+   harmless); remove once §3f is confirmed. See §3f.
+
+1b. **[STILL OPEN — felix throughput; now the PRIMARY residual after §3f] Close the 2.64 vs 4.52
+   per-round-advance gap honestly.** After §3f removes the drift, the remaining staleness gap
+   should be exactly the advance ratio (`budget/advance` ≈ 4.4 vs real 2.65 ≈ 1.7×). The residual
+   advance gap is a completion-spacing / dispatch-timing issue (the `mqtt_fetch` 60s-real vs
+   23s-sim phase divergence). Model the real round-trip cost in the trainer `sct`, NOT on the
+   clock. Diagnose with `[SIM_CLOCK_DIAG]` `buf_past` vs `buf_future` before designing.
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance
