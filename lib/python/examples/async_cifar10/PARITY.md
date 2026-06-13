@@ -28,13 +28,19 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Current status (Jun 12 — felix sim 161419 vs real 100106, 50-min): **ALL CHECKS PASS**
+### Current status (Jun 12 — felix sim 175309 vs real 100106, 50-min): **1 FAIL (per_round_advance) — §3L fix awaiting run**
 
-**Felix sim parity is GREEN.** §3j landed and fixed the staleness FAIL: on sim 161419
-**U3 staleness PASSES** (sim 3.451 vs real 2.808, KS 0.078, all non-negative — the
-past-dated tail collapsed). `per_round_advance` also flipped to PASS (KS 0.172). Terminal
-(rounds 636/626), total_commits (rel 0.016), accuracy (0.021), loss (0.013) all PASS;
-sim_rate 3.0x. The whole §3 staleness saga is closed.
+**Felix staleness is GREEN; advance regressed on the §3k gap and is fixed by §3L (below).**
+On the latest run 175309 **U3 staleness PASSES** (sim 3.16 vs real 2.808, KS 0.042, all
+non-negative) — §3k tightened it from 3.451 (run 161419). But `per_round_advance` flipped to
+**FAIL** (KS 0.208, mean 4.03 vs 4.32) because the §3k redispatch gap turned out inert on
+throughput (idle pool refilled cooled slots). Both the residual staleness (diff 0.35 > 0.2 bar)
+and the advance FAIL share **one** root cause — computing concurrency pinned at c=30 — now
+addressed by §3L (hold the cooled slot). Terminal (rounds 671/626, rel 0.067), accuracy
+(0.018), loss (0.012) PASS; sim_rate 2.7x. Awaiting the §3L n=300 run to close it.
+
+**Prior (run 161419, leg=1.6):** ALL CHECKS PASSED (staleness 3.451 KS 0.078, advance KS 0.172).
+§3k traded the passing advance for tighter staleness; §3L recovers both.
 
 **Last rung was a checker category-error, not a sim bug (§5, Jun12).** With staleness fixed,
 the only remaining FAILs were P1 (`aggregation_sequence`), F1-3 (`utility`), and
@@ -44,15 +50,19 @@ in-memory simulator cannot and should not reproduce. They were byte-identical ac
 dynamics. Fixed in the checker (see §5); felix now reports **ALL CHECKS PASSED** (2 WARNs:
 `inter_arrival_order`, `phase_mqtt_fetch`).
 
-**Residual staleness tightened — §3k fix implemented, awaiting a run.** Staleness PASSES but
-sim still sits 0.6 high at the mean (3.45 vs 2.81) and wider at the tail (p99 19 vs 9). Root
-cause (from the real LAG_DECOMP, not tuned away): `staleness = holding/advance`; the §3i 1.6s
-leg put the WHOLE real post-compute cycle BEFORE the commit, but real splits it into ~0.6s
-pre-commit holding (counts) + ~1.0s post-commit re-dispatch (does NOT count). **Fix (§3k):**
-split the leg — `simCompletionLegSeconds 1.6→0.6` + new `simRedispatchGapSeconds 1.0` (a
-per-trainer cooldown that holds a just-committed end out of selection until `vclock ≥ sct+gap`,
-so it returns fresher). Cycle (compute+1.6) preserved → advance/throughput stay matched;
-predicted staleness → ~2.84. Guarded by `TestRedispatchGap` (3 tests). Next n=300 run validates.
+**§3k validated the staleness direction but exposed the real lever — §3L fix implemented, awaiting run.**
+Run 175309 (§3k, leg=0.6 + gap=1.0): staleness improved **3.45→3.16** (KS 0.078→0.042, diff to
+real 0.35) but **`per_round_advance` now FAILS** (KS 0.172→0.208, mean 4.24→4.03 vs real 4.32).
+Root cause — **the redispatch gap was inert on throughput.** It only marked a just-committed
+trainer *unavailable*; with a 300-trainer pool the selector refilled the freed slot from idle
+trainers (`inflight_tracked`≈30 throughout), so the gap never extended the effective cycle. With
+in-flight F=30, g=10, holding L=12.3: cycle collapses to L → advance≈L/3=4.03, staleness≈(F/g)·1=3.0+tail.
+Real keeps a **fixed** 30-slot concurrency that *includes* ~3 trainers in ~1s re-dispatch limbo →
+only ~27 computing → that is what yields advance 4.32 AND staleness 2.81 together. **Fix (§3L):** a
+cooling trainer holds its concurrency slot (no idle refill) — `extra = max(0, c−in_flight−cooling_count)`
+in the selector, fed by `channel.properties["sim_cooling_count"]` from the aggregator. Predicted:
+computing≈27.7 → advance≈4.4, staleness≈3.0·(12.3/13.3)=**2.77** (real 2.81). Guarded by
+`TestRedispatchGap` (3) + `TestCoolingHoldsConcurrency` (2). Next n=300 run validates both.
 
 **Ruled out Jun12 (do not re-chase):** GPU contention (T3 overrun=0), re-dispatch-invariant
 violation (`all_selected` excludes in-flight; SEND_TIMEOUT fires 0×), `commit_gap` as a
@@ -71,7 +81,7 @@ oort/feddance still Jun-9 3.5h):
 | feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | 183/185 ✓ | 0.029 ✓ | advance KS-shape 0.57; real `trainer_speed_s` gap |
 | oort | 094917 | 12.0x | 666→701 | 18.49/17.98 | 0/0 | 0.033 ✓ | terminal 10.8%, commits 2.6% (likely noise) |
 | refl | 150131 | 2.31x | 2016→1887 | 1.48/1.74 | 3.02/3.00 ✓ | 0.034 ✓ | overhead 0.10→**0.074** retuned (revalidate); eligibility KS 0.27 |
-| **felix** | 100106/161419 | **3.0x** | 626→636 (+1.6%) | 4.32/4.00 ✓ | 2.81/**3.45** ✓ | **0.021** ✓ | **ALL PASS** (§3j + §5 gating); staleness mean/tail tightened by §3k (awaiting run); WARN: mqtt_fetch, U5 |
+| **felix** | 100106/175309 | **2.7x** | 626→671 (+7.2%) | 4.32/**4.03** ✗ | 2.81/**3.16** ✓ | **0.018** ✓ | **advance KS 0.208 FAIL** (§3k gap inert on throughput); staleness ↓ to 3.16; §3L (hold cooled slot) implemented → predicted advance 4.4 / staleness 2.77, awaiting run; WARN: mqtt_fetch, U5 |
 
 **Per-baseline:** feddance/oort near-pass (Jun9, no fresh run). refl speedup hit;
 overhead retuned 0.074 + eligibility KS 0.27 to revalidate. felix → §3.
@@ -320,7 +330,8 @@ why 8% of sim commits land out of order when arrivals are ~0.1s.**
 | §3f | `version_at(sct)` relabel band-aid | **REVERTED** — felix `fedbuff` consumes staleness for `alpha` (40% of rate); relabel only rewrites telemetry. Proved root cause = commit ORDER (run 150131: advance+throughput matched, staleness still 7.19). |
 | §3g | **probe the LIVE in-flight set** (not the stale `recv_ends` snapshot) | **WORKS by reordering** — `recv_fifo` pops min-`sct` buffered msg first → staleness 7.19→3.57 PASS, acc/loss PASS. **KEPT.** |
 | §3i | **`simCompletionLegSeconds=1.6s`** added to `sct` only (not compute/budget) | advance 3.68→4.00 (mean PASS, throughput/terminal PASS) but **staleness 3.57→4.09 FAIL**. Leg is a **tuned scalar** (calibrated to real W−compute) → models real latency but as a fudge; raised the staleness baseline. UNDER REVIEW — replace with a principled latency model or back out (see §4.1). |
-| §3k | **split the 1.6s leg into pre-commit holding (0.6) + post-commit re-dispatch gap (1.0)** | **closes the residual staleness gap (3.45 vs 2.81) principledly — awaiting run.** See §3k below. |
+| §3k | **split the 1.6s leg into pre-commit holding (0.6) + post-commit re-dispatch gap (1.0)** | **PARTIAL on run 175309: staleness 3.45→3.16 (KS 0.078→0.042) BUT advance 4.24→4.03, KS 0.172→0.208 FAIL.** The gap was implemented as pure availability-exclusion → with a 300-trainer pool the selector **refills the freed slot from idle trainers**, so the gap is INERT on throughput (computing concurrency pinned at c=30, `inflight_tracked`≈30). Effective cycle collapses to holding → advance low, staleness ≈ F/g. Corrected by §3L. |
+| §3L | **cooling trainers hold a concurrency slot (no idle-pool refill)** | **implemented, awaiting run.** `extra = max(0, c − in_flight − cooling_count)` in `async_oort._handle_send_state`; aggregator stamps `channel.properties["sim_cooling_count"] = len(_cooling)` in `_distribute_weights`. Now computing ≈ c − rate·gap ≈ 27.7 (mirrors real's 30-slot cap that includes ~3 re-dispatching trainers) → predicted advance ≈ 4.4 (real 4.32), staleness ≈ (F/g)·(L/C) = 3.0·(12.3/13.3) = **2.77** (real 2.81). Guarded by `TestCoolingHoldsConcurrency`. |
 | §3j | **drain by physical READINESS, not predicted completion** (`_sim_recv_min`) | **VALIDATED on run 161419: staleness 4.09→3.451 PASS** (KS 0.078, tail collapsed), advance KS 0.218→0.172 PASS, terminal/commits/acc/loss PASS. §3g drained in-flight ends only within `buffered_min + slack`, so a SLOW trainer (budget 38-56s, far-future `exp`) was excluded even though its message had physically arrived (wall_lag ~0.1s) → it sat undrained until the clock passed its `sct` → committed past-dated, staleness 33 vs real ~9 (same budget). Tell: tail commits have **residence≈0** (NOT buffer-resident) but **gap≈45**, corr(res,gap)=−0.27. Fix: also admit any in-flight end with a non-empty rxq (`_sim_end_has_ready_msg`), so slow trainers buffer as FUTURES and commit in `sct` order. recv_fifo on a ready end returns immediately → no added blocking. Guarded by `test_drains_ready_inflight_above_ceiling`. |
 
 ### §3k  Residual staleness gap → post-commit re-dispatch gap (Jun12)
@@ -388,11 +399,13 @@ a benign wall-time artifact (in-mem cache is faster), orthogonal to the virtual 
    Felix sim parity is now GREEN end-to-end. Residual checker FAILs were category-errors,
    fixed in §5. The §3i leg scalar can stay (advance mean PASSES at 4.00 vs 4.32); item 1a
    below (replace the leg with a measured latency model) is now purely optional polish.
-1a. **[DONE — §3k implemented, awaiting run] advance-KS shape + the §3i leg scalar.** The §3i
-   `simCompletionLegSeconds=1.6` tuned scalar is replaced by a measured, physically-split model:
-   pre-commit holding 0.6 (in `sct`) + post-commit re-dispatch gap 1.0 (`simRedispatchGapSeconds`,
-   gates re-selection). Closes the residual staleness gap (3.45→~2.84) and should de-bunch
-   overlap (advance KS). See §3k. Next n=300 run validates staleness mean+tail and advance shape.
+1a. **[§3k PARTIAL → §3L implemented, awaiting run] advance-KS + the §3i leg scalar.** §3k (leg
+   0.6 + gap 1.0) tightened staleness (run 175309: 3.45→3.16) but FAILED advance (KS 0.208) — the
+   gap was inert on throughput because the idle pool refilled cooled slots (computing concurrency
+   stayed at c=30). §3L holds the cooled slot against concurrency (`extra = max(0, c−in_flight−
+   cooling_count)`), so computing drops to ~27.7 like real. Predicted advance ≈4.4, staleness
+   ≈2.77. Next n=300 run validates both; if advance KS still >0.2, characterise the slow-trainer
+   far-future-`sct` sawtooth (big `vclock_lead_over_buf` spikes in `[SIM_CLOCK_DIAG]`).
 
 2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
    speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance

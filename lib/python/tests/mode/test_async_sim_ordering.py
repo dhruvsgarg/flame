@@ -297,6 +297,56 @@ class TestRedispatchGap:
         assert tv_on == tv_off
 
 
+class TestCoolingHoldsConcurrency:
+    """§3L: cooling trainers (post-commit re-dispatch limbo) must occupy a
+    concurrency slot so the idle pool can't refill it — otherwise the redispatch
+    gap is inert (computing concurrency pinned at c) and advance/staleness miss
+    parity. The selector subtracts ``sim_cooling_count`` from the free-slot budget.
+    """
+
+    @staticmethod
+    def _stub_selector():
+        from flame.selector.async_oort import AsyncOortSelector
+
+        sel = AsyncOortSelector.__new__(AsyncOortSelector)
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": set()}  # no in-flight
+        sel.all_selected = {}
+        return sel
+
+    def _call(self, sel, concurrency, cooling_count):
+        ends = {f"t{i}": _FakeEnd() for i in range(5)}
+        return sel._handle_send_state(
+            ends=ends,
+            concurrency=concurrency,
+            channel_props={"round": 1, "sim_cooling_count": cooling_count},
+            trainer_unavail_list=[],
+            task_to_perform="train",
+            agg_version_state=(1, 0, 0),
+            trainer_version_states={},
+        )
+
+    def test_full_cooling_holds_all_slots_no_refill(self):
+        # 2 free slots fully consumed by 2 cooling ends -> extra == 0 -> no dispatch.
+        sel = self._stub_selector()
+        assert self._call(sel, concurrency=2, cooling_count=2) == {}
+
+    def test_zero_cooling_proceeds_past_shortcircuit(self):
+        # With no cooling and free slots, selection must NOT short-circuit at
+        # extra == 0; a pacer tripwire (hit only past the short-circuit) proves it.
+        sel = self._stub_selector()
+
+        class _Tripwire(Exception):
+            pass
+
+        def _boom():
+            raise _Tripwire()
+
+        sel.pacer = _boom
+        with pytest.raises(_Tripwire):
+            self._call(sel, concurrency=2, cooling_count=0)
+
+
 class TestGateProbesLiveInflight:
     """§3g: the gate must probe the LIVE in-flight set (_sim_inflight_expected),
     not just the recv_ends snapshot taken once per cycle. Otherwise it holds the

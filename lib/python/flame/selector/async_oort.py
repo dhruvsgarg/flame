@@ -1393,7 +1393,14 @@ class AsyncOortSelector(AbstractSelector):
 
         logger.debug(f"Current selected_ends: {selected_ends}")
 
-        extra = max(0, concurrency - len(selected_ends))
+        # §3L: in sim, ends still in their post-commit re-dispatch cooldown occupy a
+        # concurrency slot (committed, but not yet re-dispatched) — exactly as a real
+        # trainer's slot is held during its ~1s re-selection+model-push. Subtract them so
+        # the idle pool does NOT refill the freed slot. Without this the redispatch gap is
+        # inert (computing concurrency stays pinned at c) → effective cycle collapses to
+        # holding, advance runs low and staleness ~F/g instead of (F/g)·(L/C). See §3k/§3L.
+        cooling_count = int(channel_props.get("sim_cooling_count", 0))
+        extra = max(0, concurrency - len(selected_ends) - cooling_count)
 
         logger.debug(
             f"c: {concurrency}, "

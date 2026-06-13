@@ -1206,6 +1206,7 @@ class TopAggregator(SyncTopAgg):
         # a fresher model_version. Prune expired entries so the dict stays bounded.
         _gap = getattr(self, "_sim_redispatch_gap_s", 0.0)
         _cd = getattr(self, "_sim_cooldown_until", None)
+        _cooling = []
         if self.simulated and _gap > 0.0 and _cd:
             _now = self._vclock.now
             _cooling = [e for e, t in self._sim_cooldown_until.items() if t > _now]
@@ -1220,6 +1221,11 @@ class TopAggregator(SyncTopAgg):
                     f"[SIM_REDISPATCH_GAP] round={self._round} cooling={len(_cooling)} "
                     f"gap={self._sim_redispatch_gap_s:.2f}s vclock={_now:.1f}"
                 )
+        if self.simulated:
+            # §3L: hold cooling trainers' slots against the selector's concurrency budget
+            # (see async_oort._handle_send_state) so the idle pool can't refill them. This
+            # is what makes the redispatch gap actually extend the effective cycle.
+            channel.properties["sim_cooling_count"] = len(_cooling)
 
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
