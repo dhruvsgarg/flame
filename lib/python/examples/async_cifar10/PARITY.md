@@ -283,11 +283,26 @@ pass*. "Dep" = upstream prerequisites.
 
 ## §3  Felix sim parity — root-cause log
 
-**Real pipeline (n=300, ~50-min):** trainer computes ~11.7s, then a ~1.6s
-post-compute leg (queue-wait 0.6s + re-dispatch ~1.0s) before its next dispatch →
-real **cycle 13.3s**, advance 4.32s, inflight ~30, **staleness 2.81, commits in true
+**Real pipeline (n=300, ~50-min):** trainer computes ~11.7s, then a ~1.0s
+post-compute leg before its next dispatch → real **cycle ~12.96s**, advance 4.32s,
+all_selected ~30 (of which ~27.6 actively computing), **staleness 2.81, commits in true
 completion order**. The whole job is to reproduce that in sim where the trainer does
 *not* sleep its budget (computes in real GPU ms, stamps a modeled completion `sct`).
+
+**Why all_selected=30 but only ~27.6 compute — verified from LAG_DECOMP (Jun12).** The
+post-compute leg is **serial-aggregator scheduling, NOT network**: `wall_lag` (send→commit)
+= compute 11.92 + model-push 0.067 + update-mqtt 0.015 + post 0.012 = **12.01s** (MQTT round
+trip <0.1s); then `queue_wait` **0.55s** (update sits in the single-threaded recv queue before
+aggregation — *pre*-commit, counts toward staleness: 12.01/4.32≈2.78≈real 2.81) + re-selection/
+send/`time.sleep(0.1)` **~0.4s** (*post*-commit, does not count). So cycle 12.96 = holding 12.57
++ ~0.4 post-commit → computing fraction 11.92/12.96 = 0.92 → ~27.6 of the 30 slots compute at any
+instant; the other ~2.4 are between commit and next dispatch. This is a genuine property of the
+serial aggregator loop, not an MQTT delay — so sim must reproduce it for fidelity (§3L holds the
+cooled slot). **Drops ruled out:** down-link receptions (9364) ≥ dispatches (9166) and
+`SEND_TIMEOUT`/abandon events = 0 → nothing lost (the 273 dup receptions are harmless MQTT
+redeliveries). `analyze_run` `mqtt_delivery_plots` now plots per-round drops + CDF (flat 0 =
+healthy) instead of raw sent/received counts; the old plot was also silently broken (dispatch log
+went DEBUG → empty sends). NOT chasing the leg as a bug.
 
 ### Current state (Jun12, sim 120543 vs real 100106)
 

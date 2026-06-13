@@ -277,6 +277,12 @@ _SIM_BARRIER_WAIT_RE = re.compile(r"\[SIM_BARRIER\].*?barrier_wait_s=([0-9.]+)")
 _AGG_CACHE_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?cache_store_s=([0-9.]+)")
 _AGG_OPT_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?optimizer_s=([0-9.]+)")
 _SEND_RE = re.compile(r"sending weights to \S+ (?:with )?model_version[=:] ?(\d+)")
+# Per-send dispatch line moved to DEBUG (out of INFO logs), so count dispatches from
+# the INFO [DISTRIBUTE_TIMING] roll-up instead (robust source for the drops check).
+_DISTRIBUTE_TIMING_RE = re.compile(r"\[DISTRIBUTE_TIMING\] round=(\d+) n_sends=(\d+)")
+# The aggregator frees a dispatched-but-never-returned model after SEND_TIMEOUT_WAIT_S;
+# that is the definitive "in-flight model lost" (drop) signal. Healthy runs see 0.
+_SEND_TIMEOUT_RE = re.compile(r"Removing end \S+ from self\.all_selected since")
 
 _LAG_DECOMP_KEYS = ("wall_lag_s", "agg_to_trainer_s", "compute_s",
                     "post_wait_s", "mqtt_lag_s", "queue_wait_s", "process_s")
@@ -309,6 +315,8 @@ def parse_agg_log(telemetry_dir: str) -> dict:
         "sim_barrier_waits": [], "sim_barrier_by_round": defaultdict(list),
         "agg_cache_store": [], "agg_optimizer": [],
         "sends_by_round": defaultdict(int),
+        "dispatched_by_round": defaultdict(int),
+        "send_timeouts": 0,
     }
     logs = glob.glob(os.path.join(run_dir, "*aggregator*.log"))
     if not logs:
@@ -319,7 +327,8 @@ def parse_agg_log(telemetry_dir: str) -> dict:
             # Cheap gate: dispatch lines carry "sending weights"; everything else
             # we parse is bracket-tagged. Skip the rest before any regex.
             tagged = "[" in line
-            if not tagged and "sending weights" not in line:
+            if (not tagged and "sending weights" not in line
+                    and "from self.all_selected since" not in line):
                 continue
             if "[SEND_RECV_LAG]" in line:
                 m = _LAG_RE.search(line)
@@ -353,10 +362,16 @@ def parse_agg_log(telemetry_dir: str) -> dict:
                 m2 = _AGG_OPT_RE.search(line)
                 if m2:
                     out["agg_optimizer"].append(float(m2.group(1)))
+            elif "[DISTRIBUTE_TIMING]" in line:
+                m = _DISTRIBUTE_TIMING_RE.search(line)
+                if m:
+                    out["dispatched_by_round"][int(m.group(1))] += int(m.group(2))
             elif "sending weights" in line:
                 m = _SEND_RE.search(line)
                 if m:
                     out["sends_by_round"][int(m.group(1))] += 1
+            elif "from self.all_selected since" in line:
+                out["send_timeouts"] += 1
     _AGG_LOG_CACHE[run_dir] = out
     return out
 
@@ -1467,17 +1482,25 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
 
 
 def mqtt_delivery_plots(records, out, stamp, tdir):
-    """MQTT delivery sanity (both modes): cumulative weight DISPATCHES (parsed
-    from the aggregator log) vs cumulative trainer RECEPTIONS (task_recv events).
+    """MQTT DROP sanity (both modes): is any dispatched model lost over the broker?
 
-    With the send-stagger removed the aggregator bursts the whole batch at once;
-    if the broker drops messages, dispatched-but-never-received accumulates and
-    the gap rises without bound. A healthy run keeps the gap ≈ in-flight count
-    (it never grows), so this is the guard for stagger=0.
+    A model dispatched by the aggregator should reach the trainer within the network
+    latency (~0.06s here), so cumulative dispatched − received tracks only the handful
+    of messages in transit; subtract that legitimate in-transit floor and the result —
+    the *drops* curve — should sit flat at 0. A genuine broker drop steps it UP and it
+    never recovers. Cross-checked against the aggregator's own SEND_TIMEOUT count (a
+    dispatched model declared lost after SEND_TIMEOUT_WAIT_S): the definitive drop
+    signal, which is 0 in a healthy run.
+
+    Dispatched count comes from the INFO [DISTRIBUTE_TIMING] roll-up (the per-send
+    line is DEBUG); received count from trainer task_recv events.
     """
+    import numpy as _np
     d = _sub(out, "system"); saved = []
-    sends_by_round = parse_agg_log(tdir)["sends_by_round"]
-    if not sends_by_round:
+    agg = parse_agg_log(tdir)
+    dispatched_by_round = agg["dispatched_by_round"] or agg["sends_by_round"]
+    send_timeouts = agg.get("send_timeouts", 0)
+    if not dispatched_by_round:
         return saved  # no agg log → nothing to check
     recvs_by_round: dict[int, int] = defaultdict(int)
     for r in records:
@@ -1485,49 +1508,43 @@ def mqtt_delivery_plots(records, out, stamp, tdir):
             rd = r.get("round")
             if rd is not None:
                 recvs_by_round[int(rd)] += 1
-    rounds = sorted(r for r in (set(sends_by_round) | set(recvs_by_round)) if r >= 1)
+    rounds = sorted(r for r in (set(dispatched_by_round) | set(recvs_by_round)) if r >= 1)
     cs = cr = 0
-    xs, cum_send, cum_recv, cum_gap = [], [], [], []
+    xs, deltas = [], []
     for r in rounds:
-        cs += sends_by_round.get(r, 0); cr += recvs_by_round.get(r, 0)
-        xs.append(r); cum_send.append(cs); cum_recv.append(cr); cum_gap.append(cs - cr)
-    gap = cs - cr
-    pct = (100.0 * gap / cs) if cs else 0.0
+        nd = dispatched_by_round.get(r, 0); nr = recvs_by_round.get(r, 0)
+        cs += nd; cr += nr
+        xs.append(r); deltas.append(nd - nr)
+    # Per-round delivery delta = dispatched_r − received_r. The cumulative gap carries
+    # the (constant) in-flight offset, so we difference it away: in balance every model
+    # dispatched is delivered the same round, so the delta hovers at 0. A broker drop
+    # shows as a sustained POSITIVE delta (dispatched not received). The CDF then piles
+    # its mass at 0. Cross-checked against SEND_TIMEOUTs, the aggregator's own count of
+    # in-flight models declared lost — the definitive drop signal (0 = none).
+    run_pos = 0; max_run = 0  # longest run of positive (undelivered) deltas
+    for v in deltas:
+        run_pos = run_pos + 1 if v > 0 else 0
+        max_run = max(max_run, run_pos)
     p = ph.line_plot(
-        {"cumulative dispatched (agg)": (xs, cum_send),
-         "cumulative received (task_recv)": (xs, cum_recv)},
-        "round", "cumulative messages",
-        f"MQTT delivery: dispatched={cs} received={cr} "
-        f"gap={gap} ({pct:.1f}%) — gap≈in-flight is healthy, growth=drops",
-        d, "mqtt_delivery_accounting.pdf", stamp=stamp)
+        {"dispatched − received (per round)": (xs, deltas)},
+        "round", "messages dropped over MQTT (per round)",
+        f"MQTT drops per round — hovers at 0 = none "
+        f"(SEND_TIMEOUTs={send_timeouts}, net={cs - cr}; dispatched={cs} received={cr})",
+        d, "mqtt_drops_over_rounds.pdf", stamp=stamp)
     if p: saved.append(p)
-    p = ph.line_plot(
-        {"dispatched − received": (xs, cum_gap)},
-        "round", "cumulative dispatched − received",
-        "MQTT undelivered gap over rounds (flat ≈ in-flight = healthy; rising = drops)",
-        d, "mqtt_undelivered_gap_over_rounds.pdf", stamp=stamp)
+    p = ph.cdf_plot(
+        deltas, "per-round (dispatched − received)",
+        f"MQTT drops CDF — mass at 0 = no drops (SEND_TIMEOUTs={send_timeouts})",
+        d, "mqtt_drops_cdf.pdf", stamp=stamp)
     if p: saved.append(p)
-    # Drops callout: a healthy run's gap oscillates around the steady-state
-    # in-flight count; a genuine drop makes the gap step UP and never recover.
-    # Estimate "lost" = final_gap − median(gap) (steady-state in-flight). If >0,
-    # SHOUT it (a no-data-style red callout reads at a glance); always show the
-    # per-round Δ(dispatched−received) histogram so a spike is visible.
-    import numpy as _np
-    steady = float(_np.median(cum_gap)) if cum_gap else 0.0
-    lost = max(0, int(round(gap - steady)))
-    deltas = [cum_gap[i] - cum_gap[i - 1] for i in range(1, len(cum_gap))]
-    if lost > 0:
+    # Definitive drop verdict: SEND_TIMEOUT is unambiguous; a long unbroken run of
+    # positive deltas is the heuristic backstop for slow/partial loss.
+    if send_timeouts > 0 or max_run >= 10:
         p = ph.no_data_plot(
-            f"MQTT message drops suspected: ~{lost} lost "
-            f"(final gap {gap} vs steady-state in-flight ≈ {steady:.0f})",
+            f"MQTT message drops suspected: SEND_TIMEOUTs={send_timeouts}, "
+            f"longest undelivered run={max_run} rounds",
             d, "mqtt_drops_callout.pdf", stamp=stamp,
-            note=f"dispatched={cs} received={cr}; gap grew {lost} beyond in-flight")
-        if p: saved.append(p)
-    if deltas:
-        p = ph.hist_plot(deltas, "per-round Δ(dispatched − received)",
-                         f"MQTT per-round delivery delta "
-                         f"(spike = drop; ~{lost} net lost, 0 = balanced)",
-                         d, "mqtt_delivery_delta_hist.pdf", stamp=stamp, vline=0.0)
+            note=f"dispatched={cs} received={cr} net={cs - cr}; a healthy run is flat 0")
         if p: saved.append(p)
     return saved
 
