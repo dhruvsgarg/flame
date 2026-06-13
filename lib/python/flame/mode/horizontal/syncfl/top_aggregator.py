@@ -201,10 +201,6 @@ class TopAggregator(Role, metaclass=ABCMeta):
         self._sim_commit_overhead_s = float(
             getattr(self.config.hyperparameters, "sim_commit_overhead_s", 0.0) or 0.0
         )
-        # Wall stagger between weight sends (both modes); pure broker pacing.
-        self._send_stagger_s = float(
-            getattr(self.config.hyperparameters, "send_stagger_s", 0.0) or 0.0
-        )
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -745,8 +741,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if self.simulated:
             msg[MessageType.SIM_SEND_TS] = _sim_send_ts
         _payload = channel.dumps(msg)
-        _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
-        for idx, end in enumerate(selected_ends):
+        _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
+        for end in selected_ends:
             logger.debug(
                 f"sending weights to {end} with model_version: {self._round} for task: {task_to_perform}"
             )
@@ -758,15 +754,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
-
-            # Broker pacing only (no effect on commit ordering); 0 = off.
-            if idx < len(selected_ends) - 1 and self._send_stagger_s > 0:
-                time.sleep(self._send_stagger_s); _stag_acc += self._send_stagger_s
         if selected_ends:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
-                f"send_wall_s={time.time() - _send_t0 - _stag_acc:.3f} "
-                f"(excl stagger={_stag_acc:.2f}s)"
+                f"send_wall_s={time.time() - _send_t0:.3f}"
             )
 
     def inform_end_of_training(self) -> None:

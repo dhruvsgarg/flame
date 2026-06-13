@@ -169,7 +169,8 @@ def _fmt_metric(name: str, res: dict) -> list:
         ]
     elif name == "participation":
         lines += [
-            f"         avg_diff={res.get('avg_diff')}  max_diff={res.get('max_diff')}",
+            f"         share_KS={res.get('share_ks')} (<={res.get('ks_tol')})  "
+            f"avg_diff={res.get('avg_diff')}  max_diff={res.get('max_diff')} (raw diag)",
         ]
     elif name == "trainer_speed":
         if res.get("n_real"):

@@ -22,6 +22,7 @@ EVENT_TRAINER_ROUND = "trainer_round"  # per-round trainer timing/availability
 EVENT_UTIL_DISPARITY = "util_disparity"  # streamed-prefix vs full-pool utility
 EVENT_AVAIL_CHANGE = "avail_change"  # trainer availability state transition
 EVENT_TASK_RECV = "task_recv"        # trainer received a task from aggregator
+EVENT_TASK_SEND = "task_send"        # trainer finished & sent the update back
 
 KNOWN_EVENTS = frozenset(
     {
@@ -33,6 +34,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_UTIL_DISPARITY,
         EVENT_AVAIL_CHANGE,
         EVENT_TASK_RECV,
+        EVENT_TASK_SEND,
     }
 )
 
@@ -241,3 +243,30 @@ def build_task_recv(
         "avl_state": avl_state,
     }
     return EVENT_TASK_RECV, fields
+
+
+def build_task_send(
+    *,
+    round_num: int,
+    trainer_id: str,
+    task_to_perform: Optional[str],
+    wall_recv_ts: Optional[float],
+    wall_send_ts: float,
+    time_mode: str,
+) -> tuple[str, dict[str, Any]]:
+    """Trainer finished a task and sent the update back to the aggregator.
+
+    Unlike trainer_round (emitted inside train(), BEFORE the real-mode budget
+    sleep), this fires from _send_weights — AFTER the sleep and the upload — so
+    ``[wall_recv_ts, wall_send_ts]`` brackets the trainer's true busy/in-flight
+    window in real mode.  That interval is the sound basis for real concurrency
+    in validate_real (PARITY §4.0): trainer_round's own ts cannot bracket it.
+    """
+    return EVENT_TASK_SEND, {
+        "round": round_num,
+        "trainer_id": trainer_id,
+        "task_to_perform": task_to_perform,
+        "wall_recv_ts": wall_recv_ts,
+        "wall_send_ts": wall_send_ts,
+        "time_mode": time_mode,
+    }

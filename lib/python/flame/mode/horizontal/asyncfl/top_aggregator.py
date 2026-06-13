@@ -1258,8 +1258,8 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             msg[MessageType.SIM_SEND_TS] = _sim_send_ts
         _payload = channel.dumps(msg)
-        _send_t0 = time.time(); _stag_acc = 0.0  # [DISTRIBUTE_TIMING]
-        for idx, end in enumerate(ends_list):
+        _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
+        for end in ends_list:
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
                 recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
@@ -1304,14 +1304,10 @@ class TopAggregator(SyncTopAgg):
                 self._round
             ] = datetime.now()
 
-            # Broker pacing only (no effect on sim-time ordering); 0 = off.
-            if idx < len(ends_list) - 1 and self._send_stagger_s > 0:
-                time.sleep(self._send_stagger_s); _stag_acc += self._send_stagger_s
         if ends_list:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(ends_list)} "
-                f"send_wall_s={time.time() - _send_t0 - _stag_acc:.3f} "
-                f"(excl stagger={_stag_acc:.2f}s)"
+                f"send_wall_s={time.time() - _send_t0:.3f}"
             )
 
     def compose(self) -> None:

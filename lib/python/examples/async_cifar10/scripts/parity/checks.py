@@ -122,7 +122,9 @@ def load_agg_jsonl(path: str) -> dict:
 def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
     """Load all trainer_*.jsonl from a telemetry dir.
 
-    Returns {short_id: {"task_recv": [...], "trainer_round": [...]}}.
+    Returns {short_id: {"task_recv": [...], "trainer_round": [...],
+    "task_send": [...]}}.  task_send (§4.0) carries [wall_recv_ts, wall_send_ts]
+    bracketing the trainer's true busy window for real-concurrency validation.
     """
     if not telemetry_dir:
         return {}
@@ -130,7 +132,7 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
     result: dict = {}
     for f in sorted(d.glob("trainer_*.jsonl")):
         short_id = f.stem[-4:]
-        task_recv_evs, trainer_round_evs = [], []
+        task_recv_evs, trainer_round_evs, task_send_evs = [], [], []
         with open(f) as fp:
             for line in fp:
                 line = line.strip()
@@ -145,9 +147,12 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
                     task_recv_evs.append(e)
                 elif ev == "trainer_round":
                     trainer_round_evs.append(e)
+                elif ev == "task_send":
+                    task_send_evs.append(e)
         result[short_id] = {
             "task_recv": task_recv_evs,
             "trainer_round": trainer_round_evs,
+            "task_send": task_send_evs,
         }
     return result
 
@@ -638,8 +643,17 @@ def inter_arrival_order_parity(real: dict, sim: dict,
 # §3.E  Update processing  (P1–P3)
 # ═══════════════════════════════════════════════════════════════════
 
-def participation_parity(real: dict, sim: dict, warn_avg_diff: float = 10.0) -> dict:
-    """S2 / P1: Per-trainer participation counts match within tolerance."""
+def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """S2: per-trainer participation *share* distributions match (scale-free).
+
+    The enforced selection invariant for stochastic selectors.  Raw count
+    `avg_diff` grows with run length, so it failed long runs (refl 8587 rounds)
+    even when the participation *distribution* matched.  We instead compare each
+    trainer's participation **share** (count / total commits) via KS, which is
+    length-independent.  A genuine *shape* divergence (a real selection-mix
+    difference) still FAILs — that is a signal to localize at Stage 3, not to
+    suppress (PARITY §4.0/§4.3).  `avg_diff`/`max_diff` kept as raw diagnostics.
+    """
     def counts(agg_rounds):
         c = collections.Counter()
         for e in agg_rounds:
@@ -649,12 +663,22 @@ def participation_parity(real: dict, sim: dict, warn_avg_diff: float = 10.0) -> 
 
     rc, sc = counts(real["agg_rounds"]), counts(sim["agg_rounds"])
     trainers = set(rc) | set(sc)
+    if not trainers:
+        return {"ok": True, "tier": "DIST", "note": "no contributing_trainers"}
+    tot_r = sum(rc.values()) or 1
+    tot_s = sum(sc.values()) or 1
+    r_shares = [rc.get(t, 0) / tot_r for t in trainers]
+    s_shares = [sc.get(t, 0) / tot_s for t in trainers]
+    ks = ks_stat(r_shares, s_shares)
     diffs = [abs(rc.get(t, 0) - sc.get(t, 0)) for t in trainers]
-    avg = sum(diffs) / len(diffs) if diffs else 0.0
+    avg = sum(diffs) / len(diffs)
+    ok = not math.isnan(ks) and ks <= ks_tol
     return {
-        "ok": avg <= warn_avg_diff,
+        "ok": ok,
         "tier": "DIST",
-        "avg_diff": round(avg, 2),
+        "share_ks": round(ks, 3) if not math.isnan(ks) else None,
+        "ks_tol": ks_tol,
+        "avg_diff": round(avg, 2),   # raw, scale-dependent (diagnostic only)
         "max_diff": max(diffs) if diffs else 0,
     }
 

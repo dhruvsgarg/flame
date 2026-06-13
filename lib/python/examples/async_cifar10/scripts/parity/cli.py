@@ -128,6 +128,10 @@ def main() -> None:
                         help="Write summary PNG to this path")
     parser.add_argument("--diagnostics", action="store_true",
                         help="(reserved) Run diagnostic single-run analysis scripts")
+    # ── real-correctness validation (§4.0) ──
+    parser.add_argument("--validate-real", metavar="DIR", default=None,
+                        help="Validate a real run's own invariants (concurrency/"
+                             "selection/aggregation) before using it as reference")
     # ── batch mode ──
     parser.add_argument("--batch", action="store_true",
                         help="Auto-discover sim/real pairs per baseline and run all")
@@ -142,6 +146,11 @@ def main() -> None:
     _scripts_dir = str(Path(__file__).resolve().parents[1])
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
+
+    # ── real-correctness validation (§4.0) ───────────────────────────────────
+    if args.validate_real:
+        from parity.validate_real import validate_real
+        sys.exit(0 if validate_real(args.validate_real) else 1)
 
     # ── batch mode ───────────────────────────────────────────────────────────
     if args.batch:

@@ -197,10 +197,6 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
     )
-    # Wall stagger between weight sends (both modes). 0 = none; guard via mqtt-drop plot.
-    send_stagger_s: t.Optional[float] = Field(
-        alias="sendStaggerSeconds", default=0.0
-    )
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound. PARITY §3m.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1

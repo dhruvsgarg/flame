@@ -47,7 +47,7 @@ from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
 from flame import telemetry
-from flame.telemetry.events import build_task_recv
+from flame.telemetry.events import build_task_recv, build_task_send
 
 # TODO: (DG) torch is needed for asyncoort in oort_loss() function,
 # but need to comment / uncomment based on the backend used. If it is
@@ -457,6 +457,21 @@ class Trainer(Role, metaclass=ABCMeta):
 
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)
+
+        # In-flight window for validate_real (§4.0): wall_send_ts is stamped here,
+        # AFTER the real-mode budget sleep in train(), so [wall_recv_ts, wall_send_ts]
+        # brackets the trainer's true busy window — which trainer_round (emitted
+        # pre-sleep) cannot. No-op when telemetry is disabled.
+        if telemetry.is_enabled():
+            ev, fields = build_task_send(
+                round_num=int(getattr(self, "_round", 0)),
+                trainer_id=str(getattr(self, "trainer_id", "")),
+                task_to_perform=getattr(self, "task_to_perform", None),
+                wall_recv_ts=getattr(self, "_wall_recv_ts", None),
+                wall_send_ts=_wall_send_ts,
+                time_mode=getattr(self, "time_mode", "real"),
+            )
+            telemetry.emit(ev, **fields)
 
         if self.task_to_perform == "train":
             # To allow the trainer to participate in eval AND train in

@@ -28,49 +28,132 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### ⚠️ Status: MAJOR UPDATE PENDING after the 4h overnight runs (Jun 12)
+### Status: refreshed from the Jun 13 4h n=300 runs
 
-All four baselines (felix / oort / refl / feddance, real + sim) are queued for fresh 4h
-n=300 runs. The numbers below predate them and will be **rewritten** once the logs land —
-treat them as the hypotheses those runs validate, not current truth.
+All four baselines re-run real+sim for a 14400s (4h) budget at n=300, α=0.1. Numbers below are
+from those runs (`experiments/parity_<baseline>.json`; real/sim dirs dated `20260613`). Eval
+cadence = every 50 FL rounds; accuracy = the **last reported eval** per run.
 
-**Done this cycle (code landed):**
-- **felix staleness (§3g/§3j):** drain in-flight by physical rxq readiness, not predicted
-  completion → past-dated tail collapsed (staleness 7.19→~3.45, KS 0.078).
-- **felix advance/concurrency (§3L):** cooling (committed, not-yet-redispatched) ends hold a
-  concurrency slot so the idle pool can't refill — makes the redispatch gap actually bite.
-- **real speed-up to ~c=30 (§3m):** drop the real-only settle-sleep brake
-  (`realDistributeSettleSeconds=0`) so the aggregator is compute-bound; sim then matches at
-  c=30 with `simRedispatchGapSeconds=0` (§3L slot-hold goes inert).
-- **feddance/fedavg staleness BUG fixed:** base sync aggregator built `TrainResult` without a
-  version → staleness reported the round number (the bogus ~183). Now stamps the trained-on
-  version. oort/refl unaffected (different aggregator).
-- **MQTT drop plot:** rewritten to per-round drops + CDF (flat 0 = healthy); old plot was
-  silently dead (dispatch log → DEBUG). Verified drops=0 on real felix.
-- **checker category-errors (§5):** P1/utility/phase_mqtt gated for stochastic/in-mem sim.
-- **speed-up (Jun10):** in-mem cache, no recv-poll/stagger/re-serialize, lazy weight-deserialize.
+**A. Cross-baseline performance** (same 4h budget, so rounds + attained accuracy are comparable):
 
-**To evaluate after the overnight runs:**
-- **felix:** does real hold ~30 computing (queue_wait collapses) at advance ~3.97 / staleness
-  ~3.0, and does sim match? Retune `simCompletionLegSeconds` (0.6 placeholder → ~0.1–0.3) vs the
-  new real `LAG_DECOMP` if advance KS misses. Watch the slow-trainer far-future-`sct` sawtooth.
-- **feddance:** real staleness now meaningful — confirm it's small and real≈sim; revisit the
-  advance KS-shape (0.57) and `trainer_speed_s` gap.
-- **oort:** refresh the Jun-9 numbers (terminal 10.8%, commits 2.6% — likely noise).
-- **refl:** revalidate overhead 0.074 retune + eligibility KS 0.27.
+| baseline | FL rounds r/s | final test-acc r/s | final loss r/s |
+|---|---|---|---|
+| refl     | 9054 / 8587 | **0.579** / 0.565 | 3.20 / 3.06 |
+| felix    | 3402 / 3913 | **0.579** / 0.578 | **1.18** / 1.17 |
+| oort     |  777 /  839 | 0.508 / 0.480 | 1.34 / 1.51 |
+| feddance |  504 /  579 | 0.428 / 0.494 | 1.79 / 1.67 |
+
+**Read:** felix ≈ refl at the top (~0.579 real acc, within eval noise — felix does *not* strictly
+out-accuracy refl), but felix reaches it in ~⅓ the rounds and at the **lowest loss** (1.18);
+refl's accuracy comes with a high/miscalibrated loss (3.2). oort (0.51) and feddance (0.43) trail.
+So felix is co-best on accuracy and best on loss + round-efficiency.
+
+**B. Parity status** (lowest broken rung; full report per-baseline JSON):
+
+| baseline | speedup | enforced pass | clock (K2/K3) | staleness r/s | root-cause FAIL(s) | verdict |
+|---|---|---|---|---|---|---|
+| refl     | 1.73x | **31/36** | PASS (terminal ✓) | 2.93 / 2.87 ✓ | trainer_speed, participation | FAIL (inputs) |
+| felix    | 1.32x | 28/36 | K3b rel 0.112 | 2.80 / 4.75 (KS 0.166) | overhead_residual, participation | 1 ROOT (clock under-charge) |
+| oort     | 14.2x | 28/36 | PASS | 0 / 0 ✓ | trainer_speed, selection_detail, training_budget | FAIL (inputs) |
+| feddance | 15.8x | 26/36 | K3 KS 0.58 | 0 / 0 ✓ | trainer_speed, training_budget, participation | FAIL (inputs) |
+
+> **felix is "1 root from green," not "outcomes match."** The +15% rounds gap (sim 3913 vs real
+> 3402) and the staleness/terminal/commits FAILs are **all downstream of one mechanism**: K3b
+> under-charges 0.046s/commit, which compounds (0.046 × ~10 commits/round × ~3900 rounds ≈ the 11%).
+> Fix K3b (§4.1) and throughput/terminal/commits/staleness close together. The §3m latency-knob
+> zeroing (`simRedispatchGapSeconds=0`, `simCommitOverheadSeconds=0`) is what removed that 0.046s.
+
+**C. Full ladder** (✓/✗ + the actual margin vs tolerance; from `parity_<baseline>.json`):
+
+| stage·check (tol) | felix | oort | refl | feddance |
+|---|---|---|---|---|
+| 1c P3 trainer_speed (KS≤.10) | ✓ .086 | ✗ .125 | ✗ .153 | ✗ .197 |
+| 1m K3b overhead (rel≤.10) | ✗ .112 | ✓ .053 | ✓ .076 | ✗ .111 |
+| 1e K3 advance (KS≤.20) | ✗ .214 | ✓ .193 | ✓ .128 | ✗ .581 |
+| 1e K2 throughput (rel≤.10) | ✗ .112 | ✓ .052 | ✓ .072 | ✗ .110 |
+| 2 A2 eligibility | ✓ | ✓ (mean) | ✓ .226 | ✓ |
+| 2 A3 timebase | ✓ | ✓ | ✓ | ✓ |
+| 3 S3/4 num_chosen (rel≤.05) | ✓ .018 | ✗ .177 | ✓ .000 | ✓ .000 |
+| 3 S2 participation (avg_diff) | ✗ 18.5 | ✗ 11.1 | ✗ 227 | ✗ 17.4 |
+| 4 T2 budget (KS≤.10) | ✓ .005 | ✗ .208 | ✓ .061 | ✗ .133 |
+| 4 T gpu_compute (KS≤.25) | ✓ .025 | ✓ .029 | ✓ .025 | ✓ .073 |
+| 5 U5 arrival (WARN, rho) | −.47 | −.44 | −.47 | −.31 |
+| 6 U3 staleness r/s | ✗ 2.8/4.75 | ✓ 0/0 | ✓ 2.9/2.9 | ✓ 0/0 |
+| 6 P1 agg_seq (gated WARN) | ✓ | ✓ | ✓ | ✓ |
+| 7 F1-3 utility (pooled KS) | ✓ .022 | ✓ .030 | ✓ .040 | ✓ .065 |
+| 8 K8 terminal (rel≤.10) | ✗ .110 | ✗ .054 | ✓ .072 | ✗ .114 |
+| 8 U2 commits (rel≤.02) | ✗ .110 | ✗ .054 | ✗ .072 | ✗ .114 |
+| 8 C1 accuracy (≤.05) | ✓ .032 | ✓ .042 | ✓ .024 | ✓ .024 |
+| 8 C2 loss (≤.15) | ✓ .065 | ✗ .182 | ✗ .194 | ✗ .155 |
+
+Reading the table: **refl** clock GREEN, only CONTROL inputs (P3) + participation + loss left.
+**felix** every FAIL traces to K3b (the one cell to fix). **oort/feddance** root at the speed/budget
+input (P3+T2) which propagates to advance (feddance K3 .581) and convergence (loss). **S2
+participation and U5 arrival fail on all four** — path-dependent for stochastic selectors (§4 item 4).
+**Speedup** is GPU-bound, not clock-bound: felix/refl run the most commits so compress least (1.3–1.7x);
+oort/feddance run few commits → 14–16x. **pytest ladder guards** (`tests/mode/`, 40 tests) all PASS —
+these are code regression guards, separate from this comparator.
+
+### Verification tracker — current metric → post-fix hypothesis (next run)
+
+For every FAIL / needs-improvement row, the **current number** (Jun13 4h run) and the **predicted
+number/trend after the staged fix lands**. Fill the "next-run actual" mentally against the hypothesis:
+a hit confirms the mechanism; a miss is a regression to localize. Rows with no staged fix are expected
+**unchanged** — any movement there is a regression signal (the fix touched something it shouldn't).
+
+**A. felix — staged fix: `simRedispatchGapSeconds 0→1.0` (§4.1); + new `task_send` concurrency check (§4.0)**
+
+| check (tol) | current (Jun13) | hypothesis after fix (next run) |
+|---|---|---|
+| §4.0 concurrency (NEW) | not measured (old check vacuous) | mean ≈ 27–28 computing of c≈30, peak ≤ ~40 (1.3× overcommit), double_dispatch=0 |
+| K3b overhead_residual (rel≤.10) | ✗ .112 — sim advance 3.68 vs real 4.14 | ✓ <.10 — gap spaces completions, sim advance →~4.1 |
+| K3 advance (KS≤.20) | ✗ .214 | ✓ ≤.20 |
+| K2 throughput (rel≤.10) | ✗ .112 — sim 3913 vs real 3402 rounds (+15%) | ✓ ≤.10 — rounds gap shrinks as advance rises |
+| U3 staleness (r/s) | ✗ sim 4.75 / real 2.80 (KS .166) | ✓ sim →~2.8 — slot-hold drops L/C (de-bunches overlap) |
+| K8 terminal (rel≤.10) | ✗ .110 | ✓ ≤.10 — closes with throughput |
+| U2 commits (rel≤.02) | ✗ .110 | →~0 — closes with throughput (downstream of K2) |
+| P3 trainer_speed (KS≤.10) | ✓ .086 | unchanged (✓) — not touched by the gap |
+
+**B. oort / refl / feddance — NO fix staged this run (§4.2 selection-mix not yet coded)**
+
+Expected **unchanged**; recorded so the next run flags any unexpected drift. §4.0 now shows real
+selection is sound (redispatch=0), so the divergence is a **sim-selection** question to localize.
+
+| baseline · check (tol) | current (Jun13) | hypothesis after fix (next run) |
+|---|---|---|
+| oort P3 trainer_speed (KS≤.10) | ✗ .125 | unchanged until §4.2 — commit-weighted by selection mix |
+| oort T2 budget (KS≤.10) | ✗ .208 — real 16.4 vs sim 12.3 (per-trainer identical) | unchanged until §4.2 (selection-mix, not input) |
+| oort S3/4 num_chosen (rel≤.05) | ✗ .177 | unchanged until §4.2 |
+| oort C2 loss (≤.15) | ✗ .182 | unchanged until §4.2 (downstream of selection mix) |
+| refl P3 (KS≤.10) / participation (share-KS≤.2) | ✗ .153 / ✗ .497 | unchanged — genuine selection-mix divergence (§4.3 not suppressed) |
+| refl C2 loss (≤.15) | ✗ .194 | unchanged until §4.2 |
+| feddance P3 / K3 advance (KS) | ✗ .197 / ✗ .581 | unchanged — speed-mix drives the advance KS |
+| feddance T2 / participation / C2 | ✗ .133 / ✗ .527 / ✗ .155 | unchanged until §4.2 |
+
+**What landed (validated this run set):**
+- **refl overhead retune 0.10→0.074 (§4.2):** K3b residual −0.12 (rel 0.076), K3/K2 PASS, **terminal_state
+  now PASS**, eligibility KS 0.48→0.226. refl clock is GREEN; only CONTROL inputs + participation remain.
+- **feddance/fedavg staleness bug fix:** staleness now **0/0** (was the bogus ~183/185). oort also 0/0.
+- **felix §3m (speed real up):** removing the real settle-sleep brake brought real advance 4.32→4.14,
+  staleness 2.81→2.80; **P3 trainer_speed now PASS** (KS 0.086). §5 checker fixes hold (P1/utility/
+  phase_mqtt gated → PASS). Only K3b (0.046s/commit) + S2 participation remain.
+
+**What's still open:**
+- **felix — K3b overhead_residual rel 0.112** (just over 0.1): sim under-advances (3.68 vs 4.14) and
+  over-stales (4.75 vs 2.80). §3m's `simRedispatchGapSeconds=0` **over-overlaps** — completions bunch.
+  Re-enabling a small redispatch gap (§3k/§3L) or modeling the 0.046s/commit overhead closes it.
+- **trainer_speed / training_budget is the common root** for refl/oort/feddance — the real trainer
+  speed model fed to sim differs (oort: budget real 16.42 vs sim 12.27; feddance: 12.44 vs 10.95),
+  which then drives feddance's advance KS 0.58. Stage-1/4 CONTROL **inputs**, not the clock formula.
+- **S2 participation** fails on all four (avg_diff 18–227) — for stochastic selectors per-trainer
+  chosen-counts are path-dependent over 4h. Likely the next §5-style gating fix (mirror P1/S1), not a
+  dynamics bug; S3/4 in-flight + S2 means match where checked.
 
 **Ruled out (do not re-chase):** GPU contention (T3 overrun=0); re-dispatch-invariant violation
-(SEND_TIMEOUT fires 0×); `commit_gap` as a staleness proxy; MQTT drops (0, both directions);
-the felix post-compute leg as a "bug" (it's serial-aggregator scheduling, not network — §3).
-
-**Pre-overnight scorecard (stale — to be replaced):**
-
-| baseline | run | sim_rate | rounds r→s | advance r/s | staleness r/s | acc |
-|---|---|---|---|---|---|---|
-| feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | ~~183/185~~ bug-fixed | 0.029 |
-| oort | 094917 | 12.0x | 666→701 | 18.49/17.98 | 0/0 | 0.033 |
-| refl | 150131 | 2.31x | 2016→1887 | 1.48/1.74 | 3.02/3.00 | 0.034 |
-| felix | 100106/175309 | 2.7x | 626→671 | 4.32/4.03 | 2.81/3.16 | 0.018 |
+(SEND_TIMEOUT fires 0×; **and now confirmed at the trainer level — §4.0 `task_send` intervals give
+double-dispatch=0 on all baselines; the old "redispatch 4549/26988" was a validator bookkeeping
+artifact, not real**); `commit_gap` as a staleness proxy; MQTT drops (0, both directions); the felix
+post-compute leg as a "bug" (it's serial-aggregator scheduling, not network — §3).
 
 ---
 
@@ -289,7 +372,10 @@ The dominant slice of the post-compute leg is removable: a real-only `time.sleep
 selection, hit twice per commit (~0.2s ≈ 46% of the 0.43s/commit budget), which inflates
 `queue_wait` and the re-dispatch gap. New knob `realDistributeSettleSeconds` (default 0.1 =
 legacy), set to **0** for felix → aggregator compute-bound, real holds ~30, advance ~3.97,
-staleness ~3.0. Sim then matches at c=30 with `simRedispatchGapSeconds=0` (§3L slot-hold inert).
+staleness ~3.0. **Validated (Jun13):** real came down to advance 4.14, staleness 2.80 ✓.
+**But the sim-side prediction was wrong** — with `simRedispatchGapSeconds=0` sim *over-overlaps*
+(advance 3.68, staleness 4.75; K3b rel 0.112), so the §3k/§3L gap was load-bearing after all.
+See §4.1: restore a small gap.
 **CPU pinning:** aggregator already pinned to a reserved set (`runner.py`); do NOT pin to 1 core
 (its MQTT thread shares CPU with the FL loop). The loop is latency-bound, not CPU-bound, so
 pinning is second-order — the sleep removal is the win.
@@ -329,7 +415,7 @@ why 8% of sim commits land out of order when arrivals are ~0.1s.**
 | §3g | **probe the LIVE in-flight set** (not the stale `recv_ends` snapshot) | **WORKS by reordering** — `recv_fifo` pops min-`sct` buffered msg first → staleness 7.19→3.57 PASS, acc/loss PASS. **KEPT.** |
 | §3i | **`simCompletionLegSeconds=1.6s`** added to `sct` only (not compute/budget) | advance 3.68→4.00 (mean PASS, throughput/terminal PASS) but **staleness 3.57→4.09 FAIL**. Leg is a **tuned scalar** (calibrated to real W−compute) → models real latency but as a fudge; raised the staleness baseline. UNDER REVIEW — replace with a principled latency model or back out (see §4.1). |
 | §3k | **split the 1.6s leg into pre-commit holding (0.6) + post-commit re-dispatch gap (1.0)** | **PARTIAL on run 175309: staleness 3.45→3.16 (KS 0.078→0.042) BUT advance 4.24→4.03, KS 0.172→0.208 FAIL.** The gap was implemented as pure availability-exclusion → with a 300-trainer pool the selector **refills the freed slot from idle trainers**, so the gap is INERT on throughput (computing concurrency pinned at c=30, `inflight_tracked`≈30). Effective cycle collapses to holding → advance low, staleness ≈ F/g. Corrected by §3L. |
-| §3L | **cooling trainers hold a concurrency slot (no idle-pool refill)** | **implemented, awaiting run.** `extra = max(0, c − in_flight − cooling_count)` in `async_oort._handle_send_state`; aggregator stamps `channel.properties["sim_cooling_count"] = len(_cooling)` in `_distribute_weights`. Now computing ≈ c − rate·gap ≈ 27.7 (mirrors real's 30-slot cap that includes ~3 re-dispatching trainers) → predicted advance ≈ 4.4 (real 4.32), staleness ≈ (F/g)·(L/C) = 3.0·(12.3/13.3) = **2.77** (real 2.81). Guarded by `TestCoolingHoldsConcurrency`. |
+| §3L | **cooling trainers hold a concurrency slot (no idle-pool refill)** | **implemented; inert in the Jun13 run because §3m set the gap to 0.** `extra = max(0, c − in_flight − cooling_count)` in `async_oort._handle_send_state`; aggregator stamps `channel.properties["sim_cooling_count"] = len(_cooling)` in `_distribute_weights`. Predicted advance ≈4.4 / staleness ≈2.77 **only with a non-zero gap** — the Jun13 run ran gap=0 (§3m) and got advance 3.68 / staleness 4.75, so §3L never engaged. §4.1: re-test §3L with the gap restored. Guarded by `TestCoolingHoldsConcurrency`. |
 | §3j | **drain by physical READINESS, not predicted completion** (`_sim_recv_min`) | **VALIDATED on run 161419: staleness 4.09→3.451 PASS** (KS 0.078, tail collapsed), advance KS 0.218→0.172 PASS, terminal/commits/acc/loss PASS. §3g drained in-flight ends only within `buffered_min + slack`, so a SLOW trainer (budget 38-56s, far-future `exp`) was excluded even though its message had physically arrived (wall_lag ~0.1s) → it sat undrained until the clock passed its `sct` → committed past-dated, staleness 33 vs real ~9 (same budget). Tell: tail commits have **residence≈0** (NOT buffer-resident) but **gap≈45**, corr(res,gap)=−0.27. Fix: also admit any in-flight end with a non-empty rxq (`_sim_end_has_ready_msg`), so slow trainers buffer as FUTURES and commit in `sct` order. recv_fifo on a ready end returns immediately → no added blocking. Guarded by `test_drains_ready_inflight_above_ceiling`. |
 
 ### §3k  Residual staleness gap → post-commit re-dispatch gap (Jun12)
@@ -363,7 +449,9 @@ matched (they currently PASS); predicted staleness → (compute+0.6)/advance ≈
 2.81. Not a relabel (§3f dead-end): the update genuinely commits earlier (smaller `sct`), so the
 real number `fedbuff` consumes drops. Guarded by `TestRedispatchGap` in
 `tests/mode/test_async_sim_ordering.py` (3 tests: cooldown recorded at sct+gap; off-by-default
-inert; commit order/clock unchanged). **Awaiting an n=300 run to confirm the predicted landing.**
+inert; commit order/clock unchanged). **Status (Jun13):** not exercised — §3m turned the gap off
+(`simRedispatchGapSeconds=0`), and that run confirms the gap is needed (sim over-overlaps without
+it: advance 3.68 vs 4.14, staleness 4.75 vs 2.80). §4.1: turn the gap back on and re-run.
 
 ### §5  Checker category-errors (Jun12) — the real "final disparity"
 
@@ -390,35 +478,132 @@ relabel (§3f — fedbuff uses the real number); adding `mqtt_fetch` (57s) to `s
 a benign wall-time artifact (in-mem cache is faster), orthogonal to the virtual clock
 — NOT chased. A2 eligibility point-mass handled (means match + CV<0.01 rescue).
 
-## §4  Next tasks (sim-real parity)
+## §4  Plan: close the remaining parity gaps (proposed Jun13)
 
-1. **[DONE — §3j validated on run 161419] staleness FAIL (4.09 → 3.451 PASS).** Tail
-   collapsed exactly as predicted (KS 0.078, all non-negative, past-dated fraction → ~0).
-   Felix sim parity is now GREEN end-to-end. Residual checker FAILs were category-errors,
-   fixed in §5. The §3i leg scalar can stay (advance mean PASSES at 4.00 vs 4.32); item 1a
-   below (replace the leg with a measured latency model) is now purely optional polish.
-1a. **[§3k PARTIAL → §3L implemented, awaiting run] advance-KS + the §3i leg scalar.** §3k (leg
-   0.6 + gap 1.0) tightened staleness (run 175309: 3.45→3.16) but FAILED advance (KS 0.208) — the
-   gap was inert on throughput because the idle pool refilled cooled slots (computing concurrency
-   stayed at c=30). §3L holds the cooled slot against concurrency (`extra = max(0, c−in_flight−
-   cooling_count)`), so computing drops to ~27.7 like real. Predicted advance ≈4.4, staleness
-   ≈2.77. Next n=300 run validates both; if advance KS still >0.2, characterise the slow-trainer
-   far-future-`sct` sawtooth (big `vclock_lead_over_buf` spikes in `[SIM_CLOCK_DIAG]`).
+Three fronts, ranked by ROI, each tagged with what already worked/failed so we don't re-walk
+dead-ends. **Overriding principle (§4.0):** parity ≠ goal. The goal is a *correct* simulator.
+Real is the reference **only after it is itself shown correct** — never tune sim to match a wrong
+real, and never add a scalar fudge where a mechanism is called for.
 
-2. **[APPLIED — revalidate] Refl overhead retune 0.10 → 0.074.** The lazy-deserialize
-   speedup (1.18 → 2.31x) made the sync barrier faster, so 0.10 now over-charges (advance
-   1.74 vs 1.48, residual −0.26 → `0.10 + (−0.26/K=10) = 0.074`). Applied in
-   `_metadata/baselines.yaml`. Next refl run should pass `per_round_advance`,
-   `overhead_residual`, `throughput`, `terminal_state`, `total_commits`.
+### ⏸ SESSION CHECKPOINT — resume here (Jun13b, real-validator made sound)
 
-3. **[OPEN] Refl eligibility drift, KS 0.48 → 0.27 (still >0.2).** Improved as `avail_timebase`
-   (A3) now passes (max_rel 0.015), but the eligible set still shifts. Recheck after the
-   0.074 retune (better throughput → more matched coverage); if it persists, it is a
-   genuine eligible-set divergence to localize at Stage 2, not a clock artifact.
+**Done this session (working tree, NOT yet run/committed to git):**
+- **§4.0 validate_real — REWRITTEN ON A SOUND BASIS.** The first cut was *unsound*: it checked
+  `effective_c` (absent in **all** selection events → concurrency check was vacuous, printed `[OK]`
+  having compared nothing) and cleared in-flight on `contributing_trainers` (which omits
+  overcommit-discarded completions → every later legit re-selection miscounted as a re-dispatch
+  breach: the bogus oort 4549 / refl 26988). Root telemetry facts: aggregator `in_flight` **==
+  num_chosen** (per-round selected count, NOT concurrency); `trainer_round.ts` is emitted *before*
+  the real-mode budget sleep (≈ task-start, not completion). **Neither agg field can measure real
+  concurrency or re-dispatch.** Fix: new **`task_send`** trainer event (fired from `_send_weights`,
+  after the sleep + upload) carrying `[wall_recv_ts, wall_send_ts]` — the true busy window.
+  `validate_real` now computes peak/mean concurrency = interval overlap, and a double-dispatch = two
+  overlapping intervals for one trainer (serial loop ⇒ exactly 0 unless telemetry is corrupt).
+  **Open §4.0 diagnostic RESOLVED:** the high redispatch count was a bookkeeping artifact, NOT a real
+  breach. Guarded by `scripts/parity/test_validate_real.py` (8 tests).
+  ⚠️ **Needs a re-run to validate:** existing runs predate `task_send`, so concurrency now correctly
+  reports `[WARN]/[FAIL] task_send_present=False` instead of a false `[OK]`. Re-run any baseline → its
+  real run validates concurrency soundly.
+- **§4.1 felix gap — STAGED (config), AWAITING SIM RUN.** `_metadata/baselines.yaml` felix
+  `simRedispatchGapSeconds 0.0 → 1.0`. Mechanism in code + test-guarded. **NEXT: user runs felix
+  sim**, then re-check K3b/K3/K2/staleness/terminal. If advance overshoots 4.14, set gap to real's
+  *measured* LAG_DECOMP leg (not whatever passes K3b).
+- **Knob retirement — `sendStaggerSeconds` REMOVED.** Off in every baseline (default 0, dead `>0`
+  branch) and its rationale (MQTT send-burst drops) is ruled out (drops 0 both directions). Dropped
+  the config field + the dead sleep branch + `_stag_acc` accounting in both top_aggregators'
+  `[DISTRIBUTE_TIMING]`. Behavioral no-op (knob was always 0). The other sim knobs (leg/overhead/gap/
+  settle) are all in active use across baselines — NOT inert, kept.
+- **§4.2 speed/budget — LOCALIZED, NO CODE YET.** Per-trainer assigned budget is **byte-identical**
+  real vs sim; the T2/P3 FAILs are **commit-weighted artifacts of a divergent selection mix** (oort
+  real selects slow trainers more: weighted budget 16.4 vs sim 12.3). NOT an input-model bug — it's
+  Stage-3 selection, same root as refl/feddance participation. NEXT: determine *which* mode selects
+  correctly — now unblocked, since §4.0 shows real selection is sound (redispatch=0, chosen≤eligible).
+- **§4.3 participation — DONE (checker).** `checks.py::participation_parity` scale-free (per-trainer
+  **share** KS, tol 0.2). felix 0.057 ✓, oort 0.184 ✓; refl 0.497 ✗, feddance 0.527 ✗ (**genuine**
+  selection-mix divergence — correctly NOT suppressed). `report.py` updated.
 
-4. **[OPEN] Re-run oort + feddance** on the post-fix code at 45-min to refresh their
-   Jun-9 numbers (oort terminal_state 10.8%, total_commits 2.6%; feddance advance
-   KS-shape + the real `trainer_speed_s` telemetry, item 6 below).
+**To continue (in order):**
+1. Re-run felix (gap=1.0, §4.1) **+ any baseline you want to validate real for** — the new `task_send`
+   event lands only in fresh runs. Then `parity_check.py --validate-real <real_dir>` confirms real
+   concurrency soundly, and `--batch` re-checks felix parity.
+2. §4.2: localize the selection-mix divergence (oort/refl/feddance) — which mode selects correctly,
+   and why. Real side is now admissible (§4.0 sound), so divergence is a sim-selection question.
+3. Not yet git-committed: `flame/config.py`, `flame/telemetry/events.py`, both `top_aggregator.py`,
+   `syncfl/trainer.py`, `baselines.yaml`, `checks.py`, `report.py`, `cli.py`, `validate_real.py`,
+   new `test_validate_real.py`, this `PARITY.md`. Re-run `tests/mode/` (40) + `tests/launch` +
+   `scripts/parity/test_*.py` (15) before committing — all green as of this session.
+
+### §4.0  Validate that REAL is correct before treating it as ground truth  [PREREQUISITE]
+Before matching sim to real on any axis, prove real obeys its own invariants — otherwise we'd be
+fitting sim to a bug. Check each from existing logs + a targeted test; only then is the real number
+admissible as the parity target.
+
+| axis | real invariant to confirm | sound signal | status |
+|---|---|---|---|
+| **concurrency** | computing fraction = compute/cycle; no in-flight pile-up | peak/mean overlap of `task_send` `[wall_recv_ts, wall_send_ts]` intervals (true busy window) | needs a fresh run (event is new); no static `c` to assert `≤ c` — concurrency is emergent, so it's reported not bounded |
+| **selection** | chosen ⊆ eligible; no double-select while in-flight | `num_chosen ≤ num_eligible` (agg); double-dispatch = overlapping intervals for one trainer (trainer telemetry) | sound; re-dispatch breach == 0 by construction (serial trainer loop) |
+| **aggregation** | agg_goal cycles 1..K; staleness ≥ 0 & matches LAG_DECOMP holding/advance | agg_round agg_goal_count + staleness | sound; real staleness 2.80 = holding 11.59/advance 4.14 ✓ |
+
+**DONE (sound rewrite).** `scripts/parity/validate_real.py` + `parity_check.py --validate-real <dir>`,
+guarded by `test_validate_real.py`. The **key correction**: the aggregator's `in_flight` is just
+`num_chosen` (not concurrency), `effective_c` is absent, and `trainer_round.ts` is pre-sleep — so the
+first cut's concurrency/re-dispatch checks were vacuous/artifactual (the bogus oort 4549/refl 26988
+redispatch counts came from clearing in-flight only on `contributing_trainers`, which omits
+overcommit-discarded completions). The sound basis is the new **`task_send`** event:
+`[wall_recv_ts, wall_send_ts]` brackets the trainer's true busy window (it fires after the real-mode
+budget sleep). **Open §4.0 redispatch diagnostic is RESOLVED — 0 real breaches; it was bookkeeping.**
+Concurrency now reports honestly: existing (pre-`task_send`) runs get `task_send_present=False` and
+do **not** falsely pass. Re-run a baseline to validate its real concurrency.
+
+### §4.1  felix — restore the post-commit redispatch gap  [config; mechanism already in code]
+**Problem:** felix's only enforced root is K3b (0.046 s/commit under-charge); it cascades to
+throughput (+15% rounds), terminal, commits, and **staleness 2.80→4.75**. One mechanism, six FAILs.
+**Worked:** §3j drain-by-readiness (staleness 7.19→3.45); §3k/§3L leg(0.6)+gap(1.0)+slot-hold
+(predicted advance 4.4 / staleness 2.77). **Failed:** §3m zeroed the gap on the theory that
+speeding real up (settle=0) lets sim match at gap=0 — the Jun13 run **refutes** it (gap=0 → sim
+over-overlaps: advance 3.68, staleness 4.75). The gap is a *mechanism* (real has a measured ~1 s
+post-commit re-dispatch leg, §3k LAG_DECOMP), not a fudge — so restoring it is principled, **provided
+§4.0 confirms real's leg is real and not an artifact.**
+**Change (config only — `_metadata/baselines.yaml` felix):** `simRedispatchGapSeconds 0.0 → 1.0`
+(keep leg 0.6, overhead 0, settle 0). Mechanism guarded by `TestRedispatchGap` +
+`TestCoolingHoldsConcurrency`.
+**Expected:** slot-hold engages → computing ≈ c−rate·gap → completions de-bunch → advance ↑~4.1–4.4,
+staleness ↓~2.8. **Validation:** one n=300 sim run. The gap value is *calibrated to real's measured
+re-dispatch leg* (LAG_DECOMP), not fitted to pass the check — if real's leg ≠ ~1 s on the new
+settle=0 runs, set the gap to the measured leg, not to whatever makes K3b green.
+
+### §4.2  oort/refl/feddance — trainer_speed/training_budget input gap  [LOCALIZE FIRST, no hack]
+**Problem:** P3 trainer_speed FAILS on all three (KS .125/.153/.197); T2 budget on oort/feddance
+(real 16.4 vs sim 12.3; 12.4 vs 11.0) → drives feddance advance K3 KS .581 + the loss curves.
+felix's T2 matches (KS .005), proving the model *can* match — so these three have a genuine input
+divergence. **This is the clearest place the principle bites:** the speed model is a *shared input*;
+if real and sim draw it differently, the bug could be in **either** mode. Do **not** bend sim's draw
+to match real until we know which side is wrong.
+**LOCALIZED (Jun13, from trainer telemetry — no new run):** per-trainer assigned `training_budget_s`
+is **byte-identical** across modes (0370→4.0, 0371→16.0, … both modes; per-trainer diff = 0.00 for
+all). The T2/P3 divergence is purely **commit-weighted**: the *pooled* (per-commit) budget differs
+(oort real 16.42 vs sim 12.27; feddance 12.36 vs 10.95) only because the **selection mix** differs —
+real over-commits slow (high-budget) trainers, sim picks faster ones. **Verdict: NOT an input-model
+bug (the speed draw is identical). The root is Stage-3 selection** — the same divergence as the
+refl/feddance participation FAIL (§4.3). Do **not** alter sim's (identical) speed draw.
+**NEXT:** determine which mode selects correctly. The oort selector scores by utility (loss + system
+terms); the mix shift means sim and real score/avail-window trainers differently. Localize at Stage 3
+(why does the chosen mix diverge?), gated by §4.0 (is real's selection itself correct? — its
+`redispatch_while_inflight` diagnostic is high, resolve that first).
+
+### §4.3  S2 participation — make the metric scale-free  [checker fix]
+**Problem:** S2 fails on all four (avg_diff 18.5/11.1/227/17.4 vs fixed warn=10). `avg_diff` is a
+**raw count** that grows with run length, so long runs (refl 8587 rounds) fail mechanically even
+when the participation *distribution* matches. S3/4 in-flight + means already PASS.
+**Why not just gate it (as §5 did for P1/S1):** S2 is *by design* the enforced selection invariant
+for stochastic selectors — gating it leaves no enforced selection check. Principled fix: keep it
+enforced but **scale-free**.
+**Change (`scripts/parity/checks.py::participation_parity`):** replace `avg_diff <= 10` with a
+length-independent test — KS on per-trainer counts, or `avg_diff / mean_participation`. Still catches
+a genuine *shape* divergence (refl 227 likely persists = a real selection difference to localize, not
+to suppress). Add a `test_ladder.py` regression case.
+**Validation:** re-run; felix/oort/feddance pass on shape if their distributions truly match; any
+remaining FAIL is a real signal, consistent with §4.0.
 
 **Done (one-liners):**
 5. **[Jun10] Lazy weight-deserialize, unified.** Trainers always ship `WEIGHTS_BYTES`;

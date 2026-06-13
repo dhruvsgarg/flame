@@ -45,8 +45,11 @@ baselines:
           type: "NA"
         # Overhead OFF the virtual clock so it tracks completions, not a ramp. PARITY §3c.
         simCommitOverheadSeconds: 0.0
-        # 0 = sim refills freed slots -> runs at c=30 to match compute-bound real. PARITY §3L/§3m.
-        simRedispatchGapSeconds: 0.0
+        # Post-commit re-dispatch leg, calibrated to real's measured LAG_DECOMP leg (~1s).
+        # §3m's 0.0 over-overlapped (advance 3.68 vs 4.14, staleness 4.75 vs 2.80); restored
+        # per PARITY §4.1. §3L slot-hold engages -> completions de-bunch. Retune to real's
+        # measured leg if the new settle=0 runs show != ~1s (do NOT fit to pass K3b).
+        simRedispatchGapSeconds: 1.0
         # 0 = drop the real-only settle-sleep brake -> real compute-bound at ~c. PARITY §3m.
         realDistributeSettleSeconds: 0.0
     trainer:
