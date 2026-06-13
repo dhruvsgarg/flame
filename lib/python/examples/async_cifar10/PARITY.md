@@ -304,6 +304,29 @@ redeliveries). `analyze_run` `mqtt_delivery_plots` now plots per-round drops + C
 healthy) instead of raw sent/received counts; the old plot was also silently broken (dispatch log
 went DEBUG → empty sends). NOT chasing the leg as a bug.
 
+### §3m  Alternative (preferred): speed up REAL to ~c computing instead of slowing sim (Jun12)
+
+Rather than holding sim's cooled slot (§3L) to match real's ~27.6, **remove the artificial brake
+in real** so it stays compute-bound at ~30. The leg is NOT fundamental: the dominant piece is a
+real-only `time.sleep(0.1)` before selection in `_distribute_weights`, hit **twice per commit**
+(put_train + put_eval) → ~0.2s of the ~0.43s/commit budget (~46%). It inflates `queue_wait`
+(updates pile up in the serial recv queue while the loop sleeps) and the commit→re-dispatch gap.
+**Fix:** new knob `realDistributeSettleSeconds` (config; default 0.1 = legacy), set to **0** in the
+felix baseline. Expected real shift: advance 4.32→~3.97, computing ~27.6→~30, **staleness 2.81→~3.0**
+(the post-commit gap that kept L/C<1 disappears, so staleness → F/g = 3.0). Then SIM matches at c=30
+with `simRedispatchGapSeconds=0` — the §3L slot-hold becomes unnecessary (keep it, inert at gap 0).
+Validate on the next real+sim pair; if real still sits <30, profile per-commit selection cost next.
+
+**Aggregator CPU pinning (asked Jun12):** already pinned — `runner.py` reserves `min(8, max(2,
+ncores//8))` cores for the aggregator and sets `OMP_NUM_THREADS=len(cores)`; it does NOT free-roam
+all cores. Do **NOT** pin it to 1 core like a trainer: a trainer's heavy work is on the GPU (CPU just
+orchestrates), but the aggregator's MQTT network thread (paho `run_forever`) runs alongside the FL
+MainThread on CPU — one core would make them time-slice and raise `mqtt_lag`/`queue_wait`. The loop
+is latency-bound (sleep + selection + blocking recv), not CPU-bound (aggregation ~0.5ms), so pinning
+is **second-order**: the `time.sleep` removal is the real win. A minor follow-up is reducing the
+reserved set 8→2-4 (enough for MainThread + MQTT + light BLAS) to free cores for trainers and tighten
+cache locality — measure, don't assume.
+
 ### Current state (Jun12, sim 120543 vs real 100106)
 
 **U3 staleness FAIL** — sim 4.09 vs real 2.81 (mean_diff 1.28 > 1.0). Decomposed

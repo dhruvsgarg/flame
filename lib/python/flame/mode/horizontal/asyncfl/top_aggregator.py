@@ -129,6 +129,11 @@ class TopAggregator(SyncTopAgg):
         _gap = getattr(self.config.hyperparameters, "sim_redispatch_gap_s", 0.0)
         self._sim_redispatch_gap_s: float = float(_gap) if _gap is not None else 0.0
 
+        # Real-mode settle sleep before selection (0 removes the artificial brake; see
+        # config.real_distribute_settle_s). Default 0.1 preserves legacy behavior.
+        _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
+        self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
+
         self._prev_distribute_weights_success = False
 
         self._per_trainer_last_heartbeat_ts = {}
@@ -1193,8 +1198,11 @@ class TopAggregator(SyncTopAgg):
         self._await_min_trainers(channel)
         self._update_weights()
 
-        if not self.simulated:
-            time.sleep(0.1)  # let channel state settle before selection (real only)
+        if not self.simulated and self._real_distribute_settle_s > 0.0:
+            # Let channel state settle before selection (real only). Hit twice per commit
+            # (put_train + put_eval); set realDistributeSettleSeconds=0 to remove this
+            # artificial brake and make the loop compute-bound (real holds ~c computing).
+            time.sleep(self._real_distribute_settle_s)
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()

@@ -65,6 +65,15 @@ baselines:
         # Total cycle (compute + 0.6 + 1.0 = compute + 1.6) is preserved, so advance/
         # throughput stay matched; staleness drops to ~(compute+0.6)/advance ~= real.
         simRedispatchGapSeconds: 1.0
+        # Jun12 (PARITY.md S3 real-decomp): remove the real-only artificial brake. The
+        # 0.1s settle sleep before selection fires twice per commit (~0.2s, ~46% of the
+        # real ~0.43s/commit budget), inflating queue_wait + the commit->re-dispatch gap
+        # so only ~27.6 of c=30 actually compute. 0 makes the aggregator loop compute-
+        # bound -> real maintains ~30 computing (advance ~3.97, staleness ~3.0). NB: this
+        # raises real staleness 2.81 -> ~3.0 (the post-commit gap that kept L/C<1 is gone)
+        # and SIM should then match at c=30 with simRedispatchGapSeconds back to 0 (the
+        # S3L slot-hold becomes unnecessary). Validate on the next real+sim pair.
+        realDistributeSettleSeconds: 0.0
     trainer:
       hyperparameters:
         client_notify:

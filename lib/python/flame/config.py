@@ -217,6 +217,16 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     send_stagger_s: t.Optional[float] = Field(
         alias="sendStaggerSeconds", default=0.0
     )
+    # Real-mode only: blind sleep before each _distribute_weights selection, meant to
+    # "let channel state settle" after MQTT-thread state updates. It is hit TWICE per
+    # commit (put_train + put_eval) so at 0.1s it burns ~0.2s/commit (~46% of the real
+    # ~0.43s/commit budget) — an artificial brake that inflates queue_wait and the
+    # commit->re-dispatch gap, dropping effective compute-concurrency below c. Set to 0
+    # to make the aggregator loop compute-bound (real maintains ~c computing); 0.1 keeps
+    # the legacy behavior. No effect in sim. See PARITY §3 (real 27.6-vs-30 decomposition).
+    real_distribute_settle_s: t.Optional[float] = Field(
+        alias="realDistributeSettleSeconds", default=0.1
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
