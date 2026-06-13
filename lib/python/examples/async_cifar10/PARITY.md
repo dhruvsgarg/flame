@@ -78,7 +78,7 @@ oort/feddance still Jun-9 3.5h):
 
 | baseline | run | sim_rate | rounds r→s | advance r/s | staleness r/s | acc | top remaining fail |
 |---|---|---|---|---|---|---|---|
-| feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | 183/185 ✓ | 0.029 ✓ | advance KS-shape 0.57; real `trainer_speed_s` gap |
+| feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | ~~183/185~~ BUG→fixed | 0.029 ✓ | advance KS-shape 0.57; real `trainer_speed_s` gap |
 | oort | 094917 | 12.0x | 666→701 | 18.49/17.98 | 0/0 | 0.033 ✓ | terminal 10.8%, commits 2.6% (likely noise) |
 | refl | 150131 | 2.31x | 2016→1887 | 1.48/1.74 | 3.02/3.00 ✓ | 0.034 ✓ | overhead 0.10→**0.074** retuned (revalidate); eligibility KS 0.27 |
 | **felix** | 100106/175309 | **2.7x** | 626→671 (+7.2%) | 4.32/**4.03** ✗ | 2.81/**3.16** ✓ | **0.018** ✓ | **advance KS 0.208 FAIL** (§3k gap inert on throughput); staleness ↓ to 3.16; §3L (hold cooled slot) implemented → predicted advance 4.4 / staleness 2.77, awaiting run; WARN: mqtt_fetch, U5 |
