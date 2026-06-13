@@ -130,6 +130,15 @@ selection is sound (redispatch=0), so the divergence is a **sim-selection** ques
 | feddance P3 / K3 advance (KS) | ✗ .197 / ✗ .581 | unchanged — speed-mix drives the advance KS |
 | feddance T2 / participation / C2 | ✗ .133 / ✗ .527 / ✗ .155 | unchanged until §4.2 |
 
+**C. Non-parity-table checks to verify this run (this session's code changes):**
+
+| change | expected behaviour to confirm | regression signal |
+|---|---|---|
+| `task_send` instrumentation (§4.0) | `validate_real` concurrency now POPULATES: felix mean ≈ 27–28 of c≈30 computing; **double_dispatch=0 all 4**; verdict ADMISSIBLE on concurrency+selection | non-zero double_dispatch, or mean concurrency ≫/≪ design |
+| `sendStaggerSeconds` removal | **behavioral no-op** — per-baseline rounds/advance/staleness within noise of the prior Jun13 run | any baseline's rounds/advance shifting materially = the removal touched the send path |
+| speedup readout (§4.4) | `intrinsic_speedup_x` (≈ prior table: refl 1.7×, felix 1.3×, oort 14×, feddance 16×) + `pct_of_floor` now populate; quantifies headroom | floor/ceiling still `None` (means `task_send` didn't land) |
+| felix gap=1.0 (§4.1) | real's LAG_DECOMP **leg ≈ 1 s** (the gap was sized to it). If real leg ≠ ~1 s on this settle=0 run, **re-tune gap to the measured leg**, not to whatever passes K3b | advance overshoots 4.14 → gap too large |
+
 **What landed (validated this run set):**
 - **refl overhead retune 0.10→0.074 (§4.2):** K3b residual −0.12 (rel 0.076), K3/K2 PASS, **terminal_state
   now PASS**, eligibility KS 0.48→0.226. refl clock is GREEN; only CONTROL inputs + participation remain.
