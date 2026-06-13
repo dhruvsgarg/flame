@@ -500,10 +500,16 @@ real, and never add a scalar fudge where a mechanism is called for.
   `validate_real` now computes peak/mean concurrency = interval overlap, and a double-dispatch = two
   overlapping intervals for one trainer (serial loop ⇒ exactly 0 unless telemetry is corrupt).
   **Open §4.0 diagnostic RESOLVED:** the high redispatch count was a bookkeeping artifact, NOT a real
-  breach. Guarded by `scripts/parity/test_validate_real.py` (8 tests).
-  ⚠️ **Needs a re-run to validate:** existing runs predate `task_send`, so concurrency now correctly
-  reports `[WARN]/[FAIL] task_send_present=False` instead of a false `[OK]`. Re-run any baseline → its
-  real run validates concurrency soundly.
+  breach. Guarded by `scripts/parity/test_validate_real.py` (11 tests). No graceful fallback — assumes
+  the run carries `task_send` (every run from this code onward does); concurrency populates on re-run.
+- **Speedup / logging readout — NEW (§4.4).** `validate_real` now prints a speedup/headroom block
+  (`intrinsic_speedup_x = virtual/wall`, `compute_floor_wall_s = GPU work / mean concurrency`,
+  `pct_of_floor`, `ceiling_speedup_x`). On old oort sim: intrinsic 14.2× (matches table); floor needs
+  `task_send` concurrency so it lands next run. **Logging is the headroom:** the aggregator `.log` is
+  ~220k lines/run (oort 777 rounds), 105k of it `[RECV_FIFO]` hot-path traces — **the parity checker
+  reads only the JSONL telemetry, never the `.log`, so this spam serves zero parity purpose.** Kept
+  AS-IS this run (consistent real baseline for the felix calibration); demote it in the speedup phase
+  for a clean before/after (§4.4).
 - **§4.1 felix gap — STAGED (config), AWAITING SIM RUN.** `_metadata/baselines.yaml` felix
   `simRedispatchGapSeconds 0.0 → 1.0`. Mechanism in code + test-guarded. **NEXT: user runs felix
   sim**, then re-check K3b/K3/K2/staleness/terminal. If advance overshoots 4.14, set gap to real's
@@ -513,25 +519,29 @@ real, and never add a scalar fudge where a mechanism is called for.
   the config field + the dead sleep branch + `_stag_acc` accounting in both top_aggregators'
   `[DISTRIBUTE_TIMING]`. Behavioral no-op (knob was always 0). The other sim knobs (leg/overhead/gap/
   settle) are all in active use across baselines — NOT inert, kept.
-- **§4.2 speed/budget — LOCALIZED, NO CODE YET.** Per-trainer assigned budget is **byte-identical**
-  real vs sim; the T2/P3 FAILs are **commit-weighted artifacts of a divergent selection mix** (oort
-  real selects slow trainers more: weighted budget 16.4 vs sim 12.3). NOT an input-model bug — it's
-  Stage-3 selection, same root as refl/feddance participation. NEXT: determine *which* mode selects
-  correctly — now unblocked, since §4.0 shows real selection is sound (redispatch=0, chosen≤eligible).
+- **§4.2 speed/budget — LOCALIZED, NO CODE; localization DATA already captured.** Per-trainer assigned
+  budget is **byte-identical** real vs sim; the T2/P3 FAILs are **commit-weighted artifacts of a
+  divergent selection mix** (oort real selects slow trainers more: weighted budget 16.4 vs sim 12.3).
+  NOT an input-model bug — it's Stage-3 selection, same root as refl/feddance participation.
+  **Confirmed the selector telemetry is sufficient to localize it — no instrumentation gap:** the
+  `selection` event's `per_trainer` dict already records each candidate's `utility`, `speed_s`,
+  `selected`, plus selector score terms (oort `believed_I`/`temporal`/`system_util`, feddance
+  `V/I/A/U`) in BOTH modes. NEXT (post-run): compare the real vs sim per-candidate scores at matched
+  rounds to see why the chosen mix diverges. Unblocked — §4.0 shows real selection is sound.
 - **§4.3 participation — DONE (checker).** `checks.py::participation_parity` scale-free (per-trainer
   **share** KS, tol 0.2). felix 0.057 ✓, oort 0.184 ✓; refl 0.497 ✗, feddance 0.527 ✗ (**genuine**
   selection-mix divergence — correctly NOT suppressed). `report.py` updated.
 
 **To continue (in order):**
-1. Re-run felix (gap=1.0, §4.1) **+ any baseline you want to validate real for** — the new `task_send`
-   event lands only in fresh runs. Then `parity_check.py --validate-real <real_dir>` confirms real
-   concurrency soundly, and `--batch` re-checks felix parity.
-2. §4.2: localize the selection-mix divergence (oort/refl/feddance) — which mode selects correctly,
-   and why. Real side is now admissible (§4.0 sound), so divergence is a sim-selection question.
-3. Not yet git-committed: `flame/config.py`, `flame/telemetry/events.py`, both `top_aggregator.py`,
-   `syncfl/trainer.py`, `baselines.yaml`, `checks.py`, `report.py`, `cli.py`, `validate_real.py`,
-   new `test_validate_real.py`, this `PARITY.md`. Re-run `tests/mode/` (40) + `tests/launch` +
-   `scripts/parity/test_*.py` (15) before committing — all green as of this session.
+1. **Correctness run (logging AS-IS):** 1h real+sim per baseline. `task_send` lands in fresh runs →
+   `parity_check.py --validate-real <real_dir>` validates concurrency soundly + prints speedup/floor;
+   `--batch` re-checks felix parity against the verification tracker.
+2. §4.2: localize the selection-mix divergence from the run's `per_trainer` scores (real vs sim at
+   matched rounds). Real is admissible (§4.0 sound), so it's a sim-selection question.
+3. **Speedup phase (after correctness locked):** demote the hot-path `.log` traces — `[RECV_FIFO]`
+   (channel.py, ~105k lines/run) + per-commit `[MSG_*]` (oort top_aggregator) — to DEBUG. None are read
+   by the parity checker. The wall-time delta vs step-1 = the logging overhead; re-tune felix gap if
+   real's leg shifts (the §4.1 plan already re-measures real's leg). Compare `pct_of_floor` before/after.
 
 ### §4.0  Validate that REAL is correct before treating it as ground truth  [PREREQUISITE]
 Before matching sim to real on any axis, prove real obeys its own invariants — otherwise we'd be
@@ -604,6 +614,30 @@ a genuine *shape* divergence (refl 227 likely persists = a real selection differ
 to suppress). Add a `test_ladder.py` regression case.
 **Validation:** re-run; felix/oort/feddance pass on shape if their distributions truly match; any
 remaining FAIL is a real signal, consistent with §4.0.
+
+### §4.4  Speedup / logging overhead  [measure first, then cut — AFTER correctness]
+**Principle:** correctness first. Sim fidelity is calibrated against real's *measured* latency, and the
+hot-path logging inflates that latency — so we do NOT change logging during the correctness run (keeps
+the real reference consistent with the felix §3m/§4.1 calibration). We *measure* the headroom now and
+*cut* in a separate phase for a clean before/after.
+
+**Measured (the readout, in `validate_real`):** `intrinsic_speedup_x = virtual_s/wall_s` (oort sim
+14.2×, matches the table); `compute_floor_wall_s = Σ gpu_compute_s / mean_concurrency` (the GPU-bound
+minimum wall); `pct_of_floor` (100% = at the floor; lower = overhead-bound); `ceiling_speedup_x =
+virtual_s/floor` (best achievable). The floor needs `task_send` concurrency, so it populates next run.
+Early signal: sim per-commit GPU is ~0.01s but wall is overhead-heavy → sim is **overhead-bound, not
+GPU-bound** → large headroom.
+
+**The overhead (not read by the parity checker — JSONL only):** aggregator `.log` ≈ 220k lines/run
+(oort, 777 rounds), of which `[RECV_FIFO]` (channel.py `_get_inner`/`recv_fifo`, `logger.info`/`warning`
+on every recv poll) is **~105k**, plus per-commit `[MSG_ARRIVAL/PROCESSING/ACCEPTED/SKIP]` and
+`[SEND_RECV_LAG]`/`[LAG_DECOMP]` (oort `top_aggregator`) at ~8k each. refl (9054 rounds) is ~10× worse.
+
+**Plan (speedup phase):** demote those hot-path traces to DEBUG (keep `[AGG_ROUND]`, `[DISTRIBUTE_TIMING]`,
+and the JSONL events — the parity inputs). Re-run; the wall delta vs the correctness run = the logging
+cost, and `pct_of_floor` should jump. Then re-measure real's LAG_DECOMP leg (logging removal lowers it)
+and re-tune felix's `simRedispatchGapSeconds` to the new leg. Applies to **both** real and sim, but the
+real win matters most — it de-contaminates the very reference sim is matched to.
 
 **Done (one-liners):**
 5. **[Jun10] Lazy weight-deserialize, unified.** Trainers always ship `WEIGHTS_BYTES`;

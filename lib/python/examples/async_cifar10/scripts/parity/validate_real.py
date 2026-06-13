@@ -106,6 +106,50 @@ def _concurrency_stats(intervals: list) -> dict:
             "span_s": round(span, 1)}
 
 
+def _gpu_work_s(trainer: dict) -> float:
+    """Total real GPU compute across all train rounds — the irreducible work."""
+    total = 0.0
+    for _sid, d in trainer.items():
+        for e in d.get("trainer_round", []):
+            if e.get("task_to_perform") == "eval":
+                continue
+            g = e.get("gpu_compute_s")
+            if g is not None:
+                total += float(g)
+    return total
+
+
+def speedup_ceiling(agg: dict, trainer: dict, tiv: dict) -> dict:
+    """How much speedup we got and how much headroom remains (informational).
+
+    intrinsic_speedup = virtual_s / wall_s — virtual time simulated per wall
+    second (= the run's speedup vs real-time; ~1 for a real run).
+    compute_floor_s = total GPU work / mean concurrency — the minimum wall a
+    perfectly-efficient run could take (GPU-bound).  pct_of_floor = floor/wall:
+    100% means we're at the GPU floor; <100% means overhead (telemetry, logging,
+    recv loop, aggregation) dominates and there's headroom.  ceiling_speedup =
+    virtual_s / floor = the best achievable speedup if overhead were zero.
+    """
+    ar = agg["agg_rounds"]
+    ts = [e.get("ts") for e in ar if e.get("ts") is not None]
+    wall_s = (max(ts) - min(ts)) if len(ts) > 1 else 0.0
+    vclocks = [e.get("vclock_now") for e in ar if e.get("vclock_now") is not None]
+    virtual_s = max(vclocks) if vclocks else wall_s  # real run: virtual == wall
+    gpu_work = _gpu_work_s(trainer)
+    mean_conc = _concurrency_stats(tiv["intervals"])["mean"]
+    floor_s = (gpu_work / mean_conc) if mean_conc > 0 else None
+    return {
+        "wall_s": round(wall_s, 1),
+        "virtual_s": round(virtual_s, 1),
+        "intrinsic_speedup_x": round(virtual_s / wall_s, 2) if wall_s > 0 else None,
+        "gpu_work_s": round(gpu_work, 1),
+        "mean_concurrency": mean_conc,
+        "compute_floor_wall_s": round(floor_s, 1) if floor_s else None,
+        "pct_of_floor": round(100 * floor_s / wall_s, 1) if (floor_s and wall_s > 0) else None,
+        "ceiling_speedup_x": round(virtual_s / floor_s, 1) if floor_s else None,
+    }
+
+
 def _infer_agg_goal(agg: dict) -> int:
     for e in agg["agg_rounds"]:
         g = e.get("agg_goal")
@@ -229,6 +273,15 @@ def validate_real(run_dir: str) -> bool:
         print(f"\n  {tag} {name}")
         for k, v in r.items():
             print(f"          {k}: {v}")
+
+    # Speedup / headroom — informational, does not affect admissibility.
+    sp = speedup_ceiling(agg, trainer, tiv)
+    print("\n  [INFO] speedup / headroom")
+    for k, v in sp.items():
+        print(f"          {k}: {v}")
+    if sp["pct_of_floor"] is not None and sp["pct_of_floor"] < 50:
+        print("          → overhead-bound (telemetry/logging/recv/agg dominate); "
+              f"~{round(100 / max(sp['pct_of_floor'], 1e-9), 1)}x wall headroom to the GPU floor.")
 
     print("\n" + "=" * 78)
     print("  REAL IS ADMISSIBLE as the parity reference."

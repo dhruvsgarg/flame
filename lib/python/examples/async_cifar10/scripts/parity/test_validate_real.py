@@ -19,7 +19,9 @@ if _SCRIPTS not in sys.path:
 from parity.validate_real import (  # noqa: E402
     _train_intervals,
     _concurrency_stats,
+    _gpu_work_s,
     check_concurrency,
+    speedup_ceiling,
 )
 
 
@@ -89,6 +91,40 @@ def test_eligible_violation_fails():
     r = check_concurrency(agg, tiv)
     assert r["eligible_violations"] == 1
     assert r["ok"] is False
+
+
+def test_gpu_work_excludes_eval():
+    trainer = {"0001": {"trainer_round": [
+        {"task_to_perform": "train", "gpu_compute_s": 2.0},
+        {"task_to_perform": "eval", "gpu_compute_s": 9.0},
+        {"task_to_perform": "train", "gpu_compute_s": 3.0},
+    ]}}
+    assert _gpu_work_s(trainer) == 5.0
+
+
+def test_speedup_ceiling_arithmetic():
+    # virtual 1000s over wall 100s -> 10x intrinsic. GPU work 40s at concurrency
+    # 2 -> floor 20s -> pct_of_floor 20% -> ceiling 50x.
+    agg = {"agg_rounds": [
+        {"ts": 0.0, "vclock_now": 0.0},
+        {"ts": 100.0, "vclock_now": 1000.0},
+    ]}
+    trainer = {"a": {"trainer_round": [{"task_to_perform": "train", "gpu_compute_s": 40.0}]}}
+    tiv = {"intervals": [(0, 10), (0, 10)]}  # mean concurrency 2 over [0,10]
+    sp = speedup_ceiling(agg, trainer, tiv)
+    assert sp["intrinsic_speedup_x"] == 10.0
+    assert sp["mean_concurrency"] == 2.0
+    assert sp["compute_floor_wall_s"] == 20.0
+    assert sp["pct_of_floor"] == 20.0
+    assert sp["ceiling_speedup_x"] == 50.0
+
+
+def test_speedup_real_run_has_unit_intrinsic():
+    # No vclock (real) -> virtual == wall -> intrinsic 1x.
+    agg = {"agg_rounds": [{"ts": 0.0}, {"ts": 50.0}]}
+    sp = speedup_ceiling(agg, {}, {"intervals": []})
+    assert sp["intrinsic_speedup_x"] == 1.0
+    assert sp["compute_floor_wall_s"] is None  # no concurrency data
 
 
 if __name__ == "__main__":
