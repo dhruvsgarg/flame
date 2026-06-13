@@ -189,27 +189,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0
     )
-    # Sim-mode PRE-commit holding leg added to the trainer sct (NOT the clock;
-    # §3c/§3i/§3k). This is the part of the post-compute cycle that elapses BEFORE
-    # the update commits — buffer-residence (real queue_wait_s) + the agg->trainer
-    # delivery + return legs. Because the clock advances to sct and staleness =
-    # (commit_round - dispatch_round), this leg DOES count toward staleness
-    # (staleness ~= holding/advance, holding = compute + this leg). Measured real
-    # felix: queue_wait 0.61 + delivery 0.06 + post/mqtt 0.03 ~= 0.6s. The POST-commit
-    # re-dispatch latency goes in sim_redispatch_gap_s instead (it must NOT inflate
-    # staleness). 0 = off.
+    # Sim PRE-commit holding leg added to trainer sct (counts toward staleness). See PARITY §3.
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
-    # Sim-mode POST-commit re-dispatch gap (§3k). Models the real latency between a
-    # trainer's update committing and that trainer's NEXT dispatch — re-selection +
-    # the agg->trainer model push. Implemented as a per-trainer cooldown: a just-
-    # committed end is held out of selection until vclock >= its sct + this gap, so
-    # it returns with a FRESHER model_version. Unlike sim_completion_leg_s this does
-    # NOT count toward the committing update's staleness (it elapses after commit),
-    # but it spaces completions (raises advance, de-bunches overlap) and preserves
-    # the full trainer cycle = compute + leg + gap. Real felix cycle 13.3s vs holding
-    # 11.79s => ~1.0-1.15s gap. 0 = off (instant re-dispatch, the pre-§3k behavior).
+    # Sim POST-commit re-dispatch cooldown; spaces completions without inflating staleness. PARITY §3.
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
     )
@@ -217,13 +201,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     send_stagger_s: t.Optional[float] = Field(
         alias="sendStaggerSeconds", default=0.0
     )
-    # Real-mode only: blind sleep before each _distribute_weights selection, meant to
-    # "let channel state settle" after MQTT-thread state updates. It is hit TWICE per
-    # commit (put_train + put_eval) so at 0.1s it burns ~0.2s/commit (~46% of the real
-    # ~0.43s/commit budget) — an artificial brake that inflates queue_wait and the
-    # commit->re-dispatch gap, dropping effective compute-concurrency below c. Set to 0
-    # to make the aggregator loop compute-bound (real maintains ~c computing); 0.1 keeps
-    # the legacy behavior. No effect in sim. See PARITY §3 (real 27.6-vs-30 decomposition).
+    # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound. PARITY §3m.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )

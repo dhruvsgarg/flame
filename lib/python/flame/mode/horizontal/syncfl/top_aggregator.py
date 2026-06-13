@@ -556,11 +556,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             if weights is not None and count > 0:
                 total += count
-                # Stamp the model version the trainer actually trained on (it reports
-                # MODEL_VERSION = its dispatch round) so staleness = self._round - version
-                # is meaningful. Without it TrainResult.version defaults to 0 and
-                # staleness collapses to self._round itself — i.e. it reports the round
-                # number (mean ~= run_length/2, the bogus "183"), not real staleness.
+                # Stamp the trained-on version so staleness = self._round - version is
+                # real; without it version defaults to 0 and staleness == round number.
                 _trained_ver = msg.get(MessageType.MODEL_VERSION, self._round)
                 tres = TrainResult(weights, count, version=_trained_ver)
                 _cs0 = time.time()

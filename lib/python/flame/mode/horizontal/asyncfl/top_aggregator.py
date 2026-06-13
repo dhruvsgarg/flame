@@ -129,8 +129,7 @@ class TopAggregator(SyncTopAgg):
         _gap = getattr(self.config.hyperparameters, "sim_redispatch_gap_s", 0.0)
         self._sim_redispatch_gap_s: float = float(_gap) if _gap is not None else 0.0
 
-        # Real-mode settle sleep before selection (0 removes the artificial brake; see
-        # config.real_distribute_settle_s). Default 0.1 preserves legacy behavior.
+        # Real-mode settle sleep before selection (0 = compute-bound; PARITY §3m).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
 
@@ -1199,9 +1198,7 @@ class TopAggregator(SyncTopAgg):
         self._update_weights()
 
         if not self.simulated and self._real_distribute_settle_s > 0.0:
-            # Let channel state settle before selection (real only). Hit twice per commit
-            # (put_train + put_eval); set realDistributeSettleSeconds=0 to remove this
-            # artificial brake and make the loop compute-bound (real holds ~c computing).
+            # Settle channel state before selection (real only); 0 removes this brake. PARITY §3m.
             time.sleep(self._real_distribute_settle_s)
 
         if self.trainer_event_dict is not None:
@@ -1209,9 +1206,8 @@ class TopAggregator(SyncTopAgg):
         else:
             curr_unavail_trainer_list = []
 
-        # §3k: exclude ends still in their post-commit re-dispatch cooldown so they
-        # rejoin selection only after vclock passes (their sct + gap), returning with
-        # a fresher model_version. Prune expired entries so the dict stays bounded.
+        # §3k: exclude ends in their post-commit cooldown (until vclock >= sct + gap);
+        # prune expired entries. PARITY §3.
         _gap = getattr(self, "_sim_redispatch_gap_s", 0.0)
         _cd = getattr(self, "_sim_cooldown_until", None)
         _cooling = []
@@ -1230,9 +1226,7 @@ class TopAggregator(SyncTopAgg):
                     f"gap={self._sim_redispatch_gap_s:.2f}s vclock={_now:.1f}"
                 )
         if self.simulated:
-            # §3L: hold cooling trainers' slots against the selector's concurrency budget
-            # (see async_oort._handle_send_state) so the idle pool can't refill them. This
-            # is what makes the redispatch gap actually extend the effective cycle.
+            # §3L: expose cooling count so the selector holds those slots (no refill).
             channel.properties["sim_cooling_count"] = len(_cooling)
 
         channel.set_curr_unavailable_trainers(

@@ -28,63 +28,49 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Current status (Jun 12 — felix sim 175309 vs real 100106, 50-min): **1 FAIL (per_round_advance) — §3L fix awaiting run**
+### ⚠️ Status: MAJOR UPDATE PENDING after the 4h overnight runs (Jun 12)
 
-**Felix staleness is GREEN; advance regressed on the §3k gap and is fixed by §3L (below).**
-On the latest run 175309 **U3 staleness PASSES** (sim 3.16 vs real 2.808, KS 0.042, all
-non-negative) — §3k tightened it from 3.451 (run 161419). But `per_round_advance` flipped to
-**FAIL** (KS 0.208, mean 4.03 vs 4.32) because the §3k redispatch gap turned out inert on
-throughput (idle pool refilled cooled slots). Both the residual staleness (diff 0.35 > 0.2 bar)
-and the advance FAIL share **one** root cause — computing concurrency pinned at c=30 — now
-addressed by §3L (hold the cooled slot). Terminal (rounds 671/626, rel 0.067), accuracy
-(0.018), loss (0.012) PASS; sim_rate 2.7x. Awaiting the §3L n=300 run to close it.
+All four baselines (felix / oort / refl / feddance, real + sim) are queued for fresh 4h
+n=300 runs. The numbers below predate them and will be **rewritten** once the logs land —
+treat them as the hypotheses those runs validate, not current truth.
 
-**Prior (run 161419, leg=1.6):** ALL CHECKS PASSED (staleness 3.451 KS 0.078, advance KS 0.172).
-§3k traded the passing advance for tighter staleness; §3L recovers both.
+**Done this cycle (code landed):**
+- **felix staleness (§3g/§3j):** drain in-flight by physical rxq readiness, not predicted
+  completion → past-dated tail collapsed (staleness 7.19→~3.45, KS 0.078).
+- **felix advance/concurrency (§3L):** cooling (committed, not-yet-redispatched) ends hold a
+  concurrency slot so the idle pool can't refill — makes the redispatch gap actually bite.
+- **real speed-up to ~c=30 (§3m):** drop the real-only settle-sleep brake
+  (`realDistributeSettleSeconds=0`) so the aggregator is compute-bound; sim then matches at
+  c=30 with `simRedispatchGapSeconds=0` (§3L slot-hold goes inert).
+- **feddance/fedavg staleness BUG fixed:** base sync aggregator built `TrainResult` without a
+  version → staleness reported the round number (the bogus ~183). Now stamps the trained-on
+  version. oort/refl unaffected (different aggregator).
+- **MQTT drop plot:** rewritten to per-round drops + CDF (flat 0 = healthy); old plot was
+  silently dead (dispatch log → DEBUG). Verified drops=0 on real felix.
+- **checker category-errors (§5):** P1/utility/phase_mqtt gated for stochastic/in-mem sim.
+- **speed-up (Jun10):** in-mem cache, no recv-poll/stagger/re-serialize, lazy weight-deserialize.
 
-**Last rung was a checker category-error, not a sim bug (§5, Jun12).** With staleness fixed,
-the only remaining FAILs were P1 (`aggregation_sequence`), F1-3 (`utility`), and
-`phase_mqtt_fetch` — all three enforced *exact identity* on quantities a stochastic /
-in-memory simulator cannot and should not reproduce. They were byte-identical across sim
-120543→161419 (invariant to the clock fix), the tell that they're not downstream of the
-dynamics. Fixed in the checker (see §5); felix now reports **ALL CHECKS PASSED** (2 WARNs:
-`inter_arrival_order`, `phase_mqtt_fetch`).
+**To evaluate after the overnight runs:**
+- **felix:** does real hold ~30 computing (queue_wait collapses) at advance ~3.97 / staleness
+  ~3.0, and does sim match? Retune `simCompletionLegSeconds` (0.6 placeholder → ~0.1–0.3) vs the
+  new real `LAG_DECOMP` if advance KS misses. Watch the slow-trainer far-future-`sct` sawtooth.
+- **feddance:** real staleness now meaningful — confirm it's small and real≈sim; revisit the
+  advance KS-shape (0.57) and `trainer_speed_s` gap.
+- **oort:** refresh the Jun-9 numbers (terminal 10.8%, commits 2.6% — likely noise).
+- **refl:** revalidate overhead 0.074 retune + eligibility KS 0.27.
 
-**§3k validated the staleness direction but exposed the real lever — §3L fix implemented, awaiting run.**
-Run 175309 (§3k, leg=0.6 + gap=1.0): staleness improved **3.45→3.16** (KS 0.078→0.042, diff to
-real 0.35) but **`per_round_advance` now FAILS** (KS 0.172→0.208, mean 4.24→4.03 vs real 4.32).
-Root cause — **the redispatch gap was inert on throughput.** It only marked a just-committed
-trainer *unavailable*; with a 300-trainer pool the selector refilled the freed slot from idle
-trainers (`inflight_tracked`≈30 throughout), so the gap never extended the effective cycle. With
-in-flight F=30, g=10, holding L=12.3: cycle collapses to L → advance≈L/3=4.03, staleness≈(F/g)·1=3.0+tail.
-Real keeps a **fixed** 30-slot concurrency that *includes* ~3 trainers in ~1s re-dispatch limbo →
-only ~27 computing → that is what yields advance 4.32 AND staleness 2.81 together. **Fix (§3L):** a
-cooling trainer holds its concurrency slot (no idle refill) — `extra = max(0, c−in_flight−cooling_count)`
-in the selector, fed by `channel.properties["sim_cooling_count"]` from the aggregator. Predicted:
-computing≈27.7 → advance≈4.4, staleness≈3.0·(12.3/13.3)=**2.77** (real 2.81). Guarded by
-`TestRedispatchGap` (3) + `TestCoolingHoldsConcurrency` (2). Next n=300 run validates both.
+**Ruled out (do not re-chase):** GPU contention (T3 overrun=0); re-dispatch-invariant violation
+(SEND_TIMEOUT fires 0×); `commit_gap` as a staleness proxy; MQTT drops (0, both directions);
+the felix post-compute leg as a "bug" (it's serial-aggregator scheduling, not network — §3).
 
-**Ruled out Jun12 (do not re-chase):** GPU contention (T3 overrun=0), re-dispatch-invariant
-violation (`all_selected` excludes in-flight; SEND_TIMEOUT fires 0×), `commit_gap` as a
-staleness proxy.
+**Pre-overnight scorecard (stale — to be replaced):**
 
-**Speedup (done, Jun10):** removed recv-poll, distribute stagger, per-send re-serialize,
-disk cache (→ in-memory); eval/checkpoint off the critical path; lazy weight-deserialize
-unified on `WEIGHTS_BYTES` + `common.util.materialize_weights` across all up-paths (§4 #5).
-refl 1.18→2.31x; felix 2.28→3.05x.
-
-**Cross-baseline scorecard** (felix/refl `parity_check.py`, ~50-min/n=300/syn_0;
-oort/feddance still Jun-9 3.5h):
-
-| baseline | run | sim_rate | rounds r→s | advance r/s | staleness r/s | acc | top remaining fail |
-|---|---|---|---|---|---|---|---|
-| feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | ~~183/185~~ BUG→fixed | 0.029 ✓ | advance KS-shape 0.57; real `trainer_speed_s` gap |
-| oort | 094917 | 12.0x | 666→701 | 18.49/17.98 | 0/0 | 0.033 ✓ | terminal 10.8%, commits 2.6% (likely noise) |
-| refl | 150131 | 2.31x | 2016→1887 | 1.48/1.74 | 3.02/3.00 ✓ | 0.034 ✓ | overhead 0.10→**0.074** retuned (revalidate); eligibility KS 0.27 |
-| **felix** | 100106/175309 | **2.7x** | 626→671 (+7.2%) | 4.32/**4.03** ✗ | 2.81/**3.16** ✓ | **0.018** ✓ | **advance KS 0.208 FAIL** (§3k gap inert on throughput); staleness ↓ to 3.16; §3L (hold cooled slot) implemented → predicted advance 4.4 / staleness 2.77, awaiting run; WARN: mqtt_fetch, U5 |
-
-**Per-baseline:** feddance/oort near-pass (Jun9, no fresh run). refl speedup hit;
-overhead retuned 0.074 + eligibility KS 0.27 to revalidate. felix → §3.
+| baseline | run | sim_rate | rounds r→s | advance r/s | staleness r/s | acc |
+|---|---|---|---|---|---|---|
+| feddance | 094917 | 18.4x | 365→370 | 33.85/34.11 | ~~183/185~~ bug-fixed | 0.029 |
+| oort | 094917 | 12.0x | 666→701 | 18.49/17.98 | 0/0 | 0.033 |
+| refl | 150131 | 2.31x | 2016→1887 | 1.48/1.74 | 3.02/3.00 | 0.034 |
+| felix | 100106/175309 | 2.7x | 626→671 | 4.32/4.03 | 2.81/3.16 | 0.018 |
 
 ---
 
@@ -290,51 +276,25 @@ completion order**. The whole job is to reproduce that in sim where the trainer 
 *not* sleep its budget (computes in real GPU ms, stamps a modeled completion `sct`).
 
 **Why all_selected=30 but only ~27.6 compute — verified from LAG_DECOMP (Jun12).** The
-post-compute leg is **serial-aggregator scheduling, NOT network**: `wall_lag` (send→commit)
-= compute 11.92 + model-push 0.067 + update-mqtt 0.015 + post 0.012 = **12.01s** (MQTT round
-trip <0.1s); then `queue_wait` **0.55s** (update sits in the single-threaded recv queue before
-aggregation — *pre*-commit, counts toward staleness: 12.01/4.32≈2.78≈real 2.81) + re-selection/
-send/`time.sleep(0.1)` **~0.4s** (*post*-commit, does not count). So cycle 12.96 = holding 12.57
-+ ~0.4 post-commit → computing fraction 11.92/12.96 = 0.92 → ~27.6 of the 30 slots compute at any
-instant; the other ~2.4 are between commit and next dispatch. This is a genuine property of the
-serial aggregator loop, not an MQTT delay — so sim must reproduce it for fidelity (§3L holds the
-cooled slot). **Drops ruled out:** down-link receptions (9364) ≥ dispatches (9166) and
-`SEND_TIMEOUT`/abandon events = 0 → nothing lost (the 273 dup receptions are harmless MQTT
-redeliveries). `analyze_run` `mqtt_delivery_plots` now plots per-round drops + CDF (flat 0 =
-healthy) instead of raw sent/received counts; the old plot was also silently broken (dispatch log
-went DEBUG → empty sends). NOT chasing the leg as a bug.
+post-compute leg is **serial-aggregator scheduling, NOT network.** `wall_lag` (send→commit) =
+compute 11.92 + push/mqtt/post ~0.1 = **12.01s** (MQTT round trip <0.1s); + `queue_wait` 0.55s
+(serial recv-queue backlog, pre-commit, counts toward staleness: 12.01/4.32≈2.78≈real 2.81) +
+re-selection/send/`sleep(0.1)` ~0.4s (post-commit, doesn't count). Cycle 12.96 → computing
+fraction 11.92/12.96 ≈ 0.92 → ~27.6 of 30. Drops ruled out (receptions ≥ dispatches,
+SEND_TIMEOUT=0). The leg is not a bug — §3m speeds real up by removing the artificial part.
 
-### §3m  Alternative (preferred): speed up REAL to ~c computing instead of slowing sim (Jun12)
+### §3m  Speed real up to ~c computing instead of slowing sim (Jun12, preferred)
 
-Rather than holding sim's cooled slot (§3L) to match real's ~27.6, **remove the artificial brake
-in real** so it stays compute-bound at ~30. The leg is NOT fundamental: the dominant piece is a
-real-only `time.sleep(0.1)` before selection in `_distribute_weights`, hit **twice per commit**
-(put_train + put_eval) → ~0.2s of the ~0.43s/commit budget (~46%). It inflates `queue_wait`
-(updates pile up in the serial recv queue while the loop sleeps) and the commit→re-dispatch gap.
-**Fix:** new knob `realDistributeSettleSeconds` (config; default 0.1 = legacy), set to **0** in the
-felix baseline. Expected real shift: advance 4.32→~3.97, computing ~27.6→~30, **staleness 2.81→~3.0**
-(the post-commit gap that kept L/C<1 disappears, so staleness → F/g = 3.0). Then SIM matches at c=30
-with `simRedispatchGapSeconds=0` — the §3L slot-hold becomes unnecessary (keep it, inert at gap 0).
-Validate on the next real+sim pair; if real still sits <30, profile per-commit selection cost next.
+The dominant slice of the post-compute leg is removable: a real-only `time.sleep(0.1)` before
+selection, hit twice per commit (~0.2s ≈ 46% of the 0.43s/commit budget), which inflates
+`queue_wait` and the re-dispatch gap. New knob `realDistributeSettleSeconds` (default 0.1 =
+legacy), set to **0** for felix → aggregator compute-bound, real holds ~30, advance ~3.97,
+staleness ~3.0. Sim then matches at c=30 with `simRedispatchGapSeconds=0` (§3L slot-hold inert).
+**CPU pinning:** aggregator already pinned to a reserved set (`runner.py`); do NOT pin to 1 core
+(its MQTT thread shares CPU with the FL loop). The loop is latency-bound, not CPU-bound, so
+pinning is second-order — the sleep removal is the win.
 
-**Aggregator CPU pinning (asked Jun12):** already pinned — `runner.py` reserves `min(8, max(2,
-ncores//8))` cores for the aggregator and sets `OMP_NUM_THREADS=len(cores)`; it does NOT free-roam
-all cores. Do **NOT** pin it to 1 core like a trainer: a trainer's heavy work is on the GPU (CPU just
-orchestrates), but the aggregator's MQTT network thread (paho `run_forever`) runs alongside the FL
-MainThread on CPU — one core would make them time-slice and raise `mqtt_lag`/`queue_wait`. The loop
-is latency-bound (sleep + selection + blocking recv), not CPU-bound (aggregation ~0.5ms), so pinning
-is **second-order**: the `time.sleep` removal is the real win. A minor follow-up is reducing the
-reserved set 8→2-4 (enough for MainThread + MQTT + light BLAS) to free cores for trainers and tighten
-cache locality — measure, don't assume.
-
-### Current state (Jun12, sim 120543 vs real 100106)
-
-**U3 staleness FAIL** — sim 4.09 vs real 2.81 (mean_diff 1.28 > 1.0). Decomposed
-from the per-commit telemetry (authoritative): **in-order commits (92%) → staleness
-3.20; past-dated commits (8%) → staleness ~23** (heavier than real's p99=9). The §3i
-leg pushed the baseline 3.57→4.09. **per_round_advance** also FAILs on KS shape only
-(0.218 > 0.2; mean 4.00 vs 4.32 PASSES `overhead_residual`); sim over-overlaps
-(K4 6.82 vs 6.39 — completions too bunched).
+### Older state (pre-§3j, stale — kept for the dead-ends)
 
 **What is NOT the cause (verified Jun12, do not re-derive):**
 - **NOT GPU contention.** T3 PASSES (overrun=0, gpu_compute ≈ 0.08s); messages arrive

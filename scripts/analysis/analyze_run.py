@@ -277,11 +277,8 @@ _SIM_BARRIER_WAIT_RE = re.compile(r"\[SIM_BARRIER\].*?barrier_wait_s=([0-9.]+)")
 _AGG_CACHE_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?cache_store_s=([0-9.]+)")
 _AGG_OPT_RE = re.compile(r"\[AGG_COMMIT_TIMING\].*?optimizer_s=([0-9.]+)")
 _SEND_RE = re.compile(r"sending weights to \S+ (?:with )?model_version[=:] ?(\d+)")
-# Per-send dispatch line moved to DEBUG (out of INFO logs), so count dispatches from
-# the INFO [DISTRIBUTE_TIMING] roll-up instead (robust source for the drops check).
+# Dispatch count from the INFO roll-up (per-send line is DEBUG); SEND_TIMEOUT = lost model.
 _DISTRIBUTE_TIMING_RE = re.compile(r"\[DISTRIBUTE_TIMING\] round=(\d+) n_sends=(\d+)")
-# The aggregator frees a dispatched-but-never-returned model after SEND_TIMEOUT_WAIT_S;
-# that is the definitive "in-flight model lost" (drop) signal. Healthy runs see 0.
 _SEND_TIMEOUT_RE = re.compile(r"Removing end \S+ from self\.all_selected since")
 
 _LAG_DECOMP_KEYS = ("wall_lag_s", "agg_to_trainer_s", "compute_s",
@@ -1482,19 +1479,10 @@ def resource_plots(out: str, stamp: str, run_dir: str) -> list[str]:
 
 
 def mqtt_delivery_plots(records, out, stamp, tdir):
-    """MQTT DROP sanity (both modes): is any dispatched model lost over the broker?
-
-    A model dispatched by the aggregator should reach the trainer within the network
-    latency (~0.06s here), so cumulative dispatched − received tracks only the handful
-    of messages in transit; subtract that legitimate in-transit floor and the result —
-    the *drops* curve — should sit flat at 0. A genuine broker drop steps it UP and it
-    never recovers. Cross-checked against the aggregator's own SEND_TIMEOUT count (a
-    dispatched model declared lost after SEND_TIMEOUT_WAIT_S): the definitive drop
-    signal, which is 0 in a healthy run.
-
-    Dispatched count comes from the INFO [DISTRIBUTE_TIMING] roll-up (the per-send
-    line is DEBUG); received count from trainer task_recv events.
-    """
+    """MQTT drop sanity (both modes): per-round dispatched − received hovers at 0 when
+    healthy, sustained-positive on a broker drop. Cross-checked vs SEND_TIMEOUTs (the
+    aggregator's own lost-model count). Dispatched from [DISTRIBUTE_TIMING], received
+    from task_recv events."""
     import numpy as _np
     d = _sub(out, "system"); saved = []
     agg = parse_agg_log(tdir)
@@ -1515,12 +1503,8 @@ def mqtt_delivery_plots(records, out, stamp, tdir):
         nd = dispatched_by_round.get(r, 0); nr = recvs_by_round.get(r, 0)
         cs += nd; cr += nr
         xs.append(r); deltas.append(nd - nr)
-    # Per-round delivery delta = dispatched_r − received_r. The cumulative gap carries
-    # the (constant) in-flight offset, so we difference it away: in balance every model
-    # dispatched is delivered the same round, so the delta hovers at 0. A broker drop
-    # shows as a sustained POSITIVE delta (dispatched not received). The CDF then piles
-    # its mass at 0. Cross-checked against SEND_TIMEOUTs, the aggregator's own count of
-    # in-flight models declared lost — the definitive drop signal (0 = none).
+    # Per-round delta differences away the constant in-flight offset, so it hovers at 0;
+    # a broker drop shows as a sustained positive run.
     run_pos = 0; max_run = 0  # longest run of positive (undelivered) deltas
     for v in deltas:
         run_pos = run_pos + 1 if v > 0 else 0

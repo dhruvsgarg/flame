@@ -43,63 +43,19 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
-        # Jun10 (PARITY.md 3c): the per-commit overhead was charged on the VIRTUAL
-        # CLOCK (vclock = max(vclock, sct) + overhead). At 0.315 it dominated the
-        # clock entirely (diagnostics: vclock 3189s = overhead_cum 3150 + sct_adv_cum
-        # 39, i.e. 98.8% overhead) -- it decoupled the clock from trainer completions
-        # and made staleness inflate AND drift over rounds (5->10->20s). Set to 0 so
-        # the clock TRACKS completions (vclock = max(vclock, sct)); staleness then =
-        # the versions elapsed during a trainer's round-trip, as in real. Any residual
-        # per-round-advance gap is a completion-spacing/dispatch issue to model in the
-        # trainer sct, NOT to fake on the clock. (History: 0.50 -> 0.16 -> 0.315 -> 0.)
+        # Overhead OFF the virtual clock so it tracks completions, not a ramp. PARITY §3c.
         simCommitOverheadSeconds: 0.0
-        # Jun12 (PARITY.md S3k): POST-commit re-dispatch gap. The original 1.6s leg
-        # (below) put the WHOLE real post-compute cycle BEFORE the commit, so it
-        # inflated staleness (sim 3.45 vs real 2.81 - staleness = holding/advance and
-        # the leg lengthened the holding). Measured real decomposition: holding
-        # (send->commit) = compute 11.71 + queue_wait 0.61 + delivery 0.09 = 11.79s,
-        # then a ~1.0-1.15s POST-commit re-dispatch leg (re-selection + model push)
-        # that does NOT count toward staleness. Split the 1.6: keep ~0.6 pre-commit
-        # (simCompletionLegSeconds below) and move ~1.0 here as a per-trainer cooldown
-        # that holds a just-committed end out of selection until vclock >= sct + gap.
-        # Total cycle (compute + 0.6 + 1.0 = compute + 1.6) is preserved, so advance/
-        # throughput stay matched; staleness drops to ~(compute+0.6)/advance ~= real.
-        #
-        # Jun12 (PARITY.md S3m): set to 0. With the real settle-sleep removed (see
-        # realDistributeSettleSeconds below), real is now compute-bound at ~c=30, so sim
-        # should ALSO run at c=30 - gap 0 lets the idle pool refill a freed slot (the S3L
-        # slot-hold goes inert), matching real's concurrency. At gap 0 the per-trainer
-        # cycle = holding, so sim staleness -> c/g = 3.0 (matches real's new ~3.0
-        # regardless of the leg); the leg below only sets advance. Was 1.0 (the S3k/S3L
-        # slow-down-sim approach, which matched a ~27-computing real).
+        # 0 = sim refills freed slots -> runs at c=30 to match compute-bound real. PARITY §3L/§3m.
         simRedispatchGapSeconds: 0.0
-        # Jun12 (PARITY.md S3 real-decomp): remove the real-only artificial brake. The
-        # 0.1s settle sleep before selection fires twice per commit (~0.2s, ~46% of the
-        # real ~0.43s/commit budget), inflating queue_wait + the commit->re-dispatch gap
-        # so only ~27.6 of c=30 actually compute. 0 makes the aggregator loop compute-
-        # bound -> real maintains ~30 computing (advance ~3.97, staleness ~3.0). NB: this
-        # raises real staleness 2.81 -> ~3.0 (the post-commit gap that kept L/C<1 is gone)
-        # and SIM should then match at c=30 with simRedispatchGapSeconds back to 0 (the
-        # S3L slot-hold becomes unnecessary). Validate on the next real+sim pair.
+        # 0 = drop the real-only settle-sleep brake -> real compute-bound at ~c. PARITY §3m.
         realDistributeSettleSeconds: 0.0
     trainer:
       hyperparameters:
         client_notify:
           enabled: "True"
         wait_until_next_avl: "True"
-        # Jun12 (PARITY.md S3i/S3k): PRE-commit holding leg only. The real send->commit
-        # holding beyond compute is just the buffer-residence (real queue_wait ~0.61s)
-        # + agg->trainer delivery/return (~0.09s) ~= 0.6s. This is the part that DOES
-        # count toward staleness (clock advances to sct; staleness = holding/advance).
-        # The remaining ~1.0s of the real post-compute cycle is the POST-commit
-        # re-dispatch latency, modeled separately as simRedispatchGapSeconds (aggregator)
-        # so it spaces completions WITHOUT inflating staleness. Was 1.6 (whole cycle
-        # pre-commit) -> staleness over-charged 3.45 vs real 2.81; split fixes it.
-        # Jun12 (S3m): with the real settle-sleep removed, real queue_wait collapses, so
-        # this 0.6 (which modeled the old 0.55 queue_wait) is now a PLACEHOLDER. At gap=0
-        # it only sets sim advance = (budget+leg)/3, not staleness. Retune to match the
-        # NEW real holding (compute + agg->trainer + residual queue_wait) from this run's
-        # [LAG_DECOMP] if advance/KS misses; expected ~0.1-0.3 once queue_wait drops.
+        # Pre-commit holding leg (counts toward staleness). Placeholder; retune vs real
+        # LAG_DECOMP after the overnight run (expect ~0.1-0.3 once queue_wait drops). PARITY §3.
         simCompletionLegSeconds: 0.6
 
   oracle:
