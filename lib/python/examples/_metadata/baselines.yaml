@@ -142,6 +142,9 @@ baselines:
         # 0.10 now OVER-charges: advance 1.74 vs real 1.48 (residual -0.26,
         # implied -0.026/commit) -> 0.10 + (-0.26/K=10) = 0.074.
         simCommitOverheadSeconds: 0.074
+        # Hold still-computing trainers in their selection slot until vclock>=sct so
+        # sim's eligible pool stops carrying the slow tail (A2b 12.41->~6.5). PARITY §4.5.
+        simInflightResidence: True
     trainer:
       hyperparameters:
         client_notify:
@@ -196,6 +199,11 @@ baselines:
         trackTrainerAvail:
           enabled: "True"
           type: ORACULAR
+        # NOTE: oort is NOT a pool-composition case -- its eligible pool already
+        # matches real (sim 12.12 vs real 11.35); the divergence is the selector
+        # picking ~average (12.21) vs real picking fast (8.81). That is a
+        # selector-scoring/path issue (see PARITY sec 4.5 oort note), so the
+        # sct-gated pool exclusion is intentionally left OFF for oort.
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"

@@ -406,6 +406,109 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     }
 
 
+def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
+    """A2c [DIST]: does the selector pick the same SPEED mix from its pool?
+
+    A2b (eligible_speed) checks the *pool* composition; this checks the *selected*
+    subset. Reading the two together localizes a selection divergence to one of two
+    causes (PARITY §4.5, Jun-14 oort-vs-refl split):
+      - pool diverges (A2b FAIL)             -> POOL COMPOSITION (refl: sim frees busy
+        clients early so slow ones re-enter the pool; selected may still match).
+      - pool matches but selected diverges   -> SELECTOR-SCORING/path bias (oort: from
+        a like pool real exploits utility -> picks fast, sim picks ~pool-average).
+    KS is over the SELECTED-candidate `speed_s`; per-mode `bias = mean(selected) -
+    mean(pool)` is reported as the selector's revealed speed preference.
+    """
+    def split(events):
+        sel, pool = [], []
+        for e in events:
+            for c in (e.get("per_trainer") or {}).values():
+                sp = c.get("speed_s")
+                if sp is None:
+                    continue
+                pool.append(sp)
+                if c.get("selected"):
+                    sel.append(sp)
+        return sel, pool
+
+    r_sel, r_pool = split(real["selection_train"])
+    s_sel, s_pool = split(sim["selection_train"])
+    if not (r_sel and s_sel):
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no selected per_trainer.speed_s in selection telemetry"}
+    ks = ks_stat(r_sel, s_sel)
+    ok = not math.isnan(ks) and ks <= ks_tol
+
+    def _m(x):
+        return round(sum(x) / len(x), 2) if x else None
+
+    return {
+        "ok": ok, "tier": "DIST",
+        "ks_stat": round(ks, 3) if not math.isnan(ks) else None, "ks_tol": ks_tol,
+        "real_selected_mean_s": _m(r_sel), "sim_selected_mean_s": _m(s_sel),
+        "real_pool_mean_s": _m(r_pool), "sim_pool_mean_s": _m(s_pool),
+        "real_bias_s": round(_m(r_sel) - _m(r_pool), 2),
+        "sim_bias_s": round(_m(s_sel) - _m(s_pool), 2),
+        "n_real": len(r_sel), "n_sim": len(s_sel),
+    }
+
+
+# Utility-score component keys emitted by the per-selector audit (oort / feddance).
+_SCORE_COMPONENT_KEYS = (
+    "believed_I", "temporal", "system_util",                  # oort
+    "feddance_V", "feddance_I", "feddance_A", "feddance_U",    # feddance
+    "v_m", "i_m", "a_m", "u_m",                               # generic
+)
+
+
+def selector_score_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
+    """Score-localize [DIAG]: WHICH utility-score term drives a selection-mix split?
+
+    For utility selectors the `per_trainer` audit carries the score components
+    (oort believed_I/temporal/system_util; feddance feddance_V/I/A/U). This compares
+    each component's distribution over SELECTED candidates, sim vs real, and reports
+    the worst-diverging term — localizing a selector divergence to a single score
+    input (e.g. feddance_I = loss-utility, oort believed_I = stat_utility) instead of
+    a black-box "the selector picks differently". DIAG: several of these terms are
+    path-dependent (the selection history differs across modes) so a divergence here
+    is a localization aid, not a verdict. SKIP for non-utility selectors.
+    """
+    def comps(events):
+        out: dict = {}
+        for e in events:
+            for c in (e.get("per_trainer") or {}).values():
+                if not c.get("selected"):
+                    continue
+                for k in _SCORE_COMPONENT_KEYS:
+                    v = c.get(k)
+                    if v is not None:
+                        out.setdefault(k, []).append(v)
+        return out
+
+    r, s = comps(real["selection_train"]), comps(sim["selection_train"])
+    common = [k for k in _SCORE_COMPONENT_KEYS if r.get(k) and s.get(k)]
+    if not common:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no per_trainer score components (non-utility selector)"}
+    per: dict = {}
+    worst_ks, worst_k = -1.0, None
+    for k in common:
+        ks = ks_stat(r[k], s[k])
+        if math.isnan(ks):
+            continue
+        per[k] = {"ks": round(ks, 3),
+                  "real_mean": round(sum(r[k]) / len(r[k]), 3),
+                  "sim_mean": round(sum(s[k]) / len(s[k]), 3)}
+        if ks > worst_ks:
+            worst_ks, worst_k = ks, k
+    return {
+        "ok": worst_ks <= ks_tol, "tier": "DIAG",
+        "worst_component": worst_k,
+        "worst_ks": round(worst_ks, 3) if worst_ks >= 0 else None,
+        "ks_tol": ks_tol, "per_component": per,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.B  Selection  (S1–S5)
 # ═══════════════════════════════════════════════════════════════════
@@ -1783,6 +1886,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
+    results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
+    results["selector_score"] = selector_score_parity(real_agg, sim_agg)
     results["participation"] = participation_parity(real_agg, sim_agg)
     results["selection"] = selection_parity(real_agg, sim_agg, max_rounds)
 
@@ -1854,7 +1959,9 @@ CHECK_META: dict = {
     "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     # ── Stage 3 Selection ──
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
-    "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail", "eligible_speed")},
+    "selection_bias":          {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},
+    "selector_score":          {"stage": 3, "role": "DIAG",     "deps": ("eligible_speed",)},
+    "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail", "eligible_speed", "selection_bias")},
     "selection":               {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
     # ── Stage 4 Dispatch & training ──
     "training_budget":         {"stage": 4, "role": "CONTROL",  "deps": ()},

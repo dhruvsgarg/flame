@@ -53,6 +53,8 @@ _SECTIONS = [
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
+        ("A2c  selected-vs-pool speed bias",    "selection_bias"),
+        ("Sx   selector score-term localize",   "selector_score"),
         ("S2   participation frequency",        "participation"),
         ("S1   per-round Jaccard",              "selection"),
     ]),
@@ -314,6 +316,30 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         pool_speed_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
             f"real_mean={res.get('real_mean_pool_speed_s')}s sim_mean={res.get('sim_mean_pool_speed_s')}s",
         ]
+    elif name == "selection_bias":
+        if res.get("status") == "SKIP":
+            lines.append(f"         note: {res.get('note')}")
+        else:
+            lines += [
+                f"         selected_speed_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
+                f"selected r/s={res.get('real_selected_mean_s')}/{res.get('sim_selected_mean_s')}s  "
+                f"pool r/s={res.get('real_pool_mean_s')}/{res.get('sim_pool_mean_s')}s",
+                f"         bias(selected-pool) real={res.get('real_bias_s')}s sim={res.get('sim_bias_s')}s "
+                f"-> pool-match+bias-diverge=selector; pool-diverge(A2b)=composition",
+            ]
+    elif name == "selector_score":
+        if res.get("status") == "SKIP":
+            lines.append(f"         note: {res.get('note')}")
+        else:
+            wk = res.get("worst_component")
+            per = res.get("per_component") or {}
+            lines.append(
+                f"         worst term={wk} KS={res.get('worst_ks')} (<={res.get('ks_tol')})"
+            )
+            for k, v in per.items():
+                lines.append(
+                    f"           {k:14s} KS={v.get('ks')}  real_mean={v.get('real_mean')}  sim_mean={v.get('sim_mean')}"
+                )
     elif name == "avail_timebase":
         lines += [
             f"         max_rel_diff={res.get('max_rel_diff')} "

@@ -28,262 +28,112 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Status: refreshed from the Jun 13 **2700 s** correctness runs (n=300, α=0.1)
+### Status: **Jun 14 — FULL 14400 s (4 h) runs (n=300, α=0.1)** — the run-length caveat RESOLVED
 
-> **Run-length caveat (read first).** These are **2700 s** runs (real ran ~2400 s wall, V≈2395 s;
-> `sim_wall_ceiling_s 2700` — ignore the stale `maxRunTime 600` field), NOT the 4 h (14400 s) runs the
-> tables below were originally built from. Selection-mix divergence is *path-dependent and accumulates*
-> over a run, so several CONTROL/selection checks that failed at 4 h (oort/refl/feddance P3·T2·K3) now
-> **pass at 2700 s with no staged fix** — a shorter-horizon artifact, not progress. The one *causal*
-> result this run is
-> **felix's §4.1 gap** (the only change staged; it targets a mechanism, not an accumulation), which
-> **validated**. Latest pairs auto-discovered by `--batch`: felix sim 164817/real 170523, oort
-> 164851/165546, feddance 175839/180515, refl 181101/182917. `pytest tests/mode/ +
-> scripts/parity/test_*` = **100 PASS**. Tables B/C below are refreshed to these runs;
-> table A is left as the **4 h reference** (2700 s runs eval only ~2× so accuracy isn't comparable).
+> **Read first.** These are the full **14400 s** runs the original tables were built for; they
+> supersede the Jun-13 2700 s section. The 2700 s caveat predicted that several oort/refl/feddance
+> selection/CONTROL checks *passed only because the horizon was too short for the selection-mix to
+> accumulate* — **the 4 h runs bear this out**: `--batch` now roots **feddance, oort, and refl all at
+> `trainer_speed` (P3)**, the commit-weighted footprint of the same selection-mix / in-flight-residence
+> divergence. feddance's "40/40 ALL GREEN" at 2700 s was the horizon artifact — at 4 h it fails
+> P3·K3·K2·terminal·commits. Pairs (`--batch` auto): felix sim 010018 / real 033735, refl sim 010048 /
+> real 034934, oort sim 075449 / real 081648, feddance sim 081900 / real 083925. `--budget-s 14400`.
+> `pytest tests/mode/ + scripts/parity/` = **58 PASS** (no code changed; checker run only).
 
-**felix — §4.1 `simRedispatchGapSeconds 0→1.0` landed; VALIDATED against the tracker hypotheses:**
+**`--batch` summary (4 h, 14400 s, agg-goal 10):**
 
-| check (tol) | Jun13 4h (pre-fix) | hypothesis | Jun13 2700 s (actual) | verdict |
-|---|---|---|---|---|
-| K2 throughput (rel≤.10) | ✗ .112 (sim +15% rounds) | ✓ | ✓ **.098** (rounds 611/620, **+1.5%**) | **HIT** |
-| K3 advance (KS≤.20) | ✗ .214 | ✓ | ✓ **.190** | **HIT** |
-| U3 staleness r/s | ✗ 2.80 / **4.75** | sim→~2.8 | ✓ real 2.79 / **sim 2.96** | **HIT** |
-| K8 terminal (rel≤.10) | ✗ .110 | ✓ | ✓ **.097** | **HIT** |
-| K3b overhead (rel≤.10) | ✗ .112 | ✓ <.10 | ✗ **.106** (barely over) | **near-miss — overshoot** |
-| U2 commits (rel≤.02) | ✗ .110 | →~0 | ✗ **.096** (same rounds as K8) | improved, tol still missed |
-| P3 trainer_speed (KS≤.10) | ✓ .086 | unchanged | ✓ **.084** | HIT (untouched) |
+| baseline | rounds r/s | K2 | K3 | P3 | overall | ROOT (banner) | reduced to |
+|---|---|---|---|---|---|---|---|
+| **felix**    | 3421 / 3454 | ✓ | ✓ | ✓ | FAIL | **staleness** | **ONE miss — staleness** (gap landed) |
+| **oort**     |  747 /  748 | ✓ | ✓ | ✗ | FAIL | trainer_speed | in-flight **residence** (quantified) |
+| **refl**     | 10158 / 9574 | ✗ | ✓ | ✗ | FAIL | trainer_speed | eligible-**pool** comp + genuine loss |
+| **feddance** |  464 /  513 | ✗ | ✗ | ✗ | FAIL | trainer_speed | selection-mix (masked at 2700 s) |
 
-The gap fix did what §4.1 predicted: the +15% rounds gap **collapsed to +1.5%**, staleness went from
-sim **4.75 (✗) → 2.96 ≈ real 2.79 (✓)**, and K3/K2/terminal all flipped PASS. **But the sign flipped:**
-sim now slightly **over**-advances (4.35 vs real 3.93; before it under-advanced 3.68 vs 4.14), so
-gap=1.0 is a *touch too large*. K3b .106 and U2 .096 are that same small overshoot. Per §4.1's own
-rule ("if advance overshoots, re-tune the gap to real's *measured* leg, not to whatever passes K3b"):
-real holding/advance = 10.95/3.93 → **drop the gap from 1.0 toward ~0.6** and re-run. felix is **one
-fine-tune from green**, and the mechanism is confirmed.
+**felix — `simRedispatchGapSeconds 1.0→0.6` LANDED; whole throughput family GREEN, one miss left.**
+At 4 h: K3b residual −0.05 (rel .011 ✓), K3 advance .075 ✓ (sim 4.17 ≈ real 4.12 — the 2700 s
+over-advance 4.35 is gone), K2 rounds 3454/3421 (rel .013 ✓), terminal .013 ✓, commits .012 ✓, P3 .084 ✓,
+participation .03 ✓, loss .016 ✓. **The single FAIL is staleness: sim 3.94 vs real 2.80** (KS shape .086
+— close; a mean/tail shift, not a shape divergence). The post-commit gap is **over-loaded** — it sets
+*both* advance (K3b) and the past-dated bunching that drives the staleness tail, and they want opposite
+values: gap **1.0** → advance 4.35 (K3b ✗) / staleness **2.96 ✓**; gap **0.6** → advance 4.17 (K3b ✓) /
+staleness **3.94 ✗**. Lowering the gap to fix advance re-bunched completions and regrew the §3j
+past-dated tail (steady-state 12.54/4.17 ≈ 3.0; measured 3.94 = +0.9 tail). **They must be decoupled.**
 
-**§4.0 `task_send` real-correctness (felix real 170523) — POPULATES & SOUND** (tracker §C): mean
-concurrency **28.78 of c=30** (hypothesis 27–28 ✓), **double_dispatch_overlaps = 0** ✓,
-eligible_violations 0, staleness 2.785 = holding 10.95 / advance 3.93 ✓ — real is admissible. Speedup
-readout populates (gpu_work 449 s, compute_floor 15.6 s, ceiling 154×).
+**oort — in-flight RESIDENCE QUANTIFIED (the `inflight_residence` event populated):**
 
-### Jun 14 session — checker corrections + corrected localization (analysis on the 2700 s telemetry)
-
-Three checker fixes (code landed in `scripts/parity/`; guarded by `test_ladder.py`/`test_parity_checks.py`, **100 parity/mode tests PASS**)
-and a re-localization that **overturns the §4.2 "real over-commits slow / sim picks fast" story**.
-
-**Checker corrections (principled, NOT relaxation — verified against the data):**
-1. **Throughput family → one shared 5% bar (K2, K8 rounds, U2 commits).** These three measure the
-   *same* rounds-per-virtual-time quantity (`U2.rel == K8.rounds_rel` to 3 decimals on all four, cpr
-   identical across modes). They were enforcing **three different** tolerances (K2/K8 10%, U2 2%); now
-   one deliberate 5% bar. Real throughput gaps stay fully enforced (felix's is downstream of K3b).
-2. **U2 (`total_commits`) 2% → 5%.** U4 already enforces fixed agg_goal commits/round, so at matched V
-   U2 carries no signal beyond K8's round rollup; the old 2% failed on a stochastic 2-rounds-in-85
-   (feddance) that K8 accepts. Now shares the family bar.
-3. **S2 (`participation`) share-KS → matched-round count-KS.** The share metric (count/total) folds in
-   the throughput delta — when modes run a different #rounds in the window, every count scales by the
-   same ratio and *any* scalar normalization (share/rate/count-mean) keeps that offset, so share_KS
-   re-measured throughput as a "shape" divergence. Fix: count participation over the matched round
-   window (first N=min(rounds) of each), like K8/U2 use matched budget. **feddance .427→.033 ✓,
-   oort .368→.127 ✓** (both were the throughput offset); **refl .542→.530 ✗ stays** (genuine shape
-   divergence — correctly not suppressed). `validate_real.py` also made utf-8-robust (latin-1 crash).
-
-**Result after the three fixes (2700 s, 5% bar):**
-
-| baseline | enforced score | remaining FAILs | nature |
+| metric (oort, per round) | sim | real | read |
 |---|---|---|---|
-| **feddance** | **39/39 — ALL PASS** | — | S2 was a metric artifact; participation genuinely matches |
-| **felix** | 1 left | K3b (K2/K8/U2 downstream) | gap `1.0→0.6` config staged — needs a re-run to confirm |
-| **oort** | 3 left | K3, S3/4, T2 | one root: **in-flight carryover** (below) |
-| **refl** | 2 left | P3, S2 | genuine commit-mix + participation divergence |
+| **`in_flight_after`** (carried stragglers) | **0.09** (median 0) | **2.40** (median 2, max 10) | sim drains to ~0; real holds ~2.4 |
+| `residence_rounds` (rounds in-flight) | mean 0.01, max 2 | mean 0.17, max 8 | real stragglers reside longer |
+| `carried_over_ages` count | 66 | **1792** | real carries ~27× more across rounds |
+| selection_detail `mean_chosen`/`in_flight` | 13.09 | **15.39** | the 2.3 gap **== the 2.40 carried** |
 
-**Corrected localization (from the selection/agg telemetry):**
-- **oort — in-flight carryover, NOT a speed/mix bug.** `select()` reports `selected_ends` (the
-  cumulative in-flight set). Sim drains it to exactly the designed `num_of_ends = aggGoal×1.3 = 13`;
-  **real holds 15.56** (≈2.5 stragglers carried across rounds). Selected-trainer *utility* matches
-  (38.1 vs 38.6). So S3/4 (count), T2 (committed-budget mix) and K3 (advance-shape) are all downstream
-  of one thing: **real keeps stragglers in-flight longer than sim drains them** — the sync analogue of
-  felix's post-commit residence (leg+gap), which the sync path does NOT model. Direction note: the old
-  doc claim "real picks slow / sim fast" was a `speed_s`-null-biased read; the real signal is in-flight
-  *residence/count*, not pick speed.
-- **refl — eligible-POOL composition, the same residence root.** num_chosen (13/13), in-flight (68/67)
-  AND staleness (2.97/3.03) all match — so it is *not* a count/timing divergence. The divergence is in
-  the eligible candidate **pool's speed mix**: sim pool-mean **12.1 s** vs real **6.8 s**. In real a slow
-  client stays busy (in-flight) its whole budget, so it is OUT of the pool that long → real's pool is
-  fast-skewed; sim frees non-committed clients back to the pool too early → slow clients re-enter → sim's
-  pool skews slow. The selector then picks from different pools → P3 (committed speed) and S2
-  (participation) diverge while A2's eligible *count* matches. **Same root as oort** (sim releases
-  in-flight/busy clients too early); confirmed by the user. The new **A2b** check (below) localizes it.
-- **feddance — was an artifact.** distinct 300/300, top-10 share 0.10/0.09, count quantiles match
-  (median 2/2, p90 6/6); only the share metric flagged it. **Now 40/40 green.**
+Mid-run sim every round `before=13 → after=0`; real `before=13–16 → after=0–3`. **⚠ SUPERSEDED (see
+§4.5):** this `in_flight_after` gap turned out to be a **false signal** — the round-300 log trace showed
+sim's slow stragglers live in the persistent `_sim_buffer` (committing late as stale), not in
+`selected_ends`, so 0.09-vs-2.40 compares different structures. The selected-vs-pool speed check then
+showed oort's **pool already ≈ real** (12.12 vs 11.35) and the divergence is the **selector** picking
+~average (12.21) vs real fast (8.81). **oort is a selector-scoring case, not a residence/carryover one**
+— it gets §4.8-style localization, not the §4.5 slot fix. (The §4.5 fix applies to **refl**, below.)
 
-### Jun 14b — A2b check + oort residence instrumentation (CODE LANDED; awaits a run)
+**refl — eligible-POOL composition, worse at full horizon; loss now genuinely diverges.** A2b
+`eligible_speed` sim pool **12.32 s** vs real **6.43 s** (KS .429, up from .363 at 2700 s — accumulates
+as predicted). num_chosen/in_flight and staleness still match → it's the pool's speed mix (sim frees
+busy clients back to the pool too early → slow re-enter → sim pool skews slow). participation
+matched-count-KS **.316 ✗** (genuine), **convergence_loss now FAILS .1735** (>.15; the 2700 s .092 was
+the ~2-eval weak pass — 192 evals at 4 h show the real divergence). This is the genuine `sct`-gated
+pool-exclusion case (§4.5) — confirmed by selected-vs-pool speed: refl's *selected* matches real
+(6.90/6.30) but its *pool* is full-population (12.41) while real's pool ≈ selected (6.56).
 
-Two more code changes (guarded, **100 parity/mode tests PASS**), staged so the next n=300 batch
-produces the data to finish the oort/refl residence fix:
+**feddance — the 2700 s "all-green" was the horizon artifact.** At 4 h: P3 .147 ✗ (root), K3 advance
+**KS .522** (mean_rel .077 — shape diverges hard while means stay close), K2 rounds 513/464 (sim
+**+10.6%**, 28.11 s/round vs real 30.4), terminal/commits +7.4%. **But feddance is NOT the residence
+mechanism:** it selects exactly k=10 with **no overcommitment** (in_flight 10/10 both modes, no
+`inflight_residence` telemetry). Its root is the **selection mix** — *which* 10 are picked — which drives
+both the max-of-K advance **shape** (K3 KS .522) and the commit-weighted speed (P3 .147). See §4.8.
 
-1. **A2b `eligible_speed` check (Stage 2, MECHANISM, dep=`eligibility`).** A2 checks the eligible-set
-   *size*; A2b checks its **speed composition** (KS over `per_trainer.speed_s` pooled across selections).
-   Validated on the 2700 s telemetry: **refl ✗ .363** (sim 12.1 vs real 6.8), felix/oort/feddance ✓
-   (≈.07). It makes **refl's root explicit** (A2b + the downstream P3), and `participation` is now
-   correctly **DOWN-suppressed** beneath it (dep added). `checks.py::eligible_speed_composition_parity`,
-   wired in `report.py` (A2b line + render) and `CHECK_META`. *(oort's A2b PASSES — confirming oort's
-   root is the in-flight COUNT/residence, not pool composition; the two baselines share the underlying
-   "sim frees busy clients early" mechanism but it surfaces in different checks.)*
-2. **oort in-flight RESIDENCE instrumentation.** New `inflight_residence` telemetry event
-   (`flame/telemetry/events.py::build_inflight_residence`), emitted per round from the oort sync
-   aggregator at the cleanup point (`flame/mode/horizontal/oort/top_aggregator.py`). Tracks each
-   trainer's entry round into `selected_ends` and emits, per round: `in_flight_before/after`,
-   `committed_fresh`, `cleaned`, `stale_rejected`, **`residence_rounds`** (rounds each cleaned straggler
-   spent in-flight) and **`carried_over_ages`** (ages of those still in-flight). Comparing sim-vs-real
-   `residence_rounds` distributions is what tells us **whether sim evicts a straggler a round too early**
-   (the hypothesis behind sim 13.4 vs real 15.6 in-flight) and by how much — the calibration knob.
+> **The roots are different per baseline (do not over-unify):** **refl** = `sct`-gated **pool composition**
+> (selected matches 6.90/6.30, pool 12.41 vs 6.56) → §4.5 pool-exclusion fix (IMPLEMENTED, refl only).
+> **oort** = **selector scoring** (pool ≈ real 12.12/11.35, but sim selects ~average 12.21 vs real fast
+> 8.81) → §4.8-style utility-score localization, **not** §4.5. **feddance** = no overcommit → **selection
+> mix** in the `feddance_I` (loss-utility) term, likely path-dependent (§4.8). **felix** = solved on
+> throughput; residual gap↔staleness coupling held for a dedicated pass (§4.6). Only **refl** has a coded
+> fix + re-run this round; oort/feddance need score localization first; felix is held.
 
-**Still needs DYNAMICS work — fine-tune from the NEXT runs' data (§3 hold; cannot verify locally):**
-- **felix:** gap `1.0→0.6` re-run (high confidence; config landed).
-- **oort + refl (shared root):** the sim frees non-committed/in-flight clients back to selection/the pool
-  too early. The principled fix holds a client OUT of `selected_ends` (and thus the eligible pool) until
-  its modeled completion (`vclock ≥ sct`), matching real's wall-residence. **Calibrate the eviction
-  timing from the new `inflight_residence` event** (sim vs real `residence_rounds`); the fix should close
-  oort S3/4·T2·K3 *and* refl A2b·P3·S2 together (same mechanism). The instrumentation + A2b are landed so
-  the next batch yields the numbers; the aggregator dynamics change is deferred to that data.
 
-**A. Cross-baseline performance** *(4 h reference — NOT refreshed; 2700 s runs eval too sparse):*
+### Distilled history — what worked / what didn't (Jun 12–14)
 
-| baseline | FL rounds r/s | final test-acc r/s | final loss r/s |
-|---|---|---|---|
-| refl     | 9054 / 8587 | **0.579** / 0.565 | 3.20 / 3.06 |
-| felix    | 3402 / 3913 | **0.579** / 0.578 | **1.18** / 1.17 |
-| oort     |  777 /  839 | 0.508 / 0.480 | 1.34 / 1.51 |
-| feddance |  504 /  579 | 0.428 / 0.494 | 1.79 / 1.67 |
+**Worked (kept, validated):**
+- **felix §3j drain-by-readiness** — admit any in-flight end with a physically-ready msg into the
+  reorder buffer so slow trainers commit in `sct` order (staleness 7.19→3.45). `_sim_recv_min`.
+- **felix §3g probe the LIVE in-flight set** (recv_fifo pops min-`sct`) — reorders the past-dated tail.
+- **felix §3m `realDistributeSettleSeconds=0`** — removes a real-only 2×`sleep(0.1)`/commit so real
+  holds ~c computing (advance 4.14, staleness 2.80) instead of slowing sim to a wrong reference.
+- **felix §4.1 redispatch gap** — post-commit re-dispatch leg as `simRedispatchGapSeconds`, slot-held
+  by §3L cooling (freed slot isn't refilled from idle). `1.0` fixed K3/K2/terminal; **`1.0→0.6` (Jun 14)
+  zeroed the over-advance** → throughput family GREEN. Residual: staleness (see Status).
+- **Checker corrections (principled, not relaxation):** throughput family → one 5% bar (K2/K8/U2 are the
+  same rounds/V quantity); S2 share-KS → **matched-round count-KS** (share folds in the throughput
+  offset); A2b `eligible_speed` pool-composition check; P1/S1 gated WARN for stochastic selectors;
+  F1-3 enforce **pooled** utility KS (per-trainer KS=1.0 was n<=2 mechanical); `phase_mqtt_fetch` → DIAG
+  (in-mem cache wall-time, off the virtual clock). `validate_real` + the `task_send` event prove real is
+  admissible (concurrency 28.8/c30, **double-dispatch 0**).
 
-**Read:** felix ≈ refl at the top (~0.579 real acc, within eval noise — felix does *not* strictly
-out-accuracy refl), but felix reaches it in ~⅓ the rounds and at the **lowest loss** (1.18);
-refl's accuracy comes with a high/miscalibrated loss (3.2). oort (0.51) and feddance (0.43) trail.
-So felix is co-best on accuracy and best on loss + round-efficiency.
+**Didn't work / dead ends (do NOT re-try):**
+- overhead>0 on the clock (§3a/b — masks & drifts; clock must `=max(vclock,sct)`, overhead 0).
+- prediction-only gates with no real blocking (§3d/e — never fire).
+- `version_at(sct)` relabel (§3f — fedbuff consumes the *real* staleness number; relabel is inert).
+- adding `mqtt_fetch` (57 s) to `sct` (§3h — not version-relevant, inflates staleness ~6×).
+- §3m's theory that settle=0 lets sim match at **gap=0** — refuted (gap=0 → sim over-overlaps:
+  advance 3.68, staleness 4.75). The gap is a real mechanism, not a fudge.
+- `sendStaggerSeconds` (always 0; MQTT drops ruled out) — REMOVED.
+- the bogus "redispatch 4549/26988" breach — a `validate_real` bookkeeping artifact (cleared in-flight
+  on `contributing_trainers`, which omits overcommit-discarded completions), NOT a real violation.
 
-**B. Parity status — Jun 13 2700 s** (lowest broken rung; root from `--batch` banner):
+**Ruled out (do not re-chase):** GPU contention (T3 overrun=0); SEND_TIMEOUT (fires 0×); `commit_gap`
+as a staleness proxy (track staleness, not commit_gap); MQTT drops (0 both directions); the felix
+post-compute leg as a "bug" (serial-aggregator scheduling, not network).
 
-| baseline | rounds r/s | clock (K2/K3/K3b) | staleness r/s | root-cause FAIL | other FAILs | vs prior 4 h |
-|---|---|---|---|---|---|---|
-| feddance | 85 / 98 | PASS ✓ | 0 / 0 ✓ | **40/40 — ALL PASS** | — | S2 metric artifact removed (matched-round) |
-| felix    | 611 / 620 | K3b ✗ .106 (↓) | 2.79 / 2.96 ✓ | **K3b** (gap overshoot) | K2/K8/U2 ✗↓ | gap `1.0→0.6` staged → needs run |
-| oort     | 126 / 149 | K3 ✗ .239 | 0 / 0 ✓ | **K3 / S3-4 / T2** (residence) | — | in-flight 13.4 vs 15.6; instrumented |
-| refl     | 1621 / 1930 | PASS ✓ | 2.97 / 3.03 ✓ | **A2b / P3** (pool composition) | participation ↓ | pool 12.1 vs 6.8; same residence root |
-
-> **Post Jun-14: feddance green; the other three each reduced to ONE mechanism.** felix = gap overshoot
-> (K3b; throughput family ✗↓ downstream, closes on the `→0.6` re-run). **oort = in-flight residence**
-> (sim drains to 13.4 vs real 15.6; S3/4·T2·K3 all downstream — now instrumented with `inflight_residence`).
-> **refl = eligible-pool composition** (A2b: sim pool 12.1 s vs real 6.8 s; P3 downstream, participation
-> suppressed beneath A2b) — the *same* "sim frees busy clients early" mechanism as oort. The three checker
-> fixes (5% throughput family, matched-round S2, A2b) are principled corrections, not relaxations; the
-> remaining roots are real sim-dynamics gaps to fine-tune from the next run's residence data (§Jun-14b).
-
-**C. Full ladder — Jun 13 2700 s** (✓/✗ + actual margin; `(4h: …)` = prior value where the verdict moved):
-
-| stage·check (tol) | felix | oort | refl | feddance |
-|---|---|---|---|---|
-| 1c P3 trainer_speed (KS≤.10) | ✓ .084 | ✓ .077 (4h ✗.125) | ✗ .221 (4h ✗.153) | ✓ .062 (4h ✗.197) |
-| 1m K3b overhead (rel≤.10) | ✗ .106 (4h ✗.112) | ✓ .053 | ✓ .057 | ✓ .028 (4h ✗.111) |
-| 1e K3 advance (KS≤.20) | ✓ .190 (4h ✗.214) | ✗ .239 (4h ✓.193) | ✓ .162 | ✓ .158 (4h ✗.581) |
-| 1e K2 throughput (rel≤**.05**) | ✗↓ .098 | ✓ .047 | ✗↓ .051 | ✓ .020 |
-| 2 A2 eligibility | ✓ | ✓ (mean) | ✓ | ✓ |
-| 2 A2b eligible-pool speed (KS≤.2) | ✓ .073 | ✓ .067 | ✗ .363 (sim 12.1/real 6.8) | ✓ .073 |
-| 2 A3 timebase | ✓ .016 | ✓ .023 | ✓ .019 | ✓ .024 |
-| 3 S3/4 num_chosen (rel≤.05) | ✓ .003 | ✗ .138 (4h ✗.177) | ✓ .000 | ✓ .000 |
-| 3 S2 participation (matched-count-KS≤.2) | ✓ .037 | ✓ .127 (share .368) | ✗ .530 (share .542) | ✓ .033 (share .427) |
-| 4 T2 budget (KS≤.10) | ✓ .010 | ✗ .162 (4h ✗.208) | ✓ .055 | ✓ .030 (4h ✗.133) |
-| 4 T gpu_compute (KS≤.25) | ✓ .045 | ✓ .035 | ✓ .014 | ✓ .113 |
-| 5 U5 arrival (WARN, rho) | −.47 | −.46 | −.47 | −.34 |
-| 6 U3 staleness r/s | ✓ 2.79/2.96 (4h ✗2.8/4.75) | ✓ 0/0 | ✓ 2.97/3.03 | ✓ 0/0 |
-| 6 P1 agg_seq (gated WARN) | ✓ | ✓ | ✓ | ✓ |
-| 7 F1-3 utility (pooled KS) | ✓ .041 | ✓ .035 | ✓ .013 | ✓ .091 |
-| 8 K8 terminal (rel≤**.05**) | ✗↓ .097 | ✓ .038 | ✓ .045 | ✓ .023 |
-| 8 U2 commits (rel≤**.05**) | ✗↓ .096 | ✓ .038 | ✓ .045 | ✓ .023 |
-| 8 C1 accuracy (≤.05) | ✓ .026 | ✓ .022 | ✓ .028 | ✓ .020 |
-| 8 C2 loss (≤.15) | ✓ .019 | ✓ .040 (4h ✗.182) | ✓ .092 (4h ✗.194) | ✓ .031 (4h ✗.155) |
-
-Reading the table (**post Jun-14 checker fixes; ✗↓ = fails the 5% bar but DOWNSTREAM-suppressed, not a
-root**): **feddance** is now **fully green** (S2 was the share-metric artifact). **felix** has one root,
-K3b (the gap overshoot) — K2/K8/U2 fail the tightened 5% bar only *downstream* of it and close when the
-`gap 1.0→0.6` re-run lands. **oort** roots at the in-flight carryover (K3 advance-shape; S3/4 count 13.4
-vs 15.6; T2 commit-mix all downstream of it); its S2 and P3 were throughput/horizon artifacts (now ✓).
-**refl** is the genuine one: P3 (commit speed-mix .221) and S2 (participation .530 *on matched rounds* —
-not an artifact). **U5 arrival (~−0.4)** is the gated stochastic WARN on all four. **pytest guards**
-(`tests/mode/` + `scripts/parity/test_*`, **100 tests**) PASS.
-
-### Verification tracker — hypothesis → **2700 s actual** (RESOLVED this run)
-
-Each staged-fix prediction with the number it actually landed on. ✅ = mechanism confirmed,
-⚠️ = near-miss/needs follow-up. (For oort/refl/feddance, recall **no fix was staged** — see the
-run-length caveat; movement there is horizon, not progress.)
-
-**A. felix — staged fix: `simRedispatchGapSeconds 0→1.0` (§4.1); + `task_send` concurrency (§4.0)**
-
-| check (tol) | hypothesis | **2700 s actual** | |
-|---|---|---|---|
-| §4.0 concurrency (NEW) | mean ≈ 27–28 of c≈30, double_dispatch=0 | **mean 28.78, peak 30, dbl_dispatch 0** | ✅ |
-| K3b overhead_residual (rel≤.10) | ✓ <.10 — sim advance →~4.1 | ✗ **.106** — sim *over*-advanced 4.35 vs real 3.93 | ⚠️ overshoot |
-| K3 advance (KS≤.20) | ✓ ≤.20 | ✓ **.190** | ✅ |
-| K2 throughput (rel≤.10) | ✓ ≤.10 — rounds gap shrinks | ✓ **.098** — rounds 611/620 (**+1.5%**, was +15%) | ✅ |
-| U3 staleness (r/s) | ✓ sim →~2.8 | ✓ real 2.79 / **sim 2.96** (was 4.75) | ✅ |
-| K8 terminal (rel≤.10) | ✓ ≤.10 | ✓ **.097** | ✅ |
-| U2 commits (rel≤.02) | →~0 | ✗ **.096** — improved but tol .02 (same rounds as K8 ✓) | ⚠️ tol |
-| P3 trainer_speed (KS≤.10) | unchanged ✓ | ✓ **.084** | ✅ |
-
-**Verdict:** gap mechanism **confirmed** — five of seven HIT, the two misses (K3b/U2) are the *same*
-small overshoot (gap 1.0 slightly too large → sim over-advances). Follow-up: drop gap → ~0.6 (real's
-measured holding/advance leg), not to whatever zeroes K3b.
-
-**B. oort / refl / feddance — NO fix staged (§4.2 selection-mix not coded) — actuals are run-length**
-
-| baseline · check (tol) | hypothesis | **2700 s actual** | read |
-|---|---|---|---|
-| oort P3 trainer_speed (KS≤.10) | unchanged ✗ | ✓ **.077** | passed only because 2700 s hasn't accumulated the mix shift |
-| oort T2 budget (KS≤.10) | unchanged ✗ | ✗ **.162** (was .208) | persists — durable selection-mix root |
-| oort S3/4 num_chosen (rel≤.05) | unchanged ✗ | ✗ **.138** (was .177) | persists |
-| oort C2 loss (≤.15) | unchanged ✗ | ✓ **.040** | weak (≈2 evals at 2700 s) — not a real close |
-| refl P3 / participation (share-KS≤.2) | unchanged ✗ | ✗ **.221** / ✗ **.542** | P3 *regressed* .153→.221 (path-dependence); persists |
-| refl C2 loss (≤.15) | unchanged ✗ | ✓ **.092** | weak (≈2 evals) |
-| feddance P3 / K3 advance (KS) | unchanged ✗ | ✓ **.062** / ✓ **.158** (was .197/.581) | run-length, not a fix |
-| feddance T2 / participation / C2 | unchanged ✗ | ✓ **.030** / ✗ **.427** / ✓ **.031** | only participation is durable |
-
-**C. Non-parity-table checks (this session's code changes) — confirmed:**
-
-| change | expected | **2700 s actual** |
-|---|---|---|
-| `task_send` instrumentation (§4.0) | concurrency POPULATES, double_dispatch=0, ADMISSIBLE | ✅ felix real: mean 28.78/c30, **dbl_dispatch 0**, eligible_violations 0 |
-| `sendStaggerSeconds` removal | behavioral no-op | ✅ no anomalous rounds/advance/staleness shift vs the mechanism |
-| speedup readout (§4.4) | `intrinsic_speedup_x` + `pct_of_floor` populate | ✅ real felix: gpu_work 449 s, compute_floor 15.6 s, ceiling 154× |
-| felix gap=1.0 (§4.1) | real leg ≈ 1 s; re-tune to measured leg if advance overshoots 4.14 | ⚠️ **advance overshot** (sim 4.35 > real 3.93) → gap too large; re-tune to ~0.6 |
-
-**What landed (validated the 2700 s run set):**
-- **felix §4.1 redispatch gap `0→1.0` — THE result.** Restoring the post-commit gap flipped
-  K3 (.214→.190), K2 (.112→.098, rounds +15%→+1.5%), staleness (sim 4.75→2.96 ≈ real 2.79), and
-  K8 terminal (.110→.097) all to PASS in one move. The mechanism (§3k/§3L slot-hold) is confirmed.
-  Residue: gap is *slightly too large* — sim now over-advances (4.35 vs 3.93), so K3b (.106) and
-  U2 (.096) sit just over tol. **Next: drop gap → ~0.6** (real's measured leg, §4.1 rule).
-- **§4.0 `task_send` real-correctness — sound and populated.** felix real: mean concurrency 28.78/c30,
-  **double_dispatch 0**, eligible_violations 0, staleness 2.785 = holding/advance ✓. Real is admissible.
-- **Carried (from prior runs, still PASS):** refl clock GREEN (K3b .057/K3 .162/K2 .051), staleness
-  bug fix holds (feddance/oort 0/0), §5 checker gating (P1/utility/phase_mqtt) PASS.
-
-**What's still open:**
-- **felix — gap overshoot (K3b .106 / U2 .096):** the one fine-tune to all-green — lower the
-  redispatch gap from 1.0 to ~0.6 and re-run; both are the same small over-advance, not new bugs.
-- **selection-mix divergence (§4.2, not yet coded)** is the durable root for the other three:
-  **oort** T2 .162 / S3-4 .138 / K3 .239, **refl** P3 .221 (regressed), **S2 participation** on
-  oort/refl/feddance (.368/.542/.427). These need the per-`per_trainer`-score localization at matched
-  rounds — and a **longer run** to confirm the 2700 s passes (feddance P3/K3/T2, oort P3) aren't just
-  under-accumulated horizon. Real selection is sound (§4.0), so it's a sim-selection question.
-- **U2 vs K8 tolerance asymmetry:** U2 (rel≤.02) fails on all four on the *same* matched-V rounds K8
-  (rel≤.10) now passes — reconcile the tolerances or document why U2 is stricter.
-
-**Ruled out (do not re-chase):** GPU contention (T3 overrun=0); re-dispatch-invariant violation
-(SEND_TIMEOUT fires 0×; **and now confirmed at the trainer level — §4.0 `task_send` intervals give
-double-dispatch=0 on all baselines; the old "redispatch 4549/26988" was a validator bookkeeping
-artifact, not real**); `commit_gap` as a staleness proxy; MQTT drops (0, both directions); the felix
-post-compute leg as a "bug" (it's serial-aggregator scheduling, not network — §3).
 
 ---
 
@@ -425,6 +275,8 @@ pass*. "Dep" = upstream prerequisites.
 | ID | Check | Role/Tier | Isolates | Dep |
 |---|---|---|---|---|
 | S3/4 | num_chosen / in_flight / effective_c | MECHANISM/DIST | Selector picks a different count | A2 |
+| A2c `[Jun14c]` | selected-vs-pool speed bias | MECHANISM/DIST | Selector's revealed *speed preference* (`bias=selected−pool`) diverges with the pool matched → **selector-scoring** (oort), vs pool itself diverging → **composition** (A2b, refl) | A2b |
+| Sx `[Jun14c]` | selector score-term localize | DIAG | *Which* utility-score term drives a mix split (oort believed_I/temporal/system_util; feddance V/I/A/U) — pinpoints e.g. oort `system_util` | A2b |
 | S2 | Participation frequency | EMERGENT/DIST | Per-trainer chosen-count diverges | S3/4 |
 | S1 | Per-round Jaccard | DIAG | Exact set identity (gated WARN for stochastic selectors) | A2 |
 
@@ -510,28 +362,6 @@ See §4.1: restore a small gap.
 (its MQTT thread shares CPU with the FL loop). The loop is latency-bound, not CPU-bound, so
 pinning is second-order — the sleep removal is the win.
 
-### Older state (pre-§3j, stale — kept for the dead-ends)
-
-**What is NOT the cause (verified Jun12, do not re-derive):**
-- **NOT GPU contention.** T3 PASSES (overrun=0, gpu_compute ≈ 0.08s); messages arrive
-  physically in ~0.1s. Do **not** attribute late commits to contention without new data.
-- **NOT a re-dispatch / selection-invariant violation.** A trainer is excluded from
-  selection while in `all_selected` (`async_oort.py:1526`); it stays there until its
-  update is received & cleaned up, and the §3g code (`top_aggregator.py:393-401`) keeps
-  drained-but-uncommitted trainers in-slot. The 90s `SEND_TIMEOUT` (which could free an
-  in-flight trainer) **fires 0× in both modes**. Invariant holds and matches sim≈real.
-- **`commit_gap_s` is a red herring** for staleness: it is `vclock − sct` where `sct =
-  sim_send_ts + budget`; past-dated `commit_gap` runs to 2922s yet the actual recorded
-  staleness on those commits is only ~23. Track **staleness**, not `commit_gap`.
-
-So the residual is (a) the **§3i leg is a tuned scalar** (`simCompletionLegSeconds=1.6`)
-that inflates the staleness baseline, and (b) a **heavier-than-real past-dated tail**.
-The advance gap (pre-leg sim 3.68 vs real 4.32) is sim **over-overlap**: sim re-dispatches
-a finished trainer with ~zero latency, so completions bunch; real has real queue_wait +
-re-selection latency between finish and next dispatch, spreading them. **Open: model that
-real latency principledly (not the leg scalar), and characterise the past-dated tail —
-why 8% of sim commits land out of order when arrivals are ~0.1s.**
-
 ### Changelog (done / tried-and-failed — do not repeat)
 
 | # | change | result |
@@ -608,181 +438,162 @@ relabel (§3f — fedbuff uses the real number); adding `mqtt_fetch` (57s) to `s
 a benign wall-time artifact (in-mem cache is faster), orthogonal to the virtual clock
 — NOT chased. A2 eligibility point-mass handled (means match + CV<0.01 rescue).
 
-## §4  Plan: close the remaining parity gaps (proposed Jun13)
 
-Three fronts, ranked by ROI, each tagged with what already worked/failed so we don't re-walk
-dead-ends. **Overriding principle (§4.0):** parity ≠ goal. The goal is a *correct* simulator.
-Real is the reference **only after it is itself shown correct** — never tune sim to match a wrong
-real, and never add a scalar fudge where a mechanism is called for.
+## §4  Plan — code changes for the next 4 h run (Jun 14)
 
-### ⏸ SESSION CHECKPOINT — resume here (Jun13b, real-validator made sound)
+**Overriding principle (§4.0):** parity ≠ goal; a *correct* simulator is. Real is the reference only
+after `validate_real` shows it admissible (done: concurrency 28.8/c30, double-dispatch 0). Never tune
+sim to a wrong real; never add a scalar fudge where a mechanism is called for.
 
-**Done this session (working tree, NOT yet run/committed to git):**
-- **§4.0 validate_real — REWRITTEN ON A SOUND BASIS.** The first cut was *unsound*: it checked
-  `effective_c` (absent in **all** selection events → concurrency check was vacuous, printed `[OK]`
-  having compared nothing) and cleared in-flight on `contributing_trainers` (which omits
-  overcommit-discarded completions → every later legit re-selection miscounted as a re-dispatch
-  breach: the bogus oort 4549 / refl 26988). Root telemetry facts: aggregator `in_flight` **==
-  num_chosen** (per-round selected count, NOT concurrency); `trainer_round.ts` is emitted *before*
-  the real-mode budget sleep (≈ task-start, not completion). **Neither agg field can measure real
-  concurrency or re-dispatch.** Fix: new **`task_send`** trainer event (fired from `_send_weights`,
-  after the sleep + upload) carrying `[wall_recv_ts, wall_send_ts]` — the true busy window.
-  `validate_real` now computes peak/mean concurrency = interval overlap, and a double-dispatch = two
-  overlapping intervals for one trainer (serial loop ⇒ exactly 0 unless telemetry is corrupt).
-  **Open §4.0 diagnostic RESOLVED:** the high redispatch count was a bookkeeping artifact, NOT a real
-  breach. Guarded by `scripts/parity/test_validate_real.py` (11 tests). No graceful fallback — assumes
-  the run carries `task_send` (every run from this code onward does); concurrency populates on re-run.
-- **Speedup / logging readout — NEW (§4.4).** `validate_real` now prints a speedup/headroom block
-  (`intrinsic_speedup_x = virtual/wall`, `compute_floor_wall_s = GPU work / mean concurrency`,
-  `pct_of_floor`, `ceiling_speedup_x`). On old oort sim: intrinsic 14.2× (matches table); floor needs
-  `task_send` concurrency so it lands next run. **Logging is the headroom:** the aggregator `.log` is
-  ~220k lines/run (oort 777 rounds), 105k of it `[RECV_FIFO]` hot-path traces — **the parity checker
-  reads only the JSONL telemetry, never the `.log`, so this spam serves zero parity purpose.** Kept
-  AS-IS this run (consistent real baseline for the felix calibration); demote it in the speedup phase
-  for a clean before/after (§4.4).
-- **§4.1 felix gap — STAGED (config), AWAITING SIM RUN.** `_metadata/baselines.yaml` felix
-  `simRedispatchGapSeconds 0.0 → 1.0`. Mechanism in code + test-guarded. **NEXT: user runs felix
-  sim**, then re-check K3b/K3/K2/staleness/terminal. If advance overshoots 4.14, set gap to real's
-  *measured* LAG_DECOMP leg (not whatever passes K3b).
-- **Knob retirement — `sendStaggerSeconds` REMOVED.** Off in every baseline (default 0, dead `>0`
-  branch) and its rationale (MQTT send-burst drops) is ruled out (drops 0 both directions). Dropped
-  the config field + the dead sleep branch + `_stag_acc` accounting in both top_aggregators'
-  `[DISTRIBUTE_TIMING]`. Behavioral no-op (knob was always 0). The other sim knobs (leg/overhead/gap/
-  settle) are all in active use across baselines — NOT inert, kept.
-- **§4.2 speed/budget — LOCALIZED, NO CODE; localization DATA already captured.** Per-trainer assigned
-  budget is **byte-identical** real vs sim; the T2/P3 FAILs are **commit-weighted artifacts of a
-  divergent selection mix** (oort real selects slow trainers more: weighted budget 16.4 vs sim 12.3).
-  NOT an input-model bug — it's Stage-3 selection, same root as refl/feddance participation.
-  **Confirmed the selector telemetry is sufficient to localize it — no instrumentation gap:** the
-  `selection` event's `per_trainer` dict already records each candidate's `utility`, `speed_s`,
-  `selected`, plus selector score terms (oort `believed_I`/`temporal`/`system_util`, feddance
-  `V/I/A/U`) in BOTH modes. NEXT (post-run): compare the real vs sim per-candidate scores at matched
-  rounds to see why the chosen mix diverges. Unblocked — §4.0 shows real selection is sound.
-- **§4.3 participation — DONE (checker).** `checks.py::participation_parity` scale-free (per-trainer
-  **share** KS, tol 0.2). felix 0.057 ✓, oort 0.184 ✓; refl 0.497 ✗, feddance 0.527 ✗ (**genuine**
-  selection-mix divergence — correctly NOT suppressed). `report.py` updated.
+**Already landed (config/checker/instrumentation):** §4.0 `validate_real` + `task_send`; §4.1 felix
+`simRedispatchGapSeconds 1.0→0.6` (throughput family green); §4.3 participation matched-round count-KS;
+A2b `eligible_speed`; oort `inflight_residence` event (now populated — gave the calibration target).
 
-**To continue (in order):**
-1. **Correctness run (logging AS-IS):** 1h real+sim per baseline. `task_send` lands in fresh runs →
-   `parity_check.py --validate-real <real_dir>` validates concurrency soundly + prints speedup/floor;
-   `--batch` re-checks felix parity against the verification tracker.
-2. §4.2: localize the selection-mix divergence from the run's `per_trainer` scores (real vs sim at
-   matched rounds). Real is admissible (§4.0 sound), so it's a sim-selection question.
-3. **Speedup phase (after correctness locked):** demote the hot-path `.log` traces — `[RECV_FIFO]`
-   (channel.py, ~105k lines/run) + per-commit `[MSG_*]` (oort top_aggregator) — to DEBUG. None are read
-   by the parity checker. The wall-time delta vs step-1 = the logging overhead; re-tune felix gap if
-   real's leg shifts (the §4.1 plan already re-measures real's leg). Compare `pct_of_floor` before/after.
+**Rule (from this session): one change per baseline per run; the change is either a strong-candidate FIX
+or instrumentation to GET MORE DATA; only re-run baselines we actually change.** The roots are
+*different per baseline* (verified from this run's telemetry), so the changes are independent code paths
+and can ship together without cross-contamination:
 
-### §4.0  Validate that REAL is correct before treating it as ground truth  [PREREQUISITE]
-Before matching sim to real on any axis, prove real obeys its own invariants — otherwise we'd be
-fitting sim to a bug. Check each from existing logs + a targeted test; only then is the real number
-admissible as the parity target.
+| baseline | stack | root (from data) | one change | type | re-run? |
+|---|---|---|---|---|---|
+| **felix** | async (async_oort/fedbuff) | gap↔staleness coupling; staleness shifted at every quantile (med 3 vs 2, **p99 28 vs 9**), `pastdated=0` so it's **buffer-depth aging** (buf_depth 26.6), not past-dating | **HOLD** (no confident single knob; see §4.6) | — | NO |
+| **oort** | sync (oort/fedavg) | pool already ≈ real (12.12 vs 11.35); **selector picks ~average (12.21) vs real fast (8.81)** → selector-scoring/path issue, NOT pool | localize oort utility scores (like §4.8) | DATA | NO (no §4.5) |
+| **refl** | sync (refl_oort/refl) | selected matches (6.90/6.30); busy client re-enters the pool before `sct` → **pool skews slow (A2b 12.41 vs 6.56)** | §4.5 sct-gated pool exclusion | FIX | YES (sim) |
+| **feddance** | syncfl (feddance/fedavg) | **no overcommit** (in_flight 10/10) → not residence; selection-mix drives advance **shape** (K3 KS .522) + commit-speed (P3 .147) | §4.8 selector-score localization | DATA | YES |
 
-| axis | real invariant to confirm | sound signal | status |
-|---|---|---|---|
-| **concurrency** | computing fraction = compute/cycle; no in-flight pile-up | peak/mean overlap of `task_send` `[wall_recv_ts, wall_send_ts]` intervals (true busy window) | needs a fresh run (event is new); no static `c` to assert `≤ c` — concurrency is emergent, so it's reported not bounded |
-| **selection** | chosen ⊆ eligible; no double-select while in-flight | `num_chosen ≤ num_eligible` (agg); double-dispatch = overlapping intervals for one trainer (trainer telemetry) | sound; re-dispatch breach == 0 by construction (serial trainer loop) |
-| **aggregation** | agg_goal cycles 1..K; staleness ≥ 0 & matches LAG_DECOMP holding/advance | agg_round agg_goal_count + staleness | sound; real staleness 2.80 = holding 11.59/advance 4.14 ✓ |
+### §4.5  refl — `sct`-gated pool exclusion (IMPLEMENTED)  [FIX]
+**Principle (from the user, Jun 14): an update must become *available to the aggregator* at the time it
+would in real — at the trainer's modeled completion `sct`, not at its (instant) physical arrival in sim.**
+A trainer that has physically sent but is modeled as still computing (`vclock < sct`) must NOT re-enter
+the eligible pool — in real it is busy that whole time. **The data scoped this to refl, not oort** (oort
+note below): refl's *selected* speeds already match (sim 6.90 vs real 6.30) but its eligible **pool**
+skews slow — sim **12.41 s** (≈ full population) vs real **6.56 s** (≈ selected), because in real the slow
+clients are busy/out-of-pool while in sim they re-enter the pool before `sct`. Its in-flight *count* even
+matches (53.55/53.65); it is purely *pool composition*.
 
-**DONE (sound rewrite).** `scripts/parity/validate_real.py` + `parity_check.py --validate-real <dir>`,
-guarded by `test_validate_real.py`. The **key correction**: the aggregator's `in_flight` is just
-`num_chosen` (not concurrency), `effective_c` is absent, and `trainer_round.ts` is pre-sleep — so the
-first cut's concurrency/re-dispatch checks were vacuous/artifactual (the bogus oort 4549/refl 26988
-redispatch counts came from clearing in-flight only on `contributing_trainers`, which omits
-overcommit-discarded completions). The sound basis is the new **`task_send`** event:
-`[wall_recv_ts, wall_send_ts]` brackets the trainer's true busy window (it fires after the real-mode
-budget sleep). **Open §4.0 redispatch diagnostic is RESOLVED — 0 real breaches; it was bookkeeping.**
-Concurrency now reports honestly: existing (pre-`task_send`) runs get `task_send_present=False` and
-do **not** falsely pass. Re-run a baseline to validate its real concurrency.
+**Commit *order* is already `sct`-gated** (`SimReorderBuffer.pop_min` commits the K-smallest-`sct` =
+real's K-fastest). What is not is the **pool re-entry** of a still-computing trainer.
 
-### §4.1  felix — restore the post-commit redispatch gap  [config; mechanism already in code]
-**Problem:** felix's only enforced root is K3b (0.046 s/commit under-charge); it cascades to
-throughput (+15% rounds), terminal, commits, and **staleness 2.80→4.75**. One mechanism, six FAILs.
-**Worked:** §3j drain-by-readiness (staleness 7.19→3.45); §3k/§3L leg(0.6)+gap(1.0)+slot-hold
-(predicted advance 4.4 / staleness 2.77). **Failed:** §3m zeroed the gap on the theory that
-speeding real up (settle=0) lets sim match at gap=0 — the Jun13 run **refutes** it (gap=0 → sim
-over-overlaps: advance 3.68, staleness 4.75). The gap is a *mechanism* (real has a measured ~1 s
-post-commit re-dispatch leg, §3k LAG_DECOMP), not a fudge — so restoring it is principled, **provided
-§4.0 confirms real's leg is real and not an artifact.**
-**Change (config only — `_metadata/baselines.yaml` felix):** `simRedispatchGapSeconds 0.0 → 1.0`
-(keep leg 0.6, overhead 0, settle 0). Mechanism guarded by `TestRedispatchGap` +
-`TestCoolingHoldsConcurrency`.
-**Expected:** slot-hold engages → computing ≈ c−rate·gap → completions de-bunch → advance ↑~4.1–4.4,
-staleness ↓~2.8. **Validation:** one n=300 sim run. The gap value is *calibrated to real's measured
-re-dispatch leg* (LAG_DECOMP), not fitted to pass the check — if real's leg ≠ ~1 s on the new
-settle=0 runs, set the gap to the measured leg, not to whatever makes K3b green.
+**Change (IMPLEMENTED, config-gated `simInflightResidence`, default off):** in
+`oort/top_aggregator._distribute_weights`, in sim, compute the **still-computing set** =
+`self._sim_buffer.pending_after(vclock)` (buffered ends with `sct > vclock`) and add them to the
+**`trainer_unavail_list`** passed to `set_curr_unavailable_trainers` — the selector (`refl_oort`:145,
+`oort`:443) excludes the unavailable list from candidates, so they stay out of the pool until `vclock ≥
+sct`, then commit normally via the buffer. **Crucially via the *unavailable* path, NOT `selected_ends`** —
+adding to `selected_ends` would put them in `select()`'s return and **re-dispatch** them (the send loop
+weights every returned id), resetting their `sct`. Bounded: released at `vclock ≥ sct` (budget ≤ ~56 s ≈
+≤3 rounds), so no "177 accumulate". Files: `config.py` (`sim_inflight_residence`),
+`sim/virtual_clock.py` (`SimReorderBuffer.pending_after`), `oort/top_aggregator.py`, `baselines.yaml`
+(refl only). **Target:** refl A2b pool 12.41→~6.5 → closes P3/participation/loss. **Guard:**
+`test_virtual_clock.py::test_pending_after_*` + `test_sync_sim_ordering.py::TestSimInflightResidence`
+(held set = `sct>vclock`, released after; merge is additive; off-by-default inert).
 
-### §4.2  oort/refl/feddance — trainer_speed/training_budget input gap  [LOCALIZE FIRST, no hack]
-**Problem:** P3 trainer_speed FAILS on all three (KS .125/.153/.197); T2 budget on oort/feddance
-(real 16.4 vs sim 12.3; 12.4 vs 11.0) → drives feddance advance K3 KS .581 + the loss curves.
-felix's T2 matches (KS .005), proving the model *can* match — so these three have a genuine input
-divergence. **This is the clearest place the principle bites:** the speed model is a *shared input*;
-if real and sim draw it differently, the bug could be in **either** mode. Do **not** bend sim's draw
-to match real until we know which side is wrong.
-**LOCALIZED (Jun13, from trainer telemetry — no new run):** per-trainer assigned `training_budget_s`
-is **byte-identical** across modes (0370→4.0, 0371→16.0, … both modes; per-trainer diff = 0.00 for
-all). The T2/P3 divergence is purely **commit-weighted**: the *pooled* (per-commit) budget differs
-(oort real 16.42 vs sim 12.27; feddance 12.36 vs 10.95) only because the **selection mix** differs —
-real over-commits slow (high-budget) trainers, sim picks faster ones. **Verdict: NOT an input-model
-bug (the speed draw is identical). The root is Stage-3 selection** — the same divergence as the
-refl/feddance participation FAIL (§4.3). Do **not** alter sim's (identical) speed draw.
-**NEXT:** determine which mode selects correctly. The oort selector scores by utility (loss + system
-terms); the mix shift means sim and real score/avail-window trainers differently. Localize at Stage 3
-(why does the chosen mix diverge?), gated by §4.0 (is real's selection itself correct? — its
-`redispatch_while_inflight` diagnostic is high, resolve that first).
+**oort note (NOT §4.5 — selector scoring; LOCALIZED to `system_util`).** oort's eligible **pool already ≈
+real** (sim 12.12 vs real 11.35), so pool exclusion is the wrong lever and is left **off** for oort. The
+new Stage-3 checks (below) localize it from the *existing* run: **A2c selection-bias** — real picks 2.54 s
+faster than its pool (`bias −2.54`) while sim picks at pool-average (`bias +0.09`), pools matched →
+selector, not composition; **Sx selector-score** — `believed_I` matches (KS .03) and `temporal` matches
+(.01), but **`system_util` diverges (KS .132, sim 0.921 vs real 0.865)**. The Oort score is
+`(believed_I + temporal)·system_util`; `system_util` is the speed/staleness penalty. Sim's is **higher**
+(less penalty) → sim under-penalizes slow trainers → picks ~average instead of fast. **oort's root is the
+`system_util` computation in sim** (`oort_system_utility(round_duration, round_preferred_duration,
+alpha)`). Both inputs are duration-derived and differ across modes: **`PROP_ROUND_DURATION` is the MODELED
+`sct`-leg in sim but WALL time in real**, and **`round_preferred_duration` is recomputed DYNAMICALLY each
+round** (a percentile of candidate durations), so the target itself differs. **Instrumented (Jun14c):**
+`oort.py` now emits `round_preferred_duration_s` + `alpha` on the selection event so the next oort sim run
+pinpoints whether the `system_util` gap is the *target* (pref) or the *round_duration input*.
 
-### §4.3  S2 participation — make the metric scale-free  [checker fix]
-**Problem:** S2 fails on all four (avg_diff 18.5/11.1/227/17.4 vs fixed warn=10). `avg_diff` is a
-**raw count** that grows with run length, so long runs (refl 8587 rounds) fail mechanically even
-when the participation *distribution* matches. S3/4 in-flight + means already PASS.
-**Why not just gate it (as §5 did for P1/S1):** S2 is *by design* the enforced selection invariant
-for stochastic selectors — gating it leaves no enforced selection check. Principled fix: keep it
-enforced but **scale-free**.
-**Change (`scripts/parity/checks.py::participation_parity`):** replace `avg_diff <= 10` with a
-length-independent test — KS on per-trainer counts, or `avg_diff / mean_participation`. Still catches
-a genuine *shape* divergence (refl 227 likely persists = a real selection difference to localize, not
-to suppress). Add a `test_ladder.py` regression case.
-**Validation:** re-run; felix/oort/feddance pass on shape if their distributions truly match; any
-remaining FAIL is a real signal, consistent with §4.0.
+### Jun 14c — selection localizers (A2c, Sx) + oort instrumentation [DONE for oort/refl; EXTEND to others]
+Turned this session's ad-hoc diagnostics into **standing parity checks** (the growth rule, §1) so any run
+auto-localizes a selection divergence — and instrumented oort's missing score input. **All landed,
+guarded (`test_ladder.py` +5, 79 parity/sim/mode tests PASS); no run needed (work on existing telemetry):**
+- **A2c `selection_speed_bias_parity`** (`checks.py`, MECHANISM/DIST, dep A2b): selected-vs-pool speed,
+  per mode, with `bias=selected−pool`. Distinguishes **pool composition** (A2b fails → refl) from
+  **selector scoring** (pool matches but bias diverges → oort). Validated on the existing runs: oort bias
+  **real −2.54 / sim +0.09** (pools 11.35/12.12 matched) → selector; refl selected matched (KS .098), pool
+  **6.43/12.32** → composition.
+- **Sx `selector_score_parity`** (DIAG, dep A2b): per-score-term KS over selected candidates (oort
+  believed_I/temporal/system_util; feddance V/I/A/U). Localizes the diverging term: **oort → `system_util`
+  KS .132**; refl → all terms match. `participation` now also deps on A2c.
+- **oort instrumentation:** `round_preferred_duration_s` + `alpha` on the selection event (above).
 
-### §4.4  Speedup / logging overhead  [measure first, then cut — AFTER correctness]
-**Principle:** correctness first. Sim fidelity is calibrated against real's *measured* latency, and the
-hot-path logging inflates that latency — so we do NOT change logging during the correctness run (keeps
-the real reference consistent with the felix §3m/§4.1 calibration). We *measure* the headroom now and
-*cut* in a separate phase for a clean before/after.
+**Status across baselines (these localizers are general; only oort/refl exercised so far):**
+| baseline | A2c / Sx read | done? |
+|---|---|---|
+| **refl** | pool composition (A2b) → §4.5 fix IMPLEMENTED | ✅ fix in; run validates |
+| **oort** | selector scoring → `system_util`; pref/alpha now instrumented | ✅ localized; **fix pending** the round_duration/pref input |
+| **feddance** | Sx should localize `feddance_I` (matches the §4.8 manual finding); A2c not yet run on it | ⬜ wire feddance through A2c/Sx; confirm `feddance_*` keys land |
+| **felix** | async stack — A2c/Sx untested; its open issue is staleness (§4.6), not selection | ⬜ run A2c/Sx on felix to confirm selection is clean |
 
-**Measured (the readout, in `validate_real`):** `intrinsic_speedup_x = virtual_s/wall_s` (oort sim
-14.2×, matches the table); `compute_floor_wall_s = Σ gpu_compute_s / mean_concurrency` (the GPU-bound
-minimum wall); `pct_of_floor` (100% = at the floor; lower = overhead-bound); `ceiling_speedup_x =
-virtual_s/floor` (best achievable). The floor needs `task_send` concurrency, so it populates next run.
-Early signal: sim per-commit GPU is ~0.01s but wall is overhead-heavy → sim is **overhead-bound, not
-GPU-bound** → large headroom.
+> **What the oort+refl sim run is FOR (and isn't):**
+> - **refl — VALIDATE the §4.5 fix** (the only coded change). Pass criteria: `[SIM_RESIDENCE]` log fires;
+>   A2b pool **12.41 → ~6.5**; A2c selected still matches; P3/participation/convergence_loss flip to PASS.
+> - **oort — DIAGNOSTIC only, not a fix run.** No oort behavior changed; the run just *populates the new
+>   `round_preferred_duration_s`/`alpha` instrumentation* so we can localize the `system_util` gap to the
+>   target vs the round_duration input. (If you'd rather not spend the run, the *existing* oort pair already
+>   localizes to `system_util` via Sx — the re-run only adds the pref/alpha breakdown.)
+>
+> **Is everything instrumented?** **refl: yes** — fully covered (A2b + A2c + Sx + the fix), run validates.
+> **oort: now yes** — the one gap (`round_preferred_duration`/`alpha`) is added; after the run, the
+> remaining question is purely *which* duration input to align (modeled `sct`-leg vs wall), which the
+> breakdown answers. **feddance/felix: not yet** — extend A2c/Sx to them next (table above).
 
-**The overhead (not read by the parity checker — JSONL only):** aggregator `.log` ≈ 220k lines/run
-(oort, 777 rounds), of which `[RECV_FIFO]` (channel.py `_get_inner`/`recv_fifo`, `logger.info`/`warning`
-on every recv poll) is **~105k**, plus per-commit `[MSG_ARRIVAL/PROCESSING/ACCEPTED/SKIP]` and
-`[SEND_RECV_LAG]`/`[LAG_DECOMP]` (oort `top_aggregator`) at ~8k each. refl (9054 rounds) is ~10× worse.
+### §4.6  felix — HOLD (no confident single change this run)
+Throughput family is GREEN; the only miss is staleness (3.94 vs 2.80). It is a **gap↔staleness coupling**:
+larger gap ↑advance AND ↓staleness, so the one knob can't hit advance 4.12 (wants gap≈0.6) and staleness
+2.80 (wants gap>1.0) together. `pastdated=0` rules out the §3j tail; the excess is **buffer-depth aging**
+(buf_depth 26.6, p99 28 vs 9) — i.e. the cooling/slot-hold dynamics, not a scalar. The decoupling knob
+(leg, in `sct`, shifts holding not advance) is too weak (0.6→0 only buys ~0.14 of 1.14). **No one-line
+fix; do not re-run felix** until a dedicated investigation of the buffer-aging vs gap is done. Dead ends
+that re-break the green family: raise the gap; add a leg scalar; revert to gap 1.0 (re-fails throughput).
 
-**Plan (speedup phase):** demote those hot-path traces to DEBUG (keep `[AGG_ROUND]`, `[DISTRIBUTE_TIMING]`,
-and the JSONL events — the parity inputs). Re-run; the wall delta vs the correctness run = the logging
-cost, and `pct_of_floor` should jump. Then re-measure real's LAG_DECOMP leg (logging removal lowers it)
-and re-tune felix's `simRedispatchGapSeconds` to the new leg. Applies to **both** real and sim, but the
-real win matters most — it de-contaminates the very reference sim is matched to.
+### §4.7  (merged into §4.5)
+The refl pool fix is §4.5 above; oort is reclassified there as a selector-scoring case (§4.8-style),
+not a slot/pool change. Nothing separate here.
 
-**Done (one-liners):**
-5. **[Jun10] Lazy weight-deserialize, unified.** Trainers always ship `WEIGHTS_BYTES`;
-   every up-path read goes through `common.util.materialize_weights` (idempotent,
-   eval-safe). Fixed the regression where refl crashed (`UnboundLocalError`) and felix
-   silently never aggregated (each baseline has its own recv/handle path). Guarded by
-   `tests/mode/test_weights_bytes_roundtrip.py`.
-6. **Feddance `trainer_speed_s`.** `syncfl/top_aggregator.py` sets `PROP_ROUND_DURATION`
-   from `wall_lag_s` in real mode. Verify the DIST check passes next run.
-7. **Log-level cleanup.** Per-commit/recv traces → DEBUG; `[AGG_ROUND]`, `[LAG_DECOMP]`,
-   `[SIM_BARRIER]`, staleness/participation summaries stay INFO.
-8. **[Jun10] Plotting overhaul** (`analyze_run.py`, `PLOTTING.md`): single-pass log
-   parser, `binned_line`, deep-dive subdirs incl. `plots/aggregation/*` (buffer/commit_gap/
-   residence/staleness) for watching the felix order fix land.
+### §4.8  feddance — selection-mix localized: same pool, real picks slower  [DATA → analysis done]
+feddance has no overcommit (in_flight 10/10), so residence does **not** apply. **Localized from existing
+`selection.per_trainer` telemetry (matched first 400 rounds):** the candidate **pool speed matches**
+(sim 12.13 s vs real 12.20 s), but **real selects slower trainers (mean 13.32 s) than sim (12.42 s) from
+that same pool** — the FedDance selector *ranks the identical pool differently*. That slower-pick mix is
+exactly what lengthens real's max-of-K advance (30.4 vs 28.1 s/round, K3 KS .522) and raises commit-speed
+(P3 .147). **Term localized (matched 400 rounds, V/I/A/U):** `V` is identical (0.967 both); A/U are tiny
+(~0–2). The **`feddance_I` term dominates** (magnitude 82–90) and is where the modes split — real selects
+**I=90.0** vs sim **82.6** (pool-I real 30.3 vs sim 28.1). `I` is the path-dependent age term
+(`last_engaged_round`): real picks higher-I = staler = slower trainers. **Resolved — `I` is the trainer's last-round training LOSS (Oort
+stat_utility), not an age term** (`feddance.py` docstring `I_m`; set via `on_update_received` → `PROP_I`).
+That event fires **on commit in both modes** (`syncfl/top_aggregator` calls it identically), and sim does
+**real** GPU compute so the loss is drawn from the same process — so the I update point is **not** biased;
+the divergence is **path-dependent stochastic accumulation** (real picks higher-loss trainers; over 4 h
+the two selection histories drift). **Implication: feddance is likely NOT a sim correctness bug** — it is
+the same stochastic-selector class as §5 (P1/utility): per-round / commit-weighted *mix identity* is
+unattainable for a chaotic selector, so P3/K3 (commit-weighted EMERGENT outcomes) should be judged
+**distributionally**, like participation (matched-count-KS, which feddance PASSES). **One thing left to
+rule out:** the `mean_I`/`prev_round_mean_I` normalization buffer accumulates over a *different round
+count* at matched time (sim 513 vs real 464) — check it doesn't horizon-bias the I ranking. If clean,
+the feddance fix is a **checker reclassification (P3/K3 → DIST for stochastic selectors)**, not a sim
+change, and feddance needs **no re-run**.
 
-Telemetry for the felix order fix: `agg_round.commit_gap_s/buf_depth/staleness` (sim;
-past-dated commits → 0, staleness → ~3), `[SIM_CLOCK_DIAG]` (`gate_holds`, `barrier_wait_s`,
-`pastdated_commits`), `[LAG_DECOMP]` (`queue_wait_s`, both modes), `plots/aggregation/*`.
+### Sequencing
+1. **felix:** no change, no re-run.
+2. **refl (IMPLEMENTED):** §4.5 `sct`-gated pool exclusion, config-gated `simInflightResidence=True` (refl
+   only), guarded. `pytest tests/sim/ tests/mode/ scripts/parity/` green under `dg_flame` (76 pass).
+3. **oort:** NOT §4.5 (pool already matches). Localize the oort selector utility scores (§4.5 oort note,
+   §4.8-style) before any oort change — **not re-run** this round.
+4. **feddance:** no code/re-run — first rule out the `mean_I` horizon bias (§4.8); likely a checker
+   reclassification, not a sim change.
+5. Launch **refl sim only** (real is unchanged — pair against the existing 4 h real `034934`). 2 h reads
+   the pool engagement (A2b per-round); 4 h reads the downstream verdicts (P3/participation/loss).
+   `parity_check.py --real experiments/<refl_real_034934> --sim experiments/<new_refl_sim> --budget-s
+   <runtime>`; compare A2b pool 12.41→~6.5 and watch `[SIM_RESIDENCE]` log lines confirm the hold fires.
+
+**Telemetry to watch:** `inflight_residence` (`in_flight_after`, `residence_rounds`, `carried_over_ages`),
+`agg_round.staleness/vclock_now`, `selection.per_trainer.{speed_s,selected}`, A2b pool speed,
+`plots/aggregation/*`. Run per-baseline plots: `python ../../../scripts/analysis/analyze_run.py <run>/telemetry`.
+
+**Done (one-liners, kept for reference):** lazy weight-deserialize via `materialize_weights`
+(`test_weights_bytes_roundtrip.py`); feddance `trainer_speed_s` from `wall_lag_s`; hot-path logs → DEBUG
+(parity reads JSONL only); plotting overhaul (`analyze_run.py`, `PLOTTING.md`, `plots/aggregation/*`).
+**Logging headroom (§4.4, after correctness):** aggregator `.log` ~220k lines/run (oort), ~105k
+`[RECV_FIFO]`; none read by the checker — demote to DEBUG in a separate phase, measure wall delta +
+`pct_of_floor`, then re-tune felix's gap to real's de-contaminated leg.

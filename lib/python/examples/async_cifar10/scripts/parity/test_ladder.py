@@ -197,6 +197,57 @@ def test_eligibility_real_divergence_still_fails():
     assert not res["ok"], "a real eligible-set divergence must not be rescued"
 
 
+def _sel_events(rows):
+    """rows: list of (selected_bool, speed_s, extra_dict) -> one selection event."""
+    pt = {}
+    for i, (seld, sp, extra) in enumerate(rows):
+        e = {"speed_s": sp, "selected": seld}
+        e.update(extra or {})
+        pt[f"t{i}"] = e
+    return {"selection_train": [{"event": "selection", "task": "train",
+                                 "round": 1, "ts": 0.0, "per_trainer": pt}]}
+
+
+def test_selection_bias_localizes_selector_vs_pool():
+    """A2c: pool matches but the selector's revealed speed preference (bias =
+    selected-mean − pool-mean) diverges ⇒ selector-scoring case (oort), distinct
+    from a pool-composition case (refl, where the pool itself diverges). The pool
+    (all per_trainer) is IDENTICAL across modes; only the `selected` flags differ."""
+    from parity.checks import selection_speed_bias_parity
+    POOL = [3.0, 4.0, 5.0, 10.0, 15.0, 20.0]            # same candidates both modes
+    real_rows = [(sp in (3.0, 4.0), sp, {}) for sp in POOL] * 30   # real picks fast
+    sim_rows = [(sp in (10.0, 15.0), sp, {}) for sp in POOL] * 30  # sim picks ~average
+    res = selection_speed_bias_parity(_sel_events(real_rows), _sel_events(sim_rows))
+    assert abs(res["real_pool_mean_s"] - res["sim_pool_mean_s"]) < 0.01  # pools match
+    assert res["real_bias_s"] < -3.0, res              # real exploits (picks fast)
+    assert res["sim_bias_s"] > res["real_bias_s"] + 3.0  # sim's preference is flatter
+
+
+def test_selector_score_localizes_worst_term():
+    """The score-localizer pinpoints the single diverging utility-score term
+    (here system_util) and leaves the matching term (believed_I) alone."""
+    from parity.checks import selector_score_parity
+    # believed_I distribution is IDENTICAL across modes (KS≈0); only system_util shifts.
+    bi = [66.0, 68.0, 70.0, 72.0, 74.0]
+    real = _sel_events([(True, 5.0, {"believed_I": b, "system_util": 0.70}) for b in bi] * 20)
+    sim = _sel_events([(True, 5.0, {"believed_I": b, "system_util": 0.95}) for b in bi] * 20)
+    res = selector_score_parity(real, sim)
+    assert res["worst_component"] == "system_util", res
+    assert res["per_component"]["believed_I"]["ks"] < 0.01     # matched term
+    assert res["per_component"]["system_util"]["ks"] > 0.9     # the diverging term
+
+
+def test_selection_checks_skip_without_per_trainer():
+    """Both new checks SKIP cleanly when selection telemetry has no per_trainer
+    (non-instrumented selectors) — never a spurious failure."""
+    from parity.checks import selection_speed_bias_parity, selector_score_parity
+    empty = {"selection_train": [{"event": "selection", "task": "train",
+                                  "round": 1, "ts": 0.0}]}
+    for fn in (selection_speed_bias_parity, selector_score_parity):
+        res = fn(empty, empty)
+        assert res["ok"] and res.get("status") == "SKIP", (fn.__name__, res)
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

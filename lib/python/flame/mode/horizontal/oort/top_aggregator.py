@@ -553,13 +553,37 @@ class TopAggregator(BaseTopAggregator):
         # trainer_unavail if it isn't None
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
-            channel.set_curr_unavailable_trainers(
-                trainer_unavail_list=curr_unavail_trainer_list
-            )
         else:
-            # Handling the case for oort's selector since it expects 3
-            # arguments
-            channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
+            curr_unavail_trainer_list = []
+
+        # [SIM_RESIDENCE] (PARITY §4.5) Mark trainers that are STILL COMPUTING in
+        # sim time as unavailable for this selection. In sim a dispatched trainer's
+        # update arrives physically at once, so it can re-enter the eligible pool
+        # before its modeled completion `sct`; real keeps it busy (out of the pool)
+        # for its whole compute. A buffered end with `sct > vclock` is exactly such
+        # a straggler. Excluding it via the unavailable list (NOT selected_ends —
+        # that would re-dispatch it) keeps sim's eligible pool from carrying the slow
+        # tail, matching real's pool composition (refl A2b 12.41->~6.5). Bounded:
+        # released once `vclock >= sct` (the buffer pops & commits it). Default off.
+        if self.simulated and getattr(
+            self.config.hyperparameters, "sim_inflight_residence", False
+        ):
+            _buf = getattr(self, "_sim_buffer", None)
+            if _buf is not None:
+                _held = _buf.pending_after(self._vclock.now)
+                if _held:
+                    curr_unavail_trainer_list = list(
+                        set(curr_unavail_trainer_list) | _held
+                    )
+                    logger.info(
+                        f"[SIM_RESIDENCE] round={self._round} held {len(_held)} "
+                        f"still-computing trainers out of selection "
+                        f"(vclock={self._vclock.now:.1f})"
+                    )
+
+        channel.set_curr_unavailable_trainers(
+            trainer_unavail_list=curr_unavail_trainer_list
+        )
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
@@ -637,7 +661,7 @@ class TopAggregator(BaseTopAggregator):
                         f"desired: {desired_selection}). THIS MAY IMPACT TRAINING QUALITY!"
                     )
                     break
-        
+
         # Now perform the actual selection
         selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         

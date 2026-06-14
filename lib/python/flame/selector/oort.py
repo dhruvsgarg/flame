@@ -302,6 +302,11 @@ class OortSelector(AbstractSelector):
             )
             self._select_run_counter = 0
 
+        # PARITY §4.5 oort: system_util = (pref/round_duration)^alpha depends on the
+        # DYNAMIC round_preferred_duration (a percentile of candidate durations,
+        # recomputed each round). Emit it so the parity localizer can tell whether the
+        # sim/real system_util gap is the target (pref) or the round_duration input.
+        _pref = getattr(self, "round_preferred_duration", None)
         self.emit_selection(
             round, task_to_perform, all_ends, eligible_ends.keys(),
             self.selected_ends,
@@ -310,6 +315,9 @@ class OortSelector(AbstractSelector):
                 "exploration_factor": self.exploration_factor,
                 "explore_ids": list(explore_end_ids),
                 "exploit_ids": list(exploit_end_ids),
+                "round_preferred_duration_s": _pref.total_seconds()
+                if hasattr(_pref, "total_seconds") else _pref,
+                "alpha": getattr(self, "alpha", None),
             },
         )
         return {key: None for key in self.selected_ends}

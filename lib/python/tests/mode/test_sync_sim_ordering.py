@@ -139,3 +139,47 @@ class TestSyncSimRecvFirstK:
         committed = _committed_ends(agg, ch, first_k=3)
         assert committed == ["t2", "t1"]  # the 2 smallest sct, ascending
         assert agg._vclock.now == 10.0
+
+
+class TestSimInflightResidence:
+    """PARITY §4.5: in sim the oort/refl aggregator marks trainers still computing
+    in sim time (buffered sct > vclock) as UNAVAILABLE for selection, so a slow
+    client stays out of the eligible pool until ``vclock >= sct`` — matching real,
+    where it is genuinely busy. Excluded via the unavailable list (NOT selected_ends,
+    which would re-dispatch it). Guards the buffer-driven hold/release invariant the
+    aggregator snippet relies on (`SimReorderBuffer.pending_after` merged into the
+    trainer_unavail_list)."""
+
+    def _unavail(self, buf, base_unavail, vclock_now):
+        # Mirror of oort/top_aggregator._distribute_weights §4.5 snippet.
+        held = buf.pending_after(vclock_now)
+        merged = list(set(base_unavail) | held) if held else list(base_unavail)
+        return held, merged
+
+    def test_slow_trainer_held_then_released(self):
+        from flame.sim import SimReorderBuffer
+
+        buf = SimReorderBuffer()
+        buf.add("fast", 4.0)     # already complete at vclock 5
+        buf.add("slow", 30.0)    # still computing at vclock 5
+
+        # Round N (vclock=5): the slow trainer is held unavailable; the fast one is
+        # not (it is available to commit, not still computing). Base unavail merged.
+        held, merged = self._unavail(buf, base_unavail=["pre"], vclock_now=5.0)
+        assert held == {"slow"}
+        assert "slow" in merged          # excluded from selection / pool
+        assert "fast" not in merged      # available, not held
+        assert "pre" in merged           # additive merge, not overwrite
+
+        # Once the clock passes its sct (it commits), it is no longer held.
+        buf.discard("slow")  # committed -> leaves the buffer
+        held2, merged2 = self._unavail(buf, base_unavail=["pre"], vclock_now=35.0)
+        assert held2 == set() and merged2 == ["pre"]
+
+    def test_noop_when_nothing_still_computing(self):
+        from flame.sim import SimReorderBuffer
+
+        buf = SimReorderBuffer()
+        buf.add("a", 2.0)
+        held, merged = self._unavail(buf, base_unavail=["x"], vclock_now=10.0)
+        assert held == set() and merged == ["x"]  # untouched

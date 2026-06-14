@@ -201,6 +201,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
+    # Sim sync-stack: hold a dispatched trainer in-flight (occupying its selection slot,
+    # excluded from the eligible pool) until vclock >= its modeled completion sct, instead
+    # of freeing the slot at instant physical arrival. Makes the committed/eligible mix
+    # match real (oort num_chosen, refl pool speed). Default off. PARITY §4.5.
+    sim_inflight_residence: t.Optional[bool] = Field(
+        alias="simInflightResidence", default=False
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
