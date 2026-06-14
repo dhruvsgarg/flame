@@ -43,7 +43,7 @@ from flame.selector.properties import PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
-from flame.telemetry.events import build_agg_round
+from flame.telemetry.events import build_agg_round, build_inflight_residence
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,16 @@ class TopAggregator(BaseTopAggregator):
                 f"[AGGREGATE] Round {self._round}: selected_ends not found, using channel.ends(). "
                 f"Stale updates may not be consumed!"
             )
-        
+
+        # In-flight residence tracking (PARITY §4.x): record the round each trainer
+        # entered the in-flight set so cleanup can emit per-straggler residence. A
+        # carryover straggler keeps its earlier entry round (setdefault); a
+        # newly-selected one gets the current round.
+        if not hasattr(self, "_inflight_entry_round"):
+            self._inflight_entry_round = {}
+        for _e in end_ids:
+            self._inflight_entry_round.setdefault(_e, self._round)
+
         configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         aggr_num = min(configured_aggr_num, len(end_ids))
         
@@ -457,6 +466,28 @@ class TopAggregator(BaseTopAggregator):
                 f"[TRACK_411] Round {self._round}: After cleanup - in_flight={test_in_flight_after}, "
                 f"successfully_freed={test_in_flight_before and not test_in_flight_after}"
             )
+
+        # [INFLIGHT_RESIDENCE] per-straggler residence telemetry (PARITY §4.x). residence
+        # = rounds a cleaned trainer spent in selected_ends; carried_over_ages = ages of
+        # those still in-flight. Comparing sim vs real residence distributions reveals
+        # whether sim evicts stragglers a round too early (sim in-flight 13.4 vs real 15.6).
+        _entry = getattr(self, "_inflight_entry_round", {})
+        _resid = [self._round - _entry.pop(_e, self._round) for _e in cleanup_list]
+        if telemetry.is_enabled():
+            _remaining = getattr(channel._selector, "selected_ends", set()) or set()
+            _ages = [self._round - _entry.get(_e, self._round) for _e in _remaining]
+            ev, fields = build_inflight_residence(
+                round_num=self._round,
+                time_mode="sim" if self.simulated else "real",
+                in_flight_before=in_flight_before,
+                in_flight_after=in_flight_after,
+                committed_fresh=received_end_count,
+                cleaned=num_to_cleanup,
+                stale_rejected=max(0, num_to_cleanup - received_end_count),
+                residence_rounds=_resid,
+                carried_over_ages=_ages,
+            )
+            telemetry.emit(ev, **fields)
 
         logger.info(
             f"====== aggregation finished for round {self._round}, "

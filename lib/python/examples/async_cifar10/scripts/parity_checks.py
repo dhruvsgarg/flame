@@ -64,6 +64,7 @@ from parity.checks import (  # noqa: F401, E402
     convergence_loss_parity,
     avail_composition_parity,
     eligibility_parity,
+    eligible_speed_composition_parity,
     selection_detail_parity,
     # registry / verdict helpers
     CHECK_META,

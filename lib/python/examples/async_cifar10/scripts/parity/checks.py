@@ -360,6 +360,52 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
     return out
 
 
+def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
+    """A2b [DIST]: the SPEED composition of the eligible candidate pool matches.
+
+    A2 (eligibility) checks the eligible-set *size*; A2b checks *who* is in it — the
+    `trainer_speed_s` distribution of every candidate seen at selection (pooled over
+    rounds). The size can match while the composition diverges, so A2 sails through.
+
+    Why it matters (PARITY §4.x, refl localization): in real a slow client stays busy
+    (in-flight) for its whole budget, so it is OUT of the eligible pool that long →
+    real's pool is fast-skewed. If sim frees a non-committed/in-flight client back to
+    the pool too early, slow clients re-enter → sim's pool skews slow. Jun13: refl sim
+    pool-mean 12.1 s vs real 6.8 s (KS .363 ✗) while oort/felix/feddance match (KS≈.07).
+    A2b is the finest check that localizes that divergence; selection-stage fails
+    (participation, committed trainer_speed mix) downstream of it are *consequences*.
+    The fix is sim-side: hold non-committed candidates out of the pool until they
+    legitimately return (the in-flight-residence model, shared with oort) — NOT to bend
+    the check. Speed source is the `per_trainer` dict on each selection event.
+    """
+    def pool_speeds(sel_events):
+        vals = []
+        for e in sel_events:
+            for cand in (e.get("per_trainer") or {}).values():
+                sp = cand.get("speed_s")
+                if sp is not None:
+                    vals.append(sp)
+        return vals
+
+    r = pool_speeds(real["selection_train"])
+    s = pool_speeds(sim["selection_train"])
+    if not r or not s:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no per_trainer.speed_s in selection telemetry"}
+    ks = ks_stat(r, s)
+    ok = not math.isnan(ks) and ks <= ks_tol
+    return {
+        "ok": ok,
+        "tier": "DIST",
+        "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
+        "ks_tol": ks_tol,
+        "real_mean_pool_speed_s": round(sum(r) / len(r), 2),
+        "sim_mean_pool_speed_s": round(sum(s) / len(s), 2),
+        "n_real": len(r),
+        "n_sim": len(s),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.B  Selection  (S1–S5)
 # ═══════════════════════════════════════════════════════════════════
@@ -644,40 +690,72 @@ def inter_arrival_order_parity(real: dict, sim: dict,
 # ═══════════════════════════════════════════════════════════════════
 
 def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
-    """S2: per-trainer participation *share* distributions match (scale-free).
+    """S2: per-trainer participation distributions match over a MATCHED round window.
 
-    The enforced selection invariant for stochastic selectors.  Raw count
-    `avg_diff` grows with run length, so it failed long runs (refl 8587 rounds)
-    even when the participation *distribution* matched.  We instead compare each
-    trainer's participation **share** (count / total commits) via KS, which is
-    length-independent.  A genuine *shape* divergence (a real selection-mix
-    difference) still FAILs — that is a signal to localize at Stage 3, not to
-    suppress (PARITY §4.0/§4.3).  `avg_diff`/`max_diff` kept as raw diagnostics.
+    The enforced selection invariant for stochastic selectors. The participation
+    *shape* (how commits spread across trainers) must match; the *amount* (total
+    commits / rounds) is a throughput quantity already owned by K2/U2/K8 and must
+    NOT be re-charged here.
+
+    History: the first cut used raw `avg_diff` (grew with run length → false-failed
+    long runs); §4.3 switched to participation **share** (count / total_commits) to
+    be length-free. But share is NOT amount-free: when the two modes complete a
+    different number of rounds in the compared window (the throughput gap), every
+    trainer's count scales by the same ratio, and *any* scalar normalization (share,
+    rate, count/mean) preserves that offset — so share_KS re-measures the throughput
+    delta as if it were a shape divergence (Jun13: feddance share_KS .427 while the
+    per-trainer count distribution on equal rounds matched at .033; oort .368→.127).
+
+    Fix (consistent with K8/U2/terminal): count participation over the MATCHED round
+    window — the first N = min(rounds_real, rounds_sim) rounds of each mode — then KS
+    on per-trainer counts. Equal rounds ⇒ equal totals ⇒ KS measures pure shape. A
+    genuine shape divergence still FAILs (Jun13 refl .530 — a real selection-mix
+    difference to localize at Stage 3, NOT suppressed). `share_ks` (full run) kept as
+    a diagnostic; `avg_diff`/`max_diff` raw diagnostics.
     """
-    def counts(agg_rounds):
-        c = collections.Counter()
+    def rounds_of(agg_rounds):
+        by_round = collections.defaultdict(list)
         for e in agg_rounds:
-            for t in e.get("contributing_trainers", []):
-                c[t] += 1
+            r = e.get("round")
+            if r is not None:
+                by_round[r].extend(e.get("contributing_trainers", []))
+        return by_round
+
+    def counts_first_n(by_round, n):
+        c = collections.Counter()
+        for r in sorted(by_round)[:n]:
+            c.update(by_round[r])
         return c
 
-    rc, sc = counts(real["agg_rounds"]), counts(sim["agg_rounds"])
+    r_by, s_by = rounds_of(real["agg_rounds"]), rounds_of(sim["agg_rounds"])
+    if not r_by or not s_by:
+        return {"ok": True, "tier": "DIST", "note": "no contributing_trainers"}
+    n_matched = min(len(r_by), len(s_by))
+    rc = counts_first_n(r_by, n_matched)
+    sc = counts_first_n(s_by, n_matched)
     trainers = set(rc) | set(sc)
     if not trainers:
         return {"ok": True, "tier": "DIST", "note": "no contributing_trainers"}
-    tot_r = sum(rc.values()) or 1
-    tot_s = sum(sc.values()) or 1
-    r_shares = [rc.get(t, 0) / tot_r for t in trainers]
-    s_shares = [sc.get(t, 0) / tot_s for t in trainers]
-    ks = ks_stat(r_shares, s_shares)
+    r_counts = [rc.get(t, 0) for t in trainers]
+    s_counts = [sc.get(t, 0) for t in trainers]
+    ks = ks_stat(r_counts, s_counts)
+    # full-run share KS — diagnostic only (entangled with the throughput delta).
+    rc_full = collections.Counter(t for vs in r_by.values() for t in vs)
+    sc_full = collections.Counter(t for vs in s_by.values() for t in vs)
+    allt = set(rc_full) | set(sc_full)
+    tr, ts = sum(rc_full.values()) or 1, sum(sc_full.values()) or 1
+    share_ks = ks_stat([rc_full.get(t, 0) / tr for t in allt],
+                        [sc_full.get(t, 0) / ts for t in allt])
     diffs = [abs(rc.get(t, 0) - sc.get(t, 0)) for t in trainers]
     avg = sum(diffs) / len(diffs)
     ok = not math.isnan(ks) and ks <= ks_tol
     return {
         "ok": ok,
         "tier": "DIST",
-        "share_ks": round(ks, 3) if not math.isnan(ks) else None,
+        "matched_count_ks": round(ks, 3) if not math.isnan(ks) else None,
         "ks_tol": ks_tol,
+        "n_rounds_matched": n_matched,
+        "share_ks": round(share_ks, 3) if not math.isnan(share_ks) else None,  # diagnostic
         "avg_diff": round(avg, 2),   # raw, scale-dependent (diagnostic only)
         "max_diff": max(diffs) if diffs else 0,
     }
@@ -947,14 +1025,19 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
     }
 
 
-def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.10) -> dict:
+def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     """K2 [EXACT]: rounds-per-virtual-second parity.
 
     sim_throughput  = total_sim_rounds / final_vclock_sim
     real_throughput = total_real_rounds / wall_elapsed_real
 
     On the motivating Felix run (410 vs 673 rounds in the same 3 h budget)
-    rel_diff ≈ 40% → FAIL (gate ≤ 10%).
+    rel_diff ≈ 40% → FAIL.
+
+    Tolerance 5% (PARITY): the throughput family — K2 (this mechanism), K8 (rounds at
+    matched V), U2 (commits at matched V) — all measure the same rounds-per-virtual-time
+    signal and share ONE tolerance, set here. Tightened 10%->5% deliberately as the
+    throughput-fidelity bar. U2 == K8 == K2 on the identical quantity, so they must agree.
     """
     sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                        if e.get("vclock_now") is not None]
@@ -1085,10 +1168,20 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3) -> dict:
     }
 
 
-def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.02) -> dict:
+def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     """U2 [EXACT]: total commits at matched virtual budget V = min(final_vclock, final_wall).
 
-    abs diff ≤ 2% of commits.
+    abs diff ≤ 5% of commits — the shared throughput-family tolerance (= K2, K8).
+
+    Rationale (PARITY): U4 (agg_goal_count cycles 1..K, INV) separately guarantees a fixed
+    agg_goal commits per round, so at matched V the commit count is the round count × agg_goal —
+    i.e. U2 carries no signal beyond K8's matched-V round rollup (and the K2 throughput mechanism).
+    Verified on the Jun13 runs: U2.rel_diff == K8.rounds_rel_diff to 3 decimals on all four
+    baselines (commits/round identical across modes). The old 2% bar required matched-V commits to
+    match 5× tighter than matched-V rounds / throughput itself, with no separate mechanism behind
+    it: a stochastic 2-rounds-in-85 difference (feddance) or a residual throughput delta that K2/K8
+    already judge failed U2 alone. The throughput family now shares ONE deliberate 5% bar; U2 stays
+    as a commit-level cross-check of the same rollup (append-only guard), not a stricter one.
     """
     sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                        if e.get("vclock_now") is not None]
@@ -1124,11 +1217,11 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.02) -> dict:
 
 
 def terminal_state_parity(real: dict, sim: dict,
-                           rounds_tol: float = 0.10,
+                           rounds_tol: float = 0.05,
                            trainers_tol: float = 0.05) -> dict:
     """K8 [EXACT]: at matched virtual budget V, both modes have comparable FL-round count.
 
-    rounds within 10%, unique trainers within 5%.
+    rounds within 5% (the shared throughput-family bar, = K2/U2), unique trainers within 5%.
     """
     sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                        if e.get("vclock_now") is not None]
@@ -1684,6 +1777,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # ── Stage 2 Availability ──
     results["avail_composition"] = avail_composition_parity(real_agg, sim_agg)
     results["eligibility"] = eligibility_parity(real_agg, sim_agg)
+    results["eligible_speed"] = eligible_speed_composition_parity(real_agg, sim_agg)
     results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg)
     results["duty_cycle"] = duty_cycle_parity(real_trainers, sim_trainers)
 
@@ -1755,11 +1849,12 @@ CHECK_META: dict = {
     # ── Stage 2 Availability ──
     "avail_composition":       {"stage": 2, "role": "MECHANISM", "deps": ()},
     "eligibility":             {"stage": 2, "role": "MECHANISM", "deps": ("avail_composition",)},
+    "eligible_speed":          {"stage": 2, "role": "MECHANISM", "deps": ("eligibility",)},
     "avail_timebase":          {"stage": 2, "role": "CONTROL",  "deps": ("per_round_advance",)},
     "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     # ── Stage 3 Selection ──
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
-    "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail",)},
+    "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail", "eligible_speed")},
     "selection":               {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
     # ── Stage 4 Dispatch & training ──
     "training_budget":         {"stage": 4, "role": "CONTROL",  "deps": ()},

@@ -23,6 +23,7 @@ EVENT_UTIL_DISPARITY = "util_disparity"  # streamed-prefix vs full-pool utility
 EVENT_AVAIL_CHANGE = "avail_change"  # trainer availability state transition
 EVENT_TASK_RECV = "task_recv"        # trainer received a task from aggregator
 EVENT_TASK_SEND = "task_send"        # trainer finished & sent the update back
+EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain accounting (oort sync)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -35,6 +36,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_AVAIL_CHANGE,
         EVENT_TASK_RECV,
         EVENT_TASK_SEND,
+        EVENT_INFLIGHT_RESIDENCE,
     }
 )
 
@@ -270,3 +272,45 @@ def build_task_send(
         "wall_send_ts": wall_send_ts,
         "time_mode": time_mode,
     }
+
+
+def build_inflight_residence(
+    *,
+    round_num: int,
+    time_mode: str,
+    in_flight_before: int,
+    in_flight_after: int,
+    newly_selected: Optional[int] = None,
+    committed_fresh: Optional[int] = None,
+    cleaned: Optional[int] = None,
+    stale_rejected: Optional[int] = None,
+    residence_rounds: Optional[list[int]] = None,
+    carried_over_ages: Optional[list[int]] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Per-round in-flight drain accounting for the oort sync aggregator (PARITY §4.x).
+
+    Localizes the in-flight RESIDENCE divergence (real holds ~15.6 in-flight, sim
+    drains to the designed ~13): a straggler occupies ``selected_ends`` from selection
+    until it is cleaned. ``residence_rounds`` = (current_round − entry_round) for each
+    trainer cleaned this round; ``carried_over_ages`` = ages of those still in-flight
+    AFTER cleanup. Comparing sim vs real residence distributions shows whether sim
+    evicts stragglers a round too early (the eviction-timing fine-tune). ``time_mode``
+    = "sim"|"real" so the two are directly comparable.
+    """
+    fields: dict[str, Any] = {
+        "round": round_num,
+        "time_mode": time_mode,
+        "in_flight_before": in_flight_before,
+        "in_flight_after": in_flight_after,
+    }
+    for k, v in (
+        ("newly_selected", newly_selected),
+        ("committed_fresh", committed_fresh),
+        ("cleaned", cleaned),
+        ("stale_rejected", stale_rejected),
+        ("residence_rounds", residence_rounds),
+        ("carried_over_ages", carried_over_ages),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_INFLIGHT_RESIDENCE, fields

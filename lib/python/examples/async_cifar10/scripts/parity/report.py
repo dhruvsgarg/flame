@@ -47,6 +47,7 @@ _SECTIONS = [
     ("2", "Availability", [
         ("A1  avail_composition parity",        "avail_composition"),
         ("A2  num_eligible / num_candidates",   "eligibility"),
+        ("A2b eligible-pool speed composition", "eligible_speed"),
         ("A3  trace time-base consistency",     "avail_timebase"),
         ("A4  per-trainer duty-cycle",          "duty_cycle"),
     ]),
@@ -169,8 +170,10 @@ def _fmt_metric(name: str, res: dict) -> list:
         ]
     elif name == "participation":
         lines += [
-            f"         share_KS={res.get('share_ks')} (<={res.get('ks_tol')})  "
-            f"avg_diff={res.get('avg_diff')}  max_diff={res.get('max_diff')} (raw diag)",
+            f"         matched_count_KS={res.get('matched_count_ks')} (<={res.get('ks_tol')})  "
+            f"over n_rounds={res.get('n_rounds_matched')}",
+            f"         share_KS(full)={res.get('share_ks')}  avg_diff={res.get('avg_diff')}  "
+            f"max_diff={res.get('max_diff')} (diag)",
         ]
     elif name == "trainer_speed":
         if res.get("n_real"):
@@ -305,6 +308,11 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         implied per-commit overhead="
             f"{res.get('implied_per_commit_overhead_s')}s "
             f"(agg_goal={res.get('agg_goal')})",
+        ]
+    elif name == "eligible_speed":
+        lines += [
+            f"         pool_speed_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
+            f"real_mean={res.get('real_mean_pool_speed_s')}s sim_mean={res.get('sim_mean_pool_speed_s')}s",
         ]
     elif name == "avail_timebase":
         lines += [

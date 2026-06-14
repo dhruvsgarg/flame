@@ -280,7 +280,7 @@ def validate_real(run_dir: str) -> bool:
     for k, v in sp.items():
         print(f"          {k}: {v}")
     if sp["pct_of_floor"] is not None and sp["pct_of_floor"] < 50:
-        print("          → overhead-bound (telemetry/logging/recv/agg dominate); "
+        print("          -> overhead-bound (telemetry/logging/recv/agg dominate); "
               f"~{round(100 / max(sp['pct_of_floor'], 1e-9), 1)}x wall headroom to the GPU floor.")
 
     print("\n" + "=" * 78)
@@ -292,6 +292,13 @@ def validate_real(run_dir: str) -> bool:
 
 
 def main(argv=None) -> None:
+    # Robust to a latin-1 stdout (e.g. invoked without PYTHONIOENCODING=utf-8): the
+    # report prints a few non-ASCII glyphs (-> arrow, em dash, §). Reconfigure rather
+    # than chase each char.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:
         print("usage: validate_real.py <real_run_dir>", file=sys.stderr)
