@@ -14,7 +14,7 @@
 # See docs/EXPERIMENT_felix_streaming.md (Distributed execution & pooling).
 set -u
 
-# --- robust conda activation (mirrors overnight_run.sh) ---
+# --- robust conda activation (mirrors debug_run.sh) ---
 ENVNAME="${FLAME_CONDA_ENV:-dg_flame}"
 CB=""
 if command -v conda >/dev/null 2>&1; then
