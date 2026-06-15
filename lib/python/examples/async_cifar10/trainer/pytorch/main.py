@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
+import numpy as np
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry
@@ -163,10 +164,10 @@ class PyTorchCifar10Trainer(Trainer):
         )
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
         self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms)
-        self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
-        self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
-        self.rtt_amplitude = float(self.config.hyperparameters.rtt_amplitude)
-        self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
+        self.satellite_index = int(self.config.hyperparameters.satellite_index)
+        self.satellite_latencies = np.load(
+            "/home/dgarg39/ava/flame/lib/python/examples/_metadata/satellite_latencies.npy"
+        )  # shape: (10800, 150)
         self.start_time = time.time()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
@@ -800,7 +801,6 @@ class PyTorchCifar10Trainer(Trainer):
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
 
-<<<<<<< HEAD
         _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
@@ -904,14 +904,6 @@ class PyTorchCifar10Trainer(Trainer):
 
         _cycle_elapsed = time.time() - _cycle_start
         if self.simulated:
-=======
-        # emulate delays in training (due to compute resource and/or
-        # dataset size and/or network latency) if enabled
-        if str(self.training_delay_enabled) == "True":
-            elapsed = time.time() - self.start_time
-            current_rtt = self.rtt_base_ms * (1 + self.rtt_amplitude * math.sin(2 * math.pi * elapsed / self.rtt_period_s))
-            time.sleep((self.computation_time_ms + current_rtt) / 1000 / self.speedup_factor)
->>>>>>> 3bc110f6 (Fix training_delay_enabled type check to handle bool and string)
             logger.info(
                 f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
                 f"time_mode=simulated: wall={_cycle_elapsed:.2f}s "

@@ -8,10 +8,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_001
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 0
   trainer_002:
     trainer_id: 2
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580371
@@ -19,10 +16,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_002
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 1
   trainer_003:
     trainer_id: 3
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580372
@@ -30,10 +24,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_003
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 2
   trainer_004:
     trainer_id: 4
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580373
@@ -41,10 +32,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_004
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 3
   trainer_005:
     trainer_id: 5
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580374
@@ -52,10 +40,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_005
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 4
   trainer_006:
     trainer_id: 6
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580375
@@ -63,10 +48,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_006
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 5
   trainer_007:
     trainer_id: 7
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580376
@@ -74,10 +56,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_007
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 6
   trainer_008:
     trainer_id: 8
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580377
@@ -85,10 +64,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_008
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 7
   trainer_009:
     trainer_id: 9
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580378
@@ -96,10 +72,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_009
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 8
   trainer_010:
     trainer_id: 10
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580379
@@ -107,10 +80,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_010
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 9
   trainer_011:
     trainer_id: 11
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580380
@@ -118,10 +88,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_011
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 10
   trainer_012:
     trainer_id: 12
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580381
@@ -129,10 +96,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_012
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 11
   trainer_013:
     trainer_id: 13
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580382
@@ -140,10 +104,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_013
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 12
   trainer_014:
     trainer_id: 14
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580383
@@ -151,10 +112,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_014
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 13
   trainer_015:
     trainer_id: 15
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580384
@@ -162,10 +120,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_015
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 14
   trainer_016:
     trainer_id: 16
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580385
@@ -173,10 +128,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_016
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 15
   trainer_017:
     trainer_id: 17
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580386
@@ -184,10 +136,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_017
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 16
   trainer_018:
     trainer_id: 18
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580387
@@ -195,10 +144,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_018
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 17
   trainer_019:
     trainer_id: 19
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580388
@@ -206,10 +152,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_019
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 18
   trainer_020:
     trainer_id: 20
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580389
@@ -217,10 +160,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_020
     computation_time_ms: '32900.0'
-    rtt_communication_time_ms: '14100.0'
-    rtt_base_ms: '14100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 19
   trainer_021:
     trainer_id: 21
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580390
@@ -228,10 +168,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_021
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 20
   trainer_022:
     trainer_id: 22
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580391
@@ -239,10 +176,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_022
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 21
   trainer_023:
     trainer_id: 23
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580392
@@ -250,10 +184,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_023
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 22
   trainer_024:
     trainer_id: 24
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580393
@@ -261,10 +192,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_024
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 23
   trainer_025:
     trainer_id: 25
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580394
@@ -272,10 +200,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_025
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 24
   trainer_026:
     trainer_id: 26
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580395
@@ -283,10 +208,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_026
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 25
   trainer_027:
     trainer_id: 27
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580396
@@ -294,10 +216,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_027
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 26
   trainer_028:
     trainer_id: 28
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580397
@@ -305,10 +224,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_028
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 27
   trainer_029:
     trainer_id: 29
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580398
@@ -316,10 +232,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_029
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 28
   trainer_030:
     trainer_id: 30
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580399
@@ -327,10 +240,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_030
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 29
   trainer_031:
     trainer_id: 31
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580400
@@ -338,10 +248,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_031
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 30
   trainer_032:
     trainer_id: 32
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580401
@@ -349,10 +256,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_032
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 31
   trainer_033:
     trainer_id: 33
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580402
@@ -360,10 +264,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_033
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 32
   trainer_034:
     trainer_id: 34
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580403
@@ -371,10 +272,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_034
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 33
   trainer_035:
     trainer_id: 35
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580404
@@ -382,10 +280,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_035
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 34
   trainer_036:
     trainer_id: 36
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580405
@@ -393,10 +288,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_036
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 35
   trainer_037:
     trainer_id: 37
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580406
@@ -404,10 +296,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_037
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 36
   trainer_038:
     trainer_id: 38
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580407
@@ -415,10 +304,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_038
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 37
   trainer_039:
     trainer_id: 39
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580408
@@ -426,10 +312,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_039
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 38
   trainer_040:
     trainer_id: 40
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580409
@@ -437,10 +320,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_040
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 39
   trainer_041:
     trainer_id: 41
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580410
@@ -448,10 +328,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_041
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 40
   trainer_042:
     trainer_id: 42
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580411
@@ -459,10 +336,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_042
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 41
   trainer_043:
     trainer_id: 43
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580412
@@ -470,10 +344,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_043
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 42
   trainer_044:
     trainer_id: 44
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580413
@@ -481,10 +352,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_044
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 43
   trainer_045:
     trainer_id: 45
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580414
@@ -492,10 +360,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_045
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 44
   trainer_046:
     trainer_id: 46
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580415
@@ -503,10 +368,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_046
     computation_time_ms: '16800.0'
-    rtt_communication_time_ms: '7200.0'
-    rtt_base_ms: '7200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 45
   trainer_047:
     trainer_id: 47
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580416
@@ -514,10 +376,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_047
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 46
   trainer_048:
     trainer_id: 48
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580417
@@ -525,10 +384,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_048
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 47
   trainer_049:
     trainer_id: 49
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580418
@@ -536,10 +392,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_049
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 48
   trainer_050:
     trainer_id: 50
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580419
@@ -547,10 +400,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_050
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 49
   trainer_051:
     trainer_id: 51
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580420
@@ -558,10 +408,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_051
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 50
   trainer_052:
     trainer_id: 52
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580421
@@ -569,10 +416,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_052
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 51
   trainer_053:
     trainer_id: 53
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580422
@@ -580,10 +424,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_053
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 52
   trainer_054:
     trainer_id: 54
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580423
@@ -591,10 +432,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_054
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 53
   trainer_055:
     trainer_id: 55
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580424
@@ -602,10 +440,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_055
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 54
   trainer_056:
     trainer_id: 56
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580425
@@ -613,10 +448,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_056
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 55
   trainer_057:
     trainer_id: 57
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580426
@@ -624,10 +456,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_057
     computation_time_ms: '21000.0'
-    rtt_communication_time_ms: '9000.0'
-    rtt_base_ms: '9000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 56
   trainer_058:
     trainer_id: 58
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580427
@@ -635,10 +464,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_058
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 57
   trainer_059:
     trainer_id: 59
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580428
@@ -646,10 +472,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_059
     computation_time_ms: '19600.0'
-    rtt_communication_time_ms: '8400.0'
-    rtt_base_ms: '8400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 58
   trainer_060:
     trainer_id: 60
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580429
@@ -657,10 +480,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_060
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 59
   trainer_061:
     trainer_id: 61
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580430
@@ -668,10 +488,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_061
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 60
   trainer_062:
     trainer_id: 62
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580431
@@ -679,10 +496,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_062
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 61
   trainer_063:
     trainer_id: 63
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580432
@@ -690,10 +504,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_063
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 62
   trainer_064:
     trainer_id: 64
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580433
@@ -701,10 +512,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_064
     computation_time_ms: '14000.0'
-    rtt_communication_time_ms: '6000.0'
-    rtt_base_ms: '6000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 63
   trainer_065:
     trainer_id: 65
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580434
@@ -712,10 +520,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_065
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 64
   trainer_066:
     trainer_id: 66
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580435
@@ -723,10 +528,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_066
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 65
   trainer_067:
     trainer_id: 67
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580436
@@ -734,10 +536,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_067
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 66
   trainer_068:
     trainer_id: 68
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580437
@@ -745,10 +544,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_068
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 67
   trainer_069:
     trainer_id: 69
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580438
@@ -756,10 +552,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_069
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 68
   trainer_070:
     trainer_id: 70
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580439
@@ -767,10 +560,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_070
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 69
   trainer_071:
     trainer_id: 71
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580440
@@ -778,10 +568,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_071
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 70
   trainer_072:
     trainer_id: 72
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580441
@@ -789,10 +576,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_072
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 71
   trainer_073:
     trainer_id: 73
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580442
@@ -800,10 +584,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_073
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 72
   trainer_074:
     trainer_id: 74
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580443
@@ -811,10 +592,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_074
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 73
   trainer_075:
     trainer_id: 75
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580444
@@ -822,10 +600,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_075
     computation_time_ms: '19600.0'
-    rtt_communication_time_ms: '8400.0'
-    rtt_base_ms: '8400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 74
   trainer_076:
     trainer_id: 76
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580445
@@ -833,10 +608,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_076
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 75
   trainer_077:
     trainer_id: 77
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580446
@@ -844,10 +616,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_077
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 76
   trainer_078:
     trainer_id: 78
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580447
@@ -855,10 +624,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_078
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 77
   trainer_079:
     trainer_id: 79
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580448
@@ -866,10 +632,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_079
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 78
   trainer_080:
     trainer_id: 80
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580449
@@ -877,10 +640,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_080
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 79
   trainer_081:
     trainer_id: 81
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580450
@@ -888,10 +648,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_081
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 80
   trainer_082:
     trainer_id: 82
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580451
@@ -899,10 +656,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_082
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 81
   trainer_083:
     trainer_id: 83
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580452
@@ -910,10 +664,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_083
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 82
   trainer_084:
     trainer_id: 84
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580453
@@ -921,10 +672,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_084
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 83
   trainer_085:
     trainer_id: 85
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580454
@@ -932,10 +680,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_085
     computation_time_ms: '18900.0'
-    rtt_communication_time_ms: '8100.0'
-    rtt_base_ms: '8100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 84
   trainer_086:
     trainer_id: 86
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580455
@@ -943,10 +688,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_086
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 85
   trainer_087:
     trainer_id: 87
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580456
@@ -954,10 +696,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_087
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 86
   trainer_088:
     trainer_id: 88
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580457
@@ -965,10 +704,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_088
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 87
   trainer_089:
     trainer_id: 89
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580458
@@ -976,10 +712,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_089
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 88
   trainer_090:
     trainer_id: 90
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580459
@@ -987,10 +720,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_090
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 89
   trainer_091:
     trainer_id: 91
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580460
@@ -998,10 +728,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_091
     computation_time_ms: '26600.0'
-    rtt_communication_time_ms: '11400.0'
-    rtt_base_ms: '11400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 90
   trainer_092:
     trainer_id: 92
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580461
@@ -1009,10 +736,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_092
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 91
   trainer_093:
     trainer_id: 93
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580462
@@ -1020,10 +744,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_093
     computation_time_ms: '18900.0'
-    rtt_communication_time_ms: '8100.0'
-    rtt_base_ms: '8100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 92
   trainer_094:
     trainer_id: 94
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580463
@@ -1031,10 +752,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_094
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 93
   trainer_095:
     trainer_id: 95
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580464
@@ -1042,10 +760,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_095
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 94
   trainer_096:
     trainer_id: 96
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580465
@@ -1053,10 +768,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_096
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 95
   trainer_097:
     trainer_id: 97
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580466
@@ -1064,10 +776,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_097
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 96
   trainer_098:
     trainer_id: 98
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580467
@@ -1075,10 +784,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_098
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 97
   trainer_099:
     trainer_id: 99
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580468
@@ -1086,10 +792,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_099
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 98
   trainer_100:
     trainer_id: 100
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580469
@@ -1097,10 +800,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_100
     computation_time_ms: '25200.0'
-    rtt_communication_time_ms: '10800.0'
-    rtt_base_ms: '10800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 99
   trainer_101:
     trainer_id: 101
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580470
@@ -1108,10 +808,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_101
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 100
   trainer_102:
     trainer_id: 102
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580471
@@ -1119,10 +816,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_102
     computation_time_ms: '14000.0'
-    rtt_communication_time_ms: '6000.0'
-    rtt_base_ms: '6000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 101
   trainer_103:
     trainer_id: 103
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580472
@@ -1130,10 +824,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_103
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 102
   trainer_104:
     trainer_id: 104
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580473
@@ -1141,10 +832,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_104
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 103
   trainer_105:
     trainer_id: 105
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580474
@@ -1152,10 +840,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_105
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 104
   trainer_106:
     trainer_id: 106
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580475
@@ -1163,10 +848,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_106
     computation_time_ms: '18200.0'
-    rtt_communication_time_ms: '7800.0'
-    rtt_base_ms: '7800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 105
   trainer_107:
     trainer_id: 107
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580476
@@ -1174,10 +856,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_107
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 106
   trainer_108:
     trainer_id: 108
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580477
@@ -1185,10 +864,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_108
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 107
   trainer_109:
     trainer_id: 109
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580478
@@ -1196,10 +872,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_109
     computation_time_ms: '20300.0'
-    rtt_communication_time_ms: '8700.0'
-    rtt_base_ms: '8700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 108
   trainer_110:
     trainer_id: 110
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580479
@@ -1207,10 +880,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_110
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 109
   trainer_111:
     trainer_id: 111
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580480
@@ -1218,10 +888,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_111
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 110
   trainer_112:
     trainer_id: 112
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580481
@@ -1229,10 +896,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_112
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 111
   trainer_113:
     trainer_id: 113
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580482
@@ -1240,10 +904,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_113
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 112
   trainer_114:
     trainer_id: 114
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580483
@@ -1251,10 +912,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_114
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 113
   trainer_115:
     trainer_id: 115
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580484
@@ -1262,10 +920,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_115
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 114
   trainer_116:
     trainer_id: 116
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580485
@@ -1273,10 +928,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_116
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 115
   trainer_117:
     trainer_id: 117
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580486
@@ -1284,10 +936,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_117
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 116
   trainer_118:
     trainer_id: 118
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580487
@@ -1295,10 +944,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_118
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 117
   trainer_119:
     trainer_id: 119
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580488
@@ -1306,10 +952,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_119
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 118
   trainer_120:
     trainer_id: 120
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580489
@@ -1317,10 +960,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_120
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 119
   trainer_121:
     trainer_id: 121
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580490
@@ -1328,10 +968,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_121
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 120
   trainer_122:
     trainer_id: 122
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580491
@@ -1339,10 +976,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_122
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 121
   trainer_123:
     trainer_id: 123
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580492
@@ -1350,10 +984,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_123
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 122
   trainer_124:
     trainer_id: 124
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580493
@@ -1361,10 +992,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_124
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 123
   trainer_125:
     trainer_id: 125
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580494
@@ -1372,10 +1000,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_125
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 124
   trainer_126:
     trainer_id: 126
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580495
@@ -1383,10 +1008,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_126
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 125
   trainer_127:
     trainer_id: 127
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580496
@@ -1394,10 +1016,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_127
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 126
   trainer_128:
     trainer_id: 128
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580497
@@ -1405,10 +1024,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_128
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 127
   trainer_129:
     trainer_id: 129
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580498
@@ -1416,10 +1032,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_129
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 128
   trainer_130:
     trainer_id: 130
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580499
@@ -1427,10 +1040,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_130
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 129
   trainer_131:
     trainer_id: 131
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580500
@@ -1438,10 +1048,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_131
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 130
   trainer_132:
     trainer_id: 132
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580501
@@ -1449,10 +1056,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_132
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 131
   trainer_133:
     trainer_id: 133
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580502
@@ -1460,10 +1064,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_133
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 132
   trainer_134:
     trainer_id: 134
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580503
@@ -1471,10 +1072,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_134
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 133
   trainer_135:
     trainer_id: 135
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580504
@@ -1482,10 +1080,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_135
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 134
   trainer_136:
     trainer_id: 136
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580505
@@ -1493,10 +1088,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_136
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 135
   trainer_137:
     trainer_id: 137
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580506
@@ -1504,10 +1096,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_137
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 136
   trainer_138:
     trainer_id: 138
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580507
@@ -1515,10 +1104,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_138
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 137
   trainer_139:
     trainer_id: 139
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580508
@@ -1526,10 +1112,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_139
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 138
   trainer_140:
     trainer_id: 140
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580509
@@ -1537,10 +1120,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_140
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 139
   trainer_141:
     trainer_id: 141
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580510
@@ -1548,10 +1128,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_141
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 140
   trainer_142:
     trainer_id: 142
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580511
@@ -1559,10 +1136,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_142
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 141
   trainer_143:
     trainer_id: 143
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580512
@@ -1570,10 +1144,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_143
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 142
   trainer_144:
     trainer_id: 144
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580513
@@ -1581,10 +1152,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_144
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 143
   trainer_145:
     trainer_id: 145
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580514
@@ -1592,10 +1160,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_145
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 144
   trainer_146:
     trainer_id: 146
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580515
@@ -1603,10 +1168,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_146
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 145
   trainer_147:
     trainer_id: 147
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580516
@@ -1614,10 +1176,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_147
     computation_time_ms: '20300.0'
-    rtt_communication_time_ms: '8700.0'
-    rtt_base_ms: '8700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 146
   trainer_148:
     trainer_id: 148
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580517
@@ -1625,10 +1184,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_148
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 147
   trainer_149:
     trainer_id: 149
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580518
@@ -1636,10 +1192,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_149
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 148
   trainer_150:
     trainer_id: 150
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580519
@@ -1647,10 +1200,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_150
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 149
   trainer_151:
     trainer_id: 151
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580520
@@ -1658,10 +1208,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_151
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 0
   trainer_152:
     trainer_id: 152
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580521
@@ -1669,10 +1216,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_152
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 1
   trainer_153:
     trainer_id: 153
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580522
@@ -1680,10 +1224,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_153
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 2
   trainer_154:
     trainer_id: 154
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580523
@@ -1691,10 +1232,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_154
     computation_time_ms: '15400.0'
-    rtt_communication_time_ms: '6600.0'
-    rtt_base_ms: '6600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 3
   trainer_155:
     trainer_id: 155
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580524
@@ -1702,10 +1240,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_155
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 4
   trainer_156:
     trainer_id: 156
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580525
@@ -1713,10 +1248,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_156
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 5
   trainer_157:
     trainer_id: 157
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580526
@@ -1724,10 +1256,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_157
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 6
   trainer_158:
     trainer_id: 158
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580527
@@ -1735,10 +1264,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_158
     computation_time_ms: '22400.0'
-    rtt_communication_time_ms: '9600.0'
-    rtt_base_ms: '9600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 7
   trainer_159:
     trainer_id: 159
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580528
@@ -1746,10 +1272,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_159
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 8
   trainer_160:
     trainer_id: 160
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580529
@@ -1757,10 +1280,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_160
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 9
   trainer_161:
     trainer_id: 161
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580530
@@ -1768,10 +1288,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_161
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 10
   trainer_162:
     trainer_id: 162
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580531
@@ -1779,10 +1296,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_162
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 11
   trainer_163:
     trainer_id: 163
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580532
@@ -1790,10 +1304,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_163
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 12
   trainer_164:
     trainer_id: 164
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580533
@@ -1801,10 +1312,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_164
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 13
   trainer_165:
     trainer_id: 165
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580534
@@ -1812,10 +1320,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_165
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 14
   trainer_166:
     trainer_id: 166
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580535
@@ -1823,10 +1328,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_166
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 15
   trainer_167:
     trainer_id: 167
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580536
@@ -1834,10 +1336,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_167
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 16
   trainer_168:
     trainer_id: 168
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580537
@@ -1845,10 +1344,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_168
     computation_time_ms: '17500.0'
-    rtt_communication_time_ms: '7500.0'
-    rtt_base_ms: '7500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 17
   trainer_169:
     trainer_id: 169
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580538
@@ -1856,10 +1352,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_169
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 18
   trainer_170:
     trainer_id: 170
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580539
@@ -1867,10 +1360,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_170
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 19
   trainer_171:
     trainer_id: 171
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580540
@@ -1878,10 +1368,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_171
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 20
   trainer_172:
     trainer_id: 172
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580541
@@ -1889,10 +1376,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_172
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 21
   trainer_173:
     trainer_id: 173
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580542
@@ -1900,10 +1384,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_173
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 22
   trainer_174:
     trainer_id: 174
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580543
@@ -1911,10 +1392,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_174
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 23
   trainer_175:
     trainer_id: 175
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580544
@@ -1922,10 +1400,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_175
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 24
   trainer_176:
     trainer_id: 176
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580545
@@ -1933,10 +1408,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_176
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 25
   trainer_177:
     trainer_id: 177
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580546
@@ -1944,10 +1416,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_177
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 26
   trainer_178:
     trainer_id: 178
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580547
@@ -1955,10 +1424,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_178
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 27
   trainer_179:
     trainer_id: 179
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580548
@@ -1966,10 +1432,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_179
     computation_time_ms: '16800.0'
-    rtt_communication_time_ms: '7200.0'
-    rtt_base_ms: '7200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 28
   trainer_180:
     trainer_id: 180
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580549
@@ -1977,10 +1440,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_180
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 29
   trainer_181:
     trainer_id: 181
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580550
@@ -1988,10 +1448,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_181
     computation_time_ms: '39200.0'
-    rtt_communication_time_ms: '16800.0'
-    rtt_base_ms: '16800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 30
   trainer_182:
     trainer_id: 182
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580551
@@ -1999,10 +1456,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_182
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 31
   trainer_183:
     trainer_id: 183
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580552
@@ -2010,10 +1464,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_183
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 32
   trainer_184:
     trainer_id: 184
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580553
@@ -2021,10 +1472,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_184
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 33
   trainer_185:
     trainer_id: 185
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580554
@@ -2032,10 +1480,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_185
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 34
   trainer_186:
     trainer_id: 186
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580555
@@ -2043,10 +1488,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_186
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 35
   trainer_187:
     trainer_id: 187
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580556
@@ -2054,10 +1496,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_187
     computation_time_ms: '21700.0'
-    rtt_communication_time_ms: '9300.0'
-    rtt_base_ms: '9300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 36
   trainer_188:
     trainer_id: 188
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580557
@@ -2065,10 +1504,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_188
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 37
   trainer_189:
     trainer_id: 189
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580558
@@ -2076,10 +1512,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_189
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 38
   trainer_190:
     trainer_id: 190
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580559
@@ -2087,10 +1520,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_190
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 39
   trainer_191:
     trainer_id: 191
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580560
@@ -2098,10 +1528,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_191
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 40
   trainer_192:
     trainer_id: 192
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580561
@@ -2109,10 +1536,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_192
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 41
   trainer_193:
     trainer_id: 193
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580562
@@ -2120,10 +1544,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_193
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 42
   trainer_194:
     trainer_id: 194
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580563
@@ -2131,10 +1552,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_194
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 43
   trainer_195:
     trainer_id: 195
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580564
@@ -2142,10 +1560,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_195
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 44
   trainer_196:
     trainer_id: 196
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580565
@@ -2153,10 +1568,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_196
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 45
   trainer_197:
     trainer_id: 197
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580566
@@ -2164,10 +1576,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_197
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 46
   trainer_198:
     trainer_id: 198
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580567
@@ -2175,10 +1584,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_198
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 47
   trainer_199:
     trainer_id: 199
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580568
@@ -2186,10 +1592,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_199
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 48
   trainer_200:
     trainer_id: 200
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580569
@@ -2197,10 +1600,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_200
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 49
   trainer_201:
     trainer_id: 201
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580570
@@ -2208,10 +1608,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_201
     computation_time_ms: '12600.0'
-    rtt_communication_time_ms: '5400.0'
-    rtt_base_ms: '5400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 50
   trainer_202:
     trainer_id: 202
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580571
@@ -2219,10 +1616,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_202
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 51
   trainer_203:
     trainer_id: 203
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580572
@@ -2230,10 +1624,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_203
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 52
   trainer_204:
     trainer_id: 204
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580573
@@ -2241,10 +1632,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_204
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 53
   trainer_205:
     trainer_id: 205
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580574
@@ -2252,10 +1640,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_205
     computation_time_ms: '16800.0'
-    rtt_communication_time_ms: '7200.0'
-    rtt_base_ms: '7200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 54
   trainer_206:
     trainer_id: 206
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580575
@@ -2263,10 +1648,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_206
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 55
   trainer_207:
     trainer_id: 207
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580576
@@ -2274,10 +1656,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_207
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 56
   trainer_208:
     trainer_id: 208
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580577
@@ -2285,10 +1664,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_208
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 57
   trainer_209:
     trainer_id: 209
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580578
@@ -2296,10 +1672,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_209
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 58
   trainer_210:
     trainer_id: 210
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580579
@@ -2307,10 +1680,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_210
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 59
   trainer_211:
     trainer_id: 211
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580580
@@ -2318,10 +1688,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_211
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 60
   trainer_212:
     trainer_id: 212
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580581
@@ -2329,10 +1696,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_212
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 61
   trainer_213:
     trainer_id: 213
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580582
@@ -2340,10 +1704,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_213
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 62
   trainer_214:
     trainer_id: 214
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580583
@@ -2351,10 +1712,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_214
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 63
   trainer_215:
     trainer_id: 215
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580584
@@ -2362,10 +1720,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_215
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 64
   trainer_216:
     trainer_id: 216
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580585
@@ -2373,10 +1728,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_216
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 65
   trainer_217:
     trainer_id: 217
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580586
@@ -2384,10 +1736,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_217
     computation_time_ms: '19600.0'
-    rtt_communication_time_ms: '8400.0'
-    rtt_base_ms: '8400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 66
   trainer_218:
     trainer_id: 218
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580587
@@ -2395,10 +1744,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_218
     computation_time_ms: '21700.0'
-    rtt_communication_time_ms: '9300.0'
-    rtt_base_ms: '9300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 67
   trainer_219:
     trainer_id: 219
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580588
@@ -2406,10 +1752,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_219
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 68
   trainer_220:
     trainer_id: 220
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580589
@@ -2417,10 +1760,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_220
     computation_time_ms: '18200.0'
-    rtt_communication_time_ms: '7800.0'
-    rtt_base_ms: '7800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 69
   trainer_221:
     trainer_id: 221
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580590
@@ -2428,10 +1768,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_221
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 70
   trainer_222:
     trainer_id: 222
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580591
@@ -2439,10 +1776,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_222
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 71
   trainer_223:
     trainer_id: 223
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580592
@@ -2450,10 +1784,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_223
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 72
   trainer_224:
     trainer_id: 224
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580593
@@ -2461,10 +1792,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_224
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 73
   trainer_225:
     trainer_id: 225
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580594
@@ -2472,10 +1800,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_225
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 74
   trainer_226:
     trainer_id: 226
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580595
@@ -2483,10 +1808,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_226
     computation_time_ms: '9100.0'
-    rtt_communication_time_ms: '3900.0'
-    rtt_base_ms: '3900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 75
   trainer_227:
     trainer_id: 227
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580596
@@ -2494,10 +1816,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_227
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 76
   trainer_228:
     trainer_id: 228
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580597
@@ -2505,10 +1824,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_228
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 77
   trainer_229:
     trainer_id: 229
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580598
@@ -2516,10 +1832,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_229
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 78
   trainer_230:
     trainer_id: 230
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580599
@@ -2527,10 +1840,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_230
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 79
   trainer_231:
     trainer_id: 231
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580600
@@ -2538,10 +1848,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_231
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 80
   trainer_232:
     trainer_id: 232
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580601
@@ -2549,10 +1856,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_232
     computation_time_ms: '18900.0'
-    rtt_communication_time_ms: '8100.0'
-    rtt_base_ms: '8100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 81
   trainer_233:
     trainer_id: 233
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580602
@@ -2560,10 +1864,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_233
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 82
   trainer_234:
     trainer_id: 234
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580603
@@ -2571,10 +1872,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_234
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 83
   trainer_235:
     trainer_id: 235
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580604
@@ -2582,10 +1880,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_235
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 84
   trainer_236:
     trainer_id: 236
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580605
@@ -2593,10 +1888,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_236
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 85
   trainer_237:
     trainer_id: 237
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580606
@@ -2604,10 +1896,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_237
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 86
   trainer_238:
     trainer_id: 238
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580607
@@ -2615,10 +1904,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_238
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 87
   trainer_239:
     trainer_id: 239
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580608
@@ -2626,10 +1912,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_239
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 88
   trainer_240:
     trainer_id: 240
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580609
@@ -2637,10 +1920,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_240
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 89
   trainer_241:
     trainer_id: 241
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580610
@@ -2648,10 +1928,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_241
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 90
   trainer_242:
     trainer_id: 242
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580611
@@ -2659,10 +1936,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_242
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 91
   trainer_243:
     trainer_id: 243
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580612
@@ -2670,10 +1944,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_243
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 92
   trainer_244:
     trainer_id: 244
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580613
@@ -2681,10 +1952,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_244
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 93
   trainer_245:
     trainer_id: 245
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580614
@@ -2692,10 +1960,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_245
     computation_time_ms: '14000.0'
-    rtt_communication_time_ms: '6000.0'
-    rtt_base_ms: '6000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 94
   trainer_246:
     trainer_id: 246
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580615
@@ -2703,10 +1968,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_246
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 95
   trainer_247:
     trainer_id: 247
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580616
@@ -2714,10 +1976,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_247
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 96
   trainer_248:
     trainer_id: 248
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580617
@@ -2725,10 +1984,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_248
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 97
   trainer_249:
     trainer_id: 249
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580618
@@ -2736,10 +1992,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_249
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 98
   trainer_250:
     trainer_id: 250
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580619
@@ -2747,10 +2000,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_250
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 99
   trainer_251:
     trainer_id: 251
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580620
@@ -2758,10 +2008,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_251
     computation_time_ms: '21700.0'
-    rtt_communication_time_ms: '9300.0'
-    rtt_base_ms: '9300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 100
   trainer_252:
     trainer_id: 252
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580621
@@ -2769,10 +2016,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_252
     computation_time_ms: '4200.0'
-    rtt_communication_time_ms: '1800.0'
-    rtt_base_ms: '1800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 101
   trainer_253:
     trainer_id: 253
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580622
@@ -2780,10 +2024,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_253
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 102
   trainer_254:
     trainer_id: 254
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580623
@@ -2791,10 +2032,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_254
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 103
   trainer_255:
     trainer_id: 255
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580624
@@ -2802,10 +2040,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_255
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 104
   trainer_256:
     trainer_id: 256
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580625
@@ -2813,10 +2048,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_256
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 105
   trainer_257:
     trainer_id: 257
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580626
@@ -2824,10 +2056,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_257
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 106
   trainer_258:
     trainer_id: 258
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580627
@@ -2835,10 +2064,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_258
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 107
   trainer_259:
     trainer_id: 259
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580628
@@ -2846,10 +2072,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_259
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 108
   trainer_260:
     trainer_id: 260
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580629
@@ -2857,10 +2080,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_260
     computation_time_ms: '3500.0'
-    rtt_communication_time_ms: '1500.0'
-    rtt_base_ms: '1500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 109
   trainer_261:
     trainer_id: 261
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580630
@@ -2868,10 +2088,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_261
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 110
   trainer_262:
     trainer_id: 262
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580631
@@ -2879,10 +2096,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_262
     computation_time_ms: '19600.0'
-    rtt_communication_time_ms: '8400.0'
-    rtt_base_ms: '8400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 111
   trainer_263:
     trainer_id: 263
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580632
@@ -2890,10 +2104,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_263
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 112
   trainer_264:
     trainer_id: 264
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580633
@@ -2901,10 +2112,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_264
     computation_time_ms: '20300.0'
-    rtt_communication_time_ms: '8700.0'
-    rtt_base_ms: '8700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 113
   trainer_265:
     trainer_id: 265
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580634
@@ -2912,10 +2120,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_265
     computation_time_ms: '11200.0'
-    rtt_communication_time_ms: '4800.0'
-    rtt_base_ms: '4800.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 114
   trainer_266:
     trainer_id: 266
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580635
@@ -2923,10 +2128,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_266
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 115
   trainer_267:
     trainer_id: 267
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580636
@@ -2934,10 +2136,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_267
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 116
   trainer_268:
     trainer_id: 268
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580637
@@ -2945,10 +2144,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_268
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 117
   trainer_269:
     trainer_id: 269
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580638
@@ -2956,10 +2152,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_269
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 118
   trainer_270:
     trainer_id: 270
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580639
@@ -2967,10 +2160,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_270
     computation_time_ms: '4900.0'
-    rtt_communication_time_ms: '2100.0'
-    rtt_base_ms: '2100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 119
   trainer_271:
     trainer_id: 271
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580640
@@ -2978,10 +2168,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_271
     computation_time_ms: '2100.0'
-    rtt_communication_time_ms: '900.0'
-    rtt_base_ms: '900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 120
   trainer_272:
     trainer_id: 272
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580641
@@ -2989,10 +2176,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_272
     computation_time_ms: '7000.0'
-    rtt_communication_time_ms: '3000.0'
-    rtt_base_ms: '3000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 121
   trainer_273:
     trainer_id: 273
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580642
@@ -3000,10 +2184,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_273
     computation_time_ms: '28000.0'
-    rtt_communication_time_ms: '12000.0'
-    rtt_base_ms: '12000.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 122
   trainer_274:
     trainer_id: 274
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580643
@@ -3011,10 +2192,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_274
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 123
   trainer_275:
     trainer_id: 275
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580644
@@ -3022,10 +2200,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_275
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 124
   trainer_276:
     trainer_id: 276
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580645
@@ -3033,10 +2208,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_276
     computation_time_ms: '11900.0'
-    rtt_communication_time_ms: '5100.0'
-    rtt_base_ms: '5100.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 125
   trainer_277:
     trainer_id: 277
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580646
@@ -3044,10 +2216,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_277
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 126
   trainer_278:
     trainer_id: 278
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580647
@@ -3055,10 +2224,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_278
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 127
   trainer_279:
     trainer_id: 279
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580648
@@ -3066,10 +2232,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_279
     computation_time_ms: '1400.0'
-    rtt_communication_time_ms: '600.0'
-    rtt_base_ms: '600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 128
   trainer_280:
     trainer_id: 280
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580649
@@ -3077,10 +2240,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_280
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 129
   trainer_281:
     trainer_id: 281
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580650
@@ -3088,10 +2248,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_281
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 130
   trainer_282:
     trainer_id: 282
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580651
@@ -3099,10 +2256,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_282
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 131
   trainer_283:
     trainer_id: 283
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580652
@@ -3110,10 +2264,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_283
     computation_time_ms: '14700.0'
-    rtt_communication_time_ms: '6300.0'
-    rtt_base_ms: '6300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 132
   trainer_284:
     trainer_id: 284
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580653
@@ -3121,10 +2272,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_284
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 133
   trainer_285:
     trainer_id: 285
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580654
@@ -3132,10 +2280,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_285
     computation_time_ms: '23800.0'
-    rtt_communication_time_ms: '10200.0'
-    rtt_base_ms: '10200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 134
   trainer_286:
     trainer_id: 286
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580655
@@ -3143,10 +2288,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_286
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 135
   trainer_287:
     trainer_id: 287
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580656
@@ -3154,10 +2296,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_287
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 136
   trainer_288:
     trainer_id: 288
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580657
@@ -3165,10 +2304,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_288
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 137
   trainer_289:
     trainer_id: 289
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580658
@@ -3176,10 +2312,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_289
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 138
   trainer_290:
     trainer_id: 290
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580659
@@ -3187,10 +2320,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_290
     computation_time_ms: '10500.0'
-    rtt_communication_time_ms: '4500.0'
-    rtt_base_ms: '4500.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 139
   trainer_291:
     trainer_id: 291
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580660
@@ -3198,10 +2328,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_291
     computation_time_ms: '16100.0'
-    rtt_communication_time_ms: '6900.0'
-    rtt_base_ms: '6900.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 140
   trainer_292:
     trainer_id: 292
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580661
@@ -3209,10 +2336,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_292
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 141
   trainer_293:
     trainer_id: 293
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580662
@@ -3220,10 +2344,7 @@ trainers:
     speed_class: medium
     mobiperf_device_id: device_293
     computation_time_ms: '5600.0'
-    rtt_communication_time_ms: '2400.0'
-    rtt_base_ms: '2400.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 142
   trainer_294:
     trainer_id: 294
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580663
@@ -3231,10 +2352,7 @@ trainers:
     speed_class: fast
     mobiperf_device_id: device_294
     computation_time_ms: '2800.0'
-    rtt_communication_time_ms: '1200.0'
-    rtt_base_ms: '1200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 143
   trainer_295:
     trainer_id: 295
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580664
@@ -3242,10 +2360,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_295
     computation_time_ms: '13300.0'
-    rtt_communication_time_ms: '5700.0'
-    rtt_base_ms: '5700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 144
   trainer_296:
     trainer_id: 296
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580665
@@ -3253,10 +2368,7 @@ trainers:
     speed_class: very_slow
     mobiperf_device_id: device_296
     computation_time_ms: '9800.0'
-    rtt_communication_time_ms: '4200.0'
-    rtt_base_ms: '4200.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 145
   trainer_297:
     trainer_id: 297
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580666
@@ -3264,10 +2376,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_297
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 146
   trainer_298:
     trainer_id: 298
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580667
@@ -3275,10 +2384,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_298
     computation_time_ms: '8400.0'
-    rtt_communication_time_ms: '3600.0'
-    rtt_base_ms: '3600.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 147
   trainer_299:
     trainer_id: 299
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580668
@@ -3286,10 +2392,7 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_299
     computation_time_ms: '6300.0'
-    rtt_communication_time_ms: '2700.0'
-    rtt_base_ms: '2700.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 148
   trainer_300:
     trainer_id: 300
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580669
@@ -3297,7 +2400,4 @@ trainers:
     speed_class: slow
     mobiperf_device_id: device_300
     computation_time_ms: '7700.0'
-    rtt_communication_time_ms: '3300.0'
-    rtt_base_ms: '3300.0'
-    rtt_amplitude: '0.3'
-    rtt_period_s: '120.0'
+    satellite_index: 149

@@ -129,10 +129,7 @@ class ConfigGenerator:
         config["hyperparameters"]["trainer_indices_list"] = dataset_indices
         config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
         config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
-        config["hyperparameters"]["rtt_communication_time_ms"] = trainer_meta["rtt_communication_time_ms"]
-        config["hyperparameters"]["rtt_base_ms"] = trainer_meta["rtt_base_ms"]
-        config["hyperparameters"]["rtt_amplitude"] = trainer_meta["rtt_amplitude"]
-        config["hyperparameters"]["rtt_period_s"] = trainer_meta["rtt_period_s"]
+        config["hyperparameters"]["satellite_index"] = trainer_meta["satellite_index"]
 	# Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
         config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled
