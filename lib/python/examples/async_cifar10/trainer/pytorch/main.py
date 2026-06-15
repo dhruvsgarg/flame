@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
+import numpy as np
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry

@@ -144,22 +144,15 @@ class ConfigGenerator:
         if "hyperparameters" not in config:
             config["hyperparameters"] = {}
 
-<<<<<<< HEAD
-        config["hyperparameters"]["trainer_indices_list"] = dataset_indices
-        # training_delay_s deprecated in favour of computation_time_ms (per-device dict, in ms)
-        config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
-        config["hyperparameters"]["satellite_index"] = trainer_meta["satellite_index"]
-        config["hyperparameters"]["satellite_latencies_path"] = "lib/python/examples/_metadata/leo/satellite_latencies.npy"
-=======
         if not skip_index_splits:
             dataset_indices = self.metadata.get_dataset_split(
                 alpha, trainer_id, dataset_name, num_trainers
             )
             config["hyperparameters"]["trainer_indices_list"] = dataset_indices
-
-        config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
-        
->>>>>>> b01408b7 (fwdllm: confirm launcher-migration readiness via 3 real n=100 runs (#68))
+        # training_delay_s deprecated in favour of computation_time_ms (per-device dict, in ms)
+        config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
+        config["hyperparameters"]["satellite_index"] = trainer_meta["satellite_index"]
+        config["hyperparameters"]["satellite_latencies_path"] = "lib/python/examples/_metadata/leo/satellite_latencies.npy"
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
         config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled
