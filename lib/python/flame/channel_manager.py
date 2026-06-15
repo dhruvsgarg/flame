@@ -152,9 +152,7 @@ class ChannelManager(object):
             self._config.group_association.get(name)
         )
 
-        # Thread the deterministic seed (if any) into every selector so its
-        # dedicated RNG is reproducible across runs/modes — a prerequisite for the
-        # parity checks. Passed as a reserved kwarg the base Selector consumes.
+        # Thread the deterministic seed into the selector's dedicated RNG.
         _seed = getattr(self._config.hyperparameters, "seed", None)
         selector = selector_provider.get(
             self._config.selector.sort,

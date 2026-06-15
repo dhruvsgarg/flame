@@ -133,3 +133,55 @@ class TestDedicatedRngInsulation:
             for _ in range(12)
         }
         assert len(outcomes) > 1
+
+
+from flame.selector import AbstractSelector
+
+
+class _Mini(AbstractSelector):
+    """Minimal concrete selector to exercise the base-class RNG contract."""
+
+    def select(self, ends, channel_props):
+        return {}
+
+
+def _np_seq(sel, n=8):
+    return sel._rng.rand(n).tolist()
+
+
+def _py_seq(sel, n=8):
+    return [sel._pyrng.random() for _ in range(n)]
+
+
+class TestDedicatedRngContract:
+    """Base-class guarantees the dedicated RNGs uphold, independent of any
+    selector's selection logic."""
+
+    def test_same_seed_same_sequence(self):
+        a, b = _Mini(_seed=7), _Mini(_seed=7)
+        assert _np_seq(a) == _np_seq(b)
+        assert _py_seq(a) == _py_seq(b)
+
+    def test_distinct_seeds_differ(self):
+        assert _np_seq(_Mini(_seed=7)) != _np_seq(_Mini(_seed=8))
+        assert _py_seq(_Mini(_seed=7)) != _py_seq(_Mini(_seed=8))
+
+    def test_none_seed_is_unseeded_and_independent(self):
+        assert _Mini(_seed=None)._seed is None
+        # two independent unseeded RNGs almost surely differ
+        assert _np_seq(_Mini(_seed=None)) != _np_seq(_Mini(_seed=None))
+
+    def test_construction_does_not_touch_global_rng(self):
+        # Seeding a selector must not perturb the process-global RNG state.
+        random.seed(0)
+        before = [random.random() for _ in range(3)]
+        random.seed(0)
+        _Mini(_seed=123)  # constructing a seeded selector in between
+        after = [random.random() for _ in range(3)]
+        assert before == after
+
+    @pytest.mark.parametrize("seed", [None, 0, 1234])
+    def test_seed_recorded_and_rngs_present(self, seed):
+        sel = _Mini(_seed=seed)
+        assert sel._seed == seed
+        assert isinstance(_np_seq(sel), list) and isinstance(_py_seq(sel), list)

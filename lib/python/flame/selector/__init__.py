@@ -20,10 +20,8 @@ from typing import Optional, Tuple, Union
 import hashlib
 import logging
 import time
-# Import the RNG classes directly (NOT `import random`): the package has a
-# sibling submodule `flame/selector/random.py`, and once it is imported it
-# shadows a module-level `random` name in this package's namespace, so
-# `random.Random` would resolve to the submodule and break. See PARITY seeding.
+# Import classes directly: bare `import random` here resolves to the sibling
+# flame/selector/random.py submodule, not stdlib.
 from random import Random as _StdRandom
 from numpy.random import RandomState as _NpRandomState
 
@@ -54,22 +52,15 @@ class AbstractSelector(ABC):
     """Abstract base class for selector implementation."""
 
     def __init__(self, **kwargs) -> None:
-        # Reserved kwarg (not a tunable): the deterministic RNG seed threaded from
-        # config.hyperparameters.seed by the channel manager. Consumed here, not
-        # setattr'd as a hyperparameter.
+        # Reserved kwarg (consumed, not setattr'd as a hyperparameter).
         _seed = kwargs.pop("_seed", None)
         for key, value in kwargs.items():
             setattr(self, key, value)
         self.selected_ends: set = set()
         self.ordered_updates_recv_ends: list = []
-        # Dedicated per-selector RNGs. Seeding these (rather than the process-global
-        # np.random/random) makes selection reproducible across runs and between
-        # real/sim modes while INSULATING the draw sequence from any other np.random
-        # consumer in the process — so a residual real-vs-sim divergence under a
-        # shared seed is a genuine decision-INPUT divergence (candidate set / utility
-        # ordering), not spurious RNG desync. seed=None preserves legacy unseeded
-        # behaviour. Selectors MUST draw from self._rng / self._pyrng, never the
-        # bare np.random / random module, for this guarantee to hold.
+        # Dedicated, seed-able RNGs insulated from the process-global np.random/
+        # random. Selectors MUST draw from these (never bare np.random/random) so
+        # selection is reproducible across real/sim. seed=None = unseeded (legacy).
         self._seed = _seed
         self._rng = _NpRandomState(_seed)
         self._pyrng = _StdRandom(_seed)
@@ -171,15 +162,9 @@ class AbstractSelector(ABC):
             else:
                 in_flight = 0
 
-            # Determinism telemetry (PARITY "seeding"): fingerprint the decision
-            # INPUTS so a real/sim divergence can be localized without guessing.
-            #  - eligible_fingerprint: the candidate SET the selector chose from.
-            #  - decision_fingerprint: that set PLUS each candidate's utility/speed
-            #    (rounded) and the chosen count — everything the draw consumed.
-            # Reading these across modes splits the two failure modes: identical
-            # fingerprints but different `chosen` ⇒ RNG desync (seed/order bug);
-            # different fingerprints ⇒ a genuine upstream input divergence
-            # (availability / utility) to fix before selection can match.
+            # Determinism fingerprints (PARITY seeding): eligible = candidate set;
+            # decision = set + per-candidate utility/speed + k. Same fingerprint but
+            # different `chosen` => RNG desync; different fingerprint => input drift.
             elig = sorted(set(eligible_ids))
             elig_fp = hashlib.sha1(
                 "|".join(elig).encode()

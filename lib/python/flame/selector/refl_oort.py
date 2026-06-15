@@ -362,9 +362,7 @@ class REFLOortSelector(OortSelector):
                 utility_list.append({PROP_END_ID: end_id, PROP_UTILITY: stat_util})
 
         if not utility_list:
-            # No utility info, select randomly. sorted() canonicalizes the set→list
-            # order (else PYTHONHASHSEED varies it per process) so a seeded draw is
-            # reproducible across real/sim.
+            # sorted(): cross-process-stable order for the seeded draw.
             return self._pyrng.sample(sorted(candidate_end_ids), num_to_select)
 
         # Calculate total utility with temporal uncertainty and system utility
