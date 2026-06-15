@@ -506,7 +506,7 @@ class AsyncOortSelector(AbstractSelector):
         nz_total = sum(nz_probs)
         nz_probs = [p / nz_total for p in nz_probs]
 
-        selected_ends = np.random.choice(
+        selected_ends = self._rng.choice(
             list(nz_ends),
             size=min(len(nz_ends), num_of_ends),
             replace=False,
@@ -522,7 +522,7 @@ class AsyncOortSelector(AbstractSelector):
 
         # Oort paper prioritizes unexplored ends with faster system
         # speed We initially implement to perform random here
-        return np.random.choice(unexplored_end_ids, size=num_of_ends, replace=False)
+        return self._rng.choice(unexplored_end_ids, size=num_of_ends, replace=False)
 
     def pacer(self) -> None:
         """
@@ -784,7 +784,7 @@ class AsyncOortSelector(AbstractSelector):
         # TODO: (DG) Check. Changed from self.selected_ends to local
         # selected_ends.
 
-        selected_random_ends = set(random.sample(list(ends), num_of_ends))
+        selected_random_ends = set(self._pyrng.sample(sorted(ends), num_of_ends))
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
         return {key: None for key in selected_random_ends}
@@ -1967,7 +1967,7 @@ class AsyncOortSelector(AbstractSelector):
                 f"Will pick cc: {cc} as min(candidates,concurrency) "
                 f"from candidates: {candidates}"
             )
-            selected_ends = set(random.sample(list(candidates), cc))
+            selected_ends = set(self._pyrng.sample(sorted(candidates), cc))
 
             self.selected_ends[self.requester] = selected_ends
             logger.debug(

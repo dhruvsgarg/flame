@@ -281,6 +281,29 @@ def test_preferred_duration_detects_binding_frequency_gap():
     assert res2["ok"], res2
 
 
+def test_trainer_speed_tolerates_wall_capture_jitter():
+    """P3 compares at the modeled integer-second grid: sim reports exact integer
+    training-delays, real carries sub-second wall-capture jitter on top. The raw
+    KS would FAIL on that jitter alone; the grid KS must PASS. But a *systematic*
+    overhead (real shifted a full grid cell) must still FAIL."""
+    from parity.checks import trainer_speed_parity
+    import random
+    random.seed(0)
+    base = [float(random.choice([2, 3, 5, 6, 8, 9])) for _ in range(20000)]
+    sim = {"agg_rounds": [{"trainer_speed_s": list(base)}]}
+    # real = same integer grid + small positive capture jitter (sleep/settle leg)
+    jittered = [v + random.uniform(0.02, 0.09) for v in base]
+    real = {"agg_rounds": [{"trainer_speed_s": jittered}]}
+    res = trainer_speed_parity(real, sim)
+    assert res["raw_ks_stat"] > 0.1, res          # raw sub-second KS would fail
+    assert res["ok"], res                          # grid KS passes
+    assert res["ks_stat"] <= 0.1, res
+    # a genuine ~+1s systematic speed-model offset is NOT absorbed
+    shifted = [v + 1.0 for v in base]
+    res_bad = trainer_speed_parity({"agg_rounds": [{"trainer_speed_s": shifted}]}, sim)
+    assert not res_bad["ok"], res_bad
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

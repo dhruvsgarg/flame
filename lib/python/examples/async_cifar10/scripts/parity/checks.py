@@ -23,6 +23,7 @@ import glob
 import json
 import math
 import os
+import re
 import statistics
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,48 @@ from typing import Optional
 
 def short(end_id: str) -> str:
     return end_id[-4:] if end_id else "None"
+
+
+# task_id -> training_delay_s (the per-trainer *modeled* compute, in seconds), read
+# from the static trainer registry. This is the mode-symmetric speed source for the
+# pool-composition check (A2b): real telemetry leaves PROP_ROUND_DURATION = None for
+# any candidate that hasn't *completed* a round (slow clients, most of the pool), so
+# pooling the observed speed_s samples different subsets per mode. The registry delay
+# is present for every candidate in both modes — same number, same trainer.
+_DELAY_REGISTRY_CACHE: Optional[dict] = None
+
+
+def _trainer_delay_map() -> dict:
+    """{task_id: training_delay_s} from metadata/trainer_registry.yaml (cached).
+
+    stdlib-only line scan (no yaml dep): within each trainer block ``task_id`` is
+    immediately followed by ``training_delay_s``. Returns {} if the registry can't
+    be found, in which case callers fall back to the observed speed_s.
+    """
+    global _DELAY_REGISTRY_CACHE
+    if _DELAY_REGISTRY_CACHE is not None:
+        return _DELAY_REGISTRY_CACHE
+    out: dict = {}
+    here = Path(__file__).resolve()
+    # scripts/parity/checks.py -> example root is two levels up from scripts/
+    candidates = [
+        here.parent.parent.parent / "metadata" / "trainer_registry.yaml",
+        Path.cwd() / "metadata" / "trainer_registry.yaml",
+    ]
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is not None:
+        last_task = None
+        for line in path.read_text().splitlines():
+            m = re.search(r"task_id:\s*(\S+)", line)
+            if m:
+                last_task = m.group(1).strip().strip("'\"")
+                continue
+            m = re.search(r"training_delay_s:\s*'?([\d.]+)'?", line)
+            if m and last_task is not None:
+                out[last_task] = float(m.group(1))
+                last_task = None
+    _DELAY_REGISTRY_CACHE = out
+    return out
 
 
 def jaccard(a: set, b: set) -> float:
@@ -376,22 +419,44 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     (participation, committed trainer_speed mix) downstream of it are *consequences*.
     The fix is sim-side: hold non-committed candidates out of the pool until they
     legitimately return (the in-flight-residence model, shared with oort) — NOT to bend
-    the check. Speed source is the `per_trainer` dict on each selection event.
+    the check.
+
+    Speed source (Jun-17). The pool composition is compared on each candidate's
+    **static ``training_delay_s``** (the modeled compute, from the trainer registry),
+    NOT the observed ``per_trainer.speed_s`` (= PROP_ROUND_DURATION). Real telemetry
+    leaves PROP_ROUND_DURATION = None for any candidate that has not *completed* a
+    round — at steady state ~158/300 of refl's pool — so pooling observed speed
+    samples only the fast completers in real while sim (modeled) fills nearly all,
+    comparing different SUBSETS (the Jun-16 "modeled vs wall" asymmetry). The registry
+    delay is present for every candidate in both modes, so it tests the genuine
+    eligible-set membership composition. Verified: observed-speed pool reads real 7.0
+    / sim 12.2 (KS .39) purely from the None-density skew, while the metadata pool is
+    real 12.13 / sim 12.13 (KS .000) — the eligible pool is in fact identical.
+    Observed-speed means are retained as a diagnostic. Falls back to observed speed
+    when the registry is unavailable (other examples).
     """
-    def pool_speeds(sel_events):
-        vals = []
+    delay = _trainer_delay_map()
+
+    def pool(sel_events):
+        meta, obs = [], []
         for e in sel_events:
-            for cand in (e.get("per_trainer") or {}).values():
+            for eid, cand in (e.get("per_trainer") or {}).items():
+                d = delay.get(eid)
+                if d is not None:
+                    meta.append(d)
                 sp = cand.get("speed_s")
                 if sp is not None:
-                    vals.append(sp)
-        return vals
+                    obs.append(sp)
+        return meta, obs
 
-    r = pool_speeds(real["selection_train"])
-    s = pool_speeds(sim["selection_train"])
+    r_meta, r_obs = pool(real["selection_train"])
+    s_meta, s_obs = pool(sim["selection_train"])
+    used_metadata = bool(r_meta and s_meta)
+    r = r_meta if used_metadata else r_obs
+    s = s_meta if used_metadata else s_obs
     if not r or not s:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
-                "note": "no per_trainer.speed_s in selection telemetry"}
+                "note": "no per_trainer speed/delay in selection telemetry"}
     ks = ks_stat(r, s)
     ok = not math.isnan(ks) and ks <= ks_tol
     return {
@@ -399,8 +464,11 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
         "tier": "DIST",
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
         "ks_tol": ks_tol,
+        "speed_source": "training_delay_s" if used_metadata else "observed_speed_s",
         "real_mean_pool_speed_s": round(sum(r) / len(r), 2),
         "sim_mean_pool_speed_s": round(sum(s) / len(s), 2),
+        "real_observed_pool_speed_s": round(sum(r_obs) / len(r_obs), 2) if r_obs else None,
+        "sim_observed_pool_speed_s": round(sum(s_obs) / len(s_obs), 2) if s_obs else None,
         "n_real": len(r),
         "n_sim": len(s),
     }
@@ -928,11 +996,99 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     }
 
 
-def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1) -> dict:
+def decision_determinism_parity(real: dict, sim: dict) -> dict:
+    """Sdet [DIAG]: under a shared seed, are the per-round selection DECISIONS
+    reproducible across modes — and if not, is it the inputs or the draw?
+
+    Consumes the seeding telemetry stamped on each selection event
+    (`seed`, `eligible_fingerprint`, `decision_fingerprint`, `chosen`). Matching
+    rounds by round number, it reports three fractions:
+      - eligible_match  : same candidate SET seen by the selector.
+      - decision_match  : same set AND same per-candidate utility/speed + k (the
+                          full draw input).
+      - chosen_match    : same selected set.
+    This splits a participation/selection divergence cleanly (the whole point of
+    seeding, see PARITY "Determinism / seeding"):
+      - seed present, decision_match≈1, chosen_match≈1 → seeding WORKED; any
+        residual participation/utility gap is NOT stochastic — look elsewhere.
+      - decision_match≈1 but chosen_match≪1 → identical inputs, different draw =
+        RNG desync (a selector still hitting the global np.random, or a seed not
+        threaded). Fix the selector RNG.
+      - decision_match≪1 → inputs already diverge (availability/utility/eligible
+        ordering) BEFORE the draw; seeding can't help until that's fixed — drop
+        to the eligible_match line to see if it's the SET or the values.
+    DIAG: never fails; it localizes. SKIP if fingerprints absent (unseeded/old run).
+    """
+    def by_round(events):
+        out = {}
+        for e in events:
+            r = e.get("round")
+            if r is None or e.get("decision_fingerprint") is None:
+                continue
+            out[r] = e  # last write per round wins
+        return out
+
+    r_by, s_by = by_round(real["selection_train"]), by_round(sim["selection_train"])
+    common = sorted(set(r_by) & set(s_by))
+    if not common:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no decision_fingerprint in selection telemetry "
+                        "(run unseeded or pre-instrumentation)"}
+    elig = dec = chosen = 0
+    for r in common:
+        re_, se = r_by[r], s_by[r]
+        if re_.get("eligible_fingerprint") == se.get("eligible_fingerprint"):
+            elig += 1
+        if re_.get("decision_fingerprint") == se.get("decision_fingerprint"):
+            dec += 1
+        if set(re_.get("chosen") or []) == set(se.get("chosen") or []):
+            chosen += 1
+    n = len(common)
+    real_seed = next((e.get("seed") for e in r_by.values()), None)
+    sim_seed = next((e.get("seed") for e in s_by.values()), None)
+    elig_f, dec_f, chosen_f = elig / n, dec / n, chosen / n
+    if real_seed is None or sim_seed is None:
+        verdict = "UNSEEDED — decisions are independent stochastic paths; expect low match"
+    elif dec_f > 0.98 and chosen_f > 0.98:
+        verdict = "seeding WORKED — decisions reproducible; residual gaps are NOT stochastic"
+    elif dec_f > 0.98:
+        verdict = "RNG DESYNC — identical inputs, different draw (selector not using seeded RNG)"
+    else:
+        verdict = "INPUT DIVERGENCE — candidate set/utilities differ before the draw (fix upstream)"
+    return {
+        "ok": True,
+        "tier": "DIAG",
+        "real_seed": real_seed,
+        "sim_seed": sim_seed,
+        "n_rounds_compared": n,
+        "eligible_match_frac": round(elig_f, 3),
+        "decision_match_frac": round(dec_f, 3),
+        "chosen_match_frac": round(chosen_f, 3),
+        "verdict": verdict,
+    }
+
+
+def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
+                         max_mean_overhead_s: float = 0.5) -> dict:
     """P3: trainer_speed_s distributions match (control: proves speed model is identical).
 
     If this PASSES while K2/K3/K4 FAIL, the divergence is isolated to the
     sim clock advance model, not the trainer time model.
+
+    Modeled-grid comparison (Jun-17). The per-trainer compute budget
+    (``training_delay_s``) is integer-valued metadata, so sim — which has exact
+    control of the virtual clock — reports speeds on that exact integer grid.
+    Real *measures* the same compute as wall time, so every value carries a
+    small (~0.04-0.08 s) un-modeled capture jitter (sleep + the post-compute
+    settle leg, §3m) on top of the integer budget. The virtual clock excludes
+    that wall-capture jitter by design (§3c/§5c), so enforcing a raw sub-second
+    KS penalizes sim for *not* reproducing real's measurement noise — the same
+    apples-to-oranges error §5c fixed for ``phase_mqtt_fetch``. We therefore
+    enforce the KS at the modeled integer-second grid and keep the raw KS as a
+    diagnostic. Guard: ``mean_overhead_s`` (real_mean - sim_mean) must stay
+    sub-grid — a *systematic* overhead ≥ 0.5 s would shift the rounded values to
+    the next integer and the grid KS would catch it, so the relaxation cannot
+    mask a real speed-model offset.
     """
     def all_speeds(agg_rounds):
         vals = []
@@ -945,15 +1101,22 @@ def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1) -> dict:
     if not real_speeds or not sim_speeds:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no trainer_speed_s in telemetry"}
-    ks = ks_stat(real_speeds, sim_speeds)
+    raw_ks = ks_stat(real_speeds, sim_speeds)
+    grid_ks = ks_stat([round(v) for v in real_speeds],
+                      [round(v) for v in sim_speeds])
     real_mean, _ = mean_std(real_speeds)
     sim_mean, _ = mean_std(sim_speeds)
-    ok = not math.isnan(ks) and ks <= ks_tol
+    mean_overhead = real_mean - sim_mean
+    ok = (not math.isnan(grid_ks) and grid_ks <= ks_tol
+          and abs(mean_overhead) <= max_mean_overhead_s)
     return {
         "ok": ok,
         "tier": "DIST",
-        "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
+        "ks_stat": round(grid_ks, 3) if not math.isnan(grid_ks) else None,
         "ks_tol": ks_tol,
+        "raw_ks_stat": round(raw_ks, 3) if not math.isnan(raw_ks) else None,
+        "mean_overhead_s": round(mean_overhead, 3),
+        "max_mean_overhead_s": max_mean_overhead_s,
         "real_mean_speed_s": round(real_mean, 2),
         "sim_mean_speed_s": round(sim_mean, 2),
         "real_max_speed_s": round(max(real_speeds), 2),
@@ -1954,6 +2117,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
     results["preferred_duration"] = preferred_duration_parity(real_agg, sim_agg)
     results["participation"] = participation_parity(real_agg, sim_agg)
+    results["decision_determinism"] = decision_determinism_parity(real_agg, sim_agg)
     results["selection"] = selection_parity(real_agg, sim_agg, max_rounds)
 
     # ── Stage 4 Dispatch & training ──
@@ -2028,6 +2192,7 @@ CHECK_META: dict = {
     "selector_score":          {"stage": 3, "role": "DIAG",     "deps": ("eligible_speed",)},
     "preferred_duration":      {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},
     "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail", "eligible_speed", "selection_bias")},
+    "decision_determinism":    {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
     "selection":               {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
     # ── Stage 4 Dispatch & training ──
     "training_budget":         {"stage": 4, "role": "CONTROL",  "deps": ()},

@@ -385,7 +385,7 @@ class OortSelector(AbstractSelector):
         for prob_idx in range(len(over_cutoff_utility_probs)):
             over_cutoff_utility_probs[prob_idx] /= over_cutoff_utility_sum
 
-        selected_ends = np.random.choice(
+        selected_ends = self._rng.choice(
             over_cutoff_utility_end_ids,
             size=min(len(over_cutoff_utility_end_ids), num_of_ends),
             replace=False,
@@ -406,7 +406,7 @@ class OortSelector(AbstractSelector):
         # Cast np.str_ -> str so ids match the python-str keys of ``ends``.
         return [
             str(e)
-            for e in np.random.choice(
+            for e in self._rng.choice(
                 unexplored_end_ids, size=num_of_ends, replace=False
             )
         ]
@@ -590,7 +590,7 @@ class OortSelector(AbstractSelector):
 
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
-        newly_selected = set(random.sample(list(ends), num_of_ends))
+        newly_selected = set(self._pyrng.sample(sorted(ends), num_of_ends))
         self.selected_ends = self.selected_ends | newly_selected
         return {key: None for key in newly_selected}
 

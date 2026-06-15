@@ -17,8 +17,15 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Union
+import hashlib
 import logging
 import time
+# Import the RNG classes directly (NOT `import random`): the package has a
+# sibling submodule `flame/selector/random.py`, and once it is imported it
+# shadows a module-level `random` name in this package's namespace, so
+# `random.Random` would resolve to the submodule and break. See PARITY seeding.
+from random import Random as _StdRandom
+from numpy.random import RandomState as _NpRandomState
 
 from .. import telemetry
 from ..common.typing import Scalar
@@ -35,14 +42,42 @@ SelectorReturnType = dict[str, Union[None, Tuple[str, Scalar]]]
 logger = logging.getLogger(__name__)
 
 
+def _round_or_none(v, ndigits: int = 4):
+    """Round for the decision fingerprint; pass through None / non-numerics."""
+    try:
+        return round(float(v), ndigits)
+    except (TypeError, ValueError):
+        return None
+
+
 class AbstractSelector(ABC):
     """Abstract base class for selector implementation."""
 
     def __init__(self, **kwargs) -> None:
+        # Reserved kwarg (not a tunable): the deterministic RNG seed threaded from
+        # config.hyperparameters.seed by the channel manager. Consumed here, not
+        # setattr'd as a hyperparameter.
+        _seed = kwargs.pop("_seed", None)
         for key, value in kwargs.items():
             setattr(self, key, value)
         self.selected_ends: set = set()
         self.ordered_updates_recv_ends: list = []
+        # Dedicated per-selector RNGs. Seeding these (rather than the process-global
+        # np.random/random) makes selection reproducible across runs and between
+        # real/sim modes while INSULATING the draw sequence from any other np.random
+        # consumer in the process — so a residual real-vs-sim divergence under a
+        # shared seed is a genuine decision-INPUT divergence (candidate set / utility
+        # ordering), not spurious RNG desync. seed=None preserves legacy unseeded
+        # behaviour. Selectors MUST draw from self._rng / self._pyrng, never the
+        # bare np.random / random module, for this guarantee to hold.
+        self._seed = _seed
+        self._rng = _NpRandomState(_seed)
+        self._pyrng = _StdRandom(_seed)
+        if _seed is not None:
+            logger.info(
+                f"[SELECTOR_SEED] {type(self).__name__} dedicated RNGs seeded "
+                f"with seed={_seed}"
+            )
 
     def enforce_min_start(self, ends_count: int) -> bool:
         """Return True if selection should wait due to min-start threshold."""
@@ -135,6 +170,32 @@ class AbstractSelector(ABC):
                 in_flight = len(sel)
             else:
                 in_flight = 0
+
+            # Determinism telemetry (PARITY "seeding"): fingerprint the decision
+            # INPUTS so a real/sim divergence can be localized without guessing.
+            #  - eligible_fingerprint: the candidate SET the selector chose from.
+            #  - decision_fingerprint: that set PLUS each candidate's utility/speed
+            #    (rounded) and the chosen count — everything the draw consumed.
+            # Reading these across modes splits the two failure modes: identical
+            # fingerprints but different `chosen` ⇒ RNG desync (seed/order bug);
+            # different fingerprints ⇒ a genuine upstream input divergence
+            # (availability / utility) to fix before selection can match.
+            elig = sorted(set(eligible_ids))
+            elig_fp = hashlib.sha1(
+                "|".join(elig).encode()
+            ).hexdigest()[:12]
+            dec_payload = ";".join(
+                f"{e}:{_round_or_none(per_trainer.get(e, {}).get('utility'))}"
+                f":{_round_or_none(per_trainer.get(e, {}).get('speed_s'))}"
+                for e in elig
+            ) + f"#k={len(chosen_set)}"
+            dec_fp = hashlib.sha1(dec_payload.encode()).hexdigest()[:12]
+            extra = dict(extra or {})
+            extra.update({
+                "seed": self._seed,
+                "eligible_fingerprint": elig_fp,
+                "decision_fingerprint": dec_fp,
+            })
 
             ev, fields = build_selection(
                 round_num=int(round_num),

@@ -362,8 +362,10 @@ class REFLOortSelector(OortSelector):
                 utility_list.append({PROP_END_ID: end_id, PROP_UTILITY: stat_util})
 
         if not utility_list:
-            # No utility info, select randomly
-            return random.sample(list(candidate_end_ids), num_to_select)
+            # No utility info, select randomly. sorted() canonicalizes the set→list
+            # order (else PYTHONHASHSEED varies it per process) so a seeded draw is
+            # reproducible across real/sim.
+            return self._pyrng.sample(sorted(candidate_end_ids), num_to_select)
 
         # Calculate total utility with temporal uncertainty and system utility
         utility_list = self.calculate_total_utility(
@@ -396,7 +398,7 @@ class REFLOortSelector(OortSelector):
             k = min(num_exploit, len(ids))
             if scores.sum() > 0:
                 exploit_clients = list(
-                    np.random.choice(ids, k, replace=False, p=scores / scores.sum())
+                    self._rng.choice(ids, k, replace=False, p=scores / scores.sum())
                 )
             else:
                 exploit_clients = ids[:k]
@@ -407,16 +409,16 @@ class REFLOortSelector(OortSelector):
             for item in utility_list
             if item[PROP_END_ID] not in set(exploit_clients)
         ]
-        explore_clients = random.sample(
+        explore_clients = self._pyrng.sample(
             remaining_candidates, min(num_explore, len(remaining_candidates))
         )
 
         selected = [str(c) for c in exploit_clients] + explore_clients
 
-        # Pad with random if needed
+        # Pad with random if needed (sorted() for cross-process-stable order)
         while len(selected) < num_to_select and len(candidate_end_ids) > len(selected):
             remaining = candidate_end_ids - set(selected)
-            selected.append(random.choice(list(remaining)))
+            selected.append(self._pyrng.choice(sorted(remaining)))
 
         return selected[:num_to_select]
 

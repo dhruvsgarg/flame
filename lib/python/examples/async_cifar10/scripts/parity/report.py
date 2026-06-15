@@ -57,6 +57,7 @@ _SECTIONS = [
         ("Sx   selector score-term localize",   "selector_score"),
         ("Sd   preferred-duration penalty bind","preferred_duration"),
         ("S2   participation frequency",        "participation"),
+        ("Sdet decision determinism (seed)",    "decision_determinism"),
         ("S1   per-round Jaccard",              "selection"),
     ]),
     ("4", "Dispatch & Training", [
@@ -178,11 +179,24 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         share_KS(full)={res.get('share_ks')}  avg_diff={res.get('avg_diff')}  "
             f"max_diff={res.get('max_diff')} (diag)",
         ]
+    elif name == "decision_determinism":
+        if res.get("status") != "SKIP":
+            lines += [
+                f"         seed real={res.get('real_seed')} sim={res.get('sim_seed')}  "
+                f"over n_rounds={res.get('n_rounds_compared')}",
+                f"         eligible_match={res.get('eligible_match_frac')}  "
+                f"decision_match={res.get('decision_match_frac')}  "
+                f"chosen_match={res.get('chosen_match_frac')}",
+                f"         -> {res.get('verdict')}",
+            ]
     elif name == "trainer_speed":
         if res.get("n_real"):
             lines += [
-                f"         KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
-                f"real_mean={res.get('real_mean_speed_s')}s "
+                f"         grid_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
+                f"raw_KS={res.get('raw_ks_stat')}  "
+                f"mean_overhead={res.get('mean_overhead_s')}s "
+                f"(<={res.get('max_mean_overhead_s')})",
+                f"         real_mean={res.get('real_mean_speed_s')}s "
                 f"sim_mean={res.get('sim_mean_speed_s')}s  "
                 f"real_max={res.get('real_max_speed_s')}s "
                 f"sim_max={res.get('sim_max_speed_s')}s",
@@ -315,7 +329,10 @@ def _fmt_metric(name: str, res: dict) -> list:
     elif name == "eligible_speed":
         lines += [
             f"         pool_speed_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
+            f"[{res.get('speed_source')}]  "
             f"real_mean={res.get('real_mean_pool_speed_s')}s sim_mean={res.get('sim_mean_pool_speed_s')}s",
+            f"         observed (diag): real={res.get('real_observed_pool_speed_s')}s "
+            f"sim={res.get('sim_observed_pool_speed_s')}s",
         ]
     elif name == "selection_bias":
         if res.get("status") == "SKIP":

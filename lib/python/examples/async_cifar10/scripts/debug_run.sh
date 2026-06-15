@@ -108,13 +108,16 @@ case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (
 # [$7 = mode: sim|real|both]
 make_debug_yaml() {
   python - "$SCR" "$1" "$2" "$3" "$4" "${5:-0}" "${6:-}" "${7:-both}" <<'PY'
-import yaml, sys, copy
+import yaml, sys, copy, os
 scr, node, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6] == "1",
     sys.argv[7] if len(sys.argv) > 7 else ""
 )
 mode = (sys.argv[8] if len(sys.argv) > 8 else "both").lower()
 requested = set(baselines_str.lower().split())
+# Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
+_seed_env = os.environ.get("SEED", "1234").strip()
+seed_val = None if _seed_env.lower() in ("none", "") else int(_seed_env)
 
 
 def exp_mode(e):
@@ -150,6 +153,13 @@ for e in d["experiments"]:
     e = copy.deepcopy(e)
     h = e["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = runtime_s
+    # Deterministic seed: the SAME value for every experiment so the real and sim
+    # variants of each baseline make identical selection draws (dedicated per-
+    # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are
+    # two independent stochastic paths and participation/utility can never match.
+    # Override per-invocation with SEED=<n>; SEED=none disables (legacy unseeded).
+    if seed_val is not None:
+        h["seed"] = seed_val
     # sim_wall_ceiling_s: tight wall guard — sim must finish in <= this many
     # wall-seconds (default = max_runtime_s = 1×; a healthy sim is faster).
     h["sim_wall_ceiling_s"] = int(ceil_arg) if ceil_arg else runtime_s

@@ -152,10 +152,19 @@ class ChannelManager(object):
             self._config.group_association.get(name)
         )
 
+        # Thread the deterministic seed (if any) into every selector so its
+        # dedicated RNG is reproducible across runs/modes — a prerequisite for the
+        # parity checks. Passed as a reserved kwarg the base Selector consumes.
+        _seed = getattr(self._config.hyperparameters, "seed", None)
         selector = selector_provider.get(
-            self._config.selector.sort, **self._config.selector.kwargs
+            self._config.selector.sort,
+            _seed=_seed,
+            **self._config.selector.kwargs,
         )
-        logger.info(f"Selector created for channel {name}, selector: {selector}")
+        logger.info(
+            f"Selector created for channel {name}, selector: {selector} "
+            f"(seed={_seed})"
+        )
 
         if name in self._backends:
             backend = self._backends[name]

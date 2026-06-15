@@ -162,6 +162,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     round_nudge_type: t.Optional[str] = Field(
         alias="roundNudgeType", default="last_train"
     )
+    # Deterministic RNG seed for selection (and torch model init). When set, the
+    # aggregator seeds the global np.random/random/torch RNGs (syncfl internal_init)
+    # AND every selector gets a dedicated RNG seeded with this value (insulated from
+    # other np.random consumers), so selection decisions are reproducible across runs
+    # and between real/sim modes — a prerequisite for the parity checks to compare
+    # like-with-like rather than two independent stochastic paths. None = legacy
+    # unseeded behaviour. See PARITY.md "Determinism / seeding".
+    seed: t.Optional[int] = Field(alias="seed", default=None)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
     #       mechanism in the control plane. This needs to be revisited
