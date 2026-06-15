@@ -28,7 +28,39 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
-### Status: **Jun 17b — DETERMINISM/SEEDING landed across all selectors (dedicated per-selector RNG + decision-fingerprint telemetry + Sdet check). refl P3+A2b checker fixes in. UNRUN — next: SEEDED 2 h pairs. Tests 271 + 23 green.**
+### Status: **Jun 17c — OORT fidelity-pass run analyzed. D1 sort + system_util FIXES VALIDATED ✓. Root found = in-flight RESIDENCE/carry-over (`Sr`; sim drains stragglers, real carries ~3.3) — ALSO explains the "low believed-utility" question. FIX IMPLEMENTED (`simInflightCarryover` §4.9, gated, guarded) + enabled for the next oort run, which is SEEDED. Tests 146 pass / 7 skip.**
+
+> ### ⏸ SESSION HANDOFF (Jun 17c, mid-task — resume here)
+> **Uncommitted working tree on `dg/fix_sim_fidelity`. Everything below is DONE + tested EXCEPT the last item (believed-vs-actual PLOT), which is code-complete but UNVALIDATED.** Run `pytest examples/async_cifar10/scripts/parity/ tests/mode/ tests/selector/test_oort_selector.py tests/sim/` under the `dg_flame` conda env — last green at **146 pass / 7 skip** (before the plot-telemetry edits; re-run to confirm those didn't regress — they only ADD an emit guarded by `telemetry.is_enabled()`).
+>
+> **DONE this session (all tested unless noted):**
+> 1. **§4.9 carry-over FIX** — `sim_inflight_carryover` (config.py) + gated logic in `oort/top_aggregator.py::_oort_sim_recv` (hold prior-round stragglers with `sct>vclock_round_start`, re-buffer). Default off; ENABLED for oort sim in `expt_scripts_2026/...OVERNIGHT_node1.yaml`. Guard: `tests/mode/test_sync_sim_ordering.py::TestSimInflightCarryover` (3 tests, drive the real generator).
+> 2. **`Sr` residence rung** — `inflight_residence_parity` in `scripts/parity/checks.py` (loader collects `inflight_residence`; CHECK_META stage3 dep eligibility) + report.py formatter + `test_ladder.py::test_residence_detects_straggler_drain`.
+> 3. **A2c metadata-pool fix** — `selection_speed_bias_parity` now uses `training_delay_s` metadata (mirrors A2b) + report.py shows source + observed diag. Inverted the false reading: pools 12.13/12.13, **real selects SLOWER (13.13s) than sim (9.11s)**, bias real +1.0 / sim −3.02.
+> 4. **believed-vs-actual TELEMETRY** — new `EVENT_UTILITY_BELIEF`/`build_utility_belief` (telemetry/events.py); emitted at the stat-utility return-overwrite in `oort/`, `asyncfl/`, `syncfl/` top_aggregators (believed = PROP_STAT_UTILITY before overwrite; actual = incoming MessageType.STAT_UTILITY; staleness; time_mode). Covers oort/refl + felix + feddance/fedavg. Imports verified.
+>
+> **⚠️ NEXT STEP — VALIDATE THE PLOT (the only unfinished item).** Added a plot block in `scripts/analysis/analyze_run.py` (after the oracle `utility_discrepancy_over_rounds`, ~line 753): reads `utility_belief` events → `selected_utility_believed_vs_actual_cdf.pdf` (cdf_multi believed vs actual), `selected_utility_belief_gap_cdf.pdf`, `selected_utility_believed_vs_actual.pdf` (scatter), `selected_utility_belief_gap_over_rounds.pdf`. **NOT yet run** (user paused before validation). To validate: syntax-check, then synthesize a telemetry dir with a few `utility_belief` rows (believed = actual + drift) + an `agg_eval` row and run `python scripts/analysis/analyze_run.py <synth>/telemetry` (under `dg_flame`), confirm the 4 PDFs render. The existing oort run `070705` predates the telemetry so has no `utility_belief` events (block skips gracefully — also confirm analyze_run still runs clean on it). EVENT_UTILITY_BELIEF added to analyze_run.py's import + fallback.
+>
+> **Then:** commit + push (user asked). Proposed msg already drafted in chat. Remaining open (NOT this session): the believed-vs-actual analysis is the felix-eval-vs-stale-baselines research claim — plot RAW utility (the live `utility_belief`, NOT normalized `believed_I`); restrict to exploit picks; hold tracking_mode constant (no oracle UTILITY injection). `util_disparity` (trainer event) is streamed-vs-full-DATA utility, a DIFFERENT axis — don't conflate. Oracle replay (`oracle_utility.py`/`oracle_misselection.py`) stays the separate counterfactual path.
+>
+> **The next oort run** (after commit/push): SEEDED (`debug_run.sh` injects seed) + §4.9 carry-over ON. Watch: `Sr` PASS (sim in_flight_after 0.15→~3.3), `S3/4` in_flight→~16, committed_fresh→~10, null-utility frac→real, A2c re-judged, the new believed-vs-actual plots. refl/felix unchanged, ready.
+
+> **The run.** oort sim `run_20260615_070705` / real `run_20260615_072824` (`parity_oort_070705.json`) — the **first exercise of the Jun-16b base-algorithm fidelity pass** (D1 unsorted-`pref` sort, D2 reward normalization/clip, Oort-paper defaults round_threshold=10 / cut_off_util=0.7 / clip_bound=0.98, cutoff-index fix). Launched 07:07 off commit `6ae2bcc5`, so it is **UNSEEDED** (predates the Jun-17b per-selector RNG) → read the mix-dependent gaps with the seeding caveat below.
+>
+> **GOOD — the fidelity fixes landed and VALIDATED on oort (the Jun-15 root cause is dead):**
+> - **D1 unsorted-`pref` bug FIXED.** `Sd` preferred-duration binding now real **.507 / sim .498** (diff .009) — was the **.346** gap (real 80 % / sim 46 %) that flagged the bug. Reconstructed `pref` median r/s = **7.05 / 7.0** (was sim 22 vs true sorted 7).
+> - **`system_util` (the Jun-15 root) RESOLVED.** `Sx` system_util KS **.035** (sim .973 / real .982), down from **.132**. The under-penalization that made sim pick ~pool-average is gone.
+> - **A2b pool** KS **0.0** (metadata, 12.13/12.13); **clock family green** — K3a/K3b/K4 PASS, K3 advance 12.88/11.85 (KS .178, rel **.08**), K2 throughput rel **.081** (just over the 5 % bar); **C1 accuracy** PASS (.039).
+>
+> **BAD — new lowest rung = in-flight RESIDENCE / carry-over (`Sr`, GENUINE, structural):** real **carries 3.32** stragglers in-flight/round (overcommit 1.3 → ~3 over agg_goal 10); sim **drains to 0.15**. carried_over **3956 vs 166** (24×); residence_rounds **.204 vs .011**; committed_fresh real **10.0** vs sim **7.56**. This is **invariant to the selection mix** (sim's instant physical arrival + immediate cleanup frees a straggler a round early) → it under-counts sim concurrency (`S3/4` in_flight **13.15 vs 16.32**, rel .194) and lets slow trainers re-enter the pool early. **NOT the §4.5 `sim_inflight_residence` mechanism** — that holds still-computing trainers out of the *pool* (composition, already matched at 12.13); it does not make sim *carry* them in-flight, and is the wrong lever. **Landed this session:** `Sr` `inflight_residence_parity` (Stage 3, MECHANISM/DIST, dep `eligibility`) promotes the existing `inflight_residence` telemetry to a first-class root-cause rung; SKIPs on the async stack (felix/feddance, no event) and when neither mode overcommits; guard `test_residence_detects_straggler_drain`.
+>
+> **Believed-utility audit (is `believed_I` tracked correctly? — YES; the "low" values are 2 non-bugs).** Concern was that `Sx` believed_I is low (real .541 / sim .445) and many selected trainers show null utility. Resolved by decomposing the per_trainer audit against the emitted `explore_ids`/`exploit_ids`: (1) the **low scale is by design** — `believed_I` is the **D2-normalized** reward (`oort_normalize_reward`, clipped to ~[0,1], ref Oort `get_norm`); the **RAW** stat-utility is healthy and NOT low — P50/P90/P99 = **40/80/164** (sim), **55/98/158** (real), the expected Oort magnitude, populated from training loss every round. (2) **Every EXPLOIT pick has a non-null utility (0 null in both modes)** — believed utility IS tracked for all utility-scored selections. The nulls are **EXPLORE picks** (unexplored clients, no utility yet — correct) + **CARRIED-OVER in-flight** trainers (already computing, not re-scored this round). The null-fraction gap (real **37 %** vs sim **23 %**) is **entirely the residence bug**: explore fractions actually MATCH (sim 23.5 % / real 18.9 %), but carry-over is **sim 1.2 % vs real 20.4 %** of selected slots → real's 20 % carry-over shows as null-utility "selected" rows; sim drains them. So the believed-utility question is a *fourth* symptom of the SAME residence root (with `S3/4`, `Sr`, throughput), not a separate defect. The residual raw-utility magnitude gap (sim P50 40 vs real 55, over exploit picks) is unseeded path drift — re-judge seeded.
+>
+> **A2c checker fix (metadata pool, mirrors A2b).** `selection_bias` computed its pool/selected speeds from observed `speed_s`, which real leaves `None` for non-completers → observed pool sampled only fast completers (real 8.17 vs metadata 12.13) and the bias FALSELY read sim as picking much faster (real −0.48 / sim −3.22). Switched to the static `training_delay_s` metadata (fallback observed). The corrected read INVERTS the story and clarifies the disparity: pools identical (12.13/12.13), but **real selects SLOWER trainers (13.13 s) than sim (9.11 s)** — bias real **+1.0** / sim **−3.02**. This is coherent with the rest: real's exploit utilities are higher (raw P50 55 vs 40) → higher Oort stat-utility = higher loss = the slower/under-trained trainers, and those slow picks are exactly the carried in-flight stragglers (residence), so the observed-*committed* speed skews fast (7.69) while the *selected* pool is slow. KS .244 still FAILs (genuine selected-mix divergence), but it is now an honest selector signal, not an observability artifact — re-judge seeded.
+>
+> **CONFOUNDED by the UNSEEDED path — DEFER judgement to the seeded run (the Jun-17b lesson):** `A2c` bias (real −0.48 / sim −3.22, but the pools it uses are the **observed**-pool asymmetry, real 8.17 / sim 12.14 — same artifact A2b fixes via metadata; the *metadata* pool would show real picks faster), `believed_I` (`Sx` KS .18, real .541 / sim .445), `P3` trainer_speed (grid_KS .14, mean_overhead **.757 > .5**, sim tail max 34 vs 21.67), `T2` training_budget (real 13.12 / sim 9.11). These are commit-weighted **selection-mix** quantities → path drift on independent RNG paths; `P3` tail and `T2` are also **downstream of the residence drain** (sim rejects slow stragglers → its committed speed/budget skews low). `S2` participation already PASSES (matched-count-KS .165).
+>
+> **Plan — next oort run = SEEDED + carry-over fix ON (the two are orthogonal, proven below).** (1) **Seed it** — `debug_run.sh` injects `seed` (no edit); turns the mix-quantities into genuine signal. (2) **Carry-over fix `simInflightCarryover` (§4.9), IMPLEMENTED + enabled for oort sim** — the believed-utility decomposition PROVED residence is **mix-independent** (explore fractions match 23.5/18.9 %; the gap is purely carry-over 1.2 vs 20.4 %), so the fix and seeding touch **orthogonal** things → safe to ship together (this overturns the earlier "don't stack" caution, which assumed they might interact). refl/felix unchanged, ready for their seeded run.
 
 > **Determinism / seeding (this session, the crux of "are we comparing like with like?").** The Jun-17 refl/felix runs were **unseeded** — selection uses `np.random.choice` (utility-weighted exploit) + `random.sample/randrange` (exploration), and no `seed` was set, so real and sim took **independent stochastic paths**. Two REAL runs would have diverged from each other by the same envelope as real-vs-sim → the residual participation (.554) / `believed_I` (felix .522) gaps are NOT sim bugs, they're path drift. **Proof it's not telemetry:** speed-CLASS selection rates already match (refl fast .344/.345 …); only per-individual identity drifts; the stochastic null (same-mode even/odd) is .04–.08 but that null shares utility state so it understates the true cross-independent-run floor.
 >
@@ -752,6 +784,36 @@ rule out:** the `mean_I`/`prev_round_mean_I` normalization buffer accumulates ov
 count* at matched time (sim 513 vs real 464) — check it doesn't horizon-bias the I ranking. If clean,
 the feddance fix is a **checker reclassification (P3/K3 → DIST for stochastic selectors)**, not a sim
 change, and feddance needs **no re-run**.
+
+### §4.9  oort — `sct`-gated carry-over (IMPLEMENTED)  [FIX]  (Jun 17c)
+**Root (proven 4 ways from the fidelity-pass run):** the sync-oort aggregator over-selects
+(aggr_num × 1.3) and closes a round at agg_goal=10 commits, leaving the ~3 slowest **still computing**.
+In real they stay in `selected_ends` (in-flight, busy) across rounds until they actually finish →
+`in_flight_after` **3.32**. In sim the trainer's update arrives **physically at once**, so the recv
+generator pops it, **stale-rejects** it (its `MODEL_VERSION` is a prior round), and frees its slot →
+sim drains to **0.15** (carried_over 166 vs **3956**, residence_rounds .011 vs .204). One structural gap,
+four symptoms: `S3/4` in_flight 13.15 vs 16.32 · `Sr` carry-over · `committed_fresh` 7.56 vs 10 ·
+the **null-utility** selection rows (real 37 % vs sim 23 % — explore fractions MATCH at 23.5/18.9 %, so
+the gap is *entirely* the 1.2 vs 20.4 % carry-over; see the believed-utility audit in the Jun-17c block).
+
+**Distinct from §4.5.** §4.5 (`simInflightResidence`) gates pool **re-entry** (keeps a still-computing
+trainer out of the eligible pool) — it does NOT make sim *carry* the straggler in-flight, and is the
+wrong lever here (oort's pool already matches at 12.13). §4.9 gates the **cleanup/commit**.
+
+**Change (config-gated `simInflightCarryover`, default off; sim oort/refl stack):** in
+`oort/top_aggregator._oort_sim_recv`, capture `vclock_round_start`; when popping the reorder buffer, a
+**prior-round** straggler (`self._round − MODEL_VERSION > 0`) whose `sct > vclock_round_start` is **still
+computing** — hold it (don't advance the clock to it, don't yield it), re-buffer it after the pass so it
+stays in `_sim_buffer` and thus in `selected_ends` (carried in-flight), and let it commit in a later round
+once `vclock_round_start ≥ sct`. Fresh (this-round) ends always deliver; a prior straggler that already
+completed (`sct ≤ round_start`) delivers and stale-commits exactly as before. Bounded: released within a
+few rounds as the clock climbs (budget ≤ ~56 s). Files: `config.py` (`sim_inflight_carryover`),
+`oort/top_aggregator.py`; **enabled for the oort sim block of `OVERNIGHT_node1.yaml`**. **Guard:**
+`tests/mode/test_sync_sim_ordering.py::TestSimInflightCarryover` (3 tests drive the REAL generator off a
+pre-loaded buffer: still-computing straggler held + clock not over-advanced; off-by-default drains
+identically; released once the clock passes its sct). **Target this run:** sim `in_flight_after`
+0.15→~3.3, `Sr` PASS, `S3/4` in_flight → ~16, committed_fresh → ~10, null-utility fraction → ~real, and
+the downstream `P3` tail / `T2` skew (sim was rejecting the slow stragglers) close.
 
 ### Sequencing
 1. **felix:** no change, no re-run.

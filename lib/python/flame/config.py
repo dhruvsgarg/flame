@@ -212,6 +212,17 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_inflight_residence: t.Optional[bool] = Field(
         alias="simInflightResidence", default=False
     )
+    # Sim sync-stack: a prior-round straggler whose modeled completion sct is still in
+    # the future at this round's start (sct > vclock_round_start) is STILL COMPUTING —
+    # in real its update has not arrived yet. Sim delivers it physically at once, so the
+    # naive aggregator pops it, stale-rejects it, and frees its slot → in-flight DRAINS
+    # to ~0 while real CARRIES ~3 (overcommit). When on, keep such stragglers buffered +
+    # in selected_ends (carried in-flight) until vclock >= sct. Distinct from
+    # sim_inflight_residence (which gates pool RE-ENTRY, not the carry/cleanup). Off by
+    # default. PARITY §4.9 (oort residence/carry-over).
+    sim_inflight_carryover: t.Optional[bool] = Field(
+        alias="simInflightCarryover", default=False
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False

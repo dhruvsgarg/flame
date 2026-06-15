@@ -53,6 +53,7 @@ _SECTIONS = [
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
+        ("Sr   in-flight residence / carry-over","residence"),
         ("A2c  selected-vs-pool speed bias",    "selection_bias"),
         ("Sx   selector score-term localize",   "selector_score"),
         ("Sd   preferred-duration penalty bind","preferred_duration"),
@@ -291,6 +292,20 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         effective_c: real={res.get('real_mean_effective_c')}  "
             f"sim={res.get('sim_mean_effective_c')}  (diagnostic only)",
         ]
+    elif name == "residence":
+        if res.get("status") == "SKIP":
+            lines.append(f"         note: {res.get('note')}")
+        else:
+            lines += [
+                f"         in_flight_after (carried): real={res.get('real_inflight_after')} "
+                f"sim={res.get('sim_inflight_after')}  rel_diff={res.get('rel_diff_carry')} "
+                f"(<={res.get('tol_rel')})",
+                f"         committed_fresh: real={res.get('real_committed_fresh')} "
+                f"sim={res.get('sim_committed_fresh')}  | stale_rejected: "
+                f"real={res.get('real_stale_rejected')} sim={res.get('sim_stale_rejected')}",
+                f"         residence_rounds: real={res.get('real_residence_rounds')} "
+                f"sim={res.get('sim_residence_rounds')}  ({res.get('note')})",
+            ]
     elif name == "trainer_phase":
         per_phase = res.get("per_phase", {})
         for phase, info in per_phase.items():
@@ -340,10 +355,14 @@ def _fmt_metric(name: str, res: dict) -> list:
         else:
             lines += [
                 f"         selected_speed_KS={res.get('ks_stat')} (<={res.get('ks_tol')})  "
+                f"[{res.get('speed_source')}]  "
                 f"selected r/s={res.get('real_selected_mean_s')}/{res.get('sim_selected_mean_s')}s  "
                 f"pool r/s={res.get('real_pool_mean_s')}/{res.get('sim_pool_mean_s')}s",
                 f"         bias(selected-pool) real={res.get('real_bias_s')}s sim={res.get('sim_bias_s')}s "
                 f"-> pool-match+bias-diverge=selector; pool-diverge(A2b)=composition",
+                f"         observed (diag): selected r/s={res.get('real_observed_selected_s')}/"
+                f"{res.get('sim_observed_selected_s')}s pool r/s={res.get('real_observed_pool_s')}/"
+                f"{res.get('sim_observed_pool_s')}s",
             ]
     elif name == "selector_score":
         if res.get("status") == "SKIP":

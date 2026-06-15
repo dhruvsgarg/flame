@@ -43,7 +43,11 @@ from flame.selector.properties import PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
-from flame.telemetry.events import build_agg_round, build_inflight_residence
+from flame.telemetry.events import (
+    build_agg_round,
+    build_inflight_residence,
+    build_utility_belief,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +107,30 @@ class TopAggregator(BaseTopAggregator):
                 f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
             )
 
+        # Carry-over gate (PARITY §4.9): a prior-round straggler whose modeled
+        # completion sct is still in the future at THIS round's start is STILL
+        # COMPUTING — in real its update has not arrived, so it occupies its slot
+        # (in-flight) rather than being delivered and stale-cleaned. Sim delivers it
+        # physically at once; without the gate it is popped, stale-rejected, and freed
+        # → in-flight drains to ~0 while real carries ~3 (overcommit). When on, hold
+        # such stragglers in the buffer (and thus in selected_ends) until a later round
+        # starts with vclock >= sct. Fresh (this-round) ends are always delivered; a
+        # prior straggler that has already completed (sct <= round_start) is delivered
+        # and stale-committed exactly as before. Default off.
+        _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        carryover = bool(getattr(_hp, "sim_inflight_carryover", False))
+        vclock_round_start = self._vclock.now
+        held_over: list = []
         while True:
             popped = buf.pop_min()
             if popped is None:
-                return
+                break
             end, sct, (msg, md) = popped
+            if carryover:
+                _tr = msg.get(MessageType.MODEL_VERSION, 0)
+                if (self._round - _tr) > 0 and sct > vclock_round_start:
+                    held_over.append((end, sct, (msg, md)))
+                    continue
             self._advance_sim_clock(sct)
             _srd = msg.get(MessageType.SIM_ROUND_DURATION)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
@@ -121,6 +144,10 @@ class TopAggregator(BaseTopAggregator):
                     timedelta(seconds=max(0.0, sct - float(_sst))),
                 )
             yield msg, md
+        # Re-buffer the still-computing stragglers so they carry to the next round
+        # (occupying their in-flight slot) and commit once vclock reaches their sct.
+        for _e, _sct, _payload in held_over:
+            buf.add(_e, _sct, _payload)
 
     def _aggregate_weights(self, tag: str) -> None:
         """
@@ -807,6 +834,22 @@ class TopAggregator(BaseTopAggregator):
             count = msg[MessageType.DATASET_SIZE]
 
         if MessageType.STAT_UTILITY in msg:
+            # Believed-vs-actual utility telemetry: the PROP_STAT_UTILITY held NOW
+            # (before this return overwrites it) is what the selector BELIEVED at
+            # selection (stale by `staleness` rounds); the incoming value is the
+            # ACTUAL fresh utility. Emit before overwriting. (PARITY believed-vs-actual)
+            if telemetry.is_enabled():
+                _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
+                _mv = msg.get(MessageType.MODEL_VERSION)
+                ev, f = build_utility_belief(
+                    round_num=self._round,
+                    end_id=end,
+                    believed=float(_believed) if _believed is not None else None,
+                    actual=float(msg[MessageType.STAT_UTILITY]),
+                    staleness=(self._round - _mv) if _mv is not None else None,
+                    time_mode="sim" if self.simulated else "real",
+                )
+                telemetry.emit(ev, **f)
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )

@@ -139,6 +139,7 @@ def load_agg_jsonl(path: str) -> dict:
     selection_train: list = []
     agg_rounds: list = []
     agg_evals: list = []
+    residence: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -152,13 +153,17 @@ def load_agg_jsonl(path: str) -> dict:
                 agg_rounds.append(e)
             elif ev == "agg_eval":
                 agg_evals.append(e)
+            elif ev == "inflight_residence":
+                residence.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     agg_evals.sort(key=lambda x: x["round"])
+    residence.sort(key=lambda x: (x["round"], x["ts"]))
     return {
         "selection_train": selection_train,
         "agg_rounds": agg_rounds,
         "agg_evals": agg_evals,
+        "residence": residence,
     }
 
 
@@ -212,7 +217,8 @@ def load_run_dir(run_dir: str) -> tuple:
     if len(agg_files) == 1:
         agg_data = load_agg_jsonl(agg_files[0])
     else:
-        merged: dict = {"selection_train": [], "agg_rounds": [], "agg_evals": []}
+        merged: dict = {"selection_train": [], "agg_rounds": [],
+                        "agg_evals": [], "residence": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -221,6 +227,7 @@ def load_run_dir(run_dir: str) -> tuple:
         merged["agg_rounds"].sort(
             key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
         merged["agg_evals"].sort(key=lambda x: x["round"])
+        merged["residence"].sort(key=lambda x: (x["round"], x["ts"]))
         agg_data = merged
     trainer_data = load_trainer_jsonl_dir(telemetry_dir)
     return agg_data, trainer_data
@@ -484,26 +491,45 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> 
         clients early so slow ones re-enter the pool; selected may still match).
       - pool matches but selected diverges   -> SELECTOR-SCORING/path bias (oort: from
         a like pool real exploits utility -> picks fast, sim picks ~pool-average).
-    KS is over the SELECTED-candidate `speed_s`; per-mode `bias = mean(selected) -
-    mean(pool)` is reported as the selector's revealed speed preference.
+    `bias = mean(selected) - mean(pool)` (per mode) is the selector's revealed speed
+    preference. Like A2b, the pool/selected speeds are taken from the **static
+    `training_delay_s` metadata** (the modeled compute) rather than observed `speed_s`:
+    real leaves `speed_s = None` for non-completers, so an observed pool samples only
+    the fast completers (real pool 8.17 vs metadata 12.13) and an observed bias falsely
+    reads sim as picking much faster relative to its pool (−0.48 vs −3.22). On the
+    metadata basis both pools are identical, so the bias isolates the genuine
+    selected-speed preference. KS is over the SELECTED-candidate speeds (metadata).
+    Observed means retained as a diagnostic; falls back to observed when the registry
+    is unavailable.
     """
-    def split(events):
-        sel, pool = [], []
-        for e in events:
-            for c in (e.get("per_trainer") or {}).values():
-                sp = c.get("speed_s")
-                if sp is None:
-                    continue
-                pool.append(sp)
-                if c.get("selected"):
-                    sel.append(sp)
-        return sel, pool
+    delay = _trainer_delay_map()
 
-    r_sel, r_pool = split(real["selection_train"])
-    s_sel, s_pool = split(sim["selection_train"])
+    def split(events):
+        sel, pool, sel_obs, pool_obs = [], [], [], []
+        for e in events:
+            for eid, c in (e.get("per_trainer") or {}).items():
+                d = delay.get(eid)
+                sp = c.get("speed_s")
+                chosen = c.get("selected")
+                if d is not None:
+                    pool.append(d)
+                    if chosen:
+                        sel.append(d)
+                if sp is not None:
+                    pool_obs.append(sp)
+                    if chosen:
+                        sel_obs.append(sp)
+        return sel, pool, sel_obs, pool_obs
+
+    r_sel, r_pool, r_sel_obs, r_pool_obs = split(real["selection_train"])
+    s_sel, s_pool, s_sel_obs, s_pool_obs = split(sim["selection_train"])
+    used_metadata = bool(r_sel and s_sel)
+    if not used_metadata:
+        # fall back to observed speed_s (no registry / other examples)
+        r_sel, r_pool, s_sel, s_pool = r_sel_obs, r_pool_obs, s_sel_obs, s_pool_obs
     if not (r_sel and s_sel):
         return {"ok": True, "tier": "DIST", "status": "SKIP",
-                "note": "no selected per_trainer.speed_s in selection telemetry"}
+                "note": "no selected per_trainer speed/delay in selection telemetry"}
     ks = ks_stat(r_sel, s_sel)
     ok = not math.isnan(ks) and ks <= ks_tol
 
@@ -513,10 +539,13 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> 
     return {
         "ok": ok, "tier": "DIST",
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None, "ks_tol": ks_tol,
+        "speed_source": "training_delay_s" if used_metadata else "observed_speed_s",
         "real_selected_mean_s": _m(r_sel), "sim_selected_mean_s": _m(s_sel),
         "real_pool_mean_s": _m(r_pool), "sim_pool_mean_s": _m(s_pool),
         "real_bias_s": round(_m(r_sel) - _m(r_pool), 2),
         "sim_bias_s": round(_m(s_sel) - _m(s_pool), 2),
+        "real_observed_selected_s": _m(r_sel_obs), "sim_observed_selected_s": _m(s_sel_obs),
+        "real_observed_pool_s": _m(r_pool_obs), "sim_observed_pool_s": _m(s_pool_obs),
         "n_real": len(r_sel), "n_sim": len(s_sel),
     }
 
@@ -758,6 +787,87 @@ def selection_detail_parity(real: dict, sim: dict,
         "sim_mean_effective_c": round(s_ec_m, 2) if not math.isnan(s_ec_m) else None,
         "tol_chosen": tol_chosen,
         "tol_inflight": tol_inflight,
+    }
+
+
+def inflight_residence_parity(real: dict, sim: dict,
+                              tol_rel: float = 0.3,
+                              floor: float = 0.5) -> dict:
+    """Sr [DIST]: straggler carry-over (in-flight residence) parity across modes.
+
+    On the sync oort stack (oort + refl) the aggregator over-selects
+    (aggr_num*overcommitment) and closes a round at agg_goal commits, leaving the
+    slowest ~(selected-agg_goal) trainers still computing — they CARRY OVER into
+    the next round as in-flight (`in_flight_after`).  In real these stragglers
+    occupy a slot until they actually finish; in sim their update arrives
+    physically at once, so a naive aggregator cleans them up immediately and the
+    in-flight set DRAINS to ~0.  That structural drain (not stochastic path drift —
+    it is invariant to the selection mix) under-counts sim concurrency (S3/4),
+    under-commits fresh updates, and lets slow trainers re-enter the pool a round
+    early, skewing committed speed/budget (P3/T2).
+
+    Grades the mean `in_flight_after` (carried stragglers) across modes; reports
+    residence_rounds, committed_fresh, stale_rejected as diagnostics.  SKIPs when
+    the stack emits no `inflight_residence` telemetry (async felix / feddance) or
+    when neither mode carries anything (no overcommit → nothing to carry, trivially
+    matched).  This is the §4.5-class carry-over rung, distinct from the pool-
+    exclusion `sim_inflight_residence` mechanism (which keeps still-computing
+    trainers out of the *pool* but does not make sim *carry* them in-flight).
+    """
+    r_ev = real.get("residence", [])
+    s_ev = sim.get("residence", [])
+    if not r_ev or not s_ev:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no inflight_residence telemetry (async stack or "
+                        "pre-instrumentation)"}
+
+    def mean(xs):
+        return sum(xs) / len(xs) if xs else 0.0
+
+    def field(evs, key):
+        return [e[key] for e in evs if e.get(key) is not None]
+
+    def flat(evs, key):
+        out = []
+        for e in evs:
+            v = e.get(key)
+            if isinstance(v, list):
+                out.extend(v)
+        return out
+
+    r_carry = mean(field(r_ev, "in_flight_after"))
+    s_carry = mean(field(s_ev, "in_flight_after"))
+    r_fresh = mean(field(r_ev, "committed_fresh"))
+    s_fresh = mean(field(s_ev, "committed_fresh"))
+    r_stale = mean(field(r_ev, "stale_rejected"))
+    s_stale = mean(field(s_ev, "stale_rejected"))
+    r_res = mean(flat(r_ev, "residence_rounds"))
+    s_res = mean(flat(s_ev, "residence_rounds"))
+
+    if max(r_carry, s_carry) < floor:
+        ok = True
+        rel = 0.0
+        note = ("no overcommit carry-over in either mode "
+                f"(real={r_carry:.2f} sim={s_carry:.2f} < {floor}) — trivially matched")
+    else:
+        rel = abs(r_carry - s_carry) / max(r_carry, s_carry)
+        ok = rel <= tol_rel
+        note = ("sim drains stragglers vs real carry-over"
+                if not ok else "carry-over matched")
+    return {
+        "ok": ok,
+        "tier": "DIST",
+        "rel_diff_carry": round(rel, 3),
+        "tol_rel": tol_rel,
+        "real_inflight_after": round(r_carry, 2),
+        "sim_inflight_after": round(s_carry, 2),
+        "real_committed_fresh": round(r_fresh, 2),
+        "sim_committed_fresh": round(s_fresh, 2),
+        "real_stale_rejected": round(r_stale, 2),
+        "sim_stale_rejected": round(s_stale, 2),
+        "real_residence_rounds": round(r_res, 3),
+        "sim_residence_rounds": round(s_res, 3),
+        "note": note,
     }
 
 
@@ -2139,6 +2249,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
+    results["residence"] = inflight_residence_parity(real_agg, sim_agg)
     results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
     results["preferred_duration"] = preferred_duration_parity(real_agg, sim_agg)
@@ -2215,6 +2326,7 @@ CHECK_META: dict = {
     "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     # ── Stage 3 Selection ──
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
+    "residence":               {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
     "selection_bias":          {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},
     "selector_score":          {"stage": 3, "role": "DIAG",     "deps": ("eligible_speed",)},
     "preferred_duration":      {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},

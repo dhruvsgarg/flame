@@ -24,6 +24,7 @@ EVENT_AVAIL_CHANGE = "avail_change"  # trainer availability state transition
 EVENT_TASK_RECV = "task_recv"        # trainer received a task from aggregator
 EVENT_TASK_SEND = "task_send"        # trainer finished & sent the update back
 EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain accounting (oort sync)
+EVENT_UTILITY_BELIEF = "utility_belief"  # believed (at selection) vs actual (at return) client utility
 
 KNOWN_EVENTS = frozenset(
     {
@@ -37,6 +38,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_TASK_RECV,
         EVENT_TASK_SEND,
         EVENT_INFLIGHT_RESIDENCE,
+        EVENT_UTILITY_BELIEF,
     }
 )
 
@@ -314,3 +316,37 @@ def build_inflight_residence(
         if v is not None:
             fields[k] = v
     return EVENT_INFLIGHT_RESIDENCE, fields
+
+
+def build_utility_belief(
+    *,
+    round_num: int,
+    end_id: str,
+    believed: Optional[float],
+    actual: Optional[float],
+    staleness: Optional[int] = None,
+    time_mode: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Believed-vs-actual client statistical utility, per returning trainer.
+
+    ``believed`` = the utility the selector held for this client when it was selected
+    (``PROP_STAT_UTILITY`` *before* this return overwrites it — the value from the
+    client's previous return, i.e. STALE by ``staleness`` rounds). ``actual`` = the
+    fresh Oort statistical utility the client computed this round and reports on return
+    (``MessageType.STAT_UTILITY``). Both are the SAME quantity (Oort stat-utility), so
+    ``believed − actual`` is the pure staleness error in the selector's belief — the
+    quantity the "believed vs actual utility" plot needs. Emitted for EVERY baseline
+    (every client reports stat-utility on return, even non-utility selectors), so the
+    plot compares felix/eval-refreshed beliefs against the stale-utility baselines.
+    ``believed`` is None on a client's first-ever return (no prior belief)."""
+    fields: dict[str, Any] = {
+        "round": round_num,
+        "end_id": end_id,
+        "believed": believed,
+        "actual": actual,
+    }
+    if staleness is not None:
+        fields["staleness"] = staleness
+    if time_mode is not None:
+        fields["time_mode"] = time_mode
+    return EVENT_UTILITY_BELIEF, fields

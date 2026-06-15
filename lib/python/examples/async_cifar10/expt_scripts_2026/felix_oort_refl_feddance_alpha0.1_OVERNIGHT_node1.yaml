@@ -169,6 +169,11 @@ experiments:
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
         aggGoal: 10
+        # PARITY §4.9: carry still-computing (sct>vclock) overcommit stragglers
+        # in-flight across rounds instead of draining them at instant physical
+        # arrival, so sim in_flight (~3 carry) matches real. Sim-only; validated
+        # by this run (Sr residence rung). See PARITY.md Jun-17c.
+        simInflightCarryover: true
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50

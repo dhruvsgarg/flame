@@ -39,7 +39,7 @@ from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
-from flame.telemetry.events import build_agg_round
+from flame.telemetry.events import build_agg_round, build_utility_belief
 from flame.sim import SimReorderBuffer
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 from flame.selector.oort import (
@@ -817,6 +817,21 @@ class TopAggregator(SyncTopAgg):
 
         stat_utility = 0  # default
         if MessageType.STAT_UTILITY in msg:
+            # Believed (PROP_STAT_UTILITY before overwrite) vs actual (incoming)
+            # client utility — the staleness of the selector's belief. (PARITY
+            # believed-vs-actual; emitted for every baseline.)
+            if telemetry.is_enabled():
+                _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
+                _mv = msg.get(MessageType.MODEL_VERSION)
+                ev, f = build_utility_belief(
+                    round_num=self._round,
+                    end_id=end,
+                    believed=float(_believed) if _believed is not None else None,
+                    actual=float(msg[MessageType.STAT_UTILITY]),
+                    staleness=(self._round - _mv) if _mv is not None else None,
+                    time_mode="sim" if self.simulated else "real",
+                )
+                telemetry.emit(ev, **f)
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )

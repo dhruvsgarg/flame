@@ -55,7 +55,11 @@ from flame.selector.properties import (
     PROP_STAT_UTILITY,
 )
 from flame import telemetry
-from flame.telemetry.events import build_agg_eval, build_agg_round
+from flame.telemetry.events import (
+    build_agg_eval,
+    build_agg_round,
+    build_utility_belief,
+)
 from flame.sim import VirtualClock, SimReorderBuffer
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 
@@ -538,6 +542,21 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
             stat_utility = 0
             if MessageType.STAT_UTILITY in msg:
+                # Believed (PROP_STAT_UTILITY before overwrite) vs actual (incoming)
+                # client utility — selector-belief staleness. (PARITY
+                # believed-vs-actual; emitted for every baseline.)
+                if telemetry.is_enabled():
+                    _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
+                    _mv = msg.get(MessageType.MODEL_VERSION)
+                    ev, f = build_utility_belief(
+                        round_num=self._round,
+                        end_id=end,
+                        believed=float(_believed) if _believed is not None else None,
+                        actual=float(msg[MessageType.STAT_UTILITY]),
+                        staleness=(self._round - _mv) if _mv is not None else None,
+                        time_mode="sim" if self.simulated else "real",
+                    )
+                    telemetry.emit(ev, **f)
                 channel.set_end_property(
                     end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
                 )

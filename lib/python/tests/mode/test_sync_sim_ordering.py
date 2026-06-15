@@ -183,3 +183,86 @@ class TestSimInflightResidence:
         buf.add("a", 2.0)
         held, merged = self._unavail(buf, base_unavail=["x"], vclock_now=10.0)
         assert held == set() and merged == ["x"]  # untouched
+
+
+class TestSimInflightCarryover:
+    """PARITY §4.9: the sim oort/refl aggregator must CARRY a prior-round straggler
+    that is still computing at this round's start (modeled sct > vclock_round_start)
+    rather than deliver its physically-instant update and stale-clean it. Without the
+    carry-over gate, sim in-flight drains to ~0 while real holds ~3 (overcommit). This
+    drives the REAL ``OortTopAggregator._oort_sim_recv`` generator off a pre-loaded
+    buffer to prove the gate holds the still-computing straggler and delivers the
+    fresh + already-completed ends in ascending sct, advancing the clock only to the
+    delivered ones."""
+
+    def _make_oort_agg(self, carryover, round_num, vclock_start):
+        from flame.mode.horizontal.oort.top_aggregator import (
+            TopAggregator as OortTopAggregator,
+        )
+        from flame.sim import SimReorderBuffer
+
+        class _ConcreteOortAgg(OortTopAggregator):
+            check_and_sleep = evaluate = initialize = load_data = train = (
+                lambda self: None
+            )
+
+        class _HP:
+            def __init__(self, c):
+                self.sim_inflight_carryover = c
+
+        class _Cfg:
+            def __init__(self, c):
+                self.hyperparameters = _HP(c)
+
+        agg = _ConcreteOortAgg.__new__(_ConcreteOortAgg)
+        agg._vclock = VirtualClock()
+        agg._vclock.advance(vclock_start)
+        agg.simulated = True
+        agg._round = round_num
+        agg.config = _Cfg(carryover)
+        agg._sim_buffer = SimReorderBuffer()
+        return agg
+
+    def _load(self, agg, items):
+        # items: list of (end, sct, model_version)
+        for end, sct, mv in items:
+            msg = {MessageType.WEIGHTS: f"w_{end}",
+                   MessageType.SIM_COMPLETION_TS: sct,
+                   MessageType.SIM_ROUND_DURATION: sct,
+                   MessageType.MODEL_VERSION: mv}
+            agg._sim_buffer.add(end, sct, (msg, (end, None)))
+
+    def _drive(self, agg):
+        # buffer pre-loaded; pass the same ends so to_probe is empty (no recv_fifo)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        ends = list(agg._sim_buffer.pending_ends())
+        return [md[0] for _msg, md in agg._oort_sim_recv(ch, ends)]
+
+    # round 2 starting at vclock 5: "done" already completed (sct 4), "fresh" is this
+    # round (sct 8), "slow" is a prior-round straggler still computing (sct 30).
+    ITEMS = [("done", 4.0, 1), ("fresh", 8.0, 2), ("slow", 30.0, 1)]
+
+    def test_carryover_holds_still_computing_straggler(self):
+        agg = self._make_oort_agg(carryover=True, round_num=2, vclock_start=5.0)
+        self._load(agg, self.ITEMS)
+        committed = self._drive(agg)
+        assert committed == ["done", "fresh"]            # ascending sct, slow held
+        assert agg._vclock.now == 8.0                    # clock not advanced to 30
+        assert agg._sim_buffer.has("slow")               # carried in-flight
+        assert not agg._sim_buffer.has("fresh")          # delivered, left buffer
+
+    def test_off_by_default_drains_straggler(self):
+        agg = self._make_oort_agg(carryover=False, round_num=2, vclock_start=5.0)
+        self._load(agg, self.ITEMS)
+        committed = self._drive(agg)
+        assert committed == ["done", "fresh", "slow"]    # all delivered (drained)
+        assert agg._vclock.now == 30.0
+        assert not agg._sim_buffer.has("slow")
+
+    def test_carryover_releases_once_clock_passes_sct(self):
+        # A later round starts past the straggler's sct -> it is delivered, not held.
+        agg = self._make_oort_agg(carryover=True, round_num=4, vclock_start=35.0)
+        self._load(agg, [("slow", 30.0, 1)])
+        committed = self._drive(agg)
+        assert committed == ["slow"]                     # released & committed (stale)
+        assert not agg._sim_buffer.has("slow")

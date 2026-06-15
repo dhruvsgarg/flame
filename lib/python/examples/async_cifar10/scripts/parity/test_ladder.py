@@ -281,6 +281,40 @@ def test_preferred_duration_detects_binding_frequency_gap():
     assert res2["ok"], res2
 
 
+def _residence_events(carry, fresh=10, stale=6, res_rounds=0.2, n=100):
+    """n rounds of inflight_residence telemetry with a given mean carry-over."""
+    return {"residence": [
+        {"event": "inflight_residence", "round": r, "ts": float(r),
+         "in_flight_after": carry, "committed_fresh": fresh,
+         "stale_rejected": stale,
+         "residence_rounds": [1] * int(round(res_rounds * 10)) + [0] * (10 - int(round(res_rounds * 10)))}
+        for r in range(n)]}
+
+
+def test_residence_detects_straggler_drain():
+    """Sr: the oort sync stack over-selects, so real CARRIES ~3 stragglers in-flight
+    each round while a naive sim cleans up the instantly-arrived updates and DRAINS
+    to ~0. This structural carry-over gap (invariant to selection mix) is the §4.5-
+    class root the residence rung makes first-class."""
+    from parity.checks import inflight_residence_parity
+    real = _residence_events(carry=3.3)
+    sim = _residence_events(carry=0.15)
+    res = inflight_residence_parity(real, sim)
+    assert not res["ok"], res                          # drain-vs-carry flagged
+    assert res["real_inflight_after"] > 3.0
+    assert res["sim_inflight_after"] < 0.5
+    assert res["rel_diff_carry"] > 0.3
+    # matched carry-over passes
+    res2 = inflight_residence_parity(_residence_events(3.2), _residence_events(3.3))
+    assert res2["ok"], res2
+    # no-overcommit (nothing to carry in either mode) is trivially matched, not a fail
+    res3 = inflight_residence_parity(_residence_events(0.05), _residence_events(0.0))
+    assert res3["ok"], res3
+    # async stack / no residence telemetry → clean SKIP, never a spurious failure
+    res4 = inflight_residence_parity({"residence": []}, {"residence": []})
+    assert res4["ok"] and res4.get("status") == "SKIP", res4
+
+
 def test_convergence_low_confidence_on_short_runs():
     """A convergence PASS under a sub-2h budget is downgraded to LOW_CONF (the
     curves haven't diverged yet); a genuine FAIL still surfaces regardless of

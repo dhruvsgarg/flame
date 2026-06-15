@@ -50,6 +50,7 @@ try:
         EVENT_SELECTION,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
+        EVENT_UTILITY_BELIEF,
     )
 except Exception:  # pragma: no cover
     EVENT_SELECTION = "selection"
@@ -58,6 +59,7 @@ except Exception:  # pragma: no cover
     EVENT_TRAINER_ROUND = "trainer_round"
     EVENT_UTIL_DISPARITY = "util_disparity"
     EVENT_AVAIL_CHANGE = "avail_change"
+    EVENT_UTILITY_BELIEF = "utility_belief"
 
 
 # Communication is reported in MEGABYTES. One model = MODEL_PARAM_COUNT fp32
@@ -750,6 +752,52 @@ def sanity_plots(records, out, stamp, tdir):
                          "normalized utility discrepancy",
                          "Utility staleness magnitude over rounds", d,
                          "utility_discrepancy_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # Believed-vs-actual client utility from LIVE telemetry (utility_belief event),
+    # available for EVERY baseline: believed = what the selector held at selection
+    # (PROP_STAT_UTILITY, stale); actual = the fresh stat-utility the client reports
+    # on return. The gap is the selector's belief staleness — small for an eval-
+    # refreshed selector (felix), larger for stale-utility baselines (oort/refl/
+    # feddance). This is the live counterpart to the oracle plot above; for the
+    # oracle replay see oracle_utility.py / oracle_misselection.py.
+    ub = by_event(records, EVENT_UTILITY_BELIEF)
+    lb, la, lgap, lrounds = [], [], [], []
+    for r in ub:
+        b, a = r.get("believed"), r.get("actual")
+        if b is None or a is None:
+            continue
+        try:
+            b = float(b); a = float(a)
+        except (TypeError, ValueError):
+            continue
+        lb.append(b); la.append(a); lgap.append(abs(b - a))
+        lrounds.append((int(r.get("round", 0)), abs(b - a)))
+    if lb:
+        p = ph.cdf_multi({"believed (at selection)": lb, "actual (at return)": la},
+                         "client statistical utility",
+                         "Selected utility: believed vs actual (live)", d,
+                         "selected_utility_believed_vs_actual_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        p = ph.cdf_plot(lgap, "|believed - actual| utility (belief staleness error)",
+                        "Selector belief staleness CDF", d,
+                        "selected_utility_belief_gap_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        p = ph.scatter_diag(lb, la, "believed utility (at selection)",
+                            "actual utility (at return)",
+                            "Client utility: believed vs actual (live)", d,
+                            "selected_utility_believed_vs_actual.pdf", stamp=stamp)
+        if p: saved.append(p)
+        # mean gap binned over rounds (does belief staleness grow over the run?)
+        gap_by_round = {}
+        for rd, g in lrounds:
+            gap_by_round.setdefault(rd, []).append(g)
+        gx = sorted(gap_by_round)
+        gy = [sum(gap_by_round[r]) / len(gap_by_round[r]) for r in gx]
+        p = ph.line_plot({"mean |believed - actual|": (gx, gy)}, "round",
+                         "belief staleness error (utility)",
+                         "Belief staleness over the run (live)", d,
+                         "selected_utility_belief_gap_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
 
     # stale-update rejections (new telemetry; skip if absent)

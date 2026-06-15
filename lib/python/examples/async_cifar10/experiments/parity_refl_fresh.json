@@ -1,0 +1,567 @@
+{
+  "field_coverage": {
+    "ok": true,
+    "tier": "INV",
+    "matrix": {
+      "agg_round.vclock_now": {
+        "real": 0.0,
+        "sim": 1.0,
+        "expect": "sim"
+      },
+      "agg_round.trainer_speed_s": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "agg_round.staleness": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "agg_round.stat_utility": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "agg_round.contributing_trainers": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "selection.num_eligible": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "selection.avail_composition": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "selection.num_chosen": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "trainer_round.gpu_compute_s": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "trainer_round.training_budget_s": {
+        "real": 1.0,
+        "sim": 1.0,
+        "expect": "both"
+      },
+      "task_recv.sim_send_ts": {
+        "real": 0.0,
+        "sim": 1.0,
+        "expect": "sim"
+      }
+    },
+    "violations": []
+  },
+  "vclock_telemetry": {
+    "ok": true,
+    "tier": "INV",
+    "n_total_events": 10025,
+    "n_with_vclock": 10025,
+    "frac_with_vclock": 1.0
+  },
+  "sim_commit_monotone": {
+    "ok": true,
+    "tier": "INV",
+    "n_stamped": 10025,
+    "monotone": true
+  },
+  "sim_rate": {
+    "ok": true,
+    "tier": "INV",
+    "sim_rate": 1.4214,
+    "final_vclock_s": 14401.9,
+    "wall_elapsed_s": 10132.0,
+    "range": [
+      0.01,
+      100.0
+    ]
+  },
+  "trainer_speed": {
+    "ok": true,
+    "tier": "DIST",
+    "ks_stat": 0.021,
+    "ks_tol": 0.1,
+    "raw_ks_stat": 0.194,
+    "mean_overhead_s": 0.111,
+    "max_mean_overhead_s": 0.5,
+    "real_mean_speed_s": 4.96,
+    "sim_mean_speed_s": 4.85,
+    "real_max_speed_s": 31.09,
+    "sim_max_speed_s": 31.0,
+    "n_real": 98690,
+    "n_sim": 100250
+  },
+  "modeled_compute_advance": {
+    "ok": true,
+    "tier": "DIAG",
+    "sim_mean_advance_s": 1.44,
+    "sim_mean_max_speed_s": 7.66,
+    "sim_implied_overhead_s": -6.22,
+    "real_mean_advance_s": 1.43,
+    "real_mean_max_speed_s": 7.88,
+    "real_implied_overhead_s": -6.45
+  },
+  "overhead_residual": {
+    "ok": true,
+    "tier": "EXACT",
+    "real_mean_advance_s": 1.43,
+    "sim_mean_advance_s": 1.44,
+    "residual_s": -0.01,
+    "rel": 0.006,
+    "tol_rel": 0.1,
+    "implied_per_commit_overhead_s": -0.001,
+    "agg_goal": 10
+  },
+  "overlap_factor": {
+    "ok": true,
+    "tier": "DIAG",
+    "sim_overlap_factor": 5.333,
+    "real_overlap_factor": 5.517,
+    "abs_diff": 0.184,
+    "tol": 0.3,
+    "sim_mean_speed_s": 7.66,
+    "real_mean_speed_s": 7.88,
+    "sim_mean_advance_s": 1.44,
+    "real_mean_advance_s": 1.43,
+    "interpretation": "sim: 7.7s speed / 1.4s advance = 5.33x overlap; real: 7.9s speed / 1.4s advance = 5.52x overlap. 1.0 = no inter-round overlap; higher = more async pipelining."
+  },
+  "per_round_advance": {
+    "ok": true,
+    "tier": "EXACT",
+    "sim_mean_advance_s": 1.44,
+    "real_mean_advance_s": 1.43,
+    "mean_rel_diff": 0.006,
+    "ks_stat": 0.119,
+    "ks_tol": 0.2,
+    "mean_tol_rel": 0.15,
+    "n_sim_rounds": 10024,
+    "n_real_rounds": 9868
+  },
+  "throughput": {
+    "ok": true,
+    "tier": "EXACT",
+    "sim_rounds": 10025,
+    "real_rounds": 9869,
+    "final_vclock_s": 14401.9,
+    "real_wall_elapsed_s": 14085.5,
+    "sim_s_per_round": 1.44,
+    "real_s_per_round": 1.43,
+    "rel_diff": 0.007,
+    "tol": 0.05
+  },
+  "avail_composition": {
+    "ok": true,
+    "tier": "DIST",
+    "rounds_real": 9869,
+    "rounds_sim": 10025,
+    "per_state": {
+      "UNKNOWN": {
+        "real_mean": 300.0,
+        "sim_mean": 300.0,
+        "rel_diff": 0.0
+      }
+    },
+    "violations": [],
+    "tol_rel": 0.2
+  },
+  "eligibility": {
+    "ok": true,
+    "tier": "DIST",
+    "ks_eligible": 0.443,
+    "ks_candidates": 0.004,
+    "real_mean_eligible": 244.4,
+    "sim_mean_eligible": 246.6,
+    "warn_ks": 0.2,
+    "note": "point-mass distribution: KS uninformative (zero-variance side), means match within 2% \u2014 passed on mean"
+  },
+  "eligible_speed": {
+    "ok": true,
+    "tier": "DIST",
+    "ks_stat": 0.0,
+    "ks_tol": 0.2,
+    "speed_source": "training_delay_s",
+    "real_mean_pool_speed_s": 12.13,
+    "sim_mean_pool_speed_s": 12.13,
+    "real_observed_pool_speed_s": 7.02,
+    "sim_observed_pool_speed_s": 12.18,
+    "n_real": 2960690,
+    "n_sim": 3007255
+  },
+  "avail_timebase": {
+    "ok": true,
+    "tier": "DIST",
+    "max_rel_diff": 0.01,
+    "per_bin_rel_diff": [
+      0.006,
+      0.009,
+      0.01,
+      0.009,
+      0.009,
+      0.009,
+      0.008,
+      0.008,
+      0.009,
+      0.009
+    ],
+    "tol_rel": 0.2
+  },
+  "duty_cycle": {
+    "ok": true,
+    "tier": "DIST",
+    "status": "SKIP",
+    "note": "avail_change telemetry not available; A4 inactive"
+  },
+  "selection_detail": {
+    "ok": true,
+    "tier": "DIST",
+    "real_mean_chosen": 13.0,
+    "sim_mean_chosen": 13.0,
+    "rel_diff_chosen": 0.0,
+    "real_mean_inflight": 68.57,
+    "sim_mean_inflight": 66.41,
+    "rel_diff_inflight": 0.031,
+    "real_mean_effective_c": null,
+    "sim_mean_effective_c": null,
+    "tol_chosen": 0.05,
+    "tol_inflight": 0.15
+  },
+  "selection_bias": {
+    "ok": true,
+    "tier": "DIST",
+    "ks_stat": 0.148,
+    "ks_tol": 0.2,
+    "real_selected_mean_s": 6.68,
+    "sim_selected_mean_s": 6.45,
+    "real_pool_mean_s": 7.02,
+    "sim_pool_mean_s": 12.18,
+    "real_bias_s": -0.34,
+    "sim_bias_s": -5.73,
+    "n_real": 127763,
+    "n_sim": 130047
+  },
+  "selector_score": {
+    "ok": true,
+    "tier": "DIAG",
+    "worst_component": "system_util",
+    "worst_ks": 0.042,
+    "ks_tol": 0.2,
+    "per_component": {
+      "believed_I": {
+        "ks": 0.023,
+        "real_mean": 0.195,
+        "sim_mean": 0.196
+      },
+      "temporal": {
+        "ks": 0.033,
+        "real_mean": 0.058,
+        "sim_mean": 0.05
+      },
+      "system_util": {
+        "ks": 0.042,
+        "real_mean": 1.0,
+        "sim_mean": 0.978
+      }
+    }
+  },
+  "preferred_duration": {
+    "ok": false,
+    "tier": "DIST",
+    "real_frac_binding": 0.0,
+    "sim_frac_binding": 0.435,
+    "frac_diff": 0.435,
+    "frac_tol": 0.2,
+    "real_pref_median_s": null,
+    "sim_pref_median_s": 13.0,
+    "n_rounds_real": 9868,
+    "n_rounds_sim": 10024
+  },
+  "participation": {
+    "ok": false,
+    "tier": "DIST",
+    "matched_count_ks": 0.554,
+    "ks_tol": 0.2,
+    "n_rounds_matched": 9869,
+    "share_ks": 0.554,
+    "avg_diff": 108.87,
+    "max_diff": 903
+  },
+  "selection": {
+    "ok": true,
+    "tier": "DIST",
+    "gated": true,
+    "selector": "REFLOortSelector",
+    "rounds_compared": 9869,
+    "mean_jaccard": 0.053,
+    "exact_match_frac": 0.0
+  },
+  "training_budget": {
+    "ok": true,
+    "tier": "DIST",
+    "ks_stat": 0.031,
+    "ks_tol": 0.1,
+    "real_mean_s": 6.64,
+    "sim_mean_s": 6.46,
+    "n_real": 128297,
+    "n_sim": 130325
+  },
+  "phase_pre_train": {
+    "ok": true,
+    "tier": "DIST",
+    "phase": "pre_train_s",
+    "ks_stat": 0.021,
+    "ks_tol": 0.25,
+    "real_mean_s": 0.0,
+    "sim_mean_s": 0.0
+  },
+  "phase_gpu_compute": {
+    "ok": true,
+    "tier": "DIST",
+    "phase": "gpu_compute_s",
+    "ks_stat": 0.015,
+    "ks_tol": 0.25,
+    "real_mean_s": 0.231,
+    "sim_mean_s": 0.233
+  },
+  "phase_mqtt_fetch": {
+    "ok": false,
+    "tier": "DIAG",
+    "phase": "mqtt_fetch_s",
+    "ks_stat": 0.269,
+    "ks_tol": 0.25,
+    "real_mean_s": 10.949,
+    "sim_mean_s": 11.449,
+    "note": "wall-time network I/O; sim uses in-mem cache, excluded from the virtual clock (diagnostic only)"
+  },
+  "phase_weights_to_gpu": {
+    "ok": true,
+    "tier": "DIST",
+    "phase": "weights_to_gpu_s",
+    "ks_stat": 0.028,
+    "ks_tol": 0.25,
+    "real_mean_s": 0.0,
+    "sim_mean_s": 0.0
+  },
+  "phase_weights_to_ram": {
+    "ok": true,
+    "tier": "DIST",
+    "phase": "weights_to_ram_s",
+    "ks_stat": 0.05,
+    "ks_tol": 0.25,
+    "real_mean_s": 0.0,
+    "sim_mean_s": 0.0
+  },
+  "phase_post_train": {
+    "ok": true,
+    "tier": "DIST",
+    "phase": "post_train_s",
+    "ks_stat": 0.031,
+    "ks_tol": 0.25,
+    "real_mean_s": 0.001,
+    "sim_mean_s": 0.001
+  },
+  "trainer_phase": {
+    "ok": true,
+    "tier": "DIAG",
+    "per_phase": {
+      "pre_train_s": {
+        "real_mean_s": 0.0,
+        "sim_mean_s": 0.0,
+        "ks": 0.021
+      },
+      "gpu_compute_s": {
+        "real_mean_s": 0.231,
+        "sim_mean_s": 0.233,
+        "ks": 0.015
+      },
+      "mqtt_fetch_s": {
+        "real_mean_s": 10.949,
+        "sim_mean_s": 11.449,
+        "ks": 0.269
+      },
+      "weights_to_gpu_s": {
+        "real_mean_s": 0.0,
+        "sim_mean_s": 0.0,
+        "ks": 0.028
+      },
+      "weights_to_ram_s": {
+        "real_mean_s": 0.0,
+        "sim_mean_s": 0.0,
+        "ks": 0.05
+      },
+      "post_train_s": {
+        "real_mean_s": 0.001,
+        "sim_mean_s": 0.001,
+        "ks": 0.031
+      }
+    }
+  },
+  "gpu_budget_real": {
+    "ok": true,
+    "tier": "INV",
+    "mean_overrun_frac": 0.0,
+    "trainers_with_any_overrun": 0
+  },
+  "gpu_budget_sim": {
+    "ok": true,
+    "tier": "INV",
+    "mean_overrun_frac": 0.0,
+    "trainers_with_any_overrun": 0
+  },
+  "sim_send_ts": {
+    "ok": true,
+    "tier": "INV",
+    "issues": []
+  },
+  "inter_arrival_order": {
+    "ok": false,
+    "tier": "DIST",
+    "mean_spearman_rho": -0.441,
+    "n_rounds": 9869,
+    "min_rho": 0.7
+  },
+  "agg_goal_cycles_real": {
+    "ok": true,
+    "tier": "EXACT",
+    "rounds_over_goal": []
+  },
+  "agg_goal_cycles_sim": {
+    "ok": true,
+    "tier": "EXACT",
+    "rounds_over_goal": []
+  },
+  "staleness": {
+    "ok": true,
+    "tier": "DIST",
+    "real_mean": 3.002,
+    "sim_mean": 2.946,
+    "ks_stat": 0.024,
+    "all_nonnegative": true
+  },
+  "aggregation_sequence": {
+    "ok": true,
+    "tier": "DIST",
+    "gated": true,
+    "selector": "REFLOortSelector",
+    "rounds_compared": 9869,
+    "exact_set_match_frac": 0.0
+  },
+  "utility": {
+    "ok": true,
+    "tier": "DIST",
+    "gated": true,
+    "selector": "REFLOortSelector",
+    "pooled_ks_stat": 0.026,
+    "max_ks_stat": 0.385,
+    "avg_mean_utility_diff": 2.52,
+    "n_trainers": 175,
+    "n_trainers_well_sampled": 111,
+    "min_samples": 10,
+    "max_ks_tol": 0.2
+  },
+  "terminal_state": {
+    "ok": true,
+    "tier": "EXACT",
+    "matched_virtual_budget_s": 14085.5,
+    "sim_rounds_at_V": 9803,
+    "real_rounds_at_V": 9869,
+    "rounds_rel_diff": 0.007,
+    "rounds_tol": 0.05,
+    "sim_trainers_at_V": 144,
+    "real_trainers_at_V": 145,
+    "trainers_rel_diff": 0.007,
+    "trainers_tol": 0.05
+  },
+  "total_commits": {
+    "ok": true,
+    "tier": "EXACT",
+    "matched_virtual_budget_s": 14085.5,
+    "n_sim_commits": 9803,
+    "n_real_commits": 9869,
+    "rel_diff": 0.0067,
+    "tol": 0.05
+  },
+  "convergence": {
+    "ok": true,
+    "tier": "DIST",
+    "eval_rounds_compared": 198,
+    "avg_accuracy_diff": 0.0208,
+    "avg_loss_diff": 0.1891,
+    "acc_tol": 0.05
+  },
+  "convergence_loss": {
+    "ok": false,
+    "tier": "DIST",
+    "avg_loss_diff": 0.1891,
+    "eval_rounds_compared": 198,
+    "loss_tol": 0.15
+  },
+  "budget_not_cap": {
+    "ok": true,
+    "tier": "INV",
+    "real_max_round": 9869,
+    "sim_max_round": 10025,
+    "note": "rounds_cap not provided \u2014 K9 skipped"
+  },
+  "failsafe": {
+    "ok": true,
+    "tier": "INV",
+    "wall_elapsed_s": 10132.0,
+    "budget_s": 14400.0,
+    "overshoot_frac": -0.296,
+    "failsafe_fired": false,
+    "max_overshoot": 0.2
+  },
+  "first_divergence_summary": {
+    "index": 0,
+    "real": [
+      {
+        "round": 1,
+        "end": "0509",
+        "staleness": 0
+      },
+      {
+        "round": 1,
+        "end": "0383",
+        "staleness": 0
+      },
+      {
+        "round": 1,
+        "end": "0525",
+        "staleness": 0
+      }
+    ],
+    "sim": [
+      {
+        "round": 1,
+        "end": "0596",
+        "staleness": 0
+      },
+      {
+        "round": 1,
+        "end": "0552",
+        "staleness": 0
+      },
+      {
+        "round": 1,
+        "end": "0566",
+        "staleness": 0
+      }
+    ],
+    "real_len": 98690,
+    "sim_len": 100250,
+    "ok": true,
+    "tier": "DIAG"
+  },
+  "real_dir": "experiments/run_20260615_022706_dbg_refl_n300_alpha0.1_syn0_stream_real",
+  "sim_dir": "experiments/run_20260614_233140_dbg_refl_n300_alpha0.1_syn0_stream_sim",
+  "agg_goal": 10
+}
