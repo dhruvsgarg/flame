@@ -281,6 +281,37 @@ def test_preferred_duration_detects_binding_frequency_gap():
     assert res2["ok"], res2
 
 
+def test_convergence_low_confidence_on_short_runs():
+    """A convergence PASS under a sub-2h budget is downgraded to LOW_CONF (the
+    curves haven't diverged yet); a genuine FAIL still surfaces regardless of
+    horizon; a long-run PASS is a confident pass."""
+    from parity.checks import convergence_loss_parity, SHORT_RUN_CONFIDENCE_S
+
+    def evs(losses):
+        return {"agg_evals": [{"round": i, "test-loss": v}
+                              for i, v in enumerate(losses)]}
+
+    match = evs([1.0, 0.8, 0.6])        # real
+    near = evs([1.0, 0.81, 0.61])       # sim within tol -> PASS
+    far = evs([1.0, 1.4, 1.9])          # sim far -> FAIL
+
+    short = SHORT_RUN_CONFIDENCE_S - 1
+    long = SHORT_RUN_CONFIDENCE_S + 1
+
+    # short + pass -> ok stays True but flagged low-confidence
+    r = convergence_loss_parity(match, near, budget_s=short)
+    assert r["ok"] and r.get("low_confidence") and r.get("status") == "LOW_CONF"
+    # long + pass -> confident pass, no flag
+    r = convergence_loss_parity(match, near, budget_s=long)
+    assert r["ok"] and not r.get("low_confidence")
+    # short + genuine divergence -> still FAILS, not masked
+    r = convergence_loss_parity(match, far, budget_s=short)
+    assert not r["ok"] and not r.get("low_confidence")
+    # no budget given -> unchanged (legacy)
+    r = convergence_loss_parity(match, near, budget_s=None)
+    assert r["ok"] and not r.get("low_confidence")
+
+
 def test_trainer_speed_tolerates_wall_capture_jitter():
     """P3 compares at the modeled integer-second grid: sim reports exact integer
     training-delays, real carries sub-second wall-capture jitter on top. The raw

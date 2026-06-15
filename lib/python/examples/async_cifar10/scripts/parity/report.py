@@ -18,7 +18,7 @@ from .checks import overall_verdict, check_role, check_stage
 # ── status decorators ─────────────────────────────────────────────────────────
 
 _ICONS = {"PASS": "[OK]", "FAIL": "[XX]", "WARN": "[!!]", "SKIP": "[--]",
-          "DOWN": "[~~]"}
+          "DOWN": "[~~]", "LOWC": "[??]"}
 _TIER_TAG = {"EXACT": "EXACT", "INV": "INV  ", "DIST": "DIST ",
              "DIAG": "DIAG ", "": "     "}
 _ROLE_TAG = {"CONTROL": "CTRL", "MECHANISM": "MECH", "EMERGENT": "EMRG",
@@ -408,6 +408,10 @@ def _status_for(key: str, res: dict, root_set: set, down_set: set,
     if res.get("status") == "SKIP" or (
             res.get("note", "").startswith("K10:") and key != "vclock_telemetry"):
         return _ICONS["SKIP"], "SKIP"
+    # Low-confidence pass on a short run: a genuine fail still routes to FAIL/DOWN
+    # below (it stays in root_set/down_set); only an otherwise-PASS is flagged.
+    if res.get("low_confidence") and key not in root_set and key not in down_set:
+        return _ICONS["LOWC"], "LOWC"
     if key in root_set:
         return _ICONS["FAIL"], "FAIL"
     if key in down_set:

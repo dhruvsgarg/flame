@@ -1209,13 +1209,34 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
 # §3.G  Convergence  (C1–C3)
 # ═══════════════════════════════════════════════════════════════════
 
+# Below this run budget a convergence PASS is not trustworthy: the real/sim
+# accuracy/loss gap grows with training, so a short run hasn't trained far enough
+# to reveal it (a short-run FAIL is still real — the gap only widens). 2 h.
+SHORT_RUN_CONFIDENCE_S = 7200.0
+
+
+def _mark_low_confidence_if_short(res: dict, budget_s: Optional[float]) -> dict:
+    """Tag a convergence PASS as low-confidence on a sub-2h run; leave FAILs alone."""
+    if (budget_s is not None and budget_s < SHORT_RUN_CONFIDENCE_S
+            and res.get("ok") and not _is_skipped(res)):
+        res["low_confidence"] = True
+        res["status"] = "LOW_CONF"
+        res["note"] = (f"budget {int(budget_s)}s < {int(SHORT_RUN_CONFIDENCE_S)}s: "
+                       "convergence pass is inconclusive (a fail would still be real)")
+    return res
+
+
 def convergence_parity(real: dict, sim: dict,
-                        acc_tol: float = 0.05) -> dict:
+                        acc_tol: float = 0.05,
+                        budget_s: Optional[float] = None) -> dict:
     """C1/C2: Accuracy and loss curves aligned by FL round.
 
     C3 fix: the original compare_parity.py had a self-compare bug where
     sc was assigned from real["agg_evals"] before being overwritten with
     sim["agg_evals"].  This implementation uses sim directly.
+
+    Horizon guard: on a sub-2h run a PASS is downgraded to LOW_CONF (the curves
+    haven't diverged yet); a genuine FAIL still surfaces.
     """
     def curve(agg_evals):
         return {e["round"]: {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
@@ -1238,14 +1259,14 @@ def convergence_parity(real: dict, sim: dict,
     avg_acc = sum(acc_diffs) / len(acc_diffs) if acc_diffs else float("nan")
     avg_loss = sum(loss_diffs) / len(loss_diffs) if loss_diffs else float("nan")
     ok = math.isnan(avg_acc) or avg_acc <= acc_tol
-    return {
+    return _mark_low_confidence_if_short({
         "ok": ok,
         "tier": "DIST",
         "eval_rounds_compared": len(rounds),
         "avg_accuracy_diff": round(avg_acc, 4) if not math.isnan(avg_acc) else None,
         "avg_loss_diff": round(avg_loss, 4) if not math.isnan(avg_loss) else None,
         "acc_tol": acc_tol,
-    }
+    }, budget_s)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2045,8 +2066,12 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
 # §3.8x  Loss curve  (C2)  — Stage 8
 # ═══════════════════════════════════════════════════════════════════
 
-def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15) -> dict:
-    """C2 [DIST]: loss curve by FL round, asserted independently of accuracy."""
+def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
+                            budget_s: Optional[float] = None) -> dict:
+    """C2 [DIST]: loss curve by FL round, asserted independently of accuracy.
+
+    Horizon guard (see convergence_parity): sub-2h PASS → LOW_CONF; FAIL stands.
+    """
     def _curve(evs):
         return {e["round"]: e.get("test-loss") for e in evs}
 
@@ -2058,9 +2083,10 @@ def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15) -> di
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no overlapping loss evals"}
     avg = sum(diffs) / len(diffs)
-    return {"ok": avg <= loss_tol, "tier": "DIST",
-            "avg_loss_diff": round(avg, 4),
-            "eval_rounds_compared": len(diffs), "loss_tol": loss_tol}
+    return _mark_low_confidence_if_short(
+        {"ok": avg <= loss_tol, "tier": "DIST",
+         "avg_loss_diff": round(avg, 4),
+         "eval_rounds_compared": len(diffs), "loss_tol": loss_tol}, budget_s)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2145,8 +2171,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # ── Stage 8 Emergent outcomes ──
     results["terminal_state"] = terminal_state_parity(real_agg, sim_agg)
     results["total_commits"] = total_commits_parity(real_agg, sim_agg)
-    results["convergence"] = convergence_parity(real_agg, sim_agg)
-    results["convergence_loss"] = convergence_loss_parity(real_agg, sim_agg)
+    results["convergence"] = convergence_parity(real_agg, sim_agg, budget_s=budget_s)
+    results["convergence_loss"] = convergence_loss_parity(
+        real_agg, sim_agg, budget_s=budget_s)
 
     # ── Stage 9 Budget / stop sanity ──
     results["budget_not_cap"] = budget_not_cap(
