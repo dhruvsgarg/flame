@@ -164,7 +164,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # Deterministic RNG seed: seeds the global RNGs (torch model init, syncfl
     # internal_init) and each selector's dedicated RNG, making selection
-    # reproducible across real/sim. None = unseeded (legacy). See PARITY.md seeding.
+    # reproducible across real/sim. None = unseeded.
     seed: t.Optional[int] = Field(alias="seed", default=None)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
@@ -193,33 +193,29 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0
     )
-    # Sim PRE-commit holding leg added to trainer sct (counts toward staleness). See PARITY §3.
+    # Sim PRE-commit holding leg added to trainer sct (counts toward staleness).
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
-    # Sim POST-commit re-dispatch cooldown; spaces completions without inflating staleness. PARITY §3.
+    # Sim POST-commit re-dispatch cooldown; spaces completions without inflating staleness.
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
     )
-    # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound. PARITY §3m.
+    # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
-    # Sim sync-stack: hold a dispatched trainer in-flight (occupying its selection slot,
-    # excluded from the eligible pool) until vclock >= its modeled completion sct, instead
-    # of freeing the slot at instant physical arrival. Makes the committed/eligible mix
-    # match real (oort num_chosen, refl pool speed). Default off. PARITY §4.5.
+    # Sim sync-stack: hold a dispatched trainer in-flight (occupying its slot, out of the
+    # eligible pool) until vclock >= its modeled completion sct, instead of freeing the
+    # slot at instant physical arrival — so the committed/eligible mix matches real.
     sim_inflight_residence: t.Optional[bool] = Field(
         alias="simInflightResidence", default=False
     )
-    # Sim sync-stack: a prior-round straggler whose modeled completion sct is still in
-    # the future at this round's start (sct > vclock_round_start) is STILL COMPUTING —
-    # in real its update has not arrived yet. Sim delivers it physically at once, so the
-    # naive aggregator pops it, stale-rejects it, and frees its slot → in-flight DRAINS
-    # to ~0 while real CARRIES ~3 (overcommit). When on, keep such stragglers buffered +
-    # in selected_ends (carried in-flight) until vclock >= sct. Distinct from
-    # sim_inflight_residence (which gates pool RE-ENTRY, not the carry/cleanup). Off by
-    # default. PARITY §4.9 (oort residence/carry-over).
+    # Sim sync-stack: keep a prior-round straggler still computing at round start
+    # (sct > vclock_round_start) buffered and carried in-flight until vclock >= sct,
+    # instead of popping + stale-rejecting it on instant arrival (which drains sim's
+    # in-flight to ~0 while real carries the overcommit). Gates carry/cleanup, whereas
+    # sim_inflight_residence gates pool re-entry.
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
     )

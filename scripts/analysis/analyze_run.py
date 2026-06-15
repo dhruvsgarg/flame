@@ -1584,10 +1584,10 @@ def mqtt_delivery_plots(records, out, stamp, tdir):
 def sim_speedup_plots(records, out, stamp, tdir):
     """Simulator-only debug plots (real runs get explicit no-data placeholders):
       • sim_speedup_factor_over_time — vclock/wall (1.0 = real-equivalent, >1 faster)
-      • sim_barrier_wait_cdf / _over_rounds — the recv barrier wall (PARITY.md §6)
+      • sim_barrier_wait_cdf / _over_rounds — the recv barrier wall
       • sim_vclock_advance_decomp_over_rounds — Δvclock vs modeled compute (K3b)
     These are the levers for debugging the speedup fix and the clock-tier parity
-    checks (K2/K3/K3b/sim_rate); see PARITY.md §6.
+    checks (K2/K3/K3b/sim_rate).
     """
     d = _sub(out, "system"); saved = []
     ar = by_event(records, EVENT_AGG_ROUND)
@@ -1876,7 +1876,7 @@ def system_plots(records, out, stamp, tdir):
     # stamped on each [SEND_RECV_LAG] line (version=N == round N), parsed once in
     # parse_agg_log. Instrumented in BOTH sync and async aggregators, so this
     # plot exists for all baselines (placeholder when no events). The upward
-    # drift seen on felix is the buffer-backup symptom (PARITY §3): wall_lag is
+    # drift seen on felix is the buffer-backup symptom: wall_lag is
     # dominated by queue_wait ≈ staleness × wall/round, which rises as the reorder
     # buffer backs up. We overlay queue_wait (from [LAG_DECOMP]) so the riser is
     # visibly that component, not an independent regression.
@@ -1899,7 +1899,7 @@ def system_plots(records, out, stamp, tdir):
     p = ph.binned_line(
         lag_raw, "round", "wall_lag_s",
         f"Send-recv lag over rounds — P50/bin "
-        f"(n={len(wall_lags)}, overruns={_overruns}; rise=queue_wait/staleness, PARITY §3)",
+        f"(n={len(wall_lags)}, overruns={_overruns}; rise=queue_wait/staleness)",
         d, "send_recv_lag_over_rounds.pdf", stamp=stamp, reducer="p50", band=True)
     if p: saved.append(p)
 
@@ -2161,7 +2161,7 @@ def aggregation_plots(records, out, stamp, tdir):
 
     # 3) reorder-buffer health: commit_gap_s (vclock − sct; >0 = buffer backed up)
     # and buf_depth over round-bins. The direct visual for the felix overhead bug
-    # (PARITY §3): a rising commit_gap_s = updates committing long after completion.
+    # A rising commit_gap_s = updates committing long after completion.
     gx, gap_v, depth_v = [], [], []
     for r in ar:
         rd = int(r.get("round", 0))
@@ -2174,7 +2174,7 @@ def aggregation_plots(records, out, stamp, tdir):
         p = ph.binned_line({"commit_gap_s (vclock−sct)": (gx, gap_v),
                             "buf_depth": (gx, depth_v)},
                            "round", "value", "Reorder-buffer health "
-                           "(commit_gap_s>0 & rising = backup; PARITY §3)", d,
+                           "(commit_gap_s>0 & rising = backup)", d,
                            "buffer_health_over_rounds.pdf", stamp=stamp,
                            nbins=150, reducer="p50")
         if p: saved.append(p)

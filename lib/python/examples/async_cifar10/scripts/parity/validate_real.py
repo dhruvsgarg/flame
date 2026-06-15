@@ -1,9 +1,9 @@
-"""§4.0  Validate that a REAL run is internally correct *before* it is used as
+"""Validate that a REAL run is internally correct *before* it is used as
 the parity reference.
 
 Parity is not the goal — a *correct* simulator is.  Real is the reference only
 after it obeys its own invariants; otherwise matching sim to real just fits sim
-to a bug (PARITY §4.0).  This module asserts the invariants the parity ladder
+to a bug.  This module asserts the invariants the parity ladder
 assumes hold on the real side:
 
   concurrency  — true in-flight overlap (peak + time-weighted mean); no trainer
@@ -24,7 +24,7 @@ trainer loop is serial, so this is exactly 0 unless telemetry is corrupt).
 
 There is no configured static concurrency cap (oort/refl/feddance concurrency is
 emergent via overcommitment + availability), so we report peak/mean concurrency
-(the "real holds ~c computing" number §3/§3m care about) rather than asserting
+(the "real holds ~c computing" number) rather than asserting
 `in_flight <= c`.  This assumes the run carries the task_send event (every run
 from this code onward does).
 
@@ -286,7 +286,7 @@ def validate_real(run_dir: str) -> bool:
     print("\n" + "=" * 78)
     print("  REAL IS ADMISSIBLE as the parity reference."
           if all_ok else
-          "  REAL VIOLATES an invariant — fix real before matching sim (PARITY §4.0).")
+          "  REAL VIOLATES an invariant — fix real before matching sim.")
     print("=" * 78)
     return all_ok
 

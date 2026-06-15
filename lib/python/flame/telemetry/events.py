@@ -264,7 +264,7 @@ def build_task_send(
     sleep), this fires from _send_weights — AFTER the sleep and the upload — so
     ``[wall_recv_ts, wall_send_ts]`` brackets the trainer's true busy/in-flight
     window in real mode.  That interval is the sound basis for real concurrency
-    in validate_real (PARITY §4.0): trainer_round's own ts cannot bracket it.
+    in validate_real: trainer_round's own ts cannot bracket it.
     """
     return EVENT_TASK_SEND, {
         "round": round_num,
@@ -289,7 +289,7 @@ def build_inflight_residence(
     residence_rounds: Optional[list[int]] = None,
     carried_over_ages: Optional[list[int]] = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Per-round in-flight drain accounting for the oort sync aggregator (PARITY §4.x).
+    """Per-round in-flight drain accounting for the oort sync aggregator.
 
     Localizes the in-flight RESIDENCE divergence (real holds ~15.6 in-flight, sim
     drains to the designed ~13): a straggler occupies ``selected_ends`` from selection

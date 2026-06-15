@@ -128,7 +128,7 @@ def main() -> None:
                         help="Write summary PNG to this path")
     parser.add_argument("--diagnostics", action="store_true",
                         help="(reserved) Run diagnostic single-run analysis scripts")
-    # ── real-correctness validation (§4.0) ──
+    # ── real-correctness validation ──
     parser.add_argument("--validate-real", metavar="DIR", default=None,
                         help="Validate a real run's own invariants (concurrency/"
                              "selection/aggregation) before using it as reference")
@@ -147,7 +147,7 @@ def main() -> None:
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
 
-    # ── real-correctness validation (§4.0) ───────────────────────────────────
+    # ── real-correctness validation ───────────────────────────────────
     if args.validate_real:
         from parity.validate_real import validate_real
         sys.exit(0 if validate_real(args.validate_real) else 1)

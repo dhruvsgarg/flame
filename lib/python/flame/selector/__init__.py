@@ -162,9 +162,9 @@ class AbstractSelector(ABC):
             else:
                 in_flight = 0
 
-            # Determinism fingerprints (PARITY seeding): eligible = candidate set;
-            # decision = set + per-candidate utility/speed + k. Same fingerprint but
-            # different `chosen` => RNG desync; different fingerprint => input drift.
+            # Determinism fingerprints: eligible = candidate set; decision = set +
+            # per-candidate utility/speed + k. Same fingerprint but different
+            # `chosen` => RNG desync; different fingerprint => input drift.
             elig = sorted(set(eligible_ids))
             elig_fp = hashlib.sha1(
                 "|".join(elig).encode()

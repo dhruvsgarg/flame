@@ -458,7 +458,7 @@ class Trainer(Role, metaclass=ABCMeta):
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)
 
-        # In-flight window for validate_real (§4.0): wall_send_ts is stamped here,
+        # In-flight window for validate_real: wall_send_ts is stamped here,
         # AFTER the real-mode budget sleep in train(), so [wall_recv_ts, wall_send_ts]
         # brackets the trainer's true busy window — which trainer_round (emitted
         # pre-sleep) cannot. No-op when telemetry is disabled.

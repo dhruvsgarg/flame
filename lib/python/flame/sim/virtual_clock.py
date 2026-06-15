@@ -85,7 +85,7 @@ class SimReorderBuffer:
         — i.e. modeled as STILL COMPUTING at virtual time ``ts`` (their update has
         arrived physically but is not yet "available" in sim time). Used by the
         sync sim stack to keep such trainers occupying their selection slot /
-        out of the eligible pool until ``vclock >= sct`` (PARITY §4.5)."""
+        out of the eligible pool until ``vclock >= sct``."""
         return {e for e, (sct, _) in self._items.items() if sct > ts}
 
     def pop_min(self) -> Optional[tuple[str, float, Any]]:

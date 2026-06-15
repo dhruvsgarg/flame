@@ -323,7 +323,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         overhead = getattr(self, "_sim_commit_overhead_s", 0.0)
         if overhead > 0.0:
             self._vclock.advance(self._vclock.now + overhead)
-        # Drift diagnostics (§3c): split the vclock advance into its sct-frontier
+        # Drift diagnostics: split the vclock advance into its sct-frontier
         # vs per-commit-overhead components. If commit_gap grows monotonically,
         # overhead_cum (which the sct timeline never gets) is the prime suspect.
         self._sim_overhead_cum = getattr(self, "_sim_overhead_cum", 0.0) + max(0.0, overhead)
@@ -543,8 +543,8 @@ class TopAggregator(Role, metaclass=ABCMeta):
             stat_utility = 0
             if MessageType.STAT_UTILITY in msg:
                 # Believed (PROP_STAT_UTILITY before overwrite) vs actual (incoming)
-                # client utility — selector-belief staleness. (PARITY
-                # believed-vs-actual; emitted for every baseline.)
+                # client utility — selector-belief staleness
+                # (believed-vs-actual; emitted for every baseline).
                 if telemetry.is_enabled():
                     _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
                     _mv = msg.get(MessageType.MODEL_VERSION)

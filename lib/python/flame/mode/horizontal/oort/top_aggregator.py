@@ -107,7 +107,7 @@ class TopAggregator(BaseTopAggregator):
                 f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
             )
 
-        # Carry-over gate (PARITY §4.9): a prior-round straggler whose modeled
+        # Carry-over gate: a prior-round straggler whose modeled
         # completion sct is still in the future at THIS round's start is STILL
         # COMPUTING — in real its update has not arrived, so it occupies its slot
         # (in-flight) rather than being delivered and stale-cleaned. Sim delivers it
@@ -187,7 +187,7 @@ class TopAggregator(BaseTopAggregator):
                 f"Stale updates may not be consumed!"
             )
 
-        # In-flight residence tracking (PARITY §4.x): record the round each trainer
+        # In-flight residence tracking: record the round each trainer
         # entered the in-flight set so cleanup can emit per-straggler residence. A
         # carryover straggler keeps its earlier entry round (setdefault); a
         # newly-selected one gets the current round.
@@ -494,7 +494,7 @@ class TopAggregator(BaseTopAggregator):
                 f"successfully_freed={test_in_flight_before and not test_in_flight_after}"
             )
 
-        # [INFLIGHT_RESIDENCE] per-straggler residence telemetry (PARITY §4.x). residence
+        # [INFLIGHT_RESIDENCE] per-straggler residence telemetry. residence
         # = rounds a cleaned trainer spent in selected_ends; carried_over_ages = ages of
         # those still in-flight. Comparing sim vs real residence distributions reveals
         # whether sim evicts stragglers a round too early (sim in-flight 13.4 vs real 15.6).
@@ -583,7 +583,7 @@ class TopAggregator(BaseTopAggregator):
         else:
             curr_unavail_trainer_list = []
 
-        # [SIM_RESIDENCE] (PARITY §4.5) Mark trainers that are STILL COMPUTING in
+        # [SIM_RESIDENCE] Mark trainers that are STILL COMPUTING in
         # sim time as unavailable for this selection. In sim a dispatched trainer's
         # update arrives physically at once, so it can re-enter the eligible pool
         # before its modeled completion `sct`; real keeps it busy (out of the pool)
@@ -837,7 +837,7 @@ class TopAggregator(BaseTopAggregator):
             # Believed-vs-actual utility telemetry: the PROP_STAT_UTILITY held NOW
             # (before this return overwrites it) is what the selector BELIEVED at
             # selection (stale by `staleness` rounds); the incoming value is the
-            # ACTUAL fresh utility. Emit before overwriting. (PARITY believed-vs-actual)
+            # ACTUAL fresh utility. Emit before overwriting. (believed-vs-actual)
             if telemetry.is_enabled():
                 _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
                 _mv = msg.get(MessageType.MODEL_VERSION)

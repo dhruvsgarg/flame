@@ -139,10 +139,10 @@ class AsyncOortSelector(AbstractSelector):
 
         self.alpha = kwargs.get("round_penalty", _d["round_penalty"])  # system_util exponent
 
-        # PARITY D2: normalize+clip the reward into ~[0,1] before adding temporal.
+        # Normalize+clip the reward into ~[0,1] before adding temporal.
         self.normalize_reward = kwargs.get("normalize_reward", True)
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
-        self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])  # D4 breadth factor
+        self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])  # breadth factor
 
         # #### CHANGES BASED OFF FEDBUFF FOR ASYNCFL
         # Tracking selected ends to ensure selection correctness for
@@ -819,8 +819,8 @@ class AsyncOortSelector(AbstractSelector):
         logger.info(
             f"stat_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
         )
-        # PARITY D2: normalize+clip the statistical reward across candidates
-        # (reference Oort get_norm) so the temporal term is meaningful.
+        # Normalize+clip the statistical reward across candidates (reference Oort
+        # get_norm) so the temporal term is meaningful.
         if self.normalize_reward:
             _min, _range, _clip = scoring.oort_norm_stats(
                 [u[PROP_UTILITY] for u in utility_list], self.clip_bound
@@ -1417,8 +1417,8 @@ class AsyncOortSelector(AbstractSelector):
 
         logger.debug(f"Current selected_ends: {selected_ends}")
 
-        # §3L: cooling (committed, not-yet-redispatched) ends hold a concurrency slot so
-        # the idle pool can't refill it — else the redispatch gap is inert. See PARITY §3.
+        # Cooling (committed, not-yet-redispatched) ends hold a concurrency slot so
+        # the idle pool can't refill it — else the redispatch gap is inert.
         cooling_count = int(channel_props.get("sim_cooling_count", 0))
         extra = max(0, concurrency - len(selected_ends) - cooling_count)
 

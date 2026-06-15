@@ -417,24 +417,24 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     `trainer_speed_s` distribution of every candidate seen at selection (pooled over
     rounds). The size can match while the composition diverges, so A2 sails through.
 
-    Why it matters (PARITY §4.x, refl localization): in real a slow client stays busy
-    (in-flight) for its whole budget, so it is OUT of the eligible pool that long →
-    real's pool is fast-skewed. If sim frees a non-committed/in-flight client back to
-    the pool too early, slow clients re-enter → sim's pool skews slow. Jun13: refl sim
-    pool-mean 12.1 s vs real 6.8 s (KS .363 ✗) while oort/felix/feddance match (KS≈.07).
+    Why it matters: in real a slow client stays busy (in-flight) for its whole
+    budget, so it is OUT of the eligible pool that long → real's pool is fast-skewed.
+    If sim frees a non-committed/in-flight client back to the pool too early, slow
+    clients re-enter → sim's pool skews slow (e.g. refl sim pool-mean 12.1 s vs real
+    6.8 s, KS .363, while oort/felix/feddance match at KS≈.07).
     A2b is the finest check that localizes that divergence; selection-stage fails
     (participation, committed trainer_speed mix) downstream of it are *consequences*.
     The fix is sim-side: hold non-committed candidates out of the pool until they
     legitimately return (the in-flight-residence model, shared with oort) — NOT to bend
     the check.
 
-    Speed source (Jun-17). The pool composition is compared on each candidate's
+    Speed source. The pool composition is compared on each candidate's
     **static ``training_delay_s``** (the modeled compute, from the trainer registry),
     NOT the observed ``per_trainer.speed_s`` (= PROP_ROUND_DURATION). Real telemetry
     leaves PROP_ROUND_DURATION = None for any candidate that has not *completed* a
     round — at steady state ~158/300 of refl's pool — so pooling observed speed
     samples only the fast completers in real while sim (modeled) fills nearly all,
-    comparing different SUBSETS (the Jun-16 "modeled vs wall" asymmetry). The registry
+    comparing different SUBSETS (the "modeled vs wall" asymmetry). The registry
     delay is present for every candidate in both modes, so it tests the genuine
     eligible-set membership composition. Verified: observed-speed pool reads real 7.0
     / sim 12.2 (KS .39) purely from the None-density skew, while the metadata pool is
@@ -486,7 +486,7 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> 
 
     A2b (eligible_speed) checks the *pool* composition; this checks the *selected*
     subset. Reading the two together localizes a selection divergence to one of two
-    causes (PARITY §4.5, Jun-14 oort-vs-refl split):
+    causes:
       - pool diverges (A2b FAIL)             -> POOL COMPOSITION (refl: sim frees busy
         clients early so slow ones re-enter the pool; selected may still match).
       - pool matches but selected diverges   -> SELECTOR-SCORING/path bias (oort: from
@@ -609,7 +609,7 @@ def selector_score_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
 def preferred_duration_parity(real: dict, sim: dict, frac_tol: float = 0.20) -> dict:
     """Stage-3 [DIST]: does the Oort speed penalty BIND at the same rate?
 
-    Root-cause guard for the Jun-15 oort `pref`-not-sorted bug (PARITY §4.8/D1).
+    Root-cause guard for the oort `pref`-not-sorted bug.
     Oort's `system_util = min(1, (pref/round_duration)^alpha)` only penalizes a
     trainer when its duration exceeds the round-preferred duration `pref` (the
     round_threshold-th PERCENTILE of candidate durations). When `pref` is computed
@@ -1043,18 +1043,18 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     NOT be re-charged here.
 
     History: the first cut used raw `avg_diff` (grew with run length → false-failed
-    long runs); §4.3 switched to participation **share** (count / total_commits) to
+    long runs); later switched to participation **share** (count / total_commits) to
     be length-free. But share is NOT amount-free: when the two modes complete a
     different number of rounds in the compared window (the throughput gap), every
     trainer's count scales by the same ratio, and *any* scalar normalization (share,
     rate, count/mean) preserves that offset — so share_KS re-measures the throughput
-    delta as if it were a shape divergence (Jun13: feddance share_KS .427 while the
+    delta as if it were a shape divergence (e.g. feddance share_KS .427 while the
     per-trainer count distribution on equal rounds matched at .033; oort .368→.127).
 
     Fix (consistent with K8/U2/terminal): count participation over the MATCHED round
     window — the first N = min(rounds_real, rounds_sim) rounds of each mode — then KS
     on per-trainer counts. Equal rounds ⇒ equal totals ⇒ KS measures pure shape. A
-    genuine shape divergence still FAILs (Jun13 refl .530 — a real selection-mix
+    genuine shape divergence still FAILs (e.g. refl .530 — a real selection-mix
     difference to localize at Stage 3, NOT suppressed). `share_ks` (full run) kept as
     a diagnostic; `avg_diff`/`max_diff` raw diagnostics.
     """
@@ -1118,7 +1118,7 @@ def decision_determinism_parity(real: dict, sim: dict) -> dict:
                           full draw input).
       - chosen_match    : same selected set.
     This splits a participation/selection divergence cleanly (the whole point of
-    seeding, see PARITY "Determinism / seeding"):
+    seeding:
       - seed present, decision_match≈1, chosen_match≈1 → seeding WORKED; any
         residual participation/utility gap is NOT stochastic — look elsewhere.
       - decision_match≈1 but chosen_match≪1 → identical inputs, different draw =
@@ -1185,15 +1185,15 @@ def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
     If this PASSES while K2/K3/K4 FAIL, the divergence is isolated to the
     sim clock advance model, not the trainer time model.
 
-    Modeled-grid comparison (Jun-17). The per-trainer compute budget
+    Modeled-grid comparison. The per-trainer compute budget
     (``training_delay_s``) is integer-valued metadata, so sim — which has exact
     control of the virtual clock — reports speeds on that exact integer grid.
     Real *measures* the same compute as wall time, so every value carries a
     small (~0.04-0.08 s) un-modeled capture jitter (sleep + the post-compute
-    settle leg, §3m) on top of the integer budget. The virtual clock excludes
-    that wall-capture jitter by design (§3c/§5c), so enforcing a raw sub-second
+    settle leg) on top of the integer budget. The virtual clock excludes
+    that wall-capture jitter by design, so enforcing a raw sub-second
     KS penalizes sim for *not* reproducing real's measurement noise — the same
-    apples-to-oranges error §5c fixed for ``phase_mqtt_fetch``. We therefore
+    apples-to-oranges error fixed for ``phase_mqtt_fetch``. We therefore
     enforce the KS at the modeled integer-second grid and keep the raw KS as a
     diagnostic. Guard: ``mean_overhead_s`` (real_mean - sim_mean) must stay
     sub-grid — a *systematic* overhead ≥ 0.5 s would shift the rounded values to
@@ -1495,7 +1495,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     On the motivating Felix run (410 vs 673 rounds in the same 3 h budget)
     rel_diff ≈ 40% → FAIL.
 
-    Tolerance 5% (PARITY): the throughput family — K2 (this mechanism), K8 (rounds at
+    Tolerance 5%: the throughput family — K2 (this mechanism), K8 (rounds at
     matched V), U2 (commits at matched V) — all measure the same rounds-per-virtual-time
     signal and share ONE tolerance, set here. Tightened 10%->5% deliberately as the
     throughput-fidelity bar. U2 == K8 == K2 on the identical quantity, so they must agree.
@@ -1634,10 +1634,10 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
 
     abs diff ≤ 5% of commits — the shared throughput-family tolerance (= K2, K8).
 
-    Rationale (PARITY): U4 (agg_goal_count cycles 1..K, INV) separately guarantees a fixed
+    Rationale: U4 (agg_goal_count cycles 1..K, INV) separately guarantees a fixed
     agg_goal commits per round, so at matched V the commit count is the round count × agg_goal —
     i.e. U2 carries no signal beyond K8's matched-V round rollup (and the K2 throughput mechanism).
-    Verified on the Jun13 runs: U2.rel_diff == K8.rounds_rel_diff to 3 decimals on all four
+    Verified: U2.rel_diff == K8.rounds_rel_diff to 3 decimals on all four
     baselines (commits/round identical across modes). The old 2% bar required matched-V commits to
     match 5× tighter than matched-V rounds / throughput itself, with no separate mechanism behind
     it: a stochastic 2-rounds-in-85 difference (feddance) or a residual throughput delta that K2/K8
@@ -2160,7 +2160,7 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
                "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
         # mqtt_fetch is pure network-I/O wall time: the sim serves weights from
         # an in-memory cache and folds the trainer cycle into budget+leg, so this
-        # phase is deliberately NOT part of the virtual clock (§3h).  Comparing it
+        # phase is deliberately NOT part of the virtual clock.  Comparing it
         # is apples-to-oranges (real MQTT round-trip vs in-mem read) — keep it as
         # a DIAG so a divergence is reported but never enforced.  gpu_compute and
         # the other modeled phases stay enforced DIST.

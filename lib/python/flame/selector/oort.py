@@ -89,11 +89,11 @@ class OortSelector(AbstractSelector):
 
         self.alpha = kwargs.get("round_penalty", _d["round_penalty"])  # system_util exponent
 
-        # PARITY D2: reference Oort normalizes+clips the reward into ~[0,1] (get_norm)
-        # before adding the temporal term; the raw reward (~70) had made it inert.
+        # Reference Oort normalizes+clips the reward into ~[0,1] (get_norm) before
+        # adding the temporal term; the raw reward (~70) had made it inert.
         self.normalize_reward = kwargs.get("normalize_reward", True)
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
-        # cut_off_util: exploitation-pool breadth factor (D4); was hardcoded 0.95.
+        # cut_off_util: exploitation-pool breadth factor; was hardcoded 0.95.
         self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])
 
         # Track sliding window statistics for the selector
@@ -312,10 +312,9 @@ class OortSelector(AbstractSelector):
             )
             self._select_run_counter = 0
 
-        # PARITY §4.5 oort: system_util = (pref/round_duration)^alpha depends on the
-        # DYNAMIC round_preferred_duration (a percentile of candidate durations,
-        # recomputed each round). Emit it so the parity localizer can tell whether the
-        # sim/real system_util gap is the target (pref) or the round_duration input.
+        # system_util = (pref/round_duration)^alpha depends on the dynamic
+        # round_preferred_duration (a per-round percentile of candidate durations);
+        # emit it so a divergence can be traced to the target vs the duration input.
         _pref = getattr(self, "round_preferred_duration", None)
         self.emit_selection(
             round, task_to_perform, all_ends, eligible_ends.keys(),
@@ -536,9 +535,9 @@ class OortSelector(AbstractSelector):
         selected round.
         """
 
-        # PARITY D5 (deferred): reference Oort keys this on the round the util was
-        # last UPDATED (on completion), not last SELECTED — needs a new
-        # aggregator-stamped property across real+sim. Subtle effect; tracked in PARITY.md.
+        # NOTE: reference Oort keys this on the round the util was last UPDATED (on
+        # completion), not last SELECTED — would need a new aggregator-stamped
+        # property across real+sim. Subtle effect; deferred.
         end_last_selected_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
         return scoring.oort_temporal_uncertainty(round, end_last_selected_round)
 
@@ -602,10 +601,9 @@ class OortSelector(AbstractSelector):
 
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
-        # PARITY D2: normalize+clip the statistical reward across this round's
-        # candidates (reference Oort get_norm), so `believed_I` lands in ~[0,1] and
-        # the additive temporal/UCB term is meaningful. Parity-neutral (both modes
-        # share this code). Stats computed once over the raw candidate rewards.
+        # Normalize+clip the statistical reward across this round's candidates
+        # (reference Oort get_norm) so `believed_I` lands in ~[0,1] and the additive
+        # temporal/UCB term is meaningful. Stats computed once over the raw rewards.
         if self.normalize_reward and utility_list:
             _min, _range, _clip = scoring.oort_norm_stats(
                 [u[PROP_UTILITY] for u in utility_list], self.clip_bound

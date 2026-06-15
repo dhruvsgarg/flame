@@ -101,13 +101,13 @@ class TopAggregator(SyncTopAgg):
         self._sim_committed: set = set()
         self._sim_pending_commit: set = set()
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
-        # Virtual-completion gate (§3c/§3d): the aggregator's own record of each
+        # Virtual-completion gate: the aggregator's own record of each
         # in-flight trainer's EXPECTED completion = dispatch vclock + its MODELED
         # budget. Lets _sim_recv_min hold the clock at the earliest expected
         # completion so it can't race past an update that has virtually completed
         # but whose message hasn't been drained yet (the straggler source).
         #
-        # §3d fix: the predictor learns each trainer's budget from the stable,
+        # the predictor learns each trainer's budget from the stable,
         # contention-free TRAINING_BUDGET_S (= modeled training_delay_s), NOT from
         # SIM_ROUND_DURATION (= max(gpu, budget), inflated by GPU contention). The
         # modeled budget is a true LOWER BOUND on the real sct (sct = send_ts +
@@ -121,7 +121,7 @@ class TopAggregator(SyncTopAgg):
         self._sim_budget_running_mean: float = 12.0  # default budget for unseen trainers
         self._sim_budget_n: int = 0
 
-        # §3k post-commit re-dispatch gap: end -> vclock before which it stays out
+        # post-commit re-dispatch gap: end -> vclock before which it stays out
         # of selection (= its last commit sct + sim_redispatch_gap_s). Models the
         # real finish->re-dispatch latency so it does NOT count toward staleness
         # (which is set by the pre-commit holding) yet still spaces completions.
@@ -129,7 +129,7 @@ class TopAggregator(SyncTopAgg):
         _gap = getattr(self.config.hyperparameters, "sim_redispatch_gap_s", 0.0)
         self._sim_redispatch_gap_s: float = float(_gap) if _gap is not None else 0.0
 
-        # Real-mode settle sleep before selection (0 = compute-bound; PARITY §3m).
+        # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
 
@@ -233,7 +233,7 @@ class TopAggregator(SyncTopAgg):
     def _sim_end_has_ready_msg(channel, end) -> bool:
         """True if `end`'s rx queue holds a message (non-blocking readiness check).
 
-        Used by _sim_recv_min (§3j) to drain a physically-arrived in-flight update
+        Used by _sim_recv_min to drain a physically-arrived in-flight update
         regardless of its modeled completion time, so slow trainers are buffered as
         futures rather than drained-in late and committed past-dated."""
         try:
@@ -247,7 +247,7 @@ class TopAggregator(SyncTopAgg):
         sim_completion_ts. The virtual clock advances TO each committed completion
         (vclock = max(vclock, sct) in _advance_sim_clock); with
         sim_commit_overhead_s = 0 the clock therefore tracks completions rather
-        than a per-commit overhead ramp. The overhead-on-clock was the §3c root
+        than a per-commit overhead ramp. The overhead-on-clock was the root
         cause: it ran the clock ahead of completions (overhead_cum dominated the
         clock), inflating and drifting staleness. Periodic [SIM_CLOCK_DIAG]
         verifies the clock is now sct-driven."""
@@ -271,14 +271,14 @@ class TopAggregator(SyncTopAgg):
             # cycle in _aggregate_weights) PLUS any LIVE in-flight trainer whose
             # MODELED completion is at/before the current buffered minimum.
             #
-            # §3g fix: the gate (below) holds the clock for the earliest-expected
+            # the gate (below) holds the clock for the earliest-expected
             # straggler taken from the live _sim_inflight_expected set, but
             # to_probe was built ONLY from the stale recv_ends snapshot — so that
             # straggler was frequently NOT in to_probe, recv_fifo never waited for
             # it (barrier_wait~0), the gate spun to the pass cap, and the clock
             # committed past it (the past-dated commit that drifts staleness).
             #
-            # §3j fix: draining must be gated by PHYSICAL readiness, not predicted
+            # draining must be gated by PHYSICAL readiness, not predicted
             # completion. A SLOW trainer (budget 38-56s) has a far-future modeled
             # `exp`, so the `exp <= _probe_ceiling` bound excluded it — yet its
             # message had already physically arrived (wall_lag ~0.1s). It therefore
@@ -366,7 +366,7 @@ class TopAggregator(SyncTopAgg):
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
         self._sim_committed.add(_end)
-        # §3k: start this end's post-commit re-dispatch cooldown. Held out of
+        # start this end's post-commit re-dispatch cooldown. Held out of
         # selection (in _distribute_weights) until vclock >= sct + gap, so it
         # returns with a fresher model_version -- the gap spaces completions
         # without counting toward this update's (already-recorded) staleness.
@@ -377,7 +377,7 @@ class TopAggregator(SyncTopAgg):
             self._sim_cooldown_until[_end] = sct + _gap
         # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
         # budget (running mean refines the default for trainers not yet observed).
-        # §3d: learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
+        # learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
         # SIM_ROUND_DURATION (= max(gpu, budget), contention-inflated). The modeled
         # budget is the stable lower bound the gate needs so it fires on genuine
         # stragglers instead of being pushed into the future by a GPU spike.
@@ -390,7 +390,7 @@ class TopAggregator(SyncTopAgg):
             self._sim_budget_n += 1
             self._sim_budget_running_mean += (float(_budget) - self._sim_budget_running_mean) / self._sim_budget_n
         _commit_gap = self._vclock.now - sct
-        # §3d metric: a "past-dated" commit is one the clock already lapped
+        # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
         # version-vs-clock and drifts staleness. The predictor fix should drive
         # this count and the cumulative past-dating toward zero.
@@ -404,7 +404,7 @@ class TopAggregator(SyncTopAgg):
             f"buf_depth={len(self._sim_buffer)} sct={sct:.1f} "
             f"T_v={self._vclock.now:.1f} commit_gap_s={_commit_gap:.1f}"
         )
-        # ── clock / completion-spacing diagnostics (§3c verification) ──────────
+        # ── clock / completion-spacing diagnostics ──────────
         # With overhead=0 the clock should be sct-driven: overhead_cum ~ 0 and
         # sct_adv_cum ~ vclock. buf_past (sct<=vclock, already completed) vs
         # buf_future (sct>vclock, not yet completed but physically arrived early):
@@ -679,7 +679,7 @@ class TopAggregator(SyncTopAgg):
                         # sim overrun: modeled compute exceeded budget (GPU contention).
                         # Use SIM_ROUND_DURATION (= max(gpu, D), pure compute) — NOT
                         # SIM_COMPLETION_TS - SIM_SEND_TS, which now also includes the
-                        # §3i post-compute completion leg and is not an overrun signal.
+                        # post-compute completion leg and is not an overrun signal.
                         _virt_elapsed = float(msg.get(MessageType.SIM_ROUND_DURATION, 0.0))
                         if _virt_elapsed > 0.0:
                             if _virt_elapsed > _budget_s:
@@ -818,8 +818,8 @@ class TopAggregator(SyncTopAgg):
         stat_utility = 0  # default
         if MessageType.STAT_UTILITY in msg:
             # Believed (PROP_STAT_UTILITY before overwrite) vs actual (incoming)
-            # client utility — the staleness of the selector's belief. (PARITY
-            # believed-vs-actual; emitted for every baseline.)
+            # client utility — the staleness of the selector's belief
+            # (believed-vs-actual; emitted for every baseline).
             if telemetry.is_enabled():
                 _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
                 _mv = msg.get(MessageType.MODEL_VERSION)
@@ -1213,7 +1213,7 @@ class TopAggregator(SyncTopAgg):
         self._update_weights()
 
         if not self.simulated and self._real_distribute_settle_s > 0.0:
-            # Settle channel state before selection (real only); 0 removes this brake. PARITY §3m.
+            # Settle channel state before selection (real only); 0 removes this brake.
             time.sleep(self._real_distribute_settle_s)
 
         if self.trainer_event_dict is not None:
@@ -1221,8 +1221,8 @@ class TopAggregator(SyncTopAgg):
         else:
             curr_unavail_trainer_list = []
 
-        # §3k: exclude ends in their post-commit cooldown (until vclock >= sct + gap);
-        # prune expired entries. PARITY §3.
+        # exclude ends in their post-commit cooldown (until vclock >= sct + gap);
+        # prune expired entries.
         _gap = getattr(self, "_sim_redispatch_gap_s", 0.0)
         _cd = getattr(self, "_sim_cooldown_until", None)
         _cooling = []
@@ -1241,7 +1241,7 @@ class TopAggregator(SyncTopAgg):
                     f"gap={self._sim_redispatch_gap_s:.2f}s vclock={_now:.1f}"
                 )
         if self.simulated:
-            # §3L: expose cooling count so the selector holds those slots (no refill).
+            # expose cooling count so the selector holds those slots (no refill).
             channel.properties["sim_cooling_count"] = len(_cooling)
 
         channel.set_curr_unavailable_trainers(
@@ -1300,7 +1300,7 @@ class TopAggregator(SyncTopAgg):
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
                 # Record this trainer's expected completion for the gate: dispatch
                 # vclock + its last-observed MODELED budget (running-mean default if
-                # unseen). §3d: the modeled budget is a lower bound on the true sct,
+                # unseen). the modeled budget is a lower bound on the true sct,
                 # so the gate holds the clock until this trainer can plausibly have
                 # completed, never lapping it.
                 _budget = self._sim_trainer_budget.get(end, self._sim_budget_running_mean)

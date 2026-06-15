@@ -78,8 +78,7 @@ def oort_norm_stats(rewards: list, clip_bound: float = 0.95, thres: float = 1e-4
 def oort_normalize_reward(raw: float, min_: float, range_: float, clip_value: float) -> float:
     """Clip the raw reward at ``clip_value`` then min-max normalize to ~[0,1]
     (reference Oort score calc, oort.py:292-295). With no normalization the raw
-    reward (~70) dwarfs the temporal/UCB term (~0.05), making exploration inert
-    (PARITY D2)."""
+    reward (~70) dwarfs the temporal/UCB term (~0.05), making exploration inert."""
     creward = min(raw, clip_value)
     return (creward - min_) / range_
 
