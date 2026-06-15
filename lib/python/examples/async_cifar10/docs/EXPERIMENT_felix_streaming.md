@@ -1,3 +1,13 @@
+> ⚠️ **STATUS: paused / not validated against the current code.** This streaming-
+> misprioritization experiment (n=50, the per-baseline online **oracle** selector
+> `flame/selector/oracle.py`, the aggregator-side `oracle_utility.py` injection, the
+> `gen_*`/`run_felix_streaming.sh` tooling, and `scripts/analysis/felix_streaming_figures.py`)
+> was developed for a while and then set aside; the **same branch** was subsequently
+> used for the real/sim fidelity work (see `PARITY.md`). It is shipped here for
+> continuity but has **not** been re-run against the fidelity-era changes, so the
+> oracle/n50 path may need updating or fixing before use. The fidelity work does not
+> depend on it (the oracle injection is a guarded no-op unless explicitly enabled).
+
 # Felix Update 11-Jun-26 — Streaming Misprioritization Experiment
 
 > Does stale, whole-dataset client prioritization cost you time-to-accuracy under
