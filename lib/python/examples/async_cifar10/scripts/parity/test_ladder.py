@@ -240,12 +240,45 @@ def test_selector_score_localizes_worst_term():
 def test_selection_checks_skip_without_per_trainer():
     """Both new checks SKIP cleanly when selection telemetry has no per_trainer
     (non-instrumented selectors) — never a spurious failure."""
-    from parity.checks import selection_speed_bias_parity, selector_score_parity
+    from parity.checks import (selection_speed_bias_parity, selector_score_parity,
+                               preferred_duration_parity)
     empty = {"selection_train": [{"event": "selection", "task": "train",
                                   "round": 1, "ts": 0.0}]}
-    for fn in (selection_speed_bias_parity, selector_score_parity):
+    for fn in (selection_speed_bias_parity, selector_score_parity,
+               preferred_duration_parity):
         res = fn(empty, empty)
         assert res["ok"] and res.get("status") == "SKIP", (fn.__name__, res)
+
+
+def _binding_rounds(frac_binding, n=100):
+    """n selection rounds; a `frac_binding` fraction have a speed-penalized
+    selected trainer (system_util<1), the rest are non-binding (system_util==1)."""
+    events = []
+    for r in range(n):
+        binds = r < int(frac_binding * n)
+        su = 0.5 if binds else 1.0
+        pt = {"t0": {"speed_s": 10.0, "selected": True, "system_util": su},
+              "t1": {"speed_s": 6.0, "selected": True, "system_util": 1.0}}
+        events.append({"event": "selection", "task": "train", "round": r,
+                       "ts": float(r), "per_trainer": pt})
+    return {"selection_train": events}
+
+
+def test_preferred_duration_detects_binding_frequency_gap():
+    """Sd: the Jun-15 oort sort bug left system_util only ~.13 KS off but flipped
+    the PENALTY BINDING FREQUENCY hard (real ~80%/round vs sim ~46%). This check
+    catches that gap directly — the growth-rule guard for the unsorted-`pref` bug."""
+    from parity.checks import preferred_duration_parity
+    real = _binding_rounds(0.80)
+    sim = _binding_rounds(0.45)
+    res = preferred_duration_parity(real, sim)
+    assert not res["ok"], res                                  # gap is flagged
+    assert abs(res["real_frac_binding"] - 0.80) < 0.02, res
+    assert abs(res["sim_frac_binding"] - 0.45) < 0.02, res
+    assert res["frac_diff"] > 0.2, res
+    # a MATCHED binding frequency passes
+    res2 = preferred_duration_parity(_binding_rounds(0.78), _binding_rounds(0.80))
+    assert res2["ok"], res2
 
 
 if __name__ == "__main__":

@@ -28,6 +28,154 @@ tests/mode/test_async_sim_ordering.py tests/mode/test_sync_sim_ordering.py
 tests/mode/test_sim_commit_overhead.py` — guards baseline wiring, the in-memory
 cache, serialize-once, sim-recv barrier ordering, and the overhead model.
 
+### Status: **Jun 16b — FULL base-algorithm fidelity pass landed (D1–D6 + 2 structural) across oort/refl/felix; UNRUN. Tests 246 + 22 green.**
+
+> **Goal (user, Jun 16):** make oort/refl/felix true to their base implementations' VALUES, cleanly + extensibly;
+> accept that current parity perf may shift. **What landed (all config-driven, default = the Oort paper):**
+> - **Canonical defaults** `scoring.OORT_PAPER_DEFAULTS` (standalone Oort `argParser.py`): round_threshold 10,
+>   round_penalty/α 2.0, clip_bound 0.98, cut_off_util 0.7, pacer 20/5, exploration 0.9/decay 0.95/min 0.2.
+>   `OortSelector` + `AsyncOortSelector` read every knob via `kwargs.get(..., paper)`. **oort + felix now use the
+>   paper** (were 30/0.95/0.95/decay 0.98) — these are FIDELITY changes that move their behavior.
+> - **refl overrides → REFL fork** via `selector.kwargs` in `OVERNIGHT_node2.yaml` (sim+real): round_threshold 30,
+>   clip_bound 0.9, cut_off_util 0.05, exploration_decay 0.98, exploration_min 0.3.
+> - **D1 sort, D2 reward-normalization** (prior Jun-16 work) — now also config-faithful (clip_bound per-baseline).
+> - **Structural fix 1 — `cutoff_util`** (oort + async): was hardcoded `0.95 *` an arbitrary near-bottom index →
+>   now `cut_off_util *` the exploitLen-th-HIGHEST score (ref `oort.py:329`). The factor was previously inert.
+> - **Structural fix 2 — refl exploitation**: was deterministic top-k (ignored cut_off_util) → now the REFL fork's
+>   `cut_off_util`-augmented, utility-WEIGHTED `np.random.choice` (`thirdparty/oort/oort.py:316-355`). refl is now
+>   genuinely stochastic (parity treats it as such; P1/utility already gated).
+> - **debug_run.sh** reads `OVERNIGHT_{node}.yaml` — both updated (also fixed a `§` char that broke `yaml.safe_load`).
+>
+> **Deferred (1 item, documented):** **D5 temporal time-base** — flame uses `last_selected_round`; refs use the
+> round the util was last UPDATED (on completion). Needs a new aggregator-stamped property across real+sim; held
+> as the one cross-cutting change (subtle effect, high blast radius). Flagged in code at the temporal call site.
+>
+> **Hypothesis for the overnight (perf WILL move; that's expected):**
+> - **oort**: round_threshold 30→10 lowers `pref` → speed penalty binds more → picks faster (was the parity bug
+>   direction anyway). cut_off_util 0.95→0.7 + the index fix widen exploitation → more utility-weighted spread.
+>   D1+D2 add the sort + meaningful temporal. Net: oort sim/real should converge AND match the paper. Watch
+>   `preferred_duration` binding (target real≈sim≈high), A2c bias, K2/terminal.
+> - **refl**: stays §4.5-green on emergent expected; now stochastic-faithful, so per-round identity stays gated.
+>   round_threshold already 30 (unchanged). Watch loss/P3 don't regress.
+> - **felix**: paper knobs (10/0.7/0.98) shift its selection; throughput family may wobble — re-confirm it holds.
+>
+> **Validation criteria carried forward:** the §4.5 / D1 / D2 criteria below still apply; add "selector kwargs
+> in the generated config match the per-baseline reference" and "felix throughput family still green".
+
+### Status: **Jun 16 — refl §4.5 VALIDATED (emergent all-green); oort sort fix CODE-COMPLETE + guarded, STILL UNRUN; reference tally done (D-ledger corrected)**
+
+> **Read first (supersedes the Jun-15 block below for the "what's run" question).** Three things this session:
+>
+> **1. refl §4.5 (`simInflightResidence`) WORKED.** Fresh sim `run_20260614_152648` vs the overnight real
+> `run_20260614_034934` (4 h, agg-goal 10, `--budget-s 14400`): the hold fires every round and at steady
+> state holds **52 of ~67 in-flight** (median; buf_depth median 67) — my first "~14 held" read was just the
+> warmup. **Every EMERGENT check flipped to PASS**: convergence_loss **.1735→.1446 ✓**, K8 rounds rel .021 ✓,
+> U2 commits rel .021 ✓, C1 acc .021 ✓, C2 loss ✓, staleness KS .021 ✓, K2/K3/K3b ✓. Remaining refl FAILs are
+> **P3 trainer_speed (KS .191, root)** and **A2 eligibility (point-mass, passed-on-mean)**; A2b pool only moved
+> **12.41→11.89** (still ≠ real 6.43) and participation is DOWNSTREAM-suppressed. **A2b's residual is NOT
+> under-holding** — it's that A2b compares sim's *modeled* `PROP_ROUND_DURATION` pool vs real's *wall*
+> round_duration pool (same asymmetry flagged for `system_util`), compounded by the P3 speed-shape gap. refl's
+> next lever is **P3 (the speed model / its observed-sample shape), not more pool exclusion.** `parity_refl_152648.json`.
+>
+> **2. oort sort fix is CODE-COMPLETE and UNRUN.** Correction to the Jun-15 note: the oort pair
+> (sim `152630` / real `081648`) referenced below is the **PRE-fix diagnostic run** — the sorted-`pref` code
+> has NOT been exercised by any run yet. So `pref` median **22** / `system_util` sim .907 vs real .865 /
+> A2c bias **+0.32** measured on `152630` is the **buggy baseline**, not a validation. The fix + guards landed
+> this session (see DONE); it needs the next oort run to validate.
+>
+> **3. Reference tally done (user cloned `third_party/REFL` + `third_party/Oort`).** D-ledger corrected below
+> — notably flame's `round_threshold=30` **MATCHES REFL** (D3 is not a refl bug), and `cut_off_util` differs
+> from **both** references. D1 (sort) and D2 (no reward normalization) are confirmed real port errors.
+
+### Status: **Jun 15 — oort ROOT CAUSE FOUND = unsorted `pref` bug (a real port error) — SESSION PAUSED mid-implementation**
+
+> **Read first. This supersedes the Jun-14 oort "selector-scoring / `system_util`" diagnosis below by
+> explaining its mechanism.** The oort `system_util` divergence is a **FLAME reimplementation bug**, found
+> entirely from the EXISTING Jun-14 oort pair (sim `run_20260614_152630` vs real `run_20260614_081648`) —
+> **no new instrumentation or re-run was needed to root-cause it.** A re-run is only to VALIDATE the fix.
+
+**The bug.** `OortSelector.calculate_round_preferred_duration` builds a list literally named
+`sorted_round_duration` and indexes it at the `round_threshold` percentile — **but never calls `.sort()`**.
+So `pref` (the speed cutoff feeding `system_util = (pref/duration)^alpha`) was an arbitrary dict-position
+duration, not the percentile. Reference Oort sorts: `third_party/Oort/oort/oort.py:272`
+(`sortedDuration = sorted([...]); round_prefer_duration = sortedDuration[min(int(len·thr/100), len-1)]`).
+
+**Proof / decomposition (from existing telemetry; `speed_s` in `emit_selection` IS `PROP_ROUND_DURATION`,
+present BOTH modes — reconstruct `pref = speed_s·sqrt(system_util)` since `alpha=2`; within-round spread = 0.000):**
+- Emitted sim `pref` median **22 s** vs the TRUE sorted 30th-pct **7 s**; bug shifts `pref` >3 s in **68 %** of rounds.
+- Speed penalty binds in **80 % of real rounds but only 46 % of sim rounds** (54 % of sim rounds penalize
+  *nobody*). Selected durations match (real 8.75 / sim 8.54); the binding `pref` matches (~9 / ~8); **only the
+  non-binding frequency diverges.** Non-binding `pref` → `system_util=1` for all → speed penalty off → selector
+  ignores speed → sim picks pool-average (A2c bias **+0.32**) while real picks fast (**−2.54**). → S3/4, P3, throughput, terminal.
+- Not the unrun-default-60 s (sim has FEWER unrun: 2.2 % vs 6.0 %); not the 99999 sentinel (1.5 %).
+
+**DONE this session (committed? NO — uncommitted working tree):**
+1. **Sort fix** — added `sorted_round_duration.sort()` before the percentile index in BOTH
+   `flame/selector/oort.py:~476` and `flame/selector/async_oort.py:~631` (felix). refl inherits oort's method (→ gets the fix; reconfirm in refl review).
+2. **Direct logging** — `OortSelector._system_util_summary()` emits per-round `sys_util_mean` / `frac_penalized`
+   / `pref_binds` over selected on the selection event (so binding is trackable without reconstruction).
+   `round_preferred_duration_s` + `alpha` already emitted (Jun-14c).
+3. **Unit tests** — `tests/selector/test_oort_selector.py::TestRoundPreferredDuration` (3 tests: pref==sorted
+   percentile & ≠ unsorted; monotone in threshold; thr=100→99999). **8 passed.** Added `flame.selector.async_oort`
+   to the `tests/conftest.py` framework-patch loop (for a parallel async guard test, NOT yet written).
+
+**NEXT STEPS (updated Jun 16 — items 1–3 DONE; resume at 4):**
+1. ✅ **async_oort guard test** — `TestAsyncRoundPreferredDuration` in `tests/selector/test_oort_selector.py`
+   (3 tests; `AsyncOortSelector` needs kwargs `c/aggGoal/evalGoalFactor/roundNudgeType/selectType`, NOT
+   `aggr_num`; conftest patch already in). **11 selector tests pass.**
+2. ✅ **`preferred_duration_parity`** (check id `preferred_duration`, "Sd" in the report) added to
+   `scripts/parity/checks.py` (Stage 3, MECHANISM/DIST, dep `eligible_speed`), registered in `run()` +
+   `CHECK_META`, formatter in `report.py`, `test_ladder.py::test_preferred_duration_detects_binding_frequency_gap`.
+   **Verified on the buggy oort pair: real binds 80.2 %/round vs sim 45.5 % (diff .346, FAIL) — it catches the bug.**
+3. ✅ **PARITY.md** updated (this block + D-ledger correction below).
+4. ✅ **D2 bundled (user decision Jun 16).** Reward normalization+clipping implemented in `scoring.py`
+   (`oort_norm_stats` + `oort_normalize_reward`, ref `get_norm`) and wired into BOTH `oort.py` and
+   `async_oort.py` `calculate_total_utility` (refl inherits oort's). Config-gated `normalize_reward` (default
+   True) + `clip_bound` (default 0.95). `believed_I` audit now logs the normalized value. Guarded by
+   `TestRewardNormalization` (4 tests). **243 selector/mode/sim + 22 parity tests PASS.** NOTE: because D1+D2
+   ship together, the next oort run validates them jointly — `preferred_duration` binding (D1) and the
+   exploration/temporal effect (D2) are separable in the telemetry (Sx `temporal` term should now be
+   non-negligible relative to `believed_I`∈[0,1]).
+5. **Commit + push** (branch `dg/fix_sim_fidelity`) — HELD per user (Jun 16); user will commit.
+6. **Re-run oort real + sim** (4 h, agg-goal 10) WITH D1+D2. Validate: emitted `pref` median 22→~7;
+   `preferred_duration` binding 46 %→~real 80 %; A2c sim bias +0.32→~−2.5; Sx `system_util` KS .12→pass +
+   `believed_I` now ∈~[0,1]; S3/4, P3, K2/terminal close. (Real also shifts under D2 — it's the new reference.)
+7. **Re-run refl real + sim as a PAIR** with D1+D2 + §4.5 (`simInflightResidence` now persisted in the SIM
+   refl block of `OVERNIGHT_node2.yaml` + `SIMULATED_node2.yaml`). The §4.5-validated sim `152648` was paired
+   against the *old* real `034934`; re-run both for a clean verdict. Validate emergent stays green; watch P3.
+
+**DISCREPANCY LEDGER — flame-vs-reference Oort differences. RECONFIRMED Jun 16 against BOTH references
+(`third_party/Oort/oort/oort.py` = the paper's standalone Oort; `third_party/REFL/thirdparty/oort/oort.py`
+= REFL's own Oort fork, which is what flame's `refl_oort` should match). The two references DIFFER on
+defaults (see D3/D4) — so "upstream" is per-baseline: standalone for the `oort` baseline, REFL fork for
+`refl`. flame has ONE shared `OortSelector` inherited by both, so it cannot match both at once.**
+
+| # | discrepancy | flame | standalone Oort | REFL fork | verdict |
+|---|---|---|---|---|---|
+| D1 | **`pref` not sorted** | FIXED (sort added, both `oort.py` + `async_oort.py`) | `sorted(...)` `oort/oort.py:272` | same (`thirdparty/oort/oort.py`) | **BUG (port error), fixed — UNRUN** |
+| D2 | **stat-utility not normalized/clipped** | **FIXED Jun 16** (`scoring.oort_norm_stats`/`oort_normalize_reward`; wired into `oort.py` + `async_oort.py` `calculate_total_utility`; config `normalize_reward`/`clip_bound`) — was raw `PROP_STAT_UTILITY` (~73.7) → temporal term inert | `creward=min(reward,clip_value); sc=(creward−min)/range + temporal` then `if dur>pref: sc*=(pref/dur)^penalty` (`get_norm` @ `oort.py:286-308,394`) | same structure (REFL uses `abs(sc)`) | **BUG (logic omission), FIXED — UNRUN.** Parity-NEUTRAL → pure FIDELITY. Guard `TestRewardNormalization`. |
+| D3 | `round_threshold` | **FIXED**: config-driven, default **10** (paper); refl override **30** | **10** (`argParser.py:52`) | **30** (`argParser.py:99`) | now per-baseline correct (oort/felix=10, refl=30) |
+| D4 | `cut_off_util` | **FIXED**: config-driven, default **0.7** (paper); refl **0.05**; AND `cutoff_util` now thresholds the exploit-boundary score (was inert) | **0.7** (`argParser.py:105`) | **0.05** (`argParser.py:127`) | structural + value; refl exploitation also rewritten to the fork's weighted augmentation |
+| D5 | temporal time-base | `last_selected_round` — **DEFERRED** (needs aggregator-stamped last-UPDATED prop; subtle, high blast radius) | `time_stamp` = round util UPDATED on completion (`oort.py:215,296`) | `training_round` (same) | the one remaining gap; flagged in code |
+| D6 | `clip_bound` | **FIXED**: config-driven, default **0.98** (paper); refl **0.9** | **0.98** | **0.9** | per-baseline correct |
+| S1 | `cutoff_util` index | **FIXED**: exploitLen-th HIGHEST score (ref) | `scores[sortedClientUtil[exploitLen]]` desc | same | flame had indexed near the bottom → factor inert |
+| S2 | refl exploitation | **FIXED**: cut_off_util-augmented utility-weighted `np.random.choice` | n/a (oort uses `sample_by_util`) | `thirdparty/oort/oort.py:316-355` | was deterministic top-k (ignored cut_off_util) |
+> `round_penalty=2.0` (orig exponent) **== flame `alpha=2`** for `system_util` — MATCHES, not a bug.
+>
+> **The shared-selector problem (the crux of "are we respecting the base implementations?").** flame has ONE
+> `OortSelector` inherited by both the `oort` baseline (should match standalone Oort) and `refl` (should match
+> the REFL fork). The two references DIFFER on defaults (round_threshold 10 vs 30; cut_off_util 0.7 vs 0.05;
+> clip_bound 0.98 vs 0.9), so flame **cannot match both at once with code defaults.** Today the code defaults
+> follow REFL (round_threshold=30) — so the **`oort` baseline does NOT match the oort paper's defaults.** All
+> these knobs came from `oort.py.__init__` CODE defaults, NOT config. **RESOLVED Jun 16b:** all knobs are now
+> `selector.kwargs`-driven, defaulting to the Oort paper (`scoring.OORT_PAPER_DEFAULTS`); refl overrides to the
+> REFL fork in `OVERNIGHT_node2.yaml`. So each baseline matches its own reference.
+>
+> **Status of D1–D6 + structural after Jun 16b:** D1, D2, D3, D4, D6, and the two structural fixes (cutoff index;
+> refl weighted exploitation) are **FIXED — UNRUN**. **Only D5 (temporal time-base) deferred** (documented). REFL's
+> `abs(sc)` is subsumed (post-D2 scores are ≥0, so abs is a no-op); the explore/exploit split + augmentation now
+> match the fork. All guarded (`TestAlgorithmHyperparams`, `TestRewardNormalization`, cutoff test). 246 + 22 PASS.
+
 ### Status: **Jun 14 — FULL 14400 s (4 h) runs (n=300, α=0.1)** — the run-length caveat RESOLVED
 
 > **Read first.** These are the full **14400 s** runs the original tables were built for; they
@@ -277,6 +425,7 @@ pass*. "Dep" = upstream prerequisites.
 | S3/4 | num_chosen / in_flight / effective_c | MECHANISM/DIST | Selector picks a different count | A2 |
 | A2c `[Jun14c]` | selected-vs-pool speed bias | MECHANISM/DIST | Selector's revealed *speed preference* (`bias=selected−pool`) diverges with the pool matched → **selector-scoring** (oort), vs pool itself diverging → **composition** (A2b, refl) | A2b |
 | Sx `[Jun14c]` | selector score-term localize | DIAG | *Which* utility-score term drives a mix split (oort believed_I/temporal/system_util; feddance V/I/A/U) — pinpoints e.g. oort `system_util` | A2b |
+| Sd `[Jun16]` | preferred-duration penalty bind | MECHANISM/DIST | Oort speed-penalty **binding frequency** per round (≥1 selected w/ `system_util<1`) + reconstructed `pref` median — the D1 unsorted-`pref` guard (caught: real 80 % vs sim 46 %). Works on pre-instrumentation runs (reconstructs `pref=dur·√system_util`). | A2b |
 | S2 | Participation frequency | EMERGENT/DIST | Per-trainer chosen-count diverges | S3/4 |
 | S1 | Per-round Jaccard | DIAG | Exact set identity (gated WARN for stochastic selectors) | A2 |
 

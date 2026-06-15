@@ -509,6 +509,70 @@ def selector_score_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
     }
 
 
+def preferred_duration_parity(real: dict, sim: dict, frac_tol: float = 0.20) -> dict:
+    """Stage-3 [DIST]: does the Oort speed penalty BIND at the same rate?
+
+    Root-cause guard for the Jun-15 oort `pref`-not-sorted bug (PARITY §4.8/D1).
+    Oort's `system_util = min(1, (pref/round_duration)^alpha)` only penalizes a
+    trainer when its duration exceeds the round-preferred duration `pref` (the
+    round_threshold-th PERCENTILE of candidate durations). When `pref` is computed
+    on an UNSORTED list it lands at an arbitrary (too-high) value, so the penalty
+    rarely binds, the selector ignores speed, and sim picks ~pool-average instead
+    of fast (A2c bias diverges). That bug left `system_util` (Sx) only ~.13 KS off
+    but flipped the *binding frequency* hard (real 80%/round vs sim 46%) — which is
+    what this check measures directly.
+
+    Per mode, over SELECTED candidates: the fraction of rounds where >=1 selected
+    trainer is speed-penalized (system_util < 1). Reconstructs `pref` from the
+    existing per_trainer audit (`pref = round_duration * sqrt(system_util)` for a
+    binding entry, alpha=2) so it works on telemetry recorded BEFORE the
+    round_preferred_duration_s instrumentation was added. SKIP for non-oort
+    selectors (no per_trainer.system_util).
+    """
+    eps = 1e-6
+
+    def per_round_binding(events):
+        binds, pref_samples = [], []
+        for e in events:
+            any_pen, saw = False, False
+            for c in (e.get("per_trainer") or {}).values():
+                if not c.get("selected"):
+                    continue
+                su = c.get("system_util")
+                if su is None:
+                    continue
+                saw = True
+                if su < 1.0 - eps:
+                    any_pen = True
+                    sp = c.get("speed_s")
+                    if sp is not None and su > 0:
+                        pref_samples.append(sp * math.sqrt(su))  # alpha=2
+            if saw:
+                binds.append(1.0 if any_pen else 0.0)
+        return binds, pref_samples
+
+    r_binds, r_pref = per_round_binding(real["selection_train"])
+    s_binds, s_pref = per_round_binding(sim["selection_train"])
+    if not (r_binds and s_binds):
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no selected per_trainer.system_util (non-oort selector)"}
+
+    r_frac = sum(r_binds) / len(r_binds)
+    s_frac = sum(s_binds) / len(s_binds)
+    diff = abs(r_frac - s_frac)
+
+    def _med(x):
+        return round(statistics.median(x), 2) if x else None
+
+    return {
+        "ok": diff <= frac_tol, "tier": "DIST",
+        "real_frac_binding": round(r_frac, 3), "sim_frac_binding": round(s_frac, 3),
+        "frac_diff": round(diff, 3), "frac_tol": frac_tol,
+        "real_pref_median_s": _med(r_pref), "sim_pref_median_s": _med(s_pref),
+        "n_rounds_real": len(r_binds), "n_rounds_sim": len(s_binds),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.B  Selection  (S1–S5)
 # ═══════════════════════════════════════════════════════════════════
@@ -1888,6 +1952,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
     results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
+    results["preferred_duration"] = preferred_duration_parity(real_agg, sim_agg)
     results["participation"] = participation_parity(real_agg, sim_agg)
     results["selection"] = selection_parity(real_agg, sim_agg, max_rounds)
 
@@ -1961,6 +2026,7 @@ CHECK_META: dict = {
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
     "selection_bias":          {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},
     "selector_score":          {"stage": 3, "role": "DIAG",     "deps": ("eligible_speed",)},
+    "preferred_duration":      {"stage": 3, "role": "MECHANISM", "deps": ("eligible_speed",)},
     "participation":           {"stage": 3, "role": "EMERGENT", "deps": ("selection_detail", "eligible_speed", "selection_bias")},
     "selection":               {"stage": 3, "role": "DIAG",     "deps": ("eligibility",)},
     # ── Stage 4 Dispatch & training ──

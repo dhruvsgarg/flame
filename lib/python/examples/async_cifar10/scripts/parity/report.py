@@ -55,6 +55,7 @@ _SECTIONS = [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
         ("A2c  selected-vs-pool speed bias",    "selection_bias"),
         ("Sx   selector score-term localize",   "selector_score"),
+        ("Sd   preferred-duration penalty bind","preferred_duration"),
         ("S2   participation frequency",        "participation"),
         ("S1   per-round Jaccard",              "selection"),
     ]),
@@ -340,6 +341,16 @@ def _fmt_metric(name: str, res: dict) -> list:
                 lines.append(
                     f"           {k:14s} KS={v.get('ks')}  real_mean={v.get('real_mean')}  sim_mean={v.get('sim_mean')}"
                 )
+    elif name == "preferred_duration":
+        if res.get("status") == "SKIP":
+            lines.append(f"         note: {res.get('note')}")
+        else:
+            lines += [
+                f"         frac_rounds_penalty_binds real={res.get('real_frac_binding')} "
+                f"sim={res.get('sim_frac_binding')} (diff={res.get('frac_diff')} <={res.get('frac_tol')})",
+                f"         reconstructed pref median r/s="
+                f"{res.get('real_pref_median_s')}/{res.get('sim_pref_median_s')}s",
+            ]
     elif name == "avail_timebase":
         lines += [
             f"         max_rel_diff={res.get('max_rel_diff')} "
