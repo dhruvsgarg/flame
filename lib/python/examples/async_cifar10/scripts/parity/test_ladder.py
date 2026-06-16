@@ -18,7 +18,7 @@ _SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
-from parity.checks import run_all_parity, overall_verdict  # noqa: E402
+from parity.checks import run_all_parity, overall_verdict, verdict_summary  # noqa: E402
 
 AGG_GOAL = 4
 TRAINERS = ["0001", "0002", "0003", "0004"]
@@ -103,6 +103,58 @@ def test_clean_pair_passes():
     assert passed, (
         f"clean pair should pass; roots={roots} downstream={downstream}")
     assert not roots and not downstream
+
+
+def test_per_round_advance_grid_ks_tolerates_quantization():
+    """K3 enforces KS at the integer grid: sim Δvclock is whole-second quantized,
+    real Δwall jitters around the same value. A raw KS spikes at the quantization
+    point even when the means match; the grid KS must PASS. A genuine mean
+    divergence must STILL FAIL (the mean-diff guard, not the KS)."""
+    from parity.checks import per_round_advance_parity
+    import random
+    random.seed(3)
+    # 200 rounds: sim advances pinned to whole seconds, real = same + wall jitter
+    sim_v = [100.0]
+    real_v = [100.0]
+    for _ in range(200):
+        step = random.choice([27.0, 28.0, 29.0])
+        sim_v.append(sim_v[-1] + step)
+        real_v.append(real_v[-1] + step + random.uniform(0.05, 0.45))
+    sim = {"agg_rounds": [{"round": i, "vclock_now": v} for i, v in enumerate(sim_v)]}
+    real = {"agg_rounds": [{"round": i, "ts": v} for i, v in enumerate(real_v)]}
+    res = per_round_advance_parity(real, sim)
+    assert res["raw_ks_stat"] > 0.2, res     # raw KS trips on quantization alone
+    assert res["ok"] and res["ks_stat"] <= 0.2, res   # grid KS rescues it
+    # a genuine ~40% advance gap (felix-like) still FAILs on the mean guard
+    sim_slow = {"agg_rounds": [{"round": i, "vclock_now": 100.0 + 16.0 * i}
+                               for i in range(201)]}
+    res_bad = per_round_advance_parity(real, sim_slow)
+    assert not res_bad["ok"] and res_bad["mean_rel_diff"] > 0.15, res_bad
+
+
+def test_verdict_summary_tally_schema():
+    """The pass/total scoreboard is consistent with the verdict and excludes
+    warn/skip from the enforced denominator (regression guard for the column)."""
+    # clean pair: all enforced checks pass, score == 1.0
+    real_agg, real_tr = _build_mode(20, advance=10.0, with_vclock=False)
+    sim_agg, sim_tr = _build_mode(20, advance=10.0, with_vclock=True)
+    results = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=AGG_GOAL)
+    s = verdict_summary(results)
+    assert s["passed"] is True
+    assert s["n_fail"] == 0 and s["score"] == 1.0
+    assert s["n_enforced"] == s["n_pass"] + s["n_fail"]
+    assert not s["roots"]
+
+    # broken pair: the failing rung is counted and surfaced as a root
+    sim_agg2, sim_tr2 = _build_mode(20, advance=3.0, with_vclock=True)
+    results2 = run_all_parity(real_agg, sim_agg2, real_tr, sim_tr2, agg_goal=AGG_GOAL)
+    s2 = verdict_summary(results2)
+    assert s2["passed"] is False
+    assert s2["n_fail"] >= 1 and 0.0 <= s2["score"] < 1.0
+    assert s2["n_enforced"] == s2["n_pass"] + s2["n_fail"]
+    assert "overhead_residual" in s2["roots"]
+    # warn/skip never inflate the enforced denominator
+    assert s2["n_enforced"] == s2["n_pass"] + s2["n_fail"]
 
 
 def test_overhead_residual_is_root():
@@ -346,27 +398,36 @@ def test_convergence_low_confidence_on_short_runs():
     assert r["ok"] and not r.get("low_confidence")
 
 
-def test_trainer_speed_tolerates_wall_capture_jitter():
-    """P3 compares at the modeled integer-second grid: sim reports exact integer
-    training-delays, real carries sub-second wall-capture jitter on top. The raw
-    KS would FAIL on that jitter alone; the grid KS must PASS. But a *systematic*
-    overhead (real shifted a full grid cell) must still FAIL."""
+def test_trainer_speed_support_guard_tolerates_mix_catches_tail():
+    """P3 enforces SUPPORT containment (Jun-16 reclassification): sim must not
+    produce speeds beyond real's support. Wall-capture jitter and a faster
+    *selection mix* both keep sim WITHIN real's support → PASS (the mix verdict is
+    owned by A2c); only a genuine speed-model bug (sim produces speeds real never
+    reaches — oort's 56s→sim tail) pushes sim's p99 beyond real and FAILs."""
     from parity.checks import trainer_speed_parity
     import random
     random.seed(0)
     base = [float(random.choice([2, 3, 5, 6, 8, 9])) for _ in range(20000)]
     sim = {"agg_rounds": [{"trainer_speed_s": list(base)}]}
-    # real = same integer grid + small positive capture jitter (sleep/settle leg)
+
+    # (1) wall-capture jitter: real = same grid + sub-second capture → within support
     jittered = [v + random.uniform(0.02, 0.09) for v in base]
-    real = {"agg_rounds": [{"trainer_speed_s": jittered}]}
-    res = trainer_speed_parity(real, sim)
-    assert res["raw_ks_stat"] > 0.1, res          # raw sub-second KS would fail
-    assert res["ok"], res                          # grid KS passes
-    assert res["ks_stat"] <= 0.1, res
-    # a genuine ~+1s systematic speed-model offset is NOT absorbed
-    shifted = [v + 1.0 for v in base]
-    res_bad = trainer_speed_parity({"agg_rounds": [{"trainer_speed_s": shifted}]}, sim)
+    res = trainer_speed_parity({"agg_rounds": [{"trainer_speed_s": jittered}]}, sim)
+    assert res["ok"], res
+    assert res["support_ratio"] <= 1.0 + res["support_tol"], res
+
+    # (2) selection mix: sim picks faster trainers from the SAME support (real has
+    # the same max, just fewer fast picks) → PASS, flagged mix_deferred
+    real_mix = list(base) + [9.0] * 8000  # real skews slower, same support [2,9]
+    res_mix = trainer_speed_parity({"agg_rounds": [{"trainer_speed_s": real_mix}]}, sim)
+    assert res_mix["ok"], res_mix
+    assert res_mix["ks_stat"] > 0.1 and res_mix["mix_deferred"], res_mix
+
+    # (3) genuine speed-model bug: sim invents a slow tail real never reaches
+    sim_tail = {"agg_rounds": [{"trainer_speed_s": base + [56.0] * 2000}]}
+    res_bad = trainer_speed_parity({"agg_rounds": [{"trainer_speed_s": base}]}, sim_tail)
     assert not res_bad["ok"], res_bad
+    assert res_bad["support_ratio"] > 1.0 + res_bad["support_tol"], res_bad
 
 
 if __name__ == "__main__":

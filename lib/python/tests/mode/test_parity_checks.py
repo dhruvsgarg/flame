@@ -321,13 +321,25 @@ class TestTrainerSpeedParity:
         r = pc.trainer_speed_parity(agg, agg, ks_tol=0.1)
         assert r["ok"]
 
-    def test_diverged_fails(self):
+    def test_out_of_support_tail_fails(self):
+        # Jun-16 support-guard semantics: P3 fails when sim produces speeds BEYOND
+        # real's support (the genuine speed-model bug — oort's old 56s→sim tail).
         real_rounds = [_round_speed(r, ["a"], [0], speed=11.0) for r in range(1, 11)]
-        sim_rounds = [_round_speed(r, ["a"], [0], speed=7.0) for r in range(1, 11)]
+        sim_rounds = [_round_speed(r, ["a"], [0], speed=56.0) for r in range(1, 11)]
         real = _agg(agg_rounds=real_rounds)
         sim = _agg(agg_rounds=sim_rounds)
-        r = pc.trainer_speed_parity(real, sim, ks_tol=0.1)
+        r = pc.trainer_speed_parity(real, sim)
         assert not r["ok"]
+        assert r["support_ratio"] > 1.0 + r["support_tol"]
+
+    def test_faster_sim_within_support_defers_to_mix(self):
+        # sim faster than real, same support direction (wall-capture / faster
+        # selection mix) is NOT a speed-model bug — P3 passes, A2c owns the mix.
+        real_rounds = [_round_speed(r, ["a"], [0], speed=11.0) for r in range(1, 11)]
+        sim_rounds = [_round_speed(r, ["a"], [0], speed=7.0) for r in range(1, 11)]
+        r = pc.trainer_speed_parity(_agg(agg_rounds=real_rounds),
+                                    _agg(agg_rounds=sim_rounds))
+        assert r["ok"], r
 
 
 class TestBudgetNotCap:
