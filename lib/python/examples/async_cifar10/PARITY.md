@@ -53,7 +53,7 @@ sections below status and get *updated in place*, not appended to.
 
 ---
 
-## Status (Jun 16 — post-overhead-fix rerun; oort block-for-K-fresh landed same day)
+## Status (Jun 16 — oort block-for-K-fresh + D5 temporal time-base landed; awaiting rerun)
 
 3h seeded runs (`seed=1234`, `--budget-s 10800`, `agg_goal 10`). Real dirs:
 `experiments/run_20260616_0{0,2,5}*_real`. Sim dirs (latest):
@@ -64,7 +64,7 @@ refl feddance --agg-goal 10 --budget-s 10800`.
 
 | baseline | score | lowest broken rung | root cause | status |
 |---|---|---|---|---|
-| **refl** | **44/46** | `participation` (S2) | **D5 resurfacing** (deferred temporal time-base bug, see Discrepancy ledger) — `PROP_LAST_SELECTED_ROUND` is written on *commit*, and sim's `sct`-sorted commit order is far more regular/deterministic than real's FIFO-arrival jitter. That regularity feeds the temporal-uncertainty utility term, skewing *which* trainers win the weighted draw even though the eligible pool, pool speed, and aggregate chosen-count all match (`matched_count_ks=.512`, avg_diff 107/round, max 653; per-round `mean_jaccard`=.039 — almost no per-round set overlap). Now well-localized: read site `selector/oort.py` (`PROP_LAST_SELECTED_ROUND` temporal term), write site `top_aggregator.py:889`. | **diagnosed, not fixed** — shared write site also feeds oort's utility term; needs a scoped design (e.g. stamp on dispatch-round not commit-round) + its own guard before landing, see Next steps |
+| **refl** | **44/46** | `participation` (S2) | **D5 — temporal time-base WRITE-TIMING, FIXED this session.** `PROP_LAST_SELECTED_ROUND` feeds the selector's UCB temporal term (`scoring.oort_temporal_uncertainty`). The bug was *not* the value (the value is the selection round, == `MODEL_VERSION`, which is correct and identical real/sim — both refs' `time_stamp` tracks engagement, and in sync FL engagement-round == selection-round == `MODEL_VERSION`). The bug was *when* it was written: the aggregator wrote it at **commit**, so a candidate's visible value depended on whether its last update had committed yet — and sim's `sct`-regular commit order vs real's FIFO jitter made that "committed-by-read-time?" answer diverge, skewing *which* trainers win the weighted draw even though pool, pool-speed and aggregate chosen-count matched (`matched_count_ks=.512`, avg_diff 107/round, max 653; `mean_jaccard`=.039). | **FIXED** — stamp moved to **selection time** in the selector (`oort.py::_record_last_selected_round`, value = selection round); commit-time write removed (`oort/top_aggregator.py`). Value unchanged, timing now aligned across modes. Guard: `test_oort_selector.py::TestLastSelectedRoundStamp`. Scope: **oort + refl** (shared `OortSelector`). **Awaiting 3h rerun.** |
 | **felix** | **33/42** | `overhead_residual`/`overlap_factor` | overlap-model collapse, unchanged: sim 12.7× vs real 6.8×, advance 2.25 vs real 4.02. **`simRedispatchGapSeconds=0.6` tested and REJECTED** — moved advance/overlap/staleness <1%, confirms the knob doesn't touch the bottleneck | needs the buffer-aging/overlap-model rework (pace future-dated commits), not another scalar |
 | **oort** | **38/44** *(pre-fix; see below)* | carry-over starvation | `_oort_sim_recv`'s adaptive `grace` timeout (4× EMA of past full-drain time) is too tight for genuinely-still-computing fresh trainers, demoting them to a later round where they land **stale** instead of fresh (`committed_fresh` sim 7.24 vs real 10). Confirmed via code trace: `recv_fifo`'s `timeout=grace` races real wall-clock GPU compute, not a deterministic future | **FIXED this session** — see below |
 | **feddance** | **41/43** | `selection_bias` (A2c) + downstream `convergence_loss` | not a regression: the already-known deferred selection-mix bias (sim picks ~0.4–0.5s-faster trainers) tipped just over its .2/.15 bars on this seed, same magnitude as always | still open, deprioritized below refl/felix |
@@ -87,18 +87,35 @@ rerun** — do that next, then update this table's oort row with the new
 
 ### Next implementation steps, in priority order
 
-1. **Rerun oort's 3h pair** to validate the block-for-K-fresh fix
-   (`bash scripts/debug_run.sh --baselines oort --runtime-s 10800 --mode both`,
-   then `parity_check.py --batch --baselines oort`). Expect `committed_fresh`
-   sim → ~10, `residence`/`preferred_duration`/`selection_bias` to clear since
-   they're all downstream of the starvation.
-2. **refl `participation` (D5).** Design a fix for `PROP_LAST_SELECTED_ROUND`
-   write timing (`top_aggregator.py:889`) that doesn't regress oort, which
-   shares the write site — likely: stamp the property at dispatch-round
-   instead of commit-round (removes the commit-order-regularity dependence
-   entirely), or denoise sim's `sct` sort to inject real's arrival jitter.
-   Needs its own guard test before a rerun; do not land opportunistically
-   alongside other changes given the shared blast radius.
+> **This rerun carries TWO landed sim changes**, both touching the shared
+> `oort/top_aggregator.py` + `OortSelector` (oort + refl): oort's
+> block-for-K-fresh AND the D5 write-timing fix (stamp `PROP_LAST_SELECTED_ROUND`
+> at selection, not commit). refl is touched only by D5; oort by both. So if
+> oort regresses, bisect by reverting one — D5 is isolated to
+> `_record_last_selected_round` + the removed commit-write; block-for-K-fresh is
+> the `not self.simulated` gate. **felix is a separate stack** (`asyncfl` agg +
+> `AsyncOortSelector`) and is intentionally NOT touched by D5 this cycle — it has
+> the same latent commit-write (`asyncfl/top_aggregator.py:516`) but a different
+> selector and an open overlap investigation; deferred to avoid confounding it.
+
+1. **Rerun oort + refl pairs** (the D5 fix touches both; 1h this cycle for
+   speed): `bash scripts/debug_run.sh --baselines 'oort refl' --runtime-s 3600
+   --mode both`, then `parity_check.py --batch --baselines oort refl --budget-s
+   3600`. 1h exercises every mechanism rung (which is what D5 + block-for-K-fresh
+   are) but is NOT enough to sign off `C1`/`C2` convergence or catch low-frequency
+   clock residuals — see Durable lessons; re-confirm those at 3h once the
+   mechanism rungs are green.
+   - **oort**: expect `committed_fresh` sim → ~10 (block-for-K-fresh);
+     `residence`/`preferred_duration`/`selection_bias` clear (downstream of the
+     starvation). Temporal term now timing-stable.
+   - **refl**: expect `participation`/S2 to clear — the temporal term no longer
+     depends on commit ordering.
+2. **felix D5 (deferred decision).** Same write-timing bug at
+   `asyncfl/top_aggregator.py:516`; fix = stamp at selection in
+   `AsyncOortSelector` (mind `round_nudge_type`: `last_train` reads this prop,
+   `last_eval` reads `PROP_LAST_EVAL_ROUND` instead — confirm which felix uses
+   before touching). Sequence after felix's overlap-model work to keep that
+   attributable, or land standalone since it's orthogonal.
 3. **felix overlap-model (buffer-aging) rework.** The redispatch-gap scalar
    is exhausted (tested, rejected this session). Next is pacing future-dated
    commits by buffer age rather than a single gap constant — design work, not
@@ -151,6 +168,27 @@ rerun** — do that next, then update this table's oort row with the new
 - A scalar fudge for the `P3 mean_overhead` ~1 s offset (wall-capture, opposite signs
   across baselines, grid-passing). Widen the bar or score on `training_delay_s`; don't
   bias the speed model to chase it.
+
+### Naming discipline (instruction — apply when touching baseline code)
+
+State and variable names must be **context-free**: a reader should not need the
+surrounding code to know what a name refers to. Round/version/time confusion has
+caused real bugs here (D5), so:
+- A name ending `_round` is a **round index** (int), never a timestamp. Use
+  `_ts`/`_time_s` for times. Don't name a round int `_stamp`/`timestamp`.
+- Qualify *whose* round: aggregator's global counter vs the selector's last-run
+  round vs a per-trainer property are different things. (Done for oort+refl:
+  selector `self.round` → `self._last_selection_round`; the per-trainer property
+  read is `end_last_selection_round`. **Deferred:** the base aggregator
+  `self._round` → `self._agg_round` — it's a `TopAggregator` attribute, so that's
+  a dedicated all-baseline pass, not scopeable to one baseline.)
+- A local should say *what it is*, not just its type-shape — `trainer_model_version`
+  (the version an update was trained on) is kept precisely because it names the
+  provenance; a vaguer `trained_round` was rejected.
+- Don't paper over an ambiguous name with a comment — rename it. Comments explain
+  *why*, names carry *what*.
+- Scope renames to the baseline you're in (oort+refl share `OortSelector`); felix
+  (`AsyncOortSelector`) and others are separate passes.
 
 ---
 
@@ -398,8 +436,11 @@ them.** Inheriting sync values therefore misbehaves:
   inflates with async's round count (more exploration pressure, automatically).
 - **pacer cadence** (`pacer_step` rounds) — fires more often in wall-time in async.
 - **staleness weighting** — async-only (sync has none); confirm fedbuff down-weights.
-- **D5 temporal time-base** (deferred) — `last_selected_round` vs round-last-*updated*
-  matters more in async, where selection and update decouple.
+- **D5 temporal time-base** (FIXED Jun 16, oort+refl) — the issue was *write
+  timing*, not value: stamping `PROP_LAST_SELECTED_ROUND` at commit let its
+  visible value ride commit ordering (sim-regular vs real-jittery). Now stamped
+  at selection (value = selection round, unchanged). Matters more in async,
+  where selection and commit decouple. felix (`AsyncOortSelector`) deferred.
 
 Principled generalization (not yet done): re-parameterize the per-round terms by
 **wall-time or samples-seen** so they're invariant to round semantics. Until then,
@@ -482,6 +523,6 @@ knobs are config-driven (`selector.kwargs`), defaulting to the Oort paper
 | D2 | stat-utility not normalized/clipped | FIXED (`scoring.oort_normalize_reward`, config `normalize_reward`/`clip_bound`) |
 | D3 | `round_threshold` | config-driven: oort/felix=10 (paper), refl=30 (fork) |
 | D4 | `cut_off_util` + cutoff-index | FIXED: config (0.7 paper / 0.05 refl); index now thresholds the exploit-boundary score (was inert) |
-| D5 | temporal time-base | **DEFERRED** — flame uses `last_selected_round`; refs use round-last-UPDATED. Needs an aggregator-stamped prop; subtle, high blast radius. Flagged in code. |
+| D5 | temporal time-base | **FIXED (Jun 16) for oort + refl** — the VALUE (selection round == `MODEL_VERSION`) was always correct and matches both refs' `time_stamp` (engagement-round, which in sync == selection round). The bug was the *write timing*: the aggregator wrote it at **commit**, making a candidate's visible value depend on commit ordering (sim sct-regular vs real FIFO-jittery). Fix: stamp at **selection** in the selector (`oort.py::_record_last_selected_round`), remove the commit-write. Guard `TestLastSelectedRoundStamp`. **felix not yet done** — same commit-write at `asyncfl/top_aggregator.py:516`, separate `AsyncOortSelector`; deferred (mind `round_nudge_type`). |
 | D6 | `clip_bound` | config-driven: 0.98 paper / 0.9 fork |
 | S | refl exploitation | FIXED: was deterministic top-k; now the fork's cut_off_util-augmented utility-weighted `np.random.choice` |

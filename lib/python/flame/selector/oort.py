@@ -63,7 +63,7 @@ class OortSelector(AbstractSelector):
 
         if self.aggr_num < 0:
             self.aggr_num = 1
-        self.round = 0
+        self._last_selection_round = 0
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
@@ -181,7 +181,7 @@ class OortSelector(AbstractSelector):
         # full candidate pool, captured before any filtering for telemetry
         all_ends = dict(ends)
 
-        if round <= self.round and len(self.selected_ends) != 0:
+        if round <= self._last_selection_round and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
 
         self.pacer()
@@ -232,7 +232,7 @@ class OortSelector(AbstractSelector):
         # This indicates the first round, where no end's utility has
         # been measured; Then, perform random selection
         if len(utility_list) == 0 and len(self.selected_ends) == 0:
-            self.round = round
+            self._last_selection_round = round
             result = self.select_random(ends, num_of_ends)
             self.emit_selection(
                 round, task_to_perform, all_ends, ends.keys(),
@@ -251,7 +251,7 @@ class OortSelector(AbstractSelector):
         )
 
         if len(utility_list) == 0:
-            self.round = round
+            self._last_selection_round = round
             result = self.select_random(ends, num_of_ends)
             self.emit_selection(
                 round, task_to_perform, all_ends, ends.keys(),
@@ -272,13 +272,14 @@ class OortSelector(AbstractSelector):
 
         newly_selected = set([*explore_end_ids, *exploit_end_ids])
         self.selected_ends = self.selected_ends | newly_selected
+        self._record_last_selected_round(newly_selected, round, ends)
 
         self.save_exploited_utility_history(ends, exploit_end_ids)
         self.update_exploration_factor()
         self.increment_selected_count_on_selected_ends(ends)
 
         logger.info(f"selected ends: {self.selected_ends}")
-        self.round = round
+        self._last_selection_round = round
 
         self._select_run_counter += 1
         for selected_end_id in self.selected_ends:
@@ -287,7 +288,7 @@ class OortSelector(AbstractSelector):
                 continue
             end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
             end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
-            end_last_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
+            end_last_eval_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
             for window in [50, 100, 200]:
                 if end_stat_util is not None:
                     self._selector_stats[task_to_perform]["data"][
@@ -297,10 +298,10 @@ class OortSelector(AbstractSelector):
                     self._selector_stats[task_to_perform]["data"][
                         f"speed_last_{window}"
                     ].append(end_speed.total_seconds())
-                if end_last_round is not None:
+                if end_last_eval_round is not None:
                     self._selector_stats[task_to_perform]["data"][
                         f"round_last_{window}"
-                    ].append(end_last_round)
+                    ].append(end_last_eval_round)
 
         if self._select_run_counter % 5 == 0:
             self.compute_trainer_stat_summary()
@@ -418,7 +419,7 @@ class OortSelector(AbstractSelector):
 
         if (
             len(self.exploitation_util_history) >= 2 * self.pacer_step
-            and self.round % self.pacer_step == 0
+            and self._last_selection_round % self.pacer_step == 0
         ):
             last_pacer_step_util = sum(
                 self.exploitation_util_history[-2 * self.pacer_step : -self.pacer_step]
@@ -530,16 +531,11 @@ class OortSelector(AbstractSelector):
     def calculate_temporal_uncertainty_of_trainer(
         self, ends: dict[str, End], end_id: str, round: int
     ) -> float:
-        """
-        Calculate temproal uncertainty term based on the end's last
-        selected round.
-        """
-
-        # NOTE: reference Oort keys this on the round the util was last UPDATED (on
-        # completion), not last SELECTED — would need a new aggregator-stamped
-        # property across real+sim. Subtle effect; deferred.
-        end_last_selected_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
-        return scoring.oort_temporal_uncertainty(round, end_last_selected_round)
+        """UCB temporal-uncertainty term, keyed on the trainer's last selection
+        round (== the model version it trained on); matches reference Oort,
+        where the selection round and the round the util was recorded coincide."""
+        end_last_selection_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
+        return scoring.oort_temporal_uncertainty(round, end_last_selection_round)
 
     def calculate_global_system_utility_of_trainer(
         self, ends: dict[str, End], end_id: str
@@ -587,10 +583,21 @@ class OortSelector(AbstractSelector):
             count = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
             ends[end_id].set_property(PROP_SELECTED_COUNT, count + 1)
 
+    def _record_last_selected_round(
+        self, end_ids, round: int, ends: dict[str, End]
+    ) -> None:
+        """Record the selection round on this round's picks (PARITY D5: at
+        selection, not at commit, so the value can't ride commit ordering).
+        Call after scoring so a pick's own bonus used its prior round."""
+        for end_id in end_ids:
+            if end_id in ends:
+                ends[end_id].set_property(PROP_LAST_SELECTED_ROUND, round)
+
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
         newly_selected = set(self._pyrng.sample(sorted(ends), num_of_ends))
         self.selected_ends = self.selected_ends | newly_selected
+        self._record_last_selected_round(newly_selected, self._last_selection_round, ends)
         return {key: None for key in newly_selected}
 
     def calculate_total_utility(

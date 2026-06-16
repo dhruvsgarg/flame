@@ -77,6 +77,57 @@ class TestOortIdempotentWithinRound:
         assert set(r1.keys()) == set(r2.keys())
 
 
+class TestLastSelectedRoundStamp:
+    """PARITY D5: PROP_LAST_SELECTED_ROUND (read by the UCB temporal term) must be
+    stamped at SELECTION time with the selection round — not at commit by the
+    aggregator. The value (the round a trainer is picked, == the MODEL_VERSION it
+    trains on) is what the reference's `time_stamp` tracks; stamping it here, where
+    selection is aligned across real/sim, removes the commit-order dependence
+    (sim sct-regular vs real FIFO-jittery) that skewed the term across modes."""
+
+    def test_stamped_with_selection_round_on_picked_ends(
+        self, oort, make_ends, channel_props
+    ):
+        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+
+        ends = make_ends(count=10, prefix="t")
+        channel_props["round"] = 5
+        result = oort.select(
+            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
+        )
+        assert result  # something was picked
+        for eid in result:
+            assert ends[eid].get_property(PROP_LAST_SELECTED_ROUND) == 5
+
+    def test_unpicked_ends_not_stamped(self, oort, make_ends, channel_props):
+        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+
+        ends = make_ends(count=10, prefix="t")
+        channel_props["round"] = 5
+        result = oort.select(
+            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
+        )
+        for eid in ends:
+            if eid not in result:
+                assert ends[eid].get_property(PROP_LAST_SELECTED_ROUND) is None
+
+    def test_stamp_is_purely_selection_side(self, oort, make_ends, channel_props):
+        # No aggregator/channel involvement: the property is set entirely within
+        # select(), so its value cannot depend on commit ordering. (The aggregator
+        # no longer writes PROP_LAST_SELECTED_ROUND at commit.)
+        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+
+        ends = make_ends(count=6, prefix="t")
+        channel_props["round"] = 3
+        result = oort.select(
+            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
+        )
+        stamped = {
+            eid: ends[eid].get_property(PROP_LAST_SELECTED_ROUND) for eid in result
+        }
+        assert stamped and all(v == 3 for v in stamped.values())
+
+
 class TestRoundPreferredDuration:
     """Guards the Jun-15 parity fix: pref must be the round_threshold-th
     PERCENTILE of candidate durations (reference Oort sorts the list before

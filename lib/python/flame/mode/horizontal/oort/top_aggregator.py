@@ -33,7 +33,6 @@ from flame.common.util import (
 from flame.mode.message import MessageType
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
-    PROP_LAST_SELECTED_ROUND,
     PROP_ROUND_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
@@ -885,9 +884,8 @@ class TopAggregator(BaseTopAggregator):
 
         trainer_model_version = 0  # default
         if MessageType.MODEL_VERSION in msg:
-            channel.set_end_property(
-                end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
-            )
+            # PROP_LAST_SELECTED_ROUND is stamped at selection (OortSelector.
+            # _record_last_selected_round), not here at commit — see PARITY D5.
             trainer_model_version = msg[MessageType.MODEL_VERSION]
             logger.info(
                 f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}"
