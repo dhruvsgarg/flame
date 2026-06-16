@@ -121,33 +121,42 @@ class TopAggregator(BaseTopAggregator):
         carryover = bool(getattr(_hp, "sim_inflight_carryover", False))
         vclock_round_start = self._vclock.now
         held_over: list = []
-        while True:
-            popped = buf.pop_min()
-            if popped is None:
-                break
-            end, sct, (msg, md) = popped
-            if carryover:
-                _tr = msg.get(MessageType.MODEL_VERSION, 0)
-                if (self._round - _tr) > 0 and sct > vclock_round_start:
-                    held_over.append((end, sct, (msg, md)))
-                    continue
-            self._advance_sim_clock(sct)
-            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
-            _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
-            if _srd is not None:
-                channel.set_end_property(
-                    end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
-                )
-            elif _sst is not None:
-                channel.set_end_property(
-                    end, PROP_ROUND_DURATION,
-                    timedelta(seconds=max(0.0, sct - float(_sst))),
-                )
-            yield msg, md
-        # Re-buffer the still-computing stragglers so they carry to the next round
-        # (occupying their in-flight slot) and commit once vclock reaches their sct.
-        for _e, _sct, _payload in held_over:
-            buf.add(_e, _sct, _payload)
+        # try/finally so the held stragglers are re-buffered even when the caller
+        # ABANDONS this generator early — which it always does (it stops once
+        # agg_goal fresh updates are accepted, suspending us at `yield` before the
+        # buffer empties). Without it, a straggler popped+held this round is lost on
+        # the next `gen.close()` (GeneratorExit at the yield) → in-flight drains to
+        # ~0.15 instead of carrying real's ~4.6 (the §4.9 carry-over under-fire).
+        try:
+            while True:
+                popped = buf.pop_min()
+                if popped is None:
+                    break
+                end, sct, (msg, md) = popped
+                if carryover:
+                    _tr = msg.get(MessageType.MODEL_VERSION, 0)
+                    if (self._round - _tr) > 0 and sct > vclock_round_start:
+                        held_over.append((end, sct, (msg, md)))
+                        continue
+                self._advance_sim_clock(sct)
+                _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+                _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+                if _srd is not None:
+                    channel.set_end_property(
+                        end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
+                    )
+                elif _sst is not None:
+                    channel.set_end_property(
+                        end, PROP_ROUND_DURATION,
+                        timedelta(seconds=max(0.0, sct - float(_sst))),
+                    )
+                yield msg, md
+        finally:
+            # Re-buffer the still-computing stragglers so they carry to the next
+            # round (occupying their in-flight slot) and commit once vclock reaches
+            # their sct.
+            for _e, _sct, _payload in held_over:
+                buf.add(_e, _sct, _payload)
 
     def _aggregate_weights(self, tag: str) -> None:
         """

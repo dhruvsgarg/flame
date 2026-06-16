@@ -53,6 +53,14 @@ experiments:
         kwargs:
           c: 30
           aggGoal: 10
+          # Parity revert: the Oort-paper knobs (round_threshold 10,
+          # exploration_decay 0.95) shifted felix's selected mix and the async
+          # overlap model — tuned for the old mix — collapsed (overlap 10.9x vs
+          # real 6.6x, staleness 8.4 vs 2.8). Restore the pre-paper async values
+          # the overlap model was validated against. No async Oort reference
+          # exists, so these anchor to the real run's spacing, not the paper.
+          round_threshold: 30
+          exploration_decay: 0.98
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -114,6 +122,14 @@ experiments:
         kwargs:
           c: 30
           aggGoal: 10
+          # Parity revert: the Oort-paper knobs (round_threshold 10,
+          # exploration_decay 0.95) shifted felix's selected mix and the async
+          # overlap model — tuned for the old mix — collapsed (overlap 10.9x vs
+          # real 6.6x, staleness 8.4 vs 2.8). Restore the pre-paper async values
+          # the overlap model was validated against. No async Oort reference
+          # exists, so these anchor to the real run's spacing, not the paper.
+          round_threshold: 30
+          exploration_decay: 0.98
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
