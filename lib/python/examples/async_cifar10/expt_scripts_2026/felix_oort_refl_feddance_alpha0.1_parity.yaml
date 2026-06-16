@@ -53,14 +53,18 @@ experiments:
         kwargs:
           c: 30
           aggGoal: 10
-          # Parity revert: the Oort-paper knobs (round_threshold 10,
-          # exploration_decay 0.95) shifted felix's selected mix and the async
-          # overlap model — tuned for the old mix — collapsed (overlap 10.9x vs
-          # real 6.6x, staleness 8.4 vs 2.8). Restore the pre-paper async values
-          # the overlap model was validated against. No async Oort reference
-          # exists, so these anchor to the real run's spacing, not the paper.
-          round_threshold: 30
-          exploration_decay: 0.98
+          # Async-relaxed (NOT the sync Oort paper). The system-utility speed
+          # penalty exists to protect a SYNC barrier (round = max-of-K, a
+          # straggler blocks everyone). Async/fedbuff has no barrier — a straggler
+          # just commits stale later — so the penalty is largely inert:
+          # round_threshold 70 keeps a broad speed mix (the pacer only raises it
+          # toward 100 anyway). exploration_decay is PER ROUND and async runs
+          # ~2-3x more rounds than sync, so a sync-tuned decay collapses
+          # exploration almost immediately; 0.999 decays slowly enough to still
+          # reach an exploitation phase across the run. No async Oort reference
+          # exists; these are not from the paper. (Paper sync defaults: 10/0.95.)
+          round_threshold: 70
+          exploration_decay: 0.999
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -122,14 +126,18 @@ experiments:
         kwargs:
           c: 30
           aggGoal: 10
-          # Parity revert: the Oort-paper knobs (round_threshold 10,
-          # exploration_decay 0.95) shifted felix's selected mix and the async
-          # overlap model — tuned for the old mix — collapsed (overlap 10.9x vs
-          # real 6.6x, staleness 8.4 vs 2.8). Restore the pre-paper async values
-          # the overlap model was validated against. No async Oort reference
-          # exists, so these anchor to the real run's spacing, not the paper.
-          round_threshold: 30
-          exploration_decay: 0.98
+          # Async-relaxed (NOT the sync Oort paper). The system-utility speed
+          # penalty exists to protect a SYNC barrier (round = max-of-K, a
+          # straggler blocks everyone). Async/fedbuff has no barrier — a straggler
+          # just commits stale later — so the penalty is largely inert:
+          # round_threshold 70 keeps a broad speed mix (the pacer only raises it
+          # toward 100 anyway). exploration_decay is PER ROUND and async runs
+          # ~2-3x more rounds than sync, so a sync-tuned decay collapses
+          # exploration almost immediately; 0.999 decays slowly enough to still
+          # reach an exploitation phase across the run. No async Oort reference
+          # exists; these are not from the paper. (Paper sync defaults: 10/0.95.)
+          round_threshold: 70
+          exploration_decay: 0.999
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0

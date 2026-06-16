@@ -61,7 +61,7 @@ convergence). Re-run the same `debug_run.sh`/parity batch.
 | baseline | change | where | re-check expectation |
 |---|---|---|---|
 | **oort** | carry-over re-buffer now in a `try/finally` so held stragglers survive the caller abandoning the recv generator early (it stops at `agg_goal`, dropping `held_over`) — the §4.9 under-fire was a lost-straggler bug, not tuning | [oort/top_aggregator.py:122](../../flame/mode/horizontal/oort/top_aggregator.py#L122) | `Sr in_flight_after`→~4.6, cascading `K2`/`K3`/`P3`/`S3·4` |
-| **felix** | revert async knobs `round_threshold 10→30`, `exploration_decay .95→.98` (pre-paper parity values) | [parity yaml felix blocks](expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_parity.yaml) | overlap 10.9×→~6.6×, staleness 8.4→~2.8, `K2`/`K3`/`U3` green |
+| **felix** | **async-relaxed** knobs `round_threshold 10→70`, `exploration_decay .95→.999` (NOT the sync paper; see §3.async) | [parity yaml felix blocks](expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_parity.yaml) | overlap 10.9×→~6.6×, staleness 8.4→~2.8, `K2`/`K3`/`U3` green |
 | **refl** | gate `Sd` to WARN when the penalty is **inactive in real** (`r_frac=0`, no reconstructable `pref`) — the PROP_ROUND_DURATION None-density artifact (A2b/A2c class). oort (`r_frac>0`) stays enforced | [checks.py preferred_duration_parity](scripts/parity/checks.py) | refl fully green (done on 45-min data) |
 | **feddance** | widen `P3 mean_overhead` bar 0.5→1.5 s (sub-grid, opposite-sign, metadata-matched wall-capture; grid_KS stays the backstop) — also clears felix's spurious `P3` | [checks.py trainer_speed_parity](scripts/parity/checks.py) | `P3` PASS; `S2`/`K3` KS resolve on the longer horizon |
 
@@ -430,6 +430,39 @@ reference only after `validate_real` shows it admissible (done: concurrency
   `0.6` zeroed the over-advance → throughput family green. *Residual:* a
   gap↔staleness coupling means one knob can't hit both advance and staleness; felix
   is HELD pending a buffer-aging investigation, not a scalar.
+
+### §3.async  Async ≠ sync selector knobs — do NOT inherit the Oort *paper* defaults
+`third_party/Oort` is **sync-only**; there is no async Oort reference, so the paper
+defaults (`OORT_PAPER_DEFAULTS`, e.g. `round_threshold 10`, `exploration_decay .95`)
+are SYNC values. Applying them to the async `AsyncOortSelector` (felix) regressed it
+(overlap 10.9× vs real 6.6×, staleness 8.4 vs 2.8) because the sim overlap model is
+calibrated to the selected MIX, and the sync knobs narrow that mix. Root theme:
+**many Oort knobs are parameterized *per round*, but "a round" is a different unit in
+async (one `agg_goal` batch) than sync (a full barrier), and async runs ~2–3× more of
+them.** Inheriting sync values therefore misbehaves:
+
+- **`round_threshold` (speed penalty)** — exists to protect a SYNC barrier (round =
+  max-of-K; a straggler blocks everyone). Async/fedbuff has no barrier (stragglers
+  commit stale later) → the penalty should be largely **inert**. Felix uses **70**
+  (broad mix). NB the pacer ([async_oort.py:546](../../flame/selector/async_oort.py#L546))
+  only ever *raises* it toward 100, so the start value washes out over a long run.
+- **`exploration_decay`** — applied once **per round**; async's higher round count
+  collapses a sync-tuned decay almost immediately (0.95 → exploration floored in ~29
+  rounds). Felix uses **0.999** (still reaches an exploitation phase across ~1150
+  rounds). `0.9999` ≈ permanent exploration (never exploits) — rejected.
+- **temporal/UCB** `√(0.1·log(round_num)/last_selected_round)` — `log(round_num)`
+  inflates with async's round count (more exploration pressure, automatically).
+- **pacer cadence** (`pacer_step` rounds) — fires more often in wall-time in async.
+- **staleness weighting** — async-only (sync has none); confirm fedbuff down-weights.
+- **D5 temporal time-base** (deferred) — `last_selected_round` vs round-last-*updated*
+  matters more in async, where selection and update decouple.
+
+Principled generalization (not yet done): re-parameterize the per-round terms by
+**wall-time or samples-seen** so they're invariant to round semantics. Until then,
+async knobs are config-driven and anchored to the real run's spacing, NOT the paper.
+**Felix's 70/0.999 is a new operating point** — the first 3 h run is its first parity
+test there; if overlap/staleness still diverge, the next move is the overlap-model
+(buffer-aging) re-tune, not more knob changes.
 
 ### §4.5  refl — `sct`-gated pool exclusion (`simInflightResidence`, validated)
 A trainer that has physically sent but is modeled as still computing (`vclock < sct`)
