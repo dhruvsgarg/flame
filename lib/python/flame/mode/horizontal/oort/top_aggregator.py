@@ -320,16 +320,31 @@ class TopAggregator(BaseTopAggregator):
             if received_end_count == aggr_num:
                 break
 
-        # running the second loop to aggregate up to aggr_num updates
-        # from trainers. Real mode only: the sim path above already returned the
-        # aggr_num smallest-sct updates in one shot (re-probing would block).
-        while not self.simulated and received_end_count < aggr_num:
-            for msg, metadata in channel.recv_fifo(end_ids, 1):
+        # running the second loop to aggregate up to aggr_num updates from
+        # trainers, mirroring real's "keep waiting" behavior. Real: recv_fifo
+        # one at a time off the same end_ids. Sim: re-probe via
+        # _oort_sim_recv on the same persistent buffer — a fresh-but-slow
+        # trainer that missed the first pass's grace window gets another
+        # grace window instead of being silently dropped to commit stale in
+        # a future round (the §4.9/Jun16 "committed_fresh starvation" gap:
+        # sim averaged 7.24 fresh/round vs real's 10 because the first pass
+        # gave up on buffer-drain rather than blocking for aggr_num fresh).
+        # `progressed` bounds the loop: a pass that accepts nothing means no
+        # more arrivals are coming this round, so stop instead of spinning.
+        while received_end_count < aggr_num and end_ids:
+            progressed = False
+            _recv2 = (
+                self._oort_sim_recv(channel, end_ids)
+                if self.simulated
+                else channel.recv_fifo(end_ids, 1)
+            )
+            for msg, metadata in _recv2:
                 end, _ = metadata
 
                 if not msg:
                     logger.info(f"[MSG_SKIP] (loop2) No data from ...{end[-8:]}; skipping it")
                     continue
+                progressed = True
 
                 # Calculate staleness
                 trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -337,14 +352,14 @@ class TopAggregator(BaseTopAggregator):
 
                 # Check if optimizer supports REFL staleness (has stale_update_max attribute)
                 stale_update_max = getattr(self.optimizer, 'stale_update_max', None)
-                
+
                 # If staleness > 0, check if we should accept or reject based on REFL config
                 if staleness > 0:
                     # CRITICAL FIX: Even if we reject stale message, we MUST clean up the trainer
                     # from in-flight tracking. Otherwise, with overcommitment, trainers that don't
                     # make the top-K will be permanently stuck in selected_ends.
                     should_reject = False
-                    
+
                     if stale_update_max is not None:
                         # REFL mode: check against stale_update_max threshold
                         if stale_update_max >= 0 and staleness > stale_update_max:
@@ -366,7 +381,7 @@ class TopAggregator(BaseTopAggregator):
                             f"expected_round={self._round}, got_round={trainer_round}; skipping it"
                         )
                         should_reject = True
-                    
+
                     # Clean up trainer from in-flight set even if rejecting the update
                     if should_reject:
                         # Check if trainer is currently in selected_ends (in-flight)
@@ -387,10 +402,10 @@ class TopAggregator(BaseTopAggregator):
                         continue
 
                 total = self._handle_weights_msg(msg, metadata, channel, total)
-                
+
                 # CRITICAL: Notify selector that this trainer has returned its update
                 channel._selector.ordered_updates_recv_ends.append(end)
-                
+
                 logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
                 # remove end_id if it sends a valid message with
@@ -402,6 +417,8 @@ class TopAggregator(BaseTopAggregator):
                     end_ids.remove(end)
                 if received_end_count == aggr_num:
                     break
+            if not progressed:
+                break
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
