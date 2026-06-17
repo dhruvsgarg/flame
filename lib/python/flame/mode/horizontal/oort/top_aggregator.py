@@ -118,7 +118,8 @@ class TopAggregator(BaseTopAggregator):
         # and stale-committed exactly as before. Default off.
         _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         carryover = bool(getattr(_hp, "sim_inflight_carryover", False))
-        vclock_round_start = self._vclock.now
+        # Pinned by _aggregate_weights so block-for-K-fresh retries can't creep it.
+        vclock_round_start = getattr(self, "_round_start_vclock", self._vclock.now)
         held_over: list = []
         # try/finally so the held stragglers are re-buffered even when the caller
         # ABANDONS this generator early — which it always does (it stops once
@@ -229,6 +230,8 @@ class TopAggregator(BaseTopAggregator):
         # across rounds and commit late as stale (mirroring real). real: receive
         # by physical FIFO arrival (authentic baseline).
         if self.simulated:
+            # Pin the carry-over threshold before any clock advance this round.
+            self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
             _recv = channel.recv_fifo(end_ids, aggr_num)

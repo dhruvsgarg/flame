@@ -118,7 +118,11 @@ class TopAggregator(SyncTopAgg):
         # commits inflated version-vs-clock and drifted staleness.
         self._sim_inflight_expected: dict = {}   # end -> expected sim_completion_ts
         self._sim_trainer_budget: dict = {}      # end -> last observed TRAINING_BUDGET_S
-        self._sim_budget_running_mean: float = 12.0  # default budget for unseen trainers
+        # Unseen-trainer floor for the gate's expected completion: a running MINIMUM,
+        # so expected stays a true lower bound on sct and the clock never laps a
+        # not-yet-seen (often fast) trainer (the past-dating seed). Mean would overshoot.
+        self._sim_budget_min: float = 12.0
+        self._sim_budget_running_mean: float = 12.0
         self._sim_budget_n: int = 0
 
         # post-commit re-dispatch gap: end -> vclock before which it stays out
@@ -389,6 +393,7 @@ class TopAggregator(SyncTopAgg):
             self._sim_trainer_budget[_end] = float(_budget)
             self._sim_budget_n += 1
             self._sim_budget_running_mean += (float(_budget) - self._sim_budget_running_mean) / self._sim_budget_n
+            self._sim_budget_min = min(self._sim_budget_min, float(_budget))
         _commit_gap = self._vclock.now - sct
         # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
@@ -1298,12 +1303,9 @@ class TopAggregator(SyncTopAgg):
             )
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
-                # Record this trainer's expected completion for the gate: dispatch
-                # vclock + its last-observed MODELED budget (running-mean default if
-                # unseen). the modeled budget is a lower bound on the true sct,
-                # so the gate holds the clock until this trainer can plausibly have
-                # completed, never lapping it.
-                _budget = self._sim_trainer_budget.get(end, self._sim_budget_running_mean)
+                # Expected completion = dispatch vclock + a lower-bound budget (own
+                # observed, else the running min), so the gate never laps this trainer.
+                _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
                 self._sim_inflight_expected[end] = _sim_send_ts + _budget
             channel.send_payload(end, _payload)
 

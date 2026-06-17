@@ -40,6 +40,31 @@ Last green: **147 pass / 7 skip**.
 
 ---
 
+## Workflow policy: minimize time & runs to parity
+
+The objective is parity in the fewest wall-hours and cluster runs. Rules:
+
+1. **Run real only when needed.** Real is the reference; once a baseline's real
+   run is admissible and stored, re-run real only when a change affects the *real*
+   path. Sim-only changes validate against the stored real dir.
+2. **Over-instrument telemetry deliberately.** Emit more signals than any single
+   check needs if they capture runtime behavior and speed up root-causing — cheap
+   to log, expensive to re-run for. (E.g. per-round `inflight_residence`, the
+   `SIM_CLOCK_DIAG` past-dating counters localized oort + felix from stored runs.)
+3. **Root-cause per baseline, then scope the fix to its blast radius.** Common
+   cause across baselines → fix once. Independent fix that cannot affect others →
+   land it. Fix that *could* perturb another baseline → serialize it (one baseline
+   per run round) so attribution stays clean.
+4. **A fix touching the real path → re-run both** real and sim; a sim-only fix →
+   re-run sim, reuse stored real.
+5. **Shortest run that exhibits the issue.** Don't default to 3–4h. Use the
+   minimum duration that surfaces the check under test; reserve long runs for
+   `C1`/`C2` convergence or round-count-compounding residuals only.
+6. **Crisp code comments** — one sentence at most; let tests document behavior.
+7. **Context-free variable names** (see Naming discipline below).
+
+---
+
 ## Doc policy: ONE status section, not one per run
 
 This doc used to grow a new `## Status (date — ...)` section per check-in,
@@ -53,62 +78,83 @@ sections below status and get *updated in place*, not appended to.
 
 ---
 
-## Status (Jun 16 — oort 1h rerun complete; refl selector crash fixed, rerun pending)
+## Status (Jun 17 — refl 1h rerun complete: D5 VALIDATED; speed-tail/selection-mix residual)
 
 Baselines not yet rerun (felix, feddance) still reference the 3h seeded runs:
 `experiments/run_20260616_0{0,2,5}*_real`, sim dirs `run_20260616_110530_..._felix`
-and `_131048_..._feddance`. **oort 1h rerun**: real=`run_20260616_175804_dbg_oort_n300_alpha0.1_syn0_stream_real`,
+and `_131048_..._feddance`. **oort 1h rerun** (unchanged this session): real=`run_20260616_175804_dbg_oort_n300_alpha0.1_syn0_stream_real`,
 sim=`run_20260616_174557_dbg_oort_n300_alpha0.1_syn0_stream_sim`, report
-`experiments/parity_oort_20260616_1h.json` (`--budget-s 3600 --agg-goal 10`).
-**refl**: crashed with `AttributeError: 'REFLOortSelector' object has no attribute
-'round'` — the D5 rename (`self.round` → `self._last_selection_round` in `OortSelector`)
-was not propagated to `refl_oort.py`; fixed this session; rerun pending.
+`experiments/parity_oort_20260616_1h.json`. **refl 1h rerun (NEW, this session)**:
+real=`run_20260616_223801_dbg_refl_n300_alpha0.1_syn0_stream_real`,
+sim=`run_20260616_223807_dbg_refl_n300_alpha0.1_syn0_stream_sim`, report
+`experiments/parity_refl_20260616_1h.json` (`--budget-s 3600 --agg-goal 10`). The
+crash-fixed selector ran clean to completion; **D5 confirmed** (`temporal KS=0.0`,
+`participation` cleared, `Sr` carry-over/residence matched).
 
 | baseline | score | lowest broken rung | root cause | status |
 |---|---|---|---|---|
-| **refl** | **44/46** *(pre-D5-fix 3h run)* | `participation` (S2) | D5 temporal time-base WRITE-TIMING — `PROP_LAST_SELECTED_ROUND` stamped at commit (sim sct-regular vs real FIFO-jittery order), skewing the UCB temporal term. Value (selection round == `MODEL_VERSION`) was always correct. | **FIXED** (D5: stamp at selection in `oort.py::_record_last_selected_round`). **THEN CRASHED** — `self._last_selection_round` rename in `OortSelector` not propagated to `REFLOortSelector` (5 refs: guard, set, pacer×2); `AttributeError` at first `select()` call. **Fixed this session** (`refl_oort.py`: all `self.round` → `self._last_selection_round`). **Awaiting 1h rerun.** |
-| **felix** | **33/42** | `overhead_residual`/`overlap_factor` | overlap-model collapse, unchanged: sim 12.7× vs real 6.8×, advance 2.25 vs real 4.02. **`simRedispatchGapSeconds=0.6` tested and REJECTED** — moved advance/overlap/staleness <1%, confirms the knob doesn't touch the bottleneck | needs the buffer-aging/overlap-model rework (pace future-dated commits), not another scalar |
-| **oort** | **36/44** *(1h rerun, post block-for-K-fresh + D5)* | `residence` (carry-over) + `preferred_duration` | **block-for-K-fresh CONFIRMED**: `committed_fresh` sim=10.0 = real=10.0 ✓. **Carry-over still broken**: `inflight_after` sim=0.82 vs real=4.24 (rel_diff=0.807, tol=0.3); `stale_rejected` sim=3.13 vs real=7.1; `residence_rounds` sim=0.062 vs real=0.247. **Hypothesis**: block-for-K-fresh's extended grace loop catches slow trainers *within* the current round (turning potential carry-overs into fresh), but real has genuine post-grace stragglers that remain in-flight across rounds. The carry-over (try/finally §4.9) fires but those trainers resolve within the round rather than spanning it. `preferred_duration` binding_frac real=0.869 vs sim=0.503 is downstream of carry-over: real's slow carry-over trainers inflate the binding count. `selection_detail` real=17.23 in-flight vs sim=13.82 is downstream of the same gap. `overhead_residual` sim advance=6.53s vs real=5.62s (−0.91s, 16%): plausibly downstream — without carry-over, sim's K-fresh set has a different tail than real's, shifting the max-of-K. | **Carry-over remains open root cause.** Next: after K fresh collected and round closes, ensure remaining in-flight trainers (sct > round_close_vclock) are carried over rather than freed. Current code may free them if block-for-K-fresh drains them as fresh. |
+| **refl** | **38/44** *(1h rerun, post D5 + crash fix)* | `overhead_residual` (S1) + `eligibility` (S2) | **NOT a mechanism bug — a thinner slow-speed tail in sim.** P3 max-of-K speed sim=7.75s vs real=8.64s; `trainer_speed` max sim=21.0s vs real=29.17s (p99 matches: 9.0/10.05, grid_KS=0.087). The modeled speed model lacks real's slow tail; per-round max-of-K picks it up → sim advance 1.39 vs real 1.59 (`K3b` rel=0.121, **implied per-commit overhead=0.019s≈0** so NOT missing overhead) → sim 2574 rounds vs real 2077 → `K2`/`K8`/`U2` ~12% downstream. `A2` num_eligible KS=0.448 but means match 1.1% (247.3/244.5) with `A2b` composition KS=0.002 + `A3` time-base passing → point-mass/shape artifact. | **D5 VALIDATED** (`temporal KS=0.0`; `participation` no longer root; `Sr` `in_flight_after` real=52.7/sim=54.45, `committed_fresh` 10=10, `residence_rounds` 4.06/4.19). **Crash fix validated** (selector ran 2574 rounds, no `AttributeError`). Remaining residual is the stochastic speed-tail/selection-mix — **same class as feddance A2c**, not a fresh break. Deprioritized below oort carry-over. |
+| **felix** | **33/42** | `overhead_residual`/`overlap_factor` | overlap-model collapse: sim 12.7× vs real 6.8×, advance 2.25 vs real 4.02. **Diagnostic mined this session (`run_20260616_110530` sim):** the bottleneck is **past-dating, not re-dispatch spacing** — `pastdated_commits=67401/92000` (**73%**), mean past-date gap **~626s**, max **9659s** (≈ whole run); `vclock_lead_over_buf` mean 280s. A population of slow-trainer updates commits thousands of vclock-s LATE with **zero clock advance** (`vclock=max(vclock,sct)` and sct≪vclock), packing many rounds into no time → overlap inflates. This is why both `simRedispatchGapSeconds` scalars (0, 0.6) were inert — they space same-trainer re-dispatch, not the cross-trainer past-dated burst. **SEED FOUND**: the gate's expected completion used the running-mean budget (~12s) as the unseen-trainer default — NOT a lower bound, so it overshoots fast trainers (actual ~5s), the gate doesn't hold, and the clock laps them; once one past-dated entry lands, `buffered_min` stays small and the gate (`min_stuck<buffered_min`) is inert forever. | **SEED FIX LANDED (sim-only)**: unseen-trainer default → running MINIMUM (`_sim_budget_min`), a true lower bound, so the gate never laps an unseen trainer. Tests: `TestExpectedCompletionLowerBound`. **Awaiting SHORT sim-only run** (reuse stored real) to confirm past-dating drops + overlap→~6.8×. NB removes the seed (~300 first-appearances); if past-dating persists there are other seeds (round-1 transient / re-dispatch) → then design buffer-aging pacing. |
+| **oort** | **36/44** *(1h rerun, pre-fix; rerun pending)* | `residence` (carry-over) + `preferred_duration` | **ROOT FOUND + FIXED this session.** Carry-over `inflight_after` sim=0.82 vs real=4.24. Telemetry mining of the existing sim run (`run_20260616_174557`) localized it: per-round `in_flight_after` **starts at 4.31 (= real's 4.24) in decile 0 and decays to ~0 by mid-run** — not a uniform absorb. Cause: the carry-over gate holds prior-round stragglers with `sct > vclock_round_start`, but `vclock_round_start` was re-read as `self._vclock.now` **inside each `_oort_sim_recv` call**, and the block-for-K-fresh retry loop spawns a fresh generator per pass *after* the clock advanced → the threshold **creeps forward mid-round**, committing stragglers that should carry. Early rounds (few retries) ≈ no creep → match real; later rounds creep → drain. `preferred_duration`/`selection_detail`/`overhead_residual` are all downstream of this. | **FIXED**: pin the threshold to the round-start vclock, captured once per round in `_aggregate_weights` (`self._round_start_vclock`); `_oort_sim_recv` reads it via `getattr(..., self._vclock.now)`. Gated behind `simInflightCarryover` (oort-only) → **refl byte-neutral** (refl uses `simInflightResidence`, carryover=False, gate is dead code). Guard added: `TestSimInflightCarryover::test_pinned_threshold_holds_straggler_across_retry`. Suite 153 pass/7 skip. **Awaiting 1h rerun** (target `inflight_after`→~4). |
 | **feddance** | **41/43** | `selection_bias` (A2c) + downstream `convergence_loss` | not a regression: the already-known deferred selection-mix bias (sim picks ~0.4–0.5s-faster trainers) tipped just over its .2/.15 bars on this seed, same magnitude as always | still open, deprioritized below refl/oort |
 
 **Landed this session.**
-- **oort block-for-K-fresh** (prior session, now validated): `committed_fresh` sim→10 = real ✓. Mechanism: removed `while not self.simulated` gate from `_aggregate_weights`'s second poll loop; retry calls `_oort_sim_recv` (re-probes persistent `SimReorderBuffer`); `progressed` flag stops spinning.
-- **refl selector crash fix**: `REFLOortSelector` used `self.round` (5 sites: guard at `select()` entry, assignment at `select()` exit, pacer condition, pacer update, pacer close). Parent's D5 rename to `self._last_selection_round` left these as dangling attrs; all updated.
+- **felix past-dating SEED fix (NEW, sim-only)**: the gate's unseen-trainer
+  expected-completion default was the running mean (overshoots fast trainers, laps
+  them, seeds the past-dated backlog that makes the gate inert); changed to the
+  running minimum (true lower bound). Guard `TestExpectedCompletionLowerBound`.
+  Awaiting a short sim-only run to confirm the cascade breaks.
+- **oort carry-over decay FIXED (NEW)**: pinned the §4.9 carry-over threshold to
+  the round-start vclock so the block-for-K-fresh retry loop can't creep it forward
+  mid-round. Root-caused by mining per-round `in_flight_after` from the existing sim
+  run (decile 0 = 4.31 ≈ real, decaying to 0). Oort-gated, refl-neutral, guarded.
+- **refl 1h rerun analysis (NEW)**: D5 + crash fix both validated against a clean
+  2574-round sim run. refl's remaining residual localized to the speed-tail/
+  selection-mix (see table + durable lesson below); reclassified as the feddance
+  A2c class, deprioritized below oort.
+- **oort block-for-K-fresh** (prior session, validated): `committed_fresh` sim→10 = real ✓. Mechanism: removed `while not self.simulated` gate from `_aggregate_weights`'s second poll loop; retry calls `_oort_sim_recv` (re-probes persistent `SimReorderBuffer`); `progressed` flag stops spinning.
+- **refl selector crash fix** (prior session, now validated): `REFLOortSelector` used `self.round` (5 sites: guard at `select()` entry, assignment at `select()` exit, pacer condition, pacer update, pacer close). Parent's D5 rename to `self._last_selection_round` left these as dangling attrs; all updated.
 
 ### Next implementation steps, in priority order
 
-> **oort carry-over (residence) is now the open root cause.** The block-for-K-fresh
+> **oort carry-over (residence) is the open root cause.** The block-for-K-fresh
 > and D5 fixes are validated. The try/finally §4.9 is wired but block-for-K-fresh's
 > extended grace window is likely absorbing the trainers that should carry over,
 > so they resolve as fresh rather than crossing the round boundary as stragglers.
-> refl is untested post-crash-fix. felix and feddance are unchanged.
+> **refl is now validated** (D5 + crash fix); its residual is stochastic
+> speed-tail/selection-mix (feddance class), not a fresh mechanism break.
+> felix and feddance are unchanged.
 
-1. **refl 1h rerun** (crash fix must be validated before any other refl work):
-   `bash scripts/debug_run.sh --baselines refl --runtime-s 3600 --mode both`,
-   then `parity_check.py --baselines refl --budget-s 3600`. Expect `participation`
-   (S2) to clear — D5 temporal term now timing-stable. Score target ≥44/46.
-2. **oort carry-over fix**: after K fresh trainers commit and the round closes,
-   check which of the over-selected trainers have `sct > round_close_vclock`;
-   those must stay in `selected_ends` as carried-over in-flight, NOT be freed.
-   Current risk: block-for-K-fresh's loop drains them as fresh before the round
-   closes, so `_oort_sim_recv`'s carry-over logic never sees them. Instrument
-   `inflight_after` per-round during a short sim-only run to confirm the mechanism.
-   Target: `inflight_after` sim→~4 (matching real 4.24).
-   - **oort**: expect `committed_fresh` sim → ~10 (block-for-K-fresh);
-     `residence`/`preferred_duration`/`selection_bias` clear (downstream of the
-     carry-over gap once fixed). Temporal term timing-stable (D5).
-   - **refl**: expect `participation`/S2 to clear — the temporal term no longer
-     depends on commit ordering.
+1. **oort carry-over fix — LANDED this session, awaiting rerun.** Root was the
+   carry-over threshold creeping forward across block-for-K-fresh retries (per-call
+   `self._vclock.now`); fixed by pinning to the round-start vclock. Next action is
+   just the rerun + parity check (target `inflight_after` sim→~4):
+   `bash scripts/debug_run.sh --baselines oort --runtime-s 3600 --mode both`.
+   - **oort**: expect `inflight_after` sim → ~4, `residence`/`preferred_duration`/
+     `selection_bias` clear (downstream of the carry-over gap once fixed).
+     Temporal term timing-stable (D5).
+2. **refl speed-tail (deprioritized, feddance class).** No mechanism bug:
+   `K3b`/`K2`/`K8`/`U2` all trace to sim's modeled speed model lacking real's
+   slow tail (max-of-K sim 7.75 vs real 8.64; `trainer_speed` max 21.0 vs 29.17).
+   Either (a) accept as stochastic selection-mix and let `K3b` ride its EXACT bar,
+   or (b) widen the speed-model tail to reproduce real's slow draws. Sequence
+   after oort + felix; close alongside feddance A2c (same class).
 3. **felix D5 (deferred decision).** Same write-timing bug at
    `asyncfl/top_aggregator.py:516`; fix = stamp at selection in
    `AsyncOortSelector` (mind `round_nudge_type`: `last_train` reads this prop,
    `last_eval` reads `PROP_LAST_EVAL_ROUND` instead — confirm which felix uses
    before touching). Sequence after felix's overlap-model work to keep that
    attributable, or land standalone since it's orthogonal.
-4. **felix overlap-model (buffer-aging) rework.** The redispatch-gap scalar
-   is exhausted (tested, rejected this session). Next is pacing future-dated
-   commits by buffer age rather than a single gap constant — design work, not
-   a config tweak; see §3 mechanism reference for the current model.
+4. **felix overlap-model — SEED FIX LANDED this session, awaiting short run.**
+   Root (mined `run_20260616_110530` sim): 74% past-dated commits, `gate_holds=0`
+   all run. The gate (`min_stuck<buffered_min`) goes inert once a past-dated backlog
+   forms (backlog keeps `buffered_min` small ≤ any future straggler). SEED: the
+   unseen-trainer expected-completion default was the running MEAN (~12s), which
+   overshoots fast trainers → gate laps them → first past-dated entry → cascade.
+   Fix landed: default → running MINIMUM (true lower bound). **Next:** SHORT
+   sim-only felix run (reuse stored real, rule iv/v) → check `pastdated_commits`
+   frac and `overlap_factor`→~6.8×. If still high, other seeds remain (round-1
+   transient, re-dispatch) → then buffer-aging pacing (mind: no overhead-on-clock).
 5. **feddance A2c/C2 selection-mix bias.** Lowest priority — close once 1–4
    land, since it's a known, bounded, already-passing-at-the-margin gap, not
    a fresh break.
@@ -129,6 +175,14 @@ was not propagated to `refl_oort.py`; fixed this session; rerun pending.
 - **`P3 mean_overhead` is wall-capture, not a speed-model bug**, when
   sub-second, opposite-sign across baselines, and `grid_KS`/`training_delay_s`
   metadata match — only trust a `P3` FAIL when `grid_KS` also fails.
+- **`K3b` ≠ "missing overhead" when `implied_per_commit_overhead_s`≈0.** The check
+  is *named* overhead_residual, but its residual is `real_advance − sim_advance`,
+  which is also moved by the per-round **max-of-K speed** order statistic. If the
+  implied per-commit overhead is sub-0.05s yet `K3b` fails, read the K3a `max_speed`
+  line: a sim/real gap there (refl: sim 7.75 vs real 8.64; `trainer_speed` max 21 vs
+  29 with p99 matching) means the advance gap is a **thinner sim speed-tail / selection
+  mix**, not omitted overhead. Do NOT add a `simCommitOverheadSeconds` scalar to chase
+  it (dead end); fix the speed-tail model or accept it as the feddance A2c class.
 - **Run length matters.** 45min exercises every mechanism check but isn't
   enough for `C1`/`C2` convergence sign-off or to catch round-count-compounding
   clock residuals / low-frequency eligibility-shape drift (refl's 3h-only
@@ -465,6 +519,21 @@ to 0.15. **Distinct from §4.5**: §4.5 gates pool *re-entry*; §4.9 gates the
 not clock-advanced), re-buffered so it stays in `selected_ends` (carried in-flight),
 and commits a few rounds later once the clock passes its `sct`. Enabled for the oort
 sim block. Guard: `test_sync_sim_ordering.py::TestSimInflightCarryover`.
+
+**Third mechanism, FIXED (Jun 17): carry-over threshold creep.** The 1h rerun
+showed carry-over still under-firing (`inflight_after` sim 0.82 vs real 4.24).
+Mining per-round `in_flight_after` from the existing sim run showed it **starts at
+4.31 (≈ real 4.24) and decays to ~0 by mid-run** — a progressive collapse, not a
+uniform absorb. Root: the gate held a prior-round straggler when `sct >
+vclock_round_start`, but `vclock_round_start` was re-read as `self._vclock.now`
+*inside each* `_oort_sim_recv` call. The block-for-K-fresh retry loop creates a
+fresh generator per pass *after* earlier passes advanced the clock, so the
+threshold crept forward within a single round and committed stragglers whose `sct`
+fell between the true round start and the advanced clock. Early rounds (few
+retries) barely creep → match real; later rounds creep hard → drain. Fix:
+`_aggregate_weights` pins `self._round_start_vclock = self._vclock.now` once, before
+the first `_oort_sim_recv` call; the gate reads that pinned value. Guard:
+`TestSimInflightCarryover::test_pinned_threshold_holds_straggler_across_retry`.
 
 **Second mechanism, FIXED (Jun 16, same day): block-for-K-fresh.** Even with
 carry-over correct, the 3h rerun showed `committed_fresh` sim 7.24 vs real 10

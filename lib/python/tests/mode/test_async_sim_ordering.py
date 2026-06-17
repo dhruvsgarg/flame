@@ -75,7 +75,8 @@ class FakeChannel:
                 self._queue.pop(i)
                 yield (
                     {MessageType.WEIGHTS: f"w_{end_id}",
-                     MessageType.SIM_COMPLETION_TS: sct},
+                     MessageType.SIM_COMPLETION_TS: sct,
+                     MessageType.TRAINING_BUDGET_S: sct},
                     (end_id, None),
                 )
             else:
@@ -114,6 +115,7 @@ def _make_agg():
     # Virtual-completion gate state (real __init__ sets these; __new__ bypasses).
     agg._sim_inflight_expected = {}
     agg._sim_trainer_budget = {}
+    agg._sim_budget_min = 12.0
     agg._sim_budget_running_mean = 12.0
     agg._sim_budget_n = 0
     return agg
@@ -406,3 +408,28 @@ class TestGateProbesLiveInflight:
         assert end == "A"                      # earliest still commits first
         assert agg._sim_buffer.has("SLOW")     # SLOW was DRAINED, not lapped
         assert agg._sim_buffer.peek_min_ts() == 5.0  # buffered as a future
+
+
+class TestExpectedCompletionLowerBound:
+    """The gate's expected completion must be a LOWER BOUND on sct, so the clock
+    never laps a not-yet-seen trainer (the past-dating seed). The unseen-trainer
+    default is the running MINIMUM observed budget, not the mean (which overshoots
+    fast trainers: gate_holds=0 over a full felix run, 74% commits past-dated)."""
+
+    def test_budget_min_tracks_minimum_below_mean(self):
+        agg = _make_agg()
+        # commit a fast (2s) and slow (25s) trainer; min must follow the fastest.
+        channel = FakeChannel({"fast", "slow"}, [("fast", 2.0), ("slow", 25.0)])
+        _drain(agg, channel)
+        assert agg._sim_budget_min == 2.0
+        assert agg._sim_budget_min < agg._sim_budget_running_mean  # min, not mean
+
+    def test_unseen_default_is_lower_bound_not_mean(self):
+        # After observing a fast trainer, an UNSEEN trainer dispatched now must get
+        # expected = send + min (a true lower bound), never the larger mean — else
+        # the clock laps the unseen trainer when it actually finishes earlier.
+        agg = _make_agg()
+        _drain(agg, FakeChannel({"fast"}, [("fast", 2.0)]))
+        unseen_budget = agg._sim_trainer_budget.get("NEW", agg._sim_budget_min)
+        assert unseen_budget == agg._sim_budget_min == 2.0
+        assert unseen_budget <= agg._sim_budget_running_mean

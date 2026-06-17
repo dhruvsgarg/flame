@@ -266,3 +266,21 @@ class TestSimInflightCarryover:
         committed = self._drive(agg)
         assert committed == ["slow"]                     # released & committed (stale)
         assert not agg._sim_buffer.has("slow")
+
+    def test_pinned_threshold_holds_straggler_across_retry(self):
+        # Regression for the §4.9 decay: the block-for-K-fresh retry loop re-enters
+        # _oort_sim_recv AFTER an earlier pass advanced the clock. The carry-over
+        # threshold must stay pinned to the ROUND START (set by _aggregate_weights),
+        # not re-read the advanced self._vclock.now — otherwise a straggler whose sct
+        # falls between round-start and the advanced clock is committed instead of
+        # carried (in_flight_after decayed 4.3 -> 0 over the run). Here round 2 started
+        # at vclock 5; a prior pass advanced the clock to 8; a prior-round straggler
+        # (sct 7) is still computing as of round start and must be HELD.
+        agg = self._make_oort_agg(carryover=True, round_num=2, vclock_start=5.0)
+        agg._round_start_vclock = 5.0          # pinned by _aggregate_weights at entry
+        agg._vclock.advance(8.0)               # an earlier pass advanced now -> 8.0
+        self._load(agg, [("straggler", 7.0, 1)])
+        committed = self._drive(agg)
+        assert committed == []                 # sct 7 > pinned start 5 -> held
+        assert agg._sim_buffer.has("straggler")  # carried, not drained
+        assert agg._vclock.now == 8.0          # untouched (a per-call `now` would commit it)
