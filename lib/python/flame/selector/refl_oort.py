@@ -132,7 +132,7 @@ class REFLOortSelector(OortSelector):
             f"task: {task_to_perform}, avail_priority={self.avail_priority}"
         )
 
-        if round_num <= self.round and len(self.newly_selected_this_round) != 0:
+        if round_num <= self._last_selection_round and len(self.newly_selected_this_round) != 0:
             return {key: None for key in self.newly_selected_this_round}
 
         self.pacer()
@@ -214,7 +214,7 @@ class REFLOortSelector(OortSelector):
             f"in-flight total {len(self.selected_ends)}"
         )
 
-        self.round = round_num
+        self._last_selection_round = round_num
         self.update_exploration_factor()
 
         for end_id in selected:
@@ -466,7 +466,7 @@ class REFLOortSelector(OortSelector):
             return  # Pacer disabled
 
         # Only run pacer at specified intervals
-        if self.round < 2 * self.pacer_step or self.round % self.pacer_step != 0:
+        if self._last_selection_round < 2 * self.pacer_step or self._last_selection_round % self.pacer_step != 0:
             return
 
         # Calculate utility change over last two pacer windows
@@ -502,4 +502,4 @@ class REFLOortSelector(OortSelector):
                 f"decreasing threshold {old_threshold}% -> {self.round_threshold}%"
             )
 
-        self.last_pacer_round = self.round
+        self.last_pacer_round = self._last_selection_round

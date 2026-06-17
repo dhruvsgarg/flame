@@ -53,74 +53,63 @@ sections below status and get *updated in place*, not appended to.
 
 ---
 
-## Status (Jun 16 — oort block-for-K-fresh + D5 temporal time-base landed; awaiting rerun)
+## Status (Jun 16 — oort 1h rerun complete; refl selector crash fixed, rerun pending)
 
-3h seeded runs (`seed=1234`, `--budget-s 10800`, `agg_goal 10`). Real dirs:
-`experiments/run_20260616_0{0,2,5}*_real`. Sim dirs (latest):
-`run_20260616_110530_..._felix`, `_110550_..._oort`, `_112444_..._refl`,
-`_131048_..._feddance`. Reports: `experiments/parity_3h_*.json`. Regenerate:
-`parity_check.py --batch --experiments-dir experiments --baselines felix oort
-refl feddance --agg-goal 10 --budget-s 10800`.
+Baselines not yet rerun (felix, feddance) still reference the 3h seeded runs:
+`experiments/run_20260616_0{0,2,5}*_real`, sim dirs `run_20260616_110530_..._felix`
+and `_131048_..._feddance`. **oort 1h rerun**: real=`run_20260616_175804_dbg_oort_n300_alpha0.1_syn0_stream_real`,
+sim=`run_20260616_174557_dbg_oort_n300_alpha0.1_syn0_stream_sim`, report
+`experiments/parity_oort_20260616_1h.json` (`--budget-s 3600 --agg-goal 10`).
+**refl**: crashed with `AttributeError: 'REFLOortSelector' object has no attribute
+'round'` — the D5 rename (`self.round` → `self._last_selection_round` in `OortSelector`)
+was not propagated to `refl_oort.py`; fixed this session; rerun pending.
 
 | baseline | score | lowest broken rung | root cause | status |
 |---|---|---|---|---|
-| **refl** | **44/46** | `participation` (S2) | **D5 — temporal time-base WRITE-TIMING, FIXED this session.** `PROP_LAST_SELECTED_ROUND` feeds the selector's UCB temporal term (`scoring.oort_temporal_uncertainty`). The bug was *not* the value (the value is the selection round, == `MODEL_VERSION`, which is correct and identical real/sim — both refs' `time_stamp` tracks engagement, and in sync FL engagement-round == selection-round == `MODEL_VERSION`). The bug was *when* it was written: the aggregator wrote it at **commit**, so a candidate's visible value depended on whether its last update had committed yet — and sim's `sct`-regular commit order vs real's FIFO jitter made that "committed-by-read-time?" answer diverge, skewing *which* trainers win the weighted draw even though pool, pool-speed and aggregate chosen-count matched (`matched_count_ks=.512`, avg_diff 107/round, max 653; `mean_jaccard`=.039). | **FIXED** — stamp moved to **selection time** in the selector (`oort.py::_record_last_selected_round`, value = selection round); commit-time write removed (`oort/top_aggregator.py`). Value unchanged, timing now aligned across modes. Guard: `test_oort_selector.py::TestLastSelectedRoundStamp`. Scope: **oort + refl** (shared `OortSelector`). **Awaiting 3h rerun.** |
+| **refl** | **44/46** *(pre-D5-fix 3h run)* | `participation` (S2) | D5 temporal time-base WRITE-TIMING — `PROP_LAST_SELECTED_ROUND` stamped at commit (sim sct-regular vs real FIFO-jittery order), skewing the UCB temporal term. Value (selection round == `MODEL_VERSION`) was always correct. | **FIXED** (D5: stamp at selection in `oort.py::_record_last_selected_round`). **THEN CRASHED** — `self._last_selection_round` rename in `OortSelector` not propagated to `REFLOortSelector` (5 refs: guard, set, pacer×2); `AttributeError` at first `select()` call. **Fixed this session** (`refl_oort.py`: all `self.round` → `self._last_selection_round`). **Awaiting 1h rerun.** |
 | **felix** | **33/42** | `overhead_residual`/`overlap_factor` | overlap-model collapse, unchanged: sim 12.7× vs real 6.8×, advance 2.25 vs real 4.02. **`simRedispatchGapSeconds=0.6` tested and REJECTED** — moved advance/overlap/staleness <1%, confirms the knob doesn't touch the bottleneck | needs the buffer-aging/overlap-model rework (pace future-dated commits), not another scalar |
-| **oort** | **38/44** *(pre-fix; see below)* | carry-over starvation | `_oort_sim_recv`'s adaptive `grace` timeout (4× EMA of past full-drain time) is too tight for genuinely-still-computing fresh trainers, demoting them to a later round where they land **stale** instead of fresh (`committed_fresh` sim 7.24 vs real 10). Confirmed via code trace: `recv_fifo`'s `timeout=grace` races real wall-clock GPU compute, not a deterministic future | **FIXED this session** — see below |
-| **feddance** | **41/43** | `selection_bias` (A2c) + downstream `convergence_loss` | not a regression: the already-known deferred selection-mix bias (sim picks ~0.4–0.5s-faster trainers) tipped just over its .2/.15 bars on this seed, same magnitude as always | still open, deprioritized below refl/felix |
+| **oort** | **36/44** *(1h rerun, post block-for-K-fresh + D5)* | `residence` (carry-over) + `preferred_duration` | **block-for-K-fresh CONFIRMED**: `committed_fresh` sim=10.0 = real=10.0 ✓. **Carry-over still broken**: `inflight_after` sim=0.82 vs real=4.24 (rel_diff=0.807, tol=0.3); `stale_rejected` sim=3.13 vs real=7.1; `residence_rounds` sim=0.062 vs real=0.247. **Hypothesis**: block-for-K-fresh's extended grace loop catches slow trainers *within* the current round (turning potential carry-overs into fresh), but real has genuine post-grace stragglers that remain in-flight across rounds. The carry-over (try/finally §4.9) fires but those trainers resolve within the round rather than spanning it. `preferred_duration` binding_frac real=0.869 vs sim=0.503 is downstream of carry-over: real's slow carry-over trainers inflate the binding count. `selection_detail` real=17.23 in-flight vs sim=13.82 is downstream of the same gap. `overhead_residual` sim advance=6.53s vs real=5.62s (−0.91s, 16%): plausibly downstream — without carry-over, sim's K-fresh set has a different tail than real's, shifting the max-of-K. | **Carry-over remains open root cause.** Next: after K fresh collected and round closes, ensure remaining in-flight trainers (sct > round_close_vclock) are carried over rather than freed. Current code may free them if block-for-K-fresh drains them as fresh. |
+| **feddance** | **41/43** | `selection_bias` (A2c) + downstream `convergence_loss` | not a regression: the already-known deferred selection-mix bias (sim picks ~0.4–0.5s-faster trainers) tipped just over its .2/.15 bars on this seed, same magnitude as always | still open, deprioritized below refl/oort |
 
-**Landed this session: oort block-for-K-fresh.** `_aggregate_weights`'s second
-poll loop (`mode/horizontal/oort/top_aggregator.py`, ~line 323) was gated
-`while not self.simulated` — sim got exactly one `_oort_sim_recv` pass and
-gave up once its buffer drained, even if fewer than `aggr_num` fresh updates
-had arrived. Real's equivalent loop just keeps polling the same `end_ids`
-until enough land. Fix: removed the `not self.simulated` gate and made the
-retry call `_oort_sim_recv` again (re-probes the same persistent
-`SimReorderBuffer`, giving slow-but-alive trainers another `grace` window)
-instead of `channel.recv_fifo`; a `progressed` flag bounds the loop so a pass
-that accepts nothing stops instead of spinning. `pytest tests/mode/
-tests/selector/test_oort_selector.py tests/sim/
-examples/async_cifar10/scripts/parity/`: **149 pass / 7 skip** (was 147/7 —
-gained coverage, no regressions). **Not yet validated against a 3h cluster
-rerun** — do that next, then update this table's oort row with the new
-`committed_fresh`/score.
+**Landed this session.**
+- **oort block-for-K-fresh** (prior session, now validated): `committed_fresh` sim→10 = real ✓. Mechanism: removed `while not self.simulated` gate from `_aggregate_weights`'s second poll loop; retry calls `_oort_sim_recv` (re-probes persistent `SimReorderBuffer`); `progressed` flag stops spinning.
+- **refl selector crash fix**: `REFLOortSelector` used `self.round` (5 sites: guard at `select()` entry, assignment at `select()` exit, pacer condition, pacer update, pacer close). Parent's D5 rename to `self._last_selection_round` left these as dangling attrs; all updated.
 
 ### Next implementation steps, in priority order
 
-> **This rerun carries TWO landed sim changes**, both touching the shared
-> `oort/top_aggregator.py` + `OortSelector` (oort + refl): oort's
-> block-for-K-fresh AND the D5 write-timing fix (stamp `PROP_LAST_SELECTED_ROUND`
-> at selection, not commit). refl is touched only by D5; oort by both. So if
-> oort regresses, bisect by reverting one — D5 is isolated to
-> `_record_last_selected_round` + the removed commit-write; block-for-K-fresh is
-> the `not self.simulated` gate. **felix is a separate stack** (`asyncfl` agg +
-> `AsyncOortSelector`) and is intentionally NOT touched by D5 this cycle — it has
-> the same latent commit-write (`asyncfl/top_aggregator.py:516`) but a different
-> selector and an open overlap investigation; deferred to avoid confounding it.
+> **oort carry-over (residence) is now the open root cause.** The block-for-K-fresh
+> and D5 fixes are validated. The try/finally §4.9 is wired but block-for-K-fresh's
+> extended grace window is likely absorbing the trainers that should carry over,
+> so they resolve as fresh rather than crossing the round boundary as stragglers.
+> refl is untested post-crash-fix. felix and feddance are unchanged.
 
-1. **Rerun oort + refl pairs** (the D5 fix touches both; 1h this cycle for
-   speed): `bash scripts/debug_run.sh --baselines 'oort refl' --runtime-s 3600
-   --mode both`, then `parity_check.py --batch --baselines oort refl --budget-s
-   3600`. 1h exercises every mechanism rung (which is what D5 + block-for-K-fresh
-   are) but is NOT enough to sign off `C1`/`C2` convergence or catch low-frequency
-   clock residuals — see Durable lessons; re-confirm those at 3h once the
-   mechanism rungs are green.
+1. **refl 1h rerun** (crash fix must be validated before any other refl work):
+   `bash scripts/debug_run.sh --baselines refl --runtime-s 3600 --mode both`,
+   then `parity_check.py --baselines refl --budget-s 3600`. Expect `participation`
+   (S2) to clear — D5 temporal term now timing-stable. Score target ≥44/46.
+2. **oort carry-over fix**: after K fresh trainers commit and the round closes,
+   check which of the over-selected trainers have `sct > round_close_vclock`;
+   those must stay in `selected_ends` as carried-over in-flight, NOT be freed.
+   Current risk: block-for-K-fresh's loop drains them as fresh before the round
+   closes, so `_oort_sim_recv`'s carry-over logic never sees them. Instrument
+   `inflight_after` per-round during a short sim-only run to confirm the mechanism.
+   Target: `inflight_after` sim→~4 (matching real 4.24).
    - **oort**: expect `committed_fresh` sim → ~10 (block-for-K-fresh);
      `residence`/`preferred_duration`/`selection_bias` clear (downstream of the
-     starvation). Temporal term now timing-stable.
+     carry-over gap once fixed). Temporal term timing-stable (D5).
    - **refl**: expect `participation`/S2 to clear — the temporal term no longer
      depends on commit ordering.
-2. **felix D5 (deferred decision).** Same write-timing bug at
+3. **felix D5 (deferred decision).** Same write-timing bug at
    `asyncfl/top_aggregator.py:516`; fix = stamp at selection in
    `AsyncOortSelector` (mind `round_nudge_type`: `last_train` reads this prop,
    `last_eval` reads `PROP_LAST_EVAL_ROUND` instead — confirm which felix uses
    before touching). Sequence after felix's overlap-model work to keep that
    attributable, or land standalone since it's orthogonal.
-3. **felix overlap-model (buffer-aging) rework.** The redispatch-gap scalar
+4. **felix overlap-model (buffer-aging) rework.** The redispatch-gap scalar
    is exhausted (tested, rejected this session). Next is pacing future-dated
    commits by buffer age rather than a single gap constant — design work, not
    a config tweak; see §3 mechanism reference for the current model.
-4. **feddance A2c/C2 selection-mix bias.** Lowest priority — close once 1–3
+5. **feddance A2c/C2 selection-mix bias.** Lowest priority — close once 1–4
    land, since it's a known, bounded, already-passing-at-the-margin gap, not
    a fresh break.
 
