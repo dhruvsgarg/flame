@@ -125,6 +125,20 @@ class TopAggregator(SyncTopAgg):
         self._sim_budget_running_mean: float = 12.0
         self._sim_budget_n: int = 0
 
+        # Past-dating source attribution: which seed produced each past-dated
+        # commit (sct < vclock by > slack), so the pacing fix can target the
+        # dominant one instead of guessing. Counts + cumulative gap per source:
+        #   fresh      — dispatched <=1 round ago, lapped before its update landed
+        #                (the clock advanced onto a future-dated slow sct, then
+        #                 lapped this newly-dispatched fast trainer)
+        #   redispatch — a previously-committed end, re-dispatched with a new sct
+        #                already below the advanced clock
+        #   straggler  — first commit, dispatched >1 round ago (genuinely slow
+        #                in-flight; usually NOT past-dated, but counted if it is)
+        #   round1     — startup transient (current round <= 1)
+        self._sim_pastdated_by_source: dict = {}  # source -> [count, gap_cum]
+        self._sim_commit_count: dict = {}          # end -> times committed (re-dispatch tell)
+
         # post-commit re-dispatch gap: end -> vclock before which it stays out
         # of selection (= its last commit sct + sim_redispatch_gap_s). Models the
         # real finish->re-dispatch latency so it does NOT count toward staleness
@@ -260,6 +274,9 @@ class TopAggregator(SyncTopAgg):
             self._sim_trainer_budget = {}
             self._sim_budget_running_mean = 12.0
             self._sim_budget_n = 0
+            self._sim_budget_min = 12.0
+            self._sim_pastdated_by_source = {}
+            self._sim_commit_count = {}
         barrier_t0 = time.time()
         deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
@@ -369,6 +386,12 @@ class TopAggregator(SyncTopAgg):
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
         self._advance_sim_clock(sct)
+        # Re-dispatch tell: captured BEFORE the add, since _sim_committed already
+        # holds _end on a second commit. Drives the past-dating source breakdown.
+        _was_recommit = _end in self._sim_committed
+        if not hasattr(self, "_sim_commit_count"):
+            self._sim_commit_count = {}
+        self._sim_commit_count[_end] = self._sim_commit_count.get(_end, 0) + 1
         self._sim_committed.add(_end)
         # start this end's post-commit re-dispatch cooldown. Held out of
         # selection (in _distribute_weights) until vclock >= sct + gap, so it
@@ -403,6 +426,24 @@ class TopAggregator(SyncTopAgg):
             self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
             self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
             self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
+            # Attribute the past-dating to its seed so the pacing fix can target the
+            # dominant one (see _sim_pastdated_by_source init). round_lag = how many
+            # rounds ago this update was trained (current round - its MODEL_VERSION).
+            _mv = m.get(MessageType.MODEL_VERSION) if isinstance(m, dict) else None
+            _round_lag = (self._round - int(_mv)) if _mv is not None else None
+            if self._round <= 1:
+                _src = "round1"
+            elif _was_recommit:
+                _src = "redispatch"
+            elif _round_lag is not None and _round_lag <= 1:
+                _src = "fresh"
+            else:
+                _src = "straggler"
+            if not hasattr(self, "_sim_pastdated_by_source"):
+                self._sim_pastdated_by_source = {}
+            _agg = self._sim_pastdated_by_source.setdefault(_src, [0, 0.0])
+            _agg[0] += 1
+            _agg[1] += _commit_gap
         logger.info(  # [SIM_BARRIER]: barrier_wait_s should track wall_lag
             f"[SIM_BARRIER] round={getattr(self, '_round', -1)} end={_end[-4:]} "
             f"barrier_wait_s={barrier_wait:.3f} probed={probed} "
@@ -422,6 +463,10 @@ class TopAggregator(SyncTopAgg):
             _past = sum(1 for s in _scts if s <= _now)
             _bmin = self._sim_buffer.peek_min_ts()
             _lead = (_now - _bmin) if _bmin is not None else 0.0
+            _pd_src = " ".join(
+                f"{k}={v[0]}/{v[1]:.0f}s"
+                for k, v in sorted(getattr(self, "_sim_pastdated_by_source", {}).items())
+            ) or "none"
             logger.info(
                 f"[SIM_CLOCK_DIAG] commits={self._sim_diag_n} "
                 f"round={getattr(self, '_round', -1)} vclock={_now:.0f} "
@@ -436,6 +481,7 @@ class TopAggregator(SyncTopAgg):
                 f"pastdated_commits={getattr(self, '_sim_pastdated_commits', 0)} "
                 f"pastdated_gap_cum={getattr(self, '_sim_pastdated_gap_cum', 0.0):.0f} "
                 f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.0f} "
+                f"pastdated_by_source=[{_pd_src}] "
                 f"budget_mean={getattr(self, '_sim_budget_running_mean', 0.0):.1f} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
