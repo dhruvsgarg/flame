@@ -430,6 +430,41 @@ def test_trainer_speed_support_guard_tolerates_mix_catches_tail():
     assert res_bad["support_ratio"] > 1.0 + res_bad["support_tol"], res_bad
 
 
+def test_commit_visibility_parity():
+    """U6 commit-timeliness: KS the update_visibility_lag_s distributions.
+
+    Matched dists PASS; a sim that commits updates late (past-dating, the felix
+    signature) FAILs; the field absent in either mode SKIPs (PASS-with-note) so
+    the rung is inert against runs predating the instrument. Accepts both the
+    per-round list shape (sync/oort) and a scalar-per-event shape."""
+    from parity.checks import commit_visibility_parity
+    import random
+    random.seed(0)
+    base = [abs(random.gauss(0.4, 0.2)) for _ in range(4000)]
+
+    # (1) matched: real & sim both timely (~0 lag) → PASS
+    real = {"agg_rounds": [{"update_visibility_lag_s": [v]} for v in base]}
+    sim = {"agg_rounds": [{"update_visibility_lag_s": [v + random.uniform(-0.02, 0.02)]}
+                          for v in base]}
+    res = commit_visibility_parity(real, sim)
+    assert res["ok"], res
+    assert not res.get("skipped"), res
+
+    # (2) sim past-dates (lag blows up) → FAIL on KS / mean gap
+    sim_late = {"agg_rounds": [{"update_visibility_lag_s": [v + 800.0]} for v in base]}
+    res_bad = commit_visibility_parity(real, sim_late)
+    assert not res_bad["ok"], res_bad
+
+    # (3) field absent in one mode → SKIP (inert), PASS verdict
+    res_skip = commit_visibility_parity(real, {"agg_rounds": [{"round": i} for i in range(10)]})
+    assert res_skip["ok"] and res_skip.get("skipped"), res_skip
+
+    # (4) scalar-per-event shape (async extra) flattens the same way
+    real_scalar = {"agg_rounds": [{"update_visibility_lag_s": v} for v in base]}
+    res_scalar = commit_visibility_parity(real_scalar, sim)
+    assert res_scalar["ok"] and not res_scalar.get("skipped"), res_scalar
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

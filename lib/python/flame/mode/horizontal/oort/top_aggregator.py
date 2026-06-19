@@ -430,7 +430,7 @@ class TopAggregator(BaseTopAggregator):
         # / round_duration), and agg_observed_s = aggregator-side send->recv wall.
         if telemetry.is_enabled():
             contrib = list(self.cache)
-            stale, sutil, speeds, agg_obs = [], [], [], {}
+            stale, sutil, speeds, agg_obs, vis_lag = [], [], [], {}, []
             for eid in contrib:
                 tres = self.cache[eid]
                 if getattr(tres, "staleness", None) is not None:
@@ -441,6 +441,7 @@ class TopAggregator(BaseTopAggregator):
                 if rd is not None:
                     speeds.append(rd)
                     agg_obs[eid] = rd
+                vis_lag.append(getattr(tres, "update_visibility_lag_s", None))
             ev, fields = build_agg_round(
                 round_num=self._round,
                 agg_goal=aggr_num,
@@ -451,7 +452,10 @@ class TopAggregator(BaseTopAggregator):
                 trainer_speed_s=speeds,
                 contributing_trainers=contrib,
                 agg_observed_s=agg_obs or None,
-                extra={"vclock_now": self._vclock.now if self.simulated else None},
+                extra={
+                    "vclock_now": self._vclock.now if self.simulated else None,
+                    "update_visibility_lag_s": vis_lag,
+                },
             )
             telemetry.emit(ev, **fields)
 
@@ -919,6 +923,13 @@ class TopAggregator(BaseTopAggregator):
             if round_duration_obj:
                 round_duration_seconds = round_duration_obj.total_seconds()
             
+            # commit-timeliness: ready->committed lag in the aggregator's own
+            # clock (see _update_visibility_lag).
+            _vis_ready, _vis_committed, _vis_lag = self._update_visibility_lag(
+                msg.get(MessageType.SIM_COMPLETION_TS),
+                timestamp if isinstance(timestamp, datetime) else None,
+            )
+
             # Create TrainResult with all REFL-required fields
             tres = TrainResult(
                 weights=weights,
@@ -927,7 +938,8 @@ class TopAggregator(BaseTopAggregator):
                 stat_utility=stat_utility,
                 staleness=update_staleness_val,
                 round_duration=round_duration_seconds,
-                end_id=end
+                end_id=end,
+                update_visibility_lag_s=_vis_lag,
             )
             
             _cs0 = time.time()
@@ -943,6 +955,7 @@ class TopAggregator(BaseTopAggregator):
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
             self._round_update_values["stat_utility"].append(stat_utility)
+            self._round_update_values["update_visibility_lag_s"].append(_vis_lag)
             # Only append trainer_speed if round_duration is available
             if round_duration_seconds is not None:
                 self._round_update_values["trainer_speed"].append(round_duration_seconds)

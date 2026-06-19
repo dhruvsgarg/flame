@@ -1872,6 +1872,35 @@ def system_plots(records, out, stamp, tdir):
             d, "staleness_over_rounds.pdf", stamp=stamp, clip_outliers=True)
         if p: saved.append(p)
 
+    # commit-visibility lag (U6): per-update delay between an update becoming
+    # ready to aggregate and being committed, in the aggregator's own clock
+    # (sim: vclock-sct; real: wall commit-arrival). Sim past-dating shows up as a
+    # large/growing lag here BEFORE it propagates into staleness; the over-rounds
+    # series exposes the felix clock-jump pattern a single CDF would smear.
+    vis_by_round = defaultdict(list); all_vis = []
+    for r in by_event(records, EVENT_AGG_ROUND):
+        v = r.get("update_visibility_lag_s")
+        if v is None:
+            continue
+        v = v if isinstance(v, list) else [v]
+        for x in v:
+            if x is not None:
+                vis_by_round[int(r.get("round", 0))].append(float(x))
+                all_vis.append(float(x))
+    if all_vis:
+        p = ph.cdf_plot(all_vis, "commit visibility lag (s, own clock)",
+                        f"Commit-visibility lag CDF (n={len(all_vis)})", d,
+                        "commit_visibility_lag_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+        vr = sorted(r for r in vis_by_round if r >= 1)
+        p = ph.binned_line(
+            {"P50 commit lag": (vr, [_m(vis_by_round[r]) for r in vr])},
+            "round", "commit visibility lag (s)",
+            "Commit-visibility lag over rounds (P50/bin + band)",
+            d, "commit_visibility_lag_over_rounds.pdf", stamp=stamp,
+            nbins=200, reducer="p50", band=True)
+        if p: saved.append(p)
+
     # Send-recv lag over rounds (binned). The round is the model `version`
     # stamped on each [SEND_RECV_LAG] line (version=N == round N), parsed once in
     # parse_agg_log. Instrumented in BOTH sync and async aggregators, so this

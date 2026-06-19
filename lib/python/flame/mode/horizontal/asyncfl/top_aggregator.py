@@ -920,6 +920,16 @@ class TopAggregator(SyncTopAgg):
                 # sat buffered. inflight = concurrent in-flight (both modes).
                 _enq_round = self._sim_enqueue_round.pop(end, self._round) if self.simulated else None
                 _commit_gap_s = (self._vclock.now - float(_sct_recv)) if (self.simulated and _sct_recv is not None) else None
+                # update_visibility_lag_s: aggregator-clock delay between when an
+                # update became READY to aggregate and when it was COMMITTED into
+                # the global model — same metric, mode-appropriate clock. Real:
+                # wall(commit) - wall(MQTT arrival); should be ~0 (timely by
+                # construction). Sim: vclock(commit) - sct(ready) = how far the
+                # virtual clock ran past this update's modeled completion (the
+                # past-dating signature). Fidelity = sim dist matches real dist.
+                _ready_ts, _committed_ts, _vis_lag_s = self._update_visibility_lag(
+                    _sct_recv, timestamp
+                )
                 ev, fields = build_agg_round(
                     round_num=self._round,
                     agg_goal=self._agg_goal,
@@ -934,6 +944,9 @@ class TopAggregator(SyncTopAgg):
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
                         "vclock_now": self._vclock.now if self.simulated else None,
                         "commit_gap_s": _commit_gap_s,
+                        "update_ready_ts": _ready_ts,
+                        "update_committed_ts": _committed_ts,
+                        "update_visibility_lag_s": [_vis_lag_s] if _vis_lag_s is not None else [],
                         "buf_depth": len(self._sim_buffer) if self.simulated else None,
                         "residence_rounds": (self._round - _enq_round) if _enq_round is not None else None,
                         "inflight": self._updates_in_queue,

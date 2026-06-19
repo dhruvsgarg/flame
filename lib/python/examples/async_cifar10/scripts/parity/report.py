@@ -80,6 +80,7 @@ _SECTIONS = [
         ("U4  agg_goal_count cycles (sim)",     "agg_goal_cycles_sim"),
     ]),
     ("6", "Aggregation", [
+        ("U6  commit visibility lag",           "commit_visibility"),
         ("U3  staleness distribution",          "staleness"),
         ("P1  aggregation sequence",            "aggregation_sequence"),
         ("U1  first divergence",                "first_divergence_summary"),
@@ -160,6 +161,16 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         sim_rate={res.get('sim_rate')} virtual-s/wall-s  "
             f"vclock={res.get('final_vclock_s')}s wall={res.get('wall_elapsed_s')}s",
         ]
+    elif name == "commit_visibility":
+        if res.get("skipped"):
+            lines += [f"         SKIP — {res.get('reason')} "
+                      f"(real_n={res.get('real_n')} sim_n={res.get('sim_n')})"]
+        else:
+            lines += [
+                f"         real_mean={res.get('real_mean')}s sim_mean={res.get('sim_mean')}s  "
+                f"real_p90={res.get('real_p90')}s sim_p90={res.get('sim_p90')}s  "
+                f"KS={res.get('ks_stat')} mean_diff={res.get('mean_diff')}s",
+            ]
     elif name == "staleness":
         lines += [
             f"         real_mean={res.get('real_mean')}  sim_mean={res.get('sim_mean')}  "

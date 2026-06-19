@@ -973,6 +973,55 @@ def staleness_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     }
 
 
+def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
+                             warn_mean_diff: float = 2.0) -> dict:
+    """U6 (commit timeliness): update_visibility_lag_s distributions match.
+
+    Lag = aggregator-clock delay between an update becoming READY to aggregate
+    and being COMMITTED to the global model (sim: vclock-sct; real: wall
+    commit-arrival). Same metric, mode-appropriate clock. For async the target
+    is ~0 in both modes (independent commits at own readiness); for sync it is
+    the barrier wait, matching in both. Either way fidelity = sim dist == real
+    dist, so we KS the two and also flag the mean gap. Upstream of staleness:
+    a sim that commits updates late (past-dating) inflates staleness downstream.
+    """
+    def vals(agg_rounds):
+        out = []
+        for e in agg_rounds:
+            v = e.get("update_visibility_lag_s")
+            if v is None:
+                continue
+            if isinstance(v, (int, float)):
+                out.append(float(v))
+            else:
+                out.extend(float(x) for x in v if x is not None)
+        return out
+
+    rv, sv = vals(real["agg_rounds"]), vals(sim["agg_rounds"])
+    if not rv or not sv:
+        return {"ok": True, "tier": "DIST", "skipped": True,
+                "reason": "update_visibility_lag_s absent in one mode "
+                          "(re-run to populate)",
+                "real_n": len(rv), "sim_n": len(sv)}
+    rm, _ = mean_std(rv)
+    sm, _ = mean_std(sv)
+    ks = ks_stat(rv, sv)
+    mean_diff = abs(rm - sm) if not (math.isnan(rm) or math.isnan(sm)) else float("nan")
+    ok = True
+    if not math.isnan(ks):
+        ok = ks <= warn_ks and (math.isnan(mean_diff) or mean_diff <= warn_mean_diff)
+    return {
+        "ok": ok,
+        "tier": "DIST",
+        "real_mean": round(rm, 3) if not math.isnan(rm) else None,
+        "sim_mean": round(sm, 3) if not math.isnan(sm) else None,
+        "real_p90": round(percentile(rv, 90), 3),
+        "sim_p90": round(percentile(sv, 90), 3),
+        "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
+        "mean_diff": round(mean_diff, 3) if not math.isnan(mean_diff) else None,
+    }
+
+
 def commit_sequence(agg: dict) -> list:
     """U1 helper: mode-agnostic logical sequence of committed updates.
 
@@ -2344,6 +2393,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         results["agg_goal_cycles_sim"] = agg_goal_cycles_ok(sim_agg, agg_goal)
 
     # ── Stage 6 Aggregation ──
+    results["commit_visibility"] = commit_visibility_parity(real_agg, sim_agg)
     results["staleness"] = staleness_parity(real_agg, sim_agg)
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
@@ -2422,7 +2472,8 @@ CHECK_META: dict = {
     "agg_goal_cycles_real":    {"stage": 5, "role": "MECHANISM", "deps": ()},
     "agg_goal_cycles_sim":     {"stage": 5, "role": "MECHANISM", "deps": ()},
     # ── Stage 6 Aggregation ──
-    "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order")},
+    "commit_visibility":       {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance",)},
+    "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 7 Statistical utility ──

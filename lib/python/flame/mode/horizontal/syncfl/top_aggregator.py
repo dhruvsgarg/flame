@@ -223,6 +223,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
             "staleness",
             "stat_utility",
             "trainer_speed",
+            "update_visibility_lag_s",
         ]
         self._round_update_values = {key: [] for key in self._round_update_stat_keys}
         # TODO Add "wt_contrib_stats" as a key later but cannot
@@ -409,6 +410,26 @@ class TopAggregator(Role, metaclass=ABCMeta):
             committed.append((msg, md))
         return committed
 
+    def _update_visibility_lag(self, ready_sct, arrival_wall):
+        """(ready_ts, committed_ts, lag_s) for one update, in the aggregator's
+        OWN clock. READY = when the update became available to aggregate;
+        COMMITTED = now (the aggregation point). Sim measures virtual seconds
+        (vclock - sct); real measures wall seconds (now - MQTT arrival). Same
+        metric, mode-appropriate clock — high fidelity means the sim lag
+        distribution matches the real one (async target ~0; sync = barrier wait,
+        matching in both). Inherited by every baseline (oort/refl/felix/feddance)."""
+        if self.simulated:
+            committed = float(self._vclock.now)
+            if ready_sct is None:
+                return None, committed, None
+            ready = float(ready_sct)
+            return ready, committed, committed - ready
+        committed_dt = datetime.now()
+        ready_dt = arrival_wall if isinstance(arrival_wall, datetime) else None
+        if ready_dt is None:
+            return None, committed_dt.timestamp(), None
+        return ready_dt.timestamp(), committed_dt.timestamp(), (committed_dt - ready_dt).total_seconds()
+
     def _aggregate_weights(self, tag: str) -> None:
         logger.debug("Agg weights inside top_aggregator syncfl")
         channel = self.cm.get_by_tag(tag)
@@ -588,6 +609,13 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 # Populate round statistics vars
                 self._round_update_values["staleness"].append(update_staleness_val)
                 self._round_update_values["stat_utility"].append(stat_utility)
+                # commit-timeliness: lag between this update becoming ready and
+                # being committed, in the aggregator's own clock (see helper).
+                _vis_ready, _vis_committed, _vis_lag = self._update_visibility_lag(
+                    msg.get(MessageType.SIM_COMPLETION_TS),
+                    timestamp if isinstance(timestamp, datetime) else None,
+                )
+                self._round_update_values["update_visibility_lag_s"].append(_vis_lag)
                 # PROP_ROUND_DURATION is only populated by the Oort stack; on the
                 # base (fedavg / feddance) flow it's unset -> guard against None.
                 _rd = channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION)
@@ -613,7 +641,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 ),
                 contributing_trainers=list(self.cache),  # diskcache iterates keys
                 agg_observed_s=agg_obs or None,
-                extra={"vclock_now": self._vclock.now if self.simulated else None},
+                extra={
+                    "vclock_now": self._vclock.now if self.simulated else None,
+                    "update_visibility_lag_s": list(
+                        self._round_update_values.get("update_visibility_lag_s", [])
+                    ),
+                },
             )
             telemetry.emit(ev, **fields)
 

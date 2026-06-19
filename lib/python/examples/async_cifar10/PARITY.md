@@ -36,7 +36,7 @@ passing different `--baselines`.
 examples/async_cifar10/scripts/parity/` — guards baseline wiring, the in-memory
 cache, serialize-once, sim ordering (barrier/residence/carry-over), the overhead
 model, deterministic seeding, the pass/total scoreboard, and every checker rung.
-Last green: **147 pass / 7 skip**.
+Last green: **148 pass / 7 skip** (adds `commit_visibility`).
 
 ---
 
@@ -65,6 +65,32 @@ The objective is parity in the fewest wall-hours and cluster runs. Rules:
 
 ---
 
+## Run-length budget: minimum time per fix (don't burn GPU for nothing)
+
+**Standing instruction:** whenever a run is proposed for a fix/measurement, state the
+**minimum duration up front**, keyed to the table below, and *why* — never default to
+3–4h. Max principled insight per GPU-hour; run the shortest duration that makes the
+check-under-test statistically read, then stop.
+
+| what you're validating | min run | why |
+|---|---|---|
+| telemetry field present / instrument sane | **5–10 min** | a few hundred commits populate any per-commit field — grep the jsonl |
+| a single MECHANISM rung (gate hold, `commit_visibility`, `residence`, `selection_detail`) | **45 min** | every mechanism check fires; per-commit distributions stabilize |
+| clock/advance residuals that compound (`K2`/`K3b`, past-dating cumulative) | **90 min – 2 h** | round-count-compounding drift needs the rounds; felix past-dating is fully visible by ~hr 1 |
+| low-frequency eligibility-shape / round-count drift (refl `K2`) | **3 h** | only surfaced at 3h despite a clean 45min pass |
+| `C1`/`C2` convergence (accuracy/loss sign-off) | **full budget (3–4 h+)** | terminal-state + curve parity only — nothing else needs this |
+
+Rules: **smoke (5 min) before any multi-hour run** (confirm the field lands); **one
+mechanism per run round** when a fix could perturb another baseline (serialize); a
+**sim-only** change validates against the stored real dir (don't re-run real).
+
+> **These pending commit-visibility runs are MEASUREMENT** → the *90 min – 2 h* band.
+> 2 h is the ceiling (margin on past-dating compounding), **not** convergence; anything
+> past 2 h here is wasted GPU. The two confirmation reads (oort straggler-lag, felix
+> clock-jump signature) are stable well before then.
+
+---
+
 ## Doc policy: ONE status section, not one per run
 
 This doc used to grow a new `## Status (date — ...)` section per check-in,
@@ -78,77 +104,57 @@ sections below status and get *updated in place*, not appended to.
 
 ---
 
-## Status (Jun 17 eve — oort + felix 1h sim reruns: threshold-fix necessary-not-sufficient; felix seed-fix partial)
+## Status (Jun 19 — commit-visibility instrument landed; oort/felix measurement runs PENDING)
 
-Baselines not yet rerun (refl unchanged, feddance unchanged) still reference prior
-stored runs. **refl**: real=`run_20260616_223801`, sim=`run_20260616_223807`,
-report `parity_refl_20260616_1h.json` (38/44 validated). **oort 1h rerun (NEW)**:
-real=`run_20260616_175804_dbg_oort_n300_alpha0.1_syn0_stream_real`,
-sim=`run_20260617_161102_dbg_oort_n300_alpha0.1_syn0_stream_sim`,
-report `parity_oort_20260617_1h.json` (`--budget-s 3600 --agg-goal 10`).
-**felix 1h rerun (NEW)**: real=`run_20260616_022110_dbg_felix_n300_alpha0.1_syn0_stream_real`,
-sim=`run_20260617_161050_dbg_felix_n300_alpha0.1_syn0_stream_sim`,
-report `parity_felix_20260617_1h.json` (`--budget-s 3600 --agg-goal 10`; real has
-3h of data but comparison is at matched V=3602s).
+This session landed **no behavioral fix** — only the `update_visibility_lag_s`
+instrument (below). The next oort+felix runs are **measurement runs**: they populate the
+new metric in real and sim so the oort carry-over-decay and felix past-dating roots can be
+settled with **evidence before** any selector/clock change. **Parity scores will not move.**
+Path chosen: **instrument-first**, then scoped fix. *This is the only PARITY.md update
+until those runs land.*
 
-| baseline | score | lowest broken rung | root cause | status |
-|---|---|---|---|---|
-| **refl** | **38/44** *(1h, Jun 16 post D5 + crash fix — unchanged)* | `overhead_residual` (S1) + `eligibility` (S2) | Stochastic speed-tail/selection-mix (same class as feddance A2c). sim max-of-K speed 7.75s vs real 8.64s; implied overhead≈0. | Deprioritized below oort/felix. |
-| **oort** | **37/44** *(1h rerun, post threshold-creep fix — Jun 17 eve)* | `residence` (carry-over) + `overhead_residual` + `preferred_duration` + `selection_detail` | **Threshold-creep fix (§4.9) necessary but not sufficient.** `in_flight_after` decile-0 now starts at 4.02 (≈ real 4.24 ✓ — threshold fix confirmed correct), but decays to ~0 by decile 4–5 (same pattern as before). `selection_detail` failure (`num_chosen` sim=13.75 vs real=17.23) is entirely DOWNSTREAM of the carry-over decay — `num_chosen` = `in_flight_before` at selection, so sim choosing 13 = 13 freshly dispatched + 0 carry-overs vs real 13 + 4 carry-overs = 17. **Root of the decay**: not the threshold. After decile 0, Oort's utility scoring learns and deprioritizes slow trainers (`system_util` penalty); fewer overcommitment slots filled with sct >> vclock_round_start → carry-over count declines. Telemetry: `carried_over_ages` ages grow (0→0→1→2→4→5) as fewer new carry-overs are seeded each round, then hit 0 by decile 5. `preferred_duration` binding real=0.869 vs sim=0.522 confirms real selects more slow trainers than sim. In real, physical timing variability means even "fast" selections carry over; sim selection tightens to fast trainers → carry-over dies out. **This is the same class as the feddance/refl speed-tail bias (A2c)** — Oort's speed penalty in sim excludes the slow tail from selection more aggressively than real. | **Threshold-creep fix validated** (decile-0 4.02 ≈ real). Core mechanism: pinned `_round_start_vclock` is working. But steady-state carry-over requires that slow trainers stay in the selection pool at the Oort-learned rate of real — a speed-tail / selection-mix issue. **Score 37/44, no regression vs pre-fix** (was 36/44 on the pre-fix run, same roots). Next: diagnose whether widening the slow-speed tail in sim (same fix direction as refl A2c) recovers `in_flight_after`→~4 at steady state. |
-| **felix** | **30/41** *(1h rerun, post seed fix — Jun 17 eve)* | `overhead_residual` (K3b) + `phase_gpu_compute` + `phase_pre_train` | **Seed fix (min budget default) partially effective.** Past-dating reduced: ~14% at commit 500 (vs 73% before), but grows to ~59% by commit 5000. `gate_holds=0` throughout (gate cascade still seeded by other mechanisms). `vclock_lead_over_buf` still spikes to 628s, `commit_gap_s` to 636s (bursts), max gap 668s (was 9659s). Overlap 11.45× vs real 6.79× (was 12.7×, marginal improvement). **New findings from phase checks:** `phase_gpu_compute` KS=0.334 (real_mean=0.416s vs sim_mean=0.18s) — aggregator-side GPU compute overhead is ~2.3× lower in sim. `phase_pre_train` KS=0.279 (marginal, both means 0.001s — distributional artifact). `staleness` sim_mean=9.533 vs real_mean=2.795 (downstream of clock; confirms past-dating). K3b: sim advance 2.34s vs real 4.02s (rel=0.417, implied overhead 0.168s per commit). | Seed fix narrows past-dating magnitude but cascade sources remain. Score 30/41 (note: 33/42 prior was against 3h real with different round count; now comparing at 1h matched budget, so check counts differ slightly). **`phase_gpu_compute` is a new finding**: real trainers spend 0.416s vs sim's 0.18s on GPU compute phase — likely an aggregation-side overhead the sim doesn't model. May explain part of K3b residual. Next: (a) identify remaining past-dating seeds (round-1 transient, re-dispatch cascade); (b) investigate `gpu_compute_s` phase gap. |
-| **feddance** | **41/43** *(unchanged, Jun 16)* | `selection_bias` (A2c) + downstream `convergence_loss` | Known stochastic selection-mix bias | Still open, deprioritized. |
+Stored reference runs unchanged (no rerun yet): **refl** 38/44, **oort** 41/45 (2.5h Jun 18,
+`run_20260618_165804…real` / `run_20260618_163855…sim`), **felix** 32/41 (2.5h Jun 18,
+`run_20260618_183452…real` / `run_20260618_163909…sim`), **feddance** 41/43.
 
-**Landed and validated this session.**
-- **oort threshold-creep fix VALIDATED**: pinned `_round_start_vclock` correctly restores carry-over in early rounds (decile-0 4.02 ≈ real). Root of remaining decay is speed-tail selection bias, not a code bug in the gate.
-- **felix seed fix PARTIALLY VALIDATED**: past-dating drops from 73% → 14% in first 500 commits but grows to 59% by commit 5000; cascade sources other than unseen-trainer overshoot still active.
-- **refl**: still 38/44 (unchanged); no rerun needed.
+### Landed this session — `update_visibility_lag_s` (commit-timeliness instrument)
+One metric, both modes, all baselines: **`committed_ts − ready_ts` in the aggregator's
+own clock.** sim = `vclock.now − sct`; real = `wall(commit) − wall(MQTT arrival)`. Async
+target ≈0 (independent commits at own readiness); sync = barrier wait (matches in both).
+Same field name both modes; high fidelity = **sim distribution == real distribution**.
+- Helper `_update_visibility_lag` on the syncfl base (inherited by every baseline); emitted
+  in asyncfl/syncfl/oort aggregators; carried on `TrainResult` for oort/refl.
+- New rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declared
+  **upstream of `staleness`** (past-dating inflates staleness downstream). Self-SKIPs when
+  the field is absent → inert on pre-instrument runs. NOT added to `field_coverage` (INV)
+  — that would wrongly root-cause every old run. Plot: CDF + P50-over-rounds
+  (`commit_visibility_lag_*.pdf`). Guard: `test_ladder.py::test_commit_visibility_parity`.
+- Touches the **real path** → re-run **both** real and sim per baseline.
 
-### Next implementation steps, in priority order
+### Corrected roots (supersede the Jun 18 hypotheses)
+| baseline | prior hypothesis (Jun 18) | corrected (Jun 19) — what we'll verify with the instrument |
+|---|---|---|
+| **oort** | carry-over decay = `system_util` recency; fix = recency guard | **Recency guard is a value-fudge, dropped.** Given intrinsic per-task latency, last-observed duration == current → returning `system_util=1` for a "stale" value removes a *correct* penalty = the forbidden speed-tail widening (no principled round threshold exists). Evidence against: selection-speed-by-decile shows sim selecting *slower* than real early (5.6 vs 3.8; trajectories cross), and `selection_bias` passes — not a clean fresh-selection-penalty divergence. **Verify**: does `commit_visibility` show sim stragglers committing/draining at the real lag (→ A2c stochastic, deprioritize) or early (→ real timing gap)? Then land the **task-type-keyed latency** correctness fix. |
+| **felix** | past-dating fix = pace dispatch timestamps | **Dispatch-ts pacing is a symptom mask, dropped** (inflates fast trainers' modeled completion → wrong-direction staleness; same family as the rejected redispatch scalar). Real root: the arrival-ordering gate is **structurally inert** — `gate_holds=0` for the whole 2.5h run, because it waits only for *not-yet-arrived* trainers, but in sim real-GPU compute (~0.4 s wall) means every in-flight trainer has already arrived & buffered (`inflight_tracked ≈ buf_depth`). The clock then **jumps** on forced far-future commits, lapping the fast cohort → fresh past-dating (**53% of commits >50 s past-dated**; `commit_gap_max` 4430–8302 s). **Verify**: the jump signature in the lag time-series (a CDF smears it). **Fix**: re-base the gate on modeled completion (`sct` vs `vclock`), cap the per-commit clock jump. |
+| **refl / feddance** | A2c stochastic speed-tail | Unchanged, deprioritized. One speed-model fix may close both. |
 
-> **oort carry-over** decay is now a speed-tail/selection-mix problem (same A2c
-> class as feddance/refl), not a gate bug. The gate works; the issue is that Oort's
-> utility scoring in sim deprioritizes slow trainers too aggressively relative to real.
-> **felix** past-dating is reduced but not eliminated; gate never fires; additional
-> seeds remain. **refl** is deprioritized (speed-tail class). **feddance** lowest.
+### What these runs buy us (and what they don't)
+- **Buy**: first apples-to-apples `update_visibility_lag_s` read, real vs sim, for oort &
+  felix → settles oort decay (timing vs stochastic) and confirms felix's clock-jump.
+- **Don't buy**: any score change (no mechanism changed), and **no C1/C2 convergence
+  sign-off** at this duration — that is explicitly out of scope here.
 
-1. **oort carry-over decay — run-length test (DECIDED Jun 18: option b, no code).**
-   The carry-over gate is correct (pinned threshold works in decile 0). The decay
-   (4.02→0 over ~300 rounds) traces to a precise selector-scoring asymmetry, pinned
-   this session to [`oort.py:548-551`](../../flame/selector/oort.py#L548): a trainer
-   with `PROP_ROUND_DURATION is None` gets `system_util=1` (no speed penalty). In sim,
-   a released straggler commits and **records its slow duration → Oort then penalizes
-   it → it stops being re-selected → no new carry-overs seeded**. In real the same
-   trainer spends far more wall-time in-flight with a stale/None duration, escaping the
-   penalty longer (`selection_bias` sim −4.51 vs real −2.33; the lone divergent
-   `selector_score` term is `system_util`). This is the A2c selection-mix class. Note
-   (a) **"widen the slow-speed tail" does NOT apply** — `trainer_speed` already passes
-   and the sim tail is if anything wider (max 25 vs 21); there is no tail to widen.
-   Chosen path: **(b) run at 3h, no code change** — `--mode both` so real+sim match at
-   V. If `in_flight_after`→~4 at matched V, the decay was a 1h-window transient (score
-   against 3h real); if not, the system_util recency fix in the shared `OortSelector`
-   is next (serialize as an oort-only run round — perturbs refl).
-
-2. **felix past-dating — source-attribution instrumentation (LANDED Jun 18, sim-only).**
-   `gate_holds=0` means the gate never fires: in sim every in-flight message buffers
-   near-instantly, so there is never an un-drained in-flight trainer expected earlier
-   than `buffered_min` for the gate to hold on. The past-dating is **cross-round** — the
-   clock advances onto a future-dated slow `sct`, then laps a newly-dispatched *fast*
-   trainer whose `sct = send_ts + small_budget` lands below the advanced clock; the gate
-   (`expected = send_ts + budget`) can't catch work that didn't exist at dispatch.
-   **Landed:** `pastdated_by_source` breakdown in `_sim_recv_min` (`fresh` / `redispatch`
-   / `straggler` / `round1`, count + cum-gap each), surfaced in the `[SIM_CLOCK_DIAG]`
-   line. Guard: existing `tests/mode` + `tests/sim` suites (128 pass / 7 skip).
-   **Awaiting a 1h sim-only rerun** (reuse stored real) to read which seed dominates,
-   then design buffer-aging pacing for it. Also still open: `phase_gpu_compute` gap
-   (real 0.416s vs sim 0.18s) — real aggregation overhead not modeled in sim, ≈ part of
-   K3b (implied overhead 0.168s per commit ≈ 0.236s gpu delta).
-
-3. **felix D5 (deferred).** Same stamp-at-commit bug at `asyncfl/top_aggregator.py:516`.
-   Land after past-dating is resolved so attribution stays clean.
-
-4. **refl + feddance speed-tail (lowest priority, A2c class).** Sequence after
-   oort + felix since all three point at the same root (slow-tail selection mix).
-   One speed-model fix may close all three at once.
+### Next implementation steps (post-measurement, in priority order)
+1. **felix gate re-base** (clock-jump root) — biggest parity gap; independent of oort
+   (separate `AsyncOortSelector`/asyncfl) so it runs in **parallel** rounds, not behind oort.
+   Re-base gate "stuck" predicate from physical-arrival → modeled-completion (`sct`>`vclock`);
+   cap per-commit clock jump so a far-future commit can't lap the fast cohort.
+2. **oort task-type-keyed latency** — correctness fix: key `PROP_ROUND_DURATION` (and the
+   `system_util` read) by **train vs eval** so the selector scores on the right latency
+   (today it's overwritten by whichever task committed last; felix dispatches both).
+   Then re-read `commit_visibility` to classify the residual carry-over decay.
+3. **felix D5** (stamp-at-commit, `asyncfl/top_aggregator.py:516`) after past-dating resolved.
+4. **refl + feddance speed-tail** (A2c) last.
 
 ### Durable lessons (kept; update in place, don't append)
 
@@ -176,17 +182,31 @@ report `parity_felix_20260617_1h.json` (`--budget-s 3600 --agg-goal 10`; real ha
   it (dead end); fix the speed-tail model or accept it as the feddance A2c class.
 - **Oort `in_flight_after` decay ≠ "carry-over gate broken" once decile-0 matches.**
   If `inflight_residence` telemetry shows decile-0 `in_flight_after` ≈ real but
-  decaying over the run, the gate itself (pinned `_round_start_vclock`) is correct.
-  The decay means slow trainers are NOT being selected at sufficient rate in later
-  rounds — a speed-tail/selection-mix issue (A2c class), not a gate or carry-over
-  bug. Diagnose via `carried_over_ages` per-decile: growing ages but falling count
-  = same slow trainers persisting but no new ones seeded. Fix: widen slow-speed tail.
-- **`phase_gpu_compute` gap is aggregation overhead, not training-speed.** If the
-  per-trainer `gpu_compute_s` phase shows real_mean >> sim_mean with similar
-  `trainer_speed_s` and `training_budget_s` (K3b implied overhead > 0), the gap is
-  in the aggregator-side GPU computation time (model aggregation, weight updates)
-  that the sim doesn't fully reproduce. Do NOT conflate with training compute budget.
-  Cross-check K3b implied overhead ≈ `gpu_compute_s` delta × agg_goal to confirm.
+  decaying over the run, the gate itself (pinned `_round_start_vclock`) is correct;
+  the decay is a *selection-mix tail* effect, not a gate bug.
+  **The `system_util` recency guard was the wrong fix (Jun 19):** with intrinsic
+  per-task latency, a trainer's last-observed duration == its current duration, so
+  returning `system_util=1` for a "stale" value removes a *correct* speed penalty —
+  observationally identical to the forbidden speed-tail widening, and there is no
+  principled round threshold (the staleness premise is false). Evidence it isn't a
+  clean `system_util` divergence anyway: `selection_bias` passes and sim selects
+  *slower* than real early (decile-0 5.6 vs 3.8; trajectories cross). Correct path:
+  **instrument with `commit_visibility`** to classify the decay (real timing gap vs
+  A2c stochastic), and land the **task-type-keyed latency** correctness fix (score
+  `system_util` on the train-task duration, not whichever task committed last).
+- **`phase_gpu_compute` gap is run-length-sensitive.** At 1h (felix), sim=0.18s vs
+  real=0.42s (FAIL, KS=0.334). At 2.5h, sim=0.422s vs real=0.356s (PASS, KS=0.08) —
+  gap closed and reversed. Don't treat a 1h `phase_gpu_compute` FAIL as a permanent
+  structural gap; re-check at 2.5h before acting.
+- **`pastdated_by_source` split: `fresh` dominates gap, `straggler` dominates count.**
+  In the felix past-dating pattern, `fresh` (newly-dispatched fast trainers lapped by
+  the clock) has a large per-commit gap (≈1139 s avg) while `straggler` (late finishers)
+  has a small per-commit gap (≈44 s avg). By steady state the straggler count exceeds
+  fresh count, but fresh owns 21× the cumulative gap. Fix fresh first — it dominates the
+  staleness and K3b residual. Straggler-count may be within tolerance after.
+- **oort `sim_committed_fresh` = agg_goal confirms block-for-K fix; don't re-examine.**
+  At 2.5h, `sim_committed_fresh=10` matches real exactly. The block-for-K mechanism is
+  closed; any future `committed_fresh` gap is a different root.
 - **Run length matters.** 45min exercises every mechanism check but isn't
   enough for `C1`/`C2` convergence sign-off or to catch round-count-compounding
   clock residuals / low-frequency eligibility-shape drift (refl's 3h-only
@@ -205,6 +225,10 @@ report `parity_felix_20260617_1h.json` (`--budget-s 3600 --agg-goal 10`; real ha
 - `simRedispatchGapSeconds=0` for felix (sim over-overlaps; the gap is a real mechanism).
 - `simRedispatchGapSeconds=0.6` for felix — tested Jun 16, no measurable effect; don't retune this scalar further, go to the buffer-aging model.
 - Expecting the felix seed fix (min budget default) alone to eliminate past-dating — confirmed Jun 17: past-dating drops from 73%→14% initially but recovers to 59% by commit 5000 with `gate_holds=0` throughout. Other cascade sources remain active; need source-level instrumentation, not scalar tuning.
+- Expecting oort carry-over decay to be a run-length transient — confirmed Jun 18 2.5h: `in_flight_after` sim=0.47 vs real=3.65 at 2.5h; zero by decile 2 of 10. Structural, not transient. Don't re-test duration.
+- "Widen the oort slow-speed tail" to fix carry-over decay — `trainer_speed` already passes; sim tail is if anything wider (max 29 vs 21 at 2.5h). It's a selection-mix tail effect, not a speed-model gap.
+- **`system_util` recency guard for oort carry-over decay (Jun 19)** — with intrinsic per-task latency the last-observed duration is *correct*, so returning `system_util=1` for a "stale" value is a value-fudge identical in effect to the (forbidden) speed-tail widening, with no principled threshold. Use `commit_visibility` + task-type-keyed latency instead.
+- **felix dispatch-timestamp pacing for past-dating (Jun 19)** — pacing/inflating the effective dispatch `sct` so fewer commits *look* past-dated falsifies fast trainers' modeled completion and pushes staleness the wrong way (same family as the redispatch scalar). The root is the inert arrival-gate + clock jump; fix the gate, not the dispatch ts.
 - Tuning sim to a *wrong* real, or any scalar fudge where a mechanism is called for.
 - Re-chasing: GPU contention (overrun 0), SEND_TIMEOUT (0×), MQTT drops (0), the
   felix post-compute leg as a "bug" (it's serial-aggregator scheduling), per-trainer
@@ -410,7 +434,8 @@ pass*. "Dep" = upstream prerequisites.
 ### Stage 6 — Aggregation
 | ID | Check | Role/Tier | Isolates | Dep |
 |---|---|---|---|---|
-| U3 | Staleness distribution | MECHANISM/DIST | Staleness diverges (async: directly downstream of clock under-charge) | K3,U5 |
+| U6 `[Jun19]` | Commit visibility lag (`update_visibility_lag_s`) | MECHANISM/DIST | The aggregator-clock delay between an update becoming READY and being COMMITTED diverges — sim commits late (past-dating) relative to real. Same metric both modes (sim `vclock−sct`, real `wall commit−arrival`); the **upstream** cause of a staleness divergence. Self-SKIPs if the field is absent. | K3 |
+| U3 | Staleness distribution | MECHANISM/DIST | Staleness diverges (async: directly downstream of clock under-charge) | K3,U5,U6 |
 | P1 | Aggregation sequence | EMERGENT/DIST (gated for stochastic) | Per-round contributing set diverges | S2,U5 |
 
 ### Stage 7 — Statistical utility
@@ -556,23 +581,16 @@ This is the **same A2c class** as refl/feddance selection-mix; carry-over is one
 manifestation. Fix direction: widen the slow-speed tail in sim so Oort selects
 enough slow trainers to sustain ~3 carry-overs at steady state.
 
-**Second mechanism, FIXED (Jun 16, same day): block-for-K-fresh.** Even with
-carry-over correct, the 3h rerun showed `committed_fresh` sim 7.24 vs real 10
+**Second mechanism, FIXED (Jun 16) and CONFIRMED (Jun 18 2.5h): block-for-K-fresh.**
+Even with carry-over correct, a prior rerun showed `committed_fresh` sim 7.24 vs real 10
 — a *starvation*, not a carry-over bug. Root: `_aggregate_weights`'s second
 poll loop only ran `while not self.simulated`, so a sim round got exactly one
 `_oort_sim_recv` pass; if a fresh (this-round) trainer's message wasn't ready
 within the adaptive `grace` window (`4× EMA of past full-drain time`,
 `syncfl/top_aggregator.py`), it was silently skipped this round and re-probed
 next round — by which point `self._round` had advanced, so it commits **stale**
-instead of fresh. Real's equivalent loop just keeps polling the same `end_ids`
-indefinitely. Fix: removed the `not self.simulated` gate so sim also retries
-— calling `_oort_sim_recv` again (re-probing the same persistent
-`SimReorderBuffer`, giving slow-but-alive trainers another `grace` window)
-instead of `channel.recv_fifo` — bounded by a `progressed` flag so a pass that
-accepts nothing stops instead of spinning. Guard: existing
-`tests/sim`/`tests/mode` suite, 149 pass / 7 skip (was 147/7). **Awaiting a 3h
-cluster rerun to confirm `committed_fresh`→~10** (logical fix validated by
-code trace + unit tests, not yet by a fresh telemetry run).
+instead of fresh. Fix: removed the `not self.simulated` gate so sim also retries.
+**Confirmed Jun 18 2.5h**: `sim_committed_fresh=10` matches real exactly. Mechanism closed.
 
 ### §5  Checker corrections (stochastic / observability classes)
 Once the sim *dynamics* match, some residual FAILs were the checker enforcing exact
