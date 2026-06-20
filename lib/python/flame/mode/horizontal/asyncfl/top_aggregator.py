@@ -147,6 +147,19 @@ class TopAggregator(SyncTopAgg):
         _gap = getattr(self.config.hyperparameters, "sim_redispatch_gap_s", 0.0)
         self._sim_redispatch_gap_s: float = float(_gap) if _gap is not None else 0.0
 
+        # Clock-jump clamp (the gate re-based onto modeled completion). The
+        # arrival-based gate above is inert in sim (real-GPU compute is ~0.4s wall,
+        # so every in-flight trainer is already buffered → gate_holds=0). A forced
+        # commit of a far-future straggler future then jumps vclock past the
+        # fresh fast cohort still mid-flight, past-dating them on arrival (72% of
+        # commits, fresh source dominant). The clamp caps each commit's advance at
+        # the earliest MODELED completion of any still-in-flight FUTURE (exp >
+        # vclock) trainer, so the clock creeps with the fast cohort instead of
+        # lapping it. Excludes exp <= vclock (already-due / abandoned ends) so a
+        # lost in-flight entry can never pin the clock.
+        _clamp = getattr(self.config.hyperparameters, "sim_clock_jump_clamp", True)
+        self._sim_clock_jump_clamp: bool = bool(_clamp) if _clamp is not None else True
+
         # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
@@ -385,7 +398,23 @@ class TopAggregator(SyncTopAgg):
         if popped is None:
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
-        self._advance_sim_clock(sct)
+        # Clamp the clock-jump to the earliest in-flight FUTURE modeled completion
+        # so a far-future straggler commit can't lap the fresh fast cohort. Only
+        # exp > vclock counts (an already-due/abandoned end never pins the clock);
+        # never advance backwards. Committing a straggler "early" (vclock < sct) is
+        # the intended in-flight residence, not a past-dating.
+        _advance_to = sct
+        if getattr(self, "_sim_clock_jump_clamp", True):
+            _now = self._vclock.now
+            _min_future_exp = None
+            for e, exp in self._sim_inflight_expected.items():
+                if e == _end or e in self._sim_committed:
+                    continue
+                if exp > _now and (_min_future_exp is None or exp < _min_future_exp):
+                    _min_future_exp = exp
+            if _min_future_exp is not None:
+                _advance_to = max(_now, min(sct, _min_future_exp + _SIM_ORDER_SLACK_S))
+        self._advance_sim_clock(_advance_to)
         # Re-dispatch tell: captured BEFORE the add, since _sim_committed already
         # holds _end on a second commit. Drives the past-dating source breakdown.
         _was_recommit = _end in self._sim_committed

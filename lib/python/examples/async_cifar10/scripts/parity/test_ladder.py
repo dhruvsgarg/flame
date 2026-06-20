@@ -464,6 +464,18 @@ def test_commit_visibility_parity():
     res_scalar = commit_visibility_parity(real_scalar, sim)
     assert res_scalar["ok"] and not res_scalar.get("skipped"), res_scalar
 
+    # (5) sub-50ms point mass (sync oort: both commit immediately) → PASS on mean
+    #     even though disjoint near-zero values make KS=1.0 (the false-positive guard).
+    real_pm = {"agg_rounds": [{"update_visibility_lag_s": [0.004]} for _ in range(2000)]}
+    sim_pm = {"agg_rounds": [{"update_visibility_lag_s": [0.001]} for _ in range(2000)]}
+    res_pm = commit_visibility_parity(real_pm, sim_pm)
+    assert res_pm["ok"] and not res_pm.get("skipped"), res_pm
+    assert res_pm["ks_stat"] == 1.0 and "point mass" in res_pm.get("note", ""), res_pm
+    # but a sim that past-dates above the floor is NOT rescued by the guard
+    sim_pm_late = {"agg_rounds": [{"update_visibility_lag_s": [14.8]} for _ in range(2000)]}
+    res_pm_late = commit_visibility_parity(real_pm, sim_pm_late)
+    assert not res_pm_late["ok"], res_pm_late
+
 
 if __name__ == "__main__":
     import traceback

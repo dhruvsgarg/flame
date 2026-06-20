@@ -201,6 +201,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
     )
+    # Sim async-stack: cap each commit's clock advance at the earliest in-flight
+    # FUTURE modeled completion (+slack), so a forced far-future straggler commit
+    # can't lap the fresh fast cohort still mid-flight (the dominant past-dating
+    # source). Re-bases the inert arrival-gate onto modeled completion.
+    sim_clock_jump_clamp: t.Optional[bool] = Field(
+        alias="simClockJumpClamp", default=True
+    )
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1

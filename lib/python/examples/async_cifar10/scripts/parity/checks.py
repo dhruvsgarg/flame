@@ -973,6 +973,9 @@ def staleness_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     }
 
 
+NEAR_ZERO_LAG_S = 0.05  # U6: both-modes mean lag <= this ⇒ immediate commit, KS uninformative
+
+
 def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
                              warn_mean_diff: float = 2.0) -> dict:
     """U6 (commit timeliness): update_visibility_lag_s distributions match.
@@ -1007,10 +1010,19 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     sm, _ = mean_std(sv)
     ks = ks_stat(rv, sv)
     mean_diff = abs(rm - sm) if not (math.isnan(rm) or math.isnan(sm)) else float("nan")
-    ok = True
-    if not math.isnan(ks):
+    # Point-mass guard: when both modes commit immediately the lag is a sub-50ms
+    # point mass at ~0, so KS→1.0 is uninformative (the A2 num_candidates case).
+    # A real past-dating divergence (felix: sim mean 14.8s) clears NEAR_ZERO_S by
+    # 100s of ms — judge those on mean_diff, not the degenerate-KS artifact.
+    pointmass = (not math.isnan(rm) and not math.isnan(sm)
+                 and abs(rm) <= NEAR_ZERO_LAG_S and abs(sm) <= NEAR_ZERO_LAG_S)
+    if pointmass:
+        ok = True
+    elif not math.isnan(ks):
         ok = ks <= warn_ks and (math.isnan(mean_diff) or mean_diff <= warn_mean_diff)
-    return {
+    else:
+        ok = True
+    out = {
         "ok": ok,
         "tier": "DIST",
         "real_mean": round(rm, 3) if not math.isnan(rm) else None,
@@ -1020,6 +1032,11 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
         "mean_diff": round(mean_diff, 3) if not math.isnan(mean_diff) else None,
     }
+    if pointmass:
+        out["note"] = ("both modes commit immediately (mean lag <= {:.0f}ms): "
+                       "KS uninformative on a near-zero point mass — passed on mean"
+                       .format(NEAR_ZERO_LAG_S * 1000))
+    return out
 
 
 def commit_sequence(agg: dict) -> list:
