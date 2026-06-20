@@ -17,6 +17,7 @@
 
 import logging
 import time
+from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -39,7 +40,7 @@ from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
-from flame.telemetry.events import build_agg_round, build_utility_belief
+from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
 from flame.sim import SimReorderBuffer
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 from flame.selector.oort import (
@@ -159,6 +160,25 @@ class TopAggregator(SyncTopAgg):
         # lost in-flight entry can never pin the clock.
         _clamp = getattr(self.config.hyperparameters, "sim_clock_jump_clamp", True)
         self._sim_clock_jump_clamp: bool = bool(_clamp) if _clamp is not None else True
+
+        # Event-driven re-dispatch (async only; sync stays batched). The round
+        # boundary re-dispatches the whole freed cohort at one frozen round-start
+        # vclock, collapsing the per-trainer completion stagger that real keeps
+        # (real re-dispatches each trainer the instant it returns). With this on,
+        # each freed slot carries the vclock at which it FREED (a train commit's
+        # advanced clock); the trainer that refills it is stamped at that vclock
+        # instead of the shared round-start frontier, so sct = sim_send_ts +
+        # compute regains the stagger. Backdating is bounded by one round's advance
+        # (~4s) << min compute (~12s), so no commit is past-dated at dispatch.
+        # MODEL_VERSION stays self._round. Default off ⇒ byte-identical to today.
+        _stag = getattr(self.config.hyperparameters, "sim_staggered_redispatch", False)
+        self._sim_staggered_redispatch: bool = bool(_stag) if _stag is not None else False
+        # FIFO of vclocks at which a train-commit freed a slot; popped (oldest
+        # first) to stamp the trainer that refills that slot. Bounded length: in
+        # steady state #frees ≈ #fills so it stays ~<= concurrency; trimmed as a
+        # safety so a transient imbalance can never make a stamp arbitrarily stale.
+        self._sim_free_slot_ts: deque = deque(maxlen=128)
+        self._sim_last_commit_sct: dict = {}  # end -> its last commit sct (held_s telem)
 
         # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
@@ -431,6 +451,22 @@ class TopAggregator(SyncTopAgg):
             if not hasattr(self, "_sim_cooldown_until"):
                 self._sim_cooldown_until = {}
             self._sim_cooldown_until[_end] = sct + _gap
+        # Event-driven re-dispatch bookkeeping: record this commit's sct (held_s
+        # telemetry) and, for a TRAIN commit, push the just-advanced vclock as the
+        # freed-slot stamp. The trainer that refills this slot rides this vclock
+        # (popped FIFO in _distribute_weights) instead of the round-start frontier,
+        # so train dispatches ≈ train commits keep the FIFO balanced and fresh.
+        if not hasattr(self, "_sim_last_commit_sct"):
+            self._sim_last_commit_sct = {}
+        self._sim_last_commit_sct[_end] = sct
+        if getattr(self, "_sim_staggered_redispatch", False):
+            _is_train = isinstance(m, dict) and (
+                MessageType.WEIGHTS in m or MessageType.WEIGHTS_BYTES in m
+            )
+            if _is_train:
+                if not hasattr(self, "_sim_free_slot_ts"):
+                    self._sim_free_slot_ts = deque(maxlen=128)
+                self._sim_free_slot_ts.append(self._vclock.now)
         # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
         # budget (running mean refines the default for trainers not yet observed).
         # learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
@@ -1327,6 +1363,18 @@ class TopAggregator(SyncTopAgg):
 
         return picked_trainer_is_available
 
+    def _pop_free_slot_ts(self, round_now):
+        """Oldest freed-slot vclock (FIFO) to stamp a re-dispatch, else round_now.
+
+        A stamp is the vclock at which a prior train commit freed a slot; it is
+        always <= the live vclock (monotone), clamped defensively. Empty queue =
+        cold start (round 1) or a transient with no held slot ⇒ the live frontier."""
+        q = getattr(self, "_sim_free_slot_ts", None)
+        if not q:
+            return round_now
+        ts = float(q.popleft())
+        return min(ts, float(round_now)) if round_now is not None else ts
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """Distribute a global model in asynchronous FL fashion."""
         channel = self.cm.get_by_tag(tag)
@@ -1388,20 +1436,9 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"No trainers found for tag {tag}")
             return
 
-        ends_list = list(ends)
-        # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = self._vclock.now if self.simulated else None
-        msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
-            MessageType.ROUND: self._round,
-            MessageType.MODEL_VERSION: self._round,
-            MessageType.TASK_TO_PERFORM: task_to_perform,
-        }
-        if self.simulated:
-            msg[MessageType.SIM_SEND_TS] = _sim_send_ts
-        _payload = channel.dumps(msg)
-        _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
-        for end in ends_list:
+        # Filter to ends we actually dispatch to (skip already-sent-this-round).
+        _send_ends = []
+        for end in list(ends):
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
                 recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
@@ -1416,7 +1453,43 @@ class TopAggregator(SyncTopAgg):
                     logger.warning(
                         f"[SELECTION_CHECK] {end} has {len(unreturned)} unreturned versions: {unreturned}"
                     )
+            _send_ends.append(end)
 
+        _round_now = self._vclock.now if self.simulated else None
+        # Event-driven re-dispatch: stagger each TRAIN dispatch by the vclock at
+        # which its slot freed (a prior commit), so the round-boundary cohort no
+        # longer collapses to one frozen frontier. Off / eval / real ⇒ one shared
+        # round_now stamp and a single serialized payload (byte-identical to before).
+        _staggered = (
+            self.simulated
+            and getattr(self, "_sim_staggered_redispatch", False)
+            and task_to_perform == "train"
+        )
+        # Per-end sim_send_ts: popped freed-slot stamp (staggered) else round_now.
+        _end_send_ts = {}
+        for end in _send_ends:
+            _end_send_ts[end] = (
+                self._pop_free_slot_ts(_round_now) if _staggered else _round_now
+            )
+        _cohort_min = min(_end_send_ts.values()) if (_staggered and _end_send_ts) else None
+
+        # Same model goes to every recipient; serialize once unless staggered (each
+        # carries its own SIM_SEND_TS so the payload must be rebuilt per end — sim
+        # weights are small and dwarfed by the real GPU compute these runs do).
+        base_msg = {
+            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.ROUND: self._round,
+            MessageType.MODEL_VERSION: self._round,
+            MessageType.TASK_TO_PERFORM: task_to_perform,
+        }
+        _shared_payload = None
+        if not _staggered:
+            if self.simulated:
+                base_msg[MessageType.SIM_SEND_TS] = _round_now
+            _shared_payload = channel.dumps(base_msg)
+
+        _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
+        for end in _send_ends:
             logger.debug(
                 f"sending weights to {end} model_version={self._round} task={task_to_perform}"
             )
@@ -1424,12 +1497,32 @@ class TopAggregator(SyncTopAgg):
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
             if self.simulated:
-                channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
+                _sst = _end_send_ts[end]
+                channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
                 # Expected completion = dispatch vclock + a lower-bound budget (own
                 # observed, else the running min), so the gate never laps this trainer.
                 _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
-                self._sim_inflight_expected[end] = _sim_send_ts + _budget
-            channel.send_payload(end, _payload)
+                self._sim_inflight_expected[end] = _sst + _budget
+                if _staggered:
+                    _m = dict(base_msg)
+                    _m[MessageType.SIM_SEND_TS] = _sst
+                    payload = channel.dumps(_m)
+                else:
+                    payload = _shared_payload
+                if telemetry.is_enabled():
+                    _prior = self._sim_last_commit_sct.get(end)
+                    ev, f = build_dispatch(
+                        round_num=self._round, end_id=end, task=task_to_perform,
+                        time_mode="sim", sim_send_ts=float(_sst),
+                        redispatch_stagger_s=(float(_sst - _cohort_min)
+                                              if _cohort_min is not None else 0.0),
+                        held_s=(float(_round_now - _prior) if _prior is not None else None),
+                        staggered=_staggered,
+                    )
+                    telemetry.emit(ev, **f)
+            else:
+                payload = _shared_payload
+            channel.send_payload(end, payload)
 
             if end not in self._track_trainer_version_duration_s:
                 self._track_trainer_version_duration_s[end] = {
@@ -1443,9 +1536,10 @@ class TopAggregator(SyncTopAgg):
                 self._round
             ] = datetime.now()
 
-        if ends_list:
+        if _send_ends:
             logger.info(
-                f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(ends_list)} "
+                f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(_send_ends)} "
+                f"staggered={_staggered} "
                 f"send_wall_s={time.time() - _send_t0:.3f}"
             )
 

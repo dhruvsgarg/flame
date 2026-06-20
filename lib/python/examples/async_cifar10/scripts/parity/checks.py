@@ -152,6 +152,7 @@ def load_agg_jsonl(path: str) -> dict:
     """Parse an aggregator telemetry JSONL into typed, sorted lists."""
     selection_train: list = []
     agg_rounds: list = []
+    eval_commits: list = []
     agg_evals: list = []
     residence: list = []
     with open(path) as f:
@@ -164,18 +165,28 @@ def load_agg_jsonl(path: str) -> dict:
             if ev == "selection" and e.get("task") == "train":
                 selection_train.append(e)
             elif ev == "agg_round":
-                agg_rounds.append(e)
+                # Eval commits emit event=agg_round (tagged task=eval) so U6/U6e can
+                # read their commit timeliness, but they carry no agg_goal_count and
+                # don't advance the clock/aggregate — keep them OUT of agg_rounds so
+                # the train-commit checks (K1 monotone, U3 staleness, U1/U5 ordering)
+                # aren't contaminated. Only the eval-aware checks opt into them.
+                if str(e.get("task_to_perform", "train")) == "eval":
+                    eval_commits.append(e)
+                else:
+                    agg_rounds.append(e)
             elif ev == "agg_eval":
                 agg_evals.append(e)
             elif ev == "inflight_residence":
                 residence.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
+    eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
     agg_evals.sort(key=lambda x: x["round"])
     residence.sort(key=lambda x: (x["round"], x["ts"]))
     return {
         "selection_train": selection_train,
         "agg_rounds": agg_rounds,
+        "eval_commits": eval_commits,
         "agg_evals": agg_evals,
         "residence": residence,
     }
@@ -232,7 +243,7 @@ def load_run_dir(run_dir: str) -> tuple:
         agg_data = load_agg_jsonl(agg_files[0])
     else:
         merged: dict = {"selection_train": [], "agg_rounds": [],
-                        "agg_evals": [], "residence": []}
+                        "eval_commits": [], "agg_evals": [], "residence": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -240,6 +251,7 @@ def load_run_dir(run_dir: str) -> tuple:
         merged["selection_train"].sort(key=lambda x: (x["round"], x["ts"]))
         merged["agg_rounds"].sort(
             key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
+        merged["eval_commits"].sort(key=lambda x: (x["round"], x["ts"]))
         merged["agg_evals"].sort(key=lambda x: x["round"])
         merged["residence"].sort(key=lambda x: (x["round"], x["ts"]))
         agg_data = merged
@@ -1060,9 +1072,12 @@ def eval_commit_timeliness(sim: dict, max_excess_s: float = 2.0) -> dict:
             out[t].extend(float(x) for x in vs if x is not None)
         return out
 
-    lag = by_task(sim["agg_rounds"], "update_visibility_lag_s")
+    # Train commits live in agg_rounds; eval commits are partitioned into
+    # eval_commits at load — U6e needs both to compare eval-vs-train timeliness.
+    commits = sim["agg_rounds"] + sim.get("eval_commits", [])
+    lag = by_task(commits, "update_visibility_lag_s")
     if not lag.get("eval") and not lag.get("train"):
-        lag = by_task(sim["agg_rounds"], "commit_gap_s")  # older runs
+        lag = by_task(commits, "commit_gap_s")  # older runs
     train, ev = lag.get("train", []), lag.get("eval", [])
     if not ev:
         return {"ok": True, "tier": "DIST", "skipped": True,

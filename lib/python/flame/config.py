@@ -208,6 +208,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_clock_jump_clamp: t.Optional[bool] = Field(
         alias="simClockJumpClamp", default=True
     )
+    # Sim async-stack: event-driven re-dispatch. Stamp each TRAIN dispatch at the
+    # vclock its slot freed (a prior commit) instead of one frozen round-start
+    # frontier, so the per-trainer completion stagger (sct = sim_send_ts + compute)
+    # is preserved across the round boundary as it is in real. Sync stays batched.
+    sim_staggered_redispatch: t.Optional[bool] = Field(
+        alias="simStaggeredRedispatch", default=False
+    )
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1

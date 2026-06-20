@@ -515,6 +515,57 @@ def test_eval_commit_timeliness():
     assert not res_gap["ok"] and res_gap["eval_n"] == len(eval_bad), res_gap
 
 
+def test_eval_commits_partitioned_at_load():
+    """Eval commits (event=agg_round, task=eval) must be partitioned OUT of
+    agg_rounds at load: they carry no agg_goal_count and don't advance the clock,
+    so leaving them in scrambles the (round,ggc,ts) sort and manufactures false
+    K1 backward steps + pollutes U3 staleness with eval zeros. Regression for the
+    Jun-20 eval-emits-agg_round contamination (felix sim_commit_monotone FAIL)."""
+    import json
+    import tempfile
+    from parity.checks import (load_agg_jsonl, sim_commit_order_monotone,
+                               staleness_parity, eval_commit_timeliness)
+
+    # Round 1: train commits ggc 1..3 (ascending vclock) interleaved with eval
+    # commits whose vclock_now is HIGHER (stamped later) and have NO agg_goal_count
+    # — exactly the shape that, if mixed into agg_rounds, breaks the ggc-sort.
+    recs = [
+        {"event": "agg_round", "round": 1, "agg_goal_count": 1, "ts": 1.0,
+         "vclock_now": 10.0, "task_to_perform": "train", "staleness": [2]},
+        {"event": "agg_round", "round": 1, "ts": 1.05, "vclock_now": 10.5,
+         "task_to_perform": "eval", "staleness": [0], "contributing_trainers": ["aaaa"],
+         "update_visibility_lag_s": [0.0]},
+        {"event": "agg_round", "round": 1, "agg_goal_count": 2, "ts": 1.1,
+         "vclock_now": 11.0, "task_to_perform": "train", "staleness": [3]},
+        {"event": "agg_round", "round": 1, "ts": 1.15, "vclock_now": 11.5,
+         "task_to_perform": "eval", "staleness": [0], "contributing_trainers": ["bbbb"],
+         "update_visibility_lag_s": [0.0]},
+        {"event": "agg_round", "round": 1, "agg_goal_count": 3, "ts": 1.2,
+         "vclock_now": 12.0, "task_to_perform": "train", "staleness": [1]},
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fp:
+        for r in recs:
+            fp.write(json.dumps(r) + "\n")
+        path = fp.name
+    agg = load_agg_jsonl(path)
+
+    # Partition: train in agg_rounds, eval in eval_commits — no crossover.
+    assert len(agg["agg_rounds"]) == 3, agg["agg_rounds"]
+    assert len(agg["eval_commits"]) == 2, agg["eval_commits"]
+    assert all(e["task_to_perform"] == "train" for e in agg["agg_rounds"])
+
+    # K1 monotone now PASSes (would FAIL if the eval 10.5/11.5 sat at ggc=0 ahead
+    # of train ggc 2/3 at 11.0/12.0).
+    assert sim_commit_order_monotone(agg)["ok"], "eval contamination broke K1"
+
+    # U3 staleness sees only the 3 train values (no eval zeros).
+    res = staleness_parity({"agg_rounds": agg["agg_rounds"]}, {"agg_rounds": agg["agg_rounds"]})
+    assert res["real_mean"] == 2.0, res  # mean([2,3,1]); eval 0s excluded
+
+    # U6e still sees the eval commits via the combined view.
+    assert eval_commit_timeliness(agg)["eval_n"] == 2
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

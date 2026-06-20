@@ -25,6 +25,7 @@ EVENT_TASK_RECV = "task_recv"        # trainer received a task from aggregator
 EVENT_TASK_SEND = "task_send"        # trainer finished & sent the update back
 EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain accounting (oort sync)
 EVENT_UTILITY_BELIEF = "utility_belief"  # believed (at selection) vs actual (at return) client utility
+EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validation (felix)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -316,6 +317,45 @@ def build_inflight_residence(
         if v is not None:
             fields[k] = v
     return EVENT_INFLIGHT_RESIDENCE, fields
+
+
+def build_dispatch(
+    *,
+    round_num: int,
+    end_id: str,
+    task: str,
+    time_mode: str,
+    sim_send_ts: Optional[float] = None,
+    redispatch_stagger_s: Optional[float] = None,
+    held_s: Optional[float] = None,
+    staggered: Optional[bool] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Per-dispatch re-dispatch-stagger validation (felix event-driven re-dispatch).
+
+    ``redispatch_stagger_s`` = this end's ``sim_send_ts`` minus the cohort minimum
+    in the same distribute call: 0 for the legacy round-boundary batch (all share
+    one frozen vclock), spread across the round's advance once event-driven
+    re-dispatch is on. ``held_s`` = vclock minus this end's PRIOR commit sct = how
+    long (virtual seconds) it sat held since it last completed before being
+    re-dispatched; the boundary backlog shows large held_s, continuous re-dispatch
+    drives it toward 0. Sim-only fields; lets the run confirm the cohort next-sct
+    spread recovers real's ~3.85s before reading K2/K3b/U3.
+    """
+    fields: dict[str, Any] = {
+        "round": round_num,
+        "end_id": end_id,
+        "task": task,
+        "time_mode": time_mode,
+    }
+    for k, v in (
+        ("sim_send_ts", sim_send_ts),
+        ("redispatch_stagger_s", redispatch_stagger_s),
+        ("held_s", held_s),
+        ("staggered", staggered),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_DISPATCH, fields
 
 
 def build_utility_belief(

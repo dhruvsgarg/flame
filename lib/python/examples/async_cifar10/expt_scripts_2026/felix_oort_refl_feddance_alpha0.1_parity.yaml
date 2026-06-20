@@ -46,17 +46,19 @@ experiments:
         min_trainers_join_timeout_s: 600
         aggGoal: 10
         evalEveryNRounds: 50
-        # PARITY K4 overlap (Jun 16 HYPOTHESIS): the 3h run over-overlapped (12.6x
-        # vs real 6.8x) because sim advance is too small (2.25 vs real 4.02 s/round):
-        # the async buffer commits future-dated completions (sct>vclock) too early
-        # (see [SIM_CLOCK_DIAG] buf_future). The post-commit re-dispatch gap spaces
-        # completions (holds a committed end out of selection until vclock>=sct+gap)
-        # WITHOUT counting toward staleness, raising advance / lowering overlap. 0.6
-        # was validated at the prior operating point; re-test it at the new async
-        # knobs (70/.999). NB doc sec 3.async flags a gap<->staleness coupling: if
-        # this lowers overlap but staleness stays high (>2.8), the deeper fix is the
-        # buffer-aging model (pace future-dated commits), not this scalar. SIM only.
-        simRedispatchGapSeconds: 0.6
+        # PARITY K2/K3b/K4/U6/U3 fix (Jun 20): EVENT-DRIVEN RE-DISPATCH. The round
+        # boundary re-dispatched the whole freed cohort at one frozen round-start
+        # vclock, collapsing the per-trainer completion stagger real keeps (median
+        # committed-sct span 52.6s sim vs real ~3.85s). With this on, each TRAIN
+        # dispatch is stamped at the vclock its slot freed (a prior commit), so
+        # sct = sim_send_ts + compute regains the spread; advance 1.93→~3.85, rounds
+        # 2800→~1400, U6/U3 follow. Sync stays batched (barrier = a synced cohort).
+        # SIM only; default off ⇒ byte-identical. Re-read K2/K3b/K4/U6/U3 after.
+        simStaggeredRedispatch: true
+        # The post-commit re-dispatch gap scalar is now redundant (the stagger sets
+        # the spacing) and was a measured no-op (Jun 16); zeroed to keep this run's
+        # attribution to the event-driven mechanism clean. SIM only.
+        simRedispatchGapSeconds: 0.0
         # PARITY U6/K3b (Jun 19 evidence): the 2.5h run showed gate_holds=0 (inert
         # arrival-gate) with 72% of commits past-dated (fresh source avg ~807s gap),
         # U6 commit-visibility sim 14.8s vs real 0.017s. The clamp caps each commit's
