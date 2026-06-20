@@ -36,7 +36,7 @@ passing different `--baselines`.
 examples/async_cifar10/scripts/parity/` — guards baseline wiring, the in-memory
 cache, serialize-once, sim ordering (barrier/residence/carry-over), the overhead
 model, deterministic seeding, the pass/total scoreboard, and every checker rung.
-Last green: **148 pass / 7 skip** (adds `commit_visibility`).
+Last green: **160 pass / 7 skip** (adds `eval_commit_timeliness` + the eval-stale-`sct` guard).
 
 ---
 
@@ -104,28 +104,56 @@ sections below status and get *updated in place*, not appended to.
 
 ---
 
-## Status (Jun 20 — felix clock-jump CLAMP + U6 guard landed; oort task-type fix FALSIFIED; rerun oort+felix)
+## Status (Jun 20 — felix past-dating ROOT-CAUSED from stored logs: EVAL ships a stale train `sct`; fix landed, smoke pending)
 
-Measurement runs (Jun 19, commit `8d418d1c`) settled both open roots via the new
-`update_visibility_lag_s` read. **This session lands the resulting fixes** — re-run
-**oort + felix, both modes** to validate:
-- **U6 point-mass guard** (checker, validated against stored dirs now): oort → **41/45**.
-- **felix clock-jump clamp** (`simClockJumpClamp`, sim-only, default on): the gate
-  re-based onto modeled completion so a far-future straggler can't lap the fresh cohort.
-- **oort task-type-keyed latency — DROPPED.** The premise (eval commits overwrite
-  `PROP_ROUND_DURATION`) is **falsified by the run**: sync oort dispatches **0 eval
-  tasks** (real & sim; eval is bundled with train). The oort Sd residual is the A2c
-  stochastic mix, folded into the refl/feddance speed-model work — *not* a separate fix.
+**The "fresh past-dating" is an EVAL-task artifact, not a clock/clamp problem.**
+Mining the stored clamp-run sim log + per-trainer telemetry settled it without a
+rerun:
 
-| baseline | score (this run) | run dirs (2.5h Jun 19) | U6 `commit_visibility` read |
+- The trainer computes its modeled completion `_sim_completion_ts = sim_send_ts +
+  duration` **only in the train path** (`trainer/pytorch/main.py:822`). `evaluate()`
+  never recomputed it. But the send path stamps `msg[SIM_COMPLETION_TS] =
+  self._sim_completion_ts` onto **every** simulated message (`syncfl/trainer.py:418`).
+  So **every eval message carries the trainer's LAST TRAIN round's `sct`** — long
+  past by the time it commits.
+- Direct evidence (trainer `…0544`): trained at rounds 1 (`sct=24.2`) and 33
+  (`sct=165.6`), then was dispatched **eval 65×** for the rest of the run. All 65
+  evals shipped `sct=165.6`, committing at rounds 2217/2253/2289/2325 with
+  `commit_gap_s` up to **5234s**. The frozen `sct=166` repeating every ~36 rounds in
+  the SIM_BARRIER log is this one trainer's evals.
+- They are mislabeled **"fresh"** because the `pastdated_by_source` classifier keys
+  on `MODEL_VERSION` (= current round for a freshly-dispatched eval), not on the
+  stale `sct`. Eval commits never emitted the `commit_gap_s` telemetry (they exit at
+  the STAT_UTILITY branch before the train-only emit), so **U6 (train-only) reads
+  16.8s straggler-dominated** while the **SIM_BARRIER/CLOCK_DIAG stream (incl. eval)
+  reads "fresh=95%"** — two populations, one bug.
+- A stale eval `sct` is also the *minimum* of the reorder buffer, so it poisons
+  `peek_min_ts` (the gate/probe-ceiling key) — degrading train ordering too.
+
+**Why the clamp was inert (now explained, not hypothesized):** the clamp caps
+*forward* clock advance; this bug delivers a far-*past* `sct` on the wire, which the
+clamp cannot touch. The `exp > vclock` guard discussion is moot.
+
+**Corroboration:** oort (sync) dispatches **0 eval tasks** and shows **no
+past-dating**; felix dispatches both. Eval-dispatch is the felix/oort differentiator.
+
+### Fix (landed, sim-only)
+`evaluate()` now stamps its OWN completion ts, `sct = send_ts + max(real_eval_gpu,
+training_delay_s/20)` (`trainer/pytorch/main.py:1072`), so eval commits at ≈now
+(`commit_gap≈0`) and stops poisoning the buffer key. Real path unchanged (still
+sleeps `floor(D/20)`) → validates against the stored real dir. Eval commits now emit
+their own `commit_gap_s`/`update_visibility_lag_s` telemetry tagged
+`task_to_perform="eval"` (`asyncfl/top_aggregator.py`, eval branch), and
+`analyze_run.py` splits the commit-gap / visibility-lag plots train-vs-eval (eval
+series absent for no-eval baselines). **Smoke pending** (5–10 min: confirm eval
+`commit_gap_s`→~0 and `pastdated_by_source` fresh→~0).
+
+| baseline | score (pre-fix) | run dirs | U6 `commit_visibility` read |
 |---|---|---|---|
-| **felix** | **33/42** (was 32/41) | `run_20260619_133446…real` / `run_20260619_122941…sim` | real_mean **0.017s** p90 0.051s vs sim_mean **14.811s** p90 58.4s (KS 0.529) → **past-dating confirmed** |
-| **oort**  | **40/45** (was 41/45) | `run_20260619_124438…real` / `run_20260619_122953…sim` | real_mean **0.004s** vs sim_mean **0.001s** (mean_diff 3 ms; KS 1.0 is a near-zero point-mass artifact) → **no past-dating** |
+| **felix** | **33/42** (clamp run, pre-eval-fix) | `run_20260620_002022…real` / `run_20260620_002029…sim` (1.5h) | real_mean **0.017s** vs sim_mean **16.819s** (train-only); eval stream past-dated to 5234s → **eval-stale-`sct` CONFIRMED; fix landed, rerun pending** |
+| **oort**  | **41/45** | `run_20260619_124438…real` / `run_20260619_122953…sim` (2.5h) | real_mean **0.004s** vs sim_mean **0.001s** (point-mass) → **no past-dating; 0 eval dispatched** |
 | **refl** | 38/44 (stored, no rerun) | Jun 18 dirs | — |
 | **feddance** | 41/43 (stored, no rerun) | Jun 18 dirs | — |
-
-oort dipped 41→40 only because U6 now fires and the KS gate FAILs it on a sub-ms
-point mass (see Next steps #1 — a checker false-positive, not a regression).
 
 ### The `update_visibility_lag_s` instrument (landed prior session)
 One metric, both modes, all baselines: **`committed_ts − ready_ts` in the aggregator's
@@ -137,7 +165,7 @@ Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declar
 ### Settled roots (the measurement runs resolved both open hypotheses)
 | baseline | root — now settled with evidence |
 |---|---|
-| **felix** | **Clock-jump / past-dating CONFIRMED.** U6: sim commit lag **14.8s mean / 58.4s p90** vs real **0.017s / 0.051s** — sim commits ~870× later *in its own clock* than real, the direct fingerprint of the clock lapping the fast cohort. Corroborated up-ladder: K3b residual 1.63s (rel 0.423), K4 overlap **11.5× sim vs 6.75× real** (sim over-pipelines → too-little advance/round → 2432 sim rounds vs 1321 real, throughput K2 off 0.425), and U3 staleness **12.0 sim vs 2.8 real** is fully downstream of U6. Gate is inert (the Jun-18 `gate_holds=0` finding stands). **Fix: re-base the gate on modeled completion + cap the per-commit clock jump** (Next steps #2). |
+| **felix** | **ROOT-CAUSED (Jun 20): EVAL tasks ship a stale train `sct`.** `evaluate()` never recomputes `_sim_completion_ts`, so the send path stamps every eval message with the trainer's last TRAIN completion ts (`trainer/pytorch/main.py:822` set in train only; `syncfl/trainer.py:418` stamps unconditionally). Eval then commits with `commit_gap` up to 5234s, mislabeled "fresh" (classifier keys on `MODEL_VERSION`, not `sct`). This is the "fresh=95%" signature; the train-only U6 16.8s tail is the *secondary* effect of the stale eval `sct` poisoning the reorder-buffer minimum. **Fix landed** (`evaluate()` stamps `send_ts + max(gpu, D/20)`); clamp was inert because it caps forward advance, not a past `sct`. Smoke pending. The K3b/K4/U3 up-ladder residuals are expected to shrink once eval stops poisoning ordering — re-measure after the rerun. |
 | **oort** | **Carry-over decay = A2c stochastic, NOT a real-timing gap — verification complete.** U6: both modes commit immediately (sim lag **0.001s** ≤ real **0.004s**); sim if anything drains *faster*, so the `in_flight_after` decay (Sr: real 3.91 vs sim 0.69) is **not** late/early commit timing — it is the selection mix tightening. Direct mix evidence: **Sd preferred-duration penalty binds real 0.822 vs sim 0.495** (sim under-penalizes slow trainers → selects fewer slow → fewer overcommit slots → fewer carry-overs), worst Sx term `system_util` (real 0.942 vs sim 0.959). **NOT a train/eval-overwrite bug** — sync oort dispatches 0 eval tasks (verified in both run logs). Same A2c class as refl/feddance; closed only by the speed-model work, not an oort-specific mechanism. |
 | **refl / feddance** | A2c stochastic speed-tail. Unchanged, deprioritized. One speed-model fix may close both, *and* the oort `system_util`/Sd mix (now a single A2c family). |
 
@@ -146,12 +174,15 @@ Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declar
    (50 ms) ⇒ pass on mean, annotate "point-mass: KS uninformative" (the A2 `num_candidates`
    precedent). oort U6 now PASS (sim 0.001s / real 0.004s) → **41/45** against the stored dir;
    felix's genuine 14.8s gap still FAILs. Guard: `test_commit_visibility_parity` case (5).
-2. **felix clock-jump clamp — ✅ LANDED (rerun to validate).** `asyncfl/top_aggregator._sim_recv_min`
-   caps each commit's clock advance at the earliest in-flight **FUTURE** modeled completion
-   (`exp > vclock`) + `_SIM_ORDER_SLACK_S`, including buffered ends (which the inert gate excludes);
-   never advances backwards; an already-due/abandoned end (`exp ≤ vclock`) can't pin the clock.
-   Config `simClockJumpClamp` (alias, default True; pinned in the felix sim yaml). Guard:
-   `TestClockJumpClamp`. **Re-read U6/K3b/K4/K2/U3** on the rerun — target sim lag → ~real 0.02s.
+2. **felix eval-stale-`sct` — ✅ ROOT-CAUSED + FIX LANDED (Jun 20), smoke pending.**
+   `evaluate()` now stamps its own `_sim_completion_ts = send_ts + max(gpu, D/20)`
+   (`trainer/pytorch/main.py:1072`); eval commits emit task-tagged
+   `commit_gap_s`/`update_visibility_lag_s`; plots + checker split train/eval. The
+   clock-jump clamp is now understood as inert *by construction* (it caps forward
+   advance; the bug delivers a past `sct`) — leave it enabled, don't re-tune
+   `_SIM_ORDER_SLACK_S`. Smoke (5–10 min) to confirm eval `commit_gap`→~0; then a
+   90-min run to re-read U6/K3b/K4/U3 (expected to tighten once the buffer key is
+   clean). Only after that is the clamp/buffer-aging direction even worth revisiting.
 3. ~~oort task-type-keyed latency~~ — **DROPPED, premise falsified** (sync oort = 0 eval dispatches;
    the Sd residual is A2c, see step 5).
 4. **felix D5** (stamp-at-commit, `asyncfl/top_aggregator.py:516`) — after the clamp rerun confirms
@@ -208,12 +239,23 @@ Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declar
   real=0.42s (FAIL, KS=0.334). At 2.5h, sim=0.422s vs real=0.356s (PASS, KS=0.08) —
   gap closed and reversed. Don't treat a 1h `phase_gpu_compute` FAIL as a permanent
   structural gap; re-check at 2.5h before acting.
-- **`pastdated_by_source` split: `fresh` dominates gap, `straggler` dominates count.**
-  In the felix past-dating pattern, `fresh` (newly-dispatched fast trainers lapped by
-  the clock) has a large per-commit gap (≈1139 s avg) while `straggler` (late finishers)
-  has a small per-commit gap (≈44 s avg). By steady state the straggler count exceeds
-  fresh count, but fresh owns 21× the cumulative gap. Fix fresh first — it dominates the
-  staleness and K3b residual. Straggler-count may be within tolerance after.
+- **`pastdated_by_source=[fresh=...]` was an EVAL artifact, not "fast trainers lapped
+  by the clock" (Jun 20 — supersedes the prior reading of this counter).** The
+  classifier keys on `MODEL_VERSION` (= current round for a freshly-dispatched eval),
+  so eval commits carrying a *stale train* `sct` are labeled "fresh" with a huge
+  per-commit gap. Root: `evaluate()` never recomputes `_sim_completion_ts`; the send
+  path stamps the last train value (`syncfl/trainer.py:418`). **Tell:** a single
+  trainer's eval commits repeat the *same* `sct` for hundreds of rounds (e.g. `…0544`
+  `sct=166` × 65). Cross-check the "fresh" log counter against the **train-only U6
+  telemetry** (which excludes eval) and per-trainer `sct` cardinality before trusting
+  a "fresh dominates" read — they told opposite stories here. Fixed by stamping a
+  per-eval `sct`.
+- **Two past-dating populations, two telemetry streams.** `commit_gap_s`/U6 telemetry
+  is emitted **only in the train (WEIGHTS) branch**; eval (STAT_UTILITY) exits before
+  it. So the train-only U6 mean and the all-commits SIM_BARRIER/CLOCK_DIAG stream can
+  diverge wildly (16.8s vs "fresh=95%/5234s"). After the Jun-20 fix, eval emits its
+  own task-tagged `commit_gap_s` so both are visible and the analyzer/checker split
+  train vs eval. Always disambiguate which stream a "past-dating" number came from.
 - **oort `sim_committed_fresh` = agg_goal confirms block-for-K fix; don't re-examine.**
   At 2.5h, `sim_committed_fresh=10` matches real exactly. The block-for-K mechanism is
   closed; any future `committed_fresh` gap is a different root.
@@ -239,6 +281,13 @@ Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declar
 - "Widen the oort slow-speed tail" to fix carry-over decay — `trainer_speed` already passes; sim tail is if anything wider (max 29 vs 21 at 2.5h). It's a selection-mix tail effect, not a speed-model gap.
 - **`system_util` recency guard for oort carry-over decay (Jun 19)** — with intrinsic per-task latency the last-observed duration is *correct*, so returning `system_util=1` for a "stale" value is a value-fudge identical in effect to the (forbidden) speed-tail widening, with no principled threshold. The decay is the A2c selection-mix class (`commit_visibility` confirms no past-dating); close it with the speed-model work, not an oort-specific knob.
 - **oort task-type-keyed latency / `PROP_ROUND_DURATION` train-vs-eval split (Jun 20)** — premise FALSIFIED by the run: sync oort dispatches **0 eval tasks** (real & sim; eval is bundled into the train commit, `oort/top_aggregator.py:901-903`), so nothing overwrites `PROP_ROUND_DURATION`. felix *does* dispatch both, but its `system_util` penalty is inert (`round_threshold=70`, Sd passes, `system_util≡1.0`) so the split is a no-op there too. Don't key the duration by task; the oort Sd gap is A2c.
+- **felix clock-jump clamp to fix "fresh" past-dating (Jun 20)** — wrong target. The
+  clamp caps *forward* clock advance, but the "fresh" past-dating is EVAL committing a
+  *past* stale `sct` (root-caused Jun 20: `evaluate()` reused the last train
+  `_sim_completion_ts`). No forward-advance cap can fix a stale-past wire timestamp.
+  Leave the clamp enabled (cheap, correct for genuine straggler jumps) but stop
+  attributing "fresh=95%" to it. Don't re-tune `_SIM_ORDER_SLACK_S`. Fix is in
+  `evaluate()` (stamp a per-eval `sct`).
 - **felix dispatch-timestamp pacing for past-dating (Jun 19)** — pacing/inflating the effective dispatch `sct` so fewer commits *look* past-dated falsifies fast trainers' modeled completion and pushes staleness the wrong way (same family as the redispatch scalar). The root is the inert arrival-gate + clock jump; fix it with the modeled-completion clock-jump clamp (`simClockJumpClamp`, landed Jun 20), not the dispatch ts.
 - Tuning sim to a *wrong* real, or any scalar fudge where a mechanism is called for.
 - Re-chasing: GPU contention (overrun 0), SEND_TIMEOUT (0×), MQTT drops (0), the

@@ -649,6 +649,39 @@ class TopAggregator(SyncTopAgg):
             channel._selector.remove_from_selected_ends(channel._ends, end)
             channel._selector._cleanup_removed_ends(end)
 
+            # Eval-commit timeliness telemetry (mirror of the train branch below):
+            # an eval task must commit at its OWN modeled completion, not a stale
+            # one. Emitting commit_gap_s/update_visibility_lag_s tagged task=eval
+            # lets the analyzer/checker catch eval past-dating (the stale-sct bug)
+            # separately from train. sim-only fields are None in real mode.
+            if telemetry.is_enabled():
+                _sct_eval = msg.get(MessageType.SIM_COMPLETION_TS)
+                _ts_eval = metadata[1] if len(metadata) > 1 else None
+                _commit_gap_eval = (
+                    (self._vclock.now - float(_sct_eval))
+                    if (self.simulated and _sct_eval is not None) else None
+                )
+                _ready_e, _committed_e, _vis_lag_e = self._update_visibility_lag(
+                    _sct_eval, _ts_eval
+                )
+                _mv_eval = msg.get(MessageType.MODEL_VERSION)
+                _stale_eval = (self._round - int(_mv_eval)) if _mv_eval is not None else None
+                ev, fields = build_agg_round(
+                    round_num=self._round,
+                    staleness=[_stale_eval] if _stale_eval is not None else None,
+                    contributing_trainers=[end],
+                    extra={
+                        "task_to_perform": "eval",
+                        "sim_completion_ts_recv": float(_sct_eval) if _sct_eval is not None else None,
+                        "vclock_now": self._vclock.now if self.simulated else None,
+                        "commit_gap_s": _commit_gap_eval,
+                        "update_ready_ts": _ready_e,
+                        "update_committed_ts": _committed_e,
+                        "update_visibility_lag_s": [_vis_lag_e] if _vis_lag_e is not None else [],
+                    },
+                )
+                telemetry.emit(ev, **fields)
+
             return
 
         # Else, throw an error and return
@@ -970,6 +1003,7 @@ class TopAggregator(SyncTopAgg):
                     contributing_trainers=[end],
                     agg_observed_s={end: _trainer_speed_s},
                     extra={
+                        "task_to_perform": "train",
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
                         "vclock_now": self._vclock.now if self.simulated else None,
                         "commit_gap_s": _commit_gap_s,

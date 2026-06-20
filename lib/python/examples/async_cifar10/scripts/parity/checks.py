@@ -1039,6 +1039,53 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     return out
 
 
+def eval_commit_timeliness(sim: dict, max_excess_s: float = 2.0) -> dict:
+    """U6e (sim invariant): EVAL commits must be as timely as TRAIN commits.
+
+    An eval task that ships a STALE train completion ts (the `evaluate()` reused
+    `_sim_completion_ts` bug) commits long after the virtual clock has passed it.
+    Signature: eval `update_visibility_lag_s` (fallback `commit_gap_s`)
+    systematically larger than train's. Sim-only — real never past-dates by
+    construction; self-SKIPs when the run dispatches no eval (e.g. sync oort) or
+    the field is absent. Localizes the eval-stale-`sct` regression directly.
+    """
+    def by_task(agg_rounds, key):
+        out = collections.defaultdict(list)
+        for e in agg_rounds:
+            v = e.get(key)
+            if v is None:
+                continue
+            t = str(e.get("task_to_perform", "train"))
+            vs = v if isinstance(v, (list, tuple)) else [v]
+            out[t].extend(float(x) for x in vs if x is not None)
+        return out
+
+    lag = by_task(sim["agg_rounds"], "update_visibility_lag_s")
+    if not lag.get("eval") and not lag.get("train"):
+        lag = by_task(sim["agg_rounds"], "commit_gap_s")  # older runs
+    train, ev = lag.get("train", []), lag.get("eval", [])
+    if not ev:
+        return {"ok": True, "tier": "DIST", "skipped": True,
+                "reason": "no eval commits in sim (baseline dispatches no eval, "
+                          "or task-tagged field absent — re-run to populate)",
+                "train_n": len(train), "eval_n": 0}
+    tm, _ = mean_std(train) if train else (0.0, 0.0)
+    em, _ = mean_std(ev)
+    excess = em - tm
+    ok = excess <= max_excess_s
+    out = {
+        "ok": ok, "tier": "DIST",
+        "train_mean": round(tm, 3), "eval_mean": round(em, 3),
+        "eval_minus_train_s": round(excess, 3),
+        "eval_p90": round(percentile(ev, 90), 3),
+        "train_n": len(train), "eval_n": len(ev),
+    }
+    if not ok:
+        out["note"] = ("eval commits systematically past-dated vs train "
+                       "(eval likely shipping a stale train sct)")
+    return out
+
+
 def commit_sequence(agg: dict) -> list:
     """U1 helper: mode-agnostic logical sequence of committed updates.
 
@@ -2411,6 +2458,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
 
     # ── Stage 6 Aggregation ──
     results["commit_visibility"] = commit_visibility_parity(real_agg, sim_agg)
+    results["eval_commit_timeliness"] = eval_commit_timeliness(sim_agg)
     results["staleness"] = staleness_parity(real_agg, sim_agg)
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
@@ -2490,6 +2538,7 @@ CHECK_META: dict = {
     "agg_goal_cycles_sim":     {"stage": 5, "role": "MECHANISM", "deps": ()},
     # ── Stage 6 Aggregation ──
     "commit_visibility":       {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance",)},
+    "eval_commit_timeliness":  {"stage": 6, "role": "MECHANISM", "deps": ("commit_visibility",)},
     "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},

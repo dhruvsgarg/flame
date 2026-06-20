@@ -477,6 +477,44 @@ def test_commit_visibility_parity():
     assert not res_pm_late["ok"], res_pm_late
 
 
+def test_eval_commit_timeliness():
+    """U6e: eval commits must be as timely as train. A sim where eval ships a
+    stale train sct (eval lag >> train lag) FAILs; matched lags PASS; a run with
+    no eval commits (e.g. sync oort) SKIPs; falls back to commit_gap_s on older
+    runs lacking the visibility field."""
+    from parity.checks import eval_commit_timeliness
+    import random
+    random.seed(1)
+    train = [abs(random.gauss(0.5, 0.2)) for _ in range(2000)]
+
+    def rounds(task, vals, key="update_visibility_lag_s"):
+        return [{"task_to_perform": task, key: [v]} for v in vals]
+
+    # (1) eval as timely as train → PASS
+    eval_ok = [abs(random.gauss(0.3, 0.1)) for _ in range(1500)]
+    sim = {"agg_rounds": rounds("train", train) + rounds("eval", eval_ok)}
+    res = eval_commit_timeliness(sim)
+    assert res["ok"] and not res.get("skipped"), res
+
+    # (2) eval ships a stale sct (lag blows up) → FAIL with the diagnostic note
+    eval_bad = [v + 700.0 for v in eval_ok]
+    sim_bad = {"agg_rounds": rounds("train", train) + rounds("eval", eval_bad)}
+    res_bad = eval_commit_timeliness(sim_bad)
+    assert not res_bad["ok"], res_bad
+    assert res_bad["eval_minus_train_s"] > 100 and "stale" in res_bad.get("note", ""), res_bad
+
+    # (3) no eval commits (untagged train only, sync oort) → SKIP
+    sim_noeval = {"agg_rounds": rounds("train", train)}
+    res_skip = eval_commit_timeliness(sim_noeval)
+    assert res_skip["ok"] and res_skip.get("skipped"), res_skip
+
+    # (4) older run: only commit_gap_s present → falls back, still catches it
+    sim_gap = {"agg_rounds": rounds("train", train, "commit_gap_s")
+               + rounds("eval", eval_bad, "commit_gap_s")}
+    res_gap = eval_commit_timeliness(sim_gap)
+    assert not res_gap["ok"] and res_gap["eval_n"] == len(eval_bad), res_gap
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
