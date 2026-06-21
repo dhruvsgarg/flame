@@ -76,6 +76,18 @@ experiments:
         # so a far-future straggler can't lap the fresh fast cohort. SIM only (default
         # True; pinned here for the parity run). Re-read U6/K3b/K2/U3 after.
         simClockJumpClamp: true
+        # PARITY K3b/U3/U6 residual (Jun 21): one-in-flight-per-trainer invariant.
+        # Post-drain the bulk past-dating closed (commit_gap median 0) but a ~14%
+        # tail still committed up to 119s past-dated (staleness 34). Root: felix
+        # async re-dispatched a fast trainer (freed instantly in sim) while a prior
+        # update was still in flight — REAL never does this (0% overlapping in-flight
+        # vs sim 13.9%), the channel holds an in-flight trainer out of selection until
+        # its update returns AND is processed. The per-end _sim_inflight_expected entry
+        # was overwritten by the re-dispatch, so the earlier update was invisible to
+        # the sct gate (gate_holds=0) and got lapped → past-dated. This excludes every
+        # outstanding (dispatched-not-committed) trainer from selection, enforcing the
+        # invariant. SIM only. Re-read K3b/K2/U3/U6/K8/U2.
+        simInflightResidence: true
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50

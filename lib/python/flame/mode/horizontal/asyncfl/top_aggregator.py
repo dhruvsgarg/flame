@@ -186,6 +186,13 @@ class TopAggregator(SyncTopAgg):
         # commit side is faithful), so the two are not enabled together.
         _drain = getattr(self.config.hyperparameters, "sim_sct_ordered_drain", False)
         self._sim_sct_ordered_drain: bool = bool(_drain) if _drain is not None else False
+        # One-in-flight-per-trainer invariant (§4.5, felix async). A trainer with
+        # an update still outstanding (dispatched, not yet committed+processed)
+        # must NOT be re-selected — in real the channel keeps it out of
+        # VAL_CH_STATE_SEND until its update returns and is aggregated. Default
+        # off ⇒ unchanged selection.
+        _resid = getattr(self.config.hyperparameters, "sim_inflight_residence", False)
+        self._sim_inflight_residence: bool = bool(_resid) if _resid is not None else False
         # FIFO of vclocks at which a train-commit freed a slot; popped (oldest
         # first) to stamp the trainer that refills that slot. Bounded length: in
         # steady state #frees ≈ #fills so it stays ~<= concurrency; trimmed as a
@@ -1446,6 +1453,27 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             # expose cooling count so the selector holds those slots (no refill).
             channel.properties["sim_cooling_count"] = len(_cooling)
+
+        # One-in-flight-per-trainer invariant (§4.5, felix async). _sim_inflight_expected
+        # keys are exactly the dispatched-but-not-yet-committed set (added at dispatch,
+        # popped on commit), so excluding them via the unavailable list — NOT
+        # selected_ends, which would re-dispatch and reset the sct — holds an
+        # outstanding trainer out of selection until its update is committed+processed,
+        # matching real (real: 0% overlapping in-flight; sim without this: 13.9%).
+        # Without it a fast trainer, freed instantly in sim (no train sleep), is
+        # re-selected while a prior update is mid-delivery; the per-end
+        # _sim_inflight_expected entry is overwritten and the earlier update is lost to
+        # the sct gate → committed past-dated (the K3b/U3/U6 residual tail).
+        if self.simulated and self._sim_inflight_residence:
+            _outstanding = set(getattr(self, "_sim_inflight_expected", {}))
+            if _outstanding:
+                curr_unavail_trainer_list = list(
+                    set(curr_unavail_trainer_list) | _outstanding
+                )
+                logger.debug(
+                    f"[SIM_RESIDENCE] round={self._round} held {len(_outstanding)} "
+                    f"in-flight trainers out of selection (vclock={self._vclock.now:.1f})"
+                )
 
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list

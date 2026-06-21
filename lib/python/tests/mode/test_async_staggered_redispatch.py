@@ -111,7 +111,7 @@ class _DistChannel:
         self.props.setdefault(end, {})[key] = value
 
     def set_curr_unavailable_trainers(self, trainer_unavail_list=None):
-        pass
+        self.unavail = list(trainer_unavail_list or [])
 
     def has(self, end):
         return end in self._send_ends
@@ -124,6 +124,7 @@ def _make_dist_agg(channel, *, staggered, simulated=True, free_slots=()):
     agg._vclock = VirtualClock()
     agg._vclock.advance(100.0)
     agg._sim_staggered_redispatch = staggered
+    agg._sim_inflight_residence = False
     agg._sim_free_slot_ts = deque(free_slots, maxlen=128)
     agg._sim_last_commit_sct = {}
     agg._sim_inflight_expected = {}

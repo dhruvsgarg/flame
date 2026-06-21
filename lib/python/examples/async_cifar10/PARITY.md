@@ -36,8 +36,8 @@ passing different `--baselines`.
 examples/async_cifar10/scripts/parity/` — guards baseline wiring, the in-memory
 cache, serialize-once, sim ordering (barrier/residence/carry-over), the overhead
 model, deterministic seeding, the pass/total scoreboard, and every checker rung.
-Last green: **parity subsuite 30 pass** (adds `test_eval_commits_partitioned_at_load`);
-prior full readiness suite 160 pass / 7 skip.
+Last green (Jun 21): **readiness suite 157 pass / 7 skip**, async stack 26 pass
+(adds `test_async_inflight_residence.py`), **parity subsuite 30 pass**.
 
 ---
 
@@ -94,90 +94,79 @@ mechanism per run round** when a fix could perturb another baseline (serialize);
 
 ## Doc policy: ONE status section, not one per run
 
-This doc used to grow a new `## Status (Jun 20 — felix root CORRECTED: COMMIT-SIDE ingestion, not dispatch stagger; `simSctOrderedDrain` landed)
+This doc keeps exactly ONE `## Status` section, updated in place — not one per
+run. The current read is below.
 
-**Run read:** felix sim `run_20260620_165003…sim` (event-driven re-dispatch ON,
-stopped early at 1726 rounds) vs stored real `run_20260620_002022…real`. The
-prior session's dispatch-stagger fix was **falsified** and the genuine root
-re-localized to the **commit side** by a single-trainer end-to-end trace.
+## Status (Jun 21 — felix K3b/U3/U6 residual root: OVERLAPPING re-dispatch; one-in-flight invariant + `simInflightResidence` landed)
 
-### The dispatch-stagger hypothesis was wrong — the root is COMMIT-side ingestion
-The prior Status blamed the round-boundary batch re-dispatch collapsing the
-completion stagger and shipped `simStaggeredRedispatch`. The run disproved it:
-per-round advance got **worse** (1.93→1.38). The injected stagger is bounded by
-the very clock advance it is meant to create — the cohort's vclock-at-commit
-spread is only ~1.2s, so ≤0.55s of stagger was injectable (circular; it cannot
-bootstrap a spread the clock doesn't already have).
+**Run read:** felix sim `run_20260620_233609…sim` (90 min / 5400s, `simSctOrderedDrain`
+ON) vs stored real `run_20260620_002022…real`. **Score 36/43 enforced pass**
+(4 warn, 2 skip). The drain fix worked — it killed the bulk past-dating
+(`commit_gap` median **0.0s**, was 26s mean; staleness 15.2→**5.11**; advance
+1.4→**3.04 s/rd**; U6 mean_diff 14.8→**3.91s**). One ROOT-CAUSE remains, **K3b
+overhead_residual** (0.82 s/rd, rel 0.212), with 6 downstream fails
+(per_round_advance/K2 throughput/U6/U3/K8/U2) all tracing to it. No independent break.
 
-Tracing trainer …0405 found the real mechanism. In sim the trainer does **not**
-sleep ([trainer/pytorch/main.py:897](trainer/pytorch/main.py#L897) is real-only);
-every in-flight update is computed fast and **sent immediately** (`wall_lag` mean
-0.29s). A correct async sim would hold them all in one `sct`-ordered buffer and
-step the clock through their `sct`s in order (`commit_gap≈0`). Instead the
-aggregator ingests through the real-transport **`recv_fifo` streamer** (a
-fire-and-forget background task + shared `_rx_queue` + per-end active-task dedup +
-grace timeout + an `is_rxq_empty` readiness probe). That path **strands arrived
-updates**: a grace-timed-out streamer task later consumes its end's message into
-`_rx_queue` *after* the generator that wanted it returned, so the message is out
-of the End's rxq (the readiness probe reports "nothing ready") yet not buffered.
+### The drain residual is OVERLAPPING re-dispatch — a violated one-in-flight invariant
+Post-drain, `commit_gap` median is 0 but a **~14% tail** still past-dates (decile-0
+mean 0.46s → decile-9 8.21s; worst 119s, staleness pinned 33–35). Stranded-commit
+signature: **fast** trainers (speed 8.9s vs 11.6s), `residence_rounds≈0` (never held
+in the reorder buffer), yet staleness ~14 — their updates sat *undrained* for ~14
+rounds, then committed past-dated. The diag confirms a structurally inert gate
+(`gate_holds=0`, `gate_failsafe=0` all run) plus `dup_buffer_adds=554`,
+`pastdated_by_source=[straggler=3197/74954s]`.
 
-| signal | sim | real |
-|---|---|---|
-| physical send→recv (`wall_lag_s`) | 0.29s mean | — |
-| aggregator queue residence (`queue_wait_s`) | **26s mean, 90.6% >5s, max 115s** | ~0 |
-| commits past-dated (`vclock>sct`) | **52%** (mean 19s late) | ~0 |
-| staleness | 15.2 | 2.8 |
-| fresh commits / round (of K=10) | **1.6** | 10 |
-| per-round advance | 1.4 s/rd | 3.85 s/rd |
+Tracing trainer …0578 (speed 7s): dispatched at round **8** (committed round 10,
+`sct`=44.4) **and again at round 9** while round-8's update was still in flight; the
+round-9 update (`sct`=48) committed only at round 43, vclock 166.8 → `commit_gap`
+118.8. `_sim_inflight_expected` is a **per-end dict holding one entry**; the round-9
+re-dispatch overwrote …0578's entry, and the round-8 commit then popped the key, so
+the round-9 update became **untracked in-flight** — invisible to the `sct` gate, which
+therefore never held the clock for it (hence `gate_holds=0`). The clock lapped it →
+past-dated.
 
-The clock advances off the incomplete buffer (the ~1.6 fresh/round) and laps the
-stranded lower-`sct` updates → they commit past-dated. The round counter still
-ticks every 10 commits → **2.8× too many rounds** (1726 vs real 1323 at half the
-budget). Concurrency and modeled speed are identical across modes (in-flight 5.5,
-trainer_speed 11.1/11.4) — only the *temporal placement* of completions diverges.
-Sync (oort) is immune: its `recv_fifo(ends, first_k=len(ends))` is a full barrier
-— it waits for the whole cohort before advancing, so an incomplete subset never
-drives the clock.
+**Root: felix async re-dispatched a fast trainer (freed instantly in sim — trainers
+don't sleep) while its prior update was still in flight, creating multiple concurrent
+in-flight updates per trainer.** Measured over the full run via overlapping
+dispatch→commit intervals: **real 0.0% overlap (0 of 13230 commits), sim 13.9%
+(2462 of 17760, 83 trainers)** — matching the ~11% past-dated tail. Real never does
+this; the channel state machine holds an in-flight trainer out of `VAL_CH_STATE_SEND`
+until its update returns AND is aggregated.
 
-### Fix LANDED — `simSctOrderedDrain` (async only; default off ⇒ byte-identical)
-Ingest by draining each in-flight end's rx queue **directly** instead of through
-the streamer, so the reorder buffer is always a COMPLETE snapshot of arrived
-in-flight updates and the existing min-`sct` gate + clock-jump clamp commit in
-true completion order. Touchpoints:
-- `End.get_ready_nowait()` (non-blocking, peek-aware) + `is_rxq_empty()` now
-  honors `peek_buf` ([end.py](../../flame/end.py)) — a peeked message can no
-  longer read as "nothing ready" (a latent stranding path of its own).
-- `Channel.drain_ready(end_ids, timeout)` ([channel.py](../../flame/channel.py)):
-  pulls raw payloads on the backend loop (queue ops only), decodes **off-loop**
-  (heavy `cloudpickle.loads` must not stall the message pump); no background task,
-  no shared queue, no dedup. Per-message bookkeeping factored into
-  `_apply_recv_payload`, shared with `recv_fifo` so RECVD/cleanup state stays
-  byte-identical across both paths.
-- `_sim_recv_min`
-  ([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py))
-  drains the **live** in-flight set (`recv_ends ∪ _sim_inflight_expected`) via
-  `drain_ready` when the flag is on; the gate (hold the clock for an
-  earlier-expected straggler) and the clamp are **unchanged** — they were already
-  correct *given a complete buffer*, which the long-standing `_sim_recv_min`
-  ordering tests prove. The bug was never the gate; it was that the buffer it
-  judged was incomplete.
-- `simStaggeredRedispatch` is **superseded** (the stagger is recovered from the
-  `sct`s once the commit side is faithful) → set off in the parity yaml.
+### Core invariant (design truth — enforce in BOTH modes)
+**A trainer requested for an update is eligible to be picked again ONLY after it has
+returned an update AND that update has been processed (committed) — i.e. the trainer
+is free to take new work. No new task is assigned while a prior one is pending; a
+trainer is never picked multiple times with tasks already outstanding.** Real
+satisfies this by construction (0% overlap). Sim must enforce it explicitly — felix
+async lacked the gate (the sync oort/refl stack has it as §4.5).
 
-Guards: `tests/mode/test_async_sct_ordered_drain.py` — End readiness primitives;
-the real `channel.drain_ready` over a threaded backend loop incl. `peek_buf`;
-flag-on commits in `sct` order with `gap≈0` under every arrival permutation;
-flag-on ≡ flag-off on a reliable channel. Readiness suite **182 pass / 7 skip**.
+### Fix LANDED — `simInflightResidence` for felix async (sim only; default off ⇒ unchanged)
+The felix analog of §4.5: in `_distribute_weights`
+([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py)),
+when `sim_inflight_residence` is on, every still-outstanding trainer
+(`set(self._sim_inflight_expected)` — the dispatched-but-not-committed set, popped only
+on commit) is added to `curr_unavail_trainer_list` (the **unavailable** path, NOT
+`selected_ends` — which would re-dispatch and reset the `sct`) before
+`set_curr_unavailable_trainers`. The `AsyncOortSelector` already honors
+`trainer_unavail_list`. This holds an outstanding trainer out of selection until its
+update is committed+processed, enforcing one-in-flight-per-trainer. With it, the per-end
+`_sim_inflight_expected` entry is never overwritten, the gate sees every outstanding
+`sct` and holds correctly, and the past-dated tail closes. Flag wired ON in the felix
+sim parity yaml. Guards: `tests/mode/test_async_inflight_residence.py` (outstanding
+held out, flag-off/real/empty no-op, excluded trainer keeps its in-flight entry).
+Readiness suite **157 pass / 7 skip**; async stack 26 pass; parity subsuite 30 pass.
 
-**Expected after the run:** `commit_gap`/`queue_wait`→~0; staleness 15→~2.8;
-advance 1.4→~3.85; rounds 1726→~1320; U6/U3/K2/K3b/K4 follow.
-**Pending:** smoke (5–10 min: `gap≈0`, staleness drop, flag wiring) → 90-min
-validation (the K2/K3b/U3 compounding band; not convergence), sim-only vs stored
-real.
+**Expected after the run:** overlap 13.9%→~0; `dup_buffer_adds`→~0; the past-dated
+tail (decile-9 8.2s) → ~0; staleness 5.1→~2.8; advance 3.04→~3.85; rounds 1664→~1320;
+K3b/K2/U3/U6/K8/U2 follow.
+**Pending:** smoke (5–10 min: overlap→0, `gate_holds`>0 / dup_adds→0, flag wiring) →
+90-min validation (the K3b/K2/U3/U6 compounding band; not convergence), sim-only vs
+stored real.
 
 | baseline | run dirs | genuine residual |
 |---|---|---|
-| **felix** | `run_20260620_002022…real` / sim pending | **commit-side ingestion (FIXED, run pending)** — `recv_fifo` streamer stranded arrived updates → past-dating; `simSctOrderedDrain` lands the direct drain |
+| **felix** | `run_20260620_002022…real` / `run_20260620_233609…sim` (drain) | **overlapping re-dispatch (FIXED, run pending)** — fast trainers re-selected while in flight → untracked updates → past-dated tail; `simInflightResidence` enforces one-in-flight. Drain (`simSctOrderedDrain`) already closed the bulk past-dating. |
 | **oort**  | `run_20260619_124438…real` / `run_20260619_122953…sim` | A2c selection-mix (Sd 0.822/0.495); no past-dating, 0 eval |
 | **refl** | Jun 18 dirs | A2c speed-tail |
 | **feddance** | Jun 18 dirs | A2c `feddance_U` |
@@ -185,7 +174,7 @@ real.
 ### Settled roots
 | baseline | root |
 |---|---|
-| **felix** | Eval-stale-`sct` ✅ CLOSED. Genuine residual = **commit-side ingestion**: trainers don't sleep in sim so updates arrive ~instantly, but the `recv_fifo` streamer strands them out of the reorder buffer (`queue_wait` 26s, 52% past-dated, staleness 15), so the clock laps them and only ~1.6/10 commits/round advance it (1.4 s/rd vs 3.85). FIXED by `simSctOrderedDrain` (direct `sct`-ordered drain). The dispatch-stagger hypothesis (`simStaggeredRedispatch`) was **falsified** (advance 1.93→1.38) and superseded. Speed model exonerated (K3a/T2/selection_bias PASS). |
+| **felix** | Eval-stale-`sct` ✅ CLOSED. Commit-side ingestion (`recv_fifo` stranding) ✅ CLOSED by `simSctOrderedDrain` (Jun 20): bulk past-dating gone, `commit_gap` median 0, staleness 15→5.1, advance 1.4→3.04. Remaining residual = **overlapping re-dispatch**: felix re-selected a fast trainer (freed instantly in sim) while its prior update was in flight (real 0% vs sim 13.9% overlap), overwriting the per-end `_sim_inflight_expected` entry → untracked update → past-dated tail (`gate_holds=0`, 14% of commits, up to 119s). FIXED by `simInflightResidence` (one-in-flight invariant). Speed model exonerated (K3a/T2/selection_bias PASS). |
 | **oort** | **A2c selection-mix, verification complete.** U6 point-mass (sim 0.001s ≤ real 0.004s); carry-over decay is the mix tightening (Sd binds real 0.822 vs sim 0.495), not a timing gap; sync oort dispatches 0 eval. Closed only by the speed-model work. |
 | **refl / feddance** | A2c stochastic speed-tail. One speed-model fix may close refl + feddance + oort's Sd mix (one A2c family). |
 
@@ -288,11 +277,41 @@ real.
   *mechanism* changes need a new cluster rerun.** Land and verify all checker
   corrections against existing dirs first, then batch mechanism changes into
   one rerun.
+- **`gate_holds=0` over a whole run means the gate is structurally inert, not
+  satisfied — read it as a tell, not a pass (Jun 21).** The `_sim_recv_min`
+  hold/clamp can be perfectly correct yet never fire because the *state it judges*
+  is wrong. Felix's gate never held because the per-end `_sim_inflight_expected`
+  dict was being overwritten by an overlapping re-dispatch, so the earlier update's
+  `sct` was untracked and never seen as an earlier-expected straggler. When a gate
+  counter pins at 0 while its symptom (past-dating) persists, suspect the upstream
+  accounting (here: multiple concurrent in-flight per trainer), not the gate logic.
+- **Diagnose past-dating by partitioning the tail, not the mean (Jun 21).** After a
+  fix drops the *mean* (`commit_gap` 26s→3.9s), the median can already be 0 — the
+  residual is a thin tail (here ~14% >5s, growing decile-0 0.46s→decile-9 8.2s). Bin
+  the per-commit `commit_gap` by run-fraction and read the tail's *signature*
+  (felix: fast trainers, `residence_rounds≈0`, staleness ~14 ⇒ undrained-then-lapped,
+  i.e. an in-flight-accounting bug) rather than the headline mean. The growth over
+  the run is the compounding tell.
+- **Measure parity invariants directly from overlapping intervals, not warning
+  counters (Jun 21).** The `[SELECTION_CHECK] N unreturned versions` log accumulates
+  *ever*-unreturned versions (one lost update inflates it for the rest of the run),
+  so it over-counts and fired in both modes — useless for "is a trainer re-dispatched
+  while in flight." The clean metric is overlapping per-trainer dispatch→commit
+  intervals (model_version = round − staleness): real 0% vs sim 13.9% settled the
+  root and scoped the fix to sim. Prefer an interval-overlap count over a cumulative
+  warning whenever testing a one-in-flight / residence invariant.
 
 ### Dead ends — do NOT retry
 
 - Overhead > 0 on the virtual clock (masks & drifts; clock must `= max(vclock, sct)`).
 - Prediction-only gates with no real blocking (never fire).
+- **Tuning the `_sim_recv_min` gate predictor (`exp = sim_send_ts + budget`) to fix
+  felix past-dating (Jun 21)** — wrong target. Per-trainer realized compute is
+  deterministic (zero variance), so `exp == sct` exactly; the predictor was never the
+  problem. `gate_holds=0` was caused by the per-end `_sim_inflight_expected`
+  **overwrite** under overlapping re-dispatch (an untracked second update), not a loose
+  predictor. Don't widen/narrow the budget, the slack, or `pending_after`; enforce
+  one-in-flight (`simInflightResidence`, §3.resid) so the dict stays single-valued.
 - `version_at(sct)` staleness relabel (fedbuff consumes the *real* number; inert).
 - Adding `mqtt_fetch` (~57 s) to `sct` (not version-relevant; inflates staleness ~6×).
 - `simRedispatchGapSeconds=0` for felix (sim over-overlaps; the gap is a real mechanism).
@@ -594,9 +613,35 @@ off-loop so `cloudpickle.loads` can't stall the pump; bookkeeping shared with
 Sync (oort/syncfl) untouched — its `recv_fifo(first_k=len(ends))` barrier already
 waits for the whole cohort, so an incomplete subset never drives the clock.
 Supersedes §3.evt (`simStaggeredRedispatch` off). Guards:
-`tests/mode/test_async_sct_ordered_drain.py`. **Next: smoke (5–10 min:
-`gap≈0`, staleness drop, flag wiring) → 90-min validation (K2/K3b/U6/U3), sim-only
-vs stored real.**
+`tests/mode/test_async_sct_ordered_drain.py`. **Validated Jun 21:** the drain run
+(`run_20260620_233609…sim`) closed the bulk past-dating (`commit_gap` median 0,
+staleness 15→5.1, advance 1.4→3.04). Residual = the overlapping-re-dispatch tail,
+fixed by §3.resid below.
+
+### §3.resid  One-in-flight-per-trainer (felix async; `simInflightResidence`; LANDED Jun 21 — the K3b/U3/U6 tail fix)
+**Core invariant:** a trainer is eligible to be picked again ONLY after it has
+returned an update AND that update has been processed (committed); no new task while
+a prior one is pending. Real satisfies it by construction — the channel holds an
+in-flight trainer out of `VAL_CH_STATE_SEND` until its update returns and is
+aggregated (**real 0% overlapping in-flight** over a full run). Felix async, where a
+trainer is freed instantly in sim (no train sleep), violated it: a fast trainer was
+re-selected while its prior update was still in flight (**sim 13.9%**), overwriting
+its per-end `_sim_inflight_expected` entry so the earlier update became untracked,
+invisible to the `sct` gate (`gate_holds=0`) → lapped → past-dated (14% tail, up to
+119s, staleness 34). The felix analog of §4.5: config-gated `simInflightResidence`
+(`config.py`; default off ⇒ unchanged selection). In
+[`_distribute_weights`](../../flame/mode/horizontal/asyncfl/top_aggregator.py) the
+outstanding set `set(self._sim_inflight_expected)` is added to
+`curr_unavail_trainer_list` (the **unavailable** path, NOT `selected_ends`) before
+`set_curr_unavailable_trainers`; `AsyncOortSelector` already filters
+`trainer_unavail_list`. Released the moment the update commits (the key is popped),
+so the trainer is re-selectable next round. SIM only; sync untouched (the barrier is
+a synchronized cohort). Complements §3.drain: the drain made the reorder buffer
+complete; residence keeps the per-trainer in-flight accounting single-valued so the
+gate the drain feeds is never blinded by an overwrite. Guard:
+`tests/mode/test_async_inflight_residence.py`. **Next: smoke (5–10 min: overlap→0,
+`gate_holds`>0 / `dup_buffer_adds`→0, flag wiring) → 90-min validation
+(K3b/K2/U3/U6/K8/U2), sim-only vs stored real.**
 
 ### §3.evt  Event-driven re-dispatch (felix async; **SUPERSEDED & FALSIFIED Jun 20** — see §3.drain)
 > **SUPERSEDED.** The run with this ON made per-round advance *worse* (1.93→1.38):
