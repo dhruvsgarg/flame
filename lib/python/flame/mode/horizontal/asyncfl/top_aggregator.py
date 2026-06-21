@@ -173,6 +173,19 @@ class TopAggregator(SyncTopAgg):
         # MODEL_VERSION stays self._round. Default off ⇒ byte-identical to today.
         _stag = getattr(self.config.hyperparameters, "sim_staggered_redispatch", False)
         self._sim_staggered_redispatch: bool = bool(_stag) if _stag is not None else False
+
+        # sct-ordered ingestion (async only). When on, _sim_recv_min fills the
+        # reorder buffer by draining each in-flight end's rx queue directly
+        # (channel.drain_ready) instead of via the recv_fifo streamer, whose
+        # background task + shared queue could strand a delivered update out of
+        # the buffer's view and let the clock lap it (past-dated commits). With a
+        # COMPLETE buffer the existing min-sct gate commits in true completion
+        # order: commit_gap≈0, staleness from genuine overlap only. Default off ⇒
+        # recv_fifo path, byte-identical to today. Supersedes the dispatch-side
+        # staggered re-dispatch (the stagger is recovered from the sct's once the
+        # commit side is faithful), so the two are not enabled together.
+        _drain = getattr(self.config.hyperparameters, "sim_sct_ordered_drain", False)
+        self._sim_sct_ordered_drain: bool = bool(_drain) if _drain is not None else False
         # FIFO of vclocks at which a train-commit freed a slot; popped (oldest
         # first) to stamp the trainer that refills that slot. Bounded length: in
         # steady state #frees ≈ #fills so it stays ~<= concurrency; trimmed as a
@@ -320,70 +333,85 @@ class TopAggregator(SyncTopAgg):
         # in-flight trainer whose update is still stuck in the rxq is EXPECTED to
         # complete earlier than the buffered minimum — so the clock can't race past
         # a virtually-completed-but-undelivered update (the straggler source).
+        def _ingest(msg, metadata):
+            # Buffer one received update into the sct-ordered reorder buffer,
+            # keyed by its actual sender + sct.
+            actual_end = metadata[0]
+            sct = msg.get(MessageType.SIM_COMPLETION_TS)
+            if sct is None:
+                sct = self._vclock.now
+            # Tripwire (#3): a trainer should be in-flight (hence buffered)
+            # at most once; re-adding overwrites a prior update of its.
+            if self._sim_buffer.has(actual_end):
+                self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
+            self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+            if not hasattr(self, "_sim_enqueue_round"):
+                self._sim_enqueue_round = {}
+            self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
+
         for _pass in range(_SIM_GATE_MAX_PASSES):
-            # Probe set = the recv_ends snapshot (taken once at the top of the
-            # cycle in _aggregate_weights) PLUS any LIVE in-flight trainer whose
-            # MODELED completion is at/before the current buffered minimum.
-            #
-            # the gate (below) holds the clock for the earliest-expected
-            # straggler taken from the live _sim_inflight_expected set, but
-            # to_probe was built ONLY from the stale recv_ends snapshot — so that
-            # straggler was frequently NOT in to_probe, recv_fifo never waited for
-            # it (barrier_wait~0), the gate spun to the pass cap, and the clock
-            # committed past it (the past-dated commit that drifts staleness).
-            #
-            # draining must be gated by PHYSICAL readiness, not predicted
-            # completion. A SLOW trainer (budget 38-56s) has a far-future modeled
-            # `exp`, so the `exp <= _probe_ceiling` bound excluded it — yet its
-            # message had already physically arrived (wall_lag ~0.1s). It therefore
-            # sat undrained in the rxq while the clock advanced past its `sct`, and
-            # was finally drained ~45 vclock-s LATE → committed past-dated →
-            # staleness inflated 2-3.5x (33 vs real ~9 for the same budget). The
-            # tell: those commits have residence~0 (NOT buffer-resident) but gap~45.
-            # Fix: drain any in-flight end with a READY message (non-empty rxq)
-            # regardless of `exp`, so slow trainers buffer as proper FUTURES and
-            # commit in `sct` order. Keep the ceiling as a secondary admit so the
-            # gate can still wait (recv_fifo grace) for an expected-soon straggler
-            # whose fragments are mid-reassembly. recv_fifo on a ready end returns
-            # immediately, so this adds NO blocking.
-            _bmin = self._sim_buffer.peek_min_ts()
-            _probe_ceiling = (
-                _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
-            )
-            to_probe = [
-                e for e in recv_ends
-                if not self._sim_buffer.has(e) and e not in self._sim_committed
-            ]
-            _seen = set(to_probe)
-            to_probe += [
-                e for e, exp in self._sim_inflight_expected.items()
-                if e not in _seen and channel.has(e)
+            # Ingest arrived in-flight updates into the sct-ordered buffer. The
+            # probe set is the recv_ends snapshot (taken once upstream in
+            # _aggregate_weights) UNION the LIVE in-flight set — a stale snapshot
+            # alone misses ends that entered RECV after it, which is what let the
+            # gate spin on an earliest-expected straggler it never probed and then
+            # commit past it (past-dated, staleness drift).
+            grace = self._sim_recv_grace_s()
+            live_inflight = [
+                e for e in set(recv_ends) | set(self._sim_inflight_expected)
+                if channel.has(e)
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
-                and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
             ]
-            if to_probe:
-                probed = max(probed, len(to_probe))
-                grace = self._sim_recv_grace_s()
-                for msg, metadata in channel.recv_fifo(
-                    to_probe, first_k=len(to_probe), timeout=grace
-                ):
-                    if msg is None:  # no more ready (grace expired or set drained)
-                        break
-                    # metadata[0] is the actual sender; may differ from probed end
-                    # if a stale recv task delivered a different end's message first.
-                    actual_end = metadata[0]
-                    sct = msg.get(MessageType.SIM_COMPLETION_TS)
-                    if sct is None:
-                        sct = self._vclock.now
-                    # Tripwire (#3): a trainer should be in-flight (hence buffered)
-                    # at most once; re-adding overwrites a prior update of its.
-                    if self._sim_buffer.has(actual_end):
-                        self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
-                    self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
-                    if not hasattr(self, "_sim_enqueue_round"):
-                        self._sim_enqueue_round = {}
-                    self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
-                drained_all = all(self._sim_buffer.has(e) for e in to_probe)
+            # ends still pending ingestion this pass — drives the "nothing left to
+            # commit and nothing in flight" loop-exit below (per ingestion path).
+            _pending_ends = live_inflight
+            if getattr(self, "_sim_sct_ordered_drain", False):
+                # sct-faithful ingestion: drain each live in-flight end's rx queue
+                # DIRECTLY (no recv_fifo streamer), so the buffer is a COMPLETE
+                # snapshot of every arrived in-flight update — the streamer could
+                # strand a delivered update out of the buffer's view and let the
+                # clock lap it (commit past-dated). Already-buffered/committed ends
+                # are excluded above, so a HOLD pass waits (drain_ready's poll)
+                # only on the genuinely-not-yet-arrived earlier-sct straggler.
+                if live_inflight:
+                    probed = max(probed, len(live_inflight))
+                    for msg, metadata in channel.drain_ready(live_inflight, timeout=grace):
+                        _ingest(msg, metadata)
+                    drained_all = all(
+                        self._sim_buffer.has(e) or e in self._sim_committed
+                        for e in live_inflight
+                    )
+            else:
+                # Legacy recv_fifo ingestion (default). An in-flight end is probed
+                # if it is physically READY (non-empty rxq) — drain it regardless of
+                # `exp` so a slow trainer whose message already arrived buffers as a
+                # FUTURE instead of being drained-in late and committed past-dated —
+                # OR its modeled `exp` is at/before the buffered minimum (+slack), so
+                # the gate can still wait (recv_fifo grace) for an expected-soon
+                # straggler whose fragments are mid-reassembly.
+                _bmin = self._sim_buffer.peek_min_ts()
+                _probe_ceiling = (
+                    _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
+                )
+                to_probe = [e for e in recv_ends
+                            if not self._sim_buffer.has(e) and e not in self._sim_committed]
+                _seen = set(to_probe)
+                to_probe += [
+                    e for e, exp in self._sim_inflight_expected.items()
+                    if e not in _seen and channel.has(e)
+                    and not self._sim_buffer.has(e) and e not in self._sim_committed
+                    and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
+                ]
+                _pending_ends = to_probe
+                if to_probe:
+                    probed = max(probed, len(to_probe))
+                    for msg, metadata in channel.recv_fifo(
+                        to_probe, first_k=len(to_probe), timeout=grace
+                    ):
+                        if msg is None:  # no more ready (grace expired or set drained)
+                            break
+                        _ingest(msg, metadata)
+                    drained_all = all(self._sim_buffer.has(e) for e in to_probe)
             # Gate: earliest expected completion among un-drained in-flight trainers.
             buffered_min = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
@@ -394,7 +422,7 @@ class TopAggregator(SyncTopAgg):
                     min_stuck, _stuck_end = exp, e
             earlier_stuck = (buffered_min is not None and min_stuck is not None
                              and min_stuck + _SIM_ORDER_SLACK_S < buffered_min)
-            if buffered_min is None and not to_probe:
+            if buffered_min is None and not _pending_ends:
                 break  # nothing to commit and nothing in flight
             if not earlier_stuck:
                 break  # the buffered minimum is the true next completion

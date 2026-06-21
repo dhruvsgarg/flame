@@ -94,180 +94,98 @@ mechanism per run round** when a fix could perturb another baseline (serialize);
 
 ## Doc policy: ONE status section, not one per run
 
-This doc used to grow a new `## Status (date — ...)` section per check-in,
-left in place "for the record." That's bloat — old scoreboards are
-regenerable from `parity_check.py --batch` and old hypothesis tables just
-restate what the next rerun already overwrote. **From now on: there is
-exactly one `## Status` section, dated to the most recent rerun, fully
-replacing the previous one.** Durable lessons that don't expire with the next
-rerun (triage rules, dead ends, validated mechanisms) live in their own named
-sections below status and get *updated in place*, not appended to.
+This doc used to grow a new `## Status (Jun 20 — felix root CORRECTED: COMMIT-SIDE ingestion, not dispatch stagger; `simSctOrderedDrain` landed)
 
----
+**Run read:** felix sim `run_20260620_165003…sim` (event-driven re-dispatch ON,
+stopped early at 1726 rounds) vs stored real `run_20260620_002022…real`. The
+prior session's dispatch-stagger fix was **falsified** and the genuine root
+re-localized to the **commit side** by a single-trainer end-to-end trace.
 
-## Status (Jun 20 — felix root CONFIRMED from logs: round-boundary batch re-dispatch collapses the completion-time stagger; event-driven fix planned)
+### The dispatch-stagger hypothesis was wrong — the root is COMMIT-side ingestion
+The prior Status blamed the round-boundary batch re-dispatch collapsing the
+completion stagger and shipped `simStaggeredRedispatch`. The run disproved it:
+per-round advance got **worse** (1.93→1.38). The injected stagger is bounded by
+the very clock advance it is meant to create — the cohort's vclock-at-commit
+spread is only ~1.2s, so ≤0.55s of stagger was injectable (circular; it cannot
+bootstrap a spread the clock doesn't already have).
 
-**Run read:** felix sim `run_20260620_114145…sim` (74 min wall, vclock 5370s) vs
-stored real `run_20260620_002022…real`. Score **33/43** (warn 4, skip 2). Two
-things landed this session and the genuine residual is now isolated.
+Tracing trainer …0405 found the real mechanism. In sim the trainer does **not**
+sleep ([trainer/pytorch/main.py:897](trainer/pytorch/main.py#L897) is real-only);
+every in-flight update is computed fast and **sent immediately** (`wall_lag` mean
+0.29s). A correct async sim would hold them all in one `sct`-ordered buffer and
+step the clock through their `sct`s in order (`commit_gap≈0`). Instead the
+aggregator ingests through the real-transport **`recv_fifo` streamer** (a
+fire-and-forget background task + shared `_rx_queue` + per-end active-task dedup +
+grace timeout + an `is_rxq_empty` readiness probe). That path **strands arrived
+updates**: a grace-timed-out streamer task later consumes its end's message into
+`_rx_queue` *after* the generator that wanted it returned, so the message is out
+of the End's rxq (the readiness probe reports "nothing ready") yet not buffered.
 
-### 1. Eval-stale-`sct` fix (prior commit) — ✅ CONFIRMED WORKING
-The Jun-20 `evaluate()` per-eval-`sct` fix killed the catastrophic eval past-dating:
-- `pastdated_by_source` collapsed from **fresh=95%** to `fresh=180/535s` vs
-  `straggler=22491/549575s`; `pastdated_gap_max` **5234s → 86s**.
-- `eval_commit_timeliness` (U6e): eval_mean **4.93s** vs train **15.5s**,
-  `eval_minus_train = −10.6s` (eval now commits *earlier* than train — the stale
-  train `sct` is gone). **0** eval-caused clock regressions.
+| signal | sim | real |
+|---|---|---|
+| physical send→recv (`wall_lag_s`) | 0.29s mean | — |
+| aggregator queue residence (`queue_wait_s`) | **26s mean, 90.6% >5s, max 115s** | ~0 |
+| commits past-dated (`vclock>sct`) | **52%** (mean 19s late) | ~0 |
+| staleness | 15.2 | 2.8 |
+| fresh commits / round (of K=10) | **1.6** | 10 |
+| per-round advance | 1.4 s/rd | 3.85 s/rd |
 
-### 2. Eval-checker contamination — ✅ FIXED (checker-side, no rerun)
-The eval fix made `evaluate()` emit `event=agg_round` records (tagged
-`task_to_perform="eval"`) so U6/U6e can read them — but those records carry **no
-`agg_goal_count`** and don't advance the clock/aggregate. Before this commit eval
-never emitted `agg_round` at all, so **every train-commit consumer of `agg_rounds`
-was newly contaminated:**
-- **`sim_commit_monotone` (K1, INV)** FAILED with 2656 false backward steps. Cause:
-  the load sort `(round, agg_goal_count→0, ts)` slotted every eval at `ggc=0` (front
-  of its round), where its *later-stamped* (higher) `vclock_now` sat ahead of the
-  round's `ggc=1..K` train commits → manufactured ~1.1s drops. **In true commit
-  (`ts`) order there are 0 backward steps — the clock was always monotone.**
-- **U3 staleness** deflated by 24,980 eval `staleness=0` samples (read 9.44; true
-  train-only **15.17**). U1 sim_len doubled (52,980→28,000), U5 polluted.
-- **Fix:** `load_agg_jsonl` now partitions eval `agg_round` records into a separate
-  `eval_commits` list; `agg_rounds` is train-only (every legacy check correct
-  unchanged); U6e reads the combined view. Guard:
-  `test_ladder.py::test_eval_commits_partitioned_at_load`. Score 31→**33/43**; K1
-  PASS (`n_stamped=28000`, monotone); numbers now truthful.
+The clock advances off the incomplete buffer (the ~1.6 fresh/round) and laps the
+stranded lower-`sct` updates → they commit past-dated. The round counter still
+ticks every 10 commits → **2.8× too many rounds** (1726 vs real 1323 at half the
+budget). Concurrency and modeled speed are identical across modes (in-flight 5.5,
+trainer_speed 11.1/11.4) — only the *temporal placement* of completions diverges.
+Sync (oort) is immune: its `recv_fifo(ends, first_k=len(ends))` is a full barrier
+— it waits for the whole cohort before advancing, so an incomplete subset never
+drives the clock.
 
-**Durable rule added** (see Durable lessons): a check consuming `agg_rounds` must be
-explicit about train-vs-eval; eval records only reach U6/U6e.
+### Fix LANDED — `simSctOrderedDrain` (async only; default off ⇒ byte-identical)
+Ingest by draining each in-flight end's rx queue **directly** instead of through
+the streamer, so the reorder buffer is always a COMPLETE snapshot of arrived
+in-flight updates and the existing min-`sct` gate + clock-jump clamp commit in
+true completion order. Touchpoints:
+- `End.get_ready_nowait()` (non-blocking, peek-aware) + `is_rxq_empty()` now
+  honors `peek_buf` ([end.py](../../flame/end.py)) — a peeked message can no
+  longer read as "nothing ready" (a latent stranding path of its own).
+- `Channel.drain_ready(end_ids, timeout)` ([channel.py](../../flame/channel.py)):
+  pulls raw payloads on the backend loop (queue ops only), decodes **off-loop**
+  (heavy `cloudpickle.loads` must not stall the message pump); no background task,
+  no shared queue, no dedup. Per-message bookkeeping factored into
+  `_apply_recv_payload`, shared with `recv_fifo` so RECVD/cleanup state stays
+  byte-identical across both paths.
+- `_sim_recv_min`
+  ([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py))
+  drains the **live** in-flight set (`recv_ends ∪ _sim_inflight_expected`) via
+  `drain_ready` when the flag is on; the gate (hold the clock for an
+  earlier-expected straggler) and the clamp are **unchanged** — they were already
+  correct *given a complete buffer*, which the long-standing `_sim_recv_min`
+  ordering tests prove. The bug was never the gate; it was that the buffer it
+  judged was incomplete.
+- `simStaggeredRedispatch` is **superseded** (the stagger is recovered from the
+  `sct`s once the commit side is faithful) → set off in the parity yaml.
 
-| baseline | score | run dirs | genuine residual |
-|---|---|---|---|
-| **felix** | **33/43** | `run_20260620_002022…real` / `run_20260620_114145…sim` (74 min) | **inter-round OVERLAP model** (K4 14.1× vs 6.7×) — see hypothesis below |
-| **oort**  | **41/45** | `run_20260619_124438…real` / `run_20260619_122953…sim` (2.5h) | A2c selection-mix (Sd 0.822/0.495); no past-dating, 0 eval |
-| **refl** | 38/44 (stored, no rerun) | Jun 18 dirs | A2c speed-tail |
-| **feddance** | 41/43 (stored, no rerun) | Jun 18 dirs | A2c `feddance_U` |
+Guards: `tests/mode/test_async_sct_ordered_drain.py` — End readiness primitives;
+the real `channel.drain_ready` over a threaded backend loop incl. `peek_buf`;
+flag-on commits in `sct` order with `gap≈0` under every arrival permutation;
+flag-on ≡ flag-off on a reliable channel. Readiness suite **182 pass / 7 skip**.
 
-### 3. Genuine felix root — CONFIRMED from the stored logs: the round boundary batch-re-dispatches the whole cohort at one frozen vclock, collapsing the completion-time stagger
-Every felix FAIL traces to **one** mechanism. The speed model is exonerated (K3a
-`modeled_compute_advance` PASS, T2 PASS, `selection_bias` PASS). The break is **how
-fast the clock advances per round** — and the Jun-20 log dig localized it to the
-*dispatch-timestamp*, not the speed model, the overlap parameter, or any scalar.
+**Expected after the run:** `commit_gap`/`queue_wait`→~0; staleness 15→~2.8;
+advance 1.4→~3.85; rounds 1726→~1320; U6/U3/K2/K3b/K4 follow.
+**Pending:** smoke (5–10 min: `gap≈0`, staleness drop, flag wiring) → 90-min
+validation (the K2/K3b/U3 compounding band; not convergence), sim-only vs stored
+real.
 
-| rung | sim | real | |
-|---|---|---|---|
-| K2 `throughput` | 1.93 s/rd | 3.85 s/rd | → sim **2800 rounds** vs real **1323** |
-| K3b `overhead_residual` | adv 1.93s | adv 3.85s | residual ~1.9s/round |
-| K4 `overlap_factor` | 14.1× | 6.74× | sim pipelines ~2× too tightly |
-| U6 `commit_visibility` | 15.5s | 0.017s | stragglers sit in the buffer past-dated |
-| U3 `staleness` | 15.17 | 2.79 | 2× rounds + late commits |
-
-**What the logs proved (supersedes the prior "21s MQTT network fetch" hypothesis).**
-The earlier reading — that real spreads completions because a re-dispatched trainer
-eats ~21s of MQTT *network* weight-fetch — is **wrong**, and `mqtt-on-sct` is rightly
-a dead end. Evidence from `run_20260620_002022…real` / `run_20260620_114145…sim`:
-
-1. **`mqtt_fetch_s` is re-selection wait, not transfer.** Real `gpu_compute_s` is
-   **0.17s** (compute is trivial); `mqtt_fetch_s` (mean 18.8s) is the trainer blocked
-   in `recv()` waiting to be *re-selected* — it scales with how many rounds it sat
-   unselected (a 10-round gap → ~35s; a 2-round gap → ~1.5s). The transfer floor is
-   ~1.5s incl. `await_join`, **not** 21s. `mqtt_fetch_s = wall(recv)` at
-   [syncfl/trainer.py:187-192](../../flame/mode/horizontal/syncfl/trainer.py#L187-L192).
-2. **The per-round advance is set by the *fresh* in-flight `sct`-spread.** Concrete
-   rounds (one each mode):
-   - **REAL round 500** — 10 commits arrive **staggered over 3.6s**, all fresh
-     (staleness 1–5): `+0.00 +0.05 +1.03 +2.09 +2.20 +2.81 +2.98 +3.30 +3.34 +3.62 s`.
-     Advance ≈ 3.85s.
-   - **SIM round 800** — clock advances **1.8s**, but the 10 committed `sct`s span
-     **60.6s**. The *fresh* cohort (ggc 4,5,6,9) sits at `v0+0.6…+1.8` (bunched at the
-     frontier → sets the advance); the rest (ggc 0,1,2,3,7,8) are past stragglers
-     (stale 7–29) committing *behind* v0 (clamped, don't advance the clock).
-3. **The bunching is the round-boundary batch.** 64% of sim dispatches share one
-   `sim_send_ts` (mean block 1.63, max 15); the round-start cohort all get
-   `sim_send_ts = self._vclock.now` at
-   [asyncfl/top_aggregator.py:1393](../../flame/mode/horizontal/asyncfl/top_aggregator.py#L1393),
-   so `sct = sim_send_ts + compute + leg` ([trainer/pytorch/main.py:822](trainer/pytorch/main.py#L822))
-   shares one base. The stagger **already exists upstream** and is being destroyed:
-   grouping each cohort by shared `sim_send_ts`, the members' **prior** completion
-   `sct`s span **~71s** (median) but their **next** `sct`s span only **~18s** — a ~4×
-   compression — and trainers are **held ~14–31s** (vclock) past their own completion
-   before the boundary re-dispatches them. In real there is no boundary hold: a trainer
-   is re-dispatched the instant it returns, so completions stay spread.
-
-**Why this is one bug, not two.** The held backlog is *both* faces of the symptom:
-(a) the fresh cohort re-stamped at one frontier bunches → small advance → 2× rounds,
-and (b) the same backlog drains as past-dated stragglers → staleness 15 vs 3. Fixing
-the boundary hold fixes both.
-
-**Expected after the fix:** per-round advance 1.93→~3.85; rounds 2800→~1400 (≈ real
-1323); U6 15.5→~0; U3 staleness 15.2→~3; K4 14.1×→~6.7×; K3b residual →<10%; the
-Stage-8 emergents (K8/U2/C1/C2) and the selector temporal term follow as downstream
-consequences and should clear without their own fix.
-
-### The fix — event-driven re-dispatch (async only; sync stays batched)
-**Decision (Jun 20):** the chosen model is **event-driven re-dispatch**, not a
-backdated/forward-staggered timestamp. Each committed slot is re-filled **one
-replacement at a time at the post-commit vclock**, so no boundary backlog forms and
-each re-dispatch rides the vclock that just advanced to the committing trainer's `sct`
-— reproducing real's continuous, staggered cadence. For **sync** (oort/syncfl) the
-batch dispatch is *correct* (barrier semantics: a round IS a synchronized cohort) and
-stays as-is. Config-gated `simStaggeredRedispatch` (default off ⇒ byte-identical to
-today).
-
-**Why not the alternatives** (both rejected this session):
-- *Anchor to own availability* (`sim_send_ts = prior_sct`): backdates the stamp before
-  the round whose weights the trainer receives → causality/`MODEL_VERSION` break.
-- *Forward stagger by a modeled wait* (`sim_send_ts = max(now, prior_sct + latency)`):
-  re-introduces a calibrated `mqtt`-like leg — the same family as the
-  `simRedispatchGapSeconds`/`mqtt-on-sct` dead ends.
-
-### Implementation steps (felix; land before the next run)
-1. **Validation telemetry first** (both modes, cheap — *5–10 min* smoke to confirm it
-   lands): in `_distribute_weights` emit per-dispatch `redispatch_stagger_s`
-   (this end's `sim_send_ts` − cohort-min) and `held_s` (`vclock.now` − prior `sct`).
-   The pass criterion the run must show: cohort **next**-`sct` spread → real's ~3.85s
-   (today ~18s) and `held_s` → ~0 (today 14–31s).
-2. **Track prior completion per end**: store `_sim_last_commit_sct[end]` at commit
-   (formalize the existing `_sim_cooldown_until` write).
-3. **Event-driven re-dispatch** (the fix): in the asyncfl flow, re-dispatch exactly
-   **one** replacement per committed slot at the **live** vclock instead of draining
-   the whole SEND-state cohort at the round-start frontier. The first round's cohort is
-   a genuine cold-start batch (matches real); thereafter it is 1-in-1-out at advancing
-   vclocks. Keep `MODEL_VERSION = self._round` (the trainer really does get this round's
-   weights → stays fresh). Scope to the felix asyncfl stack; **serialize** the run.
-4. **Sync unchanged + regression guard**: leave
-   [syncfl:785](../../flame/mode/horizontal/syncfl/top_aggregator.py#L785) /
-   [oort:740](../../flame/mode/horizontal/oort/top_aggregator.py#L740) on the shared
-   stamp; add a test asserting **sync batches** (one `sim_send_ts`/cohort) while
-   **async staggers** (distinct per-end).
-5. **Unit tests** (`tests/sim/`): async path preserves an injected free-time spread
-   (no boundary collapse); flag-off ⇒ byte-identical to today; sync path unchanged.
-6. **Plot**: per-round advance + cohort `sct`-spread, sim/real overlay, into the run's
-   `plots/` (extend `analyze_run.py`).
-7. **Run**: smoke (5–10 min, telemetry+flag wiring) → **90 min** validation (the
-   K2/K3b/U3 compounding band; *not* convergence — anything past 2h here is wasted
-   GPU). Sim-only ⇒ validate against the stored real dir.
-
-### Deferred (felix; re-check *after* the event-driven fix — expected to clear on their own)
-- **selector temporal term** (`selector_score` worst=temporal KS 0.534; `believed_I`
-  0.341) — per-round UCB terms scale with round count; sim's 2× rounds is the cause.
-  Only if residual, re-parameterize per-round terms by wall-time/samples (§3.async).
-- **U5 inter_arrival** (ρ=−0.42, gated WARN) — confirm it's round-count path-dependence
-  on a stochastic selector, not a true ordering inversion.
-- **Per-commit buffer-residence by speed decile** — confirm straggler residence shrinks
-  once #3 lands; don't fix independently (downstream of the boundary hold).
-
-### The `update_visibility_lag_s` instrument (landed prior session)
-One metric, both modes, all baselines: **`committed_ts − ready_ts` in the aggregator's
-own clock.** sim = `vclock.now − sct`; real = `wall(commit) − wall(MQTT arrival)`. Async
-target ≈0 (independent commits at own readiness); sync = barrier wait (matches in both).
-Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declared
-**upstream of `staleness`**; self-SKIPs when the field is absent.
+| baseline | run dirs | genuine residual |
+|---|---|---|
+| **felix** | `run_20260620_002022…real` / sim pending | **commit-side ingestion (FIXED, run pending)** — `recv_fifo` streamer stranded arrived updates → past-dating; `simSctOrderedDrain` lands the direct drain |
+| **oort**  | `run_20260619_124438…real` / `run_20260619_122953…sim` | A2c selection-mix (Sd 0.822/0.495); no past-dating, 0 eval |
+| **refl** | Jun 18 dirs | A2c speed-tail |
+| **feddance** | Jun 18 dirs | A2c `feddance_U` |
 
 ### Settled roots
 | baseline | root |
 |---|---|
-| **felix** | Eval-stale-`sct` ✅ CLOSED. Genuine residual = **round-boundary batch re-dispatch collapses the completion-time stagger** (CONFIRMED from logs: cohort prior-`sct` spread ~71s → next ~18s; held 14–31s; root at `asyncfl/top_aggregator.py:1393` shared `sim_send_ts`). Speed model exonerated (K3a/T2/selection_bias PASS). Fix = **event-driven re-dispatch** (Status → Implementation steps). |
+| **felix** | Eval-stale-`sct` ✅ CLOSED. Genuine residual = **commit-side ingestion**: trainers don't sleep in sim so updates arrive ~instantly, but the `recv_fifo` streamer strands them out of the reorder buffer (`queue_wait` 26s, 52% past-dated, staleness 15), so the clock laps them and only ~1.6/10 commits/round advance it (1.4 s/rd vs 3.85). FIXED by `simSctOrderedDrain` (direct `sct`-ordered drain). The dispatch-stagger hypothesis (`simStaggeredRedispatch`) was **falsified** (advance 1.93→1.38) and superseded. Speed model exonerated (K3a/T2/selection_bias PASS). |
 | **oort** | **A2c selection-mix, verification complete.** U6 point-mass (sim 0.001s ≤ real 0.004s); carry-over decay is the mix tightening (Sd binds real 0.822 vs sim 0.495), not a timing gap; sync oort dispatches 0 eval. Closed only by the speed-model work. |
 | **refl / feddance** | A2c stochastic speed-tail. One speed-model fix may close refl + feddance + oort's Sd mix (one A2c family). |
 
@@ -381,6 +299,8 @@ Rung **U6 `commit_visibility`** (Stage 6, MECHANISM/DIST, KS + mean-gap), declar
 - `simRedispatchGapSeconds=0.6` for felix — tested Jun 16, no measurable effect; don't retune this scalar further, go to the event-driven re-dispatch (Status → The fix).
 - **The "21s MQTT network weight-fetch spreads real completions" framing (Jun 20)** — disproven; real `gpu_compute_s`=0.17s and `mqtt_fetch_s` is *re-selection wait*, not transfer. Don't resurrect `mqtt-on-sct` or any transfer-leg-on-`sct` model from it.
 - **Re-dispatch `sim_send_ts = prior_sct` (anchor-to-availability)** — backdates the stamp before the round whose weights the trainer receives → `MODEL_VERSION`/causality break. Rejected Jun 20 in favor of event-driven re-dispatch.
+- **`simStaggeredRedispatch` / event-driven re-dispatch as the felix throughput fix (Jun 20) — FALSIFIED.** The run made per-round advance *worse* (1.93→1.38): the injected dispatch stagger is bounded by the very clock advance it is meant to create (cohort vclock-at-commit spread ~1.2s ⇒ ≤0.55s injectable — circular, can't bootstrap a spread the clock doesn't already have). The throughput root is **commit-side** (recv_fifo streamer stranding arrived in-flight updates → past-dating), fixed by `simSctOrderedDrain` (§3.drain). Don't re-pursue any dispatch-timestamp re-staggering for advance/staleness; the stagger is recovered from the `sct`s once ingestion+clock are faithful.
+- **Reading high `commit density` (wall-clock) as the sim "running fast" (Jun 20)** — expected and not the bug: sim has no trainer wait, so trainers return faster in wall time. The disparity is purely that the *virtual* clock under-advances per round (1.4 vs 3.85) because past-dated stragglers (commit-side stranding) don't advance it. Judge the per-round *vclock* advance and `commit_gap`, not wall-clock commit cadence.
 - **Re-dispatch `sim_send_ts = max(now, prior_sct + latency)` (forward-stagger by a modeled wait)** — re-introduces a calibrated `mqtt`-like leg, same family as the redispatch scalar / `mqtt-on-sct` dead ends. Rejected Jun 20.
 - Expecting the felix seed fix (min budget default) alone to eliminate past-dating — confirmed Jun 17: past-dating drops from 73%→14% initially but recovers to 59% by commit 5000 with `gate_holds=0` throughout. Other cascade sources remain active; need source-level instrumentation, not scalar tuning.
 - Expecting oort carry-over decay to be a run-length transient — confirmed Jun 18 2.5h: `in_flight_after` sim=0.47 vs real=3.65 at 2.5h; zero by decile 2 of 10. Structural, not transient. Don't re-test duration.
@@ -652,8 +572,42 @@ reference only after `validate_real` shows it admissible (done: concurrency
   gap↔staleness coupling means one knob can't hit both advance and staleness; felix
   is HELD pending a buffer-aging investigation, not a scalar.
 
-### §3.evt  Event-driven re-dispatch (felix async; LANDED Jun 20 — the K2/K3b/U6/U3 fix)
-**Status: IMPLEMENTED, run pending.** Config-gated `simStaggeredRedispatch`
+### §3.drain  sct-ordered DIRECT drain (felix async; LANDED Jun 20 — the commit-side K2/K3b/U6/U3 fix)
+**Status: IMPLEMENTED, run pending.** Config-gated `simSctOrderedDrain`
+(`config.py`; default off ⇒ recv_fifo path, byte-identical). The async sim clock
+under-advanced because in-flight updates — which arrive ~instantly in sim
+(trainers don't sleep) — were ingested through the `recv_fifo` streamer, whose
+background task + shared `_rx_queue` + per-end active-task dedup + grace timeout
+could **strand a delivered update** out of the reorder buffer's view
+(`is_rxq_empty` reports "nothing ready"). The clock then advanced off the
+incomplete buffer and lapped the stranded lower-`sct` updates → past-dated commits
+(`queue_wait` 26s mean / 90.6% >5s, 52% past-dated, staleness 15 vs real 2.8; only
+~1.6 of 10 commits/round advanced the clock → 1.4 s/rd vs 3.85 → 2.8× rounds). The
+fix drains each live in-flight end's rx queue **directly** so the buffer is a
+COMPLETE snapshot and the existing min-`sct` gate + clock-jump clamp commit in true
+completion order (`commit_gap≈0`). Implementation:
+[`End.get_ready_nowait`] (non-blocking, peek-aware) + peek-aware
+[`End.is_rxq_empty`]; [`Channel.drain_ready`] (pull raw on the backend loop, decode
+off-loop so `cloudpickle.loads` can't stall the pump; bookkeeping shared with
+`recv_fifo` via `_apply_recv_payload`); [`_sim_recv_min`] drains
+`recv_ends ∪ _sim_inflight_expected` via `drain_ready` (gate/clamp unchanged).
+Sync (oort/syncfl) untouched — its `recv_fifo(first_k=len(ends))` barrier already
+waits for the whole cohort, so an incomplete subset never drives the clock.
+Supersedes §3.evt (`simStaggeredRedispatch` off). Guards:
+`tests/mode/test_async_sct_ordered_drain.py`. **Next: smoke (5–10 min:
+`gap≈0`, staleness drop, flag wiring) → 90-min validation (K2/K3b/U6/U3), sim-only
+vs stored real.**
+
+### §3.evt  Event-driven re-dispatch (felix async; **SUPERSEDED & FALSIFIED Jun 20** — see §3.drain)
+> **SUPERSEDED.** The run with this ON made per-round advance *worse* (1.93→1.38):
+> the injected stagger is bounded by the very clock advance it is meant to create
+> (cohort vclock-at-commit spread ~1.2s ⇒ ≤0.55s injectable — circular). The real
+> root was on the **commit side** (recv_fifo streamer stranding arrived updates),
+> fixed by `simSctOrderedDrain` (§3.drain). `simStaggeredRedispatch` is kept in
+> the code (config-gated, off) but **disabled** in the parity yaml; do not enable
+> it together with `simSctOrderedDrain`. Description below retained for the record.
+
+**Status: IMPLEMENTED, FALSIFIED.** Config-gated `simStaggeredRedispatch`
 (`config.py`; default off ⇒ byte-identical). On each TRAIN commit `_sim_recv_min`
 pushes the just-advanced vclock to a freed-slot FIFO (`_sim_free_slot_ts`) and
 records `_sim_last_commit_sct`; `_distribute_weights` pops that FIFO (oldest first)
@@ -665,11 +619,9 @@ flag-off keep the single shared stamp + serialize-once. Per-dispatch validation
 telemetry `event=dispatch` (`redispatch_stagger_s`, `held_s`; `build_dispatch`).
 Sync (oort/syncfl) untouched (barrier = a synchronized cohort). Guards:
 `tests/mode/test_async_staggered_redispatch.py` (FIFO pop, commit push, per-end
-stagger, eval/flag-off/real batched, sync-stays-batched). Enabled in the felix sim
-block of the parity yaml (`simRedispatchGapSeconds` zeroed — now redundant).
-**Next: smoke (5–10 min, confirm `dispatch` events + per-end stagger land) →
-90-min validation (sim-only, reuse stored real); read cohort next-sct spread
-(52.6s→~3.85s), `held_s`→~0, then K2/K3b/K4/U6/U3.**
+stagger, eval/flag-off/real batched, sync-stays-batched). **Now disabled in the
+felix sim yaml** (superseded by §3.drain); the validation run referenced here was
+the one that falsified it — do not re-run for this mechanism.
 
 **Architecture map for the implementer.** The asyncfl compose loop
 ([asyncfl/top_aggregator.py:1485-1500](../../flame/mode/horizontal/asyncfl/top_aggregator.py#L1485-L1500)) is:

@@ -215,6 +215,19 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_staggered_redispatch: t.Optional[bool] = Field(
         alias="simStaggeredRedispatch", default=False
     )
+    # Sim async-stack: ingest in-flight updates into the sct-ordered reorder
+    # buffer by draining each end's rx queue DIRECTLY (channel.drain_ready),
+    # instead of through the recv_fifo streamer. The streamer's background task +
+    # shared queue can strand a delivered update where the readiness probe can't
+    # see it, so the buffer commits an incomplete subset and the virtual clock
+    # laps the stranded (lower-sct) updates → they commit past-dated (async
+    # staleness ~15 vs real ~3; only ~1.6 of 10 commits/round advance the clock).
+    # Draining directly keeps the buffer a COMPLETE snapshot of arrived in-flight
+    # updates so the existing min-sct gate commits in true completion order.
+    # Default off ⇒ recv_fifo path (byte-identical to today). Sync untouched.
+    sim_sct_ordered_drain: t.Optional[bool] = Field(
+        alias="simSctOrderedDrain", default=False
+    )
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
