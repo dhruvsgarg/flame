@@ -232,9 +232,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
-    # Sim sync-stack: hold a dispatched trainer in-flight (occupying its slot, out of the
-    # eligible pool) until vclock >= its modeled completion sct, instead of freeing the
-    # slot at instant physical arrival — so the committed/eligible mix matches real.
+    # Hold a dispatched trainer in-flight (occupying its concurrency slot, out of the
+    # eligible pool) until its update commits, instead of freeing the slot at instant
+    # physical arrival — so the committed/eligible mix matches real. Sync stack (oort):
+    # adds the still-computing set to the unavailable list (§4.5). Async stack (felix):
+    # widens _sim_hold_busy_slots to the full dispatched-but-not-committed set, held via
+    # selected_ends (a slot), NOT the unavailable list. Default off ⇒ holds only the
+    # already-buffered set.
     sim_inflight_residence: t.Optional[bool] = Field(
         alias="simInflightResidence", default=False
     )

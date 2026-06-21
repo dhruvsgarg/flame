@@ -97,7 +97,17 @@ mechanism per run round** when a fix could perturb another baseline (serialize);
 This doc keeps exactly ONE `## Status` section, updated in place — not one per
 run. The current read is below.
 
-## Status (Jun 21 — felix K3b/U3/U6 residual root: OVERLAPPING re-dispatch; one-in-flight invariant + `simInflightResidence` landed)
+## Status (Jun 21 — felix one-in-flight: `simInflightResidence` v1 over-selected to N (busy-via-UN_AVL bug); re-landed as `_sim_hold_busy_slots` (slot-held))
+
+**Latest:** the first `simInflightResidence` (unavail-list) regressed the sim — it
+freed busy trainers' `selected_ends` slots, the selector over-selected to N≈300, and
+the vclock crawled at 0.27 s/rd (`run_20260621_011547…sim`, stopped early). Root: busy
+≠ UN_AVL (see §3.resid + dead-ends). Re-landed correctly as `_sim_hold_busy_slots`
+(hold the busy set in `selected_ends`, not the unavailable list); tests green
+(readiness mode/selector/sim/parity subset **190 pass / 7 skip**). **Pending the smoke
++ 90-min validation re-run.** The pre-regression read below still stands.
+
+### Prior read — felix K3b/U3/U6 residual root: OVERLAPPING re-dispatch; one-in-flight invariant
 
 **Run read:** felix sim `run_20260620_233609…sim` (90 min / 5400s, `simSctOrderedDrain`
 ON) vs stored real `run_20260620_002022…real`. **Score 36/43 enforced pass**
@@ -141,28 +151,19 @@ trainer is never picked multiple times with tasks already outstanding.** Real
 satisfies this by construction (0% overlap). Sim must enforce it explicitly — felix
 async lacked the gate (the sync oort/refl stack has it as §4.5).
 
-### Fix LANDED — `simInflightResidence` for felix async (sim only; default off ⇒ unchanged)
-The felix analog of §4.5: in `_distribute_weights`
-([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py)),
-when `sim_inflight_residence` is on, every still-outstanding trainer
-(`set(self._sim_inflight_expected)` — the dispatched-but-not-committed set, popped only
-on commit) is added to `curr_unavail_trainer_list` (the **unavailable** path, NOT
-`selected_ends` — which would re-dispatch and reset the `sct`) before
-`set_curr_unavailable_trainers`. The `AsyncOortSelector` already honors
-`trainer_unavail_list`. This holds an outstanding trainer out of selection until its
-update is committed+processed, enforcing one-in-flight-per-trainer. With it, the per-end
-`_sim_inflight_expected` entry is never overwritten, the gate sees every outstanding
-`sct` and holds correctly, and the past-dated tail closes. Flag wired ON in the felix
-sim parity yaml. Guards: `tests/mode/test_async_inflight_residence.py` (outstanding
-held out, flag-off/real/empty no-op, excluded trainer keeps its in-flight entry).
-Readiness suite **157 pass / 7 skip**; async stack 26 pass; parity subsuite 30 pass.
+### Fix — one-in-flight via slot-holding (`_sim_hold_busy_slots`); see §3.resid
+The felix analog of §4.5, done as a held **slot** (not the unavail list — that was the
+reverted v1 bug, busy ≠ UN_AVL; see §3.resid + dead-ends). Holds the
+dispatched-but-not-committed set in `selected_ends` until commit, which bounds
+concurrency (`extra = c − len(selected_ends)`) and excludes the trainer from the pool
+(`all_selected`). Flag wired ON in the felix sim parity yaml. Guard:
+`tests/mode/test_async_inflight_residence.py`.
 
-**Expected after the run:** overlap 13.9%→~0; `dup_buffer_adds`→~0; the past-dated
-tail (decile-9 8.2s) → ~0; staleness 5.1→~2.8; advance 3.04→~3.85; rounds 1664→~1320;
-K3b/K2/U3/U6/K8/U2 follow.
-**Pending:** smoke (5–10 min: overlap→0, `gate_holds`>0 / dup_adds→0, flag wiring) →
-90-min validation (the K3b/K2/U3/U6 compounding band; not convergence), sim-only vs
-stored real.
+**Expected after the run:** in-flight bounded ~c≈30 (not N≈300); advance back to ~3 s/rd
+then →~3.85; overlap 13.9%→~0; `dup_buffer_adds`→~0; the past-dated tail (decile-9 8.2s)
+→ ~0; staleness 5.1→~2.8; rounds →~1320; K3b/K2/U3/U6/K8/U2 follow.
+**Pending:** smoke (5–10 min) → 90-min validation (K3b/K2/U3/U6 compounding band; not
+convergence), sim-only vs stored real.
 
 | baseline | run dirs | genuine residual |
 |---|---|---|
@@ -312,6 +313,15 @@ stored real.
   **overwrite** under overlapping re-dispatch (an untracked second update), not a loose
   predictor. Don't widen/narrow the budget, the slack, or `pending_after`; enforce
   one-in-flight (`simInflightResidence`, §3.resid) so the dict stays single-valued.
+- **Expressing felix "busy" (compute task outstanding) via the UN_AVL unavailable
+  list (Jun 21 — `simInflightResidence` v1, reverted).** UN_AVL = a trainer that
+  cannot participate in FL at all; a busy trainer is AVL_TRAIN/AVL_EVAL, just
+  temporarily occupied. Routing busy trainers through `curr_unavail_trainer_list`
+  filters them from `eligible_ends`, which makes `_handle_send_state` evict them from
+  `selected_ends` and free their concurrency slot → the selector refills `c` with NEW
+  trainers every round → in-flight → N≈300, vclock crawl (0.27 s/rd, slower than wall).
+  Hold a busy trainer in `selected_ends` (a SLOT) until commit instead (`_sim_hold_busy_slots`,
+  §3.resid). Sync oort's §4.5 unavail-list use is unaffected (barrier re-selects the cohort).
 - `version_at(sct)` staleness relabel (fedbuff consumes the *real* number; inert).
 - Adding `mqtt_fetch` (~57 s) to `sct` (not version-relevant; inflates staleness ~6×).
 - `simRedispatchGapSeconds=0` for felix (sim over-overlaps; the gap is a real mechanism).
@@ -628,20 +638,39 @@ trainer is freed instantly in sim (no train sleep), violated it: a fast trainer 
 re-selected while its prior update was still in flight (**sim 13.9%**), overwriting
 its per-end `_sim_inflight_expected` entry so the earlier update became untracked,
 invisible to the `sct` gate (`gate_holds=0`) → lapped → past-dated (14% tail, up to
-119s, staleness 34). The felix analog of §4.5: config-gated `simInflightResidence`
-(`config.py`; default off ⇒ unchanged selection). In
-[`_distribute_weights`](../../flame/mode/horizontal/asyncfl/top_aggregator.py) the
-outstanding set `set(self._sim_inflight_expected)` is added to
-`curr_unavail_trainer_list` (the **unavailable** path, NOT `selected_ends`) before
-`set_curr_unavailable_trainers`; `AsyncOortSelector` already filters
-`trainer_unavail_list`. Released the moment the update commits (the key is popped),
-so the trainer is re-selectable next round. SIM only; sync untouched (the barrier is
-a synchronized cohort). Complements §3.drain: the drain made the reorder buffer
-complete; residence keeps the per-trainer in-flight accounting single-valued so the
-gate the drain feeds is never blinded by an overwrite. Guard:
-`tests/mode/test_async_inflight_residence.py`. **Next: smoke (5–10 min: overlap→0,
-`gate_holds`>0 / `dup_buffer_adds`→0, flag wiring) → 90-min validation
-(K3b/K2/U3/U6/K8/U2), sim-only vs stored real.**
+119s, staleness 34).
+
+**First attempt (Jun 21) was WRONG and reverted — busy ≠ UN_AVL.** It added the
+outstanding set to `curr_unavail_trainer_list` (the **unavailable** path). But UN_AVL
+means a trainer cannot participate in FL at all; a BUSY trainer (compute task
+outstanding) is AVL_TRAIN/AVL_EVAL, just temporarily occupied. Marking busy trainers
+unavailable filters them out of `eligible_ends`, so `_handle_send_state` sees them as
+gone-from-channel and **evicts them from `selected_ends`** — freeing their concurrency
+slot. The selector budgets `extra = c − len(selected_ends)`, so each round it refilled
+`c` slots with NEW trainers while residence blocked the old ones → in-flight ramped to
+N≈300 in ~10 rounds, the reorder buffer became a 300-deep dense `sct` cluster, and the
+vclock crawled at ~0.27 s/rd (slower than wall). The run (`run_20260621_011547…sim`)
+was stopped early. **Dead end: never express "busy" via the unavailable list.**
+
+**Correct fix (LANDED):** a busy trainer must HOLD its concurrency slot in
+`selected_ends`, exactly like real (the channel keeps it out of `VAL_CH_STATE_SEND`
+until its update is aggregated). The codebase already did this for the buffer-arrived
+subset via `_sim_pending_commit`; the fix widens it. `_sim_hold_busy_slots`
+([asyncfl/top_aggregator.py](../../flame/mode/horizontal/asyncfl/top_aggregator.py),
+called from `_aggregate_weights` at agg-goal) holds the busy set in
+`selected_ends`/`all_selected`/`_sim_pending_commit` (a SLOT — not the unavail list);
+flag-off holds only `pending_ends()` (already-buffered), flag-on widens to the full
+`pending_ends() ∪ set(_sim_inflight_expected)` (all dispatched-but-not-committed,
+train+eval) so the not-yet-buffered overlap tail is covered too. Released on commit
+in `_sim_recv_min` (the `_sim_inflight_expected` key is popped → slot freed). Holding
+in `selected_ends` both bounds concurrency (`extra = c − len(selected_ends)`) AND
+excludes the trainer from the candidate pool (`all_selected`) — no over-selection, no
+overlap. SIM only; sync (oort §4.5) still uses the unavail-list path (correct there —
+the barrier re-selects the whole cohort). Guard:
+`tests/mode/test_async_inflight_residence.py` (slot-held not unavail-marked; flag-off
+holds only buffered; eval held; committed releases its slot). **Next: smoke (5–10 min:
+in-flight bounded ~c≈30 not N, advance back to ~3 s/rd, overlap→0, flag wiring) →
+90-min validation (K3b/K2/U3/U6/K8/U2), sim-only vs stored real.**
 
 ### §3.evt  Event-driven re-dispatch (felix async; **SUPERSEDED & FALSIFIED Jun 20** — see §3.drain)
 > **SUPERSEDED.** The run with this ON made per-round advance *worse* (1.93→1.38):

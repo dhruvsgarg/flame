@@ -1244,39 +1244,7 @@ class TopAggregator(SyncTopAgg):
         channel.cleanup_recvd_ends()
 
         if self.simulated:
-            sel = channel._selector
-            requester = sel.requester
-            pending_in_buffer = set(self._sim_buffer.pending_ends())
-
-            # Release all_selected trainers with no buffer entry yet (GPU still
-            # running — rare). They'll be probed next round's fill pass.
-            for end_id in [e for e in list(sel.all_selected.keys()) if e not in pending_in_buffer]:
-                del sel.all_selected[end_id]
-                if channel.has(end_id):
-                    channel._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
-                    sel.selected_ends[requester].discard(end_id)
-
-            # Block every trainer with a pending buffer entry from re-selection.
-            # cleanup_recvd_ends may have freed them early; re-block here so the
-            # real-mode invariant holds: one in-flight update per trainer at a time.
-            # Crucially, KEEP them in selected_ends: concurrency is budgeted as
-            # extra = c - len(selected_ends), so a buffered-but-uncommitted update
-            # must hold its slot until it actually commits — exactly like real
-            # mode. Dropping it here frees a phantom slot the selector refills
-            # with a NEW trainer, so in-flight grows toward N each round (the
-            # over-selection bug). The slot is released on commit in _sim_recv_min.
-            for end_id in pending_in_buffer:
-                self._sim_pending_commit.add(end_id)
-                if end_id not in sel.all_selected:
-                    sel.all_selected[end_id] = time.time()
-                if requester in sel.selected_ends:
-                    sel.selected_ends[requester].add(end_id)
-            if pending_in_buffer:
-                logger.debug(
-                    f"[SIM_PENDING] round={self._round} blocked {len(pending_in_buffer)} "
-                    f"trainer(s) pending buffer commit: {[e[-4:] for e in pending_in_buffer]}"
-                )
+            self._sim_hold_busy_slots(channel)
 
     def oracular_trainer_avail_check(self, end: str) -> bool:
         logger.debug("In oracular_trainer_avail_check")
@@ -1410,6 +1378,55 @@ class TopAggregator(SyncTopAgg):
         ts = float(q.popleft())
         return min(ts, float(round_now)) if round_now is not None else ts
 
+    def _sim_hold_busy_slots(self, channel) -> None:
+        """Hold BUSY trainers (a compute task still outstanding) in their
+        concurrency slot until their update commits.
+
+        Sim analog of real, where the channel keeps a dispatched trainer out of
+        VAL_CH_STATE_SEND until its update returns AND is aggregated (one in-flight
+        update per trainer). Busy != UN_AVL: a busy trainer is AVL_TRAIN/AVL_EVAL but
+        temporarily occupied, so it holds a slot in the selector's selected_ends
+        (concurrency is budgeted as extra = c - len(selected_ends)) — it does NOT go
+        on the unavailable list, which is for trainers that cannot participate at all.
+        cleanup_recvd_ends frees a trainer the instant its message arrives (instant in
+        sim); this re-blocks it so the slot is released only on commit (_sim_recv_min).
+        Dropping a busy slot frees a phantom the selector refills with a NEW trainer,
+        so in-flight grows toward N each round (the over-selection bug).
+
+        Default holds the already-buffered set; with sim_inflight_residence on it holds
+        the FULL dispatched-but-not-committed set (_sim_inflight_expected, train+eval),
+        so a trainer whose update has not yet drained into the buffer also can't be
+        re-selected mid-flight — closing the overlap tail."""
+        sel = channel._selector
+        requester = sel.requester
+        pending_in_buffer = set(self._sim_buffer.pending_ends())
+        held = pending_in_buffer
+        if self._sim_inflight_residence:
+            held = pending_in_buffer | set(self._sim_inflight_expected)
+
+        # Release trainers no longer busy (committed, or — residence off — dispatched
+        # with no buffer entry yet); they refill next round's fill pass.
+        for end_id in [e for e in list(sel.all_selected.keys()) if e not in held]:
+            del sel.all_selected[end_id]
+            if channel.has(end_id):
+                channel._ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            if requester in sel.selected_ends and end_id in sel.selected_ends[requester]:
+                sel.selected_ends[requester].discard(end_id)
+
+        # Block every busy trainer from re-selection, KEEPING its slot.
+        for end_id in held:
+            self._sim_pending_commit.add(end_id)
+            if end_id not in sel.all_selected:
+                sel.all_selected[end_id] = time.time()
+            if requester in sel.selected_ends:
+                sel.selected_ends[requester].add(end_id)
+        if held:
+            logger.debug(
+                f"[SIM_PENDING] round={self._round} held {len(held)} busy "
+                f"trainer(s) (buffered={len(pending_in_buffer)}): "
+                f"{[e[-4:] for e in held]}"
+            )
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """Distribute a global model in asynchronous FL fashion."""
         channel = self.cm.get_by_tag(tag)
@@ -1454,27 +1471,11 @@ class TopAggregator(SyncTopAgg):
             # expose cooling count so the selector holds those slots (no refill).
             channel.properties["sim_cooling_count"] = len(_cooling)
 
-        # One-in-flight-per-trainer invariant (§4.5, felix async). _sim_inflight_expected
-        # keys are exactly the dispatched-but-not-yet-committed set (added at dispatch,
-        # popped on commit), so excluding them via the unavailable list — NOT
-        # selected_ends, which would re-dispatch and reset the sct — holds an
-        # outstanding trainer out of selection until its update is committed+processed,
-        # matching real (real: 0% overlapping in-flight; sim without this: 13.9%).
-        # Without it a fast trainer, freed instantly in sim (no train sleep), is
-        # re-selected while a prior update is mid-delivery; the per-end
-        # _sim_inflight_expected entry is overwritten and the earlier update is lost to
-        # the sct gate → committed past-dated (the K3b/U3/U6 residual tail).
-        if self.simulated and self._sim_inflight_residence:
-            _outstanding = set(getattr(self, "_sim_inflight_expected", {}))
-            if _outstanding:
-                curr_unavail_trainer_list = list(
-                    set(curr_unavail_trainer_list) | _outstanding
-                )
-                logger.debug(
-                    f"[SIM_RESIDENCE] round={self._round} held {len(_outstanding)} "
-                    f"in-flight trainers out of selection (vclock={self._vclock.now:.1f})"
-                )
-
+        # One-in-flight-per-trainer is enforced by _sim_hold_busy_slots (commit-side):
+        # a busy trainer holds its concurrency slot in selected_ends until its update
+        # commits, NOT the unavailable list (which is for UN_AVL trainers that can't
+        # participate at all). Marking busy trainers unavailable here frees their slot
+        # and over-selects toward N — see _sim_hold_busy_slots.
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
