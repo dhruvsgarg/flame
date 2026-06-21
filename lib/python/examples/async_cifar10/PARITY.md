@@ -97,25 +97,79 @@ mechanism per run round** when a fix could perturb another baseline (serialize);
 This doc keeps exactly ONE `## Status` section, updated in place — not one per
 run. The current read is below.
 
-## Status (Jun 21 — felix one-in-flight: `simInflightResidence` v1 over-selected to N (busy-via-UN_AVL bug); re-landed as `_sim_hold_busy_slots` (slot-held))
+## Status (Jun 21 — felix one-in-flight `_sim_hold_busy_slots` VALIDATED: full mechanism parity, 46/46 enforced pass)
 
-**Latest:** the first `simInflightResidence` (unavail-list) regressed the sim — it
-freed busy trainers' `selected_ends` slots, the selector over-selected to N≈300, and
-the vclock crawled at 0.27 s/rd (`run_20260621_011547…sim`, stopped early). Root: busy
-≠ UN_AVL (see §3.resid + dead-ends). Re-landed correctly as `_sim_hold_busy_slots`
-(hold the busy set in `selected_ends`, not the unavailable list); tests green
-(readiness mode/selector/sim/parity subset **190 pass / 7 skip**). **Pending the smoke
-+ 90-min validation re-run.** The pre-regression read below still stands.
+**Latest (VALIDATION RUN):** felix sim `run_20260621_154600…sim` (90 min / 5400s,
+`simSctOrderedDrain` + `simInflightResidence`/`_sim_hold_busy_slots` ON) vs stored real
+`run_20260620_002022…real`. **Score 46/46 enforced pass** (1 warn `U5`, 2 skip). The
+slot-held one-in-flight fix CLOSED the overlapping-re-dispatch tail — every previously-
+failing rung is now green:
 
-### Prior read — felix K3b/U3/U6 residual root: OVERLAPPING re-dispatch; one-in-flight invariant
+| metric | pre-fix (drain only, `…233609`) | this run (`…154600`) | real |
+|---|---|---|---|
+| K3b overhead_residual | 0.82 s/rd, rel 0.212 (**ROOT FAIL**) | **−0.08 s/rd, rel 0.02 PASS** | — |
+| K3 per-round advance | 3.04 s/rd | **3.93 s/rd** | 3.85 |
+| K2 rounds/vsec | FAIL (downstream) | **PASS** | — |
+| U3 staleness mean | 5.11 | **2.829** | 2.787 |
+| U6 commit_visibility mean_diff | 3.91s | **0.016s** | (0.017) |
+| K8 rounds @ V=5102.5s | downstream | **1300** (rel 0.017) | 1323 |
+| U2 commits @ V | downstream | **13001** (rel 0.017) | 13230 |
+
+The 6 downstream fails (advance/K2/U6/U3/K8/U2) all cleared once K3b cleared — confirming
+they were a single root (overlapping re-dispatch), not independent breaks. K3a advance
+3.93 vs 3.85 with `max_speed` 25.96≈25.98 (speed model exonerated; `implied_overhead`
+−0.008 s/commit). No enforced FAIL remains — **felix is at full mechanism parity.**
+
+**Only non-pass:** `U5` inter-arrival Spearman (−0.425) — gated WARN, expected for a
+stochastic streaming selector (per-round arrival rank is path-dependent). C1/C2 are
+**LOWC** (budget 5400s < 7200s convergence bar) but already read clean: avg_acc_diff
+**0.027**, avg_loss_diff **0.026**. Tests green (readiness mode/selector/sim/parity
+subset **190 pass / 7 skip**). Report JSON: `experiments/parity_felix_20260621_resid.json`.
+
+### Next steps (felix)
+1. **Convergence sign-off only** — the sole remaining felix gap is C1/C2 LOWC (budget
+   < 7200s). One **full-budget (≥7200s / 2h)** sim-only run vs stored real to promote
+   C1/C2 from LOWC→enforced PASS. Nothing else needs the long run (all mechanism rungs
+   are stable by 90 min). After that, felix is fully closed.
+2. Then pivot to the **A2c speed-model family** (oort Sd-mix / refl + feddance
+   speed-tail) — the one shared root left across the other three baselines.
+
+### Roadmap: lock mechanism parity across ALL baselines BEFORE the perf pass
+**Sequencing decision (Jun 21):** get **46/46 on oort + refl + feddance first**, then do
+the sim perf pass — do *not* interleave them. Rationale:
+- The parity checker reads the over-instrumented per-commit telemetry
+  (`inflight_residence`, `SIM_CLOCK_DIAG`, per-phase `commit_gap`). Stripping/gating that
+  logging *before* the A2c roots are closed removes the very instrumentation needed to
+  root-cause them — and risks silently regressing a checker field.
+- A perf change (reduced logging/overhead) can perturb **all four** baselines at once, so
+  by the workflow policy (§ "Root-cause per baseline … serialize") it must land on a
+  *clean, fully-parity* base where any regression is attributable. Felix being 46/46 isn't
+  enough; oort/refl/feddance must be green too or a perf regression hides in their noise.
+- The three remaining gaps share **one A2c speed-model root** — the cheaper path is to
+  close that one family, not to defer it under perf work.
+
+### Then: perf pass — max speedup at the SAME parity fidelity (deferred until all 46/46)
+Goal: keep every enforced check green while maximizing sim wall-clock speedup. Levers,
+once parity is locked:
+- **Flag-gate the diagnostic logging** (`SIM_CLOCK_DIAG`, `inflight_residence`,
+  per-commit `commit_gap` deciles, dup/gate counters) behind a `simDiag` switch — default
+  OFF for throughput, ON for root-causing. Keep only the fields the *checker* consumes.
+- Trim per-commit/per-round JSONL volume and any redundant serialization on the hot path
+  (the in-mem cache + serialize-once work already cut most of this).
+- **Guard rail:** every perf commit re-runs the 90-min parity (all baselines) and must
+  hold 46/46 — speedup is only valid if fidelity is unchanged. Measure speedup as
+  sim wall / real wall at equal virtual budget.
+
+### Prior read — felix K3b/U3/U6 residual root: OVERLAPPING re-dispatch; one-in-flight invariant (NOW FIXED)
 
 **Run read:** felix sim `run_20260620_233609…sim` (90 min / 5400s, `simSctOrderedDrain`
 ON) vs stored real `run_20260620_002022…real`. **Score 36/43 enforced pass**
 (4 warn, 2 skip). The drain fix worked — it killed the bulk past-dating
 (`commit_gap` median **0.0s**, was 26s mean; staleness 15.2→**5.11**; advance
-1.4→**3.04 s/rd**; U6 mean_diff 14.8→**3.91s**). One ROOT-CAUSE remains, **K3b
+1.4→**3.04 s/rd**; U6 mean_diff 14.8→**3.91s**). One ROOT-CAUSE remained, **K3b
 overhead_residual** (0.82 s/rd, rel 0.212), with 6 downstream fails
-(per_round_advance/K2 throughput/U6/U3/K8/U2) all tracing to it. No independent break.
+(per_round_advance/K2 throughput/U6/U3/K8/U2) all tracing to it — all CLOSED by the
+`_sim_hold_busy_slots` validation run above.
 
 ### The drain residual is OVERLAPPING re-dispatch — a violated one-in-flight invariant
 Post-drain, `commit_gap` median is 0 but a **~14% tail** still past-dates (decile-0
@@ -167,7 +221,7 @@ convergence), sim-only vs stored real.
 
 | baseline | run dirs | genuine residual |
 |---|---|---|
-| **felix** | `run_20260620_002022…real` / `run_20260620_233609…sim` (drain) | **overlapping re-dispatch (FIXED, run pending)** — fast trainers re-selected while in flight → untracked updates → past-dated tail; `simInflightResidence` enforces one-in-flight. Drain (`simSctOrderedDrain`) already closed the bulk past-dating. |
+| **felix** | `run_20260620_002022…real` / `run_20260621_154600…sim` (drain+resid) | **CLOSED at mechanism level (46/46, Jun 21).** Overlapping re-dispatch fixed by `_sim_hold_busy_slots` (slot-held one-in-flight); K3b −0.08/0.02, staleness 2.83 vs 2.79, advance 3.93 vs 3.85. Only C1/C2 convergence sign-off (≥7200s run) outstanding. |
 | **oort**  | `run_20260619_124438…real` / `run_20260619_122953…sim` | A2c selection-mix (Sd 0.822/0.495); no past-dating, 0 eval |
 | **refl** | Jun 18 dirs | A2c speed-tail |
 | **feddance** | Jun 18 dirs | A2c `feddance_U` |
@@ -175,7 +229,7 @@ convergence), sim-only vs stored real.
 ### Settled roots
 | baseline | root |
 |---|---|
-| **felix** | Eval-stale-`sct` ✅ CLOSED. Commit-side ingestion (`recv_fifo` stranding) ✅ CLOSED by `simSctOrderedDrain` (Jun 20): bulk past-dating gone, `commit_gap` median 0, staleness 15→5.1, advance 1.4→3.04. Remaining residual = **overlapping re-dispatch**: felix re-selected a fast trainer (freed instantly in sim) while its prior update was in flight (real 0% vs sim 13.9% overlap), overwriting the per-end `_sim_inflight_expected` entry → untracked update → past-dated tail (`gate_holds=0`, 14% of commits, up to 119s). FIXED by `simInflightResidence` (one-in-flight invariant). Speed model exonerated (K3a/T2/selection_bias PASS). |
+| **felix** | **ALL MECHANISM ROOTS CLOSED (Jun 21, 46/46 enforced pass).** Eval-stale-`sct` ✅. Commit-side ingestion (`recv_fifo` stranding) ✅ by `simSctOrderedDrain` (Jun 20). Overlapping re-dispatch ✅ by `_sim_hold_busy_slots`/`simInflightResidence` (Jun 21): re-selected a fast trainer while its prior update was in flight (real 0% vs sim 13.9% overlap) → untracked update → past-dated tail; slot-holding the busy set in `selected_ends` enforces one-in-flight (K3b 0.82→−0.08, staleness 5.1→2.83, advance 3.04→3.93). Speed model exonerated (K3a/T2/selection_bias PASS). **Only open item: C1/C2 convergence sign-off via a ≥7200s run.** |
 | **oort** | **A2c selection-mix, verification complete.** U6 point-mass (sim 0.001s ≤ real 0.004s); carry-over decay is the mix tightening (Sd binds real 0.822 vs sim 0.495), not a timing gap; sync oort dispatches 0 eval. Closed only by the speed-model work. |
 | **refl / feddance** | A2c stochastic speed-tail. One speed-model fix may close refl + feddance + oort's Sd mix (one A2c family). |
 
@@ -668,9 +722,12 @@ excludes the trainer from the candidate pool (`all_selected`) — no over-select
 overlap. SIM only; sync (oort §4.5) still uses the unavail-list path (correct there —
 the barrier re-selects the whole cohort). Guard:
 `tests/mode/test_async_inflight_residence.py` (slot-held not unavail-marked; flag-off
-holds only buffered; eval held; committed releases its slot). **Next: smoke (5–10 min:
-in-flight bounded ~c≈30 not N, advance back to ~3 s/rd, overlap→0, flag wiring) →
-90-min validation (K3b/K2/U3/U6/K8/U2), sim-only vs stored real.**
+holds only buffered; eval held; committed releases its slot). **VALIDATED Jun 21** by
+`run_20260621_154600…sim` (90 min / 5400s) vs stored real `…002022…real`: **46/46
+enforced pass**, K3b residual 0.82→**−0.08** (rel 0.02), advance 3.04→**3.93** (real
+3.85), staleness 5.11→**2.829** (real 2.787), U6 mean_diff 3.91→**0.016s**, rounds 1300
+vs 1323. The whole K3b→{K2,U3,U6,K8,U2} downstream cluster cleared together — one root.
+Only `U5` warns (stochastic, expected); C1/C2 LOWC pending a ≥7200s convergence run.
 
 ### §3.evt  Event-driven re-dispatch (felix async; **SUPERSEDED & FALSIFIED Jun 20** — see §3.drain)
 > **SUPERSEDED.** The run with this ON made per-round advance *worse* (1.93→1.38):
