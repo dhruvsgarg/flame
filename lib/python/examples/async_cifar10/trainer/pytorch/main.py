@@ -162,7 +162,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = (
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
-        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        self.training_delay_s = float(self.config.hyperparameters.training_delay_s["mobile_device"])
         self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms)
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
         self.satellite_latencies = np.load(
