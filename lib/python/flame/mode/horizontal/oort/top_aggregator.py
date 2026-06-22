@@ -33,7 +33,7 @@ from flame.common.util import (
 from flame.mode.message import MessageType
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_LAST_EVAL_ROUND,
@@ -63,8 +63,8 @@ class TopAggregator(BaseTopAggregator):
 
         Probes not-yet-buffered in-flight ends into a PERSISTENT reorder buffer,
         then yields buffered updates in ascending sim_completion_ts (advancing the
-        virtual clock and stamping each end's PROP_ROUND_DURATION from
-        SIM_ROUND_DURATION). It is a GENERATOR so the caller's existing
+        virtual clock and stamping each end's PROP_CLIENT_TASK_TRAIN_DURATION from
+        SIM_CLIENT_TASK_TRAIN_DURATION_S). It is a GENERATOR so the caller's existing
         "stop once aggr_num *accepted*" loop drives consumption — exactly mirroring
         real mode, where recv_fifo keeps delivering (and the loop cleans stale
         stragglers along the way) until aggr_num fresh updates land.
@@ -139,15 +139,15 @@ class TopAggregator(BaseTopAggregator):
                         held_over.append((end, sct, (msg, md)))
                         continue
                 self._advance_sim_clock(sct)
-                _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+                _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
                 _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
                 if _srd is not None:
                     channel.set_end_property(
-                        end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
+                        end, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd))
                     )
                 elif _sst is not None:
                     channel.set_end_property(
-                        end, PROP_ROUND_DURATION,
+                        end, PROP_CLIENT_TASK_TRAIN_DURATION,
                         timedelta(seconds=max(0.0, sct - float(_sst))),
                     )
                 yield msg, md
@@ -780,10 +780,42 @@ class TopAggregator(BaseTopAggregator):
                 f"send_wall_s={time.time() - _send_t0:.3f}"
             )
 
+    @staticmethod
+    def _real_client_task_train_duration(msg, dispatch_ts, recv_ts):
+        """Real-mode client task-train duration = trainer finish (WALL_SEND_TS,
+        stamped right after compute) minus dispatch. This is the client's intrinsic
+        speed (~= compute + network) — the value reference-Oort scores on, and the
+        real counterpart of sim's SIM_CLIENT_TASK_TRAIN_DURATION_S. Returns a
+        timedelta, or None when it cannot be measured.
+
+        It deliberately EXCLUDES the aggregator read-wait that ``recv_ts`` carries:
+        a stale straggler's finished update sits unread until a later round drains
+        the reorder buffer, so ``recv_ts - dispatch = compute + (rounds unread)``.
+        That read-wait is a server-side artifact, not client speed; folding it in
+        inflated slow trainers up to ~1.65x their compute (real median 39.9s for a
+        D=24s client) and made real over-avoid them vs sim — the H2 selector
+        divergence. Trainer telemetry confirms ``wall_send - wall_recv == compute``
+        to +0.01s (no client post-wait), so ``WALL_SEND_TS - dispatch`` recovers the
+        true client duration. Falls back to ``recv_ts - dispatch`` only when
+        WALL_SEND_TS is absent. Refines the 78252bf6 stale-record fix (which began
+        recording stale durations but used recv_ts). See PARITY.md oort /
+        project_oort_a2c_root.
+        """
+        if dispatch_ts is None:
+            return None
+        wst = msg.get(MessageType.WALL_SEND_TS)
+        if wst is not None and hasattr(dispatch_ts, "timestamp"):
+            dur = float(wst) - dispatch_ts.timestamp()
+            if dur > 0:
+                return timedelta(seconds=dur)
+        if isinstance(recv_ts, datetime):
+            return recv_ts - dispatch_ts
+        return None
+
     def _record_returned_trainer_props(self, channel, end, msg, recv_ts) -> None:
         """Record a returned trainer's observed properties (statistical utility +
-        round duration/speed) into the selector's memory, even when the update is
-        STALE and dropped from aggregation.
+        client task-train duration/speed) into the selector's memory, even when the
+        update is STALE and dropped from aggregation.
 
         Correctness fix (oort + refl share this stack): Oort must learn the
         properties of any trainer it selected and that actually computed. A stale
@@ -803,22 +835,24 @@ class TopAggregator(BaseTopAggregator):
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
-        # Observed round duration (speed) feeds the system_util speed penalty. In
-        # sim the recv generator already stamped it from SIM_ROUND_DURATION (this
-        # re-stamps the same value, idempotent); in real, measure recv minus the
-        # per-version send so a stale version's duration isn't read off a later
-        # re-selection's round-start.
+        # PROP_CLIENT_TASK_TRAIN_DURATION feeds the system_util speed penalty. It is
+        # the CLIENT's task-train duration (dispatch -> trainer finish) — the same
+        # quantity in both modes:
+        #   sim:  SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, D)), already stamped by
+        #         the recv generator (this re-stamp is idempotent).
+        #   real: WALL_SEND_TS - dispatch (see _real_client_task_train_duration).
         _ver = msg.get(MessageType.MODEL_VERSION, self._round)
         if self.simulated:
-            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+            _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
             if _srd is not None:
                 channel.set_end_property(
-                    end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
+                    end, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd))
                 )
         else:
             _sent = getattr(self, "_oort_sent_version_ts", {}).get(end, {}).get(_ver)
-            if _sent is not None and isinstance(recv_ts, datetime):
-                channel.set_end_property(end, PROP_ROUND_DURATION, recv_ts - _sent)
+            _dur = self._real_client_task_train_duration(msg, _sent, recv_ts)
+            if _dur is not None:
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, _dur)
 
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
@@ -830,15 +864,17 @@ class TopAggregator(BaseTopAggregator):
         logger.info(f"[MSG_PROCESSING] Processing message from end ...{end[-8:]}, round={self._round}, msg_version={msg.get(MessageType.MODEL_VERSION, 'N/A')}")
         logger.debug(f"received data from {end}")
 
-        # calculate round duration for this end, if the round number
-        # information is identical with round_start_time. In simulated mode the
-        # sim recv path already set PROP_ROUND_DURATION from SIM_ROUND_DURATION;
-        # the physical wall-clock delta here is ~0 (no sleeps), so don't clobber.
+        # Real client task-train duration (sim already stamped it in the recv path).
+        # Same WALL_SEND_TS-based measure as the stale path (single-sourced in
+        # _real_client_task_train_duration) so fresh and stale share one definition;
+        # for a freshly-read update this ~= recv - dispatch anyway.
         round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
         if not self.simulated and round_start_time_tup[0] == msg[MessageType.MODEL_VERSION]:
-            channel.set_end_property(
-                end, PROP_ROUND_DURATION, timestamp - round_start_time_tup[1]
+            _dur = self._real_client_task_train_duration(
+                msg, round_start_time_tup[1], timestamp
             )
+            if _dur is not None:
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, _dur)
 
         # Per-version send-time lookup so stale updates (version N arriving in
         # round M > N) use the correct send timestamp for version N, not the
@@ -862,7 +898,7 @@ class TopAggregator(BaseTopAggregator):
             # Full per-message lag decomposition into 6 components.
             _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
             _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
-            _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+            _rcs = msg.get(MessageType.CLIENT_TASK_TRAIN_COMPUTE_S) # modeled compute duration (float s)
             _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
             _agg_recv_unix = _recv_ts.timestamp() if hasattr(_recv_ts, "timestamp") else None
             _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
@@ -885,7 +921,7 @@ class TopAggregator(BaseTopAggregator):
             if _budget_s > 0:
                 if self.simulated:
                     # sim overrun: virtual round duration > budget.
-                    # ROUND_COMPUTE_S = max(gpu, D) = SIM_ROUND_DURATION.
+                    # CLIENT_TASK_TRAIN_COMPUTE_S = max(gpu, D) = SIM_CLIENT_TASK_TRAIN_DURATION_S.
                     if _rcs is not None and float(_rcs) > _budget_s:
                         logger.warning(
                             f"[TIMING_OVERRUN_AGG] {end[-4:]} ver={_msg_version} "
@@ -968,7 +1004,7 @@ class TopAggregator(BaseTopAggregator):
             update_staleness_val = self._round - trainer_model_version
             
             # Get round duration if available
-            round_duration_obj = channel.get_end_property(end, PROP_ROUND_DURATION)
+            round_duration_obj = channel.get_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION)
             round_duration_seconds = None
             if round_duration_obj:
                 round_duration_seconds = round_duration_obj.total_seconds()

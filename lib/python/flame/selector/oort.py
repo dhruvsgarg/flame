@@ -32,7 +32,7 @@ from flame.selector.properties import (
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
     PROP_LAST_SELECTED_ROUND,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_SELECTED_COUNT,
     PROP_STAT_UTILITY,
@@ -287,7 +287,7 @@ class OortSelector(AbstractSelector):
             if selected_end_id not in ends:
                 continue
             end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
-            end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
+            end_speed = ends[selected_end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
             end_last_eval_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
             for window in [50, 100, 200]:
                 if end_stat_util is not None:
@@ -484,7 +484,7 @@ class OortSelector(AbstractSelector):
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
-                end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+                end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
                 else:
@@ -545,7 +545,7 @@ class OortSelector(AbstractSelector):
         duration.
         """
 
-        end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+        end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
 
         if end_round_duration is None:
             return 1

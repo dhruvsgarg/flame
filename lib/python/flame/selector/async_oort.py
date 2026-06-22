@@ -42,7 +42,7 @@ from flame.selector.properties import (
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
     PROP_LAST_SELECTED_ROUND,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_SELECTED_COUNT,
     PROP_STAT_UTILITY,
@@ -368,7 +368,7 @@ class AsyncOortSelector(AbstractSelector):
 
             for selected_end_id in results.keys():
                 end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
-                end_speed = ends[selected_end_id].get_property(PROP_ROUND_DURATION)
+                end_speed = ends[selected_end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
                 end_last_round = ends[selected_end_id].get_property(
                     PROP_LAST_EVAL_ROUND
                 )
@@ -618,7 +618,7 @@ class AsyncOortSelector(AbstractSelector):
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
-                end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+                end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
                 logger.debug(
                     f"end_id: {end_id}, end_round_duration: {end_round_duration}"
                 )
@@ -710,7 +710,7 @@ class AsyncOortSelector(AbstractSelector):
         duration.
         """
 
-        end_round_duration = ends[end_id].get_property(PROP_ROUND_DURATION)
+        end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
 
         # In normal training, the util of trainer is 1 if it is faster
         # than preferred round duration. This is a multiplier to the
@@ -1234,11 +1234,11 @@ class AsyncOortSelector(AbstractSelector):
         # get the end properties
         end_id_to_round_durations = {}
         for key, val in ends.items():
-            # if the PROP_ROUND_DURATION is None, it means the trainer
+            # if the PROP_CLIENT_TASK_TRAIN_DURATION is None, it means the trainer
             # hasnt trained even once till now. So we set it to
             # 00:00:00.000000 (upto microseconds) to prioritize it to
             # get picked up atleast once.
-            round_duration = val.get_property(PROP_ROUND_DURATION)
+            round_duration = val.get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
             if round_duration is None:
                 round_duration = timedelta(
                     hours=0, minutes=0, seconds=0, microseconds=0

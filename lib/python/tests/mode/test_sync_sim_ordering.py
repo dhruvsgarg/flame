@@ -20,7 +20,7 @@ from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
 from flame.mode.message import MessageType
 from flame.selector.properties import (
     PROP_SIM_SEND_TS,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_STAT_UTILITY,
 )
 from flame.sim import VirtualClock
@@ -61,7 +61,7 @@ class FakeSyncChannel:
                 msg = {MessageType.WEIGHTS: f"w_{e}",
                        MessageType.SIM_COMPLETION_TS: self._scts[e]}
                 if e in self._rd:
-                    msg[MessageType.SIM_ROUND_DURATION] = self._rd[e]
+                    msg[MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S] = self._rd[e]
                 yield (msg, (e, None))
             else:
                 i += 1
@@ -128,9 +128,9 @@ class TestSyncSimRecvFirstK:
         rd = {"t2": 5.0, "t5": 8.0, "t1": 10.0, "t3": 25.0, "t4": 15.0}
         ch = FakeSyncChannel(SCTS, list(SCTS), round_durations=rd, sim_send_ts=0.0)
         agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
-        # committed t2,t5 get PROP_ROUND_DURATION from SIM_ROUND_DURATION
-        assert ch.get_end_property("t2", PROP_ROUND_DURATION).total_seconds() == 5.0
-        assert ch.get_end_property("t5", PROP_ROUND_DURATION).total_seconds() == 8.0
+        # committed t2,t5 get PROP_CLIENT_TASK_TRAIN_DURATION from SIM_CLIENT_TASK_TRAIN_DURATION_S
+        assert ch.get_end_property("t2", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 5.0
+        assert ch.get_end_property("t5", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 8.0
 
     def test_fewer_responders_than_k(self):
         # Only 2 of the 5 selected ever respond. Real mode's recv_fifo(first_k=3)
@@ -232,7 +232,7 @@ class TestSimInflightCarryover:
         for end, sct, mv in items:
             msg = {MessageType.WEIGHTS: f"w_{end}",
                    MessageType.SIM_COMPLETION_TS: sct,
-                   MessageType.SIM_ROUND_DURATION: sct,
+                   MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: sct,
                    MessageType.MODEL_VERSION: mv}
             agg._sim_buffer.add(end, sct, (msg, (end, None)))
 
@@ -292,7 +292,7 @@ class TestSimInflightCarryover:
 
 class TestStaleTrainerPropsRecorded:
     """Correctness fix (oort + refl): a trainer that was selected and computed must
-    have its speed (PROP_ROUND_DURATION) and statistical utility (PROP_STAT_UTILITY)
+    have its speed (PROP_CLIENT_TASK_TRAIN_DURATION) and statistical utility (PROP_STAT_UTILITY)
     recorded into the selector's memory EVEN when its update arrives stale and is
     dropped from aggregation. Otherwise the selector reads PROP_STAT_UTILITY=None as
     'unexplored' and re-selects the same slow trainers forever (kept real's mix
@@ -315,21 +315,47 @@ class TestStaleTrainerPropsRecorded:
         agg._round = 10
         return agg
 
-    def test_real_records_speed_and_utility_for_stale(self):
+    def test_real_records_client_duration_excluding_read_wait(self):
+        """Real stale duration = trainer-finish (WALL_SEND_TS) - dispatch, i.e. the
+        client's true round duration. The aggregator-side read-wait (recv_ts long
+        after the message was sent, because a stale straggler is read only when a
+        later round drains the buffer) MUST be excluded — including it inflated slow
+        trainers' observed speed and made real over-avoid them vs sim."""
         from datetime import datetime, timedelta
 
         agg = self._make_agg(simulated=False)
         ch = FakeSyncChannel({}, arrival_order=[])
         send_ts = datetime(2026, 1, 1, 0, 0, 0)
-        recv_ts = send_ts + timedelta(seconds=18.0)  # genuinely slow trainer
-        # stale update: trained on version 7, current round 10
+        # client computed for 12s then sent; aggregator did not READ it until +18s
+        # (6s of server read-wait). Duration must track the 12s, not 18s.
+        wall_send_ts = send_ts.timestamp() + 12.0
+        recv_ts = send_ts + timedelta(seconds=18.0)
+        agg._oort_sent_version_ts = {"slow": {7: send_ts}}
+        msg = {
+            MessageType.MODEL_VERSION: 7,
+            MessageType.STAT_UTILITY: 4.2,
+            MessageType.WALL_SEND_TS: wall_send_ts,
+        }
+
+        agg._record_returned_trainer_props(ch, "slow", msg, recv_ts)
+
+        assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
+        assert ch.get_end_property("slow", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 12.0
+
+    def test_real_falls_back_to_recv_minus_dispatch_without_wall_send(self):
+        from datetime import datetime, timedelta
+
+        agg = self._make_agg(simulated=False)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        send_ts = datetime(2026, 1, 1, 0, 0, 0)
+        recv_ts = send_ts + timedelta(seconds=18.0)
         agg._oort_sent_version_ts = {"slow": {7: send_ts}}
         msg = {MessageType.MODEL_VERSION: 7, MessageType.STAT_UTILITY: 4.2}
 
         agg._record_returned_trainer_props(ch, "slow", msg, recv_ts)
 
         assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
-        assert ch.get_end_property("slow", PROP_ROUND_DURATION).total_seconds() == 18.0
+        assert ch.get_end_property("slow", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 18.0
 
     def test_sim_records_utility_and_duration_for_stale(self):
         agg = self._make_agg(simulated=True)
@@ -337,23 +363,23 @@ class TestStaleTrainerPropsRecorded:
         msg = {
             MessageType.MODEL_VERSION: 7,
             MessageType.STAT_UTILITY: 4.2,
-            MessageType.SIM_ROUND_DURATION: 18.0,
+            MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: 18.0,
         }
 
         agg._record_returned_trainer_props(ch, "slow", msg, None)
 
         assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
-        assert ch.get_end_property("slow", PROP_ROUND_DURATION).total_seconds() == 18.0
+        assert ch.get_end_property("slow", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 18.0
 
     def test_no_utility_field_is_safe(self):
         agg = self._make_agg(simulated=True)
         ch = FakeSyncChannel({}, arrival_order=[])
-        msg = {MessageType.MODEL_VERSION: 7, MessageType.SIM_ROUND_DURATION: 5.0}
+        msg = {MessageType.MODEL_VERSION: 7, MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: 5.0}
 
         agg._record_returned_trainer_props(ch, "x", msg, None)
 
         assert ch.get_end_property("x", PROP_STAT_UTILITY) is None
-        assert ch.get_end_property("x", PROP_ROUND_DURATION).total_seconds() == 5.0
+        assert ch.get_end_property("x", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 5.0
 
 
 class TestStaleRejectRecordsPropsIntegration:
@@ -372,7 +398,12 @@ class TestStaleRejectRecordsPropsIntegration:
         )
 
         sent_ts = datetime(2026, 1, 1)
-        recv_ts = sent_ts + timedelta(seconds=18.0)  # genuinely slow trainer
+        # Client computed 12s then sent; the aggregator READ the stale straggler only
+        # at +18s (6s of server-side read-wait while it sat unread until this round
+        # drained the buffer). The recorded client task-train duration must be the 12s
+        # the client took, not the 18s read latency.
+        wall_send_ts = sent_ts.timestamp() + 12.0
+        recv_ts = sent_ts + timedelta(seconds=18.0)
 
         class _Selector:
             def __init__(self):
@@ -399,6 +430,7 @@ class TestStaleRejectRecordsPropsIntegration:
                         MessageType.MODEL_VERSION: 7,
                         MessageType.STAT_UTILITY: 4.2,
                         MessageType.WEIGHTS: "w",
+                        MessageType.WALL_SEND_TS: wall_send_ts,
                     }
                     yield (msg, ("slow", recv_ts))
                 yield (None, ("", None))  # nothing more ready
@@ -458,8 +490,10 @@ class TestStaleRejectRecordsPropsIntegration:
         # The fix: a stale-but-returned trainer's speed + utility are recorded into
         # the selector's memory (pre-fix: both None -> stuck "unexplored" forever).
         assert chan.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
-        rd = chan.get_end_property("slow", PROP_ROUND_DURATION)
-        assert rd is not None and rd.total_seconds() == 18.0
+        rd = chan.get_end_property("slow", PROP_CLIENT_TASK_TRAIN_DURATION)
+        # client task-train duration = WALL_SEND_TS - dispatch (12s), excluding the
+        # 6s aggregator read-wait that recv_ts would have added.
+        assert rd is not None and rd.total_seconds() == 12.0
         # ...while the stale update itself was NOT aggregated (dropped from the model)
         # and the trainer was cleaned out of the in-flight set.
         assert agg.cache == {}

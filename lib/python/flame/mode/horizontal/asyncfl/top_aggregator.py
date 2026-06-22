@@ -47,7 +47,7 @@ from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
     PROP_LAST_EVAL_ROUND,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
@@ -110,10 +110,10 @@ class TopAggregator(SyncTopAgg):
         #
         # the predictor learns each trainer's budget from the stable,
         # contention-free TRAINING_BUDGET_S (= modeled training_delay_s), NOT from
-        # SIM_ROUND_DURATION (= max(gpu, budget), inflated by GPU contention). The
+        # SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, budget), inflated by GPU contention). The
         # modeled budget is a true LOWER BOUND on the real sct (sct = send_ts +
         # max(gpu, budget) >= send_ts + budget), so clamping the clock to it can
-        # never overshoot a true completion. The old SIM_ROUND_DURATION predictor
+        # never overshoot a true completion. The old SIM_CLIENT_TASK_TRAIN_DURATION_S predictor
         # over-estimated under contention -> expected pushed into the future ->
         # gate never fired -> the clock lapped in-flight stragglers -> past-dated
         # commits inflated version-vs-clock and drifted staleness.
@@ -505,13 +505,13 @@ class TopAggregator(SyncTopAgg):
         # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
         # budget (running mean refines the default for trainers not yet observed).
         # learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
-        # SIM_ROUND_DURATION (= max(gpu, budget), contention-inflated). The modeled
+        # SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, budget), contention-inflated). The modeled
         # budget is the stable lower bound the gate needs so it fires on genuine
         # stragglers instead of being pushed into the future by a GPU spike.
         self._sim_inflight_expected.pop(_end, None)
         _budget = m.get(MessageType.TRAINING_BUDGET_S) if isinstance(m, dict) else None
         if _budget is None and isinstance(m, dict):  # fallback for older messages
-            _budget = m.get(MessageType.SIM_ROUND_DURATION)
+            _budget = m.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
         if _budget is not None:
             self._sim_trainer_budget[_end] = float(_budget)
             self._sim_budget_n += 1
@@ -837,7 +837,7 @@ class TopAggregator(SyncTopAgg):
                 # Full per-message lag decomposition into 6 components.
                 _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
                 _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
-                _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+                _rcs = msg.get(MessageType.CLIENT_TASK_TRAIN_COMPUTE_S) # modeled compute duration (float s)
                 _agg_sent_unix = sent_wts_ts.timestamp() if hasattr(sent_wts_ts, "timestamp") else None
                 _agg_recv_unix = recv_wts_ts.timestamp() if hasattr(recv_wts_ts, "timestamp") else None
                 _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
@@ -861,10 +861,10 @@ class TopAggregator(SyncTopAgg):
                 if _budget_s > 0:
                     if self.simulated:
                         # sim overrun: modeled compute exceeded budget (GPU contention).
-                        # Use SIM_ROUND_DURATION (= max(gpu, D), pure compute) — NOT
+                        # Use SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, D), pure compute) — NOT
                         # SIM_COMPLETION_TS - SIM_SEND_TS, which now also includes the
                         # post-compute completion leg and is not an overrun signal.
-                        _virt_elapsed = float(msg.get(MessageType.SIM_ROUND_DURATION, 0.0))
+                        _virt_elapsed = float(msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S, 0.0))
                         if _virt_elapsed > 0.0:
                             if _virt_elapsed > _budget_s:
                                 logger.warning(
@@ -945,7 +945,7 @@ class TopAggregator(SyncTopAgg):
                 # Both modes: round_duration = max(gpu, D); mirrors recv_ts-sent_ts for OORT utility.
                 if self.simulated:
                     round_duration_td = timedelta(
-                        seconds=float(msg.get(MessageType.SIM_ROUND_DURATION, 0.0))
+                        seconds=float(msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S, 0.0))
                     )
                 else:
                     round_duration_td = recv_wts_ts - sent_wts_ts
@@ -968,11 +968,11 @@ class TopAggregator(SyncTopAgg):
                 # be calculated based on send and recv time for that
                 # version to that trainer.
                 logger.debug(
-                    f"Setting channel property {PROP_ROUND_DURATION} for "
+                    f"Setting channel property {PROP_CLIENT_TASK_TRAIN_DURATION} for "
                     f"end {end} with duration {round_duration_td}"
                 )
                 channel.set_end_property(
-                    end, PROP_ROUND_DURATION, round_duration_td
+                    end, PROP_CLIENT_TASK_TRAIN_DURATION, round_duration_td
                 )
 
         channel._selector.ordered_updates_recv_ends.append(end)
@@ -1041,7 +1041,7 @@ class TopAggregator(SyncTopAgg):
             # Populate round statistics vars
             self._round_update_values["staleness"].append(update_staleness_val)
             self._round_update_values["stat_utility"].append(stat_utility)
-            _round_dur = channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION)
+            _round_dur = channel.get_end_property(end_id=end, key=PROP_CLIENT_TASK_TRAIN_DURATION)
             _trainer_speed_s = _round_dur.total_seconds() if _round_dur is not None else 0.0
             self._round_update_values["trainer_speed"].append(_trainer_speed_s)
 

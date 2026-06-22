@@ -49,7 +49,7 @@ from flame.registries import registry_provider
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 from flame.selector.properties import (
     PROP_LOCAL_ACCURACY,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_END_TIME,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
@@ -350,7 +350,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         sim_completion_ts (the k that would physically finish first in real),
         independent of arrival jitter, and advance the virtual clock to the
         k-th smallest. Returns an ascending-sct list of (msg, metadata); also
-        stamps each committed end's PROP_ROUND_DURATION from SIM_ROUND_DURATION
+        stamps each committed end's PROP_CLIENT_TASK_TRAIN_DURATION from SIM_CLIENT_TASK_TRAIN_DURATION_S
         so OORT/REFL see the correct simulated speed.
 
         Sync aggregation is order-independent (weighted average), so parity only
@@ -396,12 +396,12 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 )
             self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
-            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+            _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
             if _srd is not None:
-                channel.set_end_property(end, PROP_ROUND_DURATION,
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION,
                                          timedelta(seconds=float(_srd)))
             elif _sst is not None:
-                channel.set_end_property(end, PROP_ROUND_DURATION,
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION,
                                          timedelta(seconds=max(0.0, sct - float(_sst))))
             logger.info(
                 f"[SYNC_SIM_RECV] committed {end[-4:]} sct={sct:.1f} "
@@ -488,17 +488,17 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"[SEND_RECV_LAG] end={end} version={self._round} "
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
-                # Base syncfl stack (fedavg/feddance) doesn't set PROP_ROUND_DURATION
+                # Base syncfl stack (fedavg/feddance) doesn't set PROP_CLIENT_TASK_TRAIN_DURATION
                 # — only the oort overlay does. Fill it from wall_lag_s so
                 # trainer_speed_s telemetry is populated for all sync baselines.
-                if not self.simulated and channel.get_end_property(end, PROP_ROUND_DURATION) is None:
+                if not self.simulated and channel.get_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION) is None:
                     channel.set_end_property(
-                        end, PROP_ROUND_DURATION, timedelta(seconds=wall_lag_s)
+                        end, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=wall_lag_s)
                     )
                 # Full per-message lag decomposition into 6 components.
                 _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
                 _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
-                _rcs = msg.get(MessageType.ROUND_COMPUTE_S) # modeled compute duration (float s)
+                _rcs = msg.get(MessageType.CLIENT_TASK_TRAIN_COMPUTE_S) # modeled compute duration (float s)
                 _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
                 _agg_recv_unix = recv_ts.timestamp() if hasattr(recv_ts, "timestamp") else None
                 _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
@@ -616,9 +616,9 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     timestamp if isinstance(timestamp, datetime) else None,
                 )
                 self._round_update_values["update_visibility_lag_s"].append(_vis_lag)
-                # PROP_ROUND_DURATION is only populated by the Oort stack; on the
+                # PROP_CLIENT_TASK_TRAIN_DURATION is only populated by the Oort stack; on the
                 # base (fedavg / feddance) flow it's unset -> guard against None.
-                _rd = channel.get_end_property(end_id=end, key=PROP_ROUND_DURATION)
+                _rd = channel.get_end_property(end_id=end, key=PROP_CLIENT_TASK_TRAIN_DURATION)
                 self._round_update_values["trainer_speed"].append(
                     _rd.total_seconds() if _rd is not None else 0.0
                 )
@@ -628,7 +628,7 @@ class TopAggregator(Role, metaclass=ABCMeta):
         if telemetry.is_enabled():
             agg_obs = {}
             for eid in list(self.cache):
-                _rd = channel.get_end_property(end_id=eid, key=PROP_ROUND_DURATION)
+                _rd = channel.get_end_property(end_id=eid, key=PROP_CLIENT_TASK_TRAIN_DURATION)
                 if _rd is not None:
                     agg_obs[eid] = _rd.total_seconds() if hasattr(_rd, "total_seconds") else _rd
             ev, fields = build_agg_round(

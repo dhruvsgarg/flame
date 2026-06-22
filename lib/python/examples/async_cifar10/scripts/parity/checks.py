@@ -39,7 +39,7 @@ def short(end_id: str) -> str:
 
 # task_id -> training_delay_s (the per-trainer *modeled* compute, in seconds), read
 # from the static trainer registry. This is the mode-symmetric speed source for the
-# pool-composition check (A2b): real telemetry leaves PROP_ROUND_DURATION = None for
+# pool-composition check (A2b): real telemetry leaves PROP_CLIENT_TASK_TRAIN_DURATION = None for
 # any candidate that hasn't *completed* a round (slow clients, most of the pool), so
 # pooling the observed speed_s samples different subsets per mode. The registry delay
 # is present for every candidate in both modes — same number, same trainer.
@@ -456,8 +456,8 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
 
     Speed source. The pool composition is compared on each candidate's
     **static ``training_delay_s``** (the modeled compute, from the trainer registry),
-    NOT the observed ``per_trainer.speed_s`` (= PROP_ROUND_DURATION). Real telemetry
-    leaves PROP_ROUND_DURATION = None for any candidate that has not *completed* a
+    NOT the observed ``per_trainer.speed_s`` (= PROP_CLIENT_TASK_TRAIN_DURATION). Real telemetry
+    leaves PROP_CLIENT_TASK_TRAIN_DURATION = None for any candidate that has not *completed* a
     round — at steady state ~158/300 of refl's pool — so pooling observed speed
     samples only the fast completers in real while sim (modeled) fills nearly all,
     comparing different SUBSETS (the "modeled vs wall" asymmetry). The registry
@@ -688,7 +688,7 @@ def preferred_duration_parity(real: dict, sim: dict, frac_tol: float = 0.20) -> 
         return round(statistics.median(x), 2) if x else None
 
     # Observability gate (refl): the penalty is INACTIVE in real — it never binds
-    # and no `pref` is reconstructable. That is the PROP_ROUND_DURATION None-density
+    # and no `pref` is reconstructable. That is the PROP_CLIENT_TASK_TRAIN_DURATION None-density
     # asymmetry (same class A2b/A2c resolved): real's `calculate_round_preferred_
     # duration` is fed mostly None durations (non-completers → 60s default), so
     # `pref` inflates and the speed penalty never fires; sim has dense modeled
@@ -700,7 +700,7 @@ def preferred_duration_parity(real: dict, sim: dict, frac_tol: float = 0.20) -> 
         return {
             "ok": True, "tier": "DIST", "status": "WARN",
             "note": ("real penalty inactive (no binding, no reconstructable pref) — "
-                     "PROP_ROUND_DURATION None-density artifact; nothing to match"),
+                     "PROP_CLIENT_TASK_TRAIN_DURATION None-density artifact; nothing to match"),
             "real_frac_binding": round(r_frac, 3), "sim_frac_binding": round(s_frac, 3),
             "frac_diff": round(diff, 3), "frac_tol": frac_tol,
             "real_pref_median_s": _med(r_pref), "sim_pref_median_s": _med(s_pref),

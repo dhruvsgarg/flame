@@ -51,7 +51,7 @@ from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
     PROP_LAST_EVAL_ROUND,
-    PROP_ROUND_DURATION,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_STAT_UTILITY,
     PROP_UPDATE_COUNT,
@@ -706,9 +706,9 @@ class TopAggregator(AsyncTopAgg):
             if round_start_time_tup is not None:
                 sent_ts = round_start_time_tup[1]
                 round_duration = timestamp - sent_ts
-                channel.set_end_property(end, PROP_ROUND_DURATION, round_duration)
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, round_duration)
                 logger.info(
-                    f"Set PROP_ROUND_DURATION for {end}: {round_duration.total_seconds():.3f}s"
+                    f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"
                 )
         else:
             logger.error(
@@ -906,7 +906,7 @@ class TopAggregator(AsyncTopAgg):
         for trainer_update in self._per_agg_trainer_list:
             self._model_version_unique_trainers.add(trainer_update)
             train_duration = channel.get_end_property(
-                trainer_update, PROP_ROUND_DURATION
+                trainer_update, PROP_CLIENT_TASK_TRAIN_DURATION
             )
             if train_duration is not None:
                 self._model_version_trainer_stats["train_duration"].append(

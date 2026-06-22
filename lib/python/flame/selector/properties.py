@@ -13,7 +13,7 @@ PROP_LAST_ENGAGED_ROUND = "last_engaged_round"
 # Round timing
 PROP_ROUND_START_TIME = "round_start_time"
 PROP_ROUND_END_TIME = "round_end_time"
-PROP_ROUND_DURATION = "round_duration"
+PROP_CLIENT_TASK_TRAIN_DURATION = "client_task_train_duration_s"
 
 # Simulated time (time_mode="simulated"): trainer-reported virtual completion
 # time, used to order updates by a virtual clock and to source round duration.

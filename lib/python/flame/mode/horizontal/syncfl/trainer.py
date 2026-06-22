@@ -418,7 +418,7 @@ class Trainer(Role, metaclass=ABCMeta):
         _sim_completion = getattr(self, "_sim_completion_ts", None)
         if getattr(self, "simulated", False) and _sim_completion is not None:
             msg[MessageType.SIM_COMPLETION_TS] = _sim_completion
-            msg[MessageType.SIM_ROUND_DURATION] = getattr(
+            msg[MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S] = getattr(
                 self, "_sim_round_duration", 0.0
             )
 
@@ -443,7 +443,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # trainer-side lag into delivery + compute + post-wait in both modes.
         _compute_s = getattr(self, "_sim_round_duration", None)
         if _compute_s is not None:
-            msg[MessageType.ROUND_COMPUTE_S] = float(_compute_s)
+            msg[MessageType.CLIENT_TASK_TRAIN_COMPUTE_S] = float(_compute_s)
 
         # Trainer recv timestamp: when channel.recv() returned the distributed
         # weights. Used by the aggregator for the agg→trainer delivery leg (i).

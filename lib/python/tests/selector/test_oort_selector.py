@@ -8,7 +8,7 @@ import pytest
 
 from flame.selector.oort import OortSelector
 from flame.selector.async_oort import AsyncOortSelector
-from flame.selector.properties import PROP_ROUND_DURATION
+from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION
 
 
 @pytest.fixture
@@ -138,7 +138,7 @@ class TestRoundPreferredDuration:
         # Insert in the GIVEN (unsorted) order so a missing sort is detectable.
         ends = make_ends([f"e{i}" for i in range(len(durations_s))])
         for (eid, e), d in zip(ends.items(), durations_s):
-            e.set_property(PROP_ROUND_DURATION, timedelta(seconds=d))
+            e.set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d))
         return ends
 
     def test_round_preferred_duration_is_sorted_percentile(self, oort, make_ends):
@@ -177,7 +177,7 @@ class TestAsyncRoundPreferredDuration:
     def _ends_with_durations(self, make_ends, durations_s):
         ends = make_ends([f"e{i}" for i in range(len(durations_s))])
         for (eid, e), d in zip(ends.items(), durations_s):
-            e.set_property(PROP_ROUND_DURATION, timedelta(seconds=d))
+            e.set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d))
         return ends
 
     def test_round_preferred_duration_is_sorted_percentile(
@@ -242,7 +242,7 @@ class TestRewardNormalization:
         raws = [66.0, 68.0, 70.0, 72.0, 74.0]
         for (eid, e), r in zip(ends.items(), raws):
             e.set_property(PROP_STAT_UTILITY, r)
-            e.set_property(PROP_ROUND_DURATION, timedelta(seconds=10))
+            e.set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=10))
         util_list = [{PROP_END_ID: eid, PROP_UTILITY: r} for eid, r in zip(ids, raws)]
         assert oort.normalize_reward is True
         oort.calculate_total_utility(util_list, ends, round=5)
@@ -250,12 +250,12 @@ class TestRewardNormalization:
             assert 0.0 <= comp["believed_I"] <= 1.0, comp
 
     def test_normalization_can_be_disabled(self, make_ends):
-        from flame.selector.properties import PROP_END_ID, PROP_UTILITY, PROP_ROUND_DURATION
+        from flame.selector.properties import PROP_END_ID, PROP_UTILITY, PROP_CLIENT_TASK_TRAIN_DURATION
         sel = OortSelector(aggr_num=3, normalize_reward=False)
         ids = [f"e{i}" for i in range(3)]
         ends = make_ends(ids)
         for eid, e in ends.items():
-            e.set_property(PROP_ROUND_DURATION, timedelta(seconds=10))
+            e.set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=10))
         raws = [66.0, 70.0, 74.0]
         util_list = [{PROP_END_ID: eid, PROP_UTILITY: r} for eid, r in zip(ids, raws)]
         sel.calculate_total_utility(util_list, ends, round=5)
