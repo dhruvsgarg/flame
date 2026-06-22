@@ -354,3 +354,113 @@ class TestStaleTrainerPropsRecorded:
 
         assert ch.get_end_property("x", PROP_STAT_UTILITY) is None
         assert ch.get_end_property("x", PROP_ROUND_DURATION).total_seconds() == 5.0
+
+
+class TestStaleRejectRecordsPropsIntegration:
+    """Integration regression: drive the REAL OortTopAggregator._aggregate_weights
+    stale-reject path end to end (oort + refl share this stack) and assert the
+    rejected trainer's speed + utility ARE recorded into the selector's memory while
+    the stale update is NOT aggregated. This FAILS on the pre-fix code, which
+    `continue`d before recording — leaving the trainer PROP_STAT_UTILITY=None
+    (selector reads as unexplored, re-picks forever). Complements the unit-level
+    TestStaleTrainerPropsRecorded by guarding the call-site wiring."""
+
+    def _build_agg(self):
+        from datetime import datetime, timedelta
+        from flame.mode.horizontal.oort.top_aggregator import (
+            TopAggregator as OortTopAggregator,
+        )
+
+        sent_ts = datetime(2026, 1, 1)
+        recv_ts = sent_ts + timedelta(seconds=18.0)  # genuinely slow trainer
+
+        class _Selector:
+            def __init__(self):
+                self.selected_ends = {"slow"}
+                self.ordered_updates_recv_ends = []
+
+        class _Chan:
+            def __init__(self, selector):
+                self._selector = selector
+                self._props = defaultdict(dict)
+                self._delivered = False
+
+            def get_end_property(self, end, key):
+                return self._props[end].get(key)
+
+            def set_end_property(self, end, key, val):
+                self._props[end][key] = val
+
+            def recv_fifo(self, end_ids, first_k=0, timeout=None):
+                # Deliver one STALE update (version 7 < round 11) exactly once.
+                if not self._delivered and "slow" in set(end_ids):
+                    self._delivered = True
+                    msg = {
+                        MessageType.MODEL_VERSION: 7,
+                        MessageType.STAT_UTILITY: 4.2,
+                        MessageType.WEIGHTS: "w",
+                    }
+                    yield (msg, ("slow", recv_ts))
+                yield (None, ("", None))  # nothing more ready
+
+            def cleanup_recvd_ends(self):
+                for e in self._selector.ordered_updates_recv_ends:
+                    self._selector.selected_ends.discard(e)
+                self._selector.ordered_updates_recv_ends = []
+
+        class _CM:
+            def __init__(self, chan):
+                self._chan = chan
+
+            def get_by_tag(self, tag):
+                return self._chan
+
+        class _Optimizer:
+            # No stale_update_max attr -> standard oort: reject ALL stale updates.
+            def do(self, weights, cache, total=0):
+                return weights
+
+        class _SelCfg:
+            kwargs = {"aggr_num": 10}
+
+        class _Config:
+            selector = _SelCfg()
+
+        class _ConcreteOortAgg(OortTopAggregator):
+            def check_and_sleep(self): pass
+            def evaluate(self): pass
+            def initialize(self): pass
+            def load_data(self): pass
+            def train(self): pass
+            def _compute_aggregator_stats(self): pass
+            def _reset_aggregator_stats(self): pass
+            def _update_model(self): pass
+
+        agg = _ConcreteOortAgg.__new__(_ConcreteOortAgg)
+        agg.simulated = False
+        agg._round = 11
+        sel = _Selector()
+        chan = _Chan(sel)
+        agg.cm = _CM(chan)
+        agg.config = _Config()
+        agg.optimizer = _Optimizer()
+        agg.weights = "W"
+        agg.cache = {}
+        agg._updates_recevied = {}
+        agg._oort_sent_version_ts = {"slow": {7: sent_ts}}
+        return agg, chan, sel
+
+    def test_stale_reject_records_speed_and_utility_but_not_aggregated(self):
+        agg, chan, sel = self._build_agg()
+
+        agg._aggregate_weights("tag")
+
+        # The fix: a stale-but-returned trainer's speed + utility are recorded into
+        # the selector's memory (pre-fix: both None -> stuck "unexplored" forever).
+        assert chan.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
+        rd = chan.get_end_property("slow", PROP_ROUND_DURATION)
+        assert rd is not None and rd.total_seconds() == 18.0
+        # ...while the stale update itself was NOT aggregated (dropped from the model)
+        # and the trainer was cleaned out of the in-flight set.
+        assert agg.cache == {}
+        assert "slow" not in sel.selected_ends
