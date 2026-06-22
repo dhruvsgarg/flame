@@ -18,7 +18,11 @@ import pytest
 
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
 from flame.mode.message import MessageType
-from flame.selector.properties import PROP_SIM_SEND_TS, PROP_ROUND_DURATION
+from flame.selector.properties import (
+    PROP_SIM_SEND_TS,
+    PROP_ROUND_DURATION,
+    PROP_STAT_UTILITY,
+)
 from flame.sim import VirtualClock
 
 
@@ -284,3 +288,69 @@ class TestSimInflightCarryover:
         assert committed == []                 # sct 7 > pinned start 5 -> held
         assert agg._sim_buffer.has("straggler")  # carried, not drained
         assert agg._vclock.now == 8.0          # untouched (a per-call `now` would commit it)
+
+
+class TestStaleTrainerPropsRecorded:
+    """Correctness fix (oort + refl): a trainer that was selected and computed must
+    have its speed (PROP_ROUND_DURATION) and statistical utility (PROP_STAT_UTILITY)
+    recorded into the selector's memory EVEN when its update arrives stale and is
+    dropped from aggregation. Otherwise the selector reads PROP_STAT_UTILITY=None as
+    'unexplored' and re-selects the same slow trainers forever (kept real's mix
+    artificially broad vs sim). See PARITY.md 'Real is the reference, but VERIFY'."""
+
+    def _make_agg(self, simulated):
+        from datetime import datetime
+        from flame.mode.horizontal.oort.top_aggregator import (
+            TopAggregator as OortTopAggregator,
+        )
+
+        class _ConcreteOortAgg(OortTopAggregator):
+            check_and_sleep = evaluate = initialize = load_data = train = (
+                lambda self: None
+            )
+
+        agg = _ConcreteOortAgg.__new__(_ConcreteOortAgg)
+        agg._vclock = VirtualClock()
+        agg.simulated = simulated
+        agg._round = 10
+        return agg
+
+    def test_real_records_speed_and_utility_for_stale(self):
+        from datetime import datetime, timedelta
+
+        agg = self._make_agg(simulated=False)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        send_ts = datetime(2026, 1, 1, 0, 0, 0)
+        recv_ts = send_ts + timedelta(seconds=18.0)  # genuinely slow trainer
+        # stale update: trained on version 7, current round 10
+        agg._oort_sent_version_ts = {"slow": {7: send_ts}}
+        msg = {MessageType.MODEL_VERSION: 7, MessageType.STAT_UTILITY: 4.2}
+
+        agg._record_returned_trainer_props(ch, "slow", msg, recv_ts)
+
+        assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
+        assert ch.get_end_property("slow", PROP_ROUND_DURATION).total_seconds() == 18.0
+
+    def test_sim_records_utility_and_duration_for_stale(self):
+        agg = self._make_agg(simulated=True)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        msg = {
+            MessageType.MODEL_VERSION: 7,
+            MessageType.STAT_UTILITY: 4.2,
+            MessageType.SIM_ROUND_DURATION: 18.0,
+        }
+
+        agg._record_returned_trainer_props(ch, "slow", msg, None)
+
+        assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
+        assert ch.get_end_property("slow", PROP_ROUND_DURATION).total_seconds() == 18.0
+
+    def test_no_utility_field_is_safe(self):
+        agg = self._make_agg(simulated=True)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        msg = {MessageType.MODEL_VERSION: 7, MessageType.SIM_ROUND_DURATION: 5.0}
+
+        agg._record_returned_trainer_props(ch, "x", msg, None)
+
+        assert ch.get_end_property("x", PROP_STAT_UTILITY) is None
+        assert ch.get_end_property("x", PROP_ROUND_DURATION).total_seconds() == 5.0

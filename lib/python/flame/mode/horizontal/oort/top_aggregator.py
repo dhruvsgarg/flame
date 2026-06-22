@@ -282,6 +282,11 @@ class TopAggregator(BaseTopAggregator):
                     
                     # Clean up trainer from in-flight set even if rejecting the update
                     if should_reject:
+                        # Still learn this trainer's speed/utility (it was selected
+                        # and computed) before dropping the stale update from agg.
+                        self._record_returned_trainer_props(
+                            channel, end, msg, metadata[1]
+                        )
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         channel._selector.ordered_updates_recv_ends.append(end)
@@ -386,6 +391,11 @@ class TopAggregator(BaseTopAggregator):
 
                     # Clean up trainer from in-flight set even if rejecting the update
                     if should_reject:
+                        # Still learn this trainer's speed/utility (it was selected
+                        # and computed) before dropping the stale update from agg.
+                        self._record_returned_trainer_props(
+                            channel, end, msg, metadata[1]
+                        )
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         channel._selector.ordered_updates_recv_ends.append(end)
@@ -769,6 +779,46 @@ class TopAggregator(BaseTopAggregator):
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
                 f"send_wall_s={time.time() - _send_t0:.3f}"
             )
+
+    def _record_returned_trainer_props(self, channel, end, msg, recv_ts) -> None:
+        """Record a returned trainer's observed properties (statistical utility +
+        round duration/speed) into the selector's memory, even when the update is
+        STALE and dropped from aggregation.
+
+        Correctness fix (oort + refl share this stack): Oort must learn the
+        properties of any trainer it selected and that actually computed. A stale
+        update is correctly excluded from AGGREGATION (Oort never mixes a stale
+        model), but its measured speed and statistical utility are still valid
+        observations of that trainer. The previous behavior `continue`d before
+        `_handle_weights_msg`, recording neither — so a persistently-slow trainer
+        (whose delayed update keeps arriving stale) was left with
+        PROP_STAT_UTILITY=None, which the selector reads as *unexplored*
+        (oort.py:fetch_statistical_utility) and re-selects forever. That re-explore
+        loop kept real's selection mix artificially broad vs sim. See PARITY.md
+        "Real is the reference, but VERIFY real is correct".
+        """
+        # Statistical utility marks the trainer as explored (the selector's
+        # unexplored test is `PROP_STAT_UTILITY is None`).
+        if MessageType.STAT_UTILITY in msg:
+            channel.set_end_property(
+                end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
+            )
+        # Observed round duration (speed) feeds the system_util speed penalty. In
+        # sim the recv generator already stamped it from SIM_ROUND_DURATION (this
+        # re-stamps the same value, idempotent); in real, measure recv minus the
+        # per-version send so a stale version's duration isn't read off a later
+        # re-selection's round-start.
+        _ver = msg.get(MessageType.MODEL_VERSION, self._round)
+        if self.simulated:
+            _srd = msg.get(MessageType.SIM_ROUND_DURATION)
+            if _srd is not None:
+                channel.set_end_property(
+                    end, PROP_ROUND_DURATION, timedelta(seconds=float(_srd))
+                )
+        else:
+            _sent = getattr(self, "_oort_sent_version_ts", {}).get(end, {}).get(_ver)
+            if _sent is not None and isinstance(recv_ts, datetime):
+                channel.set_end_property(end, PROP_ROUND_DURATION, recv_ts - _sent)
 
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int

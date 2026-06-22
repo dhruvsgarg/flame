@@ -235,6 +235,25 @@ convergence), sim-only vs stored real.
 
 ### Durable lessons (kept; update in place, don't append)
 
+- **Real is the reference, but VERIFY real is correct before matching it — a
+  real↔sim mechanism gap has TWO candidate fix directions (Jun 22).** Parity ≠
+  blindly tuning sim to real. When the two modes diverge on a *mechanism* (not just
+  stochastic noise), reason about which side is logically correct BEFORE picking the
+  fix direction. Case: Oort's selector had observed durations for 298 trainers (31%
+  recorded ≥15s) in sim but only 201 (3%) in real. First read assumed real correct
+  ⇒ would have made sim *discard* stale-update durations — WRONG. Correct behavior is
+  sim's: a selected+computed trainer's properties (speed `PROP_ROUND_DURATION`,
+  utility `PROP_STAT_UTILITY`) MUST be recorded into the selector's memory even when
+  its update arrives **stale and is discarded for aggregation** — otherwise the
+  selector (Oort treats `PROP_STAT_UTILITY is None` as *unexplored*,
+  oort.py:472-478) re-explores the same slow trainers forever (information-loss bug).
+  Real drops them (`continue` before `_handle_weights_msg` in the stale branch,
+  oort/top_aggregator.py) and records neither; sim records duration (recv generator)
+  but not utility. So the fix is on the **real path** (record props for
+  stale-but-returned updates) + complete sim's utility recording — NOT a sim-side
+  discard. Don't aggregate stale (both modes already correct there); only the
+  *learning/exploration* of properties was wrong. See [[project_oort_a2c_root]].
+
 - **A check consuming `agg_rounds` must be explicit about train vs eval (Jun 20).**
   Eval commits emit `event=agg_round` (tagged `task_to_perform="eval"`) so U6/U6e can
   read their timeliness, but they carry **no `agg_goal_count`** and don't advance the
