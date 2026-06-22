@@ -380,7 +380,7 @@ def main():
     ap.add_argument("--sample-size", type=int,
                     help="per-trainer utility subsample (default from config/256)")
     ap.add_argument("--data-root",
-                    default="/home/dgarg39/flame/lib/python/examples/async_cifar10/data")
+                    default="/Users/seshutummala/CodeRepo/OMSCS/flame/lib/python/examples/async_cifar10/data")
     ap.add_argument("--every-n-checkpoints", type=int, default=1,
                     help="use every Nth checkpoint to bound compute")
     ap.add_argument("--max-checkpoints", type=int)

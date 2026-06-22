@@ -222,7 +222,7 @@ fragment for any failure. The script exits non-zero on any failure.
 2. Update `verify_migration.py`'s reconstruction to match that exact formatting.
 3. Run the migration:
    ```bash
-   cd /home/dgarg39/flame
+   cd /Users/seshutummala/CodeRepo/OMSCS/flame
    python -m scripts.migrate_trainer_configs \
        --example lib/python/examples/cifar10 \
        --metadata-out lib/python/examples/_metadata \
@@ -311,7 +311,7 @@ Outline:
 ## Resume command for tomorrow
 
 ```bash
-cd /home/dgarg39/flame
+cd /Users/seshutummala/CodeRepo/OMSCS/flame
 git status
 # Should show: lib/python/scripts/migrate_trainer_configs.py (untracked)
 #              migration.md (untracked)

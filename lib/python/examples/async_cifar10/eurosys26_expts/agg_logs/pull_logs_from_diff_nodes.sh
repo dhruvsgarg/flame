@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Base remote path
-REMOTE_PATH="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
+REMOTE_PATH="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs"
 
 # Array of [node filename] entries
 declare -a FILES_TO_FETCH=(

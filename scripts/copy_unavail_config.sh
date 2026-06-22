@@ -8,13 +8,13 @@
 set -e
 
 # --- Configuration ---
-SRC_DIR="/home/dgarg39/aish_test/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
-DST_DIR="/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
+SRC_DIR="/Users/seshutummala/CodeRepo/OMSCS/aish_test/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort"
+DST_DIR="/Users/seshutummala/CodeRepo/OMSCS/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts"
 # We can re-use the same temporary file name
 # TMP_FILE="$DST_DIR/tmp_config.json"
 
 # The Python helper script we just created
-PYTHON_SCRIPT="/home/dgarg39/aish_test/flame/scripts/copy_unavail_config_.py" 
+PYTHON_SCRIPT="/Users/seshutummala/CodeRepo/OMSCS/aish_test/flame/scripts/copy_unavail_config_.py" 
 # ---------------------
 
 # --- Check for Python ---

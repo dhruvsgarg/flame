@@ -23,14 +23,14 @@ while true; do
   # Step 1: Start aggregator on JAYNE (local)
   conda activate dg_flame
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/aggregator
   python pytorch/main.py fedbuff_config_final_expt_7jul24.json --log_to_wandb --wandb_run_name agg_7jul_final_alpha100_cifar_80acc_fedbuff_client_avail > agg_7jul_final_alpha100_cifar_80acc_fedbuff_client_avail.log 2>&1 &
 
   # Step 2: Start trainers on JAYNE (local)
   sleep 10
   conda activate dg_flame
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer
   cd config_dir100_num300_traceFail_48h/
   bash exec_100_trainers_jayne.sh > trainer_jayne_7jul_final_alpha100_cifar_80acc_fedbuff_client_avail.log 2>&1 &
   
@@ -39,7 +39,7 @@ while true; do
   ssh dgarg39@shepherd.cc.gatech.edu "bash -s" << EOF
   conda activate dg_flame
   export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer
   cd config_dir100_num300_traceFail_48h/
   bash exec_100_trainers_sheph.sh > trainer_sheph_7jul_final_alpha100_cifar_80acc_fedbuff_client_avail.log 2>&1 &
 EOF
@@ -48,7 +48,7 @@ EOF
   ssh dgarg39@jayne.cc.gatech.edu "bash -s" << EOF
   conda activate dg_flame
   export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer
   cd config_dir100_num300_traceFail_48h/
   bash exec_100_trainers_jayne.sh > trainer_jayne_7jul_final_alpha100_cifar_80acc_fedbuff_client_avail.log 2>&1 &
 EOF

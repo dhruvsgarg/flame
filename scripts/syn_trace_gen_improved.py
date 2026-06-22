@@ -214,7 +214,7 @@ stickiness=0.40
 
 # Run the corrected version
 all_states_history = batch_inject_and_plot(
-    folder_path='/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/',
+    folder_path='/Users/seshutummala/CodeRepo/OMSCS/aish_test/flame/lib/python/examples/fwdllm/expts/run_tc_expts/json_scripts/',
     max_trainers=100,
     train_p=train_p,
     eval_p=eval_p,

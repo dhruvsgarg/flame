@@ -21,7 +21,7 @@ plt.rcParams.update(
 
 #### plotting the synthetic trace distribution
 
-FOLDER = "/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort/"
+FOLDER = "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort/"
 SECONDS_IN_DAY = 86400
 keys = ["avl_events_syn_0", "avl_events_syn_20", "avl_events_syn_50"]
 timelines_by_key = {key: [] for key in keys}

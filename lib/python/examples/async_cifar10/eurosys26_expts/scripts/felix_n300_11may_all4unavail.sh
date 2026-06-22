@@ -64,14 +64,14 @@ for trace in "${availability_traces[@]}"; do
   echo "$(date +'%Y-%m-%d %H:%M:%S') Waited for cleanup to complete"
 
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/aggregator
 
-  mkdir -p /home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs
-  mkdir -p /home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs
+  mkdir -p /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs
+  mkdir -p /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs
 
   timestamp=$(date +%d_%m_%H_%M)
-  agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}.log"
-  config_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/configs/felix_n300_9may25_evalGoal1.5.json"
+  agg_log_file="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}.log"
+  config_file="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/configs/felix_n300_9may25_evalGoal1.5.json"
   wandb_run_name="agg_${node_name}_${timestamp}_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareMode}_${trace}_c13_1.3k"
 
   echo "Created aggregator log file: ${agg_log_file}"
@@ -83,10 +83,10 @@ for trace in "${availability_traces[@]}"; do
 
   conda activate dg_flame
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort/
+  cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer/config_dir0.1_num300_traceFail_6d_3state_oort/
   echo "Inside trainer folder for trace=${trace}"
 
-  trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs/log_trainer_${node_name}_${timestamp}_${alpha}_${aggType}_${selType}_${awareMode}_${trace}.log"
+  trainer_log_file="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/trainer_logs/log_trainer_${node_name}_${timestamp}_${alpha}_${aggType}_${selType}_${awareMode}_${trace}.log"
   echo "Created trainer log file: ${trainer_log_file}"
   bash exec_300_trainers_3state_felix.sh --notify_enabled True --notify_trace "$trace" > "$trainer_log_file" 2>&1 &
   trainer_pid=$!

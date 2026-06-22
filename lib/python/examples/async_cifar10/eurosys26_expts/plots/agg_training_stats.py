@@ -47,8 +47,8 @@ def extract_and_plot_p50(log_file, suffix, syn_percent):
 
 
 # Run for both logs
-log_file_j = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_11_51_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_20.log"
-log_file_s = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_sheph_11_05_11_36_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log"
+log_file_j = "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_11_51_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_20.log"
+log_file_s = "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_sheph_11_05_11_36_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log"
 
 extract_and_plot_p50(log_file_j, "felix", "UNAVL(20%)")
 extract_and_plot_p50(log_file_s, "OORT+Async", "UNAVL(20%)")

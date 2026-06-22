@@ -88,8 +88,8 @@ def extract_and_plot_time_diffs(log_path, suffix, syn_percent):
 
 
 # File paths
-log_path_j = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_11_51_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_20.log"
-log_path_s = "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_sheph_11_05_11_36_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log"
+log_path_j = "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_11_51_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_20.log"
+log_path_s = "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_sheph_11_05_11_36_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log"
 
 # Run for both logs
 extract_and_plot_time_diffs(log_path_j, "Felix", "UNAVL(20%)")

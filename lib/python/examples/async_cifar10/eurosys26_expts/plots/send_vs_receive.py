@@ -134,8 +134,8 @@ def analyze_multiple_logs(log_paths, labels):
 # Example usage
 log_paths = [
     "agg_sheph_13_05_08_29_alpha0.1_cifar_70acc_TierFuse_TierSelect_TierTrack_syn_20.log",
-    "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_15_20_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log",
-    "/home/dgarg39/flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_wash_11_05_11_49_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn20.log",
+    "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/plots/agg_jayne_11_05_15_20_alpha0.1_cifar_70acc_fedbuff_oortAsync_oracular_syn20.log",
+    "/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/eurosys26_expts/agg_logs/agg_wash_11_05_11_49_alpha0.1_cifar_70acc_fedavg_oort_oracular_syn20.log",
 ]
 labels = ["Felix_20", "OORT+Async_20", "OORT+Trace_20"]
 

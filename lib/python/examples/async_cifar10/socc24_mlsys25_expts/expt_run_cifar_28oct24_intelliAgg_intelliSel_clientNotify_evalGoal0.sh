@@ -86,8 +86,8 @@ for baseline_name in "${baseline_names[@]}"; do
 
     # Start the aggregator process with the correct configuration and log file name
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator
-    agg_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_50.log"
+    cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/aggregator
+    agg_log_file="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_50.log"
     echo "Created aggregator log file: ${agg_log_file}"
     python pytorch/main.py expt_cifar_27oct24_iAgg_iSel_clientNotify_evalGoal0_c30_k10.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_cifar_70acc_${aggType}_${selType}_${awareType}_battery50_evalGoal0_c30_k10 > "$agg_log_file" 2>&1 &
     sleep 15  # Wait for the aggregator to start
@@ -96,10 +96,10 @@ for baseline_name in "${baseline_names[@]}"; do
     # Start the trainers
     conda activate dg_flame
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-    cd /home/dgarg39/flame/lib/python/examples/async_cifar10/trainer
+    cd /Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer
     cd config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/
     echo "going inside this folder: config_dir${alpha}_num300_traceFail${trainer_dir_suffix}"
-    trainer_log_file="/home/dgarg39/flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${aggType}_${selType}_${awareType}_50.log"
+    trainer_log_file="/Users/seshutummala/CodeRepo/OMSCS//flame/lib/python/examples/async_cifar10/trainer/config_dir${alpha}_num300_traceFail${trainer_dir_suffix}/log_trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_${aggType}_${selType}_${awareType}_50.log"
     echo "Created trainer log file: ${trainer_log_file}"
     bash exec_300_trainers_battery50_speed2.sh > "$trainer_log_file" 2>&1 &
     echo "$(date +'%Y-%m-%d %H:%M:%S') All trainers successfully started"

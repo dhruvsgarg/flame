@@ -63,8 +63,8 @@ for alpha in "${alphas[@]}"; do
 
   # Start the aggregator process with the correct configuration and log file name
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_google_speech/aggregator
-  agg_log_file="/home/dgarg39/flame/lib/python/examples/async_google_speech/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_speech_60acc_${baseline_name}.log"
+  cd /Users/seshutummala/CodeRepo/OMSCS/flame/lib/python/examples/async_google_speech/aggregator
+  agg_log_file="/Users/seshutummala/CodeRepo/OMSCS/flame/lib/python/examples/async_google_speech/aggregator/agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_speech_60acc_${baseline_name}.log"
   python pytorch/main_resnet.py fedbuff_config_final_expt_14jul24_${baseline_name}.json --log_to_wandb --wandb_run_name agg_${node_name}_$(date +%d_%m_%H_%M)_alpha${alpha}_speech_60acc_${baseline_name} > "$agg_log_file" 2>&1 &
   sleep 15  # Wait for the aggregator to start
   echo "$(date +'%Y-%m-%d %H:%M:%S') Waited after aggregator start"
@@ -72,7 +72,7 @@ for alpha in "${alphas[@]}"; do
   # Start the trainers
   conda activate dg_flame
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/serenity/scratch/dgarg/anaconda3/envs/dg_flame/lib/
-  cd /home/dgarg39/flame/lib/python/examples/async_google_speech/trainer
+  cd /Users/seshutummala/CodeRepo/OMSCS/flame/lib/python/examples/async_google_speech/trainer
   cd config_dir${alpha}_num100_traceFail${trainer_dir_suffix}/
   trainer_log_file="trainer_${node_name}_$(date +%d_%m_%H_%M)_${alpha}_num100_${baseline_name}.log"
   bash exec_100_trainers.sh > "$trainer_log_file" 2>&1 &
