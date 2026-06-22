@@ -52,34 +52,32 @@ perturb another baseline.
 
 ---
 
-## Status (Jun 22 — felix CLOSED 46/46; oort K3b root REVISED = stale read-wait inflation, fix implemented, real rerun pending; then refl → feddance)
+## Status (Jun 22 — felix + oort BOTH CLOSED 46/46; active = refl + feddance batched run)
 
 **Scoreboard (latest per baseline):**
 
 | baseline | score | state / root | run dirs |
 |---|---|---|---|
 | **felix** | **46/46** ✅ | mechanism parity closed (§3.drain + §3.resid); only C1/C2 sign-off (≥7200s) left | `…002022…real` / `…154600…sim` |
-| **oort** | **41/46** (90min) | **K3b root REVISED Jun 22, fix implemented, real rerun pending.** See Settled roots / Durable lessons. Fix: real records client task-train duration `WALL_SEND_TS − dispatch` (read-wait excluded); sim unchanged ⇒ real rerun only. | `…115119…real` / `…113810…sim` |
-| **refl** | 38/44 (1h) · 43/45 (3h) — **stale Jun 16** | shares oort stack; participation / eligibility | **GONE — need fresh real+sim** |
+| **oort** | **46/46** ✅ (90min, VALIDATED Jun 22) | WALL_SEND_TS fix confirmed: A2c `selected_KS=0.024`, K3b residual −0.27s (rel 0.039), Sd 0.581/0.734, S2 KS 0.042. Only C1/C2 LOWC (budget 5400<7200) left. | `…152051…real` / `…152203…sim` |
+| **refl** | 38/44 (1h) · 43/45 (3h) — **stale Jun 16** | shares oort stack ⇒ WALL_SEND_TS fix applies free; participation / low-freq `K2` | **GONE — need fresh real+sim** |
 | **feddance** | 40/42 — **stale Jun 16** | `selection_bias` / `feddance_U` (separate root) | **GONE — need fresh real+sim** |
 
-JSONs kept: `parity_felix_20260621_resid`, `parity_oort_20260622_stale`,
+JSONs kept: `parity_felix_20260621_resid`, `parity_oort_20260622_wallsend`,
 `parity_refl_20260616_1h` + `parity_3h_refl`, `parity_3h_feddance`.
 
-### Next steps — oort (active) → refl → feddance → felix sign-off
-1. **oort (active).** Re-run **real 1.5h with the WALL_SEND_TS fix** (real path changed); sim
-   is reusable (`…113810…sim`, unchanged) but running both fresh 1.5h is clean and gives the
-   paired dirs the checker wants. **Need back:** both run dirs with `telemetry/` + the
-   aggregator `.log` (for `[LAG_DECOMP]`). Validate: real per-trainer observed durations drop
-   to ≈D (no read-wait inflation), `P(sel|elig)` for mid/slow converges to sim, K3b residual
-   → ~0, round count converges. Tool to re-confirm scorer-not-residence:
-   `scripts/oort_residence_discriminator.py`.
-2. **refl.** Same shared `oort/top_aggregator` stack ⇒ same fix. Dirs gone ⇒ fresh real+sim.
-   refl *accepts* within-threshold stale, so the fix changes only its too-stale rejects; its
-   low-frequency `K2`/participation drift needs **3 h**, not 45 min.
-3. **feddance.** Separate root (`selection_bias`/`feddance_U`). Fresh real+sim; tackle after
-   oort+refl validate (serialize for clean attribution).
-4. **felix.** One ≥7200s sim-only run vs stored real to promote C1/C2 LOWC→PASS.
+### Next steps — refl + feddance batched → felix sign-off
+1. **refl + feddance (active, batched).** Launch fresh real+sim for both:
+   `bash scripts/debug_run.sh --baselines 'refl feddance' --runtime-s 10800 --mode both`
+   (**3 h** — refl's low-frequency `K2`/participation only surfaces at 3h). Both inherit the
+   shared `oort/top_aggregator` WALL_SEND_TS fix (no new code). **Need back:** the four run
+   dirs with `telemetry/` + aggregator `.log`. **Validate refl:** A2b/A2c (pool-composition vs
+   scorer), participation/S2, `K2` at 3h. **Validate feddance:** `selection_bias`/`feddance_U`
+   — its separate root may still FAIL (then root-cause it; do NOT assume the oort fix covers
+   it). Serialize attribution: read refl first (shares the fixed stack, should pass), then
+   feddance (distinct root).
+2. **felix.** One ≥7200s sim-only run vs stored real to promote C1/C2 LOWC→PASS.
+3. **oort.** Optional ≥7200s run to promote its own C1/C2 LOWC→PASS (mechanism already closed).
 
 ### Roadmap: lock mechanism parity on ALL baselines BEFORE the perf pass (Jun 21)
 Get 46/46 on oort+refl+feddance first, then the sim perf pass — do not interleave. The
@@ -94,8 +92,8 @@ baselines) and must hold 46/46.
 | baseline | root |
 |---|---|
 | **felix** | **ALL MECHANISM ROOTS CLOSED (Jun 21, 46/46).** Eval-stale-`sct` ✅; commit-side ingestion (`recv_fifo` stranding) ✅ `simSctOrderedDrain` (§3.drain); overlapping re-dispatch ✅ `_sim_hold_busy_slots`/`simInflightResidence` (§3.resid). Speed model exonerated. Open: C1/C2 (≥7200s). |
-| **oort** | **(1) Stale-property recording — CLOSED (VALIDATED Jun 22).** Real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever (broad mix, carry-over 3.9) vs sim (tight, →0). Fix `_record_returned_trainer_props` confirmed on the 90-min rerun (Sr/Sd/A2c/S2/Sdet PASS). **(2) K3b — REVISED Jun 22 (was mislabeled "speed-tail"; fix implemented, real rerun pending).** Decomposition (`scripts/oort_residence_discriminator.py`, offline) shows the eligible menu is identical sim/real (residence OUT); the whole gap is `P(sel\|elig)` — sim picks slow 1.23×. Cause: fix (1) recorded stale durations using `recv−dispatch`, which adds **aggregator read-wait** (a finished straggler sits unread until a later round drains the buffer; up to 1.65×D, real_med 39.9s for D=24) — a server artifact, not client speed, inflating slow trainers so real over-avoided them. Fix (Option A): real records **client task-train duration = `WALL_SEND_TS − dispatch`** (`_real_client_task_train_duration`, fresh+stale); sim unchanged (already D). |
-| **refl** | Same shared `oort/top_aggregator` stale-property fix (reruns pending; dirs gone). Prior reads: 3 h `participation`, 1 h `overhead_residual`/`eligibility` — re-evaluate post-fix. refl accepts within-threshold stale, so the fix touches only its too-stale rejects. |
+| **oort** | **ALL MECHANISM ROOTS CLOSED (Jun 22, 46/46).** **(1) Stale-property recording** — real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever; fix `_record_returned_trainer_props`. **(2) K3b stale read-wait inflation** — fix (1) recorded stale durations as `recv−dispatch`, bundling **aggregator read-wait** (finished straggler sits unread until a later round drains the buffer; up to 1.65×D) — a server artifact, not client speed, inflating slow trainers so real over-avoided them. Fix: real records **client task-train duration = `WALL_SEND_TS − dispatch`** (`_real_client_task_train_duration`, fresh+stale); sim unchanged (already D). **VALIDATED Jun 22 90min:** A2c `selected_KS=0.024` (pool 12.13/12.13 matched, raw observed 17.1/12.1 still diverges = the excluded read-wait, as diagnosed), K3b residual −0.27s, Sd 0.581/0.734, S2 KS 0.042. Open: C1/C2 (≥7200s). |
+| **refl** | Same shared `oort/top_aggregator` stale-property + WALL_SEND_TS fix (no new code; inherits oort's). Reruns pending; dirs gone. Prior reads: 3 h `participation`, 1 h `overhead_residual`/`eligibility` — re-evaluate post-fix. refl accepts within-threshold stale, so the fix touches only its too-stale rejects. |
 | **feddance** | `selection_bias` / `feddance_U` — SEPARATE root, not the oort stale-props bug (fresh runs needed). |
 
 ---
