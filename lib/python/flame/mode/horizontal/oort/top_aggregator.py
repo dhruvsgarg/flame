@@ -38,7 +38,7 @@ from flame.selector.oort import (
     PROP_STAT_UTILITY,
     PROP_LAST_EVAL_ROUND,
 )
-from flame.selector.properties import PROP_SIM_SEND_TS
+from flame.selector.properties import PROP_LAST_RETURNED_ROUND, PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
@@ -325,6 +325,9 @@ class TopAggregator(BaseTopAggregator):
             self._inflight_commit_staleness[end] = staleness
             self._inflight_commit_fresh[end] = True
             channel._selector.ordered_updates_recv_ends.append(end)
+            # Reference Oort/REFL `time_stamp`: the agg round of last RECEIPT (drives the
+            # UCB temporal term; see PROP_LAST_RETURNED_ROUND).
+            channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
             logger.info(f"[MSG_ACCEPTED] Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
@@ -431,6 +434,8 @@ class TopAggregator(BaseTopAggregator):
                 self._inflight_commit_staleness[end] = staleness
                 self._inflight_commit_fresh[end] = True
                 channel._selector.ordered_updates_recv_ends.append(end)
+                # Reference time_stamp = agg round of last receipt (UCB temporal term).
+                channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
                 logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
@@ -875,6 +880,9 @@ class TopAggregator(BaseTopAggregator):
             _dur = self._real_client_task_train_duration(msg, _sent, recv_ts)
             if _dur is not None:
                 channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, _dur)
+        # A stale straggler is still a RECEIVED result in the reference (registerScore
+        # runs for it), so its `time_stamp` (UCB temporal source) advances to this round.
+        channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
@@ -999,8 +1007,6 @@ class TopAggregator(BaseTopAggregator):
 
         trainer_model_version = 0  # default
         if MessageType.MODEL_VERSION in msg:
-            # PROP_LAST_SELECTED_ROUND is stamped at selection (OortSelector.
-            # _record_last_selected_round), not here at commit — see PARITY D5.
             trainer_model_version = msg[MessageType.MODEL_VERSION]
             logger.info(
                 f"End {end} sent a model update version {msg[MessageType.MODEL_VERSION]}, while current model version {self._round}"

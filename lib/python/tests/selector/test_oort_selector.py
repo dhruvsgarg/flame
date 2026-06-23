@@ -77,55 +77,36 @@ class TestOortIdempotentWithinRound:
         assert set(r1.keys()) == set(r2.keys())
 
 
-class TestLastSelectedRoundStamp:
-    """PARITY D5: PROP_LAST_SELECTED_ROUND (read by the UCB temporal term) must be
-    stamped at SELECTION time with the selection round — not at commit by the
-    aggregator. The value (the round a trainer is picked, == the MODEL_VERSION it
-    trains on) is what the reference's `time_stamp` tracks; stamping it here, where
-    selection is aligned across real/sim, removes the commit-order dependence
-    (sim sct-regular vs real FIFO-jittery) that skewed the term across modes."""
+class TestTemporalUncertaintyFidelity:
+    """UCB temporal term keys on the agg round of the end's last RECEIVED update
+    (PROP_LAST_RETURNED_ROUND, stamped at receipt by the aggregator), reference
+    Oort/REFL — registration-initialized so the bonus is defined for every client.
+    Supersedes the D5 last-selected stamping (see PARITY D7)."""
 
-    def test_stamped_with_selection_round_on_picked_ends(
-        self, oort, make_ends, channel_props
-    ):
-        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+    def test_registration_init_fires(self, oort, make_ends):
+        from flame.selector.properties import PROP_LAST_RETURNED_ROUND
 
-        ends = make_ends(count=10, prefix="t")
-        channel_props["round"] = 5
-        result = oort.select(
-            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
-        )
-        assert result  # something was picked
-        for eid in result:
-            assert ends[eid].get_property(PROP_LAST_SELECTED_ROUND) == 5
+        ends = make_ends(count=4, prefix="t", stat_utility=1.0)
+        bonus = oort.calculate_temporal_uncertainty_of_trainer(ends, "t0", 50)
+        assert bonus > 0
+        assert ends["t0"].get_property(PROP_LAST_RETURNED_ROUND) == 50
 
-    def test_unpicked_ends_not_stamped(self, oort, make_ends, channel_props):
-        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+    def test_older_receipt_gets_larger_bonus(self, oort, make_ends):
+        from flame.selector.properties import PROP_LAST_RETURNED_ROUND
 
-        ends = make_ends(count=10, prefix="t")
-        channel_props["round"] = 5
-        result = oort.select(
-            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
-        )
-        for eid in ends:
-            if eid not in result:
-                assert ends[eid].get_property(PROP_LAST_SELECTED_ROUND) is None
+        ends = make_ends(count=2, prefix="t", stat_utility=1.0)
+        ends["t0"].set_property(PROP_LAST_RETURNED_ROUND, 5)
+        ends["t1"].set_property(PROP_LAST_RETURNED_ROUND, 95)
+        old = oort.calculate_temporal_uncertainty_of_trainer(ends, "t0", 100)
+        recent = oort.calculate_temporal_uncertainty_of_trainer(ends, "t1", 100)
+        assert old > recent > 0
 
-    def test_stamp_is_purely_selection_side(self, oort, make_ends, channel_props):
-        # No aggregator/channel involvement: the property is set entirely within
-        # select(), so its value cannot depend on commit ordering. (The aggregator
-        # no longer writes PROP_LAST_SELECTED_ROUND at commit.)
-        from flame.selector.oort import PROP_LAST_SELECTED_ROUND
+    def test_disabled_zeroes_term(self, make_ends):
+        from flame.selector.oort import OortSelector
 
-        ends = make_ends(count=6, prefix="t")
-        channel_props["round"] = 3
-        result = oort.select(
-            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
-        )
-        stamped = {
-            eid: ends[eid].get_property(PROP_LAST_SELECTED_ROUND) for eid in result
-        }
-        assert stamped and all(v == 3 for v in stamped.values())
+        sel = OortSelector(aggr_num=3, enable_temporal=False)
+        ends = make_ends(count=2, prefix="t", stat_utility=1.0)
+        assert sel.calculate_temporal_uncertainty_of_trainer(ends, "t0", 100) == 0.0
 
 
 class TestRoundPreferredDuration:

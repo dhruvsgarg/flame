@@ -52,7 +52,7 @@ perturb another baseline.
 
 ---
 
-## Status (Jun 22 — felix + oort CLOSED 46/46; refl 43/46 + feddance 42/44, both ~1 residual)
+## Status (Jun 23 — felix+oort CLOSED 46/46; feddance 43/44 (U6 FIX CONFIRMED, C2-only); refl 40/46 — A2-residence CLOSED, NEW K3b mix-bias)
 
 **Scoreboard (latest per baseline):**
 
@@ -60,73 +60,50 @@ perturb another baseline.
 |---|---|---|---|
 | **felix** | **46/46** ✅ | mechanism parity closed (§3.drain + §3.resid); only C1/C2 sign-off (≥7200s) left | `…002022…real` / `…154600…sim` |
 | **oort** | **46/46** ✅ (90min, VALIDATED Jun 22) | WALL_SEND_TS fix confirmed: A2c `selected_KS=0.024`, K3b residual −0.27s (rel 0.039), Sd 0.581/0.734, S2 KS 0.042. Only C1/C2 LOWC (budget 5400<7200) left. | `…152051…real` / `…152203…sim` |
-| **refl** | **43/46** (1.5h Jun 22) ⬆ from 38/44@1h | shared oort `WALL_SEND_TS`/stale-props fix landed CLEAN — K2/K3b/A2c/Sr/Sd/Sx all PASS. Sole FAIL = **A2 num_eligible** KS=0.384: a residence-release-timing gap (sim releases §4.5 pool-hold at `vclock≥sct`, real at commit → sim holds ~3 fewer in-flight ⇒ ~3 more eligible). Means within 1.2%; near-threshold. | `…182200…real` / `…175808…sim` |
-| **feddance** | **42/44** (1.5h Jun 22) | old `feddance_U`/`selection_bias` root **CLOSED** (inherited `WALL_SEND_TS` duration fix: A2c, Sx `feddance_U`=0.154, S2 all PASS). Residual: **U6 commit_visibility** (sync-barrier OBSERVABILITY artifact, not a bug) + **K2** marginal (0.052 vs 0.05). | `…180730…real` / `…175847…sim` |
+| **feddance** | **43/44** (3h Jun 23) ⬆ from 42/44 | **U6 barrier-anchor (§6.u6) CONFIRMED on fresh real**: U6 PASS real_mean 14.39 ≈ sim 14.55 (KS 0.115). **K2 PASS** (28.04 vs 27.63 s/rd — the ~1.4σ swing was noise, tightened with rounds). K3b/A2c/K8/U2/C1 all PASS. **Sole FAIL = C2 loss** 0.1716 vs 0.15 (emergent, only 8 eval rounds; K8 terminal + C1 acc both PASS). | `…033223…real` / `…031608…sim` |
+| **refl** | **40/46** (3h Jun 23); **fidelity fix + telemetry landed, rerun pending** | 1.5h A2-residence root CONVERGED (Sr PASS 3.645/3.72). Dominant root = **K3b** (advance sim 2.76 vs real 3.15 → sim 3911 vs real 3332 rd). **Traced via the ladder:** duration model correct (same-trainer durs match 0.07s); eligibility identical by speed class; yet committed mix differs (real +6.85pp slow ≥12s; per-round committed max 14.73 vs 16.37) because **SELECTION differs** — sim `sel/elig`=**0.092 FLAT** across all speed classes, real **rises with duration** (3-5s→0.02-0.04, 13-20s→0.09); selected mean speed 10.03 sim vs 11.22 real. **Confirmed fidelity bug: refl's UCB temporal-uncertainty term was DEAD** (0/7513 nonzero) — `refl_oort.select()` overrode oort's and dropped the `_record_last_selected_round` stamp, so the term divided by a None `time_stamp` → temporal=0 → refl selected by stat_util alone (speed-uniform); reference Oort/REFL's temporal bonus up-weights under-selected (slower-returning) trainers. **FIXED FAITHFULLY (§S.temporal):** reference uses `time_stamp = self.epoch` = agg round of last RECEIPT, registration-initialized (never None). Landed: `PROP_LAST_RETURNED_ROUND` stamped at every receipt in [oort/top_aggregator.py], selector reads it with registration-init lazy to current round; `enable_temporal` kwarg (default True; False=ablation). Legacy last-SELECTED machinery removed (no baseline used it). Applied to BOTH oort+refl (identical references; felix's AsyncOortSelector is separate, untouched). **oort now also uses this → CLOSED oort needs a re-validation pass (fidelity > parity per user; both modes get it symmetrically so parity should hold).** **CAVEAT:** temporal was dead in BOTH refl modes, so this is a FIDELITY fix; whether it closes the real/sim PARITY gap is measured by the rerun (residual may be a stat_util/normalization/draw-weight asymmetry — new `selection_prob`/`score` telemetry pins it). Downstream K2/K8/U2/S2. | `…234940…real` / `…225223…sim` |
 
 JSONs kept: `parity_felix_20260621_resid`, `parity_oort_20260622_wallsend`,
-`parity_refl_20260622_1p5h`, `parity_feddance_20260622_1p5h`.
+`parity_refl_20260623_3h`, `parity_feddance_20260623_3h`.
 
 ### Next steps
-1. **feddance U6 — TRUE FIX LANDED (real path, §6.u6), needs a confirming real rerun.** The U6
-   divergence (sim 15.5s vs real 0.02s) was a REAL telemetry flaw, not a sim bug. Root: real
-   `_update_visibility_lag` evaluated `committed = datetime.now()` **per-message inside the recv
-   loop**, so it measured arrival→ingestion (~0.02s); the strict barrier actually applies all K
-   at ONE post-loop instant, so an early finisher's true lag = barrier − own completion. Updates
-   physically arrive SPREAD (`[MSG_ARRIVAL]` 33→48s, `queue_depth=0`) — real had the spread, the
-   metric just didn't see it. **Fix:** real now anchors on the single round barrier:
-   `lag_i = max_dur − dur_i`, `dur = WALL_SEND_TS − dispatch` (client task-train duration; sim
-   stays `vclock−sct`, already the barrier). [syncfl/top_aggregator.py
-   `_barrier_anchored_lags`](../../flame/mode/horizontal/syncfl/top_aggregator.py). **Validated
-   against STORED real logs (no rerun):** recomputed real lag = mean 15.65 / min 0 / p50 16 /
-   max 53 ≈ sim 15.48/0/16/52. oort/refl UNAFFECTED (streaming aggregator, own per-message path
-   stays — see "why only feddance" in §6.u6). Guard `test_sync_sim_ordering.py::
-   test_barrier_anchored_lags_*`. **Rerun real feddance** (sim dir reusable — sim path
-   untouched) to repopulate telemetry and confirm U6 PASS → 43/44.
-   **K2** (0.052 vs 0.05, the 44th) is an EMERGENT rollup whose every child rung PASSES (K3
-   grid_KS 0.125, K3a, K3b rel 0.056, K4 0.005). It decomposes to real selecting marginally
-   SLOWER trainers/round; the largest selector-term gap `feddance_I` (real 51.7 vs sim 59.7) is
-   the Oort **stat_utility (training loss)** — an EMERGENT of each trainer's divergent stochastic
-   trajectory, NOT a clean computational asymmetry like `WALL_SEND_TS`. With only 176 rounds the
-   5.2% gap is ~1.4σ. **No clean code lever** (do NOT add a scalar overhead — Dead ends; do NOT
-   chase the stat_utility mix). Resolution = the 3h rerun: more rounds tighten the estimate.
-2. **refl A2 num_eligible — DECOMPOSED to `selected_ends` residence SHAPE; instrumentation
-   landed, run pending.** The `[DISTRIBUTE]` log already decomposes eligible: `unavail=0` both
-   modes (all-UNKNOWN trace), so eligible = `300 − |selected_ends|` and the **entire gap is
-   `selected_ends`** (sim 47.2 vs real 50.1 = the 252.7/249.8 gap exactly). NOT the §4.5 buffer
-   hold — that feeds the *scorer's* pool (A2b), not this count; the `pending_after`→`pending_ends`
-   lever was FALSIFIED (Dead ends). By Little's law `|selected_ends| = num_chosen(13) × residence`,
-   so it's purely residence: sim 3.63 vs real 3.86 rounds. Mining stored `inflight_residence`
-   telemetry: the residence **tail (≥4) is IDENTICAL (0.449/0.450)** — the gap is the **body
-   SHAPE**: real has a sharp mode at residence=3 (19.2%), sim is flatter (peak at 1). Real commits
-   with a ~3-round pipeline cadence; sim's modeled commit timing is more spread. **Landed
-   instrumentation** (telemetry-only, no dynamics change): `inflight_residence` now emits
-   `residence_staleness` + `residence_was_fresh` **paired 1:1** with `residence_rounds`
-   ([events.py](../../flame/telemetry/events.py),
-   [oort/top_aggregator.py](../../flame/mode/horizontal/oort/top_aggregator.py)), to split the
-   shape gap by commit class. Guard `test_parity_checks.py::test_builder_paired_commit_class`.
-   **Run:** rerun refl real+sim, then per residence bucket compare sim/real `(staleness,
-   fresh-frac)` — does sim under-hold the fresh-committed body (the residence=3 mode)? Near-
-   threshold (means 1.2%, rest clean 43/46); confirm a *systematic* class skew before any fix —
-   may be real-pipeline cadence (no sim fix).
+1. **feddance — DONE (43/44), nothing to fix.** §6.u6 U6 barrier-anchor CONFIRMED on the fresh 3h
+   real (U6 PASS 14.39≈14.55). K2 was noise (PASS at 3h). **C2 loss** (0.1716 vs 0.15) is the lone
+   residual: EMERGENT, 8 eval rounds only, K8 terminal-state PASS (rel 0.016) and C1 acc PASS
+   (0.0176) — i.e. the run-end state matches; only the per-eval-round loss CURVE is 14% over on a
+   few points. No code lever; a longer run or more eval cadence tightens it. Treat as effectively
+   closed.
+2. **refl K3b — ROOT = selection disparity from a DEAD temporal term; fidelity fix + telemetry
+   LANDED, rerun pending.** Ladder trace (each rung measured, overturning the earlier "emergent
+   no-lever" call): K3b advance sim 2.76 vs real 3.15 → sim 3911 vs real 3332 rd. Duration model
+   correct (same-trainer committed durs match 0.07s); eligibility IDENTICAL by speed class; but the
+   **committed mix differs** (real +6.85pp slow ≥12s; per-round committed max 14.73 vs 16.37)
+   because **SELECTION differs** — sim `sel/elig`=0.092 FLAT across every speed class, real RISES
+   with duration (fast 0.02-0.04 → slow 0.09); selected mean speed 10.03 sim vs 11.22 real;
+   exploration ~off (0.3%) both, so it's the exploit (utility-weighted) draw. **Root: refl's UCB
+   temporal-uncertainty term was DEAD** — `refl_oort.select()` overrode `oort.select()` and dropped
+   the `_record_last_selected_round` stamp → `PROP_LAST_SELECTED_ROUND`=None → `oort_temporal_uncertainty`
+   returns 0 (telemetry: 0/7513 nonzero, both modes) → refl scored on stat_util alone (speed-uniform).
+   Reference Oort/REFL (`third_party/{Oort,REFL}/.../oort.py`) make the temporal bonus a core term
+   that up-weights under-selected (slower-returning) trainers, keyed on `time_stamp = self.epoch`
+   (agg round of last RECEIPT), registration-initialized so it is NEVER None. **FIX landed FAITHFULLY
+   (§S.temporal):** `PROP_LAST_RETURNED_ROUND` stamped at every receipt
+   ([oort/top_aggregator.py](../../flame/mode/horizontal/oort/top_aggregator.py)); selector reads it
+   with registration-init lazy to current round; `enable_temporal` kwarg (default True; False=
+   ablation). Legacy last-SELECTED machinery (`_record_last_selected_round`, D5) removed — no baseline
+   used it. Applied to oort+refl (identical refs; felix AsyncOortSelector separate, untouched). Guards
+   `test_refl_oort_selector.py::TestREFLTemporalFidelity`,
+   `test_oort_selector.py::TestTemporalUncertaintyFidelity`. **Also landed:** per-candidate
+   `selection_prob`/`score`/`in_exploit_pool`/`exploit_cutoff` telemetry
+   ([oort.py](../../flame/selector/oort.py) `calculate_total_utility`, refl exploit draw) — stored
+   logs lacked the final draw weight, why the divergent term couldn't be pinned offline. **CAVEAT
+   (do not over-claim):** temporal was dead in BOTH modes, so this is a FIDELITY fix; NOT proven to
+   be the real/sim PARITY divergence (sim-flat vs real-rising with temporal dead in both implies a
+   stat_util/normalization or draw-weight asymmetry too). **Rerun refl + oort both modes (45min,
+   selector mechanism)** → (a) temporal now fires & matches reference, (b) `selection_prob` agrees
+   sim/real or pins residual, (c) **oort re-validates 46/46 under the new faithful default.**
 3. **felix / oort.** One ≥7200s sim-only run each vs stored real to promote C1/C2 LOWC→PASS
    (mechanism already closed for both).
-
-### 3h rerun (feddance + refl, real+sim) — what to EXPECT
-`bash scripts/debug_run.sh --baselines 'feddance refl' --runtime-s 10800 --mode both`. 3h=10800s
-> 7200 ⇒ C1/C2 become ENFORCED (no longer LOWC) for both.
-- **feddance — expect a real FIX + cleanup.** **U6 PASSES** (the §6.u6 barrier-anchor is landed
-  code; real telemetry now carries the corrected lag, validated ≈ sim). C1/C2 enforce and should
-  PASS (1.5h: acc 0.0163≪0.05, loss 0.0912<0.15). **K2 is the swing:** more rounds tighten the
-  ~1.4σ estimate — likely PASS if it was noise, may stay ~5% if the stat_utility mix bias is
-  systematic. Best case 44/44 (+ C1/C2). It is NOT guaranteed to "go away" — it's borderline.
-- **refl — DIAGNOSTIC run, NOT a fix. Expect A2 to STILL FAIL.** We added only telemetry
-  (`residence_staleness`/`residence_was_fresh`), no dynamics change — so A2 num_eligible KS and
-  its downstream (S2, C2) persist. The run's PURPOSE is to populate the paired residence telemetry
-  (stored runs lack it) so we can bucket residence by commit class and decide the fix (or confirm
-  no-fix cadence). Also at 3h watch refl's low-frequency `K2` (the prior 3h run newly failed it,
-  rel .075 — round-count-compounding); C2 may fail as A2-downstream. **Do not read a refl A2/C2
-  fail at 3h as a regression** — no fix shipped yet. After: analyze the residence-class split,
-  THEN decide whether to code a fix.
 
 ### Roadmap: lock mechanism parity on ALL baselines BEFORE the perf pass (Jun 21)
 Get 46/46 on oort+refl+feddance first, then the sim perf pass — do not interleave. The
@@ -142,8 +119,8 @@ baselines) and must hold 46/46.
 |---|---|
 | **felix** | **ALL MECHANISM ROOTS CLOSED (Jun 21, 46/46).** Eval-stale-`sct` ✅; commit-side ingestion (`recv_fifo` stranding) ✅ `simSctOrderedDrain` (§3.drain); overlapping re-dispatch ✅ `_sim_hold_busy_slots`/`simInflightResidence` (§3.resid). Speed model exonerated. Open: C1/C2 (≥7200s). |
 | **oort** | **ALL MECHANISM ROOTS CLOSED (Jun 22, 46/46).** **(1) Stale-property recording** — real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever; fix `_record_returned_trainer_props`. **(2) K3b stale read-wait inflation** — fix (1) recorded stale durations as `recv−dispatch`, bundling **aggregator read-wait** (finished straggler sits unread until a later round drains the buffer; up to 1.65×D) — a server artifact, not client speed, inflating slow trainers so real over-avoided them. Fix: real records **client task-train duration = `WALL_SEND_TS − dispatch`** (`_real_client_task_train_duration`, fresh+stale); sim unchanged (already D). **VALIDATED Jun 22 90min:** A2c `selected_KS=0.024` (pool 12.13/12.13 matched, raw observed 17.1/12.1 still diverges = the excluded read-wait, as diagnosed), K3b residual −0.27s, Sd 0.581/0.734, S2 KS 0.042. Open: C1/C2 (≥7200s). |
-| **refl** | Shared `oort/top_aggregator` stale-property + `WALL_SEND_TS` fix landed CLEAN (1.5h Jun 22): K2/K3b/A2c/Sr/Sd/Sx all PASS. **Open: A2 num_eligible** (KS 0.384) DECOMPOSED: `[DISTRIBUTE]` shows `unavail=0`, so eligible = `300−|selected_ends|`; the whole gap is `selected_ends` (sim 47.2 vs real 50.1), which by Little's law = residence (3.63 vs 3.86, num_chosen=13 matches). Residence **tail (≥4) identical**; gap is body SHAPE (real mode at 3, sim flatter = real's ~3-round pipeline cadence). NOT §4.5 buffer (FALSIFIED). Instrumented `residence_staleness`/`residence_was_fresh` paired w/ `residence_rounds` to split by commit class; rerun pending. Near-threshold (means 1.2%); may be no-fix cadence. |
-| **feddance** | `selection_bias`/`feddance_U` **CLOSED** (1.5h Jun 22) — inherited the syncfl `WALL_SEND_TS` duration fix ([syncfl/top_aggregator.py:499](../../flame/mode/horizontal/syncfl/top_aggregator.py#L499)): A2c PASS, Sx `feddance_U` KS=0.154, `feddance_I`/`A`/`V` all PASS, S2 KS=0.067. **U6 commit_visibility** root = real per-message metric blind to the barrier wait; **FIXED real-path (§6.u6 barrier-anchor)**, validated vs stored logs (15.65≈15.48), confirming rerun pending. **K2** 0.052-vs-0.05 = emergent rollup, all child rungs pass; residual = sub-threshold `feddance_I`(=stat_utility/loss, emergent) mix-bias + run-length noise (~1.4σ at 176 rd) → 3h rerun, no code lever. |
+| **refl** | Shared `oort/top_aggregator` stale-property + `WALL_SEND_TS` fix landed CLEAN. 1.5h A2-residence root CONVERGED at 3h (Sr PASS 3.645/3.72). **K3b root FOUND (Jun 23) = selection disparity from a DEAD UCB temporal term.** Ladder: duration model correct (0.07s), eligibility identical by speed class, but committed mix differs (real +6.85pp slow) because SELECTION differs — sim `sel/elig`=0.092 FLAT, real rises with duration. **`refl_oort.select()` let the term divide by a None `time_stamp`** → temporal 0 (0/7513 both modes) → refl scored by stat_util alone (speed-uniform), losing the reference's exploration boost toward slower-returning trainers. **FIXED FAITHFULLY (§S.temporal):** `PROP_LAST_RETURNED_ROUND` = reference's last-RECEIPT round (`self.epoch`), stamped at receipt + registration-init; `enable_temporal` kwarg (default True; False=ablation); legacy last-SELECTED machinery removed. Applied to oort+refl (felix separate). oort now uses it too → re-validate 46/46. Guards `TestREFLTemporalFidelity`/`TestTemporalUncertaintyFidelity`. Added `selection_prob`/`score` telemetry (stored logs lacked the draw weight). **CAVEAT:** temporal dead in BOTH modes ⇒ FIDELITY fix, not proven the parity lever; rerun measures whether it closes K3b or the residual is a stat_util/draw-weight asymmetry. |
+| **feddance** | **CLOSED 43/44 (3h Jun 23).** `selection_bias`/`feddance_U` closed via inherited syncfl `WALL_SEND_TS` duration fix. **U6 §6.u6 barrier-anchor CONFIRMED on fresh real**: U6 PASS real_mean 14.39 ≈ sim 14.55 (KS 0.115, mean_diff 0.164s). **K2 PASS** (28.04 vs 27.63 s/rd) — the 1.5h 0.052-vs-0.05 was ~1.4σ noise, tightened with rounds, NO code lever was needed (correctly resisted the scalar-overhead / stat_utility-chase dead ends). K3b/A2c/K8/U2/C1 PASS. Lone residual **C2 loss** 0.1716 vs 0.15 = emergent eval-curve on 8 points; K8 terminal-state + C1 acc both PASS, so run-end state matches. No mechanism gap remains. |
 
 ---
 
@@ -165,6 +142,28 @@ baselines) and must hold 46/46.
   `SIM_CLIENT_TASK_TRAIN_DURATION_S = max(gpu,D)`). Single-sourced in
   `_real_client_task_train_duration`. Proof it was the scorer not residence:
   `scripts/oort_residence_discriminator.py`. See [[project_oort_a2c_root]].
+- **A borderline EXACT rung (K3b/K2) swaps in as the root once an upstream DIST rung (A2/Sr)
+  converges with run length (refl Jun 23).** At 1.5h refl's root was A2/residence (3.63 vs 3.86)
+  and K3b PASSED; at 3h residence converged (3.645 vs 3.72, Sr PASS) but K3b FAILED (rel 0.124).
+  Nothing in dynamics changed — the residence gap was run-length-sensitive AND the constant ~0.4s/
+  round advance gap was always there, just under the 0.1 bar until more rounds tightened the
+  estimate. **Tell a constant mechanism gap from compounding feedback: bin per-round advance by
+  run-fraction.** Flat gap across all bins (sim ~2.77 / real ~3.2 every bin) = a constant
+  selection-mix bias, NOT a §3.async round-indexed loop (which would GROW). Don't read the K3b
+  emergence as a regression; it's the next rung down surfacing.
+- **An INERT score term is a tell for a DEAD mechanism, not "the selector ignores it" — verify the
+  term is even being fed inputs (refl Jun 23).** refl K3b looked like an emergent stat-utility×speed
+  correlation: `system_util`=1.0 and `temporal`=0 for EVERY candidate both modes, so the selector
+  seemed "purely `believed_I`-driven." The right read of `temporal`=0/7513 was NOT "UCB is naturally
+  small" but **"the UCB term is structurally DEAD"** — `refl_oort.select()` overrode `oort.select()`
+  and dropped the `_record_last_selected_round` stamp, so `PROP_LAST_SELECTED_ROUND`=None →
+  `oort_temporal_uncertainty` returns 0 forever. The reference Oort/REFL temporal bonus up-weights
+  under-selected (slower-returning) trainers; with it dead, refl selected speed-uniformly (`sel/elig`
+  0.092 FLAT) while real-side parity expected the speed-rising pattern. **Lesson:** when a score term
+  is byte-zero across a whole run, check the INPUT property it reads is actually populated (and that
+  an overriding subclass didn't drop the parent's stamp), and diff flame against the `third_party/`
+  reference — don't conclude "emergent, no lever." Confirm selection-by-class with a SINGLE intrinsic
+  map applied to both modes (a per-mode map masked the flat-vs-rising split as "neutral +0.001").
 - **`A2 num_eligible` can FAIL (KS) while `S3/4 in_flight` PASSES — read it as the same gap at
   two tolerances (refl Jun 22).** With an all-available trace (`A1 UNKNOWN≈300`), eligible =
   `candidates − in_flight_hold`, so a small in-flight gap (60.2 vs 63.15, rel 0.047 — under
@@ -563,6 +562,7 @@ refl overriding.
 | D2 | stat-utility not normalized/clipped | FIXED (`scoring.oort_normalize_reward`, config) |
 | D3 | `round_threshold` | config: oort/felix=10 (paper), refl=30 (fork) |
 | D4 | `cut_off_util` + cutoff-index | FIXED: config (0.7 paper / 0.05 refl); index thresholds the exploit-boundary score (was inert) |
-| D5 | temporal time-base | **FIXED (Jun 16) oort+refl** — VALUE always correct (selection round == `MODEL_VERSION`); bug was *write timing* (written at commit → value rode commit ordering). Now stamped at **selection** (`oort.py::_record_last_selected_round`). felix (`AsyncOortSelector`) deferred. |
+| D5 | temporal time-base | **SUPERSEDED by D7 (Jun 23) for oort+refl.** Jun-16 fix stamped at selection (`_record_last_selected_round`) to dodge commit-order dependence; D7 found that was still unfaithful (reference keys the UCB term on last-RECEIPT round + registration-init, not dispatch round) and replaced it with `PROP_LAST_RETURNED_ROUND` — the last-selected machinery is removed. felix (`AsyncOortSelector`, separate class) keeps its own last-selected path, still deferred. |
 | D6 | `clip_bound` | config: 0.98 paper / 0.9 fork |
 | S | refl exploitation | FIXED: was deterministic top-k; now fork's cut_off_util-weighted `np.random.choice` |
+| D7 | UCB temporal-uncertainty `time_stamp` | **FIXED (Jun 23, §S.temporal).** Reference Oort+REFL: `sc += sqrt(0.1·log(round)/time_stamp)`, `time_stamp=self.epoch` (agg round of last RECEIPT), init at registration → never None, always contributes, up-weights under-selected/slower-returning clients. flame bug: refl's term was DEAD (0/7513) — `refl_oort.select()` let it divide by a None `time_stamp`; oort used last-SELECTED (dispatch round) with a None→0 guard. **Fix:** `PROP_LAST_RETURNED_ROUND` stamped at every receipt (fresh+stale) in oort/top_aggregator = agg round; selector reads it, registration-init lazy to current round; both oort+refl. `enable_temporal` kwarg (default True; False = ablation only). The legacy last-SELECTED machinery (`_record_last_selected_round`, D5) is REMOVED from OortSelector (no baseline used it); D5's MODEL_VERSION value was for staleness, not this UCB term. felix AsyncOortSelector is a separate class — untouched. |

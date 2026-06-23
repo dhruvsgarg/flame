@@ -31,7 +31,10 @@ from flame.selector.properties import (
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
-    PROP_LAST_SELECTED_ROUND,
+    PROP_LAST_RETURNED_ROUND,
+    # Re-exported for asyncfl/fwdllm aggregators (felix sets it on its own path); the
+    # OortSelector temporal term no longer reads it (uses PROP_LAST_RETURNED_ROUND).
+    PROP_LAST_SELECTED_ROUND,  # noqa: F401
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
     PROP_SELECTED_COUNT,
@@ -95,6 +98,18 @@ class OortSelector(AbstractSelector):
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
         # cut_off_util: exploitation-pool breadth factor; was hardcoded 0.95.
         self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])
+
+        # UCB temporal-uncertainty term. Reference Oort AND REFL
+        # (`third_party/{Oort,REFL}/.../oort.py`) divide by the aggregator round at which
+        # the end's update was LAST RECEIVED (`time_stamp = self.epoch` in
+        # update_client_util), initialized at REGISTRATION — so the bonus is defined
+        # (non-zero) for every client and up-weights under-selected / slower-returning
+        # ones (flame reads PROP_LAST_RETURNED_ROUND, stamped at receipt by the
+        # aggregator, registration-initialized to the current round). Default ON =
+        # faithful; set False only for ablation (reproduces the pre-fix dead-temporal
+        # behavior). refl had this term DEAD entirely (refl_oort.select() never let it
+        # fire); enabling restores it for both baselines faithfully.
+        self.enable_temporal = kwargs.get("enable_temporal", True)
 
         # Track sliding window statistics for the selector
         self._selector_stats = {}
@@ -272,7 +287,6 @@ class OortSelector(AbstractSelector):
 
         newly_selected = set([*explore_end_ids, *exploit_end_ids])
         self.selected_ends = self.selected_ends | newly_selected
-        self._record_last_selected_round(newly_selected, round, ends)
 
         self.save_exploited_utility_history(ends, exploit_end_ids)
         self.update_exploration_factor()
@@ -531,11 +545,20 @@ class OortSelector(AbstractSelector):
     def calculate_temporal_uncertainty_of_trainer(
         self, ends: dict[str, End], end_id: str, round: int
     ) -> float:
-        """UCB temporal-uncertainty term, keyed on the trainer's last selection
-        round (== the model version it trained on); matches reference Oort,
-        where the selection round and the round the util was recorded coincide."""
-        end_last_selection_round = ends[end_id].get_property(PROP_LAST_SELECTED_ROUND)
-        return scoring.oort_temporal_uncertainty(round, end_last_selection_round)
+        """UCB temporal-uncertainty term = sqrt(0.1*log(round)/time_stamp), reference
+        Oort/REFL. `time_stamp` = the agg round of the end's last RECEIVED update
+        (PROP_LAST_RETURNED_ROUND, stamped at receipt), registration-initialized to the
+        current round. `enable_temporal=False` forces 0 (ablation only)."""
+        if not self.enable_temporal:
+            return 0.0
+        time_stamp = ends[end_id].get_property(PROP_LAST_RETURNED_ROUND)
+        if not time_stamp:
+            # Reference registers a new arm with time_stamp = current round, so the bonus
+            # is defined for a never-returned client; mirror that lazily on first scoring
+            # (and persist so it stays stable across rounds).
+            time_stamp = round
+            ends[end_id].set_property(PROP_LAST_RETURNED_ROUND, round)
+        return scoring.oort_temporal_uncertainty(round, time_stamp)
 
     def calculate_global_system_utility_of_trainer(
         self, ends: dict[str, End], end_id: str
@@ -583,21 +606,10 @@ class OortSelector(AbstractSelector):
             count = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
             ends[end_id].set_property(PROP_SELECTED_COUNT, count + 1)
 
-    def _record_last_selected_round(
-        self, end_ids, round: int, ends: dict[str, End]
-    ) -> None:
-        """Record the selection round on this round's picks (PARITY D5: at
-        selection, not at commit, so the value can't ride commit ordering).
-        Call after scoring so a pick's own bonus used its prior round."""
-        for end_id in end_ids:
-            if end_id in ends:
-                ends[end_id].set_property(PROP_LAST_SELECTED_ROUND, round)
-
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
         newly_selected = set(self._pyrng.sample(sorted(ends), num_of_ends))
         self.selected_ends = self.selected_ends | newly_selected
-        self._record_last_selected_round(newly_selected, self._last_selection_round, ends)
         return {key: None for key in newly_selected}
 
     def calculate_total_utility(
@@ -640,14 +652,18 @@ class OortSelector(AbstractSelector):
             system_util = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
+            combined = scoring.oort_combine_score(stat_util, temporal, system_util)
             self._audit_components[curr_end_id] = {
                 "believed_I": stat_util,
                 "temporal": temporal,
                 "system_util": system_util,
+                # Final combined score actually fed to the exploit draw; the
+                # parity-divergent term lives in the selection PROBABILITY, not the
+                # per-term KS (refl Jun 23). selection_prob/in_exploit_pool stamped
+                # at the draw site (refl_oort / oort sample_by_util).
+                "score": combined,
             }
-            utility_list[utility_idx][PROP_UTILITY] = scoring.oort_combine_score(
-                stat_util, temporal, system_util
-            )
+            utility_list[utility_idx][PROP_UTILITY] = combined
 
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 

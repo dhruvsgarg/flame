@@ -394,6 +394,19 @@ class REFLOortSelector(OortSelector):
             scores = np.array([max(p[PROP_UTILITY], 0.0) for p in pool], dtype=np.float64)
             ids = [p[PROP_END_ID] for p in pool]
             k = min(num_exploit, len(ids))
+            # Stamp the final per-candidate draw probability + pool/cutoff membership
+            # into the audit so the parity checker can compare the SELECTION weighting
+            # (not just per-term KS) sim vs real — the divergence that drives refl K3b.
+            _audit = getattr(self, "_audit_components", None)
+            if _audit is not None:
+                _tot = float(scores.sum())
+                for _i, _eid in enumerate(ids):
+                    if _eid in _audit:
+                        _audit[_eid]["in_exploit_pool"] = True
+                        _audit[_eid]["exploit_cutoff"] = cutoff
+                        _audit[_eid]["selection_prob"] = (
+                            float(scores[_i]) / _tot if _tot > 0 else 0.0
+                        )
             if scores.sum() > 0:
                 exploit_clients = list(
                     self._rng.choice(ids, k, replace=False, p=scores / scores.sum())

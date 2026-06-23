@@ -7,6 +7,10 @@ PROP_END_ID = "end_id"
 PROP_SELECTED_COUNT = "selected_count"
 PROP_UPDATE_COUNT = "update_count"
 PROP_LAST_SELECTED_ROUND = "last_selected_round"
+# Aggregator round at which this end's update was last RECEIVED. This is the
+# reference Oort/REFL `time_stamp` (set to `self.epoch` at result-processing,
+# initialized at registration) that the UCB temporal-uncertainty term divides by.
+PROP_LAST_RETURNED_ROUND = "last_returned_round"
 PROP_LAST_EVAL_ROUND = "last_eval_round"
 PROP_LAST_ENGAGED_ROUND = "last_engaged_round"
 
