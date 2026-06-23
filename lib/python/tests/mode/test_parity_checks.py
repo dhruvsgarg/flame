@@ -450,3 +450,20 @@ class TestInflightResidenceEvent:
         ev2, f2 = build_inflight_residence(
             round_num=1, time_mode="real", in_flight_before=13, in_flight_after=13)
         assert "residence_rounds" not in f2 and "cleaned" not in f2
+
+    def test_builder_paired_commit_class(self):
+        """residence_staleness / residence_was_fresh ride alongside residence_rounds
+        (paired 1:1) to decompose the residence-shape gap by commit class (refl A2)."""
+        from flame.telemetry.events import build_inflight_residence
+        ev, f = build_inflight_residence(
+            round_num=7, time_mode="real", in_flight_before=16, in_flight_after=13,
+            residence_rounds=[3, 3, 5], residence_staleness=[0, 2, 4],
+            residence_was_fresh=[True, False, False])
+        assert f["residence_staleness"] == [0, 2, 4]
+        assert f["residence_was_fresh"] == [True, False, False]
+        assert len(f["residence_staleness"]) == len(f["residence_rounds"])
+        # omitted when not supplied
+        _, f2 = build_inflight_residence(
+            round_num=1, time_mode="sim", in_flight_before=13, in_flight_after=13,
+            residence_rounds=[1])
+        assert "residence_staleness" not in f2

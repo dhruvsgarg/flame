@@ -204,6 +204,12 @@ class TopAggregator(BaseTopAggregator):
             self._inflight_entry_round = {}
         for _e in end_ids:
             self._inflight_entry_round.setdefault(_e, self._round)
+        # Per-end commit class, recorded when the update is appended to the cleanup
+        # queue and popped at cleanup — paired 1:1 with residence to decompose the
+        # residence-shape gap (refl A2) by staleness / fresh-vs-stale (see cleanup).
+        if not hasattr(self, "_inflight_commit_staleness"):
+            self._inflight_commit_staleness = {}
+            self._inflight_commit_fresh = {}
 
         configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         aggr_num = min(configured_aggr_num, len(end_ids))
@@ -289,6 +295,8 @@ class TopAggregator(BaseTopAggregator):
                         )
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
+                        self._inflight_commit_staleness[end] = staleness
+                        self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
                         logger.info(
                             f"[CLEANUP_STALE] Added stale trainer ...{end[-8:]} to cleanup queue. "
@@ -314,8 +322,10 @@ class TopAggregator(BaseTopAggregator):
             # CRITICAL: Notify selector that this trainer has returned its update
             # This prevents the selector from re-selecting this trainer in the next round
             # before it has returned its update (key for SyncFL with overcommitment)
+            self._inflight_commit_staleness[end] = staleness
+            self._inflight_commit_fresh[end] = True
             channel._selector.ordered_updates_recv_ends.append(end)
-            
+
             logger.info(f"[MSG_ACCEPTED] Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
             # remove end_id if it sends a valid message with correct
@@ -398,6 +408,8 @@ class TopAggregator(BaseTopAggregator):
                         )
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
+                        self._inflight_commit_staleness[end] = staleness
+                        self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
                         logger.info(
                             f"[CLEANUP_STALE] (loop2) Added stale trainer ...{end[-8:]} to cleanup queue. "
@@ -416,6 +428,8 @@ class TopAggregator(BaseTopAggregator):
                 total = self._handle_weights_msg(msg, metadata, channel, total)
 
                 # CRITICAL: Notify selector that this trainer has returned its update
+                self._inflight_commit_staleness[end] = staleness
+                self._inflight_commit_fresh[end] = True
                 channel._selector.ordered_updates_recv_ends.append(end)
 
                 logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
@@ -542,6 +556,12 @@ class TopAggregator(BaseTopAggregator):
         # whether sim evicts stragglers a round too early (sim in-flight 13.4 vs real 15.6).
         _entry = getattr(self, "_inflight_entry_round", {})
         _resid = [self._round - _entry.pop(_e, self._round) for _e in cleanup_list]
+        # Paired 1:1 with _resid (same cleanup_list order): each cleaned end's commit
+        # staleness + fresh/stale class, to decompose the residence-SHAPE gap (refl A2).
+        _cstale = getattr(self, "_inflight_commit_staleness", {})
+        _cfresh = getattr(self, "_inflight_commit_fresh", {})
+        _resid_stale = [_cstale.pop(_e, None) for _e in cleanup_list]
+        _resid_fresh = [_cfresh.pop(_e, None) for _e in cleanup_list]
         if telemetry.is_enabled():
             _remaining = getattr(channel._selector, "selected_ends", set()) or set()
             _ages = [self._round - _entry.get(_e, self._round) for _e in _remaining]
@@ -555,6 +575,8 @@ class TopAggregator(BaseTopAggregator):
                 stale_rejected=max(0, num_to_cleanup - received_end_count),
                 residence_rounds=_resid,
                 carried_over_ages=_ages,
+                residence_staleness=_resid_stale,
+                residence_was_fresh=_resid_fresh,
             )
             telemetry.emit(ev, **fields)
 

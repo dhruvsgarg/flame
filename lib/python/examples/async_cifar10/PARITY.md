@@ -52,7 +52,7 @@ perturb another baseline.
 
 ---
 
-## Status (Jun 22 — felix + oort BOTH CLOSED 46/46; active = refl + feddance batched run)
+## Status (Jun 22 — felix + oort CLOSED 46/46; refl 43/46 + feddance 42/44, both ~1 residual)
 
 **Scoreboard (latest per baseline):**
 
@@ -60,24 +60,73 @@ perturb another baseline.
 |---|---|---|---|
 | **felix** | **46/46** ✅ | mechanism parity closed (§3.drain + §3.resid); only C1/C2 sign-off (≥7200s) left | `…002022…real` / `…154600…sim` |
 | **oort** | **46/46** ✅ (90min, VALIDATED Jun 22) | WALL_SEND_TS fix confirmed: A2c `selected_KS=0.024`, K3b residual −0.27s (rel 0.039), Sd 0.581/0.734, S2 KS 0.042. Only C1/C2 LOWC (budget 5400<7200) left. | `…152051…real` / `…152203…sim` |
-| **refl** | 38/44 (1h) · 43/45 (3h) — **stale Jun 16** | shares oort stack ⇒ WALL_SEND_TS fix applies free; participation / low-freq `K2` | **GONE — need fresh real+sim** |
-| **feddance** | 40/42 — **stale Jun 16** | `selection_bias` / `feddance_U` (separate root) | **GONE — need fresh real+sim** |
+| **refl** | **43/46** (1.5h Jun 22) ⬆ from 38/44@1h | shared oort `WALL_SEND_TS`/stale-props fix landed CLEAN — K2/K3b/A2c/Sr/Sd/Sx all PASS. Sole FAIL = **A2 num_eligible** KS=0.384: a residence-release-timing gap (sim releases §4.5 pool-hold at `vclock≥sct`, real at commit → sim holds ~3 fewer in-flight ⇒ ~3 more eligible). Means within 1.2%; near-threshold. | `…182200…real` / `…175808…sim` |
+| **feddance** | **42/44** (1.5h Jun 22) | old `feddance_U`/`selection_bias` root **CLOSED** (inherited `WALL_SEND_TS` duration fix: A2c, Sx `feddance_U`=0.154, S2 all PASS). Residual: **U6 commit_visibility** (sync-barrier OBSERVABILITY artifact, not a bug) + **K2** marginal (0.052 vs 0.05). | `…180730…real` / `…175847…sim` |
 
 JSONs kept: `parity_felix_20260621_resid`, `parity_oort_20260622_wallsend`,
-`parity_refl_20260616_1h` + `parity_3h_refl`, `parity_3h_feddance`.
+`parity_refl_20260622_1p5h`, `parity_feddance_20260622_1p5h`.
 
-### Next steps — refl + feddance batched → felix sign-off
-1. **refl + feddance (active, batched).** Launch fresh real+sim for both:
-   `bash scripts/debug_run.sh --baselines 'refl feddance' --runtime-s 10800 --mode both`
-   (**3 h** — refl's low-frequency `K2`/participation only surfaces at 3h). Both inherit the
-   shared `oort/top_aggregator` WALL_SEND_TS fix (no new code). **Need back:** the four run
-   dirs with `telemetry/` + aggregator `.log`. **Validate refl:** A2b/A2c (pool-composition vs
-   scorer), participation/S2, `K2` at 3h. **Validate feddance:** `selection_bias`/`feddance_U`
-   — its separate root may still FAIL (then root-cause it; do NOT assume the oort fix covers
-   it). Serialize attribution: read refl first (shares the fixed stack, should pass), then
-   feddance (distinct root).
-2. **felix.** One ≥7200s sim-only run vs stored real to promote C1/C2 LOWC→PASS.
-3. **oort.** Optional ≥7200s run to promote its own C1/C2 LOWC→PASS (mechanism already closed).
+### Next steps
+1. **feddance U6 — TRUE FIX LANDED (real path, §6.u6), needs a confirming real rerun.** The U6
+   divergence (sim 15.5s vs real 0.02s) was a REAL telemetry flaw, not a sim bug. Root: real
+   `_update_visibility_lag` evaluated `committed = datetime.now()` **per-message inside the recv
+   loop**, so it measured arrival→ingestion (~0.02s); the strict barrier actually applies all K
+   at ONE post-loop instant, so an early finisher's true lag = barrier − own completion. Updates
+   physically arrive SPREAD (`[MSG_ARRIVAL]` 33→48s, `queue_depth=0`) — real had the spread, the
+   metric just didn't see it. **Fix:** real now anchors on the single round barrier:
+   `lag_i = max_dur − dur_i`, `dur = WALL_SEND_TS − dispatch` (client task-train duration; sim
+   stays `vclock−sct`, already the barrier). [syncfl/top_aggregator.py
+   `_barrier_anchored_lags`](../../flame/mode/horizontal/syncfl/top_aggregator.py). **Validated
+   against STORED real logs (no rerun):** recomputed real lag = mean 15.65 / min 0 / p50 16 /
+   max 53 ≈ sim 15.48/0/16/52. oort/refl UNAFFECTED (streaming aggregator, own per-message path
+   stays — see "why only feddance" in §6.u6). Guard `test_sync_sim_ordering.py::
+   test_barrier_anchored_lags_*`. **Rerun real feddance** (sim dir reusable — sim path
+   untouched) to repopulate telemetry and confirm U6 PASS → 43/44.
+   **K2** (0.052 vs 0.05, the 44th) is an EMERGENT rollup whose every child rung PASSES (K3
+   grid_KS 0.125, K3a, K3b rel 0.056, K4 0.005). It decomposes to real selecting marginally
+   SLOWER trainers/round; the largest selector-term gap `feddance_I` (real 51.7 vs sim 59.7) is
+   the Oort **stat_utility (training loss)** — an EMERGENT of each trainer's divergent stochastic
+   trajectory, NOT a clean computational asymmetry like `WALL_SEND_TS`. With only 176 rounds the
+   5.2% gap is ~1.4σ. **No clean code lever** (do NOT add a scalar overhead — Dead ends; do NOT
+   chase the stat_utility mix). Resolution = the 3h rerun: more rounds tighten the estimate.
+2. **refl A2 num_eligible — DECOMPOSED to `selected_ends` residence SHAPE; instrumentation
+   landed, run pending.** The `[DISTRIBUTE]` log already decomposes eligible: `unavail=0` both
+   modes (all-UNKNOWN trace), so eligible = `300 − |selected_ends|` and the **entire gap is
+   `selected_ends`** (sim 47.2 vs real 50.1 = the 252.7/249.8 gap exactly). NOT the §4.5 buffer
+   hold — that feeds the *scorer's* pool (A2b), not this count; the `pending_after`→`pending_ends`
+   lever was FALSIFIED (Dead ends). By Little's law `|selected_ends| = num_chosen(13) × residence`,
+   so it's purely residence: sim 3.63 vs real 3.86 rounds. Mining stored `inflight_residence`
+   telemetry: the residence **tail (≥4) is IDENTICAL (0.449/0.450)** — the gap is the **body
+   SHAPE**: real has a sharp mode at residence=3 (19.2%), sim is flatter (peak at 1). Real commits
+   with a ~3-round pipeline cadence; sim's modeled commit timing is more spread. **Landed
+   instrumentation** (telemetry-only, no dynamics change): `inflight_residence` now emits
+   `residence_staleness` + `residence_was_fresh` **paired 1:1** with `residence_rounds`
+   ([events.py](../../flame/telemetry/events.py),
+   [oort/top_aggregator.py](../../flame/mode/horizontal/oort/top_aggregator.py)), to split the
+   shape gap by commit class. Guard `test_parity_checks.py::test_builder_paired_commit_class`.
+   **Run:** rerun refl real+sim, then per residence bucket compare sim/real `(staleness,
+   fresh-frac)` — does sim under-hold the fresh-committed body (the residence=3 mode)? Near-
+   threshold (means 1.2%, rest clean 43/46); confirm a *systematic* class skew before any fix —
+   may be real-pipeline cadence (no sim fix).
+3. **felix / oort.** One ≥7200s sim-only run each vs stored real to promote C1/C2 LOWC→PASS
+   (mechanism already closed for both).
+
+### 3h rerun (feddance + refl, real+sim) — what to EXPECT
+`bash scripts/debug_run.sh --baselines 'feddance refl' --runtime-s 10800 --mode both`. 3h=10800s
+> 7200 ⇒ C1/C2 become ENFORCED (no longer LOWC) for both.
+- **feddance — expect a real FIX + cleanup.** **U6 PASSES** (the §6.u6 barrier-anchor is landed
+  code; real telemetry now carries the corrected lag, validated ≈ sim). C1/C2 enforce and should
+  PASS (1.5h: acc 0.0163≪0.05, loss 0.0912<0.15). **K2 is the swing:** more rounds tighten the
+  ~1.4σ estimate — likely PASS if it was noise, may stay ~5% if the stat_utility mix bias is
+  systematic. Best case 44/44 (+ C1/C2). It is NOT guaranteed to "go away" — it's borderline.
+- **refl — DIAGNOSTIC run, NOT a fix. Expect A2 to STILL FAIL.** We added only telemetry
+  (`residence_staleness`/`residence_was_fresh`), no dynamics change — so A2 num_eligible KS and
+  its downstream (S2, C2) persist. The run's PURPOSE is to populate the paired residence telemetry
+  (stored runs lack it) so we can bucket residence by commit class and decide the fix (or confirm
+  no-fix cadence). Also at 3h watch refl's low-frequency `K2` (the prior 3h run newly failed it,
+  rel .075 — round-count-compounding); C2 may fail as A2-downstream. **Do not read a refl A2/C2
+  fail at 3h as a regression** — no fix shipped yet. After: analyze the residence-class split,
+  THEN decide whether to code a fix.
 
 ### Roadmap: lock mechanism parity on ALL baselines BEFORE the perf pass (Jun 21)
 Get 46/46 on oort+refl+feddance first, then the sim perf pass — do not interleave. The
@@ -93,8 +142,8 @@ baselines) and must hold 46/46.
 |---|---|
 | **felix** | **ALL MECHANISM ROOTS CLOSED (Jun 21, 46/46).** Eval-stale-`sct` ✅; commit-side ingestion (`recv_fifo` stranding) ✅ `simSctOrderedDrain` (§3.drain); overlapping re-dispatch ✅ `_sim_hold_busy_slots`/`simInflightResidence` (§3.resid). Speed model exonerated. Open: C1/C2 (≥7200s). |
 | **oort** | **ALL MECHANISM ROOTS CLOSED (Jun 22, 46/46).** **(1) Stale-property recording** — real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever; fix `_record_returned_trainer_props`. **(2) K3b stale read-wait inflation** — fix (1) recorded stale durations as `recv−dispatch`, bundling **aggregator read-wait** (finished straggler sits unread until a later round drains the buffer; up to 1.65×D) — a server artifact, not client speed, inflating slow trainers so real over-avoided them. Fix: real records **client task-train duration = `WALL_SEND_TS − dispatch`** (`_real_client_task_train_duration`, fresh+stale); sim unchanged (already D). **VALIDATED Jun 22 90min:** A2c `selected_KS=0.024` (pool 12.13/12.13 matched, raw observed 17.1/12.1 still diverges = the excluded read-wait, as diagnosed), K3b residual −0.27s, Sd 0.581/0.734, S2 KS 0.042. Open: C1/C2 (≥7200s). |
-| **refl** | Same shared `oort/top_aggregator` stale-property + WALL_SEND_TS fix (no new code; inherits oort's). Reruns pending; dirs gone. Prior reads: 3 h `participation`, 1 h `overhead_residual`/`eligibility` — re-evaluate post-fix. refl accepts within-threshold stale, so the fix touches only its too-stale rejects. |
-| **feddance** | `selection_bias` / `feddance_U` — SEPARATE root, not the oort stale-props bug (fresh runs needed). |
+| **refl** | Shared `oort/top_aggregator` stale-property + `WALL_SEND_TS` fix landed CLEAN (1.5h Jun 22): K2/K3b/A2c/Sr/Sd/Sx all PASS. **Open: A2 num_eligible** (KS 0.384) DECOMPOSED: `[DISTRIBUTE]` shows `unavail=0`, so eligible = `300−|selected_ends|`; the whole gap is `selected_ends` (sim 47.2 vs real 50.1), which by Little's law = residence (3.63 vs 3.86, num_chosen=13 matches). Residence **tail (≥4) identical**; gap is body SHAPE (real mode at 3, sim flatter = real's ~3-round pipeline cadence). NOT §4.5 buffer (FALSIFIED). Instrumented `residence_staleness`/`residence_was_fresh` paired w/ `residence_rounds` to split by commit class; rerun pending. Near-threshold (means 1.2%); may be no-fix cadence. |
+| **feddance** | `selection_bias`/`feddance_U` **CLOSED** (1.5h Jun 22) — inherited the syncfl `WALL_SEND_TS` duration fix ([syncfl/top_aggregator.py:499](../../flame/mode/horizontal/syncfl/top_aggregator.py#L499)): A2c PASS, Sx `feddance_U` KS=0.154, `feddance_I`/`A`/`V` all PASS, S2 KS=0.067. **U6 commit_visibility** root = real per-message metric blind to the barrier wait; **FIXED real-path (§6.u6 barrier-anchor)**, validated vs stored logs (15.65≈15.48), confirming rerun pending. **K2** 0.052-vs-0.05 = emergent rollup, all child rungs pass; residual = sub-threshold `feddance_I`(=stat_utility/loss, emergent) mix-bias + run-length noise (~1.4σ at 176 rd) → 3h rerun, no code lever. |
 
 ---
 
@@ -116,6 +165,12 @@ baselines) and must hold 46/46.
   `SIM_CLIENT_TASK_TRAIN_DURATION_S = max(gpu,D)`). Single-sourced in
   `_real_client_task_train_duration`. Proof it was the scorer not residence:
   `scripts/oort_residence_discriminator.py`. See [[project_oort_a2c_root]].
+- **`A2 num_eligible` can FAIL (KS) while `S3/4 in_flight` PASSES — read it as the same gap at
+  two tolerances (refl Jun 22).** With an all-available trace (`A1 UNKNOWN≈300`), eligible =
+  `candidates − in_flight_hold`, so a small in-flight gap (60.2 vs 63.15, rel 0.047 — under
+  S3/4's 0.15 bar) lands directly on eligible (252.7 vs 249.8) where A2's tight KS≤0.2 binds.
+  Don't chase A2 as a separate eligibility bug; walk to the in-flight/residence channel
+  (`residence_rounds` 3.63 vs 3.86 localized the §4.5 release-timing root).
 - **Decompose a net selection-rate gap into channels before fixing it.**
   `sel_rate = eligible_fraction × P(sel|eligible)`. If `eligible_fraction` matches sim/real
   (the menu is identical) the gap is the **scorer** (P(sel|elig)), not residence/eligibility.
@@ -140,6 +195,19 @@ baselines) and must hold 46/46.
 - **`U6 commit_visibility` KS is a false-positive on a sub-ms point mass.** When both modes
   commit immediately (real_mean 0.004s, sim 0.001s) KS→1.0 is signal-free; read `mean_diff`
   (3ms ≪ 2.0s bar). A real divergence (felix past-dating) shows a large `mean_diff` (14.8s).
+- **`U6` LARGE `mean_diff` on a STRICT SYNC BARRIER was a REAL-telemetry flaw, fixed on the real
+  path — NOT a sim bug, NOT a checker gate (feddance, Jun 22).** sim 15.5s vs real 0.02s. Sim
+  `vclock−sct` is correct (barrier commits all K at `max(sct)`; slowest lag=0, early finishers
+  0→52s). The bug: real `_update_visibility_lag` took `committed=datetime.now()` **per-message in
+  the recv loop**, measuring arrival→ingestion (~0.02s), NOT the barrier wait — even though
+  updates physically arrive SPREAD (`[MSG_ARRIVAL]` 33→48s, `queue_depth=0`). Don't reach for a
+  checker WARN-gate or "real is blind" — real HAS the spread; **recompute it from stored raw
+  logs first**: `lag_i = max_dur − dur_i`, `dur = WALL_SEND_TS − dispatch` gave 15.65 ≈ sim 15.48,
+  proving the quantity exists and the metric (not the dynamics) was wrong. Fix = barrier-anchor
+  the real path (§6.u6); only the sync-barrier baseline (feddance/fedavg) needs it — a STREAMING
+  aggregator (oort/refl) commits each update at its own `sct`, so per-message is already correct.
+  **Tell it's a metric flaw not past-dating:** sim per-round MIN lag ≈0 (past-dating shifts the
+  whole dist up) AND `U3 staleness` 0/0 matched.
 - **`P3 mean_overhead` is wall-capture, not a speed-model bug**, when sub-second,
   opposite-sign across baselines, and `grid_KS`/`training_delay_s` match — trust `P3` only
   when `grid_KS` also fails.
@@ -191,6 +259,12 @@ baselines) and must hold 46/46.
   need a cluster rerun.
 
 ## Dead ends — do NOT retry
+- **refl A2 num_eligible via §4.5 `pending_after`→`pending_ends` (hold ALL buffered until
+  commit) — FALSIFIED (Jun 22).** Over-holds: sim `buf_depth`≈57–63 vs `held`≈46–48, so it
+  would exclude ~13 more (eligible 252.7→~240) vs the ~3-end target (real 249.8). ~13 ends sit
+  ready-but-uncommitted in the reorder buffer, but real does NOT hold all of them out — its
+  selected_ends/eligible accounting is subtler than buffer occupancy. Instrument the exact
+  per-round eligible decomposition in both modes BEFORE any hold change.
 - Overhead > 0 on the virtual clock (masks & drifts; clock must `= max(vclock, sct)`).
 - Prediction-only gates with no real blocking (never fire).
 - **Tuning the `_sim_recv_min` gate predictor (`exp = sim_send_ts + budget`)** — realized
@@ -446,6 +520,26 @@ poll loop ran `while not self.simulated`, so sim got one pass and skipped not-ye
 trainers → committed stale; removed the gate (confirmed 2.5h `sim_committed_fresh=10`). Guard:
 `TestSimInflightCarryover`. *(The residual carry-over "decay" was the A2c scorer-input root —
 see Settled roots; NOT a gate or speed-tail bug.)*
+
+### §6.u6  syncfl real U6 barrier-anchor (feddance/fedavg; LANDED Jun 22)
+`update_visibility_lag_s` on the REAL strict-sync path was wrong: `_update_visibility_lag`
+evaluated `committed = datetime.now()` **per-message inside the recv loop**, so it measured
+arrival→ingestion (~0.02s/update) — NOT the barrier wait. A strict barrier applies all K at ONE
+post-loop instant (`optimizer.do`), so an early finisher's true visibility lag = barrier − its
+own completion. Real updates do physically arrive spread (`[MSG_ARRIVAL]` 33→48s within a round,
+`queue_depth=0`); the per-message metric was just blind to it (sim 15.5s vs real 0.02s = U6
+FAIL). **Fix:** real anchors on the single round barrier — `_barrier_anchored_lags(durs)` returns
+`max_dur − dur_i` with `dur = WALL_SEND_TS − dispatch` (client task-train duration, the
+dispatch-relative completion matching sim's `sct`); sim is unchanged (`vclock−sct`, vclock is
+already advanced to the barrier). **Why only feddance, not oort/refl:** oort/refl use the
+oort overlay's STREAMING commit — `_oort_sim_recv` pops in `sct` order and `_advance_sim_clock`
+tracks each pop, so each update commits at `vclock≈own sct` → lag≈0 in BOTH modes (real commits
+first-K-to-arrive near arrival too). The barrier wait only exists for a baseline that waits for
+the slowest of its cohort (feddance). So oort's per-message helper stays correct and is left
+untouched; only `syncfl._aggregate_weights` (feddance + fedavg base) is barrier-anchored.
+**Validated against STORED real logs (no rerun):** recomputed lag mean 15.65/min 0/max 53 ≈ sim
+15.48/0/52. Pure telemetry (no dynamics/staleness effect). Guard:
+`test_sync_sim_ordering.py::test_barrier_anchored_lags_*`. Pending: confirming real feddance rerun.
 
 ## §5  Checker corrections (stochastic / observability classes)
 Once dynamics match, some residual FAILs were the checker enforcing exact identity on

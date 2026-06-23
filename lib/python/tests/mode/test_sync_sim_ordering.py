@@ -498,3 +498,33 @@ class TestStaleRejectRecordsPropsIntegration:
         # and the trainer was cleaned out of the in-flight set.
         assert agg.cache == {}
         assert "slow" not in sel.selected_ends
+
+
+# --- U6 real barrier-anchored visibility lag (feddance/fedavg sync barrier) ----
+from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as _SyncAgg
+
+
+def test_barrier_anchored_lags_basic():
+    """lag_i = max_completion - completion_i: the slowest (barrier-setter) has
+    lag 0, early finishers wait the gap. This is the within-round spread real's
+    per-message `now-arrival` metric was blind to (feddance U6, sim 15.5 vs 0.02)."""
+    durs = [13.0, 11.0, 2.0, 56.0]  # 56 = slowest = barrier
+    lags = _SyncAgg._barrier_anchored_lags(durs)
+    assert lags == [43.0, 45.0, 54.0, 0.0]
+    assert min(lags) == 0.0  # barrier-setter always 0 (proves not a past-dating shift)
+
+
+def test_barrier_anchored_lags_none_safe():
+    # Missing WALL_SEND_TS -> None passes through; barrier ignores Nones.
+    assert _SyncAgg._barrier_anchored_lags([None, 5.0, 20.0]) == [None, 15.0, 0.0]
+    assert _SyncAgg._barrier_anchored_lags([None, None]) == [None, None]
+    assert _SyncAgg._barrier_anchored_lags([]) == []
+
+
+def test_barrier_anchored_lags_matches_sim_spread():
+    """Mean of the anchored lags equals (max - mean) of completions — the same
+    quantity sim reports as vclock-sct (barrier - sct)."""
+    import numpy as np
+    durs = [2.0, 5.0, 7.0, 9.0, 13.0, 14.0, 16.0, 17.0, 25.0, 27.0]
+    lags = _SyncAgg._barrier_anchored_lags(durs)
+    assert abs(np.mean(lags) - (max(durs) - np.mean(durs))) < 1e-9
