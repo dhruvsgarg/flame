@@ -135,7 +135,7 @@ class REFLOortSelector(OortSelector):
         if round_num <= self._last_selection_round and len(self.newly_selected_this_round) != 0:
             return {key: None for key in self.newly_selected_this_round}
 
-        self.pacer()
+        self.pacer(round_num)
 
         unavail_set = set(trainer_unavail_list) if trainer_unavail_list else set()
 
@@ -467,52 +467,7 @@ class REFLOortSelector(OortSelector):
 
         return set(blacklist)
 
-    def pacer(self) -> None:
-        """
-        Adaptive pacer mechanism to adjust round_threshold.
-
-        Monitors exploitation utility trends and adjusts round_threshold:
-        - If utility is flat (< 10% change): increase threshold (faster clients)
-        - If utility is volatile (> 500% change): decrease threshold (more clients)
-        """
-        if self.pacer_step <= 0:
-            return  # Pacer disabled
-
-        # Only run pacer at specified intervals
-        if self._last_selection_round < 2 * self.pacer_step or self._last_selection_round % self.pacer_step != 0:
-            return
-
-        # Calculate utility change over last two pacer windows
-        if len(self.exploitation_util_history) < 2 * self.pacer_step:
-            return
-
-        history_list = list(self.exploitation_util_history)
-        util_last_window = sum(history_list[-2 * self.pacer_step : -self.pacer_step])
-        util_current_window = sum(history_list[-self.pacer_step :])
-
-        if util_last_window == 0:
-            return
-
-        relative_change = abs(util_current_window - util_last_window) / util_last_window
-
-        # Flat utility: increase threshold (prefer faster clients)
-        if relative_change <= 0.1:
-            old_threshold = self.round_threshold
-            self.round_threshold = min(100.0, self.round_threshold + self.pacer_delta)
-            logger.info(
-                f"Pacer: Utility flat ({relative_change:.2%}), "
-                f"increasing threshold {old_threshold}% -> {self.round_threshold}%"
-            )
-
-        # Volatile utility: decrease threshold (include more clients)
-        elif relative_change >= 5.0:
-            old_threshold = self.round_threshold
-            self.round_threshold = max(
-                self.pacer_delta, self.round_threshold - self.pacer_delta
-            )
-            logger.info(
-                f"Pacer: Utility volatile ({relative_change:.2%}), "
-                f"decreasing threshold {old_threshold}% -> {self.round_threshold}%"
-            )
-
-        self.last_pacer_round = self._last_selection_round
+    # pacer() inherited from OortSelector — the faithful reference port (§S.pacer,
+    # third_party/Oort/oort/oort.py:184-199). refl previously kept its own copy;
+    # the base now matches the reference exactly (flat→relax / sharp→tighten,
+    # keyed on the current round), so the override was redundant and removed.

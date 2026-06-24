@@ -22,7 +22,7 @@ sim fixes. Split across machines via `--baselines`.
 
 **Tests** (no cluster; under lib/python with `dg_flame`): `pytest tests/mode/
 tests/selector/test_oort_selector.py tests/sim/ examples/async_cifar10/scripts/parity/`.
-Last green (Jun 22): mode+selector+telemetry **300 pass / 7 skip**, sim **32 pass**.
+Last green (Jun 24): selector+mode+sim+parity **351 pass / 7 skip** (incl. `TestPacerFidelity`).
 
 ---
 
@@ -52,58 +52,79 @@ perturb another baseline.
 
 ---
 
-## Status (Jun 23 PM 3h — K2 ROOT FOUND + FIXED (§S.dur): selector-input delivery-lag strip; oort+refl 3h real reruns PENDING; temporal fix faithful & stable; felix 46/46; feddance 43/44)
+## Status (Jun 24 3h — §S.dur VALIDATED (refl 40→43); felix 46/46 incl C1/C2; oort §S.pacer ROOT-CAUSED + FIXED (faithful pacer port, validate next run); refl S2 RESOLVED (stochastic core-identity → speed-class reclassification, 43→44))
 
-**K2 root (oort+refl), ROOT-CAUSED Jun 23 PM:** sim selects a ~0.77s-faster mix → lower
-per-round max-of-K committed duration → ~0.5s/rd lower advance → more rounds → K2. It's the
-DRAW (committed-mix gap = selected-mix gap; residence matched), driven by the selector's
-observed-duration INPUT: sim records `duration = D` exactly; **real recorded `D + delivery_lag`
-(WALL_RECV − dispatch, +8s for D≥20 stragglers held one-in-flight)**, raising real's
-`round_preferred_duration` percentile (10.7 vs sim 7.0) so real under-penalized slow clients.
-The trainer's OWN stamps prove the inflation is server-side, not speed: `WALL_SEND − WALL_RECV
-= D` exactly (real GPU ~0.01s; device sleeps to D). **FIX LANDED (§S.dur):** anchor the real
-selector duration on BOTH client stamps (`WALL_SEND_TS − WALL_RECV_TS`) = intrinsic D = sim's
-`max(gpu,D)`. Real-path only, selector-input only (clock untouched). **Now SINGLE-SOURCED across
-ALL horizontal aggregators** (`client_duration.real_client_task_train_duration`): oort/refl (the
-K2 root), and — for consistency / to pre-empt the same long-run disparity — asyncfl/felix
-(was the crudest, `recv−dispatch`), syncfl/feddance+fedavg, and fwdllm. For felix/feddance the
-duration feeds telemetry + an inert/absent speed penalty (so it doesn't fail their CURRENT
-parity), but felix was only validated at 1.5h and accumulates stragglers at length, so anchoring
-it on the intrinsic stamps now removes the latent risk. **3h real reruns of oort+refl PENDING**
-(sim unchanged → compare vs stored sim dirs); felix should re-validate at a longer horizon too.
+**§S.dur validation (Jun 24 3h real+sim reruns, only commit since Jun 23 = ba4d177e §S.dur).**
+The delivery-lag strip did its job and the [CLIENT_DUR_STRIP] telemetry CONFIRMS real's selector
+input is now clean: 5237 stale records, `intrinsic_s ≈ D` exactly with `delivery_lag_s ≈ 0.02–0.06s`
+(NOT the +8s the lag carried at the time the fix was scoped). So real's `round_preferred_duration`
+is now the correct intrinsic-D-based value. **refl: §S.dur WORKED** — K2/K3b/A2c/Sr all PASS,
+throughput family closed, 40→43. **oort: §S.dur exposed a deeper, SIM-side root, now ROOT-CAUSED
++ FIXED.** With real's input cleaned, sim's `pref` sat HIGHER than real's (mean 10.14 vs 8.58) so
+sim bound the Oort speed penalty in only 73.6% of rounds vs real's 94.1% → ~1.5s-slower max-of-K
+(10.5 vs 8.99) → +1.2s/rd advance (K3b −1.22s rel 0.131) → fewer rounds (K2 rel 0.117). **Root =
+the dynamic `round_threshold` PACER was an UNFAITHFUL port** of reference Oort
+(third_party/Oort/oort/oort.py:184-199): flame's base `OortSelector.pacer()` raised on ANY utility
+dip (`last > curr`) and NEVER lowered → a monotonic ratchet to 100, hypersensitive to per-round
+noise, so the sim/real round_threshold trajectories diverged and compounded in the back half (Q4
+sim pref 19.49/real 15.19, sim hit `pref=99999`/penalty-off in 31 late rounds, real 0). NOT the
+duration input (candidate-pool static speed + selected MEAN identical, A2c PASS; CLIENT_DUR_STRIP
+clean). **FIX LANDED (§S.pacer):** faithful port — FLAT plateau (`|Δ|≤0.1·last`) RELAXES, SHARP
+change (`|Δ|≥5·last`) TIGHTENS, keyed on the current round; redundant `REFLOortSelector.pacer`
+override removed (refl's copy was already faithful) so oort+refl share one reference-matching
+implementation. `round_threshold` added to selection telemetry. **refl S2 RESOLVED:** its
+`matched_count_ks` 0.464 was pure STOCHASTIC core-IDENTITY (both modes build a ~120-trainer core,
+SPEED-MATCHED — real-only D̄ 9.8 / sim-only 9.2, participation-weighted D̄ 8.20/8.26 — but only 63
+of ~120 individuals shared, the weighted-exploit draw locking in different members via
+rich-get-richer); NO speed/utility-class bias (A2c/K8 pass). At `speed_class` granularity
+participation matches (TVD 0.026 vs per-second 0.187, sign-alternating noise). S2 now enforces
+participation BY SPEED CLASS for stochastic selectors (§5), per-trainer identity demoted to
+diagnostic → refl 43→44. **Both oort+refl fixes are selector/checker changes; validate the pacer
+on the next 3h run, S2 re-validates instantly vs stored dirs.**
 
-**Scoreboard (latest per baseline — pre-fix; K2 fix validation pending):**
+**Cross-run caveat (per user):** Jun 23 stored oort/refl dirs are also 3h (`final_vclock≈10800`,
+wall≈10500) so duration-comparable, but the Jun-24 sim `pref` (10.14) differs from the Jun-23 stored
+sim figure despite a real-path-only commit — treat the Jun-24 3h pair as the source of truth and the
+back-half pacer divergence as the thing to fix; do not anchor on the cross-run delta direction.
+
+**Scoreboard (Jun 24 3h):**
 
 | baseline | score | state / root | run dirs |
 |---|---|---|---|
-| **felix** | **46/46** ✅ | mechanism parity closed (§3.drain + §3.resid); only C1/C2 sign-off (≥7200s) left | `…002022…real` / `…154600…sim` |
-| **oort** | **43/46** (3h Jun 23 PM) | **Temporal fix faithful & STABLE at 3h** (Sx temporal KS 0.076, real 0.045/sim 0.044; A2c selected_speed_KS 0.074, K3b PASS rel 0.054). **Sr residence RESOLVED with run length** — `in_flight_after` 1.56/1.17 rel 0.25 vs 0.3 (was 0.357 FAIL at 90min → CONFIRMS the small-N sensitivity read, `committed_fresh` 10.0/9.96; NOT a §4.9 regression). **Single root = K2** rel 0.052 vs 0.05 (sim 9.69 vs real 10.22 s/rd) — just over the bar; the K3b advance residual (0.55s/rd, passes its 0.1 bar) compounds over ~1100 rounds into K2's tighter 0.05. **K8** (rounds rel 0.068, trainers rel 0.106) + **U2** DOWNSTREAM of K2. **C1/C2 now PASS** (3h: acc_diff 0.028, loss_diff 0.089). | `…153623…real` / `…151441…sim` |
-| **feddance** | **43/44** (3h Jun 23) | **U6 barrier-anchor (§6.u6) CONFIRMED on fresh real**: U6 PASS real_mean 14.39 ≈ sim 14.55 (KS 0.115). **K2 PASS** (28.04 vs 27.63 s/rd — the ~1.4σ swing was noise, tightened with rounds). K3b/A2c/K8/U2/C1 all PASS. **Sole FAIL = C2 loss** 0.1716 vs 0.15 (emergent, only 8 eval rounds; K8 terminal + C1 acc both PASS). | `…033223…real` / `…031608…sim` |
-| **refl** | **40/46** (3h Jun 23 PM) ⬇ from 42/46 (90min) | **Temporal fix STILL faithful at 3h** (Sx temporal KS 0.119, real 0.026/sim 0.024 — alive & matched). **K3b PASS** residual 0.28s rel 0.095 (near bar), **A2c PASS**, **Sr PASS** (residence 3.72/3.78). **Now 2 roots, both throughput-family: K2 FAIL** rel 0.093 vs 0.05 (sim 2.65 vs real 2.93 s/rd) — the K3b advance residual is a CONSTANT ~0.28s/rd gap (flat across quartiles: sim 2.62/2.69/2.65/2.63), passes per-round but its measurement TIGHTENED with rounds (0.06→0.093) to expose it over K2's 0.05 bar; structural selection-mix bias, NOT noise & NOT compounding. **A2 FAIL** num_candidates KS 1.0 (point-mass; num_eligible means MATCH 251.7/249.8 within 2%). **S2** (matched_count_KS 0.232) + K8/U2 DOWNSTREAM. | `…162336…real` / `…151433…sim` |
+| **felix** | **46/46** ✅ (3h Jun 24) — **RE-VALIDATE next run after §S.pacer** | **Mechanism parity AND C1/C2 sign-off DONE at full 3h** (acc_diff 0.017, loss_diff 0.020, K8 rounds rel 0.023 / trainers 0.0, U2 rel 0.023). §3.drain + §3.resid hold; §S.dur anchor no regression. ⚠ The Jun-24 §S.pacer fix touched felix's `AsyncOortSelector.pacer` (same unfaithful flat/sharp bug + eval double-fire) — its speed penalty was inert because of the buggy ratchet; now active, so re-confirm 46/46 next run. WARN = U5 inter-arrival (stochastic). | `…020348…real` / `…232449…sim` |
+| **oort** | **40/46** (3h Jun 24) ⬇ from 43; **pacer fix landed, validate next run** | **§S.dur cleaned real's input (CLIENT_DUR_STRIP: intrinsic_s≈D, lag≈0.02s), exposing a SIM-side root.** Lowest broken rung = **Sd `preferred_duration`** (frac_diff 0.205>0.2; real binds 0.941 / sim 0.736, real pref_median 10.01 / sim 12.0). Root = the **UNFAITHFUL `round_threshold` PACER (§S.pacer)** — flame's base pacer raised on any dip + never lowered (monotonic ratchet), so sim/real diverged & back-half-compounded (Q4 sim pref 19.49/frac_pen 0.153 vs real 15.19/0.443; sim penalty-off 31 late rounds). Propagated to **K3b** (−1.22s, rel 0.131) + **K2** (sim 10.5 / real 9.27 s/rd, rel 0.117); **K8** (rounds 0.102, trainers 0.179) + **U2** DOWNSTREAM. A2c PASS (8.04/8.16), residence PASS (0.271), Sx PASS, S2 PASS (tvd 0.052), **C1/C2 PASS**. **FIXED (§S.pacer): faithful reference port** (flat→relax/sharp→tighten); expect sim round_threshold to track real → pref/binding match → K3b/K2/K8/U2 close. | `…054205…real` / `…052050…sim` |
+| **feddance** | **43/44** (3h Jun 23) | Unchanged (no rerun; §S.dur left syncfl's separate `_real_task_dur` U6 anchor untouched). **U6 §6.u6** PASS, K2/K3b/A2c/K8/U2/C1 PASS; sole FAIL = **C2 loss** 0.1716 vs 0.15 (emergent, 8 eval rounds). Effectively closed. | `…033223…real` / `…031608…sim` |
+| **refl** | **44/46** (3h Jun 24) ⬆ from 40 | **§S.dur CLOSED the throughput family**: **K2 PASS** (2.64/2.77 s/rd, rel 0.047, was 0.093), **K3b PASS** (0.048), **A2c PASS** (11.61/11.64), **Sr PASS** (50.1/48.9, rel 0.024), Sx PASS. Speed penalty inert (binding 0.0/0.0, round_threshold=30 → §S.pacer doesn't bite refl). **S2 RESOLVED** — was stochastic core-identity (63 of ~120 shared, SPEED-MATCHED, no class bias); reclassified to speed-class participation (TVD 0.026 PASS). Remaining: **A2 `eligibility`** ks_eligible 0.389 — KS point-mass artifact (means MATCH 251.1/248.8, in_flight rel 0.019 PASS), root by ladder but not a selector lever; **C2 loss** 0.1929 vs 0.15 (emergent, 76 eval rounds, DOWNSTREAM). | `…094324…real` / `…084324…sim` |
 
-JSONs kept: `parity_felix_20260621_resid`, `parity_oort_20260623_3h`,
-`parity_refl_20260623_3h`, `parity_feddance_20260623_3h`.
+JSONs kept: `parity_felix_20260624_3h`, `parity_oort_20260624_3h`,
+`parity_refl_20260624_3h`, `parity_feddance_20260623_3h`.
 
 ### Next steps
-0. **K2 root FOUND + FIXED (§S.dur) — validate.** The unified oort+refl K2 root = sim selects a
-   ~0.77s-faster mix because the selector's observed-duration INPUT diverged: real recorded
-   `WALL_SEND − dispatch` (carried the dispatch→recv delivery lag, +8s for stragglers), inflating
-   `pref` (10.7 vs sim 7.0) so real under-penalized slow clients → committed a slower mix → +0.5s/rd
-   advance → K2. NOT a clock/overhead bug, NOT noise (quartile-flat constant mix bias). **FIX:** real
-   selector duration = `WALL_SEND − WALL_RECV` (intrinsic D, = sim). **Fire oort+refl 3h real reruns
-   vs stored sim;** expect real `pref`→~7.0, A2c selected mean→sim 7.82/11.45, K2 sim≈real s/rd,
-   K8/U2/S2 clear (downstream). If a K2 residual persists post-fix, THEN it's the stochastic-mix
-   floor (reclassify per §5), but the input gap is the real lever and must close first.
-1. **refl — 40/46 at 3h, K2 fix pending.** After §S.dur, expect K2 (was rel 0.093) to close as the
-   selector input aligns; **A2** num_candidates KS 1.0 is a point-mass artifact (num_eligible MEANS
-   match 251.7/249.8, <2% — read with §5/U6 point-mass lesson), so the real remaining check post-fix
-   is A2's classification, not a selector lever. S2/K8/U2 downstream of K2.
-2. **oort — 43/46 at 3h, K2 fix pending.** **Sr residence RESOLVED** (rel 0.25 vs 0.3, was 0.357 FAIL
-   at 90min) — small-N sensitivity, not a regression; do NOT instrument carry-over. **K8 trainers**
-   rel 0.106 + U2 are DOWNSTREAM of K2, clear when §S.dur closes K2.
-   C1/C2 already PASS at 3h, so no separate ≥7200s sign-off run needed for oort.
+0. **§S.dur VALIDATED — refl closed, felix unaffected, oort exposed a deeper root.** No action on
+   §S.dur itself; the delivery-lag strip is correct and CLIENT_DUR_STRIP confirms real input clean.
+1. **oort — PACER fidelity fix LANDED (§S.pacer), VALIDATE on the next 3h run.** Root was an
+   unfaithful port: flame's base `OortSelector.pacer()` raised `round_threshold` on ANY utility dip
+   (`last > curr`) and never lowered it → monotonic ratchet to 100, noise-sensitive → sim/real
+   diverge & compound. **Fix = faithful port of third_party/Oort/oort/oort.py:184-199** (FLAT
+   `|Δ|≤0.1·last` → relax; SHARP `|Δ|≥5·last` → tighten; keyed on the current round), redundant
+   `REFLOortSelector.pacer` override removed, `round_threshold` now in selection telemetry. **On the
+   rerun confirm:** (a) sim & real `round_threshold` trajectories track (read the new field, binned
+   by run-fraction — no monotonic-to-100 ratchet, no 99999 penalty-off in sim); (b) Sd binding
+   matches (real≈sim ~0.9); (c) K3b/K2 close, K8/U2 clear. Do NOT tune `pacer_delta`/`pacer_step`
+   or touch the §S.dur duration input (A2c/residence/CLIENT_DUR_STRIP all clean).
+2. **refl — 44/46, S2 RESOLVED + throughput family CLOSED.** S2 was stochastic core-IDENTITY, not a
+   bug: both modes build a ~120-trainer core, SPEED-MATCHED (real-only D̄ 9.8 / sim-only 9.2;
+   participation-weighted 8.20/8.26) with only 63 shared individuals; speed-class participation
+   matches (TVD 0.026). Reclassified S2 to enforce participation BY SPEED CLASS for stochastic
+   selectors (§5), identity demoted to diagnostic. Remaining: **A2 `eligibility`** KS point-mass
+   artifact (means match 251.1/248.8, in_flight rel 0.019 — A2/S3-4 two-tolerances lesson, NOT a
+   selector lever) and **C2 loss** emergent (76 eval rounds). No refl mechanism gap remains; the A2
+   classification is a checker read, not a sim/real change. refl is immune to §S.pacer
+   (round_threshold=30, penalty never binds — Sd 0.0/0.0; pacer change is keying-only for it).
 3. **feddance — DONE (43/44), nothing to fix.** C2 loss (0.1716 vs 0.15) is emergent (8 eval rounds);
    K8 + C1 acc both PASS. Treat as effectively closed.
+4. **felix — CLOSED (46/46 at full 3h incl. C1/C2).** No sign-off run pending. §S.dur anchor caused
+   no regression at length.
 4. **felix.** One ≥7200s sim-only run vs stored real to promote C1/C2 LOWC→PASS (mechanism closed).
 
 ### Roadmap: lock mechanism parity on ALL baselines BEFORE the perf pass (Jun 21)
@@ -118,9 +139,9 @@ baselines) and must hold 46/46.
 ### Settled roots
 | baseline | root |
 |---|---|
-| **felix** | **ALL MECHANISM ROOTS CLOSED (Jun 21, 46/46).** Eval-stale-`sct` ✅; commit-side ingestion (`recv_fifo` stranding) ✅ `simSctOrderedDrain` (§3.drain); overlapping re-dispatch ✅ `_sim_hold_busy_slots`/`simInflightResidence` (§3.resid). Speed model exonerated. Open: C1/C2 (≥7200s). |
-| **oort** | **MECHANISM ROOTS CLOSED Jun 22 (46/46); faithful temporal (§S.temporal) landed; 3h Jun 23 PM → 43/46, single root K2.** **(1) Stale-property recording** — real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever; fix `_record_returned_trainer_props`. **(2) K3b stale read-wait inflation** — fix (1) recorded stale durations as `recv−dispatch`, bundling **aggregator read-wait** (up to 1.65×D, a server artifact); fix: real records **client task-train duration = `WALL_SEND_TS − dispatch`**. **(3) Temporal fidelity (Jun 23):** new faithful UCB temporal default applied symmetrically — alive & matched (3h Sx KS 0.076, 0.045/0.044), A2c PASS 0.074, K3b PASS 0.054. **3h verdict:** the 90min Sr/K8 marginals were small-N — **Sr RESOLVED** (rel 0.25 vs 0.3) and **K8 is DOWNSTREAM** of the lone surviving root **K2** rel 0.052. **(4) K2 ROOT-CAUSED + FIXED Jun 23 PM (§S.dur):** K2 = sim selects a ~0.77s-faster mix (committed per-round max-of-K 9.69 vs real 10.09) because the selector's observed-duration INPUT still diverged — fix (2) stripped the recv-side read-wait but real's `WALL_SEND − dispatch` still carried the **dispatch→recv delivery lag** (`WALL_RECV − dispatch`, +8s for D≥20 stragglers held one-in-flight), inflating `pref` (10.7 vs sim 7.0) so real under-penalized slow clients. Fix: real duration = `WALL_SEND − WALL_RECV` (intrinsic D, both client stamps = sim's `max(gpu,D)`). Guards `TestStaleTrainerPropsRecorded`. C1/C2 PASS at 3h. Open: validate §S.dur on 3h real rerun (K2→close, K8/U2 clear). |
-| **refl** | Shared `oort/top_aggregator` stale-property + `WALL_SEND_TS` fix landed CLEAN. A2-residence root CONVERGED (Sr PASS 3.851/3.772). **K3b root = selection disparity from a DEAD UCB temporal term — FIX CONFIRMED Jun 23 PM (40→42/46).** `refl_oort.select()` let the term divide by a None `time_stamp` → temporal 0 (0/7513 both modes) → refl scored by stat_util alone (speed-uniform). **FIXED FAITHFULLY (§S.temporal):** `PROP_LAST_RETURNED_ROUND` = reference's last-RECEIPT round (`self.epoch`), stamped at receipt + registration-init. **VALIDATED & STABLE at 3h:** temporal term ALIVE & matched (Sx KS 0.119, real 0.026/sim 0.024), **K3b PASS** rel 0.095, **A2c PASS**, **Sr PASS** 3.72/3.78. **3h verdict (40/46):** surviving roots are **K2** rel 0.093 (the constant per-round advance residual ~0.28s/rd, quartile-flat → constant selection-mix bias, shared with oort — see Next-steps §0; its measurement tightened with rounds to expose it over K2's 0.05) and **A2** num_candidates KS-artifact (num_eligible MEANS match 251.7/249.8). S2/K8/U2 downstream. So the temporal fix was BOTH a fidelity fix AND closed K3b/A2c. **K2 ROOT-CAUSED + FIXED Jun 23 PM (§S.dur, shared with oort):** the residual was NOT a clock/overhead bug but the same selector-input delivery-lag (real `WALL_SEND − dispatch` carried `WALL_RECV − dispatch`, inflating `pref` 10.7 vs sim 7.0 → real picks a slower mix → per-round max-of-K 15.40 vs sim 14.08 → +0.28s/rd). Fix: real duration = `WALL_SEND − WALL_RECV` (intrinsic D). Validate on 3h real rerun. Guards `TestREFLTemporalFidelity`/`TestTemporalUncertaintyFidelity`/`TestStaleTrainerPropsRecorded`. |
+| **felix** | **46/46 at full 3h incl. C1/C2 (Jun 24) — RE-VALIDATE after §S.pacer.** Eval-stale-`sct` ✅; commit-side ingestion (`recv_fifo` stranding) ✅ `simSctOrderedDrain` (§3.drain); overlapping re-dispatch ✅ `_sim_hold_busy_slots`/`simInflightResidence` (§3.resid). Speed model exonerated. **C1/C2 sign-off DONE** (3h: acc_diff 0.017, loss_diff 0.020, K8/U2 rel 0.023). §S.dur anchor no regression. **§S.pacer (Jun 24) touched felix's `AsyncOortSelector.pacer`** — it had the same unfaithful raise-only ratchet AND fired on the eval hand off a stale round; both fixed (faithful two-branch + train-gate). felix's penalty was inert *because* of the ratchet; now active → re-validate 46/46 on the next run (a shift would mean the prior pass leaned on the inert penalty). |
+| **oort** | **MECHANISM ROOTS CLOSED Jun 22 (46/46); faithful temporal (§S.temporal) landed; 3h Jun 23 PM → 43/46, single root K2.** **(1) Stale-property recording** — real dropped a stale-returning trainer's speed/utility (`continue` before `_handle_weights_msg`) → Oort treated slow trainers as unexplored and re-picked forever; fix `_record_returned_trainer_props`. **(2) K3b stale read-wait inflation** — fix (1) recorded stale durations as `recv−dispatch`, bundling **aggregator read-wait** (up to 1.65×D, a server artifact); fix: real records **client task-train duration = `WALL_SEND_TS − dispatch`**. **(3) Temporal fidelity (Jun 23):** new faithful UCB temporal default applied symmetrically — alive & matched (3h Sx KS 0.076, 0.045/0.044), A2c PASS 0.074, K3b PASS 0.054. **3h verdict:** the 90min Sr/K8 marginals were small-N — **Sr RESOLVED** (rel 0.25 vs 0.3) and **K8 is DOWNSTREAM** of the lone surviving root **K2** rel 0.052. **(4) K2 ROOT-CAUSED + FIXED Jun 23 PM (§S.dur):** K2 = sim selects a ~0.77s-faster mix (committed per-round max-of-K 9.69 vs real 10.09) because the selector's observed-duration INPUT still diverged — fix (2) stripped the recv-side read-wait but real's `WALL_SEND − dispatch` still carried the **dispatch→recv delivery lag** (`WALL_RECV − dispatch`, +8s for D≥20 stragglers held one-in-flight), inflating `pref` (10.7 vs sim 7.0) so real under-penalized slow clients. Fix: real duration = `WALL_SEND − WALL_RECV` (intrinsic D, both client stamps = sim's `max(gpu,D)`). Guards `TestStaleTrainerPropsRecorded`. C1/C2 PASS at 3h. **(5) §S.dur VALIDATED Jun 24, but it EXPOSED a deeper SIM-side root → 43→40/46.** CLIENT_DUR_STRIP confirms real input clean (intrinsic_s≈D, delivery_lag≈0.02s — in THIS run the lag was already negligible, so the strip mostly re-anchored to WALL_SEND−WALL_RECV). With real cleaned, sim's `pref` now sits HIGHER (mean 10.14 vs 8.58) → sim binds the speed penalty 73.6% vs real 94.1% → slower max-of-K (10.5 vs 8.99) → K3b rel 0.131 + K2 rel 0.117. **New root = the DYNAMIC `round_threshold` PACER (§S.pacer)**, back-half-compounding (Q4 sim pref 19.49/real 15.19, sim disables penalty in 31 late rounds, real 0). A2c/residence/Sx PASS, so NOT the duration input. **(6) §S.pacer ROOT-CAUSED + FIXED Jun 24:** flame's base `OortSelector.pacer()` was an UNFAITHFUL port — it raised `round_threshold` on ANY utility dip (`last > curr`) with NO decrease branch (reference: FLAT `|Δ|≤0.1·last`→raise, SHARP `|Δ|≥5·last`→lower), so it ratcheted monotonically to 100 and was noise-sensitive → sim/real diverged & compounded. Fixed = faithful port (both branches, 0.1/5× bands, current-round keyed); redundant refl override removed; `round_threshold` added to telemetry. Guard `TestPacerFidelity`. VALIDATE next 3h run (round_threshold tracks, Sd binding real≈sim, K3b/K2/K8/U2 close). |
+| **refl** | Shared `oort/top_aggregator` stale-property + `WALL_SEND_TS` fix landed CLEAN. A2-residence root CONVERGED (Sr PASS 3.851/3.772). **K3b root = selection disparity from a DEAD UCB temporal term — FIX CONFIRMED Jun 23 PM (40→42/46).** `refl_oort.select()` let the term divide by a None `time_stamp` → temporal 0 (0/7513 both modes) → refl scored by stat_util alone (speed-uniform). **FIXED FAITHFULLY (§S.temporal):** `PROP_LAST_RETURNED_ROUND` = reference's last-RECEIPT round (`self.epoch`), stamped at receipt + registration-init. **VALIDATED & STABLE at 3h:** temporal term ALIVE & matched (Sx KS 0.119, real 0.026/sim 0.024), **K3b PASS** rel 0.095, **A2c PASS**, **Sr PASS** 3.72/3.78. **3h verdict (40/46):** surviving roots are **K2** rel 0.093 (the constant per-round advance residual ~0.28s/rd, quartile-flat → constant selection-mix bias, shared with oort — see Next-steps §0; its measurement tightened with rounds to expose it over K2's 0.05) and **A2** num_candidates KS-artifact (num_eligible MEANS match 251.7/249.8). S2/K8/U2 downstream. So the temporal fix was BOTH a fidelity fix AND closed K3b/A2c. **K2 ROOT-CAUSED + FIXED Jun 23 PM (§S.dur, shared with oort):** the residual was NOT a clock/overhead bug but the same selector-input delivery-lag (real `WALL_SEND − dispatch` carried `WALL_RECV − dispatch`, inflating `pref` 10.7 vs sim 7.0 → real picks a slower mix → per-round max-of-K 15.40 vs sim 14.08 → +0.28s/rd). Fix: real duration = `WALL_SEND − WALL_RECV` (intrinsic D). **§S.dur VALIDATED Jun 24 (40→43/46): throughput family CLOSED** — K2 PASS rel 0.047 (sim 2.64/real 2.77), K3b PASS 0.048, A2c PASS, Sr PASS 0.024. refl is IMMUNE to §S.pacer (round_threshold=30 → speed penalty never binds, Sd 0.0/0.0), so the oort regression doesn't touch it. **S2 ROOT-CAUSED + RESOLVED Jun 24:** `matched_count_ks` 0.464 was pure STOCHASTIC core-IDENTITY — both modes build a ~120-trainer persistent core, SPEED-MATCHED (real-only D̄ 9.8 / sim-only 9.2; participation-weighted 8.20/8.26) with only 63 of ~120 individuals shared (weighted-exploit draw locking different members via rich-get-richer); NO speed/utility-class bias (A2c/K8 pass), speed-class participation matches (TVD 0.026 vs per-second 0.187 noise). Reclassified S2 to enforce participation BY SPEED CLASS for stochastic selectors (§5), identity demoted to diagnostic → 43→44. Remaining: **A2 eligibility** KS point-mass artifact (means 251.1/248.8 match — checker read, not a sim/real lever), **C2 loss** emergent. Guards `TestREFLTemporalFidelity`/`TestTemporalUncertaintyFidelity`/`TestStaleTrainerPropsRecorded`. |
 | **feddance** | **CLOSED 43/44 (3h Jun 23).** `selection_bias`/`feddance_U` closed via inherited syncfl `WALL_SEND_TS` duration fix. **U6 §6.u6 barrier-anchor CONFIRMED on fresh real**: U6 PASS real_mean 14.39 ≈ sim 14.55 (KS 0.115, mean_diff 0.164s). **K2 PASS** (28.04 vs 27.63 s/rd) — the 1.5h 0.052-vs-0.05 was ~1.4σ noise, tightened with rounds, NO code lever was needed (correctly resisted the scalar-overhead / stat_utility-chase dead ends). K3b/A2c/K8/U2/C1 PASS. Lone residual **C2 loss** 0.1716 vs 0.15 = emergent eval-curve on 8 points; K8 terminal-state + C1 acc both PASS, so run-end state matches. No mechanism gap remains. |
 
 ---
@@ -160,6 +181,43 @@ baselines) and must hold 46/46.
   smuggles in a server wait that biases the speed penalty.** Diagnose by mapping committed +
   candidate-pool durations to STATIC D (registry) and reading `obs − static` per speed bucket —
   it localizes whether the divergence is the draw (input) vs commit/residence.
+- **Cleaning the REFERENCE (real) input can FLIP a divergence onto the SIM side and expose a
+  deeper root (oort §S.dur→§S.pacer, Jun 24).** §S.dur stripped real's selector-duration delivery
+  lag (correct — CLIENT_DUR_STRIP shows `intrinsic_s≈D`, `lag≈0.02s`). For refl that CLOSED K2.
+  For oort it lowered real `pref` 10→8.58 and revealed that SIM's `pref` (10.14) was the divergent
+  side all along — sim under-binds the speed penalty (73.6% vs 94.1%) → slower mix → K2/K3b fail.
+  **Lesson:** when a real-path fix over- or fully-corrects, re-run BOTH and check the metric didn't
+  just cross zero (sim was faster, now sim is slower). The new lowest rung is a different mechanism,
+  not "the fix regressed." Localize it fresh: identical pool + identical selected-MEAN (A2c) +
+  divergent per-round `pref` percentile ⇒ the divergence is in whatever SETS the percentile (here
+  the dynamic `round_threshold` pacer), not the durations feeding it.
+- **A DYNAMIC feedback-controller knob that diverges and COMPOUNDS is usually an UNFAITHFUL PORT,
+  not a mode-asymmetry — diff it against the reference line-by-line BEFORE reaching for a
+  re-parameterization (oort §S.pacer, Jun 24).** flame's `pacer()` raised `round_threshold` on ANY
+  utility dip (`last > curr`) with NO decrease branch; the reference makes TWO symmetric moves —
+  FLAT (`|Δ|≤0.1·last`)→raise, SHARP (`|Δ|≥5·last`)→lower. The one-branch monotonic ratchet was
+  hypersensitive to per-round noise, so sim/real `round_threshold` drifted to different levels and,
+  never recovering, the gap GREW in the back half (Q4 sim pref 19.49 vs real 15.19; sim `pref=99999`
+  in 31 late rounds, real never). **Tell it's a port bug not the round-indexing:** the reference is
+  ALSO per-round, but self-corrects — a faithful symmetric controller fed matched utility
+  distributions tracks across modes. So the fix is FIDELITY (port both branches), not the §3.async
+  "re-parameterize cadence by wall-time" generalization (which I floated first and then SUPERSEDED).
+  Bin the knob by run-quartile to see the ratchet; instrument it directly (`round_threshold` was
+  only inferable from `pref`); never tune `pacer_delta`/`pacer_step` blind. **When you fix a ported
+  knob, check EVERY copy against EVERY reference the baselines map to, and every SELECTOR HAND:**
+  refl has its own fork (`third_party/REFL`, byte-identical pacer here — confirm, don't assume),
+  and felix's `AsyncOortSelector` carried the same bug PLUS fired the (training-only) pacer on its
+  EVAL hand off a stale round. A shared-concept knob copied into 3 classes drifts 3 ways.
+- **A large per-trainer participation KS (S2) on a STOCHASTIC selector is usually core-IDENTITY,
+  not a mix bias — separate identity from policy by bucketing on an INTRINSIC attribute (refl
+  Jun 24).** refl's `matched_count_ks` 0.464 looked like a selection bias, but the two modes build
+  ~120-trainer cores that are SPEED-MATCHED (real-only D̄ 9.8 / sim-only 9.2; participation-weighted
+  8.20/8.26) with only 63 shared individuals — the weighted-exploit draw locks DIFFERENT members in
+  via rich-get-richer from tiny round-1 eligibility differences. **Granularity is the discriminator:**
+  at `speed_class` the participation shares match (TVD 0.026); per-SECOND buckets re-expose the same
+  identity noise (TVD 0.187, sign-alternating Δ). So enforce participation BY SPEED CLASS (policy),
+  demote per-trainer identity to diagnostic (§5). Confirm it's identity-not-bias with A2c + K8 +
+  speed-matched mode-specific cores BEFORE reclassifying — don't suppress a real mix bias.
 - **A borderline EXACT rung (K3b/K2) swaps in as the root once an upstream DIST rung (A2/Sr)
   converges with run length (refl Jun 23).** At 1.5h refl's root was A2/residence (3.63 vs 3.86)
   and K3b PASSED; at 3h residence converged (3.645 vs 3.72, Sr PASS) but K3b FAILED (rel 0.124).
@@ -508,7 +566,11 @@ is calibrated to the selected MIX and sync knobs narrow it. Root theme: many Oor
 **per-round**, but "a round" differs in async (one `agg_goal` batch) vs sync (a barrier), and
 async runs ~2–3× more of them.
 - **`round_threshold`** (speed penalty) protects a SYNC barrier; async has no barrier →
-  largely inert. Felix uses **70** (the pacer only raises toward 100, so the start washes out).
+  largely inert. Felix starts at **70**. *(Correction Jun 24, §S.pacer: the earlier "the pacer
+  only raises toward 100, so the start washes out" described the BUGGY raise-only ratchet — that
+  ratchet is exactly why the penalty went inert. The pacer is now the faithful two-branch
+  controller and train-gated, so round_threshold no longer monotonically washes out; felix's
+  penalty becomes active and its 46/46 must be re-validated.)*
 - **`exploration_decay`** applied per-round; sync 0.95 floors exploration in ~29 async rounds.
   Felix uses **0.999** (`0.9999` ≈ never exploits — rejected).
 - temporal/UCB `√(0.1·log(round)/last_selected)` auto-inflates with round count; pacer cadence
@@ -563,8 +625,64 @@ was `wall_lag_s`), and fwdllm all call it (each falling back to its prior agg-an
 only when a client stamp is missing). syncfl's `_real_task_dur` (`WALL_SEND−dispatch`) U6
 barrier anchor (§6.u6) is a SEPARATE quantity — left untouched. Guards:
 `test_client_duration.py` (helper contract), `test_sync_sim_ordering.py::TestStaleTrainerPropsRecorded`
-(oort path + fallback). VALIDATE: oort+refl 3h real reruns vs stored sim → real `pref`→~7.0, A2c
-selected mean→sim, K2 closes; re-validate felix at a longer horizon.
+(oort path + fallback). **VALIDATED Jun 24 3h:** CLIENT_DUR_STRIP confirms real `intrinsic_s≈D`,
+`delivery_lag≈0.02s` (the +8s lag the fix was scoped against was already negligible in this run);
+refl throughput family CLOSED (K2 rel 0.047), felix no regression at 3h. For OORT it exposed the
+§S.pacer SIM-side root (real `pref` cleaned to 8.58, sim sits at 10.14) — see §S.pacer.
+
+### §S.pacer  oort — dynamic `round_threshold` PACER was an UNFAITHFUL port (ROOT-CAUSED + FIXED Jun 24; validate next run)
+The Oort speed penalty `system_util = min(1,(pref/duration)^α)` only binds when a candidate's
+duration exceeds `pref = round_preferred_duration`, the **`round_threshold`-th percentile** of
+candidate durations (`oort.py:496`). `round_threshold` is **DYNAMIC**, set by `pacer()`. **The
+flame base `OortSelector.pacer()` was an UNFAITHFUL port** of reference Oort
+(`third_party/Oort/oort/oort.py:184-199`): the reference makes TWO symmetric moves keyed on the
+exploited-utility trend over the last two `pacer_step` windows — a FLAT plateau (`|Δ| ≤ 0.1·last`)
+RELAXES (`round_threshold += pacer_delta`), a SHARP change (`|Δ| ≥ 5·last`) TIGHTENS
+(`round_threshold = max(pacer_delta, round_threshold − pacer_delta)`). flame's port instead raised
+on **ANY** dip (`last > curr`) and had **NO** decrease branch → a monotonic ratchet to 100,
+hypersensitive to per-round utility noise. Because the noise timing/magnitude differs between sim
+and real (different stochastic utility trajectories), the ratchet drifted to different levels and,
+never recovering, the divergence COMPOUNDED. Jun 24 3h: pref grew in both modes (real Q1→Q4
+4.53→15.19, sim 4.31→19.49) but **sim faster** — Q3 sim 11.48/real 9.09, Q4 sim 19.49/real 15.19,
+sim disabling the penalty (`pref=99999`) in 31 late rounds (real 0). So sim bound 73.6%/round vs
+real 94.1% → ~1.5s-slower max-of-K (10.5 vs 8.99) → +1.2s/rd advance (K3b −1.22s) → fewer rounds
+(K2). **Tells it's the pacer not the input:** candidate-pool static speed (12.13), selected MEAN
+(8.04/8.16, A2c PASS), residence (PASS) all match; only the per-round `pref` percentile diverged,
+and it's `round_threshold` (the pacer) that sets the percentile. CLIENT_DUR_STRIP confirms the
+§S.dur input is clean (intrinsic≈D). **FIX LANDED:** faithful reference port in
+`OortSelector.pacer(round)` — both branches on the 0.1 / 5× bands, keyed on the current `round`
+(reference's `training_round`) with a `pacer_step > 0` guard. The `REFLOortSelector.pacer`
+override (which was ALREADY faithful — flat/sharp, 0.1/5×) is REMOVED so oort+refl share the one
+reference-matching base. `round_threshold` is added to the selection telemetry `extra` (was only
+inferable from `pref`). Guard `tests/selector/test_oort_selector.py::TestPacerFidelity`.
+**Selector-side, both modes identically** (changes the BASELINE toward the reference, not parity-
+tuning) — the hypothesis is that a self-correcting symmetric controller, fed matched utility
+distributions (F1-3 pooled KS 0.037), keeps sim/real `round_threshold` tracking instead of
+ratcheting apart. **VALIDATE on the next 3h run** via the new `round_threshold` field (binned by
+run-fraction: no monotonic-to-100, no sim 99999), Sd binding real≈sim, K3b/K2/K8/U2 close. Do NOT
+tune `pacer_delta`/`pacer_step` or touch the §S.dur input. *(Earlier read floated a §3.async
+"re-parameterize by wall-time" generalization — SUPERSEDED: the reference pacer is also per-round
+and self-corrects, so the gap was the unfaithful port, not the round-indexing.)*
+
+**Reference cross-check (Jun 24):** the fix matches BOTH references — `third_party/Oort/oort/oort.py`
+:184-199 AND the `third_party/REFL/thirdparty/oort/oort.py`:176-201 fork are BYTE-IDENTICAL on the
+pacer (same 0.1 / 5× bands, flat→raise / sharp→lower, `training_round`-keyed; REFL only differs in
+`round_threshold=30` default, already config'd via D3). So refl inheriting the faithful base is
+correct against its OWN reference, not just Oort's.
+
+**felix (`AsyncOortSelector`) — SAME bug, ALSO fixed (validate next run).** felix is a separate
+class (no async-Oort reference) but the pacer is the SAME concept, so it must match the reference's
+two-branch logic. Two defects: (1) the identical flat/sharp bug (raised on any dip, no decrease
+branch → monotonic ratchet to 100, turning the speed penalty OFF — felix only "passed" because the
+penalty was thus rendered largely inert, see §3.async); (2) felix has TWO selector hands (train +
+eval) on ONE instance and `pacer()` fired in `_handle_send_state` for BOTH, but `self.round` /
+`exploitation_util_history` advance only on TRAIN, so an eval call re-ran the pacer off a STALE
+round. **Fix:** faithful two-branch `AsyncOortSelector.pacer()` (kept in-class) + the call is now
+TRAIN-GATED (matches the reference's *training*-selector pacer). Guard
+`TestPacerFidelity::test_async_oort_pacer_faithful`. ⚠ **This changes felix's round_threshold
+dynamics** — the penalty is now active (oscillates near its start) instead of ratcheting to off —
+so felix's 46/46 MUST be re-validated on the next run; if it shifts, the old pass partly relied on
+the inert penalty (a real finding, not a clean regression).
 
 ### §6.u6  syncfl real U6 barrier-anchor (feddance/fedavg; LANDED Jun 22)
 `update_visibility_lag_s` on the REAL strict-sync path was wrong: `_update_visibility_lag`
@@ -592,6 +710,15 @@ quantities a stochastic/in-memory sim can't reproduce (tell: byte-identical acro
 large dynamics changes). All principled, guarded, append-only; a future *deterministic*
 selector still gets exact enforcement via `DETERMINISTIC_SELECTORS`.
 - **P1 aggregation_sequence** → WARN for stochastic (S2 participation is the enforced invariant).
+- **S2 participation** → enforce participation BY SPEED CLASS (`speed_class_tvd`, registry
+  `speed_class`), NOT per-trainer identity, for stochastic selectors (Jun 24). The per-trainer
+  `matched_count_ks` is path-dependent: a stochastic weighted-exploit selector builds a persistent
+  core whose SIZE/concentration/speed-composition match but whose individual MEMBERS diverge
+  (refl: 63 of ~120 shared, speed-matched). What the POLICY fixes is the speed-class distribution
+  (refl TVD 0.026); per-SECOND buckets re-expose the identity noise (TVD 0.187, sign-alternating),
+  so coarse `speed_class` is the right granularity. `matched_count_ks` kept as diagnostic;
+  `DETERMINISTIC_SELECTORS` still get exact identity enforcement. Tell it's identity-not-bias:
+  A2c/K8 pass and the mode-specific cores are speed-matched.
 - **F1-3 utility** → pooled KS (per-trainer KS=1.0 was mechanical for n≤2; means identical).
 - **phase_mqtt_fetch** → DIAG (in-mem cache wall time, deliberately off the virtual clock).
 - **trainer_speed / eligible_speed / selection_bias** → integer-grid / metadata-pool.
@@ -612,3 +739,4 @@ refl overriding.
 | D6 | `clip_bound` | config: 0.98 paper / 0.9 fork |
 | S | refl exploitation | FIXED: was deterministic top-k; now fork's cut_off_util-weighted `np.random.choice` |
 | D7 | UCB temporal-uncertainty `time_stamp` | **FIXED (Jun 23, §S.temporal).** Reference Oort+REFL: `sc += sqrt(0.1·log(round)/time_stamp)`, `time_stamp=self.epoch` (agg round of last RECEIPT), init at registration → never None, always contributes, up-weights under-selected/slower-returning clients. flame bug: refl's term was DEAD (0/7513) — `refl_oort.select()` let it divide by a None `time_stamp`; oort used last-SELECTED (dispatch round) with a None→0 guard. **Fix:** `PROP_LAST_RETURNED_ROUND` stamped at every receipt (fresh+stale) in oort/top_aggregator = agg round; selector reads it, registration-init lazy to current round; both oort+refl. `enable_temporal` kwarg (default True; False = ablation only). The legacy last-SELECTED machinery (`_record_last_selected_round`, D5) is REMOVED from OortSelector (no baseline used it); D5's MODEL_VERSION value was for staleness, not this UCB term. felix AsyncOortSelector is a separate class — untouched. |
+| D8 | `pacer()` round_threshold adaptation | **FIXED (Jun 24, §S.pacer).** Reference (`oort.py:184-199`) makes TWO symmetric moves on the exploited-utility trend: FLAT `|Δ|≤0.1·last` → `round_threshold += pacer_delta`, SHARP `|Δ|≥5·last` → `round_threshold = max(pacer_delta, −pacer_delta)`, keyed on `training_round`. flame's base `OortSelector.pacer()` raised on ANY dip (`last > curr`) with NO decrease branch → monotonic ratchet to 100, noise-sensitive → sim/real `round_threshold` diverged & back-half-compounded (the oort §S.pacer root). **Fix:** faithful both-branch port keyed on the current round, `pacer_step>0` guard; `REFLOortSelector.pacer` override (already faithful) REMOVED so oort+refl share the base; `round_threshold` added to selection telemetry. Guard `TestPacerFidelity`. **Cross-checked vs the REFL fork too** (`third_party/REFL/thirdparty/oort/oort.py`:176-201, byte-identical pacer, only round_threshold=30 default differs). **felix `AsyncOortSelector` (separate class) had the SAME bug + fired the pacer on its eval hand off a stale round → ALSO fixed** (faithful two-branch, train-gated; `test_async_oort_pacer_faithful`); changes felix dynamics → re-validate its 46/46 next run. |

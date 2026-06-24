@@ -288,6 +288,68 @@ class TestAlgorithmHyperparams:
         assert cut2 > cut  # boundary moved up toward higher utilities
 
 
+class TestPacerFidelity:
+    """Guards §S.pacer: pacer() must faithfully port reference Oort
+    (third_party/Oort/oort/oort.py:184-199) — a FLAT plateau relaxes
+    round_threshold, a SHARP change tightens it, keyed on the current round.
+    The earlier port raised on any dip and never lowered (monotonic ratchet)."""
+
+    def _seed_history(self, oort, last_vals, curr_vals):
+        # two pacer_step windows of mean exploited utility
+        oort.exploitation_util_history = list(last_vals) + list(curr_vals)
+
+    def test_flat_plateau_relaxes(self, oort):
+        oort.pacer_step, oort.pacer_delta, oort.round_threshold = 2, 5.0, 10.0
+        # last sum 20, curr sum 21 -> |Δ|=1 <= 0.1*20=2 -> RELAX
+        self._seed_history(oort, [10.0, 10.0], [10.0, 11.0])
+        oort.pacer(round=4)            # 4 >= 2*step and 4 % step == 0
+        assert oort.round_threshold == 15.0
+
+    def test_sharp_change_tightens(self, oort):
+        oort.pacer_step, oort.pacer_delta, oort.round_threshold = 2, 5.0, 30.0
+        # last sum 20, curr sum 200 -> |Δ|=180 >= 5*20=100 -> TIGHTEN
+        self._seed_history(oort, [10.0, 10.0], [100.0, 100.0])
+        oort.pacer(round=4)
+        assert oort.round_threshold == 25.0
+
+    def test_moderate_change_no_move(self, oort):
+        oort.pacer_step, oort.pacer_delta, oort.round_threshold = 2, 5.0, 30.0
+        # last 20, curr 30 -> |Δ|=10, between 0.1*20=2 and 5*20=100 -> NO MOVE
+        self._seed_history(oort, [10.0, 10.0], [15.0, 15.0])
+        oort.pacer(round=4)
+        assert oort.round_threshold == 30.0
+
+    def test_tighten_floored_at_pacer_delta(self, oort):
+        oort.pacer_step, oort.pacer_delta, oort.round_threshold = 2, 5.0, 5.0
+        self._seed_history(oort, [10.0, 10.0], [100.0, 100.0])
+        oort.pacer(round=4)
+        assert oort.round_threshold == 5.0  # max(delta, thr-delta) floors here
+
+    def test_no_move_off_cadence_or_warmup(self, oort):
+        oort.pacer_step, oort.pacer_delta, oort.round_threshold = 2, 5.0, 10.0
+        self._seed_history(oort, [10.0, 10.0], [10.0, 11.0])
+        oort.pacer(round=3)            # 3 % 2 != 0 -> no move
+        assert oort.round_threshold == 10.0
+        oort.pacer(round=2)            # 2 < 2*step(4) warmup -> no move
+        assert oort.round_threshold == 10.0
+
+    def test_async_oort_pacer_faithful(self, async_oort):
+        # felix's separate AsyncOortSelector.pacer must use the same two-branch
+        # reference logic, keyed on self.round.
+        async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
+        async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
+        async_oort.round_threshold, async_oort.round = 10.0, 4
+        async_oort.pacer()                       # FLAT |Δ|=1 <= 2 -> relax
+        assert async_oort.round_threshold == 15.0
+        async_oort.exploitation_util_history = [10.0, 10.0, 100.0, 100.0]
+        async_oort.round_threshold, async_oort.round = 30.0, 4
+        async_oort.pacer()                       # SHARP |Δ|=180 >= 100 -> tighten
+        assert async_oort.round_threshold == 25.0
+        async_oort.round_threshold, async_oort.round = 30.0, 3  # off-cadence
+        async_oort.pacer()
+        assert async_oort.round_threshold == 30.0
+
+
 class TestOortCleanup:
     def test_cleanup_recvd_ends_clears_inflight(self, oort, make_ends):
         oort.selected_ends.update(["a", "b", "c"])

@@ -199,7 +199,7 @@ class OortSelector(AbstractSelector):
         if round <= self._last_selection_round and len(self.selected_ends) != 0:
             return {key: None for key in self.selected_ends}
 
-        self.pacer()
+        self.pacer(round)
 
         eligible_ends = {
             end_id: end
@@ -341,6 +341,9 @@ class OortSelector(AbstractSelector):
                 "exploit_ids": list(exploit_end_ids),
                 "round_preferred_duration_s": _pref.total_seconds()
                 if hasattr(_pref, "total_seconds") else _pref,
+                # dynamic pacer state: the percentile that SETS pref. Logged so the
+                # sim/real pref divergence is read directly, not inferred (§S.pacer).
+                "round_threshold": getattr(self, "round_threshold", None),
                 "alpha": getattr(self, "alpha", None),
                 # per-round speed-penalty summary over selected (see _system_util_summary)
                 **self._system_util_summary(),
@@ -425,26 +428,41 @@ class OortSelector(AbstractSelector):
             )
         ]
 
-    def pacer(self) -> None:
-        """
-        Controls round preferred duration based on the exploited
-        statistical utility.
-        """
+    def pacer(self, round: int) -> None:
+        """Adapt `round_threshold` (the speed-penalty percentile) from the
+        exploited-utility trend — a faithful port of reference Oort
+        (third_party/Oort/oort/oort.py:184-199), keyed on the CURRENT round
+        like the reference's `training_round`.
 
-        if (
-            len(self.exploitation_util_history) >= 2 * self.pacer_step
-            and self._last_selection_round % self.pacer_step == 0
+        Two SYMMETRIC moves on the reference's 0.1 / 5x bands over the last two
+        `pacer_step` windows of mean exploited utility:
+          * FLAT plateau (`|Δ| <= 0.1·last`) → RELAX: `round_threshold += delta`
+            (admit slower-but-higher-utility clients when progress stalls).
+          * SHARP change (`|Δ| >= 5·last`) → TIGHTEN: `round_threshold -= delta`
+            (floored at `pacer_delta`).
+        The earlier port raised on ANY dip (`last > curr`) and never lowered, so
+        `round_threshold` ratcheted monotonically to 100 and was hypersensitive
+        to per-round utility noise — which made the sim/real trajectories
+        diverge and compound the speed-penalty binding gap (PARITY.md §S.pacer).
+        """
+        if not (
+            self.pacer_step > 0
+            and round >= 2 * self.pacer_step
+            and round % self.pacer_step == 0
+            and len(self.exploitation_util_history) >= 2 * self.pacer_step
         ):
-            last_pacer_step_util = sum(
-                self.exploitation_util_history[-2 * self.pacer_step : -self.pacer_step]
+            return
+        last_util = sum(
+            self.exploitation_util_history[-2 * self.pacer_step : -self.pacer_step]
+        )
+        curr_util = sum(self.exploitation_util_history[-self.pacer_step :])
+        delta = abs(curr_util - last_util)
+        if delta <= last_util * 0.1:
+            self.round_threshold = min(100.0, self.round_threshold + self.pacer_delta)
+        elif delta >= last_util * 5.0:
+            self.round_threshold = max(
+                self.pacer_delta, self.round_threshold - self.pacer_delta
             )
-            curr_pacer_step_util = sum(
-                self.exploitation_util_history[-self.pacer_step :]
-            )
-            if last_pacer_step_util > curr_pacer_step_util:
-                self.round_threshold = min(
-                    100.0, self.round_threshold + self.pacer_delta
-                )
 
     def find_blocklists(self, ends: dict[str, End]) -> list[str]:
         """Make a filter of blocklist ends."""
