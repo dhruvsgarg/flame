@@ -6,9 +6,9 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 0 / 15 steps complete
+## Progress: 1 / 15 steps complete
 
-- [ ] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
+- [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
 - [ ] 2. Add `DatasetConfig.path_style` + `skip_index_splits` plumbing (Phase 1b)
 - [ ] 3. Add `TrainerConfig.client_idx_modulo` + per-trainer override path (Phase 1b)
 - [ ] 4. Fix `_sweep_stragglers()` pattern list for fwdllm paths (Phase 1c)

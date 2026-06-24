@@ -375,15 +375,26 @@ class ExperimentRunner:
         return exp.example.aggregator_main or "aggregator/pytorch/main.py"
 
     # async selectors require the asyncfl stack; everything else is sync.
-    _ASYNC_STACKS = {"asyncfl", "coord_asyncfl"}
+    # "fwdllm" is its own stack: FedFwd's TopAggregator
+    # (flame.mode.horizontal.syncfl.fwdllm_aggregator) is a FedFwd-specific
+    # implementation, not the generic syncfl.top_aggregator, so the regex
+    # below can't detect it under the normal top_aggregator match. Its
+    # aggregation is event-driven/variance-gated (partial participation,
+    # no lockstep rounds), so it's grouped with the async stacks.
+    _ASYNC_STACKS = {"asyncfl", "coord_asyncfl", "fwdllm"}
     _ASYNC_SELECTORS = {"async_oort", "async_random", "fedbuff"}
 
     def _validate_stack(self, agg_main_path: Path, agg_cfg: dict) -> None:
         text = Path(agg_main_path).read_text()
-        m = re.search(
-            r"from flame\.mode\.horizontal\.(\w+)\.top_aggregator import", text
-        )
-        stack = m.group(1) if m else "syncfl"
+        if re.search(
+            r"from flame\.mode\.horizontal\.\w+\.fwdllm_aggregator import", text
+        ):
+            stack = "fwdllm"
+        else:
+            m = re.search(
+                r"from flame\.mode\.horizontal\.(\w+)\.top_aggregator import", text
+            )
+            stack = m.group(1) if m else "syncfl"
         selector = (agg_cfg.get("selector") or {}).get("sort", "")
         is_async_stack = stack in self._ASYNC_STACKS
         is_async_sel = selector in self._ASYNC_SELECTORS
