@@ -315,19 +315,47 @@ class TestStaleTrainerPropsRecorded:
         agg._round = 10
         return agg
 
-    def test_real_records_client_duration_excluding_read_wait(self):
-        """Real stale duration = trainer-finish (WALL_SEND_TS) - dispatch, i.e. the
-        client's true round duration. The aggregator-side read-wait (recv_ts long
-        after the message was sent, because a stale straggler is read only when a
-        later round drains the buffer) MUST be excluded — including it inflated slow
-        trainers' observed speed and made real over-avoid them vs sim."""
+    def test_real_records_intrinsic_excluding_delivery_lag(self):
+        """Real duration = WALL_SEND_TS - WALL_RECV_TS (the client's intrinsic
+        compute+sleep, both client stamps). The dispatch->recv delivery lag (the agg
+        stamps `dispatch` at selection, but a slow client held one-in-flight receives
+        the weights later) MUST be excluded — folding it into WALL_SEND - dispatch
+        inflated slow-trainer durations ~8s, raised the selector's preferred-duration
+        percentile, and made real under-penalize slow clients vs sim (the K2 root)."""
+        from datetime import datetime, timedelta
+
+        agg = self._make_agg(simulated=False)
+        ch = FakeSyncChannel({}, arrival_order=[])
+        dispatch_ts = datetime(2026, 1, 1, 0, 0, 0)
+        # agg dispatched at t=0; client received weights 8s later (delivery lag),
+        # computed 12s, sent at t=20. Recorded duration must be 12 (intrinsic), not
+        # 20 (dispatch-anchored). The +6s aggregator read-wait (recv at +26) is also
+        # excluded by construction since we anchor on the two client stamps.
+        wall_recv_ts = dispatch_ts.timestamp() + 8.0
+        wall_send_ts = dispatch_ts.timestamp() + 20.0
+        recv_ts = dispatch_ts + timedelta(seconds=26.0)
+        agg._oort_sent_version_ts = {"slow": {7: dispatch_ts}}
+        msg = {
+            MessageType.MODEL_VERSION: 7,
+            MessageType.STAT_UTILITY: 4.2,
+            MessageType.WALL_RECV_TS: wall_recv_ts,
+            MessageType.WALL_SEND_TS: wall_send_ts,
+        }
+
+        agg._record_returned_trainer_props(ch, "slow", msg, recv_ts)
+
+        assert ch.get_end_property("slow", PROP_STAT_UTILITY) == 4.2
+        assert ch.get_end_property("slow", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 12.0
+
+    def test_real_falls_back_to_wall_send_minus_dispatch_without_wall_recv(self):
+        """Without WALL_RECV_TS the intrinsic measure is unavailable; fall back to
+        WALL_SEND_TS - dispatch (the prior-fix path, still server-wait-free on the
+        recv side)."""
         from datetime import datetime, timedelta
 
         agg = self._make_agg(simulated=False)
         ch = FakeSyncChannel({}, arrival_order=[])
         send_ts = datetime(2026, 1, 1, 0, 0, 0)
-        # client computed for 12s then sent; aggregator did not READ it until +18s
-        # (6s of server read-wait). Duration must track the 12s, not 18s.
         wall_send_ts = send_ts.timestamp() + 12.0
         recv_ts = send_ts + timedelta(seconds=18.0)
         agg._oort_sent_version_ts = {"slow": {7: send_ts}}

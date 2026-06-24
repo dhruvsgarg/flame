@@ -31,6 +31,7 @@ from flame.common.util import (
     weights_to_model_device,
 )
 from flame.mode.message import MessageType
+from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
     PROP_CLIENT_TASK_TRAIN_DURATION,
@@ -809,35 +810,12 @@ class TopAggregator(BaseTopAggregator):
 
     @staticmethod
     def _real_client_task_train_duration(msg, dispatch_ts, recv_ts):
-        """Real-mode client task-train duration = trainer finish (WALL_SEND_TS,
-        stamped right after compute) minus dispatch. This is the client's intrinsic
-        speed (~= compute + network) — the value reference-Oort scores on, and the
-        real counterpart of sim's SIM_CLIENT_TASK_TRAIN_DURATION_S. Returns a
-        timedelta, or None when it cannot be measured.
-
-        It deliberately EXCLUDES the aggregator read-wait that ``recv_ts`` carries:
-        a stale straggler's finished update sits unread until a later round drains
-        the reorder buffer, so ``recv_ts - dispatch = compute + (rounds unread)``.
-        That read-wait is a server-side artifact, not client speed; folding it in
-        inflated slow trainers up to ~1.65x their compute (real median 39.9s for a
-        D=24s client) and made real over-avoid them vs sim — the H2 selector
-        divergence. Trainer telemetry confirms ``wall_send - wall_recv == compute``
-        to +0.01s (no client post-wait), so ``WALL_SEND_TS - dispatch`` recovers the
-        true client duration. Falls back to ``recv_ts - dispatch`` only when
-        WALL_SEND_TS is absent. Refines the 78252bf6 stale-record fix (which began
-        recording stale durations but used recv_ts). See PARITY.md oort /
-        project_oort_a2c_root.
-        """
-        if dispatch_ts is None:
-            return None
-        wst = msg.get(MessageType.WALL_SEND_TS)
-        if wst is not None and hasattr(dispatch_ts, "timestamp"):
-            dur = float(wst) - dispatch_ts.timestamp()
-            if dur > 0:
-                return timedelta(seconds=dur)
-        if isinstance(recv_ts, datetime):
-            return recv_ts - dispatch_ts
-        return None
+        """Real-mode client task-train duration = the client's INTRINSIC task time,
+        ``WALL_SEND_TS - WALL_RECV_TS``. Thin wrapper over the single-sourced
+        ``client_duration.real_client_task_train_duration`` shared by all horizontal
+        aggregators (oort/refl, asyncfl/felix, syncfl/feddance) so the definition
+        can't drift. See PARITY.md §S.dur / project_oort_a2c_root."""
+        return real_client_task_train_duration(msg, dispatch_ts, recv_ts)
 
     def _record_returned_trainer_props(self, channel, end, msg, recv_ts) -> None:
         """Record a returned trainer's observed properties (statistical utility +
@@ -867,7 +845,7 @@ class TopAggregator(BaseTopAggregator):
         # quantity in both modes:
         #   sim:  SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, D)), already stamped by
         #         the recv generator (this re-stamp is idempotent).
-        #   real: WALL_SEND_TS - dispatch (see _real_client_task_train_duration).
+        #   real: WALL_SEND_TS - WALL_RECV_TS (see _real_client_task_train_duration).
         _ver = msg.get(MessageType.MODEL_VERSION, self._round)
         if self.simulated:
             _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
@@ -880,6 +858,18 @@ class TopAggregator(BaseTopAggregator):
             _dur = self._real_client_task_train_duration(msg, _sent, recv_ts)
             if _dur is not None:
                 channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, _dur)
+                # Validate the delivery-lag strip: intrinsic (recorded) vs the old
+                # dispatch-anchored measure. delivery_lag = WALL_RECV - dispatch is
+                # the server-side component now excluded (large for slow stragglers);
+                # this line lets the parity run confirm it without a recompute.
+                _wrt = msg.get(MessageType.WALL_RECV_TS)
+                if _wrt is not None and hasattr(_sent, "timestamp"):
+                    _delivery_lag = float(_wrt) - _sent.timestamp()
+                    logger.info(
+                        f"[CLIENT_DUR_STRIP] end={end} version={_ver} stale=1 "
+                        f"intrinsic_s={_dur.total_seconds():.3f} "
+                        f"delivery_lag_s={_delivery_lag:.3f}"
+                    )
         # A stale straggler is still a RECEIVED result in the reference (registerScore
         # runs for it), so its `time_stamp` (UCB temporal source) advances to this round.
         channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)

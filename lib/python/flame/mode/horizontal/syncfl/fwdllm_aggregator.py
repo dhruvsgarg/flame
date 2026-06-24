@@ -45,6 +45,7 @@ from sklearn.metrics import (
 )
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator as AsyncTopAgg
 from flame.mode.message import MessageType
+from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
@@ -705,7 +706,13 @@ class TopAggregator(AsyncTopAgg):
             )
             if round_start_time_tup is not None:
                 sent_ts = round_start_time_tup[1]
-                round_duration = timestamp - sent_ts
+                # Client INTRINSIC duration (WALL_SEND - WALL_RECV, §S.dur); falls
+                # back to recv - dispatch (timestamp - sent_ts) when the trainer did
+                # not stamp the client times. Keeps the selector/telemetry duration
+                # server-overhead-free, consistent with the other aggregators.
+                round_duration = real_client_task_train_duration(msg, sent_ts, timestamp)
+                if round_duration is None:
+                    round_duration = timestamp - sent_ts
                 channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, round_duration)
                 logger.info(
                     f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"

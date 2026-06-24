@@ -37,6 +37,7 @@ from flame.mode.horizontal.syncfl.top_aggregator import (
 )
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
+from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
@@ -942,13 +943,22 @@ class TopAggregator(SyncTopAgg):
                 curr_cumulative_training_s = self._track_trainer_version_duration_s[
                     end
                 ]["total_training_time_s"]
-                # Both modes: round_duration = max(gpu, D); mirrors recv_ts-sent_ts for OORT utility.
+                # Both modes: the client's INTRINSIC task-train duration = max(gpu, D),
+                # excluding server-side waits (§S.dur). Real anchors on the two CLIENT
+                # stamps (WALL_SEND - WALL_RECV); the old `recv_wts_ts - sent_wts_ts`
+                # (agg recv - dispatch) folded in read-wait + dispatch->recv delivery
+                # lag, inflating slow-trainer trainer_speed telemetry — latent on
+                # felix (mostly-fresh commits) but the oort/refl K2 root at length.
                 if self.simulated:
                     round_duration_td = timedelta(
                         seconds=float(msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S, 0.0))
                     )
                 else:
-                    round_duration_td = recv_wts_ts - sent_wts_ts
+                    round_duration_td = real_client_task_train_duration(
+                        msg, sent_wts_ts, recv_wts_ts
+                    )
+                    if round_duration_td is None:  # no client stamps -> prior behavior
+                        round_duration_td = recv_wts_ts - sent_wts_ts
                 curr_round_time_s = round_duration_td.total_seconds()
                 new_cumulative_training_s = (
                     curr_cumulative_training_s + curr_round_time_s

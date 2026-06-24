@@ -40,6 +40,7 @@ from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
+from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.mode.role import Role
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
@@ -514,12 +515,16 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
                 # Base syncfl stack (fedavg/feddance) doesn't set PROP_CLIENT_TASK_TRAIN_DURATION
-                # — only the oort overlay does. Fill it from wall_lag_s so
-                # trainer_speed_s telemetry is populated for all sync baselines.
+                # — only the oort overlay does. Fill it with the client's INTRINSIC
+                # duration (WALL_SEND - WALL_RECV, §S.dur) — NOT wall_lag_s (recv -
+                # dispatch), which folds in read-wait + dispatch->recv delivery lag and
+                # would inflate slow-trainer trainer_speed telemetry. (U6 barrier lag
+                # below uses _real_task_dur = WALL_SEND - dispatch, a separate anchor.)
                 if not self.simulated and channel.get_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION) is None:
-                    channel.set_end_property(
-                        end, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=wall_lag_s)
-                    )
+                    _ctd = real_client_task_train_duration(msg, _sent_ts, recv_ts)
+                    if _ctd is None:
+                        _ctd = timedelta(seconds=wall_lag_s)
+                    channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, _ctd)
                 # Full per-message lag decomposition into 6 components.
                 _wst = msg.get(MessageType.WALL_SEND_TS)   # trainer send (float unix)
                 _wrt = msg.get(MessageType.WALL_RECV_TS)   # trainer recv of agg weights (float unix)
