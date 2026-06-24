@@ -45,7 +45,7 @@ these layers in order (last wins for leaf values):
 3. Per-trainer metadata from `_metadata/`:
    - `taskid` (from registry `task_id`)
    - `training_delay_s` (from registry, 4–18 s range for the 300-trainer pool)
-   - `trainer_indices_list` (from dataset splits; for non-CIFAR examples see §6)
+   - `trainer_indices_list` (from dataset splits; for non-CIFAR examples see §9)
    - **All five availability traces pre-injected**: `avl_events_syn_0`, `avl_events_syn_20`,
      `avl_events_syn_50`, `avl_events_mobiperf_2st`, `avl_events_mobiperf_3st_50`,
      `avl_events_mobiperf_3st_75` — trainer selects at runtime via
@@ -66,7 +66,7 @@ switch availability modes within a batch.
    `dataset_splits` YAML cannot hold per-trainer index lists; instead, store
    `data_file_path`, `partition_file_path`, and `client_idx` directly in
    `trainer_base.yaml` as placeholders, and inject them via
-   `experiment.trainer.config_overrides.hyperparameters`. See §6 for the
+   `experiment.trainer.config_overrides.hyperparameters`. See §9 for the
    fwdllm-specific guidance.
 3. **Trainer population.** If the new example needs a different `N` or device
    timing, extend `trainer_registry.yaml` (or add a parallel registry and point
@@ -111,6 +111,28 @@ switch availability modes within a batch.
    `selection` (selected trainer IDs, scores, round) and `aggregation`
    (aggregation time, staleness stats). See §5 for the full telemetry contract.
 
+6. **CPU partitioning and watchdog (handled by the runner, no example code
+   needed)**: `flame/launch/runner.py` reserves
+   `min(8, max(2, len(all_cores) // 8))` CPU cores for the aggregator before
+   spawning anything, so the 300 pinned trainers (see §3) don't time-slice
+   the single message-processing-bound aggregator process —
+   `AggregatorSpawner.spawn(..., cpu_cores=reserved_cores)` pins it via
+   `os.sched_setaffinity` and sets `OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS` to
+   the reserved core count. The runner also no longer blocks forever on the
+   aggregator: it computes a watchdog budget from the aggregator's own
+   `hyperparameters.{max_runtime_s, sim_wall_ceiling_s}` (+1200s grace) and
+   calls `AggregatorSpawner.wait(timeout=watchdog_s)`; if the aggregator is
+   still running past that (deadlock), the runner hard-`terminate()`s it
+   instead of hanging the whole batch.
+
+7. **Running the launcher**: `python -m flame.launch.run_experiment
+   <experiment.yaml> [--example-dir DIR] [--metadata-dir DIR]`
+   (`flame/launch/run_experiment.py:main()`). `--example-dir` and
+   `--metadata-dir` are optional — if omitted, the example dir is
+   autodetected by walking up the YAML path's parents until
+   `parent.parent.name == "examples"`, and metadata defaults to
+   `<example_dir>/metadata`.
+
 ---
 
 ## 3. Trainer-side changes
@@ -120,7 +142,7 @@ The trainer is spawned with `--config-json`; everything per-trainer arrives in
 
 - `trainer_indices_list` — dataset sample indices (from `dataset_splits`).
   For path-style datasets, use `data_file_path` + `partition_file_path` +
-  `client_idx` instead (§6).
+  `client_idx` instead (§9).
 - `training_delay_s` — per-trainer delay (from registry).
 - `training_delay_enabled` — bool gate on delay (from config_overrides or
   trainer_base.yaml default).
@@ -151,6 +173,19 @@ JSON). The trainer reads it from `sys.argv` alongside the config. Two modes:
 
 Set `time_mode` in the experiment YAML under `trainer.time_mode`. The spawner
 passes it as `--time_mode` to each trainer subprocess.
+
+### CPU pinning (handled by the launcher, on by default)
+
+`TrainerSpawner(cpu_pinning=True, reserved_cores=...)` (`flame/launch/spawner.py`)
+round-robin-pins each trainer process to a single CPU core via
+`os.sched_setaffinity` (respecting cgroup/Slurm affinity) and sets
+`OMP_NUM_THREADS=MKL_NUM_THREADS=OPENBLAS_NUM_THREADS=NUMEXPR_NUM_THREADS=1`
+to prevent thread oversubscription on a 1-core process. `reserved_cores` (the
+cores the runner set aside for the aggregator — see §2) are excluded from the
+trainer pool. Pinning silently disables itself on non-Linux platforms where
+`os.sched_getaffinity`/`os.sched_setaffinity` aren't available. No example
+code needs to opt in or out — this is launcher-side spawning behavior, not a
+config the trainer reads.
 
 ### Data streaming (optional)
 
@@ -225,6 +260,19 @@ The launcher resolves `aggregator_main` from the baseline (an experiment may not
 override it) and **fails fast on a selector/stack mismatch** — async selectors
 (`async_oort`, `async_random`, `fedbuff`) must run on the asyncfl stack;
 everything else on a sync stack (`flame/launch/runner.py:_validate_stack`).
+The check is a regex over the aggregator main file's import line
+(`from flame\.mode\.horizontal\.(\w+)\.top_aggregator import`, defaulting to
+`syncfl` if no match), compared against `_ASYNC_STACKS = {asyncfl,
+coord_asyncfl}` and `_ASYNC_SELECTORS = {async_oort, async_random, fedbuff}`
+— it raises `ValueError` before any process is spawned if the selector's
+async-ness doesn't match the stack's.
+
+**Debugging multi-layer merges**: `flame/launch/baselines.py` also has
+`merge_with_provenance(layers)` / `format_provenance(name, provenance)`,
+which track which layer (config template / baseline / experiment override)
+contributed each leaf key when building the aggregator or trainer config, and
+print a per-layer summary. Useful when a value isn't what you expect and you
+need to know which of the merge layers in §1/§2 last touched it.
 
 ---
 
@@ -290,7 +338,97 @@ experiments/run_YYYYMMDD_HHMMSS_<name>/
 
 ---
 
-## 6. fwdllm-specific migration notes
+## 6. Execution snapshots and reproducibility
+
+The runner writes two reproducibility files into every experiment's output
+directory (see the §5 directory layout) — no example code is involved.
+
+- **`snapshot.yaml`** (`flame/launch/snapshot.py:ExperimentSnapshot.create_snapshot()`):
+  ```yaml
+  snapshot_version: "1.0"
+  timestamp: <ISO8601>
+  hostname: <hostname>
+  experiment:
+    name: ...
+    description: ...
+    trainer: {num_trainers, start_id, dataset: {name, dirichlet_alpha},
+              availability: {mode}, battery_threshold, time_mode}
+    aggregator: {config_template, selector, tracking_mode, agg_goal}
+    execution: {num_gpus, sleep_between_spawns, aggregator_warmup_time}
+  spawn_commands:
+    aggregator: [...]   # full argv used to spawn the aggregator
+    trainers: [...]      # representative trainer argv
+  git_info: {commit, branch, clean, uncommitted_changes}   # or {error: ...} if not a git repo
+  metadata_location: <absolute path to _metadata/>
+  metadata_checksums:
+    trainer_registry: <sha256>
+    dataset_splits: {<filename>: <sha256>, ...}
+    availability_traces: {<filename>: <sha256>, ...}
+  aggregator_config: <path to the merged aggregator JSON used>
+  ```
+  It also copies the merged aggregator config to
+  `<exp_dir>/aggregator_config.json` if it wasn't already written there.
+  Load a saved snapshot with `ExperimentSnapshot.load_snapshot(path)`.
+
+- **`execution_config.yaml`** (`flame/launch/execution_config_generator.py:create_execution_config()` +
+  `save_execution_config()`): a more compact companion record that references
+  metadata **by key** instead of embedding it — e.g.
+  `metadata_refs.dataset_split_key = f"cifar10_alpha{alpha}_n{num_trainers}"`
+  and `metadata_refs.availability_trace_key = <availability_mode>` — plus
+  `git_info`, the resolved aggregator selector/tracking/goal, the trainer's
+  `trainer_id_range`, and (if provided) the same `spawn_commands` as the
+  snapshot. `save_execution_config()` prints a one-line summary (file size,
+  git hash, metadata keys) when it writes the file.
+
+## 7. Resource monitoring
+
+Optional background monitoring of RAM and GPU memory during a run, configured
+under `execution.monitoring` in the experiment YAML (`MonitoringConfig` in
+`flame/launch/experiment_config.py`):
+
+```yaml
+execution:
+  monitoring:
+    enabled: true                  # default true
+    check_interval_seconds: 30
+    ram_warning_percent: 80.0
+    ram_critical_percent: 90.0
+    gpu_warning_percent: 80.0
+    gpu_critical_percent: 90.0
+```
+
+When enabled, the runner calls `create_monitor_from_config()`
+(`flame/launch/resource_monitor.py`) to build a `ResourceMonitor`, which runs
+on a background thread and writes lines like
+`RAM: X.XGB / Y.YGB (Z.Z%) | Swap: A.AGB (B.B%) | GPU0: C.CGB/D.DGB (E.E%) Util:F% Temp:G°C`
+to `<exp_dir>/*_resources.log` at `check_interval_seconds`, escalating to
+WARNING/CRITICAL log lines past the configured thresholds. RAM tracking uses
+`psutil`; GPU tracking uses `pynvml` (via `nvidia-smi`) if available and is
+skipped otherwise. `create_monitor_from_config` (and the whole feature) is a
+no-op import-time fallback if `psutil` isn't installed.
+
+## 8. Batch mode: running multiple experiments in one launch
+
+The top-level experiment YAML is always an `experiments:` list (see the §1
+injection example and `README.md`); it isn't restricted to one entry — adding
+more entries makes `flame.launch.run_experiment` run them **sequentially in
+one process**, via `ExperimentRunner.run_experiment_batch()`
+(`flame/launch/runner.py`):
+
+- Before the batch starts, and again after **every** experiment (success or
+  failure, via `finally`), the runner calls `_sweep_stragglers()`: it
+  `pkill -9 -f`s any lingering `trainer/pytorch/main.py` /
+  `aggregator/pytorch/main_*` processes (never the batch runner itself) and
+  polls for GPU memory to drain (up to 45s) before continuing, so a hung
+  process from one experiment can't poison the next.
+- On an experiment failure, the default behavior is to prompt
+  `continue? (y/n):` on stdin. For unattended runs (overnight/CI), set
+  `auto_continue` is implied when **either** stdin is not a TTY **or** the
+  env var `FLAME_BATCH_CONTINUE_ON_ERROR` is set to anything other than
+  `""`, `"0"`, or `"false"` — in that case the runner logs the failure and
+  moves on to the next experiment instead of blocking on input.
+
+## 9. fwdllm-specific migration notes
 
 fwdllm differs from async_cifar10 in two key areas: (a) its dataset is stored as
 H5 partitions on disk (not index lists injected by the spawner), and (b) its
@@ -487,12 +625,12 @@ def _emit(event, **fields):
 
 ---
 
-## 7. Migration checklist for a new example
+## 10. Migration checklist for a new example
 
 1. Symlink `<example>/metadata → ../_metadata` (or set `experiment.metadata.dir`).
 2. Add `dataset_splits/<dataset>_alpha<a>_n<N>.yaml`; reuse registry + traces.
    For path-style datasets (fwdllm), skip this step and inject paths via
-   `config_overrides` instead (§6).
+   `config_overrides` instead (§9).
 3. Add `<example>/configs/trainer_base.yaml` (static per-example trainer
    template; per-trainer fields are injected by the launcher).
 4. Provide one aggregator entrypoint per stack you run (§2); delete the rest.
@@ -538,4 +676,4 @@ Keep (still current):
 | `async_cifar10` | Migrated (reference). 5 baselines: felix, fedbuff, fedavg, oort, refl. Includes telemetry, streaming, time_mode, memory profiler. |
 | `feddance_cifar10` | Has launcher YAMLs; FedDance baseline blockers tracked in `async_cifar10/FEDDANCE_TODO.md`. |
 | `async_google_speech` | **TODO** — migrate per this guide (needs google-speech dataset splits + per-stack aggregator entrypoints). |
-| `fwdllm` | **TODO** — see §6 for fwdllm-specific steps. Main blockers: (1) config intake switch to `load_config_from_argv()`; (2) per-trainer `client_idx` injection; (3) split aggregator into per-stack entrypoints; (4) add baselines to `baselines.yaml`; (5) gate wandb; (6) add JSONL telemetry. Dataset splits are H5-path-based, not index-list-based — use `config_overrides` for data paths rather than `_metadata/dataset_splits/`. |
+| `fwdllm` | **TODO** — see §9 for fwdllm-specific steps. Main blockers: (1) config intake switch to `load_config_from_argv()`; (2) per-trainer `client_idx` injection; (3) split aggregator into per-stack entrypoints; (4) add baselines to `baselines.yaml`; (5) gate wandb; (6) add JSONL telemetry. Dataset splits are H5-path-based, not index-list-based — use `config_overrides` for data paths rather than `_metadata/dataset_splits/`. |
