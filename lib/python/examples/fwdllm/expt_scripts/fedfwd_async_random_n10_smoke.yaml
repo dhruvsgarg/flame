@@ -1,0 +1,78 @@
+# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
+# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
+# (FedFwd has no simulated-clock support yet -- see
+# MIGRATION_TO_LAUNCHER_FWDLLM.md "New aspects" #6).
+# Use this to validate the launcher + baseline merge before the n=150 run.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fedfwd_async_random_n10_smoke.yaml
+
+experiments:
+  - name: fedfwd_async_random_n10_smoke
+    description: "FedFwd smoke (10 trainers, async_random+fedbuff+dynamic_kc). Validates launcher port before full n=150 run."
+
+    baseline: fedfwd_async_random_dynkc
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        mode: syn_0
+      # FedFwd has no simulated-clock support; always real.
+      time_mode: real
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
+      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          client_notify:
+            trace: syn_0
+
+    aggregator:
+      config_template: ../_metadata/aggregator_base.json
+      selector: async_random
+      tracking_mode: client_notify
+      agg_goal: 2
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fedfwd_async_random_n10_smoke
+        hyperparameters:
+          rounds: 50  # short smoke run, not the full 300
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+        selector:
+          kwargs:
+            # Scaled down from the n=150 production values (c=15, aggGoal=5,
+            # minInitialTrainers=15, dynamic_kc k:5-15/c:15-15) to fit 10
+            # trainers, while preserving the same selector/dynamic_kc shape.
+            c: 5
+            aggGoal: 2
+            minInitialTrainers: 5
+            dynamic_kc:
+              k_min: 2
+              k_max: 5
+              c_min: 5
+              c_max: 5
+
+    execution:
+      num_gpus: 1
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

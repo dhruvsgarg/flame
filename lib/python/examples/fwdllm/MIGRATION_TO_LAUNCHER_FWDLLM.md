@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 8 / 18 checkpoints complete
+## Progress: 10 / 18 checkpoints complete
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
@@ -16,7 +16,7 @@ this migration in any new session.
 - [x] 5. Create `fwdllm/metadata -> ../_metadata` symlink (Phase 2d)
 - [x] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
 - [x] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
-- [ ] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
+- [x] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
 - [ ] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [ ] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [ ] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
@@ -25,7 +25,7 @@ this migration in any new session.
 
 **Smoke tests (5) — interspersed to catch blockers early:**
 - [x] A. Static `_validate_stack` check (after step 4: verify the Phase 1a fix works)
-- [ ] B. Load experiment YAML + validate baseline (after step 8: confirm config schema is sound
+- [x] B. Load experiment YAML + validate baseline (after step 8: confirm config schema is sound
   before writing entrypoint code that depends on it)
 - [ ] C. Entrypoints accept `--config-json` (after step 10: trainer/agg don't crash on startup)
 - [ ] D. Full static config generation dry-run (after step 13: all wiring correct before live test)
