@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 4 / 18 checkpoints complete
+## Progress: 5 / 18 checkpoints complete
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
@@ -24,7 +24,7 @@ this migration in any new session.
 - [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
 
 **Smoke tests (5) — interspersed to catch blockers early:**
-- [ ] A. Static `_validate_stack` check (after step 4: verify the Phase 1a fix works)
+- [x] A. Static `_validate_stack` check (after step 4: verify the Phase 1a fix works)
 - [ ] B. Load experiment YAML + validate baseline (after step 6: confirm config schema is sound)
 - [ ] C. Entrypoints accept `--config-json` (after step 8: trainer/agg don't crash on startup)
 - [ ] D. Full static config generation dry-run (after step 13: all wiring correct before live test)
