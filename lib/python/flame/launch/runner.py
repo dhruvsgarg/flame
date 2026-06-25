@@ -398,6 +398,20 @@ class ExperimentRunner:
     _ASYNC_STACKS = {"asyncfl", "coord_asyncfl", "fwdllm"}
     _ASYNC_SELECTORS = {"async_oort", "async_random", "fedbuff"}
 
+    # _sweep_stragglers() pkill/pgrep patterns. fwdllm's entrypoints have no
+    # pytorch/ subdirectory, so they need their own patterns alongside the
+    # cifar10-shaped ones -- add one line per new example's entrypoint paths.
+    _STRAGGLER_PATTERNS = (
+        "trainer/pytorch/main.py",
+        "aggregator/pytorch/main_",
+        "fwdllm/trainer/main.py",
+        "fwdllm/aggregator/main_fedfwd_agg.py",
+    )
+    _TRAINER_STRAGGLER_PATTERNS = (
+        "trainer/pytorch/main.py",
+        "fwdllm/trainer/main.py",
+    )
+
     def _validate_stack(self, agg_main_path: Path, agg_cfg: dict) -> None:
         text = Path(agg_main_path).read_text()
         if re.search(
@@ -516,7 +530,7 @@ class ExperimentRunner:
 
         Matches ONLY the example's main scripts — never the batch runner itself
         (``run_experiment``) — so it is safe to call from inside the batch loop."""
-        for pat in ("trainer/pytorch/main.py", "aggregator/pytorch/main_"):
+        for pat in self._STRAGGLER_PATTERNS:
             try:
                 subprocess.run(["pkill", "-9", "-f", pat], check=False,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -526,10 +540,15 @@ class ExperimentRunner:
         deadline = time.time() + gpu_settle_timeout_s
         while time.time() < deadline:
             try:
-                out = subprocess.run(
-                    ["pgrep", "-f", "trainer/pytorch/main.py"],
-                    capture_output=True, text=True, check=False)
-                if not out.stdout.strip():
+                still_running = False
+                for pat in self._TRAINER_STRAGGLER_PATTERNS:
+                    out = subprocess.run(
+                        ["pgrep", "-f", pat],
+                        capture_output=True, text=True, check=False)
+                    if out.stdout.strip():
+                        still_running = True
+                        break
+                if not still_running:
                     break
             except Exception:
                 break
