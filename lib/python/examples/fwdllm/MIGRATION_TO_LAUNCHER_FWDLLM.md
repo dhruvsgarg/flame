@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 11 / 18 checkpoints complete
+## Progress: 12 / 18 checkpoints complete
 
 **Known environment gap (affects steps 9, 10, C, E):** this dev sandbox lacks
 fwdllm's pinned ML stack (`req.txt`'s `adapter-transformers==3.1.0` +
@@ -28,7 +28,7 @@ will need an environment that actually has fwdllm's pinned stack installed.
 - [x] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
 - [x] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
 - [x] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
-- [ ] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
+- [x] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [ ] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
@@ -359,7 +359,11 @@ aggregator.compose(); aggregator.run()
 called unconditionally — gating is additive, not a removal.
 **Checkpoint:** running with `--config-json` and no `--log_to_wandb` does not
 import/call `wandb.init()` (verify by stubbing/monkeypatching `wandb.init` to
-raise, confirm it's never hit).
+raise, confirm it's never hit). **[DONE]** — verified both directions:
+`wandb.init()` is never reached without `--log_to_wandb`, and is correctly
+reached with it. Full end-to-end execution hits the same pre-existing
+`adapter-transformers`/Rust-toolchain wall as the trainer side (step 9),
+confirmed at the identical import line, before `__main__` runs.
 
 ---
 
