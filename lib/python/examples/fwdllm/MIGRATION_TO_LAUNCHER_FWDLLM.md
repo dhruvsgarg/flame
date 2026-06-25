@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 14 / 18 checkpoints complete
+## Progress: 15 / 18 checkpoints complete
 
 **Update to the environment-gap note above:** the core `flame` library deps
 (`aiostream`, `gpustat`, `paho-mqtt`, `shared-memory-dict`, `mlflow`) were
@@ -39,7 +39,7 @@ will need an environment that actually has fwdllm's pinned stack installed.
 - [x] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [x] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [x] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
-- [ ] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
+- [x] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
 
 **Smoke tests (5) — interspersed to catch blockers early:**
@@ -437,6 +437,21 @@ near where loss/accuracy become available for the variance check), gated by
 `telemetry.is_enabled()`.
 **Checkpoint:** with `FLAME_TELEMETRY_DIR` set to a temp dir, one training
 round produces a `trainer_<id>.jsonl` line with `event: trainer_round`.
+**[DONE]** — emission added at the end of `train_with_data_id()` (after
+`_perform_training()`/`_emulate_training_delay()`, on the successful-training
+path only, not on the `abort_training`/`_check_availability` early-returns),
+using `self._stat_utility` (the base `Trainer` class's per-batch-loss-derived
+accumulator, the same value used in the aggregator's variance/utility checks)
+as `stat_utility`; `final_loss` is left unset (`None`, an optional field) since
+no persistent loss attribute is exposed by `tc_transformer_trainer_distribute.py`
+without a deeper change there, out of scope for this migration.
+`telemetry.configure(role="trainer", end_id=str(config.task_id))` added at
+startup in `trainer/main.py` (missed in step 9, added now). Verified against
+the real `train_with_data_id()` method (only the heavy ML sub-call
+`_perform_training()` stubbed out) with a real `FLAME_TELEMETRY_DIR` temp
+dir: produced exactly one `trainer_round` JSONL line with all expected
+fields (`round`, `dataset_size`, `stat_utility`, `data_id`,
+`iteration_per_data_id`, `model_version`, `avail_state`, `real_gpu_time_s`).
 
 ---
 

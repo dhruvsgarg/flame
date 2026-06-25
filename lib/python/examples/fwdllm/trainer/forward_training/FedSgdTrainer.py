@@ -15,6 +15,9 @@ from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import flame.monitor.runtime
 import math
 
+from flame import telemetry
+from flame.telemetry.events import build_trainer_round
+
 logger = logging.getLogger(__name__)
 
 
@@ -498,7 +501,9 @@ class FedSGDTrainer(Trainer):
         if not self._check_availability():
             return
 
+        _round_start_ts = time.time()
         self._perform_training()
+        _real_gpu_time_s = time.time() - _round_start_ts
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
@@ -507,6 +512,29 @@ class FedSGDTrainer(Trainer):
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
         )
+
+        # self._stat_utility (inherited from the base Trainer class) is
+        # accumulated from per-batch loss during _perform_training() --
+        # the same value the aggregator's variance/utility checks use, so
+        # this is the natural point to report it via telemetry.
+        if telemetry.is_enabled():
+            try:
+                _stat_utility = float(self._stat_utility)
+            except (TypeError, ValueError):
+                _stat_utility = None
+            ev, fields = build_trainer_round(
+                round_num=int(self._round),
+                real_gpu_time_s=_real_gpu_time_s,
+                avail_state=self.avl_state.value,
+                dataset_size=self.dataset_size,
+                stat_utility=_stat_utility,
+                extra={
+                    "data_id": self.data_id,
+                    "iteration_per_data_id": self.iteration_per_data_id,
+                    "model_version": self._model_version,
+                },
+            )
+            telemetry.emit(ev, **fields)
 
     def test(self):
         # train data

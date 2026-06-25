@@ -36,6 +36,7 @@ from examples.fwdllm.trainer.forward_training.FedSgdTrainer import FedSGDTrainer
 import argparse
 import logging
 from flame.launch.cli import load_config_from_argv
+from flame import telemetry
 
 
 def post_complete_message(tc_args):
@@ -70,6 +71,7 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d,%H:%M:%S",
     )
     logging.debug(config)
+    telemetry.configure(role="trainer", end_id=str(config.task_id))
     if _cli_args.time_mode != "real":
         logging.warning(
             f"--time_mode={_cli_args.time_mode!r} requested, but FedFwd has no "
