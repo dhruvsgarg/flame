@@ -32,8 +32,8 @@ from flame.selector.properties import (
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
     PROP_LAST_RETURNED_ROUND,
-    # Re-exported for asyncfl/fwdllm aggregators (felix sets it on its own path); the
-    # OortSelector temporal term no longer reads it (uses PROP_LAST_RETURNED_ROUND).
+    # Re-exported for asyncfl/fwdllm aggregators; OortSelector's temporal term reads
+    # PROP_LAST_RETURNED_ROUND instead.
     PROP_LAST_SELECTED_ROUND,  # noqa: F401
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_START_TIME,
@@ -92,23 +92,17 @@ class OortSelector(AbstractSelector):
 
         self.alpha = kwargs.get("round_penalty", _d["round_penalty"])  # system_util exponent
 
-        # Reference Oort normalizes+clips the reward into ~[0,1] (get_norm) before
-        # adding the temporal term; the raw reward (~70) had made it inert.
+        # Reference Oort normalizes+clips the reward into ~[0,1] (get_norm) before adding
+        # the temporal term, so the additive term isn't swamped by the raw reward (~70).
         self.normalize_reward = kwargs.get("normalize_reward", True)
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
-        # cut_off_util: exploitation-pool breadth factor; was hardcoded 0.95.
+        # cut_off_util: exploitation-pool breadth factor.
         self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])
 
-        # UCB temporal-uncertainty term. Reference Oort AND REFL
-        # (`third_party/{Oort,REFL}/.../oort.py`) divide by the aggregator round at which
-        # the end's update was LAST RECEIVED (`time_stamp = self.epoch` in
-        # update_client_util), initialized at REGISTRATION — so the bonus is defined
-        # (non-zero) for every client and up-weights under-selected / slower-returning
-        # ones (flame reads PROP_LAST_RETURNED_ROUND, stamped at receipt by the
-        # aggregator, registration-initialized to the current round). Default ON =
-        # faithful; set False only for ablation (reproduces the pre-fix dead-temporal
-        # behavior). refl had this term DEAD entirely (refl_oort.select() never let it
-        # fire); enabling restores it for both baselines faithfully.
+        # UCB temporal-uncertainty term. Like reference Oort/REFL, divide by the agg round
+        # of the end's LAST RECEIVED update (PROP_LAST_RETURNED_ROUND, registration-init) so
+        # the bonus is defined for every client and up-weights under-selected/slower-returning
+        # ones. Default ON = faithful; False = ablation (dead temporal, the pre-fix refl path).
         self.enable_temporal = kwargs.get("enable_temporal", True)
 
         # Track sliding window statistics for the selector
@@ -327,9 +321,8 @@ class OortSelector(AbstractSelector):
             )
             self._select_run_counter = 0
 
-        # system_util = (pref/round_duration)^alpha depends on the dynamic
-        # round_preferred_duration (a per-round percentile of candidate durations);
-        # emit it so a divergence can be traced to the target vs the duration input.
+        # Emit round_preferred_duration (the per-round percentile that drives the
+        # system_util speed penalty) so a divergence localizes to target vs input.
         _pref = getattr(self, "round_preferred_duration", None)
         self.emit_selection(
             round, task_to_perform, all_ends, eligible_ends.keys(),
@@ -341,8 +334,7 @@ class OortSelector(AbstractSelector):
                 "exploit_ids": list(exploit_end_ids),
                 "round_preferred_duration_s": _pref.total_seconds()
                 if hasattr(_pref, "total_seconds") else _pref,
-                # dynamic pacer state: the percentile that SETS pref. Logged so the
-                # sim/real pref divergence is read directly, not inferred (§S.pacer).
+                # pacer state: the percentile that sets pref (read pref divergence directly).
                 "round_threshold": getattr(self, "round_threshold", None),
                 "alpha": getattr(self, "alpha", None),
                 # per-round speed-penalty summary over selected (see _system_util_summary)
@@ -356,12 +348,11 @@ class OortSelector(AbstractSelector):
         sorted_utility_list: list[tuple[str, float]],
         num_of_ends: int,
     ) -> float:
-        """Cutoff utility = cut_off_util * the (exploitLen-th HIGHEST) score.
+        """Cutoff = cut_off_util * the (exploitLen-th HIGHEST) score.
 
-        Reference Oort thresholds at the exploitation boundary's score then samples
-        above it (oort.py:329). `sorted_utility_list` is ASCENDING, so the
-        exploitLen-th highest is at index ``len-1-exploitLen``. The prior port
-        indexed near the bottom, making the factor inert.
+        Reference Oort thresholds at the exploitation boundary's score then samples above
+        it. `sorted_utility_list` is ASCENDING, so the exploitLen-th highest is at index
+        ``len-1-exploitLen``.
         """
         if not sorted_utility_list:
             logger.debug("Got empty utility_list, returning 999999.0")
@@ -429,21 +420,15 @@ class OortSelector(AbstractSelector):
         ]
 
     def pacer(self, round: int) -> None:
-        """Adapt `round_threshold` (the speed-penalty percentile) from the
-        exploited-utility trend — a faithful port of reference Oort
-        (third_party/Oort/oort/oort.py:184-199), keyed on the CURRENT round
-        like the reference's `training_round`.
+        """Adapt `round_threshold` (the speed-penalty percentile) from the exploited-utility
+        trend — faithful port of reference Oort (oort.py:184-199), keyed on the current round.
 
-        Two SYMMETRIC moves on the reference's 0.1 / 5x bands over the last two
-        `pacer_step` windows of mean exploited utility:
-          * FLAT plateau (`|Δ| <= 0.1·last`) → RELAX: `round_threshold += delta`
-            (admit slower-but-higher-utility clients when progress stalls).
-          * SHARP change (`|Δ| >= 5·last`) → TIGHTEN: `round_threshold -= delta`
-            (floored at `pacer_delta`).
-        The earlier port raised on ANY dip (`last > curr`) and never lowered, so
-        `round_threshold` ratcheted monotonically to 100 and was hypersensitive
-        to per-round utility noise — which made the sim/real trajectories
-        diverge and compound the speed-penalty binding gap (PARITY.md §S.pacer).
+        Two symmetric moves on the 0.1 / 5x bands over the last two `pacer_step` windows of
+        mean exploited utility:
+          * FLAT plateau (`|Δ| <= 0.1·last`) → RELAX: `round_threshold += delta`.
+          * SHARP change (`|Δ| >= 5·last`) → TIGHTEN: `round_threshold -= delta` (floor delta).
+        Both branches matter: a raise-only ratchet drifts monotonically to 100 and is
+        noise-sensitive, diverging sim/real (PARITY.md §S.pacer).
         """
         if not (
             self.pacer_step > 0
@@ -571,9 +556,8 @@ class OortSelector(AbstractSelector):
             return 0.0
         time_stamp = ends[end_id].get_property(PROP_LAST_RETURNED_ROUND)
         if not time_stamp:
-            # Reference registers a new arm with time_stamp = current round, so the bonus
-            # is defined for a never-returned client; mirror that lazily on first scoring
-            # (and persist so it stays stable across rounds).
+            # Reference registers a new arm with time_stamp = current round so the bonus is
+            # defined for a never-returned client; mirror that lazily and persist it.
             time_stamp = round
             ends[end_id].set_property(PROP_LAST_RETURNED_ROUND, round)
         return scoring.oort_temporal_uncertainty(round, time_stamp)
@@ -675,10 +659,8 @@ class OortSelector(AbstractSelector):
                 "believed_I": stat_util,
                 "temporal": temporal,
                 "system_util": system_util,
-                # Final combined score actually fed to the exploit draw; the
-                # parity-divergent term lives in the selection PROBABILITY, not the
-                # per-term KS (refl Jun 23). selection_prob/in_exploit_pool stamped
-                # at the draw site (refl_oort / oort sample_by_util).
+                # Combined score fed to the exploit draw; the divergent term lives in the
+                # selection PROBABILITY, stamped at the draw site (refl_oort/sample_by_util).
                 "score": combined,
             }
             utility_list[utility_idx][PROP_UTILITY] = combined

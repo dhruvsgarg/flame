@@ -378,10 +378,8 @@ class REFLOortSelector(OortSelector):
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True)
 
         # Exploitation, faithful to the REFL fork (thirdparty/oort/oort.py:316-355):
-        # threshold at cut_off_util * the exploitLen-th-highest score, augment the
-        # pool down to that cutoff (or 10x exploitLen), then sample exploitLen
-        # WEIGHTED by utility. The prior port took a deterministic top-k (no
-        # cut_off_util, no probabilistic draw).
+        # threshold at cut_off_util * the exploitLen-th-highest score, augment the pool
+        # down to that cutoff (or 10x exploitLen), then sample exploitLen WEIGHTED by utility.
         exploit_clients = []
         if num_exploit > 0:
             boundary = min(num_exploit, len(utility_list) - 1)
@@ -467,7 +465,6 @@ class REFLOortSelector(OortSelector):
 
         return set(blacklist)
 
-    # pacer() inherited from OortSelector — the faithful reference port (§S.pacer,
-    # third_party/Oort/oort/oort.py:184-199). refl previously kept its own copy;
-    # the base now matches the reference exactly (flat→relax / sharp→tighten,
-    # keyed on the current round), so the override was redundant and removed.
+    # pacer() inherited from OortSelector — the base is the faithful reference port
+    # (flat→relax / sharp→tighten, current-round keyed), matching the REFL fork, so no
+    # override is needed here (§S.pacer, third_party/Oort/oort/oort.py:184-199).

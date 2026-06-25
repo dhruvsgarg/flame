@@ -107,27 +107,23 @@ class TopAggregator(BaseTopAggregator):
                 f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
             )
 
-        # Carry-over gate: a prior-round straggler whose modeled
-        # completion sct is still in the future at THIS round's start is STILL
-        # COMPUTING — in real its update has not arrived, so it occupies its slot
-        # (in-flight) rather than being delivered and stale-cleaned. Sim delivers it
-        # physically at once; without the gate it is popped, stale-rejected, and freed
-        # → in-flight drains to ~0 while real carries ~3 (overcommit). When on, hold
-        # such stragglers in the buffer (and thus in selected_ends) until a later round
-        # starts with vclock >= sct. Fresh (this-round) ends are always delivered; a
-        # prior straggler that has already completed (sct <= round_start) is delivered
-        # and stale-committed exactly as before. Default off.
+        # Carry-over gate (§4.9). A prior-round straggler whose modeled completion sct is still
+        # in the future at this round's start is STILL COMPUTING — real keeps it in-flight
+        # (occupying its slot) rather than delivered+stale-cleaned. Sim delivers physically at
+        # once; without the gate it is popped, stale-rejected and freed → in-flight drains to ~0
+        # while real carries ~3. When on, hold such stragglers in the buffer (and selected_ends)
+        # until a round starts with vclock >= sct. Already-completed (sct <= round_start) and
+        # fresh ends deliver as before. Default off.
         _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         carryover = bool(getattr(_hp, "sim_inflight_carryover", False))
         # Pinned by _aggregate_weights so block-for-K-fresh retries can't creep it.
         vclock_round_start = getattr(self, "_round_start_vclock", self._vclock.now)
         held_over: list = []
-        # try/finally so the held stragglers are re-buffered even when the caller
-        # ABANDONS this generator early — which it always does (it stops once
-        # agg_goal fresh updates are accepted, suspending us at `yield` before the
-        # buffer empties). Without it, a straggler popped+held this round is lost on
-        # the next `gen.close()` (GeneratorExit at the yield) → in-flight drains to
-        # ~0.15 instead of carrying real's ~4.6 (the §4.9 carry-over under-fire).
+        # try/finally so held stragglers are re-buffered even when the caller ABANDONS this
+        # generator early — which it always does (it stops once agg_goal fresh updates are
+        # accepted, suspending us at `yield`). Without it, a straggler popped+held this round is
+        # lost on the next `gen.close()` (GeneratorExit at the yield) — the §4.9 carry-over
+        # under-fire (in-flight drains to ~0.15 instead of real's ~4.6).
         try:
             while True:
                 popped = buf.pop_min()
@@ -341,17 +337,12 @@ class TopAggregator(BaseTopAggregator):
             if received_end_count == aggr_num:
                 break
 
-        # running the second loop to aggregate up to aggr_num updates from
-        # trainers, mirroring real's "keep waiting" behavior. Real: recv_fifo
-        # one at a time off the same end_ids. Sim: re-probe via
-        # _oort_sim_recv on the same persistent buffer — a fresh-but-slow
-        # trainer that missed the first pass's grace window gets another
-        # grace window instead of being silently dropped to commit stale in
-        # a future round (the §4.9/Jun16 "committed_fresh starvation" gap:
-        # sim averaged 7.24 fresh/round vs real's 10 because the first pass
-        # gave up on buffer-drain rather than blocking for aggr_num fresh).
-        # `progressed` bounds the loop: a pass that accepts nothing means no
-        # more arrivals are coming this round, so stop instead of spinning.
+        # Second loop: keep aggregating up to aggr_num, mirroring real's "keep waiting". Real:
+        # recv_fifo one at a time off the same end_ids. Sim: re-probe via _oort_sim_recv on the
+        # same persistent buffer so a fresh-but-slow trainer that missed the first pass's grace
+        # window gets another instead of being dropped to commit stale later (the §4.9
+        # committed_fresh-starvation gap). `progressed` bounds the loop: a pass that accepts
+        # nothing means no more arrivals this round, so stop instead of spinning.
         while received_end_count < aggr_num and end_ids:
             progressed = False
             _recv2 = (
@@ -653,15 +644,12 @@ class TopAggregator(BaseTopAggregator):
         else:
             curr_unavail_trainer_list = []
 
-        # [SIM_RESIDENCE] Mark trainers that are STILL COMPUTING in
-        # sim time as unavailable for this selection. In sim a dispatched trainer's
-        # update arrives physically at once, so it can re-enter the eligible pool
-        # before its modeled completion `sct`; real keeps it busy (out of the pool)
-        # for its whole compute. A buffered end with `sct > vclock` is exactly such
-        # a straggler. Excluding it via the unavailable list (NOT selected_ends —
-        # that would re-dispatch it) keeps sim's eligible pool from carrying the slow
-        # tail, matching real's pool composition (refl A2b 12.41->~6.5). Bounded:
-        # released once `vclock >= sct` (the buffer pops & commits it). Default off.
+        # [SIM_RESIDENCE] (§4.5) Mark trainers STILL COMPUTING in sim time unavailable for this
+        # selection. In sim a dispatched update arrives physically at once, so the trainer can
+        # re-enter the eligible pool before its modeled `sct`; real keeps it busy for its whole
+        # compute. A buffered end with `sct > vclock` is such a straggler — excluding it via the
+        # unavailable list (NOT selected_ends, which would re-dispatch it) keeps sim's pool from
+        # carrying the slow tail (refl A2b 12.41->~6.5). Released once vclock >= sct. Default off.
         if self.simulated and getattr(
             self.config.hyperparameters, "sim_inflight_residence", False
         ):

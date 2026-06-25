@@ -515,11 +515,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
                     f"wall_lag_s={wall_lag_s:.3f}"
                 )
                 # Base syncfl stack (fedavg/feddance) doesn't set PROP_CLIENT_TASK_TRAIN_DURATION
-                # — only the oort overlay does. Fill it with the client's INTRINSIC
-                # duration (WALL_SEND - WALL_RECV, §S.dur) — NOT wall_lag_s (recv -
-                # dispatch), which folds in read-wait + dispatch->recv delivery lag and
-                # would inflate slow-trainer trainer_speed telemetry. (U6 barrier lag
-                # below uses _real_task_dur = WALL_SEND - dispatch, a separate anchor.)
+                # — only the oort overlay does. Fill it with the client's INTRINSIC duration
+                # (WALL_SEND - WALL_RECV, §S.dur), NOT wall_lag_s (recv - dispatch) which folds in
+                # server waits. (U6 barrier lag below uses _real_task_dur = WALL_SEND - dispatch,
+                # a separate anchor.)
                 if not self.simulated and channel.get_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION) is None:
                     _ctd = real_client_task_train_duration(msg, _sent_ts, recv_ts)
                     if _ctd is None:
@@ -645,13 +644,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
                 # Populate round statistics vars
                 self._round_update_values["staleness"].append(update_staleness_val)
                 self._round_update_values["stat_utility"].append(stat_utility)
-                # commit-timeliness: lag between this update becoming ready and
-                # being committed. Sim's vclock is already advanced to the round
-                # barrier (max sct), so per-message `vclock - sct` is the within-round
-                # wait. Real applies all K at one post-loop instant, so it must anchor
-                # on that single barrier — deferred and finalized after the loop
-                # (`_real_round_durs`); measuring per-message `now() - arrival` here
-                # would track arrival and collapse to ~0, blind to the barrier wait.
+                # commit-timeliness: ready->committed lag. Sim's vclock is already at the round
+                # barrier (max sct), so per-message `vclock - sct` is the within-round wait. Real
+                # applies all K at one post-loop instant, so it anchors on that single barrier
+                # (deferred to `_real_round_durs`); a per-message `now() - arrival` here would
+                # track arrival and collapse to ~0, blind to the barrier wait.
                 if self.simulated:
                     _vis_ready, _vis_committed, _vis_lag = self._update_visibility_lag(
                         msg.get(MessageType.SIM_COMPLETION_TS),
@@ -669,12 +666,10 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
-        # [U6 real barrier-anchor] Finalize real visibility lag against the single
-        # round barrier: lag_i = max_completion - completion_i over this round's
-        # updates (completion = WALL_SEND_TS - dispatch). Matches sim's vclock - sct
-        # (the round barrier is the latest completion). An early finisher's update
-        # waits this long for the cohort before the one post-loop aggregation applies
-        # it; the prior per-message metric saw only arrival->ingestion (~0.02s).
+        # [U6 real barrier-anchor] Finalize real visibility lag against the single round barrier:
+        # lag_i = max_completion - completion_i over this round's updates (completion = WALL_SEND
+        # - dispatch). Matches sim's vclock - sct (the barrier is the latest completion): an early
+        # finisher waits this long for the cohort before the one post-loop aggregation applies it.
         if not self.simulated and _real_round_durs:
             self._round_update_values["update_visibility_lag_s"] = (
                 self._barrier_anchored_lags(_real_round_durs)

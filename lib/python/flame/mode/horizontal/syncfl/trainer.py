@@ -422,13 +422,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 self, "_sim_round_duration", 0.0
             )
 
-        # Lazy-deserialize (BOTH real and sim): ship the weight update as raw
-        # pre-serialized bytes so the aggregator reconstructs the tensor only for
-        # the updates it commits, not the surplus/stale ones it discards. The
-        # channel's recv otherwise eagerly cloudpickle.loads every received tensor
-        # (channel.py), even ones thrown away to overcommitment / a sync barrier
-        # that only needs the K fastest. The aggregator side restores the tensor
-        # via common.util.materialize_weights at its read site.
+        # Lazy-deserialize (real and sim): ship the weight update as raw pre-serialized bytes so
+        # the aggregator reconstructs the tensor only for updates it commits, not the surplus/
+        # stale ones it discards (the channel otherwise cloudpickle.loads every received tensor).
+        # The aggregator restores it via common.util.materialize_weights at its read site.
         if MessageType.WEIGHTS in msg:
             msg[MessageType.WEIGHTS_BYTES] = cloudpickle.dumps(
                 msg.pop(MessageType.WEIGHTS)
