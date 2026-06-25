@@ -253,3 +253,145 @@ baselines:
         client_notify:
           enabled: "False"
           trace: syn_0
+
+  # --- fwdllm (FedFwd) baselines ---
+  # FedFwd's aggregator (flame.mode.horizontal.syncfl.fwdllm_aggregator.TopAggregator)
+  # is a single, FedFwd-specific implementation (gradient-variance-gated commits,
+  # JVP/forward-mode, dynamic_kc controller) -- not the generic asyncfl/syncfl/oort
+  # hierarchy the baselines above swap between. Both fwdllm baselines therefore
+  # point at the same single aggregator entrypoint (aggregator/main_fedfwd_agg.py);
+  # there is no per-stack split here.
+
+  fedfwd_async_random_dynkc:
+    description: >-
+      FedFwd (forward-mode/JVP variance-gated FL) + async_random selector +
+      fedbuff optimizer + adaptive dynamic_kc controller. Transcribed
+      faithfully from the existing
+      fwdllm/expts/run_tc_expts/json_scripts/aggregator.json (the current
+      production default for fwdllm) -- ported as-is, not redesigned.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: async_random
+        kwargs:
+          c: 15  # concurrency level; override per experiment to scale with num_trainers
+          aggGoal: 5  # override per experiment to match num_trainers
+          evalGoalFactor: 0
+          selectType: default
+          roundNudgeType: last_train
+          minInitialTrainers: 15  # override per experiment to scale with num_trainers
+          k: 5
+          is_async: true
+          # Maps task names to eligible avl_state values. Classic FL: only
+          # AVL_TRAIN. FedFwd: both AVL_TRAIN and AVL_EVAL can train.
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+          # K adapts to track variance against target_iter_per_data_id; C is
+          # held fixed (c_min == c_max == c). Override k_min/k_max/c_min/c_max
+          # per experiment to scale with num_trainers.
+          dynamic_kc:
+            enabled: true
+            policy: adaptive_k_var_tracking
+            policy_kwargs:
+              target_iter_per_data_id: 15
+              k_step: 2
+              window: 6
+            k_min: 5
+            k_max: 15
+            c_min: 15
+            c_max: 15
+            update_every_n_aggs: 1
+            history_window: 20
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          # NOTE: dataset_name is "google-speech" in the legacy aggregator.json
+          # this baseline was transcribed from, even though fwdllm runs agnews.
+          # Ported as-is per "transcribed faithfully, not redesigned" -- looks
+          # like a copy-paste artifact from another example's config, left
+          # unfixed here; flag before relying on this kwarg's value.
+          dataset_name: google-speech
+          agg_rate_conf:
+            type: old
+            scale: 1.0
+            a_exp: 0.2
+            b_exp: 0.25
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NONE"
+        rejectStaleUpdates: false
+        inc_model_version_per_data_id: true
+        # Soft-cap fallback. With adaptive_k_var_tracking, aggregations should
+        # converge near target without needing the cap, but it remains as a
+        # safety net.
+        max_iterations_per_data_id: 15
+        # FedSGD variance check threshold. Raised from the distilbert default
+        # (0.1) for heterogeneous NIID partitions where gradient variance is
+        # naturally higher.
+        var_threshold: 0.3
+    trainer:
+      hyperparameters:
+        fl_algorithm: FedFwd
+        forward_mode: "True"
+        var_control: "True"
+        perturbation_sampling: "True"
+        client_notify:
+          enabled: "False"
+
+  fedfwd_oracular:
+    description: >-
+      FedFwd + async_oort selector + fedbuff optimizer + ORACULAR trainer
+      availability tracking. NOTE:
+      flame/mode/horizontal/syncfl/fwdllm_aggregator.py:read_trainer_unavailability()
+      currently hardcodes a glob over
+      fwdllm/expts/run_tc_expts/json_scripts/trainer_*.json to build the
+      oracular event dict -- a library-level (not example-level) dependency
+      on the legacy JSON directory. This baseline only stays correct while
+      json_scripts/ remains on disk; rewriting read_trainer_unavailability()
+      to read _metadata/trainer_registry.yaml +
+      _metadata/availability_traces/*.yaml (mirroring main_oort_sync_agg.py's
+      pattern for async_cifar10) is flagged as a follow-up, not yet done.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: async_oort
+        kwargs:
+          c: 30
+          aggGoal: 10
+          evalGoalFactor: 0
+          selectType: default
+          roundNudgeType: last_train
+          minInitialTrainers: 50
+          k: 10
+          is_async: true
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+          dynamic_kc:
+            enabled: false
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          dataset_name: agnews
+          agg_rate_conf:
+            type: new
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "True"
+          type: ORACULAR
+        var_threshold: 0.3
+    trainer:
+      hyperparameters:
+        fl_algorithm: FedFwd
+        forward_mode: "True"
+        client_notify:
+          enabled: "True"

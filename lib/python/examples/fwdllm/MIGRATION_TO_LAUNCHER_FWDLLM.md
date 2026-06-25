@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 7 / 18 checkpoints complete
+## Progress: 8 / 18 checkpoints complete
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
@@ -15,7 +15,7 @@ this migration in any new session.
 - [x] 4. Fix `_sweep_stragglers()` pattern list for fwdllm paths (Phase 1c)
 - [x] 5. Create `fwdllm/metadata -> ../_metadata` symlink (Phase 2d)
 - [x] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
-- [ ] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
+- [x] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
 - [ ] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
 - [ ] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [ ] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
