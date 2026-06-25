@@ -266,6 +266,7 @@ class ExperimentRunner:
                 alpha=exp.trainer.dataset.dirichlet_alpha,
                 availability_mode=exp.trainer.availability.mode,
                 trainer_main_path=paths["trainer_main"],
+                skip_index_splits=exp.trainer.dataset.path_style,
                 **config_overrides,
             )
 

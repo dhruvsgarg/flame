@@ -97,6 +97,7 @@ class ConfigGenerator:
         availability_mode: str = "mobiperf_2st",
         dataset_name: str = "cifar10",
         num_trainers: int = 300,
+        skip_index_splits: bool = False,
         **overrides,
     ) -> Dict:
         """Build a full trainer config dict from base + metadata + overrides.
@@ -106,6 +107,12 @@ class ConfigGenerator:
           2. baseline_overrides (set via set_baseline_overrides, deep-merged)
           3. per-trainer values from shared metadata (taskid, indices, traces)
           4. **overrides dotted-key kwargs (job.id, hyperparameters.X)
+
+        skip_index_splits: True for path-style datasets (e.g. H5 file paths)
+        that have no _metadata/dataset_splits/<name>_alpha<a>_n<N>.yaml
+        index-list file -- skips the get_dataset_split() lookup and the
+        trainer_indices_list injection entirely, instead of KeyError-ing on a
+        split file that will never exist for this dataset.
         """
         from copy import deepcopy
 
@@ -118,15 +125,16 @@ class ConfigGenerator:
         trainer_meta = self.metadata.get_trainer_metadata(trainer_id)
         config["taskid"] = trainer_meta["task_id"]
 
-        dataset_indices = self.metadata.get_dataset_split(
-            alpha, trainer_id, dataset_name, num_trainers
-        )
-
         # Update hyperparameters
         if "hyperparameters" not in config:
             config["hyperparameters"] = {}
 
-        config["hyperparameters"]["trainer_indices_list"] = dataset_indices
+        if not skip_index_splits:
+            dataset_indices = self.metadata.get_dataset_split(
+                alpha, trainer_id, dataset_name, num_trainers
+            )
+            config["hyperparameters"]["trainer_indices_list"] = dataset_indices
+
         config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
         
         # Set training_delay_enabled from overrides (default True)
@@ -232,6 +240,7 @@ class TrainerSpawner:
         alpha: float,
         availability_mode: str,
         trainer_main_path: Path,
+        skip_index_splits: bool = False,
         **config_overrides,
     ) -> subprocess.Popen:
         """
@@ -242,6 +251,9 @@ class TrainerSpawner:
             alpha: Dirichlet alpha
             availability_mode: Availability trace mode
             trainer_main_path: Path to trainer main.py
+            skip_index_splits: True for path-style datasets with no
+                _metadata/dataset_splits/ index-list file (see
+                ConfigGenerator.generate_trainer_config).
             **config_overrides: Additional config overrides
 
         Returns:
@@ -249,7 +261,8 @@ class TrainerSpawner:
         """
         # Generate config
         config = self.config_gen.generate_trainer_config(
-            trainer_id, alpha, availability_mode, **config_overrides
+            trainer_id, alpha, availability_mode,
+            skip_index_splits=skip_index_splits, **config_overrides
         )
 
         # Serialize config to JSON string
@@ -317,6 +330,7 @@ class TrainerSpawner:
         alpha: float,
         availability_mode: str,
         trainer_main_path: Path,
+        skip_index_splits: bool = False,
         **config_overrides,
     ):
         """
@@ -327,6 +341,8 @@ class TrainerSpawner:
             alpha: Dirichlet alpha
             availability_mode: Availability trace mode
             trainer_main_path: Path to trainer main.py
+            skip_index_splits: True for path-style datasets with no
+                _metadata/dataset_splits/ index-list file.
             **config_overrides: Additional config overrides
         """
         print(f"\nSpawning {len(trainer_ids)} trainers...")
@@ -341,6 +357,7 @@ class TrainerSpawner:
                 alpha,
                 availability_mode,
                 trainer_main_path,
+                skip_index_splits=skip_index_splits,
                 **config_overrides,
             )
             time.sleep(self.sleep_between_spawns)

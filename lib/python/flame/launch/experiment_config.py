@@ -16,6 +16,10 @@ class DatasetConfig:
 
     name: str = "cifar10"
     dirichlet_alpha: float = 0.1
+    # True for path-style datasets (e.g. H5 file paths) that have no
+    # _metadata/dataset_splits/<name>_alpha<a>_n<N>.yaml index-list file.
+    # Skips the index-split lookup in ConfigGenerator.generate_trainer_config().
+    path_style: bool = False
 
 
 @dataclass
