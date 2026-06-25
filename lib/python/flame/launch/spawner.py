@@ -331,6 +331,7 @@ class TrainerSpawner:
         availability_mode: str,
         trainer_main_path: Path,
         skip_index_splits: bool = False,
+        per_trainer_overrides: Optional[Dict[int, Dict]] = None,
         **config_overrides,
     ):
         """
@@ -343,7 +344,13 @@ class TrainerSpawner:
             trainer_main_path: Path to trainer main.py
             skip_index_splits: True for path-style datasets with no
                 _metadata/dataset_splits/ index-list file.
-            **config_overrides: Additional config overrides
+            per_trainer_overrides: Optional {trainer_id: {dotted.key: value}}
+                dict of overrides that vary per trainer (e.g. a computed
+                hyperparameters.client_idx), merged on top of the shared
+                **config_overrides for that specific trainer_id. Unlike
+                **config_overrides (identical for every trainer),
+                per_trainer_overrides lets each trainer's config differ.
+            **config_overrides: Additional config overrides shared by all trainers
         """
         print(f"\nSpawning {len(trainer_ids)} trainers...")
         print(f"  Alpha: {alpha}")
@@ -352,13 +359,16 @@ class TrainerSpawner:
         print()
 
         for trainer_id in trainer_ids:
+            trainer_overrides = dict(config_overrides)
+            if per_trainer_overrides and trainer_id in per_trainer_overrides:
+                trainer_overrides.update(per_trainer_overrides[trainer_id])
             self.spawn_trainer(
                 trainer_id,
                 alpha,
                 availability_mode,
                 trainer_main_path,
                 skip_index_splits=skip_index_splits,
-                **config_overrides,
+                **trainer_overrides,
             )
             time.sleep(self.sleep_between_spawns)
 

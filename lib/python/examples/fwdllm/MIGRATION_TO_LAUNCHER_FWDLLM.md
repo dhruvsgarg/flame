@@ -6,12 +6,12 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 2 / 18 checkpoints complete
+## Progress: 3 / 18 checkpoints complete
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
 - [x] 2. Add `DatasetConfig.path_style` + `skip_index_splits` plumbing (Phase 1b)
-- [ ] 3. Add `TrainerConfig.client_idx_modulo` + per-trainer override path (Phase 1b)
+- [x] 3. Add `TrainerConfig.client_idx_modulo` + per-trainer override path (Phase 1b)
 - [ ] 4. Fix `_sweep_stragglers()` pattern list for fwdllm paths (Phase 1c)
 - [ ] 5. Create `fwdllm/metadata -> ../_metadata` symlink (Phase 2d)
 - [ ] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)

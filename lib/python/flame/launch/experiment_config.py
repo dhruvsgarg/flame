@@ -47,6 +47,11 @@ class TrainerConfig:
     enable_training_delays: bool = True  # Enable per-trainer training delays
     hyperparameters: Optional[dict] = None  # Trainer-specific hyperparameters (e.g., batchSize, learningRate)
     config_overrides: Optional[dict] = None  # Deep-merged into per-trainer config last (wins over baseline)
+    # When set, the runner injects hyperparameters.client_idx =
+    # (trainer_id - 1) % client_idx_modulo per trainer, for path-style
+    # datasets (e.g. H5 partitions) that need N trainers wrapped onto M
+    # data partitions. None = no per-trainer client_idx injection.
+    client_idx_modulo: Optional[int] = None
 
 
 @dataclass
@@ -198,6 +203,7 @@ class ExperimentBatch:
                     enable_training_delays=trainer_data.get("enable_training_delays", True),
                     hyperparameters=trainer_data.get("hyperparameters"),
                     config_overrides=trainer_data.get("config_overrides"),
+                    client_idx_modulo=trainer_data.get("client_idx_modulo"),
                 ),
                 aggregator=AggregatorConfig(**agg_data) if agg_data else None,
                 execution=(

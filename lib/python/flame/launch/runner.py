@@ -261,12 +261,25 @@ class ExperimentRunner:
                 config_gen.set_baseline_overrides(merged_t)
                 print(format_provenance("trainer", t_prov))
 
+            # client_idx_modulo wraps N trainers onto M data partitions for
+            # path-style datasets (e.g. fwdllm's H5 partitions) -- each
+            # trainer needs a different hyperparameters.client_idx, computed
+            # from its own trainer_id, not a value shared across the batch.
+            per_trainer_overrides = None
+            if exp.trainer.client_idx_modulo:
+                modulo = exp.trainer.client_idx_modulo
+                per_trainer_overrides = {
+                    tid: {"hyperparameters.client_idx": (tid - 1) % modulo}
+                    for tid in trainer_ids
+                }
+
             self.trainer_spawner.spawn_all(
                 trainer_ids,
                 alpha=exp.trainer.dataset.dirichlet_alpha,
                 availability_mode=exp.trainer.availability.mode,
                 trainer_main_path=paths["trainer_main"],
                 skip_index_splits=exp.trainer.dataset.path_style,
+                per_trainer_overrides=per_trainer_overrides,
                 **config_overrides,
             )
 
