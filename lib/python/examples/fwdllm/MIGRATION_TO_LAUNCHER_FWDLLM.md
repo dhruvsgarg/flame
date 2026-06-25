@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 6 / 18 checkpoints complete
+## Progress: 7 / 18 checkpoints complete
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
@@ -14,7 +14,7 @@ this migration in any new session.
 - [x] 3. Add `TrainerConfig.client_idx_modulo` + per-trainer override path (Phase 1b)
 - [x] 4. Fix `_sweep_stragglers()` pattern list for fwdllm paths (Phase 1c)
 - [x] 5. Create `fwdllm/metadata -> ../_metadata` symlink (Phase 2d)
-- [ ] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
+- [x] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
 - [ ] 7. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [ ] 8. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [ ] 9. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
