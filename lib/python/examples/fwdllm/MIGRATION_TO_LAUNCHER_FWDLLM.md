@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 15 / 18 checkpoints complete
+## Progress: 16 / 18 checkpoints complete
 
 **Update to the environment-gap note above:** the core `flame` library deps
 (`aiostream`, `gpustat`, `paho-mqtt`, `shared-memory-dict`, `mlflow`) were
@@ -40,7 +40,7 @@ will need an environment that actually has fwdllm's pinned stack installed.
 - [x] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [x] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
 - [x] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
-- [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
+- [x] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
 
 **Smoke tests (5) — interspersed to catch blockers early:**
 - [x] A. Static `_validate_stack` check (after step 4: verify the Phase 1a fix works)
@@ -466,7 +466,9 @@ rewritten. This is a deliberate deviation from the doc's normal "delete legacy
 JSON dirs" checklist step, and should be called out in review.
 
 **Checkpoint:** file exists; `json_scripts/*.json` files still present and
-unmodified (diff-check against pre-migration state).
+unmodified (diff-check against pre-migration state). **[DONE]** —
+`git status --short` on `expts/run_tc_expts/` shows only the new
+`DEPRECATED.md` as untracked; all 155 `json_scripts/*.json` files unchanged.
 
 ---
 
