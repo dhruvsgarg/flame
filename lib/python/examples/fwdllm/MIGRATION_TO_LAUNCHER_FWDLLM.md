@@ -6,7 +6,17 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 10 / 18 checkpoints complete
+## Progress: 11 / 18 checkpoints complete
+
+**Known environment gap (affects steps 9, 10, C, E):** this dev sandbox lacks
+fwdllm's pinned ML stack (`req.txt`'s `adapter-transformers==3.1.0` +
+its `tokenizers==0.12.1`, which needs `sklearn` too) -- mainline
+`transformers==4.54.0` is installed instead, and the pinned package can't be
+built here (its 2022-era Rust source fails under any modern `rustc`).
+Confirmed pre-existing: the untouched legacy `fl_main.py` fails identically.
+Steps verified via isolated-logic checks instead of full execution where this
+gap blocks reaching model construction; full live execution (Smoke Test E)
+will need an environment that actually has fwdllm's pinned stack installed.
 
 **Implementation steps (13):**
 - [x] 1. Fix `_validate_stack` regex/`_ASYNC_STACKS` for `fwdllm_aggregator` (Phase 1a)
@@ -17,7 +27,7 @@ this migration in any new session.
 - [x] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
 - [x] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
 - [x] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
-- [ ] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
+- [x] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [ ] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
 - [ ] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
@@ -311,6 +321,24 @@ from `trainer/fl_main.py`:
 - Keep the existing `notify_trainer_avail` thread spawn (already implemented,
   no change).
 **Checkpoint:** `python trainer/main.py --config-json '{...minimal...}' --time_mode real` parses argv without error and reaches model construction (does not need to complete a full round).
+
+**Checkpoint result — DONE, with a documented pre-existing environment gap:**
+verified `load_config_from_argv()` + the `--time_mode`/`--log_level`/`--battery_threshold`
+side-channel parser work correctly in isolation. Could not exercise reaching
+model construction in this sandbox: the module-level import chain
+(`tc_transformer_trainer_distribute.py`) requires `sklearn` (not in `req.txt`,
+installed ad hoc) and then `adapter-transformers==3.1.0`'s `AdamW`/adapter API
+(`req.txt`'s pin), which this conda env has never had installed (mainline
+`transformers==4.54.0` is installed instead). Installing the pinned package
+hits a further wall: its `tokenizers==0.12.1` dependency is 2022-era Rust
+source that fails to compile under any readily available modern `rustc`
+(`invalid_reference_casting` became a deny-by-default lint after that crate
+was written). **Confirmed this is pre-existing and not migration-caused** —
+the untouched legacy `trainer/fl_main.py` fails at the identical import line
+for the identical reason, before either file's `__main__` body (where all of
+this migration's code lives) ever executes. Out of scope for this migration;
+flagged as an environment-provisioning gap for wherever fwdllm's real
+training actually runs (presumably a different, properly-provisioned host).
 
 ### Step 10. `aggregator/main_fedfwd_agg.py`
 Single entrypoint (see Phase-1 rationale). Mirror `main_asyncfl_agg.py`'s
