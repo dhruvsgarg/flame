@@ -15,40 +15,51 @@ this migration in any new session.
 - [x] 4. Fix `_sweep_stragglers()` pattern list for fwdllm paths (Phase 1c)
 - [x] 5. Create `fwdllm/metadata -> ../_metadata` symlink (Phase 2d)
 - [x] 6. Create `fwdllm/configs/trainer_base.yaml` (Phase 2c)
-- [ ] 7. Create `fwdllm/trainer/main.py` (Phase 2a)
-- [ ] 8. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
-- [ ] 9. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
-- [ ] 10. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
-- [ ] 11. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
-- [ ] 12. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
+- [ ] 7. Add `fedfwd_async_random_dynkc` + `fedfwd_oracular` to `_metadata/baselines.yaml` (Phase 3)
+- [ ] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
+- [ ] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
+- [ ] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
+- [ ] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
+- [ ] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
 
 **Smoke tests (5) — interspersed to catch blockers early:**
 - [x] A. Static `_validate_stack` check (after step 4: verify the Phase 1a fix works)
-- [ ] B. Load experiment YAML + validate baseline (after step 6: confirm config schema is sound)
-- [ ] C. Entrypoints accept `--config-json` (after step 8: trainer/agg don't crash on startup)
+- [ ] B. Load experiment YAML + validate baseline (after step 8: confirm config schema is sound
+  before writing entrypoint code that depends on it)
+- [ ] C. Entrypoints accept `--config-json` (after step 10: trainer/agg don't crash on startup)
 - [ ] D. Full static config generation dry-run (after step 13: all wiring correct before live test)
 - [ ] E. Live 10-trainer smoke test + parity vs. legacy script (final: end-to-end validation)
+
+**Reordering note (this section added when the plan was corrected):** baselines.yaml
+and the smoke-test experiment YAML (steps 7–8) were moved earlier than the
+entrypoint scripts (steps 9–10) so that Smoke Test B has real files to load
+before any entrypoint code is written. The baseline/YAML files only reference
+the entrypoint paths by string (`example.aggregator_main`), so they don't
+need the entrypoint files to exist yet — but Smoke Test B needs the
+baseline/YAML files to exist. Originally steps 7–8 came after the
+entrypoints (mirroring the phase numbering in MIGRATING_TO_LAUNCHER.md), which
+made Smoke Test B unrunnable at its assigned point; this reorder fixes that
+without changing what any step actually does.
 
 ## Checkpoint rules
 
 - **One step at a time.** Do not start step *N+1* until step *N*'s checkpoint
   has passed.
 - **Checkpoint after every step**, before checking its box:
-  - Code-change steps (1–4, 7–11): the file imports/parses cleanly, and where
+  - Code-change steps (1–4, 9–12): the file imports/parses cleanly, and where
     applicable, the specific behavior the step claims to fix is exercised once
-    (e.g. after step 1, re-run the `_validate_stack` repro from Verification
-    §1 and confirm it now passes instead of raising).
-  - New-file steps (5, 6, 12, 13): the file exists at the right path with the
-    right shape (symlink resolves; YAML parses via `yaml.safe_load`).
-  - Verification steps (14, 15): the run actually executed and its specific
-    pass/fail criteria (Verification section below) were checked, not just
-    "command exited 0."
+    (e.g. after step 1, re-run the `_validate_stack` repro from Smoke Test A
+    and confirm it now passes instead of raising).
+  - New-file steps (5, 6, 7, 8, 13): the file exists at the right path with
+    the right shape (symlink resolves; YAML parses via `yaml.safe_load`).
+  - Smoke test steps (A–E): the run actually executed and its specific
+    pass/fail criteria (below) were checked, not just "command exited 0."
 - **On checkpoint failure**: stop, fix the issue, re-run the same checkpoint —
   never proceed to the next step with a known-failing checkpoint.
-- **After each passing checkpoint**, update both the `Progress: N / 15 steps
-  complete` line and that step's checkbox in the same edit, so the file is
-  never out of sync with actual progress.
+- **After each passing checkpoint**, update both the `Progress: N / 18
+  checkpoints complete` line and that step's checkbox in the same edit, so
+  the file is never out of sync with actual progress.
 - This file is the source of truth for resuming work across sessions — before
   starting any work on this migration, read its Progress line and checklist
   first rather than assuming where things left off.
@@ -114,8 +125,8 @@ def _validate_stack(self, agg_main_path, agg_cfg):
     ...
 ```
 
-**Checkpoint:** re-run the static repro from Verification §1 — must raise
-`ValueError` before this fix, must pass after.
+**Checkpoint:** re-run the static repro from Smoke Test A — must raise
+`ValueError` before this fix, must pass after. **[DONE — see Smoke Test A.]**
 
 ### 1b. Per-trainer `client_idx` injection — explicit field, not eval-based formulas
 
@@ -142,42 +153,35 @@ eval-evaluated formula string in YAML, add two narrow, explicit fields:
   covers the actual need (wrap N trainers onto M data partitions) without
   introducing `eval()` over YAML-sourced strings.
 
-Implementation:
-- `spawner.py: generate_trainer_config()` — gate the `get_dataset_split()` call
-  (and the `trainer_indices_list` injection) behind a new `skip_index_splits:
-  bool = False` parameter. **(Step 2 checkpoint: dry-run call with
-  `skip_index_splits=True` on a fake dataset name does not `KeyError`.)**
-- `spawner.py: TrainerSpawner.spawn_trainer()`/`spawn_all()` — thread
-  `skip_index_splits` through to `generate_trainer_config()`.
-- `runner.py: run_experiment()` — where `config_overrides` is assembled
-  (line ~239, right where `"job.id"`/`"hyperparameters.training_delay_enabled"`
-  are set today): if `exp.trainer.client_idx_modulo` is set, loop per
-  `trainer_id` and call `generate_trainer_config(..., **{**config_overrides,
-  "hyperparameters.client_idx": (trainer_id - 1) % exp.trainer.client_idx_modulo})`
-  individually instead of the current single `spawn_all(...)` call that passes
-  identical overrides to every trainer — i.e. `TrainerSpawner.spawn_all()` needs
-  a path where the per-trainer override dict can vary by `trainer_id` (a small
-  signature change: accept an optional `per_trainer_overrides: Dict[int, Dict]`
-  merged on top of the shared `**overrides` for that specific trainer_id).
-  **(Step 3 checkpoint: matches Verification §2 — 10 distinct client_idx
-  values 0–9, no `trainer_indices_list` key present.)**
-- Pass `skip_index_splits=exp.trainer.dataset.path_style` through the same
-  call chain (`run_experiment()` → `spawn_all()` → `spawn_trainer()` →
-  `generate_trainer_config()`).
+Implementation (done — see `spawner.py`/`runner.py`/`experiment_config.py`):
+- `generate_trainer_config()` gates the `get_dataset_split()` call (and the
+  `trainer_indices_list` injection) behind `skip_index_splits: bool = False`.
+- `TrainerSpawner.spawn_trainer()`/`spawn_all()` thread `skip_index_splits`
+  through, and `spawn_all()` accepts `per_trainer_overrides:
+  Dict[int, Dict]` merged per-trainer on top of the shared `**overrides`.
+- `runner.py: run_experiment()` builds `per_trainer_overrides = {tid:
+  {"hyperparameters.client_idx": (tid - 1) % modulo} for tid in trainer_ids}`
+  when `exp.trainer.client_idx_modulo` is set, and passes
+  `skip_index_splits=exp.trainer.dataset.path_style` through the same call.
+
+**Checkpoint:** 10 distinct client_idx values 0–9, no `trainer_indices_list`
+key present — verified through the real `spawn_all()`/`per_trainer_overrides`
+path. **[DONE.]**
 
 ### 1c. Fix `_sweep_stragglers()` path patterns
 
-File: `flame/launch/runner.py:_sweep_stragglers()` (line 487). Confirmed
+File: `flame/launch/runner.py:_sweep_stragglers()` (line 487 pre-fix). Confirmed
 hardcoded patterns `("trainer/pytorch/main.py", "aggregator/pytorch/main_")`
-(line 494) and the GPU-drain poll's `pgrep -f "trainer/pytorch/main.py"`
-(line 505) — fwdllm's new entrypoints have no `pytorch/` subdirectory. Extract
-the pattern list to a class-level tuple and add fwdllm's two entrypoint paths
-(decided in Phase 2: `trainer/main.py`, `aggregator/main_fedfwd_agg.py`); widen
-the `pgrep` call to loop over the same pattern list rather than a single
-hardcoded string.
+and the GPU-drain poll's `pgrep -f "trainer/pytorch/main.py"` — fwdllm's new
+entrypoints have no `pytorch/` subdirectory. Extracted the pattern lists to
+class-level tuples `_STRAGGLER_PATTERNS` (pkill list) and
+`_TRAINER_STRAGGLER_PATTERNS` (GPU-drain poll list), added fwdllm's two
+entrypoint paths (`fwdllm/trainer/main.py`, `fwdllm/aggregator/main_fedfwd_agg.py`),
+widened the poll loop to check all trainer-matching patterns.
 
-**Checkpoint (step 4):** start a dummy background process whose argv contains
-`fwdllm/trainer/main.py`, call `_sweep_stragglers()`, confirm it's killed.
+**Checkpoint:** dummy background process with `fwdllm/trainer/main.py` in its
+argv, confirmed killed by `_sweep_stragglers()`; cifar10's original pattern
+also still works (no regression). **[DONE.]**
 
 ---
 
@@ -190,7 +194,7 @@ Verify that the Phase 1a fix actually works and doesn't regress existing example
 2. async_cifar10 asyncfl + async_random → should NOT raise (no regression)
 3. async_cifar10 sync + async_random → should raise ValueError (check still works)
 
-If all three pass as expected, smoke test A is complete.
+If all three pass as expected, smoke test A is complete. **[PASSED.]**
 
 ---
 
@@ -209,24 +213,72 @@ lib/python/examples/fwdllm/
 `trainer/fl_main.py` and `aggregator/fl_main.py` are kept (manual `--config
 <file>` debugging path, per the doc's "Keep" list), not deleted.
 
-### Step 5. Metadata symlink
+### Step 5. Metadata symlink — **[DONE]**
 `ln -s ../_metadata lib/python/examples/fwdllm/metadata` (mirrors
 `async_cifar10/metadata` exactly). **Checkpoint:** `readlink -f` resolves to
-`examples/_metadata`.
+`examples/_metadata`; files readable through the symlink.
 
-### Step 6. `configs/trainer_base.yaml`
+### Step 6. `configs/trainer_base.yaml` — **[DONE]**
 Static template with FedFwd's full hyperparameter set (dataset/model/FL/
 availability blocks — transcribed from `json_scripts/trainer_1.json` and
 `aggregator.json`), placeholders for `data_file_path`/`partition_file_path`
 (injected via `config_overrides`, not `_metadata/dataset_splits/`) and
 `client_idx` (injected per-trainer via Phase 1b's `client_idx_modulo`
-mechanism). Include an inline comment documenting the mobiperf trace-name
-wrinkle (step 8). **Checkpoint:** `yaml.safe_load()` parses it; all keys from
-the existing `trainer_1.json`'s `hyperparameters` block are present.
+mechanism). Includes an inline comment documenting the mobiperf trace-name
+wrinkle (step 11). **Checkpoint:** `yaml.safe_load()` parses it; every
+legacy hyperparameter key from `trainer_1.json` is present, except
+`avl_events_*`/`training_delay_s` which are spawner-injected at runtime
+(same convention as cifar10's `trainer_base.yaml`).
 
 ---
 
-## Smoke Test B — Load experiment YAML + validate baseline (after step 6)
+## Phase 3 — Step 7: `_metadata/baselines.yaml` additions
+
+One primary baseline, `fedfwd_async_random_dynkc`, transcribed faithfully from
+the **existing** `json_scripts/aggregator.json` (selector `async_random` +
+`dynamic_kc` block with `k_min/k_max: 5/15`, `c_min/c_max: 15`, optimizer
+`fedbuff`, `var_threshold: 0.3`, `max_iterations_per_data_id: 15`) — this is
+the current production default, ported as-is, not redesigned.
+
+A second, clearly-flagged `fedfwd_oracular` baseline (async_oort selector +
+ORACULAR tracking) carries an explicit warning in its `description:` field:
+`flame/mode/horizontal/syncfl/fwdllm_aggregator.py:read_trainer_unavailability()`
+(line 480) hardcodes a glob over
+`examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_*.json` to build the
+oracular event dict — a **library-level**, not example-level, dependency on the
+legacy JSON directory. This baseline only stays correct while `json_scripts/`
+remains on disk; rewriting `read_trainer_unavailability()` to read
+`_metadata/trainer_registry.yaml` + `_metadata/availability_traces/*.yaml`
+(mirroring `main_oort_sync_agg.py`'s pattern for cifar10) is flagged as a
+follow-up, not in the critical path for the primary (`client_notify`-based,
+non-oracular) baseline.
+
+`example.aggregator_main` in both entries points at
+`aggregator/main_fedfwd_agg.py` (a path string), which doesn't need to exist
+yet for this step's checkpoint — only step 9/10 need to create the actual file.
+
+**Checkpoint:** `yaml.safe_load()` parses `baselines.yaml` with both new keys
+present; `load_baselines()` returns them; no existing baseline entries changed
+(diff-check).
+
+---
+
+## Phase 4 — Step 8: smoke-test experiment YAML
+
+`lib/python/examples/fwdllm/expt_scripts/fedfwd_async_random_n10_smoke.yaml`:
+10 trainers, `baseline: fedfwd_async_random_dynkc`, `trainer.dataset.path_style:
+true`, `trainer.client_idx_modulo: 100` (gives client_idx 0–9, a valid, distinct
+subset of the 100 H5 partitions), `time_mode: real`, scaled-down selector
+kwargs (`c`, `aggGoal`, `minInitialTrainers`, `dynamic_kc.{k,c}_{min,max}`) to
+fit 10 trainers, `rounds: 50` for a short run, `data_file_path`/
+`partition_file_path` injected via `config_overrides.hyperparameters`.
+
+**Checkpoint:** `load_experiment_config()` parses it into one `ExperimentConfig`
+with `num_trainers == 10` and `baseline == "fedfwd_async_random_dynkc"`.
+
+---
+
+## Smoke Test B — Load experiment YAML + validate baseline (after step 8)
 
 Verify that the experiment YAML can be loaded and the baseline is resolvable,
 before creating the entrypoints.
@@ -241,7 +293,7 @@ If all four pass, smoke test B is complete.
 
 ---
 
-### Step 7. `trainer/main.py`
+### Step 9. `trainer/main.py`
 Mirror `async_cifar10/trainer/pytorch/main.py`'s `main()` shape, but reuse all
 existing fwdllm wiring (model/data-manager/preprocessor construction) unchanged
 from `trainer/fl_main.py`:
@@ -259,25 +311,6 @@ from `trainer/fl_main.py`:
 - Keep the existing `notify_trainer_avail` thread spawn (already implemented,
   no change).
 **Checkpoint:** `python trainer/main.py --config-json '{...minimal...}' --time_mode real` parses argv without error and reaches model construction (does not need to complete a full round).
-
-### Step 8. Fix mobiperf trace-name mismatch
-`FedSgdTrainer.py`'s `client_notify["trace"]` dispatch matches long-form
-strings (`"avl_events_mobiperf_2st"`) for mobiperf but the spawner's
-`availability_mode`/`client_notify.trace` convention uses short names
-(`"mobiperf_2st"`) — patch the trainer's match to accept both forms (one-line
-fix, removes a footgun for future experiment authors).
-**Checkpoint:** unit-test both `"mobiperf_2st"` and `"avl_events_mobiperf_2st"`
-resolve to the same trace lookup.
-
-### Step 9. Telemetry: `trainer_round`
-Add `telemetry.configure(role="trainer", end_id=str(task_id))` at startup in
-`trainer/main.py`. Emit `trainer_round` events (via
-`flame.telemetry.events.build_trainer_round`) from inside `FedSgdTrainer.py`'s
-per-round completion path (locate the exact call site during implementation —
-near where loss/accuracy become available for the variance check), gated by
-`telemetry.is_enabled()`.
-**Checkpoint:** with `FLAME_TELEMETRY_DIR` set to a temp dir, one training
-round produces a `trainer_<id>.jsonl` line with `event: trainer_round`.
 
 ### Step 10. `aggregator/main_fedfwd_agg.py`
 Single entrypoint (see Phase-1 rationale). Mirror `main_asyncfl_agg.py`'s
@@ -302,7 +335,7 @@ raise, confirm it's never hit).
 
 ---
 
-## Smoke Test C — Entrypoints accept `--config-json` (after step 8)
+## Smoke Test C — Entrypoints accept `--config-json` (after step 10)
 
 Verify that the trainer and aggregator entrypoints can parse `--config-json`
 and reach their model-construction code without crashing.
@@ -326,45 +359,24 @@ or `--time_mode` parsing. Smoke test C passes if both reach their setup phase.
 
 ---
 
-## Phase 3 — Step 11: `_metadata/baselines.yaml` additions
+### Step 11. Fix mobiperf trace-name mismatch
+`FedSgdTrainer.py`'s `client_notify["trace"]` dispatch matches long-form
+strings (`"avl_events_mobiperf_2st"`) for mobiperf but the spawner's
+`availability_mode`/`client_notify.trace` convention uses short names
+(`"mobiperf_2st"`) — patch the trainer's match to accept both forms (one-line
+fix, removes a footgun for future experiment authors).
+**Checkpoint:** unit-test both `"mobiperf_2st"` and `"avl_events_mobiperf_2st"`
+resolve to the same trace lookup.
 
-One primary baseline, `fedfwd_async_random_dynkc`, transcribed faithfully from
-the **existing** `json_scripts/aggregator.json` (selector `async_random` +
-`dynamic_kc` block with `k_min/k_max: 5/15`, `c_min/c_max: 15`, optimizer
-`fedbuff`, `var_threshold: 0.3`, `max_iterations_per_data_id: 15`) — this is
-the current production default, ported as-is, not redesigned.
-
-A second, clearly-flagged `fedfwd_oracular` baseline (async_oort selector +
-ORACULAR tracking) carries an explicit warning in its `description:` field:
-`flame/mode/horizontal/syncfl/fwdllm_aggregator.py:read_trainer_unavailability()`
-(line 480) hardcodes a glob over
-`examples/fwdllm/expts/run_tc_expts/json_scripts/trainer_*.json` to build the
-oracular event dict — a **library-level**, not example-level, dependency on the
-legacy JSON directory. This baseline only stays correct while `json_scripts/`
-remains on disk; rewriting `read_trainer_unavailability()` to read
-`_metadata/trainer_registry.yaml` + `_metadata/availability_traces/*.yaml`
-(mirroring `main_oort_sync_agg.py`'s pattern for cifar10) is flagged as a
-follow-up, not in the critical path for the primary (`client_notify`-based,
-non-oracular) baseline.
-
-**Checkpoint:** `yaml.safe_load()` parses `baselines.yaml` with both new keys
-present; `load_baselines()` returns them; no existing baseline entries changed
-(diff-check).
-
----
-
-## Phase 4 — Step 12: smoke-test experiment YAML
-
-`lib/python/examples/fwdllm/expt_scripts/fedfwd_async_random_n10_smoke.yaml`:
-10 trainers, `baseline: fedfwd_async_random_dynkc`, `trainer.dataset.path_style:
-true`, `trainer.client_idx_modulo: 100` (gives client_idx 0–9, a valid, distinct
-subset of the 100 H5 partitions), `time_mode: real`, scaled-down selector
-kwargs (`c`, `aggGoal`, `minInitialTrainers`, `dynamic_kc.{k,c}_{min,max}`) to
-fit 10 trainers, `rounds: 50` for a short run, `data_file_path`/
-`partition_file_path` injected via `config_overrides.hyperparameters`.
-
-**Checkpoint:** `load_experiment_config()` parses it into one `ExperimentConfig`
-with `num_trainers == 10` and `baseline == "fedfwd_async_random_dynkc"`.
+### Step 12. Telemetry: `trainer_round`
+Add `telemetry.configure(role="trainer", end_id=str(task_id))` at startup in
+`trainer/main.py`. Emit `trainer_round` events (via
+`flame.telemetry.events.build_trainer_round`) from inside `FedSgdTrainer.py`'s
+per-round completion path (locate the exact call site during implementation —
+near where loss/accuracy become available for the variance check), gated by
+`telemetry.is_enabled()`.
+**Checkpoint:** with `FLAME_TELEMETRY_DIR` set to a temp dir, one training
+round produces a `trainer_<id>.jsonl` line with `event: trainer_round`.
 
 ---
 
@@ -386,7 +398,6 @@ unmodified (diff-check against pre-migration state).
 ## Smoke Test D — Full static config generation dry-run (after step 13)
 
 Verify that all configuration wiring is correct before the expensive live test.
-This is the "dry-run" from the original Verification §2.
 
 **Checkpoint:**
 ```python
@@ -446,15 +457,15 @@ If all 10 trainers generate with distinct client_idx 0–9 and no KeyError, smok
    `max_iterations_per_data_id`, `forward_mode`/`perturbation_sampling`/
    `select_perturbation_using_jvp` (JVP forward-mode gradient estimation),
    `peft_method`/`use_adapter`/`freeze_layers`/`fp16` — all newly transcribed
-   into `baselines.yaml` and `trainer_base.yaml` (steps 6, 11).
+   into `baselines.yaml` (step 7) and `trainer_base.yaml` (step 6).
 5. **Single aggregator entrypoint** instead of per-stack split — direct
    consequence of #1; corrects MIGRATING_TO_LAUNCHER.md §9's guidance.
 6. **No simulated-clock support** — FedFwd always uses real wall-clock delay;
-   `--time_mode simulated` is accepted but a documented no-op for now (step 7).
+   `--time_mode simulated` is accepted but a documented no-op for now (step 9).
 7. **CPU-pinning perf risk for transformer workloads** — cifar10's CNN trainer
    tolerates 1-core pinning; fwdllm's DistilBERT/forward-mode training is much
    heavier per-trainer. No code change required, but flag for smoke-test
-   wall-clock observation (step 15) before scaling to n=150.
+   wall-clock observation (Smoke Test E) before scaling to n=150.
 8. **`_sweep_stragglers()` path-pattern mismatch** — fwdllm's entrypoints have
    no `pytorch/` subdirectory; requires the pattern-list extension (step 4).
 9. **Library-level legacy path dependency** — `read_trainer_unavailability()`
@@ -465,7 +476,7 @@ If all 10 trainers generate with distinct client_idx 0–9 and no KeyError, smok
 10. **Trace-name string-format mismatch** for mobiperf traces (long-form
     `"avl_events_mobiperf_2st"` expected by `FedSgdTrainer.py` vs. short-form
     `"mobiperf_2st"` used by the spawner/cifar10 convention) — one-line fix
-    (step 8), no cifar10 equivalent since its schema and trace values were
+    (step 11), no cifar10 equivalent since its schema and trace values were
     co-designed.
 
 ---
@@ -483,7 +494,7 @@ The final end-to-end validation before declaring the migration complete.
    - `telemetry/trainer_*.jsonl` files exist with `trainer_round` events
    - `aggregator_config.json` shows expected merged `selector.sort`,
      `dynamic_kc.enabled`, `var_threshold: 0.3`, `max_iterations_per_data_id: 15`
-   
+
 2. **Parity check vs. legacy**: Run `run_text_classification.sh` with a matching
    10-trainer subset and compare round-over-round loss/accuracy trend against
    the new launcher run (exact bit-parity not expected, but trend should match
