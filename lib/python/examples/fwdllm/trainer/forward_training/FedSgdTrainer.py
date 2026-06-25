@@ -239,13 +239,28 @@ class FedSGDTrainer(Trainer):
             logger.info(
                 f"Set avl_events_syn_train_50_eval_30_unavail_20 for trainer id {self.trainer_id}."
             )
-        elif self.client_notify["trace"] == "avl_events_mobiperf_2st":
+        # Accept both the long form ("avl_events_mobiperf_2st", this trainer's
+        # own historical convention) and the short form ("mobiperf_2st", the
+        # flame.launch spawner's availability_mode/client_notify.trace
+        # convention mirrored from async_cifar10) -- the launcher's
+        # _metadata/ injects the short form. See
+        # MIGRATION_TO_LAUNCHER_FWDLLM.md step 11.
+        elif self.client_notify["trace"] in (
+            "avl_events_mobiperf_2st",
+            "mobiperf_2st",
+        ):
             self.state_avl_event_ts = self.avl_events_mobiperf_2st
             logger.info(f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "avl_events_mobiperf_3st_75":
+        elif self.client_notify["trace"] in (
+            "avl_events_mobiperf_3st_75",
+            "mobiperf_3st_75",
+        ):
             self.state_avl_event_ts = self.avl_events_mobiperf_3st_75
             logger.info(f"Set avl_events_mobiperf_3st_75 for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "avl_events_mobiperf_3st_50":
+        elif self.client_notify["trace"] in (
+            "avl_events_mobiperf_3st_50",
+            "mobiperf_3st_50",
+        ):
             self.state_avl_event_ts = self.avl_events_mobiperf_3st_50
             logger.info(f"Set avl_events_mobiperf_3st_50 for trainer id {self.trainer_id}.")
         else:

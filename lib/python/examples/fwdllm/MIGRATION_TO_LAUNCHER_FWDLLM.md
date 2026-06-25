@@ -6,7 +6,16 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 13 / 18 checkpoints complete
+## Progress: 14 / 18 checkpoints complete
+
+**Update to the environment-gap note above:** the core `flame` library deps
+(`aiostream`, `gpustat`, `paho-mqtt`, `shared-memory-dict`, `mlflow`) were
+missing too, but are all pure-Python with no native/Rust build step --
+installed without issue, unlike the `adapter-transformers`/`tokenizers`
+wall. `FedSgdTrainer.py` now imports and instantiates standalone. The
+remaining hard blocker is specifically fwdllm's ML training stack
+(`adapter-transformers==3.1.0` and its pinned `tokenizers==0.12.1`), still
+unresolved -- see step 9's note.
 
 **Known environment gap (affects steps 9, 10, C, E):** this dev sandbox lacks
 fwdllm's pinned ML stack (`req.txt`'s `adapter-transformers==3.1.0` +
@@ -29,7 +38,7 @@ will need an environment that actually has fwdllm's pinned stack installed.
 - [x] 8. Create `fedfwd_async_random_n10_smoke.yaml` (Phase 4)
 - [x] 9. Create `fwdllm/trainer/main.py` (Phase 2a)
 - [x] 10. Create `fwdllm/aggregator/main_fedfwd_agg.py` (Phase 2b)
-- [ ] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
+- [x] 11. Fix mobiperf trace-name mismatch in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 12. Add `trainer_round` telemetry emission in `FedSgdTrainer.py` (Phase 2a)
 - [ ] 13. Add `expts/run_tc_expts/DEPRECATED.md` (Phase 5)
 
@@ -408,7 +417,16 @@ strings (`"avl_events_mobiperf_2st"`) for mobiperf but the spawner's
 (`"mobiperf_2st"`) — patch the trainer's match to accept both forms (one-line
 fix, removes a footgun for future experiment authors).
 **Checkpoint:** unit-test both `"mobiperf_2st"` and `"avl_events_mobiperf_2st"`
-resolve to the same trace lookup.
+resolve to the same trace lookup. **[DONE]** — verified against the **real**
+`FedSGDTrainer` constructor (not isolated logic): installed the missing
+pure-Python core `flame` deps (`aiostream`, `gpustat`, `paho-mqtt`,
+`shared-memory-dict`, `mlflow` -- all low-risk, no native/Rust build, needed
+by `flame.channel`/`flame.monitor`/`flame.registry` regardless of fwdllm) so
+`FedSgdTrainer.py` imports standalone. Built a minimal fake config/trainer
+and instantiated `FedSGDTrainer` directly with `client_notify.trace` set to
+each of the long and short forms for all three mobiperf variants --
+confirmed identical `state_avl_event_ts` for each pair, plus a `syn_0`
+regression check (unaffected, unrelated branch untouched).
 
 ### Step 12. Telemetry: `trainer_round`
 Add `telemetry.configure(role="trainer", end_id=str(task_id))` at startup in
