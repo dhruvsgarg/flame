@@ -85,6 +85,508 @@ without changing what any step actually does.
 
 ---
 
+## Phase 6 (NEW — design only, not started) — Baseline taxonomy: fwdllm / fwdllm+ / fluxtune
+
+**Status:** paused for fresh design session. Nothing in this phase has been
+implemented — no code or YAML has been changed for this phase. Everything
+below is either (a) the owner's spec, given verbally, or (b) findings
+confirmed by direct code reading this session. Re-verify line numbers if
+much time has passed before resuming.
+
+### Soundness verdict on the prior Phase 6 design (this session's evaluation)
+
+**Verdict: the investigation is sound and well-grounded, but it stopped at
+findings and left every actual decision open — so as a *design* it was
+incomplete. The findings (file:line-verified) hold up under re-reading, with
+one overstatement (finding 6, corrected below). The taxonomy it gestures at is
+right; what was missing is the resolved target architecture, the concrete
+step/checkpoint/test breakdown, and a decision on the legacy baselines. This
+session supplies those (decisions D1–D6 and Phase 7 below).**
+
+What was right: (a) `_validate_stack` is a real blocker for sync fwdllm
+(finding 2); (b) FedAvg-vs-FedBuff is genuinely a one-flag axis, re-confirmed
+— the fwdllm aggregator only touches `self.optimizer.agg_rate_conf` inside the
+`_weighted_aggregation_enabled` (fedbuff-only) branch at
+`fwdllm_aggregator.py:549-563`, so `optimizer.sort: fedavg` takes the
+`rate=1.0` path and needs no code change (finding 3); (c) perturbation and
+availability are config-ready (findings 4–5); (d) `fedbuff.py`'s hardcoded LR
+table is the one real cross-example coupling (finding 7).
+
+What needed correcting / completing: finding 6 overstated the selector blocker
+(the `random` selector already supports sync via `is_async`, see correction
+below); the oracular json_scripts dependency (Phase-3 note) was treated as an
+out-of-scope follow-up but is actually **on** the critical path for a clean
+fwdllm+ (decision D3); and the "keep or retire the two legacy baselines"
+question was never answered (decision D6).
+
+### Why this phase exists
+
+Smoke-testing needs three baselines — **fwdllm**, **fwdllm+**, **fluxtune** —
+but only two baselines currently exist in `_metadata/baselines.yaml`
+(`fedfwd_async_random_dynkc`, `fedfwd_oracular`, added in Phase 3 above), and
+neither maps cleanly onto the three names. Investigating the gap surfaced a
+broader question: should fwdllm's async_oort/fedbuff usage share code paths
+with `async_cifar10`'s existing `felix` baseline as-is, or does FluxTune (the
+adaptive dynamic_kc / LLM-finetuning variant) need some of that shared code
+forked or parameterized? That question is the actual subject of Phase 6 and
+needs its own design pass before any YAML/code changes land.
+
+### Target baseline spec (owner's words, verbatim)
+
+| Axis | **fwdllm** (syncfl) | **fwdllm+** (syncfl) | **fluxtune** (asyncfl) |
+|---|---|---|---|
+| Trainer availability | unaware | oracular | 3-tier client_notify |
+| Selection | random per round | random per iteration | async_oort |
+| Aggregation | federated averaging | federated averaging | fedbuff-based |
+| Perturbation | randomly generated | randomly generated | greedy JVP-based |
+
+Owner's note on fluxtune: "Selection (async oort, should be separated out
+from felix implementation), aggregation (fedbuff based but might need
+different parameters from felix so should be separated)... if you want, we
+can incorporate these design decisions/separate out code cleanly so that it
+is easy to create configs and the codebase is also clean, separated and
+maintainable across the examples (felix is for google speech, cifar10 etc)
+while fluxtune is for llm fine tuning through examples and datasets like
+fwdllm."
+
+### Grounded findings this session (file:line, verified by direct reading)
+
+**1. `felix` is a real, already-registered baseline, not just a verbal
+nickname** — `examples/_metadata/baselines.yaml:18-64`, used by
+`async_cifar10`: `selector.sort: async_oort` (`evalGoalFactor: 1.0`) +
+`optimizer.sort: fedbuff` (`use_oort_lr: "True"`, `agg_rate_conf.type: new`)
++ `client_notify.enabled: "True"` (not oracular). This is structurally the
+closest existing precedent for fluxtune — same selector/optimizer shape,
+different domain (cifar-10/google-speech vs LLM fine-tuning).
+
+**2. Real blocker: `_validate_stack()` forces async for *any* fwdllm
+aggregator, which breaks the sync fwdllm/fwdllm+ specs.**
+`flame/launch/runner.py:398-434`:
+```python
+_ASYNC_STACKS = {"asyncfl", "coord_asyncfl", "fwdllm"}
+_ASYNC_SELECTORS = {"async_oort", "async_random", "fedbuff"}
+
+def _validate_stack(self, agg_main_path, agg_cfg):
+    ...
+    stack = "fwdllm" if <agg main imports fwdllm_aggregator> else ...
+    is_async_stack = stack in self._ASYNC_STACKS   # always True for fwdllm
+    is_async_sel = selector in self._ASYNC_SELECTORS
+    if is_async_stack != is_async_sel:
+        raise ValueError(...)
+```
+Because `stack` is keyed off the aggregator *class* (always `fwdllm_aggregator`
+for this example) rather than the runtime `is_async` selector kwarg, a
+sync-style fwdllm/fwdllm+ baseline using `selector.sort: random` would be
+**rejected before any process spawns** — `random` is not in
+`_ASYNC_SELECTORS`. This check was added in Phase 1a of this same migration
+under the assumption that all fwdllm runs are async (true of the original
+legacy `aggregator.json`, not true of the new fwdllm/fwdllm+ spec). Needs
+revisiting: likely fix is to key the async/sync check off
+`agg_cfg["selector"]["kwargs"].get("is_async")` directly instead of the
+stack name, for the `fwdllm` stack specifically.
+
+**3. Aggregation rule (federated averaging vs fedbuff) is a single existing
+flag, not two code paths** — `flame/mode/horizontal/syncfl/fwdllm_aggregator.py:260-269`:
+```python
+self._optimizer_sort_value = self.config.optimizer.sort
+OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF,)
+self._weighted_aggregation_enabled = (
+    self._optimizer_sort_value in OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION
+)
+```
+and used at `fwdllm_aggregator.py:549-577` (`aggregate_grads_from_trainers`):
+when not fedbuff, `rate = 1.0` for every gradient (plain FedAvg); when
+fedbuff, `rate` comes from `agg_rate_conf`. Both `_aggregate_grads_sync` and
+`_aggregate_grads_async` call the same `aggregate_grads_from_trainers`, so
+**FedAvg vs FedBuff aggregation is purely `optimizer.sort: fedavg` vs
+`fedbuff`** — `OptimizerType.FEDAVG` already exists
+(`flame/config.py:58`). No code change needed for this axis.
+
+**4. Perturbation strategy is already fully wired end-to-end, no code
+change needed** — `select_perturbation_using_jvp` is read from config in
+`examples/fwdllm/trainer/main.py:123` and defaults `false` in
+`examples/fwdllm/configs/trainer_base.yaml:84`; consumed in
+`trainer/forward_training/tc_transformer_trainer_distribute.py:204-205,
+394-463` (random-candidate path vs JVP-scored candidate path, both already
+implemented). Setting `select_perturbation_using_jvp: "True"` per-baseline
+in `baselines.yaml` is sufficient.
+
+**5. Availability — ORACULAR and HEARTBEAT are both config-ready**;
+`trackTrainerAvail` (YAML) aliases to `track_trainer_avail`
+(`flame/config.py:175`), and `check_trainer_availability` already branches
+on `enabled`/`type in {ORACULAR, HEARTBEAT}`
+(`fwdllm_aggregator.py:1304-1313` region). ORACULAR has a known separate
+issue (hardcoded glob over legacy `json_scripts/trainer_*.json`, already
+flagged in the existing `fedfwd_oracular` baseline's description in
+`baselines.yaml:346-357` — unrelated to this phase, pre-existing). HEARTBEAT
+is implemented but currently unused by any baseline. The "3-tier
+client_notify" mode (trainer self-reports `AVL_TRAIN`/`AVL_EVAL`/`UN_AVL` via
+a separate notify thread — see `flame/config.py`'s `TrainerAvailState` enum
+and `examples/fwdllm/trainer/forward_training/FedSgdTrainer.py:194-275`) is
+a **different, independent mechanism** from `trackTrainerAvail` — it feeds
+`task_eligible_states`-based filtering inside the selector, not the
+aggregator's post-selection liveness check. fluxtune's "3-tier client
+notify" axis means `client_notify.enabled: "True"` + a `*_3st_*` trace, with
+`trackTrainerAvail.enabled` likely `"False"` (no oracular/heartbeat layered
+on top) — needs explicit confirmation, not yet decided.
+
+**6. Selection granularity ("random per round" vs "random per iteration")
+has no existing code-level toggle, and fwdllm's sync aggregation path
+cannot use the plain `random` selector as-is today.** Confirmed by direct
+trace of `fwdllm_aggregator.py`'s `sync_collect_and_accumulate_grads`
+(~line 1051-1078): it calls `channel.ends()` (no `RECV` state arg) inside
+its collection loop, which `flame/selector/random.py` doesn't handle the
+same way `async_random.py` does (random.py only properly drains
+`selected_ends` on an explicit `RECV`-state call; fwdllm's sync loop never
+makes that call). This is *why* both currently-registered fwdllm baselines
+use `async_random`/`async_oort` even though one of them runs synchronously
+— the buffered SEND/RECV state machine is a hard dependency of fwdllm's
+collection loop, not an arbitrary choice. Making genuine "random per round"
+(classic, only-select-once, like the `fedavg` baseline at
+`baselines.yaml:236-255`) vs "random per iteration" (re-select on each
+trainer message) real, distinct behaviors for fwdllm/fwdllm+ likely
+**needs a small code change** in `sync_collect_and_accumulate_grads` (or a
+new selector mode) — not just a YAML kwarg swap. This needs design.
+
+**7. `fedbuff` optimizer hardcodes per-example learning rates keyed by
+`dataset_name`** — `flame/optimizer/fedbuff.py:233-256`:
+```python
+if self.dataset_name == "cifar-10":
+    learning_rate = 40.9   # (use_oort_lr=False path)
+elif self.dataset_name == "google-speech":
+    learning_rate = 0.075
+else:
+    learning_rate = 1.0    # fallback
+# use_oort_lr=True path: 0.3 / 0.065 / (no fallback shown for else)
+```
+This is the concrete code-sharing problem behind the owner's "felix vs
+fluxtune... might need different parameters... should be separated" note:
+`async_oort.py` itself is fully generic/config-driven (no hardcoded
+example-specific branches found), but `fedbuff.py`'s learning-rate dispatch
+is **not** — it only knows about `cifar-10` and `google-speech`, and
+`fedfwd_async_random_dynkc`'s existing `dataset_name: google-speech` kwarg
+(flagged as a copy-paste artifact in `baselines.yaml:311-315`) is silently
+relying on the google-speech branch rather than fwdllm having its own rate.
+Cleanest fix: add a direct `learning_rate` kwarg to `fedbuff.py`,
+independent of `dataset_name`, so each baseline sets its own rate explicitly
+instead of routing through a dataset-name lookup table. This is the one
+clear "separate fluxtune from felix" code change identified so far — felix
+(`async_oort`+`fedbuff`) itself needs no fork, just this one optimizer
+parameterization fix, which benefits all examples, not just fluxtune.
+
+**8. Gap vs. the two already-registered fwdllm baselines:**
+- `fedfwd_async_random_dynkc` (`baselines.yaml:265-343`): async_random +
+  dynamic_kc + fedbuff(`type: old`) + `perturbation_sampling: "True"` only
+  (no JVP) + `trackTrainerAvail` disabled. Doesn't match **fwdllm** (which
+  per spec should be sync, not async) or **fwdllm+** (should be oracular).
+  It's closer to an async middle-ground than either target.
+- `fedfwd_oracular` (`baselines.yaml:345-398`): `async_oort` (spec says
+  fwdllm+ should be `async_random`/"random") + ORACULAR (matches fwdllm+'s
+  availability axis) + fedbuff(`type: new`) + perturbation flags unset
+  (should be `perturbation_sampling: "True"` per spec). Partial match on
+  fwdllm+, selector axis is wrong, perturbation flag missing.
+- Neither is async + 3-tier client_notify + JVP perturbation, so
+  **fluxtune doesn't exist yet** in any form.
+
+### Correction to finding 6 (verified this session)
+
+Finding 6 above overstates the blocker. Direct reading of
+`flame/selector/random.py` shows it **does** support both modes: it reads an
+`is_async` kwarg (`random.py:52`), and its `select()` handles
+`VAL_CH_STATE_RECV` by returning the drained `selected_ends`
+(`random.py:271-273`) — the same buffered SEND/RECV state machine
+`async_random.py` uses. So `random` with `is_async: false` is a usable sync
+selector, and the reason the two legacy baselines use `async_random` is
+historical (they were transcribed from a legacy async `aggregator.json`), not
+a hard code-level dependency. What is genuinely missing is not "can the sync
+random selector run at all" but "is there a toggle for re-selecting clients
+*per dynamic_kc iteration* vs *once per round*" — that distinction (fwdllm vs
+fwdllm+) has no flag today and is the one selection-axis code change still
+required (see decision **D4** / step **P4** below).
+
+### Design decisions (RESOLVED this session)
+
+These resolve the six open questions. Guiding principle for all of them:
+**baselines.yaml is the single shared catalog across every example; shared
+library code (selectors, optimizers, the fwdllm aggregator) stays
+example-agnostic and config-driven; example-specific behavior lives only in
+the example's `aggregator/`,`trainer/` subclasses and its `trainer_base.yaml`.
+The CNN/speech family (felix/oort/refl/feddance/oracle/fedbuff/fedavg) and the
+LLM forward-mode family (fwdllm/fwdllm+/fluxtune) share the *same* selectors
+and optimizers — we parameterize the one place they currently diverge rather
+than fork any shared class.** No felix code or config changes.
+
+**D1 — `_validate_stack` (was Q1, Q6).** Fix it to key async-ness off the
+selector's `is_async` kwarg for the `fwdllm` stack, not stack-set membership.
+The fwdllm aggregator already dispatches sync vs async purely on
+`selector.kwargs.is_async` (`fwdllm_aggregator.py:1657-1660`), so that kwarg
+is the single source of truth — `_validate_stack` should agree with it. The
+real invariant to enforce for fwdllm is *internal consistency*: an async
+selector (`async_oort`/`async_random`/`fedbuff`) must set `is_async: true`,
+and a sync selector (`random`) must set `is_async: false`/unset. This change
+is scoped to the `stack == "fwdllm"` branch, so no other example's validation
+path changes (felix/cifar10 keep the `_ASYNC_STACKS` membership test
+unchanged). Remove `"fwdllm"` from `_ASYNC_STACKS` since it is no longer the
+discriminator for this stack.
+
+**D2 — `fedbuff.py` learning rate (was Q3).** Add an explicit
+`learning_rate` kwarg now, before fluxtune registers. When present it wins;
+when absent, fall back to the existing `dataset_name` lookup (backward
+compatible — felix/oracle/fedbuff baselines are untouched). This removes
+fluxtune's silent reliance on the `google-speech` branch (the copy-paste
+artifact flagged at `baselines.yaml:311-316`) and is the single
+"separate fluxtune from felix" change that benefits all examples. This is the
+answer to Q6: felix needs no fork — only this generic parameterization.
+
+**D3 — Oracular availability source (new, required by fwdllm+).** Rewrite the
+**library** method `fwdllm_aggregator.read_trainer_unavailability()`
+(`fwdllm_aggregator.py:480-489`, currently globs legacy
+`json_scripts/trainer_*.json`) to read `_metadata/trainer_registry.yaml` +
+`_metadata/availability_traces/*.yaml`, porting the already-clean pattern from
+`async_cifar10/aggregator/pytorch/main_oort_sync_agg.py:173+`. fwdllm+'s
+availability axis is ORACULAR, so a clean fwdllm+ is impossible while this
+method depends on the legacy directory. This also unblocks the Phase 5
+json_scripts deletion that was deferred in step 13.
+
+**D4 — Selection granularity, "per round" vs "per iteration" (was Q2; owner
+clarified the semantics).** In fwdllm each client's data is split into
+**databins** (`data_id`), and within a databin the server iterates
+(`iteration_per_data_id`) until the gradient-variance threshold is met (or
+`max_iterations_per_data_id`). The loop nesting (verified at
+`fwdllm_aggregator.py:900-998`) is:
+
+```
+round (self._round):
+  for data_id in 0..total_data_bins:            # databins
+    iterate until var <= var_threshold / max_iter:   # iterations within a databin
+      _distribute_weights_sync()  -> channel.ends(VAL_CH_STATE_SEND)  # selection fires here
+    data_id += 1                                # :981
+  self._round += 1                              # :996 (after ALL databins done)
+```
+
+- **random per round (fwdllm)** = **one** selection that persists across *all*
+  databins and *all* iterations of a round — the same trainers serve the whole
+  round, re-sampled only when `self._round` advances.
+- **random per iteration (fwdllm+)** = a fresh selection on *every* iteration,
+  regardless of databin or iteration boundary.
+
+Critical grounding: `_distribute_weights_sync` calls
+`channel.ends(VAL_CH_STATE_SEND, ...)` (`fwdllm_aggregator.py:1437`) on **every**
+iteration, which re-invokes the selector — so **per-iteration is what the code
+does today**, and **per-round is the new behavior to build**. The fix is a
+declarative hyperparameter `reselect_each_iteration: bool` (default `true`, to
+preserve current behavior). When `false`, cache the selected end set at the
+round boundary (where `self._round` increments / `data_id` resets to 0) and
+re-distribute to that cached set on subsequent iterations instead of calling
+the SEND-state selection again; when `true`, keep today's per-iteration
+re-selection. The non-trivial part is the selector's buffered SEND/RECV state
+machine (`random.py` drains `selected_ends` on RECV) — per-round mode must
+re-arm/reuse the same set rather than re-sample, so implement the cache at the
+aggregator level (`self._round_selected_ends`) and bypass re-selection, rather
+than mutating the selector. Lock both modes with a unit test (step P4).
+
+**D5 — fluxtune availability = 3-tier client_notify (was Q4).** "3-tier
+client_notify" means `trainer.client_notify.enabled: "True"` with a `*_3st_*`
+trace (trainer self-reports `AVL_TRAIN`/`AVL_EVAL`/`UN_AVL`), and
+`trackTrainerAvail.enabled: "False"` — client_notify is the *only* availability
+signal, NOT layered with ORACULAR/HEARTBEAT. The three are independent
+mechanisms (finding 5); fluxtune uses exactly one.
+
+**D6 — Retire the two legacy baselines (was Q5).** Replace
+`fedfwd_async_random_dynkc` and `fedfwd_oracular` with the three owner-spec
+baselines `fwdllm` / `fwdllm_plus` / `fluxtune`. `fedfwd_oracular` is fully
+superseded by `fwdllm_plus` — delete it. The adaptive `dynamic_kc` block from
+`fedfwd_async_random_dynkc` is a genuinely distinct research config (async +
+adaptive-K) that maps to none of the three; preserve it as a clearly-labeled
+`fluxtune_dynkc` variant (fluxtune base + the dynamic_kc selector block) so the
+ported production default stays reproducible for parity, rather than keeping
+the misnamed `fedfwd_*` entries. The smoke-test YAML moves to the `fwdllm`
+baseline (cheapest, and it exercises the brand-new sync path — best coverage).
+
+### Critical files for the next session
+
+- `lib/python/examples/_metadata/baselines.yaml` (existing `felix` at
+  lines 18-64; existing fwdllm baselines at lines 257-398)
+- `lib/python/flame/launch/runner.py` (`_validate_stack`, lines 398-434)
+- `lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py`
+  (`_weighted_aggregation_enabled` at 260-269; `sync_collect_and_accumulate_grads`
+  ~1051-1078; `check_trainer_availability` ~1304-1313)
+- `lib/python/flame/optimizer/fedbuff.py` (learning-rate dispatch, 233-256)
+- `lib/python/flame/selector/random.py` vs `async_random.py` vs
+  `async_oort.py`
+- `lib/python/examples/fwdllm/trainer/forward_training/tc_transformer_trainer_distribute.py`
+  (perturbation strategies, 200-463)
+- `lib/python/examples/fwdllm/configs/trainer_base.yaml`,
+  `lib/python/examples/fwdllm/trainer/forward_training/FedSgdTrainer.py`
+  (client_notify / `TrainerAvailState`)
+
+---
+
+## Phase 7 — Implementation plan (concrete, ready to execute)
+
+Built on decisions D1–D6. Same checkpoint discipline as Phases 1–5: **one step
+at a time; each step's checkpoint must pass (and, for code steps, its unit test
+must be added and green) before starting the next.** Code/library changes
+(P1–P4) land first because the baselines depend on them; then the catalog
+(P5), the per-baseline trainer config (P6), pytest sweep (P7), and the live
+smoke test (P8).
+
+### Target baseline matrix (the contract every step serves)
+
+| Baseline | stack (`is_async`) | selector | optimizer | availability | perturbation | reselect |
+|---|---|---|---|---|---|---|
+| **fwdllm** | sync (`false`) | `random` | `fedavg` | unaware (`trackTrainerAvail` off, `client_notify` off) | `perturbation_sampling: "True"`, JVP off | per-round (`false`) |
+| **fwdllm_plus** | sync (`false`) | `random` | `fedavg` | ORACULAR (`trackTrainerAvail` ORACULAR, `_metadata` trace) | `perturbation_sampling: "True"`, JVP off | per-iteration (`true`) |
+| **fluxtune** | async (`true`) | `async_oort` | `fedbuff` (explicit `learning_rate`) | 3-tier `client_notify` (`*_3st_*` trace), `trackTrainerAvail` off | `select_perturbation_using_jvp: "True"` | n/a (async) |
+| **fluxtune_dynkc** | async (`true`) | `async_random` + `dynamic_kc` | `fedbuff` | off | `perturbation_sampling: "True"` | n/a | (research variant; preserves the ported production default) |
+
+### Step P1 — Fix `_validate_stack` to be selector-driven for the fwdllm stack (D1)
+
+File: `flame/launch/runner.py:398-434`.
+- Remove `"fwdllm"` from `_ASYNC_STACKS` (line 398).
+- In `_validate_stack`, after detecting `stack == "fwdllm"`, compute
+  `is_async_stack = bool(agg_cfg["selector"]["kwargs"].get("is_async", False))`
+  for that branch instead of `stack in self._ASYNC_STACKS`. Keep the membership
+  test for all other stacks unchanged. Net invariant for fwdllm: the selector's
+  async-ness (`sort in _ASYNC_SELECTORS`) must equal its declared `is_async`.
+- **Unit test** (`tests/launch/test_runner_paths.py`, new `TestValidateStack`):
+  fwdllm + `random`/`is_async:false` → no raise; fwdllm + `async_oort`/`is_async:true`
+  → no raise; fwdllm + `random`/`is_async:true` (inconsistent) → raises; fwdllm +
+  `async_oort`/`is_async:false` (inconsistent) → raises; cifar10 asyncfl + `async_random`
+  → no raise (regression guard).
+- **Checkpoint:** the five cases above behave as asserted; existing
+  `test_runner_paths.py` still green.
+
+### Step P2 — Add explicit `learning_rate` kwarg to FedBuff (D2)
+
+File: `flame/optimizer/fedbuff.py:41-81` (`__init__`) + `:222-270`
+(`_scale_add_agg_weights_pytorch`, and the tensorflow twin at `:272+`).
+- In `__init__`, read `self.learning_rate = kwargs.get("learning_rate", None)`.
+- In both `_scale_add_*`, if `self.learning_rate is not None` use it directly;
+  else fall back to the existing `use_oort_lr`/`dataset_name` table (unchanged).
+- Do **not** touch felix/oracle/fedbuff baselines — absence of the kwarg keeps
+  their exact current behavior.
+- **Unit test** (`tests/optimizer/test_fedbuff_lr.py`, new): explicit
+  `learning_rate=0.5` overrides the dataset table; absence + `dataset_name:
+  cifar-10` still yields the legacy value; absence + unknown dataset still warns
+  and uses 1.0.
+- **Checkpoint:** test green; felix's effective LR unchanged when no kwarg set.
+
+### Step P3 — Re-source oracular availability from `_metadata` (D3)
+
+File: `flame/mode/horizontal/syncfl/fwdllm_aggregator.py:480-489`
+(`read_trainer_unavailability`).
+- Port `async_cifar10/aggregator/pytorch/main_oort_sync_agg.py:173+`: read
+  `_metadata/trainer_registry.yaml` + `_metadata/availability_traces/<trace>.yaml`,
+  return `trainer_id -> SortedDict(ts -> state)`. Drop the `glob` over
+  `json_scripts/trainer_*.json` and the `import glob` if now unused.
+- Resolve `_METADATA_DIR` the same way the cifar10 module does (don't hardcode a
+  relative `../../../../examples/...` path).
+- **Unit test** (`tests/mode/test_fwdllm_oracular_avail.py`, new): point it at a
+  tmp `_metadata` with a tiny registry + trace; assert the returned dict matches,
+  and assert **no** read of any `json_scripts/` path (e.g. monkeypatch `glob.glob`
+  to fail if called).
+- **Checkpoint:** test green; this unblocks deleting `json_scripts/` (revisit the
+  Phase 5 / step 13 "do not delete" caveat — after P3 it becomes safe; update
+  `DEPRECATED.md` accordingly).
+
+### Step P4 — Selection granularity flag `reselect_each_iteration` (D4)
+
+Semantics now confirmed by owner (see D4): per-round = one selection across all
+databins+iterations of a round; per-iteration = fresh selection every iteration
+(= current default behavior). So this step *adds* the per-round path.
+File: `flame/mode/horizontal/syncfl/fwdllm_aggregator.py` —
+`_distribute_weights_sync` (`:1387-1442`, where `channel.ends(VAL_CH_STATE_SEND)`
+re-selects), the round-increment site (`:996`), and ctor flag block (`~:255-269`).
+- Read `self._reselect_each_iteration = bool(self.config.hyperparameters.get(
+  "reselect_each_iteration", True))` (default `True` preserves today's behavior).
+- Add `self._round_selected_ends = None`. In `_distribute_weights_sync`, when
+  `_reselect_each_iteration is False`: if a new round just started (cache empty
+  or `self._round` changed since last cache), call the SEND-state selection once
+  and cache the resulting end set keyed by `self._round`; on subsequent
+  iterations/databins of the same round, re-distribute to the cached set and skip
+  re-selection. When `True`: unchanged (call SEND-state selection every time).
+- Invalidate/refresh the cache exactly at the `self._round += 1` boundary.
+- Keep the change confined to the sync path (`is_async` False); the async path
+  (fluxtune) is untouched.
+- **Unit test** (`tests/mode/test_fwdllm_reselection.py`, new): drive the gate
+  with a fake channel/selector spanning 2 databins × 2 iterations within one
+  round, then a round rollover; assert `False` → selector invoked exactly once
+  for the whole round and again only after rollover; `True` → invoked every
+  iteration.
+- **Checkpoint:** both modes behave as asserted; existing fwdllm aggregator
+  imports/compose still parse.
+
+### Step P5 — Rewrite the fwdllm baseline catalog (D5, D6)
+
+File: `examples/_metadata/baselines.yaml:257-398`.
+- Delete `fedfwd_async_random_dynkc` and `fedfwd_oracular`.
+- Add `fwdllm`, `fwdllm_plus`, `fluxtune`, `fluxtune_dynkc` per the matrix above.
+  All four keep `example.aggregator_main: aggregator/main_fedfwd_agg.py`.
+  fluxtune's `optimizer.kwargs` sets an explicit `learning_rate` (P2) and drops
+  the misleading `dataset_name: google-speech`.
+- Add two organizational comment headers in the file: one over the CNN/speech
+  family, one over the LLM forward-mode family — purely for maintainability.
+- **Checkpoint:** `yaml.safe_load` parses; `load_baselines()` returns the four
+  new keys and neither old key; the felix/oort/refl/feddance/oracle/fedbuff/fedavg
+  entries are byte-for-byte unchanged (diff-check).
+
+### Step P6 — Per-baseline trainer config coverage (D5)
+
+Files: `examples/fwdllm/configs/trainer_base.yaml`, and the smoke + any new
+`expt_scripts/*.yaml`.
+- Confirm `trainer_base.yaml` exposes (with sane defaults) every trainer-side
+  knob the four baselines flip: `perturbation_sampling`,
+  `select_perturbation_using_jvp`, `forward_mode`, `var_control`,
+  `client_notify.{enabled,trace}`. Add any missing key with a default that makes
+  the *unaware fwdllm* baseline correct out of the box.
+- Ensure a `*_3st_*` mobiperf/availability trace exists for fluxtune's
+  client_notify (reuse the step-11 short/long-form fix); register it if absent.
+- **Checkpoint:** `yaml.safe_load`; a generated trainer config for each of the
+  four baselines has the matrix's expected trainer-side values after merge.
+
+### Step P7 — Pytest sweep (add + update)
+
+Beyond the per-step unit tests (P1–P4), add/refresh integration-level tests:
+- `tests/launch/test_baselines.py`: assert the four fwdllm baselines resolve and
+  carry the expected `selector.sort` / `optimizer.sort` / `trackTrainerAvail` /
+  perturbation flags; assert the two retired keys are gone.
+- `tests/launch/test_config_generator.py`: for each fwdllm baseline, generate the
+  aggregator + a trainer config end-to-end and assert no KeyError and that the
+  matrix values survive the deep-merge (mirrors Smoke Test D, extended to all
+  four baselines).
+- `tests/mode/test_baseline_readiness.py` (already exists): extend its coverage
+  to the new baselines if it enumerates baselines.
+- **Checkpoint:** `pytest lib/python/tests/launch lib/python/tests/mode
+  lib/python/tests/optimizer lib/python/tests/selector` all green.
+
+### Step P8 — Live smoke tests (supersedes the old Smoke Test E)
+
+Run on a host with fwdllm's pinned stack installed (the
+`adapter-transformers`/Rust gap noted throughout Phases 9–E still applies in
+this sandbox). Smoke each NEW codepath, cheapest first:
+1. **`fwdllm`** (sync, fedavg, random, unaware) — exercises P1+P4(`false`)+fedavg.
+   10 trainers, ~5 rounds; assert processes start, rounds complete,
+   `telemetry/trainer_*.jsonl` has `trainer_round`, and `aggregator_config.json`
+   shows `selector.sort: random`, `is_async: false`, `optimizer.sort: fedavg`.
+2. **`fwdllm_plus`** (sync, oracular, per-iteration) — exercises P3+P4(`true`).
+   Assert oracular events load from `_metadata` (P3), no `json_scripts` read.
+3. **`fluxtune`** (async, async_oort, fedbuff, JVP, 3-tier) — exercises P2 LR
+   kwarg + JVP perturbation + client_notify 3st.
+- **Parity (optional):** for `fwdllm`, confirm `client_idx = (trainer_id-1) %
+  100` reproduces the same H5 partitions as the legacy `trainer_*.json`.
+- **Checkpoint:** all three launch and complete ≥3–5 rounds without crashing;
+  per-baseline assertions above hold.
+
+### Execution order summary
+
+`P1 → P2 → P3 → P4 (confirm w/ owner) → P5 → P6 → P7 → P8`. P1–P4 are
+independent library changes that can each be reviewed/merged on their own; P5+
+depend on all four. None of P1–P4 touch felix/cifar10 behavior (regression
+guards in each step's test enforce this).
+
+---
+
 ## Context
 
 `fwdllm` (FedFwd text-classification on agnews/DistilBERT) is the last unmigrated
