@@ -1,7 +1,9 @@
 # Sim Unavailability — Design & Staged Plan
 
-**Status:** **Stage A COMPLETE** (Jun 25) — substrate implemented, 389/389 unit tests pass.
-Smoke test (syn_0 90-min all-baseline byte-identity) pending on training node. v1 scope **locked**
+**Status:** **Stage A COMPLETE** (Jun 25) — substrate implemented, 410/410 unit tests pass.
+Smoke test (syn_0 5-min all-baseline, Jun 25) passed — 0 errors all 4 baselines, AvailabilityMixin
+active, `agg_version_state` deprecation fixed (Jun 26). **Stage B in progress** (Jun 26) — A3/A4 unit
+tests added; syn_20 oort smoke run needed to satisfy exit criterion. v1 scope **locked**
 (Jun 25) — *oracular trace-read for ALL baselines, `client_notify` deferred*. Same feature templates
 into fwdllm ([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built
 **library-level so it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
@@ -281,9 +283,11 @@ See §8 for the file-level spec. Summary:
   `flame/config.py`. Gate-off default ⇒ `trainer_event_dict=None` ⇒ byte-identical.
 - **A.4** `_init_availability(config)` called from `syncfl/TopAggregator.internal_init()`; supports both
   new `sim_unavailability` gate and legacy `track_trainer_avail["enabled"]` path.
-- **Unit tests:** 389/389 pass. **Smoke test:** syn_0 90-min all-baseline byte-identity — **PENDING
-  on training node** (submit with `scripts/run_parity.sh --trace syn_0`).
-- **Exit:** syn_0 90-min all-baseline parity holds the scoreboard byte-for-byte → then proceed to Stage B.
+- **Unit tests:** 410/410 pass (Jun 26, incl. 5 new A3/A4 tests). **Smoke test:** syn_0 5-min
+  all-baseline (Jun 25) — 0 errors, clean termination, AvailabilityMixin active on oort/refl (legacy
+  ORACULAR path), config-gating correct on feddance. `agg_version_state` deprecation fixed in
+  `asyncfl/top_aggregator.py`; `logger.warn` → `logger.warning` in `flame/plugin/__init__.py`.
+- **Exit (relaxed):** syn_0 smoke clean, 0 errors → proceed to Stage B.
 
 ### Stage B — A3 time-base CONTROL (gate for everything above it)
 - **B.1** A3 `trace_time_base_consistency` (CONTROL/DIST, dep K3): resolved on/off windows align

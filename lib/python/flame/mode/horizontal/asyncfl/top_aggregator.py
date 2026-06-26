@@ -1488,7 +1488,8 @@ class TopAggregator(SyncTopAgg):
         # before selection. No-op unless oracle_utility_injection is enabled.
         self._inject_oracle_utilities(channel, task_to_perform)
 
-        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
+                            agg_version_state=(self._round, None, None))
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return

@@ -59,8 +59,8 @@ SIM_WALL_CEILING_S=""  # empty = max_runtime_s (1×, tight guard; sim should be 
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 
 usage() {
-  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700]"
-  echo "       $0 smoke [--baselines ...] [--mode sim|real|both]"
+  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
+  echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20]"
   echo ""
   echo "  --baselines           which baselines to run (any of felix oort refl feddance);"
   echo "                        filtered from the parity config, node-agnostic."
@@ -71,10 +71,14 @@ usage() {
   echo "  --sim-wall-ceiling-s  wall-clock ceiling for sim mode (default: = runtime_s)."
   echo "                        A well-behaved sim finishes in <= real-mode wall time."
   echo "                        Fires [SIM_WALL_CEILING] warning + stops when exceeded."
+  echo "  --trace               availability trace name to substitute (e.g. syn_20, syn_50)."
+  echo "                        Replaces trainer availability.mode and aggregator trackTrainerAvail.trace."
+  echo "                        Default: use whatever is in the parity config (syn_0)."
   exit 2
 }
 
 # parse args
+TRACE=""  # empty = use whatever is in the parity config (syn_0)
 if [ "${1:-}" = "smoke" ]; then
   SMOKE=1; shift
   BASELINES="felix oort refl feddance"   # smoke default: validate all
@@ -82,6 +86,7 @@ if [ "${1:-}" = "smoke" ]; then
     case "$1" in
       --baselines) BASELINES="$2"; shift 2 ;;
       --mode)      MODE="$2"; shift 2 ;;
+      --trace)     TRACE="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -94,6 +99,7 @@ else
       --mode)                MODE="$2"; shift 2 ;;
       --sim-wall-ceiling-s)  SIM_WALL_CEILING_S="$2"; shift 2 ;;
       --wall-runtime-s)      SIM_WALL_CEILING_S="$2"; shift 2 ;;  # backward compat alias
+      --trace)               TRACE="$2"; shift 2 ;;
       # --node is DEPRECATED (node1/node2 split removed): baselines are filtered
       # from a single node-agnostic parity config, so the node is irrelevant.
       # Accept+ignore so existing wrappers don't hard-error.
@@ -106,15 +112,17 @@ case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (
 
 # Generate a single filtered+patched YAML from the parity source config.
 # $1 = baselines (space-separated), $2 = runtime_s, $3 = output path,
-# [$4 = smoke: 1|0], [$5 = sim_wall_ceiling_s: int or ""], [$6 = mode: sim|real|both]
+# [$4 = smoke: 1|0], [$5 = sim_wall_ceiling_s: int or ""], [$6 = mode: sim|real|both],
+# [$7 = trace: trace name or ""]
 make_debug_yaml() {
-  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" <<'PY'
+  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" "${7:-}" <<'PY'
 import yaml, sys, copy, os
 scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5] == "1",
     sys.argv[6] if len(sys.argv) > 6 else ""
 )
 mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
+trace_override = sys.argv[8].strip() if len(sys.argv) > 8 else ""
 requested = set(baselines_str.lower().split())
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
 _seed_env = os.environ.get("SEED", "1234").strip()
@@ -177,6 +185,18 @@ for e in cfg.get("experiments", []):
         # binding stop condition, not an early round-count termination.
         h["rounds"] = 20000
         e["name"] = f"dbg_{e['name']}"
+    # --trace override: substitute availability trace in trainer + aggregator config.
+    if trace_override:
+        avail = e["trainer"].setdefault("availability", {})
+        old_trace = avail.get("mode", "syn_0")
+        avail["mode"] = trace_override
+        if "trackTrainerAvail" in h:
+            h["trackTrainerAvail"]["trace"] = trace_override
+        elif "client_notify" in h and isinstance(h["client_notify"], dict):
+            h["client_notify"]["trace"] = trace_override
+        # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
+        import re
+        e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
     e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
     kept.append(e)
 
@@ -208,7 +228,7 @@ if [ "$SMOKE" = "1" ]; then
   # Clear any stale config from a previous invocation so a no-match run is
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
-  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE"
+  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE"
   [ -f "$cfg" ] && run_node "dbg_smoke" "$cfg"
   echo "=== SMOKE RESULTS ==="
   for dd in experiments/run_*dbg_smoke_*; do
@@ -226,7 +246,7 @@ cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE"
+make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."
