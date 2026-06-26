@@ -48,7 +48,7 @@ experiments:
             trace: syn_0
 
     aggregator:
-      config_template: ../configs/aggregator_base.json
+      config_template: configs/aggregator_base.json
       selector: random
       tracking_mode: default
       agg_goal: 2

@@ -50,7 +50,7 @@ experiments:
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
 
     aggregator:
-      config_template: ../configs/aggregator_base.json
+      config_template: configs/aggregator_base.json
       selector: random
       tracking_mode: oracular
       agg_goal: 2
