@@ -21,6 +21,11 @@ from flame.telemetry.events import build_trainer_round
 logger = logging.getLogger(__name__)
 
 
+def _parse_avl_events(val):
+    # YAML delivers already-parsed lists; legacy JSON delivered string-encoded lists.
+    return val if isinstance(val, list) else ast.literal_eval(val)
+
+
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle numpy types and PyTorch tensors"""
 
@@ -179,37 +184,37 @@ class FedSGDTrainer(Trainer):
         self.trainer_start_ts = time.time()
         # TODO (ARM): Fix this to read traces better!
         # Storing synthetic avail traces
-        self.avl_events_syn_0 = ast.literal_eval(
+        self.avl_events_syn_0 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_0
         )
 
-        self.avl_events_syn_20 = ast.literal_eval(
+        self.avl_events_syn_20 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_20
         )
 
-        self.avl_events_syn_50 = ast.literal_eval(
+        self.avl_events_syn_50 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_50
         )
 
-        self.avl_events_syn_train_100_eval_0_unavail_0 = ast.literal_eval(
+        self.avl_events_syn_train_100_eval_0_unavail_0 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_train_100_eval_0_unavail_0
         )
 
-        self.avl_events_syn_train_90_eval_10_unavail_0 = ast.literal_eval(
+        self.avl_events_syn_train_90_eval_10_unavail_0 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_train_90_eval_10_unavail_0
         )
 
-        self.avl_events_syn_train_50_eval_30_unavail_20 = ast.literal_eval(
+        self.avl_events_syn_train_50_eval_30_unavail_20 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_train_50_eval_30_unavail_20
         )
 
-        self.avl_events_mobiperf_2st = ast.literal_eval(
+        self.avl_events_mobiperf_2st = _parse_avl_events(
             self.config.hyperparameters.avl_events_mobiperf_2st
         )
-        self.avl_events_mobiperf_3st_75 = ast.literal_eval(
+        self.avl_events_mobiperf_3st_75 = _parse_avl_events(
             self.config.hyperparameters.avl_events_mobiperf_3st_75
         )
-        self.avl_events_mobiperf_3st_50 = ast.literal_eval(
+        self.avl_events_mobiperf_3st_50 = _parse_avl_events(
             self.config.hyperparameters.avl_events_mobiperf_3st_50
         )
 

@@ -58,6 +58,7 @@ experiments:
           id: fwdllm_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
+          manual_seed: 42
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
         selector:

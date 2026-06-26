@@ -44,6 +44,8 @@ setup(
         # (async_cifar10, ...) and the NLP forward-mode examples (fwdllm).
         "examples": [
             # --- Shared (vision + speech + NLP) ---
+            # On CUDA driver >= 12.9 use setup_env.sh (force-reinstalls torch
+            # from the cu126 index) instead of a bare `pip install -e .[examples]`.
             "torch",
             "torchvision",
             "torchaudio",  # async_google_speech (audio feature extraction)
