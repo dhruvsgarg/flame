@@ -347,14 +347,10 @@ class TopAggregator(AsyncTopAgg):
 
         # maintain a set of all trainers that have sent heartbeats previously
         self.all_trainers = set()
-        try:
-            self.minInitialTrainers = self.config.selector.kwargs.get(
-                "minInitialTrainers"
-            )
-            assert self.minInitialTrainers is not None
-        except (KeyError, AssertionError):
+        self.minInitialTrainers = self.config.selector.kwargs.get("minInitialTrainers")
+        if self.is_async and self.minInitialTrainers is None:
             raise KeyError(
-                "minInitialTrainers must be specified in selector config & must not be None for determinism"
+                "minInitialTrainers must be specified in selector config for async fwdllm"
             )
         self.trainer_unavail_durations = None
         self._cached_test_data = None
