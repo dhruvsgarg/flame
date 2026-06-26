@@ -1,7 +1,9 @@
 # Sim Unavailability — Design & Staged Plan
 
-**Status:** **Stage B COMPLETE** (Jun 26) — A3 exit criterion met on oort syn_20 smoke
-(`max_rel_diff=0.033 ≤ 0.20`). Stage C is next. v1 scope **locked** (Jun 25) — *oracular trace-read
+**Status:** **Stage C IN PROGRESS** (Jun 26) — delivery-ledger substrate landed + tested; live
+commit-loop wiring (C.2 emit / C.3 abandon re-clock / late re-commit) + syn_20 45-min validation
+remain. Stage B COMPLETE (Jun 26) — A3 exit criterion met on oort syn_20 smoke
+(`max_rel_diff=0.033 ≤ 0.20`). v1 scope **locked** (Jun 25) — *oracular trace-read
 for ALL baselines, `client_notify` deferred*. Same feature templates into fwdllm
 ([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built **library-level so
 it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
@@ -338,8 +340,122 @@ Until `get_curr_unavail_trainers()` is activated (Stage C), `avail_composition` 
 hasn't started filtering — confirming the baseline state before Stage C changes anything.
 
 ### Stage C — ORACULAR driver + send-time delivery gate + vclock abandon (oort, refl; then ALL)
+
+**Substrate landed (Jun 26)** — the reusable C.2/C.4/C.5 core, gated/dormant until the live loop
+calls it (default OFF ⇒ byte-identical, 420/420 unit tests incl. 10 new in
+`tests/availability/test_delivery_ledger.py`):
+- `AvailabilityMixin.compute_delivery_ts(end, sct)` — earliest `t ≥ sct` with `state_at(t) ∈ AVL_*`
+  (immediate if already AVL at sct; `inf` if the trace never recovers → caller guards, Challenge 10).
+  Fixes a `next_avail_after` edge: it returns the next AVL *event* after t, so an already-available sct
+  must short-circuit via `state_at` rather than wait for a (nonexistent) future transition.
+- `free_stalled_slot(channel, end, *, reason, sct)` — **the C.5 eviction abstraction, now active.**
+  Slot ledger: drops `end` from `selector.all_selected` / `selected_ends[requester]` and resets the
+  end state to NONE. Delivery ledger: `pending_withheld[end] = compute_delivery_ts(...)`. No-op when
+  the gate is off (returns None). One effect path for the 90s abandon (C.3), aware boundary eviction
+  (Stage D), and the future `avl_*` message (Stage H).
+- `withheld_held_ends(now)` / `ready_withheld(now)` / `commit_withheld(end)` — the delivery-ledger
+  query/order/pop helpers. `ready_withheld` orders by `(delivery_ts, end_id)` (Challenge 1/6 — commits
+  past `sct`, never at it). **invariant 2 wired:** `withheld_held_ends()` is unioned into the
+  unavailable list in both `oort/top_aggregator._distribute_weights` and `asyncfl/...` so a held
+  trainer stays out of the eligible pool until its `delivery_ts`.
+
+#### Stage C live-wiring implementation plan (RESUME HERE)
+
+Detailed enough to start cold. The substrate above is in the tree (uncommitted) and unit-tested; the
+steps below are the live commit-loop/selector wiring that makes the feature behave. All paths relative
+to `lib/python/`. Everything stays gated by `trainer_event_dict is not None` ⇒ default-OFF byte-identity.
+
+**Already in the tree (uncommitted, do NOT re-do):**
+- `flame/availability/availability_mixin.py` — `compute_delivery_ts`, active `free_stalled_slot(...,
+  sct=)`, `withheld_held_ends`, `ready_withheld`, `commit_withheld`, `_AVL_STATES`.
+- `flame/mode/horizontal/{asyncfl,oort}/top_aggregator.py` — invariant-2 union of `withheld_held_ends()`
+  into the unavailable list in `_distribute_weights`.
+- `asyncfl/top_aggregator.py __init__` — `self._sim_withheld_payload: dict = {}` (end → `(sct, (msg,
+  metadata))`), plus the same key added to the `_sim_recv_min` bare-init guard. **This store is the only
+  half-done piece; C.2 below consumes it.**
+- `tests/availability/test_delivery_ledger.py` — 10 substrate tests (all green; full suite 420/420).
+
+**C.2 — send-time withhold + late re-commit (`asyncfl/top_aggregator.py::_sim_recv_min`).**
+The withhold gate fires at *completion* (`sct`) on the vclock: an in-flight update whose trainer is
+`UN_AVL` at `sct` must not commit; hold it, re-commit at `delivery_ts` (stale). Two new helpers + a
+2-line change at the pop site (currently `popped = self._sim_buffer.pop_min()` at ~`:428`):
+
+1. `_sim_reinject_ready_withheld(self)` — called *before* the pop. No-op if `not self.pending_withheld`.
+   For each `(end, dts)` in `self.ready_withheld(self._vclock.now)` (already ordered by
+   `(delivery_ts, end_id)`): pop `self._sim_withheld_payload.get(end)`; if a payload exists,
+   `self._sim_buffer.add(end, dts, payload)` then `self.commit_withheld(end)` (pop ledger → end
+   re-enters the pool at next selection). If no payload (slot-only registration from the C.3 abandon of
+   a trainer whose update never physically arrived), just `self.commit_withheld(end)` and skip — nothing
+   to deliver.
+2. `_sim_pop_committable(self, channel)` — replaces the single `pop_min()`. Loop: `popped =
+   self._sim_buffer.pop_min()`; if `None` return `None`. Unpack `end, sct, payload`. Compute `dts =
+   self.compute_delivery_ts(end, sct)`. If `dts <= sct` (available at completion, or gate off ⇒ returns
+   `sct`) → `return popped` (commit normally). Else **withhold**: if `dts == inf` → drop the payload
+   (undeliverable in-window; `free_stalled_slot` still registers the ledger so the end stays excluded —
+   acceptable v1 edge, log `[WITHHELD_LOST]`); else `self._sim_withheld_payload[end] = (sct, payload)`.
+   Then `self.free_stalled_slot(channel, end, reason="send_gate_withhold", sct=sct)` (frees slot +
+   registers `pending_withheld[end]=dts`), `self._sim_inflight_expected.pop(end, None)`, and **continue**
+   the loop (pop the next-smallest). Pop site becomes:
+   `self._sim_reinject_ready_withheld(); popped = self._sim_pop_committable(channel)`.
+   - **Gate-off safety:** `compute_delivery_ts` returns `sct` ⇒ `dts <= sct` always ⇒ never withholds ⇒
+     one pop, identical to today; reinject is a no-op. Byte-identical.
+   - **Clock:** do NOT advance the vclock for a withheld pop — only the actually-committed update drives
+     `_advance_sim_clock` (unchanged; the withhold `continue`s before line ~`:442`).
+   - **Past-dating telemetry:** a re-injected delivery commits at `dts <= vclock` ⇒ it WILL register in
+     `_sim_pastdated_*`. That is correct (it is a late stale delivery, not a bug). Add a `"withheld"`
+     source bucket in `_sim_pastdated_by_source` (set membership: end was in `self._sim_withheld_payload`
+     just before this commit) so the `withheld_delivery` rung separates intended staleness from
+     past-dating bugs. Emit a `withheld_delivery` telemetry event at re-commit: `delivery_ts − sct`,
+     resulting staleness (`round − MODEL_VERSION`), accept/reject (see below).
+   - **Staleness gate (accept/reject):** the re-injected update flows through the SAME pop→commit path,
+     so async fedbuff weighting / sync `reject_stale_updates` tolerance apply unchanged (Q-new-2, E.2 —
+     no new scalar). Verify oort/refl (async) accept-stale; feddance (sync) reject-over-tolerance lands
+     in Stage E.
+
+**C.3 — vclock abandon (slot ledger), aggregator-side (recommended over selector edit).**
+The selector 90s abandon (`async_oort.py:1481`, `fedbuff.py:~501`, `async_random.py:~521`) compares
+`time.time()` against `all_selected[end]` (also wall-stamped) — inert in sim (wall barely advances).
+Rather than thread the vclock through three selectors, do the abandon **aggregator-side on the vclock**,
+where `free_stalled_slot` and the per-end dispatch vclock already live:
+- In sim, each dispatched end has `PROP_SIM_SEND_TS` (dispatch vclock) and `_sim_inflight_expected[end]`.
+  In `_aggregate_weights` (or at the top of `_distribute_weights`), scan in-flight ends with `vclock −
+  sim_send_ts > SEND_TIMEOUT_WAIT_S` that have NOT yet buffered/committed → `free_stalled_slot(channel,
+  end, reason="abandon_90s_vclock", sct=<modeled completion or vclock>)`. That frees the slot
+  (replacement selectable) and registers the delivery ledger; if the update later physically arrives it
+  is reconciled by `_sim_reinject_ready_withheld` (payload path) or already committed.
+- Keep the existing wall-based selector abandon as the REAL-mode path (guard the sim path so the two
+  don't double-fire). Emit an `abandon_timeout` telemetry event (vclock, end) for the rung.
+- **Invariant 1 (no double-count / in-flight never negative):** if an abandoned end's update *does* later
+  arrive, `_sim_pop_committable` must not re-register it — guard with `if end in self._sim_committed or
+  end in self.pending_withheld: skip re-withhold`. Assert in a unit test.
+
+**Trainer send-gate (real-side, `trainer/pytorch/main.py`, documented change).**
+Move the task-start skip (`:684-706`, `:1029-1040`) to a SEND-time gate on the upload path: compute
+always completes; immediately before putting the update on the channel, if `state_at(trace,
+_vclock.now)` is `UN_AVL`, hold and block until `AVL_*` (real) — sim needs no wall-block (the agg buffer
+models delivery at `delivery_ts`). Add a `[SEND_GATE]` log line + docstring note. Also finish the
+`_sim_now()` fix (use `_vclock.now`, never `_sim_send_ts`). This is only needed to confirm real
+withholds-then-delivers (Challenge 5 / §7 open follow-up) before C.2 is signed off — can trail the sim
+wiring.
+
+**Tests to add with the wiring (cheap, before the 45-min run):**
+- `_sim_pop_committable` withhold path: an `UN_AVL`-at-sct end is held (payload stashed, ledger set,
+  slot freed, inflight popped), the next committable is returned; gate-off ⇒ single pop unchanged.
+- `_sim_reinject_ready_withheld`: due ledger entries re-added at `dts` in order; slot-only entries
+  dropped; nothing leaks (`pending_withheld` and `_sim_withheld_payload` both emptied).
+- Invariant 1: abandoned-then-arrived end commits exactly once, in-flight count never negative.
+- C.3 vclock abandon fires at the 90s vclock deadline (not wall) and the replacement is selectable.
+
+**Parity rungs to populate** (`examples/async_cifar10/scripts/parity/checks.py`, append-only):
+`withheld_delivery` (`delivery_ts−sct` dist + staleness + accept/reject split), `abandon_timeout` (count
++ vclock timing, fails loudly if wall leaks), `observation_lag` (boundary cadence, NOT asserted ≈0 in
+v1), `eligible_pool_reduction` (A2). Then **validation:** syn_20, 45-min, oort+refl first; exit =
+A1/A2/A3/A4 PASS, withheld/abandon rungs populated, no new past-dating beyond the `"withheld"` bucket
+(U6), K2/K3b hold vs the syn_20 real reference; then felix/feddance smoke confirms the same oracular path.
+
 - **C.1** Activate `get_curr_unavail_trainers()` via the Stage-A resolver on `_vclock.now` →
-  `channel.set_curr_unavailable_trainers`. **Gates new selection only.**
+  `channel.set_curr_unavailable_trainers`. **Gates new selection only.** ✅ wired (substrate path active
+  when `trainer_event_dict` populated; both async + oort drivers call it pre-selection).
 - **C.2 Send-time withhold-deliver.** An in-flight trainer entering `UN_AVL` is **not** interrupted;
   its modeled update is **held and delivered at `delivery_ts = max(sct, next_avail_ts)`**, committing
   **stale**. Real-side: add the trainer **send gate** (block upload until `AVL_*`) — documented real

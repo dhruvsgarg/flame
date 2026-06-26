@@ -112,6 +112,11 @@ class TopAggregator(SyncTopAgg):
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
         self._sim_pending_commit: set = set()
+        # C.2 send-time withhold: an in-flight update whose trainer is UN_AVL at
+        # its completion (sct) is HELD here (end -> (sct, (msg, metadata))) and
+        # re-injected into the buffer at its delivery_ts (commits stale). The
+        # delivery_ts itself lives in the AvailabilityMixin pending_withheld ledger.
+        self._sim_withheld_payload: dict = {}
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
         # Virtual-completion gate: the aggregator's record of each in-flight trainer's
         # EXPECTED completion = dispatch vclock + its MODELED budget. Lets _sim_recv_min hold
@@ -307,6 +312,7 @@ class TopAggregator(SyncTopAgg):
         verifies the clock is now sct-driven."""
         if not hasattr(self, "_sim_inflight_expected"):  # bare-init guard (tests)
             self._sim_inflight_expected = {}
+            self._sim_withheld_payload = {}
             self._sim_trainer_budget = {}
             self._sim_budget_running_mean = 12.0
             self._sim_budget_n = 0
@@ -1445,6 +1451,13 @@ class TopAggregator(SyncTopAgg):
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            # invariant 2: a trainer with a withheld update stays out of the
+            # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
+            _held_withheld = self.withheld_held_ends()
+            if _held_withheld:
+                curr_unavail_trainer_list = list(
+                    set(curr_unavail_trainer_list) | _held_withheld
+                )
         else:
             curr_unavail_trainer_list = []
 

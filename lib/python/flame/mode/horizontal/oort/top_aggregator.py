@@ -641,6 +641,13 @@ class TopAggregator(BaseTopAggregator):
         # trainer_unavail if it isn't None
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            # invariant 2: a trainer with a withheld update stays out of the
+            # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
+            _held_withheld = self.withheld_held_ends()
+            if _held_withheld:
+                curr_unavail_trainer_list = list(
+                    set(curr_unavail_trainer_list) | _held_withheld
+                )
         else:
             curr_unavail_trainer_list = []
 

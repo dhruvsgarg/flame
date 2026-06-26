@@ -20,18 +20,23 @@ Stage C will activate free_stalled_slot and wire the pending_withheld ledger.
 """
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
-from flame.availability.trace import load_trace, state_at
+from flame.availability.trace import load_trace, next_avail_after, state_at
 from flame.config import TrainerAvailState
 
 logger = logging.getLogger(__name__)
 
 _METADATA_DIR = Path(__file__).resolve().parents[2] / "examples/_metadata"
+
+_AVL_STATES = frozenset(
+    {TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL}
+)
 
 
 class AvailabilityMixin:
@@ -193,24 +198,125 @@ class AvailabilityMixin:
         return unavail
 
     # ------------------------------------------------------------------
-    # Dormant eviction hook (Stage C wires this up)
+    # Delivery ledger (Stage C) — withheld update bookkeeping
     # ------------------------------------------------------------------
+    #
+    # Two ledgers, never one (Challenge 4 / invariant 1):
+    #   * slot ledger    — in-flight count; freed here (free_stalled_slot).
+    #   * delivery ledger — pending_withheld[end] = delivery_ts; the completed
+    #                       update is HELD, not discarded, and committed later
+    #                       (stale) by the live commit loop.
+    # The same effect path serves all three triggers (90s vclock abandon, aware
+    # boundary eviction, and the future avl_* message) — only the trigger differs.
 
-    def free_stalled_slot(self, channel, end: str, *, reason: str) -> None:
+    def compute_delivery_ts(self, end: str, sct: float) -> float:
+        """When a withheld update from `end` becomes deliverable.
+
+        The earliest time >= sct at which the trainer is AVL_* again: a
+        completed-but-withheld update cannot deliver before it finished
+        computing (`sct`) nor while the trainer is unreachable. If the trainer
+        is already available at `sct` (it recovered before completing, or never
+        went down) delivery is immediate (= sct); otherwise it waits for the
+        next AVL_* window. Returns math.inf when the trace never recovers — the
+        caller must guard (Challenge 10); the update is undeliverable in-window.
+        """
+        if self.trainer_event_dict is None:
+            return float(sct)
+        trace = self.trainer_event_dict.get(end)
+        if not trace:
+            return float(sct)
+        ref = float(sct)
+        if state_at(trace, ref) in _AVL_STATES:
+            return ref
+        nxt = next_avail_after(trace, ref)
+        if nxt == math.inf:
+            return math.inf
+        return max(ref, float(nxt))
+
+    def free_stalled_slot(
+        self, channel, end: str, *, reason: str, sct: Optional[float] = None
+    ) -> Optional[float]:
         """Free an in-flight slot and register its pending withheld delivery.
 
-        Stage A: built but dormant. No-op until Stage C activates it for the
-        90s vclock abandon path and Stage D activates it for aware proactive
-        boundary eviction. Stage H will also trigger it via an avl_* message
-        without changing the effect logic (the abstraction exists for exactly
-        this swap).
+        Triggered by (a) the 90s vclock abandon for everyone (C.3) and (b) the
+        aware boundary eviction for availability_aware baselines (Stage D); Stage H
+        adds an avl_* message trigger without changing this effect logic — the
+        abstraction exists for exactly that swap.
 
-        When active (Stage C+):
-            1. Remove `end` from selected_ends / in-flight (slot ledger).
-            2. Compute delivery_ts = max(sct, next_avail_after(trace, now)).
-            3. Register pending_withheld[end] = delivery_ts (delivery ledger).
-        The two ledgers are independent — Challenge 4 / invariant 1.
+        1. Remove `end` from the selector slot ledger (selected_ends / all_selected).
+        2. Compute delivery_ts = compute_delivery_ts(end, sct) (delivery ledger).
+        3. Register pending_withheld[end] = delivery_ts.
+
+        No-op (returns None) when the gate is off (trainer_event_dict is None),
+        preserving byte-identity. Returns the registered delivery_ts otherwise.
         """
-        logger.debug(
-            f"[AVAIL] free_stalled_slot({end!r}, reason={reason!r}) — dormant (Stage A)"
+        if self.trainer_event_dict is None:
+            logger.debug(
+                f"[AVAIL] free_stalled_slot({end!r}) — gate off, no-op"
+            )
+            return None
+
+        # 1. Slot ledger: release the concurrency slot so a replacement is
+        #    selectable. Mirrors the abandon path's removal (random.py:215).
+        sel = getattr(channel, "_selector", None)
+        if sel is not None:
+            requester = getattr(sel, "requester", None)
+            all_selected = getattr(sel, "all_selected", None)
+            if all_selected is not None:
+                all_selected.pop(end, None)
+            selected_ends = getattr(sel, "selected_ends", None)
+            if (
+                isinstance(selected_ends, dict)
+                and requester in selected_ends
+            ):
+                selected_ends[requester].discard(end)
+            if channel.has(end):
+                from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+
+                channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+
+        # 2/3. Delivery ledger: hold the completed update until delivery_ts.
+        if sct is None:
+            sct = self._avail_now()
+        delivery_ts = self.compute_delivery_ts(end, sct)
+        self.pending_withheld[end] = delivery_ts
+        logger.info(
+            f"[AVAIL] free_stalled_slot({end!r}, reason={reason!r}) "
+            f"sct={float(sct):.1f} delivery_ts={delivery_ts:.1f}"
         )
+        return delivery_ts
+
+    def withheld_held_ends(self, now: Optional[float] = None) -> set:
+        """Ends whose withheld update has NOT yet reached its delivery_ts.
+
+        These must stay out of the eligible pool (invariant 2: a still-down
+        trainer is never re-selected) until vclock >= delivery_ts — the §4.5
+        residence exclusion extended from `sct` to `delivery_ts`. Unioned into
+        the unavailable list by the selection driver.
+        """
+        if not self.pending_withheld:
+            return set()
+        if now is None:
+            now = self._avail_now()
+        return {end for end, dts in self.pending_withheld.items() if dts > now}
+
+    def ready_withheld(self, now: Optional[float] = None) -> list:
+        """Withheld ends due for delivery (delivery_ts <= now), commit order.
+
+        Ordered by (delivery_ts, end_id) so the late stale commits replay
+        deterministically (Challenge 1/6 — past-dating is avoided because a
+        withheld update commits at delivery_ts > sct, never at sct).
+        """
+        if not self.pending_withheld:
+            return []
+        if now is None:
+            now = self._avail_now()
+        due = [
+            (end, dts) for end, dts in self.pending_withheld.items() if dts <= now
+        ]
+        due.sort(key=lambda kv: (kv[1], str(kv[0])))
+        return due
+
+    def commit_withheld(self, end: str) -> Optional[float]:
+        """Pop `end` from the delivery ledger once its late update has committed."""
+        return self.pending_withheld.pop(end, None)
