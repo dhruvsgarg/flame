@@ -6,7 +6,7 @@ It is kept up to date (Progress line + checkboxes) as each step's checkpoint
 passes — read the Progress line and checklist below before resuming work on
 this migration in any new session.
 
-## Progress: 16 / 18 checkpoints complete
+## Progress: 17 / 18 checkpoints complete
 
 **Update to the environment-gap note above:** the core `flame` library deps
 (`aiostream`, `gpustat`, `paho-mqtt`, `shared-memory-dict`, `mlflow`) were
@@ -47,7 +47,7 @@ will need an environment that actually has fwdllm's pinned stack installed.
 - [x] B. Load experiment YAML + validate baseline (after step 8: confirm config schema is sound
   before writing entrypoint code that depends on it)
 - [x] C. Entrypoints accept `--config-json` (after step 10: trainer/agg don't crash on startup)
-- [ ] D. Full static config generation dry-run (after step 13: all wiring correct before live test)
+- [x] D. Full static config generation dry-run (after step 13: all wiring correct before live test)
 - [ ] E. Live 10-trainer smoke test + parity vs. legacy script (final: end-to-end validation)
 
 **Reordering note (this section added when the plan was corrected):** baselines.yaml
@@ -513,6 +513,13 @@ for trainer_id in range(1, 11):
 ```
 
 If all 10 trainers generate with distinct client_idx 0–9 and no KeyError, smoke test D passes.
+
+**Checkpoint result — PASSED:** ran the exact script above with `PYTHONPATH=lib/python`
+(needed since `flame` isn't installed editable in this sandbox). All 10 trainer
+configs generated with distinct `client_idx` 0–9, both assertions held for every
+trainer (`client_idx == (trainer_id-1) % 100`, `trainer_indices_list` absent),
+and `load_experiment_config`/`load_baselines`/`ConfigGenerator` all succeeded
+with no KeyError.
 
 ---
 
