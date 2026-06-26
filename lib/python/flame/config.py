@@ -268,6 +268,21 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
     )
+    # Sim unavailability feature gate (§1 / §8.4). Default False ⇒ byte-identical
+    # to all existing runs. Set True to activate the oracular trace-read path.
+    sim_unavailability: t.Optional[bool] = Field(
+        alias="simUnavailability", default=False
+    )
+    # Per-baseline: aware baselines free stalled slots proactively at the next
+    # selection boundary (Stage D); unaware wait for the 90s vclock abandon.
+    availability_aware: t.Optional[bool] = Field(
+        alias="availabilityAware", default=False
+    )
+    # Override directory for availability trace YAMLs. Defaults to
+    # examples/_metadata/availability_traces/ when None.
+    availability_trace_dir: t.Optional[str] = Field(
+        alias="availabilityTraceDir", default=None
+    )
     inc_model_version_per_data_id: t.Optional[bool] = Field(
         alias="incModelVersionPerDataId", default=False
     )

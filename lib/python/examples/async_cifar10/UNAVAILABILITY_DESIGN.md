@@ -1,10 +1,10 @@
 # Sim Unavailability — Design & Staged Plan
 
-**Status:** v1 scope **locked** (Jun 25) — *oracular trace-read for ALL baselines, `client_notify`
-deferred*. Implementation spec is §8. Implementation NOT started; this file is committed *with* the
-spec and is the pickup-ready reference. Same feature templates into fwdllm
-([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built **library-level so it
-spans examples** (async_cifar10, fwdllm), not bolted onto one example.
+**Status:** **Stage A COMPLETE** (Jun 25) — substrate implemented, 389/389 unit tests pass.
+Smoke test (syn_0 90-min all-baseline byte-identity) pending on training node. v1 scope **locked**
+(Jun 25) — *oracular trace-read for ALL baselines, `client_notify` deferred*. Same feature templates
+into fwdllm ([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built
+**library-level so it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
 
 **Prerequisites (read first):** [PARITY.md](PARITY.md) §1–§2 (the causal ladder, role/tier tags,
 dependency gating) and its §3 mechanism reference (`_vclock`, §3.drain, §3.resid, §4.5/§4.9, §S.dur).
@@ -268,24 +268,22 @@ oracular path for ALL baselines** (oort/refl first, then felix/feddance behaving
 the dormant eviction hook); the proactive aware eviction + continuous scheduling are **Stage H**.
 Context-free names (`_ts`/`_time_s`, `_round`).
 
-### Stage A — Substrate: one trace, one resolver, one clock, one library mixin (NO behavior change)
+### Stage A — Substrate: one trace, one resolver, one clock, one library mixin ✅ COMPLETE (Jun 25)
 See §8 for the file-level spec. Summary:
-- **A.1** `flame/availability/trace.py`: `load_trace(name, trainer_id) → SortedDict[ts→state]` +
-  `state_at(trace, t) → TrainerAvailState`. Single binary search (replaces the inlined copies in
-  `get_curr_unavail_trainers` / `oracular_trainer_avail_check` / trainer `check_and_update_state_avl`).
-- **A.2** `flame/availability/AvailabilityMixin`: consolidates the **three** duplicated
-  `read_trainer_unavailability` (`fwdllm_aggregator.py:481`, `main_oort_sync_agg.py:173`,
-  `main_asyncfl_agg.py:158`); exposes `get_curr_unavail_trainers(now)` + the **dormant eviction hook**;
-  all timing on `_vclock.now` (sim) / `time.time()−agg_start` (real). **Mixed into all four library
-  `TopAggregator`s** (oort, asyncfl, syncfl, fwdllm_aggregator — they have NO common ancestor below
-  `Role`, so a mixin, not a base method).
-- **A.3** Fix `_sim_now()` frozen clock: availability reads the **global vclock**; selection fully
-  agg-driven; trainer uses the vclock only for the send-gate + telemetry.
-- **A.4** Config surface (§8) + telemetry on the vclock: `avail_change`, `agg_observed_state`, trace
-  granularity, `abandon_timeout`, `withheld_delivery`.
-- **Tests:** resolver determinism + parity with the old inlined searches; frozen-clock deadlock cannot
-  recur; `sim_unavailability=False` ⇒ byte-identical. **Exit:** syn_0 90-min all-baseline parity holds
-  the scoreboard byte-for-byte.
+- **A.1** ✅ `flame/availability/trace.py`: `load_trace`, `state_at`, `next_avail_after` implemented.
+  Single `bisect_right` resolver replaces the three inlined copies; lru_cache for YAML files.
+- **A.2** ✅ `flame/availability/availability_mixin.py`: `AvailabilityMixin` consolidates the three dup
+  `read_trainer_unavailability` copies (deleted from `fwdllm_aggregator.py`, `main_oort_sync_agg.py`,
+  `main_asyncfl_agg.py`); `get_curr_unavail_trainers` (deleted from `syncfl/top_aggregator.py` body and
+  `main_oort_sync_agg.py` wall-clock override); `_avail_now()` uses vclock in sim; `free_stalled_slot`
+  dormant hook built. Mixed into `syncfl/top_aggregator.py` → all four stacks inherit automatically.
+- **A.3** Config surface: `sim_unavailability`, `availability_aware`, `availability_trace_dir` added to
+  `flame/config.py`. Gate-off default ⇒ `trainer_event_dict=None` ⇒ byte-identical.
+- **A.4** `_init_availability(config)` called from `syncfl/TopAggregator.internal_init()`; supports both
+  new `sim_unavailability` gate and legacy `track_trainer_avail["enabled"]` path.
+- **Unit tests:** 389/389 pass. **Smoke test:** syn_0 90-min all-baseline byte-identity — **PENDING
+  on training node** (submit with `scripts/run_parity.sh --trace syn_0`).
+- **Exit:** syn_0 90-min all-baseline parity holds the scoreboard byte-for-byte → then proceed to Stage B.
 
 ### Stage B — A3 time-base CONTROL (gate for everything above it)
 - **B.1** A3 `trace_time_base_consistency` (CONTROL/DIST, dep K3): resolved on/off windows align

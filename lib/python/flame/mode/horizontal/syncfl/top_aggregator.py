@@ -24,6 +24,7 @@ import cloudpickle
 import numpy as np
 
 from diskcache import Cache
+from flame.availability.availability_mixin import AvailabilityMixin
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -98,7 +99,7 @@ _NETWORK_SLACK_S = 2.0
 MIN_TRAINERS_JOIN_TIMEOUT_S = 180
 
 
-class TopAggregator(Role, metaclass=ABCMeta):
+class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
     """Top level Aggregator implements an ML aggregation role."""
 
     @abstract_attribute
@@ -216,6 +217,11 @@ class TopAggregator(Role, metaclass=ABCMeta):
 
         self._trainers_used_in_curr_round = []
         self.agg_start_time_ts = time.time()
+
+        # Initialize availability substrate (AvailabilityMixin). Sets
+        # trainer_event_dict=None when sim_unavailability=False → no-op on
+        # all current runs; gate-on enables the oracular trace-read path.
+        self._init_availability(self.config)
 
         self._updates_recevied = {}
 
@@ -1159,67 +1165,6 @@ class TopAggregator(Role, metaclass=ABCMeta):
             self.weights = self.model.state_dict()
         elif self.framework == MLFramework.TENSORFLOW:
             self.weights = self.model.get_weights()
-
-    def get_curr_unavail_trainers(self) -> list:
-        curr_unavail_trainer_list = []
-
-        # Ensure trainer_event_dict exists
-        if self.trainer_event_dict is not None:
-            # Aggregator time since start, on the SAME timeline the trace's event
-            # timestamps live on. In simulated mode that is the virtual clock
-            # (sim-seconds); wall-clock would be a few seconds total while the
-            # virtual timeline spans the whole trace, making every window look
-            # available. Trainer-side availability already keys off _sim_now()
-            # (sim_send_ts); this mirrors it for the aggregator-side oracular path.
-            agg_time_since_start_s = (
-                self._vclock.now if self.simulated
-                else time.time() - self.agg_start_time_ts
-            )
-
-            for trainer_id, event_dict in list(self.trainer_event_dict.items()):
-                logger.debug(
-                    f"Checking trainer {trainer_id}'s availability. Event_dict is: {event_dict}"
-                )
-
-                if not event_dict:
-                    continue  # Skip if no events for trainer
-
-                # Binary search for closest past event
-                idx = event_dict.bisect_right(agg_time_since_start_s) - 1
-                logger.debug(f"Trainer_id: {trainer_id} got index: {idx}")
-
-                if idx >= 0:
-                    most_recent_event = event_dict.peekitem(idx)
-                    logger.debug(
-                        f"Trainer_id: {trainer_id} got most_recent_event: {most_recent_event}"
-                    )
-
-                    most_recent_event_ts = most_recent_event[0]
-                    most_recent_event_state = most_recent_event[1]
-
-                    if most_recent_event_state == "UN_AVL":
-                        logger.debug(
-                            f"Trainer {trainer_id} is unavailable since time {most_recent_event_ts}."
-                        )
-                        curr_unavail_trainer_list.append(trainer_id)
-                    elif most_recent_event_state == "AVL_TRAIN":
-                        logger.debug(
-                            f"Trainer {trainer_id} is available since time {most_recent_event_ts}."
-                        )
-                    else:
-                        logger.warning(
-                            f"Trainer {trainer_id} was in state {most_recent_event_state} since time {most_recent_event_ts}, needs to be handled."
-                        )
-
-                # TODO: To be more memory efficient, we can delete
-                # events that are way past their time and already used
-
-        # Return the list of currently unavailable trainers
-        logger.debug(
-            f"Current curr_unavail_trainer_list: {curr_unavail_trainer_list} has {len(curr_unavail_trainer_list)} ends out of total {len(self.trainer_event_dict)} ends dict"
-        )
-
-        return curr_unavail_trainer_list
 
     def compose(self) -> None:
         """Compose role with tasklets."""

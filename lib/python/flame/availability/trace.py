@@ -1,0 +1,126 @@
+# Copyright 2024 Cisco Systems, Inc. and its affiliates
+# SPDX-License-Identifier: Apache-2.0
+"""Shared availability trace resolver — single source of truth for agg and trainer.
+
+state_at / next_avail_after replace the three inlined bisect_right copies in
+get_curr_unavail_trainers (main_oort_sync_agg.py:311),
+oracular_trainer_avail_check (asyncfl/top_aggregator.py:1226), and
+check_and_update_state_avl (trainer/pytorch/main.py:336).
+"""
+
+import math
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional
+
+import yaml
+from sortedcontainers import SortedDict
+
+from flame.config import TrainerAvailState
+
+_DEFAULT_TRACE_DIR = (
+    Path(__file__).resolve().parents[2] / "examples/_metadata/availability_traces"
+)
+
+_MOBIPERF_SUBS: dict = {
+    "mobiperf_2st": "states_2st",
+    "mobiperf_3st_50": "states_3st_50",
+    "mobiperf_3st_75": "states_3st_75",
+}
+
+_AVL_STATE_VALUES = frozenset(
+    {TrainerAvailState.AVL_TRAIN.value, TrainerAvailState.AVL_EVAL.value}
+)
+
+
+# ---------------------------------------------------------------------------
+# Internal YAML cache — loaded once per (trace_dir) call site, never reloaded.
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=16)
+def _raw_mobiperf(trace_dir: str) -> dict:
+    with open(Path(trace_dir) / "mobiperf_traces.yaml") as f:
+        return yaml.safe_load(f)["traces"]
+
+
+@lru_cache(maxsize=16)
+def _raw_synthetic(trace_dir: str) -> dict:
+    with open(Path(trace_dir) / "synthetic_traces.yaml") as f:
+        return yaml.safe_load(f)["traces"]
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def load_trace(
+    trace_name: str,
+    trainer_key: str,
+    *,
+    base_dir: Optional[str] = None,
+) -> SortedDict:
+    """Return per-trainer availability as SortedDict[ts_s → state_str].
+
+    trace_name: canonical name — syn_0 / syn_20 / syn_50 / mobiperf_2st /
+        mobiperf_3st_50 / mobiperf_3st_75.
+    trainer_key: registry key ('trainer_001'). For mobiperf the numeric suffix
+        is used to derive the device key ('device_001').
+    base_dir: override for the trace store root; default = examples/_metadata/
+        availability_traces/.
+
+    syn_0 / all-available traces return an empty SortedDict (always AVL_TRAIN).
+    """
+    trace_dir = str(Path(base_dir) if base_dir else _DEFAULT_TRACE_DIR)
+
+    if trace_name in _MOBIPERF_SUBS:
+        sub = _MOBIPERF_SUBS[trace_name]
+        raw = _raw_mobiperf(trace_dir)
+        num = trainer_key.split("_")[-1]
+        device_key = f"device_{num}"
+        events = raw[device_key][sub]
+    elif trace_name.startswith("syn_"):
+        raw = _raw_synthetic(trace_dir)
+        if trace_name not in raw:
+            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml")
+        entry = raw[trace_name]
+        per_trainer = entry.get("per_trainer", {}).get("n300", {})
+        pattern = entry.get("pattern", [])
+        events = per_trainer.get(trainer_key) or pattern
+    else:
+        raise KeyError(f"unsupported trace name: {trace_name!r}")
+
+    result = SortedDict()
+    for ts, state in events:
+        result[float(ts)] = state
+    return result
+
+
+def state_at(trace: SortedDict, t: float) -> TrainerAvailState:
+    """Trainer availability at time t.
+
+    bisect_right(t)-1: the last event whose timestamp ≤ t.
+    Returns AVL_TRAIN (safe default) when no event has fired yet or trace is empty.
+    """
+    if not trace:
+        return TrainerAvailState.AVL_TRAIN
+    idx = trace.bisect_right(t) - 1
+    if idx < 0:
+        return TrainerAvailState.AVL_TRAIN
+    state_str = trace.peekitem(idx)[1]
+    try:
+        return TrainerAvailState(state_str)
+    except ValueError:
+        return TrainerAvailState.AVL_TRAIN
+
+
+def next_avail_after(trace: SortedDict, t: float) -> float:
+    """Smallest ts > t whose state ∈ {AVL_TRAIN, AVL_EVAL}.
+
+    Returns math.inf if the trace never recovers (caller must guard — Challenge 10).
+    """
+    idx = trace.bisect_right(t)
+    for i in range(idx, len(trace)):
+        ts, state = trace.peekitem(i)
+        if state in _AVL_STATE_VALUES:
+            return float(ts)
+    return math.inf
