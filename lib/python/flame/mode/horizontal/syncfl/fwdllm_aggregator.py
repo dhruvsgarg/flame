@@ -21,11 +21,11 @@ import logging
 import psutil
 import time
 from datetime import datetime
+from pathlib import Path
+from typing import Optional, Union
 import sklearn
 import numpy as np
-import ast
-import os
-import json
+import yaml
 from sortedcontainers import SortedDict
 import torch.nn.functional as F
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -58,7 +58,6 @@ from flame.selector.oort import (
 )
 import functorch as fc
 import torch
-import glob
 
 from torch.nn import CrossEntropyLoss
 import flame.monitor.runtime
@@ -71,6 +70,18 @@ logger = logging.getLogger(__name__)
 PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
+
+# Default location of the shared examples/_metadata bundle, resolved relative
+# to this library file (lib/python/flame/mode/horizontal/syncfl/ -> lib/python
+# /examples/_metadata) rather than to any specific example's legacy directory
+# -- this is what makes the oracular path example-agnostic, mirroring
+# async_cifar10/aggregator/pytorch/main_oort_sync_agg.py's resolution.
+_METADATA_DIR = Path(__file__).resolve().parents[4] / "examples" / "_metadata"
+_TRACE_KEY_TO_MOBIPERF_SUB = {
+    "mobiperf_2st": "states_2st",
+    "mobiperf_3st_50": "states_3st_50",
+    "mobiperf_3st_75": "states_3st_75",
+}
 
 import hashlib
 
@@ -257,6 +268,21 @@ class TopAggregator(AsyncTopAgg):
         self.var = None
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
+
+        # Selection granularity for the sync path (fwdllm/fwdllm_plus):
+        # True (default, preserves pre-existing behavior) = re-select
+        # trainers on every SEND-state call, i.e. every iteration of every
+        # databin. False = select once per round and reuse that selection
+        # across all databins/iterations until self._round advances. The
+        # async path (fluxtune) is untouched by this flag.
+        self._reselect_each_iteration = bool(
+            getattr(
+                self.config.hyperparameters, "reselect_each_iteration", True
+            )
+        )
+        self._round_selected_ends = None
+        self._round_selected_ends_round = None
+
         self._optimizer_sort_value = self.config.optimizer.sort
         OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF,)
         self._weighted_aggregation_enabled = (
@@ -477,40 +503,63 @@ class TopAggregator(AsyncTopAgg):
         else:
             logger.warning(f"Got invalid {msg} while processing heartbeat")
 
-    def read_trainer_unavailability(self, trace=None) -> None:
-        logger.info(f"Came to read_trainer_unavailability, trace: {trace}")
+    def read_trainer_unavailability(
+        self, trace=None, metadata_dir: Optional[Union[str, Path]] = None
+    ) -> dict:
+        """Build task_id -> SortedDict(timestamp -> state) for `trace`.
+
+        Reads from the shared examples/_metadata/ bundle (registry +
+        traces), mirroring
+        async_cifar10/aggregator/pytorch/main_oort_sync_agg.py's pattern --
+        not from the legacy per-trainer json_scripts/trainer_*.json files.
+        """
+        logger.info(f"Reading trainer unavailability for trace: {trace}")
+
+        metadata_dir = Path(metadata_dir) if metadata_dir is not None else _METADATA_DIR
+
+        registry_path = metadata_dir / "trainer_registry.yaml"
+        with open(registry_path) as f:
+            registry = yaml.safe_load(f)["trainers"]
+
+        if trace in _TRACE_KEY_TO_MOBIPERF_SUB:
+            sub = _TRACE_KEY_TO_MOBIPERF_SUB[trace]
+            with open(metadata_dir / "availability_traces/mobiperf_traces.yaml") as f:
+                traces = yaml.safe_load(f)["traces"]
+
+            def lookup(tk: str, trainer_id: int) -> list:
+                return traces[f"device_{trainer_id:03d}"][sub]
+
+        elif trace and trace.startswith("syn_"):
+            with open(metadata_dir / "availability_traces/synthetic_traces.yaml") as f:
+                syn = yaml.safe_load(f)["traces"]
+            if trace not in syn:
+                logger.warning(f"trace {trace!r} not found in synthetic_traces.yaml")
+                return None
+            entry = syn[trace]
+            per_trainer = entry.get("per_trainer", {}).get("n300", {})
+            pattern = entry.get("pattern", [])
+
+            def lookup(tk: str, trainer_id: int) -> list:
+                return per_trainer.get(tk) or pattern
+
+        else:
+            logger.warning(f"unsupported trace name: {trace!r}")
+            return None
+
         trainer_events_dict = {}
+        for tk, meta in registry.items():
+            trainer_id = meta["trainer_id"]
+            task_id = meta["task_id"]
+            events = lookup(tk, trainer_id)
+            state_dict = SortedDict()
+            for timestamp, state in events:
+                state_dict[timestamp] = state
+            trainer_events_dict[task_id] = state_dict
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        files_path = os.path.join(
-            current_dir, "../../../../examples/fwdllm/expts/run_tc_expts/json_scripts"
+        logger.info(
+            f"Loaded availability traces for {len(trainer_events_dict)} trainers "
+            f"(trace={trace})"
         )
-        search_pattern = os.path.join(files_path, "trainer_*.json")
-        json_files = glob.glob(search_pattern)
-
-        if not json_files:
-            logger.warning(f"No JSON files found matching pattern: {search_pattern}")
-            return {}
-
-        logger.info(f"Found {len(json_files)} JSON files to process.")
-
-        for file_path in json_files:
-            with open(file_path) as f:
-                trainer_json = json.load(f)
-                curr_trainer_id = trainer_json["taskid"]
-                event_list = ast.literal_eval(trainer_json["hyperparameters"][trace])
-
-                # SortedDict for efficient timestamp lookup
-                state_dict = SortedDict()
-
-                # Process the events
-                for timestamp, event_name in event_list:
-                    state_dict[timestamp] = event_name
-
-                trainer_events_dict[curr_trainer_id] = state_dict
-                logger.info(f"Completed file read for {file_path}")
-
-        logger.info("Completed reading all trainer unavailability from files")
         return trainer_events_dict
 
     def aggregate_grads_from_trainers(
@@ -1383,6 +1432,38 @@ class TopAggregator(AsyncTopAgg):
             self.jvp_for_snr_check_list = []
             self._is_model_updated = False
 
+    def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
+        """Return the SEND-state-selected ends, honoring
+        `self._reselect_each_iteration` (D4 / Phase 7 step P4).
+
+        True (default): re-invoke the selector every call (today's
+        behavior, used by every databin/iteration). False: select once per
+        round and reuse that cached set for the rest of the round's
+        databins/iterations, only re-invoking the selector once
+        `self._round` has advanced past the round the cache was built for.
+        """
+        if (
+            not self._reselect_each_iteration
+            and self._round_selected_ends is not None
+            and self._round_selected_ends_round == self._round
+        ):
+            ends = list(self._round_selected_ends)
+            logger.info(
+                f"[ReselectGate] reselect_each_iteration=False; reusing "
+                f"cached per-round selection ends={ends} for round={self._round}"
+            )
+            return ends
+
+        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        if not self._reselect_each_iteration and ends:
+            self._round_selected_ends = list(ends)
+            self._round_selected_ends_round = self._round
+            logger.info(
+                f"[ReselectGate] reselect_each_iteration=False; cached "
+                f"new per-round selection ends={ends} for round={self._round}"
+            )
+        return ends
+
     @timer_decorator
     def _distribute_weights_sync(
         self, tag: str, task_to_perform: str = "train"
@@ -1434,7 +1515,7 @@ class TopAggregator(AsyncTopAgg):
             f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
         )
         
-        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        ends = self._select_ends_respecting_reselect_gate(channel, task_to_perform)
         logger.info(f"ends: {ends}")
         if ends is None or len(ends) >= self._agg_goal:
             self.ends_not_selected_yet = True

@@ -15,12 +15,15 @@ Baselines (selector + optimizer + FedFwd hyperparameters) live in
 `examples/_metadata/baselines.yaml`; experiments declare `baseline: <name>`
 and override only what they need.
 
-## `json_scripts/` is still load-bearing for ORACULAR tracking
+## `json_scripts/` is no longer load-bearing (as of Phase 7 step P3)
 
 `flame/mode/horizontal/syncfl/fwdllm_aggregator.py:read_trainer_unavailability()`
-hardcodes a glob over `json_scripts/trainer_*.json` to build the oracular
-trainer-availability event dict. Until that function is rewritten to read
+previously hardcoded a glob over `json_scripts/trainer_*.json` to build the
+oracular trainer-availability event dict. Phase 7 step P3 rewrote it to read
 `_metadata/trainer_registry.yaml` + `_metadata/availability_traces/*.yaml`
-(see the `fedfwd_oracular` baseline's description in `baselines.yaml`), do
-NOT delete `json_scripts/` -- only the shell/Python launch scripts in this
-directory are deprecated. The JSON config files remain a live dependency.
+instead (mirroring `async_cifar10/aggregator/pytorch/main_oort_sync_agg.py`'s
+pattern), so the `fwdllm_plus`/oracular baseline no longer depends on this
+directory. `json_scripts/` is now fully superseded and safe to delete
+whenever someone cleans up this directory -- it has been left in place here
+only because deleting it wasn't itself part of Phase 7's scope, not because
+anything still reads it.

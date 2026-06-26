@@ -39,6 +39,15 @@ from examples.fwdllm.trainer.forward_training.fed_trainer_transformer import (
 )
 from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator
 
+# Unused directly (FedSGDAggregator already extends it) -- kept so
+# flame.launch.runner._validate_stack's static regex, which scans this
+# entrypoint file's own import lines for "fwdllm_aggregator" to detect the
+# fwdllm stack, has something to match. Without it the regex falls through
+# to its "syncfl" default, since this file imports FedSGDAggregator (not
+# TopAggregator) directly -- unlike async_cifar10's main_*_agg.py files,
+# which import TopAggregator straight from flame.mode.horizontal.*.
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator  # noqa: F401
+
 from flame.launch.cli import load_config_from_argv
 from flame import telemetry
 

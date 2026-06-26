@@ -392,10 +392,12 @@ class ExperimentRunner:
     # "fwdllm" is its own stack: FedFwd's TopAggregator
     # (flame.mode.horizontal.syncfl.fwdllm_aggregator) is a FedFwd-specific
     # implementation, not the generic syncfl.top_aggregator, so the regex
-    # below can't detect it under the normal top_aggregator match. Its
-    # aggregation is event-driven/variance-gated (partial participation,
-    # no lockstep rounds), so it's grouped with the async stacks.
-    _ASYNC_STACKS = {"asyncfl", "coord_asyncfl", "fwdllm"}
+    # below can't detect it under the normal top_aggregator match. Unlike
+    # the other stacks, fwdllm supports both sync and async baselines
+    # (fwdllm/fwdllm_plus run sync, fluxtune runs async) gated purely by the
+    # selector's `is_async` kwarg -- so it's deliberately not in
+    # _ASYNC_STACKS; its async-ness is decided in _validate_stack itself.
+    _ASYNC_STACKS = {"asyncfl", "coord_asyncfl"}
     _ASYNC_SELECTORS = {"async_oort", "async_random", "fedbuff"}
 
     # _sweep_stragglers() pkill/pgrep patterns. fwdllm's entrypoints have no
@@ -423,9 +425,19 @@ class ExperimentRunner:
                 r"from flame\.mode\.horizontal\.(\w+)\.top_aggregator import", text
             )
             stack = m.group(1) if m else "syncfl"
-        selector = (agg_cfg.get("selector") or {}).get("sort", "")
-        is_async_stack = stack in self._ASYNC_STACKS
+        selector_cfg = agg_cfg.get("selector") or {}
+        selector = selector_cfg.get("sort", "")
         is_async_sel = selector in self._ASYNC_SELECTORS
+        if stack == "fwdllm":
+            # fwdllm's aggregator dispatches sync vs async purely on the
+            # selector's declared `is_async` kwarg (see
+            # fwdllm_aggregator.py), not on stack membership -- so the
+            # invariant to enforce here is internal consistency: an async
+            # selector must declare is_async=true, and a sync selector
+            # (e.g. `random`) must declare is_async=false/unset.
+            is_async_stack = bool((selector_cfg.get("kwargs") or {}).get("is_async", False))
+        else:
+            is_async_stack = stack in self._ASYNC_STACKS
         if is_async_stack != is_async_sel:
             raise ValueError(
                 f"selector/stack mismatch: selector={selector!r} "

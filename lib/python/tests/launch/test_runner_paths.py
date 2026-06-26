@@ -93,3 +93,100 @@ class TestPathResolution:
         exp = ExperimentConfig(name="x")
         paths = runner._resolve_example_paths(exp)
         assert paths["metadata_dir"] == shared.resolve()
+
+
+class TestValidateStack:
+    """fwdllm is selector-driven (is_async kwarg), all other stacks are
+    stack-set-driven (_ASYNC_STACKS membership)."""
+
+    @pytest.fixture
+    def fwdllm_main(self, tmp_path):
+        p = tmp_path / "main_fedfwd_agg.py"
+        p.write_text(
+            "from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator\n"
+        )
+        return p
+
+    @pytest.fixture
+    def asyncfl_main(self, tmp_path):
+        p = tmp_path / "main_asyncfl_agg.py"
+        p.write_text(
+            "from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator\n"
+        )
+        return p
+
+    @pytest.fixture
+    def syncfl_main(self, tmp_path):
+        p = tmp_path / "main_sync_agg.py"
+        p.write_text(
+            "from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator\n"
+        )
+        return p
+
+    def test_fwdllm_sync_random_no_raise(self, fake_example_dir, fwdllm_main):
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "random", "kwargs": {"is_async": False}}}
+        runner._validate_stack(fwdllm_main, agg_cfg)
+
+    def test_fwdllm_async_oort_no_raise(self, fake_example_dir, fwdllm_main):
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "async_oort", "kwargs": {"is_async": True}}}
+        runner._validate_stack(fwdllm_main, agg_cfg)
+
+    def test_fwdllm_random_declared_async_raises(self, fake_example_dir, fwdllm_main):
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "random", "kwargs": {"is_async": True}}}
+        with pytest.raises(ValueError):
+            runner._validate_stack(fwdllm_main, agg_cfg)
+
+    def test_fwdllm_async_oort_declared_sync_raises(self, fake_example_dir, fwdllm_main):
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "async_oort", "kwargs": {"is_async": False}}}
+        with pytest.raises(ValueError):
+            runner._validate_stack(fwdllm_main, agg_cfg)
+
+    def test_asyncfl_async_random_no_raise(self, fake_example_dir, asyncfl_main):
+        """Regression guard: non-fwdllm stacks are unaffected."""
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "async_random"}}
+        runner._validate_stack(asyncfl_main, agg_cfg)
+
+    def test_syncfl_async_random_raises(self, fake_example_dir, syncfl_main):
+        """Regression guard: sync stack + async selector still rejected."""
+        runner = ExperimentRunner(fake_example_dir)
+        agg_cfg = {"selector": {"sort": "async_random"}}
+        with pytest.raises(ValueError):
+            runner._validate_stack(syncfl_main, agg_cfg)
+
+    def test_real_fwdllm_entrypoint_detected_for_both_sync_and_async(
+        self, fake_example_dir
+    ):
+        """Regression guard against the real entrypoint, not a synthetic
+        fixture: examples/fwdllm/aggregator/main_fedfwd_agg.py doesn't
+        import fwdllm_aggregator.TopAggregator directly (it imports
+        FedSGDAggregator, which extends TopAggregator in a separate file),
+        so the static stack-detection regex needs a same-file marker import
+        to find it -- see that file's TopAggregator import comment."""
+        real_main = (
+            Path(__file__).resolve().parents[2]
+            / "examples"
+            / "fwdllm"
+            / "aggregator"
+            / "main_fedfwd_agg.py"
+        )
+        assert real_main.is_file(), real_main
+        runner = ExperimentRunner(fake_example_dir)
+
+        runner._validate_stack(
+            real_main,
+            {"selector": {"sort": "random", "kwargs": {"is_async": False}}},
+        )
+        runner._validate_stack(
+            real_main,
+            {"selector": {"sort": "async_oort", "kwargs": {"is_async": True}}},
+        )
+        with pytest.raises(ValueError):
+            runner._validate_stack(
+                real_main,
+                {"selector": {"sort": "async_oort", "kwargs": {"is_async": False}}},
+            )

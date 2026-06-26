@@ -8,6 +8,13 @@ this migration in any new session.
 
 ## Progress: 17 / 18 checkpoints complete
 
+**This counter covers the original Phase 1–5 plan + Smoke Tests A–E only.**
+Phase 6 (design) and Phase 7 (the baseline-taxonomy implementation it
+specified) are tracked separately, further down this document — see
+"Phase 7 — Implementation plan"'s own `Progress: 7 / 8 steps complete`
+line. Phase 7's remaining step (P8, live smoke tests) is blocked by the
+same environment gap as this counter's remaining item (Smoke Test E).
+
 **Update to the environment-gap note above:** the core `flame` library deps
 (`aiostream`, `gpustat`, `paho-mqtt`, `shared-memory-dict`, `mlflow`) were
 missing too, but are all pure-Python with no native/Rust build step --
@@ -85,13 +92,16 @@ without changing what any step actually does.
 
 ---
 
-## Phase 6 (NEW — design only, not started) — Baseline taxonomy: fwdllm / fwdllm+ / fluxtune
+## Phase 6 — Baseline taxonomy: fwdllm / fwdllm+ / fluxtune
 
-**Status:** paused for fresh design session. Nothing in this phase has been
-implemented — no code or YAML has been changed for this phase. Everything
-below is either (a) the owner's spec, given verbally, or (b) findings
-confirmed by direct code reading this session. Re-verify line numbers if
-much time has passed before resuming.
+**Status: design complete, fully implemented in Phase 7 below (P1–P7 DONE).**
+This phase itself stayed design-only (decisions D1–D6, captured below); all
+code/YAML changes it called for landed under Phase 7's step-by-step plan.
+One addendum to the owner's spec, given verbally in the Phase 7 implementation
+session: felix (CNN/speech family) always runs fixed K/C, but fluxtune's
+async_oort selector must support **both** fixed and adaptive (dynamic_kc)
+K/C, toggled and parameterized purely via config — see fluxtune's
+`selector.kwargs.dynamic_kc` block (Phase 7 step P5) for the implementation.
 
 ### Soundness verdict on the prior Phase 6 design (this session's evaluation)
 
@@ -424,6 +434,10 @@ baseline (cheapest, and it exercises the brand-new sync path — best coverage).
 
 ## Phase 7 — Implementation plan (concrete, ready to execute)
 
+**Progress: 7 / 8 steps complete (P1–P7 DONE; P8 -- live smoke tests --
+blocked on the same pinned-ML-stack environment gap as Smoke Test E; see
+Phase 7 implementation notes below).**
+
 Built on decisions D1–D6. Same checkpoint discipline as Phases 1–5: **one step
 at a time; each step's checkpoint must pass (and, for code steps, its unit test
 must be added and green) before starting the next.** Code/library changes
@@ -439,6 +453,12 @@ smoke test (P8).
 | **fwdllm_plus** | sync (`false`) | `random` | `fedavg` | ORACULAR (`trackTrainerAvail` ORACULAR, `_metadata` trace) | `perturbation_sampling: "True"`, JVP off | per-iteration (`true`) |
 | **fluxtune** | async (`true`) | `async_oort` | `fedbuff` (explicit `learning_rate`) | 3-tier `client_notify` (`*_3st_*` trace), `trackTrainerAvail` off | `select_perturbation_using_jvp: "True"` | n/a (async) |
 | **fluxtune_dynkc** | async (`true`) | `async_random` + `dynamic_kc` | `fedbuff` | off | `perturbation_sampling: "True"` | n/a | (research variant; preserves the ported production default) |
+
+**Addendum (owner clarification during implementation):** felix always runs
+fixed K/C; fluxtune's K/C policy is itself config-driven --
+`selector.kwargs.dynamic_kc` defaults to `enabled: false` (fixed K/C, same as
+felix) but can be flipped to adaptive K/C per experiment without forking the
+selector (`DynamicKCController` is already selector-agnostic -- see P5).
 
 ### Step P1 — Fix `_validate_stack` to be selector-driven for the fwdllm stack (D1)
 
@@ -457,6 +477,29 @@ File: `flame/launch/runner.py:398-434`.
 - **Checkpoint:** the five cases above behave as asserted; existing
   `test_runner_paths.py` still green.
 
+**Checkpoint result — DONE.** Implemented as specified (`_ASYNC_STACKS` no
+longer includes `"fwdllm"`; the `stack == "fwdllm"` branch in
+`_validate_stack` now computes `is_async_stack` from
+`selector_cfg["kwargs"].get("is_async", False)`). All 5 cases pass via the
+new `TestValidateStack` class.
+
+**Bug found and fixed while verifying this against the real entrypoint (not
+just synthetic fixture text):** `examples/fwdllm/aggregator/main_fedfwd_agg.py`
+does **not** import `fwdllm_aggregator.TopAggregator` directly — it imports
+`FedSGDAggregator` from `examples/fwdllm/aggregator/FedSgdAggregator.py`,
+which extends `TopAggregator` in a separate file. `_validate_stack`'s regex
+only scans the entrypoint file's own text, so it never matched the real file
+and silently fell back to `stack="syncfl"` for every fwdllm baseline (this
+predates this session — Phase 1a's original fix was only ever verified
+against synthetic file content, not the real file). Fixed by adding a
+same-file marker import (`from flame.mode.horizontal.syncfl.fwdllm_aggregator
+import TopAggregator  # noqa: F401`) to `main_fedfwd_agg.py`, with a comment
+explaining why. Locked in by a new `test_real_fwdllm_entrypoint_detected_for_
+both_sync_and_async` test in `test_runner_paths.py` that runs `_validate_stack`
+against the actual repo file. Without this fix, P5–P8's async baselines
+(`fluxtune`, `fluxtune_dynkc`) would have raised `ValueError` on every real
+launch despite all unit tests passing.
+
 ### Step P2 — Add explicit `learning_rate` kwarg to FedBuff (D2)
 
 File: `flame/optimizer/fedbuff.py:41-81` (`__init__`) + `:222-270`
@@ -471,6 +514,14 @@ File: `flame/optimizer/fedbuff.py:41-81` (`__init__`) + `:222-270`
   cifar-10` still yields the legacy value; absence + unknown dataset still warns
   and uses 1.0.
 - **Checkpoint:** test green; felix's effective LR unchanged when no kwarg set.
+
+**Checkpoint result — DONE.** `self.learning_rate = kwargs.get("learning_rate",
+None)` added in `__init__`; both `_scale_add_agg_weights_pytorch` and the
+tensorflow twin check it first and fall back to the existing table when
+absent. `tests/optimizer/test_fedbuff_lr.py` (new): explicit
+`learning_rate=0.5` overrides the table; absent + `dataset_name: cifar-10`
+still yields `40.9`; absent + unknown dataset still falls back to `1.0`. All
+3 green.
 
 ### Step P3 — Re-source oracular availability from `_metadata` (D3)
 
@@ -489,6 +540,18 @@ File: `flame/mode/horizontal/syncfl/fwdllm_aggregator.py:480-489`
 - **Checkpoint:** test green; this unblocks deleting `json_scripts/` (revisit the
   Phase 5 / step 13 "do not delete" caveat — after P3 it becomes safe; update
   `DEPRECATED.md` accordingly).
+
+**Checkpoint result — DONE.** `read_trainer_unavailability(trace,
+metadata_dir=None)` rewritten to mirror `main_oort_sync_agg.py`'s pattern
+exactly (registry + mobiperf/synthetic trace lookup, keyed by `task_id`);
+`metadata_dir` defaults to a module-level `_METADATA_DIR` resolved from
+`__file__` (`lib/python/examples/_metadata`) but is overridable, which is
+what the new test points at a tmp bundle. `glob`/`ast`/`json` imports dropped
+(no longer used anywhere in the file). `tests/mode/test_fwdllm_oracular_avail.py`
+(new): reads from a tmp `_metadata` bundle correctly, and a monkeypatched
+`glob.glob` that raises is never hit. `expts/run_tc_expts/DEPRECATED.md`
+updated: `json_scripts/` is no longer load-bearing (left in place, but safe
+to delete — deleting it wasn't itself in scope here).
 
 ### Step P4 — Selection granularity flag `reselect_each_iteration` (D4)
 
@@ -517,6 +580,21 @@ re-selects), the round-increment site (`:996`), and ctor flag block (`~:255-269`
 - **Checkpoint:** both modes behave as asserted; existing fwdllm aggregator
   imports/compose still parse.
 
+**Checkpoint result — DONE.** Implemented as a small extracted helper,
+`_select_ends_respecting_reselect_gate(channel, task_to_perform)`, called
+from `_distribute_weights_sync` in place of the bare `channel.ends(...)`
+call — extracted (rather than left inline) specifically so it could be unit
+tested directly against a fake channel/aggregator without needing to
+construct a full `TopAggregator`. Cache invalidation at the round boundary
+falls out for free from comparing `self._round_selected_ends_round ==
+self._round` (no separate invalidation code needed — once `self._round`
+increments, the comparison fails and the `else` branch re-selects).
+`tests/mode/test_fwdllm_reselection.py` (new, 3 tests): per-round selects
+once across 2 databins × 2 iterations then again after rollover;
+per-iteration selects on all 4 calls; an empty/`None` selection (no trainers
+joined yet) is never cached, so per-round mode keeps retrying instead of
+freezing on an empty set. All green.
+
 ### Step P5 — Rewrite the fwdllm baseline catalog (D5, D6)
 
 File: `examples/_metadata/baselines.yaml:257-398`.
@@ -530,6 +608,21 @@ File: `examples/_metadata/baselines.yaml:257-398`.
 - **Checkpoint:** `yaml.safe_load` parses; `load_baselines()` returns the four
   new keys and neither old key; the felix/oort/refl/feddance/oracle/fedbuff/fedavg
   entries are byte-for-byte unchanged (diff-check).
+
+**Checkpoint result — DONE.** All four baselines added; both legacy keys
+removed. `fluxtune`'s `selector.kwargs.dynamic_kc` block defaults to
+`enabled: false` per the owner's mid-session clarification (see Phase 6/7
+addendum above) rather than being absent, so the adaptive-K/C path is
+reachable via a per-experiment override without a second baseline.
+`fluxtune_dynkc` deliberately keeps the exact legacy
+`fedfwd_async_random_dynkc` selector/optimizer shape (including its known
+`dataset_name: google-speech` artifact) for parity, just renamed and with
+the now-default-true trainer-side keys (`forward_mode`/`var_control`/
+`perturbation_sampling`/`fl_algorithm`) dropped since `trainer_base.yaml`'s
+defaults already supply the same resolved values. Verified: `yaml.safe_load`
+parses; `load_baselines()` returns exactly the four new keys; programmatic
+diff confirmed felix/oracle/refl/feddance/oort/fedbuff/fedavg are
+dict-equal to the pre-Phase-7 catalog.
 
 ### Step P6 — Per-baseline trainer config coverage (D5)
 
@@ -545,6 +638,27 @@ Files: `examples/fwdllm/configs/trainer_base.yaml`, and the smoke + any new
 - **Checkpoint:** `yaml.safe_load`; a generated trainer config for each of the
   four baselines has the matrix's expected trainer-side values after merge.
 
+**Checkpoint result — DONE.** `trainer_base.yaml` already exposed every knob
+the four baselines need, with defaults that make the *unaware fwdllm*
+baseline correct out of the box (`forward_mode`/`var_control`/
+`perturbation_sampling: true`, `select_perturbation_using_jvp: false`,
+`client_notify: {enabled: "False", trace: syn_0}`) — no new keys were
+needed. Updated two stale comments: the long/short mobiperf-trace-name note
+(described the mismatch as still-unresolved; step 11 already fixed it) and
+the baseline-name reference next to the `selector:`/`optimizer:` placeholders
+(named the now-deleted `fedfwd_*` keys). `*_3st_*` traces
+(`states_3st_50`/`states_3st_75`) already exist per-device in
+`_metadata/availability_traces/mobiperf_traces.yaml`, and the spawner
+unconditionally injects all three mobiperf variants into every trainer
+config regardless of `availability_mode` — fluxtune's `client_notify.trace:
+mobiperf_3st_50` needed no new trace registration. Smoke-test YAML moved
+per D6: deleted `expt_scripts/fedfwd_async_random_n10_smoke.yaml`, added
+`expt_scripts/fwdllm_n10_smoke.yaml` (`baseline: fwdllm`, `random` selector
+kwargs scaled to `k=5,c=10` for 10 trainers). Verified via
+`ConfigGenerator.generate_trainer_config()` for all four baselines: matrix
+values survive the merge exactly (see Step P7's test suite below, which
+formalizes this same check).
+
 ### Step P7 — Pytest sweep (add + update)
 
 Beyond the per-step unit tests (P1–P4), add/refresh integration-level tests:
@@ -559,6 +673,25 @@ Beyond the per-step unit tests (P1–P4), add/refresh integration-level tests:
   to the new baselines if it enumerates baselines.
 - **Checkpoint:** `pytest lib/python/tests/launch lib/python/tests/mode
   lib/python/tests/optimizer lib/python/tests/selector` all green.
+
+**Checkpoint result — DONE.** `test_baselines.py`: new `TestFwdllmBaselines`
+class (7 tests) -- all four baselines present, both retired keys gone,
+selector/optimizer/availability/perturbation/`reselect_each_iteration`/
+`dynamic_kc` values match the matrix, `fluxtune_dynkc` preserves the legacy
+shape exactly. `test_config_generator.py`: new
+`TestFwdllmEndToEndConfigGeneration` class, parametrized over all four
+baselines -- trainer config generates without `KeyError` (path-style
+dataset, no `trainer_indices_list`), trainer-side matrix values survive the
+merge, and the aggregator-side merge (against the real
+`aggregator_base.json` template) both matches the matrix **and** passes
+`_validate_stack` against the real `main_fedfwd_agg.py` entrypoint (this is
+what caught the P1 marker-import gap above). `test_baseline_readiness.py`
+needed no changes -- it already enumerates `baselines.yaml` dynamically, so
+all four new baselines were automatically parametrized in and their
+selector/optimizer registration checked.
+Full sweep: `pytest lib/python/tests/launch lib/python/tests/mode
+lib/python/tests/optimizer lib/python/tests/selector` → **312 passed, 7
+skipped, 0 failed** (152s).
 
 ### Step P8 — Live smoke tests (supersedes the old Smoke Test E)
 
