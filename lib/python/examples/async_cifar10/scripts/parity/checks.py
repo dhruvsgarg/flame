@@ -190,6 +190,8 @@ def load_agg_jsonl(path: str) -> dict:
     eval_commits: list = []
     agg_evals: list = []
     residence: list = []
+    withheld_deliveries: list = []
+    abandon_timeouts: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -199,6 +201,10 @@ def load_agg_jsonl(path: str) -> dict:
             ev = e.get("event")
             if ev == "selection" and e.get("task") == "train":
                 selection_train.append(e)
+            elif ev == "withheld_delivery":
+                withheld_deliveries.append(e)
+            elif ev == "abandon_timeout":
+                abandon_timeouts.append(e)
             elif ev == "agg_round":
                 # Eval commits emit event=agg_round (tagged task=eval) so U6/U6e can
                 # read their commit timeliness, but they carry no agg_goal_count and
@@ -218,12 +224,18 @@ def load_agg_jsonl(path: str) -> dict:
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
     agg_evals.sort(key=lambda x: x["round"])
     residence.sort(key=lambda x: (x["round"], x["ts"]))
+    withheld_deliveries.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
+    abandon_timeouts.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
     return {
         "selection_train": selection_train,
         "agg_rounds": agg_rounds,
         "eval_commits": eval_commits,
         "agg_evals": agg_evals,
         "residence": residence,
+        # Stage C availability events (sim-only): the send-gate late stale
+        # deliveries and the 90s vclock abandons.
+        "withheld_deliveries": withheld_deliveries,
+        "abandon_timeouts": abandon_timeouts,
     }
 
 
@@ -241,6 +253,7 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
     for f in sorted(d.glob("trainer_*.jsonl")):
         short_id = f.stem[-4:]
         task_recv_evs, trainer_round_evs, task_send_evs = [], [], []
+        avail_change_evs: list = []
         with open(f) as fp:
             for line in fp:
                 line = line.strip()
@@ -257,10 +270,15 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
                     trainer_round_evs.append(e)
                 elif ev == "task_send":
                     task_send_evs.append(e)
+                elif ev == "avail_change":
+                    # Trainer availability transitions (A4 duty-cycle). Previously
+                    # dropped here, so duty_cycle_parity was permanently SKIP.
+                    avail_change_evs.append(e)
         result[short_id] = {
             "task_recv": task_recv_evs,
             "trainer_round": trainer_round_evs,
             "task_send": task_send_evs,
+            "avail_change": avail_change_evs,
         }
     return result
 
@@ -2330,9 +2348,15 @@ def avail_timebase_parity(real: dict, sim: dict,
 def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
     """A4 [DIST]: per-trainer availability duty-cycle parity.
 
-    Requires avail_change telemetry (on/off transitions per trainer), which
-    the current loader does not surface — SKIP placeholder per the append-only
-    growth rule; activates automatically once that telemetry exists.
+    Requires avail_change telemetry (per-trainer state transitions), now surfaced
+    by load_trainer_jsonl_dir. SKIP when absent (e.g. v1 oracular runs with
+    client_notify OFF, where the aggregator reads the trace directly and the
+    trainer emits no transitions — the trace-grounded A4b validator is the right
+    check there; see UNAVAILABILITY_DESIGN.md Stage B).
+
+    NOTE (limitation, intentional): this counts the fraction of TRANSITIONS whose
+    new_state is AVL_*, not time-in-state. A duration-weighted duty cycle is the
+    A4b trace-vs-dispatch validator (to add with run data).
     """
     def _has_avail_change(tr):
         return any(d.get("avail_change") for d in tr.values())
@@ -2340,14 +2364,15 @@ def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
     if not _has_avail_change(real_trainers) and not _has_avail_change(sim_trainers):
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "avail_change telemetry not available; A4 inactive"}
-    # Telemetry present: compare per-trainer on-fraction.
+    # Telemetry present: compare per-trainer on-fraction. avail_change events carry
+    # {old_state, new_state} (build_avail_change), so "available" = new_state is AVL_*.
     def _on_frac(tr):
         out = {}
         for tid, d in tr.items():
             evs = d.get("avail_change", [])
             if not evs:
                 continue
-            on = sum(1 for e in evs if e.get("available"))
+            on = sum(1 for e in evs if str(e.get("new_state", "")).startswith("AVL"))
             out[tid] = on / len(evs)
         return out
 
@@ -2357,6 +2382,132 @@ def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
     max_diff = max(diffs) if diffs else 0.0
     return {"ok": max_diff <= 0.2, "tier": "DIST",
             "max_dutycycle_diff": round(max_diff, 3), "n_trainers": len(keys)}
+
+
+def withheld_delivery_parity(real: dict, sim: dict) -> dict:
+    """withheld_delivery [NEW, sim characterization]: send-gated updates deliver
+    late and STALE, never before completion.
+
+    The C.2 send-gate holds an update whose trainer is UN_AVL at completion (sct)
+    and re-commits it at delivery_ts = max(sct, next_avail) — stale, never
+    discarded. This rung asserts the STRUCTURAL invariants of that path (the
+    cross-mode staleness magnitude is owned by the `staleness` rung / U3):
+      * delivery_ts >= sct      — never deliver before completion (no past-dating),
+      * delay_s = delivery_ts - sct >= 0,
+      * staleness >= 0.
+    Real mode emits no withheld_delivery (its trainer send-gate is a different
+    mechanism), so this is sim-only; SKIP when the gate is off (no events).
+    """
+    evs = sim.get("withheld_deliveries", []) or []
+    if not evs:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no withheld_delivery events (gate off or no withholds)"}
+    delays, stales, accepted, bad = [], [], 0, []
+    for e in evs:
+        sct, dts = e.get("sct"), e.get("delivery_ts")
+        dly, st = e.get("delay_s"), e.get("staleness")
+        if dly is None and sct is not None and dts is not None:
+            dly = float(dts) - float(sct)
+        if sct is not None and dts is not None and float(dts) + 1e-6 < float(sct):
+            bad.append({"end": e.get("end_id"), "sct": sct, "delivery_ts": dts})
+        if dly is not None:
+            delays.append(float(dly))
+            if float(dly) < -1e-6:
+                bad.append({"end": e.get("end_id"), "delay_s": dly})
+        if st is not None:
+            stales.append(int(st))
+            if int(st) < 0:
+                bad.append({"end": e.get("end_id"), "staleness": st})
+        if e.get("accepted"):
+            accepted += 1
+    dmean, _ = mean_std(delays) if delays else (float("nan"), 0.0)
+    smean, _ = mean_std(stales) if stales else (float("nan"), 0.0)
+    return {
+        "ok": len(bad) == 0,
+        "tier": "DIAG",
+        "n_withheld": len(evs),
+        "mean_delay_s": round(dmean, 1) if delays else None,
+        "p95_delay_s": round(percentile(delays, 95), 1) if delays else None,
+        "mean_staleness": round(smean, 2) if stales else None,
+        "accept_frac": round(accepted / len(evs), 3),
+        "violations": bad[:10],
+    }
+
+
+def abandon_timeout_parity(real: dict, sim: dict,
+                           threshold_s: float = 90.0,
+                           wall_leak_ceiling_s: float = 1e7) -> dict:
+    """abandon_timeout [NEW, CONTROL]: the 90s abandon fires on the VCLOCK.
+
+    Each abandon frees a stalled in-flight slot at age >= SEND_TIMEOUT_WAIT_S.
+    Control purpose (Challenge 2): the deadline must be measured on the vclock,
+    not the wall — a wall-clock leak surfaces as an age in epoch-scale seconds
+    (~1.7e9) instead of sim-seconds. Fails loudly if any age is wall-scale or
+    below the threshold. Sim-only (real uses the wall selector abandon); SKIP
+    when no abandons fired.
+    """
+    evs = sim.get("abandon_timeouts", []) or []
+    if not evs:
+        return {"ok": True, "tier": "CONTROL", "status": "SKIP",
+                "note": "no abandon_timeout events (gate off or none stalled)"}
+    ages, wall_leak, below = [], [], []
+    for e in evs:
+        age = e.get("age_s")
+        if age is None:
+            sst, now = e.get("sim_send_ts"), e.get("vclock_now")
+            if sst is not None and now is not None:
+                age = float(now) - float(sst)
+        if age is None:
+            continue
+        ages.append(float(age))
+        if float(age) >= wall_leak_ceiling_s:
+            wall_leak.append(e.get("end_id"))
+        elif float(age) + 1e-6 < threshold_s:
+            below.append({"end": e.get("end_id"), "age_s": round(float(age), 1)})
+    amean, _ = mean_std(ages) if ages else (float("nan"), 0.0)
+    out = {
+        "ok": not wall_leak and not below,
+        "tier": "CONTROL",
+        "n_abandon": len(evs),
+        "mean_age_s": round(amean, 1) if ages else None,
+        "max_age_s": round(max(ages), 1) if ages else None,
+        "threshold_s": threshold_s,
+        "wall_leak_ends": wall_leak[:10],
+        "below_threshold": below[:10],
+    }
+    if wall_leak:
+        out["note"] = "WALL-CLOCK LEAK: abandon age is epoch-scale; vclock not used"
+    return out
+
+
+def eligible_pool_reduction_parity(real: dict, sim: dict,
+                                   tol_rel: float = 0.25) -> dict:
+    """eligible_pool_reduction [NEW, DIAG]: availability shrinks the eligible pool
+    by the same amount in both modes.
+
+    Complements A2 (absolute num_eligible) by isolating the REDUCTION
+    (num_candidates - num_eligible) — what availability + in-flight remove from
+    the pool. Under unavailability this is > 0 and should track across modes; at
+    100% availability it is ~the in-flight count and A2 already covers it.
+    """
+    def _red(sel):
+        out = []
+        for e in sel:
+            nc, ne = e.get("num_candidates"), e.get("num_eligible")
+            if nc is not None and ne is not None:
+                out.append(max(0, int(nc) - int(ne)))
+        return out
+
+    rr, sr = _red(real["selection_train"]), _red(sim["selection_train"])
+    if not rr or not sr:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no num_candidates/num_eligible to compute reduction"}
+    rm, sm = sum(rr) / len(rr), sum(sr) / len(sr)
+    ref = max(rm, sm, 1.0)
+    rel = abs(rm - sm) / ref
+    return {"ok": rel <= tol_rel, "tier": "DIAG",
+            "real_mean_reduction": round(rm, 1), "sim_mean_reduction": round(sm, 1),
+            "rel_diff": round(rel, 3), "tol_rel": tol_rel}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2523,6 +2674,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["eligible_speed"] = eligible_speed_composition_parity(real_agg, sim_agg)
     results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg)
     results["duty_cycle"] = duty_cycle_parity(real_trainers, sim_trainers)
+    results["eligible_pool_reduction"] = eligible_pool_reduction_parity(
+        real_agg, sim_agg)
+    results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
@@ -2552,6 +2706,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["commit_visibility"] = commit_visibility_parity(real_agg, sim_agg)
     results["eval_commit_timeliness"] = eval_commit_timeliness(sim_agg)
     results["staleness"] = staleness_parity(real_agg, sim_agg)
+    results["withheld_delivery"] = withheld_delivery_parity(real_agg, sim_agg)
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
 
@@ -2603,6 +2758,8 @@ CHECK_META: dict = {
     "eligible_speed":          {"stage": 2, "role": "MECHANISM", "deps": ("eligibility",)},
     "avail_timebase":          {"stage": 2, "role": "CONTROL",  "deps": ("per_round_advance",)},
     "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
+    "eligible_pool_reduction": {"stage": 2, "role": "DIAG",     "deps": ("eligibility",)},
+    "abandon_timeout":         {"stage": 2, "role": "CONTROL",  "deps": ("avail_timebase",)},
     # ── Stage 3 Selection ──
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
     "residence":               {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
@@ -2632,6 +2789,7 @@ CHECK_META: dict = {
     "commit_visibility":       {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance",)},
     "eval_commit_timeliness":  {"stage": 6, "role": "MECHANISM", "deps": ("commit_visibility",)},
     "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
+    "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 7 Statistical utility ──

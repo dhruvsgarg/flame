@@ -53,6 +53,20 @@ def _raw_synthetic(trace_dir: str) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _canonical_trace_name(trace_name: str) -> str:
+    """Normalize a configured trace name to a canonical store key.
+
+    Legacy configs (trackTrainerAvail.trace) name traces with an ``avl_events_``
+    prefix, e.g. ``avl_events_syn_20`` / ``avl_events_mobiperf_2st``; newer ones
+    use the bare canonical name (``syn_20``). Strip the prefix so both resolve to
+    the same SortedDict — without this the legacy oort/refl JSON configs load 0
+    traces and the gate silently turns OFF.
+    """
+    if trace_name and trace_name.startswith("avl_events_"):
+        return trace_name[len("avl_events_"):]
+    return trace_name
+
+
 def load_trace(
     trace_name: str,
     trainer_key: str,
@@ -71,6 +85,7 @@ def load_trace(
     syn_0 / all-available traces return an empty SortedDict (always AVL_TRAIN).
     """
     trace_dir = str(Path(base_dir) if base_dir else _DEFAULT_TRACE_DIR)
+    trace_name = _canonical_trace_name(trace_name)
 
     if trace_name in _MOBIPERF_SUBS:
         sub = _MOBIPERF_SUBS[trace_name]

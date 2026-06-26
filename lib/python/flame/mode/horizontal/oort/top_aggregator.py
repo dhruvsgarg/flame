@@ -126,15 +126,36 @@ class TopAggregator(BaseTopAggregator):
         # under-fire (in-flight drains to ~0.15 instead of real's ~4.6).
         try:
             while True:
+                # C.2: re-inject any withheld update whose delivery_ts has arrived
+                # (no-op when the gate is off ⇒ pop loop unchanged, byte-identical).
+                self._sim_reinject_ready_withheld()
                 popped = buf.pop_min()
                 if popped is None:
                     break
                 end, sct, (msg, md) = popped
-                if carryover:
+                # A re-injected late stale delivery has already completed and is
+                # exempt from BOTH the carry-over gate (it is not still-computing)
+                # and the send-gate (its trainer is AVL_* at delivery_ts).
+                _is_withheld_delivery = end in getattr(
+                    self, "_sim_withheld_delivering", {}
+                )
+                if carryover and not _is_withheld_delivery:
                     _tr = msg.get(MessageType.MODEL_VERSION, 0)
                     if (self._round - _tr) > 0 and sct > vclock_round_start:
                         held_over.append((end, sct, (msg, md)))
                         continue
+                # C.2 send-gate: a COMPLETED update whose trainer is UN_AVL at sct
+                # is held and delivered stale at delivery_ts. Applied AFTER carry-over
+                # so a still-computing future-sct straggler (which has not reached its
+                # send-gate) stays in-flight (Challenge 7 composition).
+                if not _is_withheld_delivery and self._sim_withhold_if_unavail(
+                    channel, end, sct, (msg, md)
+                ):
+                    continue
+                # Late stale delivery: emit the withheld_delivery rung (best-effort).
+                _wd = self._sim_take_withheld_delivering(end)
+                if _wd is not None:
+                    self._emit_withheld_delivery(end, msg, _wd[0], _wd[1])
                 self._advance_sim_clock(sct)
                 _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
                 _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
@@ -632,6 +653,11 @@ class TopAggregator(BaseTopAggregator):
 
         # before distributing weights, update it from global model
         self._update_weights()
+
+        # C.3: re-clock the 90s abandon to the vclock and free stalled slots so a
+        # replacement is selectable this round (no-op when the gate is off).
+        if self.simulated:
+            self._sim_abandon_stalled(channel)
 
         # Per-baseline online oracle: overwrite candidate stat-utility with true
         # current values before the selector ranks. No-op unless enabled.

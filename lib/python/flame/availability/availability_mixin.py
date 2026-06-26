@@ -27,8 +27,12 @@ from typing import Optional
 
 import yaml
 
+from flame import telemetry
 from flame.availability.trace import load_trace, next_avail_after, state_at
 from flame.config import TrainerAvailState
+from flame.mode.message import MessageType
+from flame.selector.properties import PROP_SIM_SEND_TS
+from flame.telemetry.events import build_abandon_timeout, build_withheld_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,11 @@ _METADATA_DIR = Path(__file__).resolve().parents[2] / "examples/_metadata"
 _AVL_STATES = frozenset(
     {TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL}
 )
+
+# Re-clock of the selector's wall-based abandon (SEND_TIMEOUT_WAIT_S) onto the
+# vclock. Heuristic basis (PARITY.md / design §1): train takes ≤60s, so an
+# in-flight trainer dispatched > 90 vclock-seconds ago is assumed offline.
+_AVAIL_ABANDON_TIMEOUT_S = 90.0
 
 
 class AvailabilityMixin:
@@ -73,6 +82,15 @@ class AvailabilityMixin:
             getattr(hp, "availability_aware", False)
         )
         self.pending_withheld: dict = {}
+        # C.2 send-time withhold ledgers (shared by asyncfl + oort commit loops):
+        #   _sim_withheld_payload   end -> (orig_sct, (msg, metadata)) held update
+        #   _sim_withheld_delivering end -> (orig_sct, delivery_ts) being re-injected
+        # Initialized here (before the gate check) so the commit-loop helpers can
+        # reference them unconditionally; they stay empty when the gate is off.
+        if not hasattr(self, "_sim_withheld_payload"):
+            self._sim_withheld_payload: dict = {}
+        if not hasattr(self, "_sim_withheld_delivering"):
+            self._sim_withheld_delivering: dict = {}
 
         sim_unavail = bool(getattr(hp, "sim_unavailability", False))
         track = getattr(hp, "track_trainer_avail", None) or {}
@@ -258,22 +276,15 @@ class AvailabilityMixin:
 
         # 1. Slot ledger: release the concurrency slot so a replacement is
         #    selectable. Mirrors the abandon path's removal (random.py:215).
-        sel = getattr(channel, "_selector", None)
-        if sel is not None:
-            requester = getattr(sel, "requester", None)
-            all_selected = getattr(sel, "all_selected", None)
-            if all_selected is not None:
-                all_selected.pop(end, None)
-            selected_ends = getattr(sel, "selected_ends", None)
-            if (
-                isinstance(selected_ends, dict)
-                and requester in selected_ends
-            ):
-                selected_ends[requester].discard(end)
-            if channel.has(end):
-                from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
-
-                channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        #    Robust to BOTH selector shapes: asyncfl (fedbuff/async_oort/
+        #    async_random) keep selected_ends as a dict keyed by requester plus an
+        #    all_selected dict; oort/refl/feddance keep selected_ends as a flat set
+        #    and have no all_selected. Drop `end` from whichever is present.
+        self._avail_free_slot_ledger(channel, end)
+        # Drop it from the asyncfl gate's in-flight tracker too (no-op on oort,
+        # which tracks in-flight purely via selected_ends) — "free the slot" is one
+        # effect across both stacks.
+        self._avail_drop_inflight(end)
 
         # 2/3. Delivery ledger: hold the completed update until delivery_ts.
         if sct is None:
@@ -320,3 +331,229 @@ class AvailabilityMixin:
     def commit_withheld(self, end: str) -> Optional[float]:
         """Pop `end` from the delivery ledger once its late update has committed."""
         return self.pending_withheld.pop(end, None)
+
+    # ------------------------------------------------------------------
+    # Slot-ledger helpers (robust to both selector shapes)
+    # ------------------------------------------------------------------
+
+    def _avail_free_slot_ledger(self, channel, end: str) -> None:
+        """Drop `end` from the selector slot ledger + reset its end state.
+
+        asyncfl selectors keep selected_ends as dict[requester -> set] + an
+        all_selected dict; oort/refl/feddance keep selected_ends as a flat set
+        and have no all_selected. Handle whichever is present.
+        """
+        sel = getattr(channel, "_selector", None)
+        if sel is not None:
+            all_selected = getattr(sel, "all_selected", None)
+            if isinstance(all_selected, dict):
+                all_selected.pop(end, None)
+            selected_ends = getattr(sel, "selected_ends", None)
+            if isinstance(selected_ends, dict):
+                requester = getattr(sel, "requester", None)
+                if requester in selected_ends:
+                    selected_ends[requester].discard(end)
+            elif isinstance(selected_ends, set):
+                selected_ends.discard(end)
+        if channel.has(end):
+            from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+
+            channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+
+    def _avail_drop_inflight(self, end: str) -> None:
+        """Remove `end` from the asyncfl gate's in-flight tracker (no-op on oort)."""
+        ie = getattr(self, "_sim_inflight_expected", None)
+        if isinstance(ie, dict):
+            ie.pop(end, None)
+
+    def _avail_inflight_ends(self, channel) -> set:
+        """In-flight (slot-ledger) ends, generic over both selector shapes."""
+        sel = getattr(channel, "_selector", None)
+        if sel is None:
+            return set()
+        se = getattr(sel, "selected_ends", None)
+        if isinstance(se, dict):
+            out: set = set()
+            for v in se.values():
+                out |= set(v)
+            return out
+        if isinstance(se, (set, list, tuple)):
+            return set(se)
+        return set()
+
+    # ------------------------------------------------------------------
+    # Shared commit-loop wiring (C.2 / C.3) — one logic for asyncfl + oort
+    # ------------------------------------------------------------------
+    #
+    # Both stacks own a different sim commit loop (asyncfl _sim_recv_min's single
+    # pop site; oort _sim_drain_buffer's generator pop loop), but the send-gate /
+    # late-recommit / vclock-abandon EFFECT is identical, so it lives here and each
+    # loop just calls in. Depends only on self._sim_buffer + the ledgers; never on
+    # a stack-specific attribute (the gate tracker is reached via the guarded
+    # _avail_drop_inflight hook). Off ⇒ pending_withheld stays empty ⇒ no-op.
+
+    def _sim_reinject_ready_withheld(self) -> None:
+        """C.2: re-inject withheld updates whose delivery_ts has arrived.
+
+        Call before each pop. For every ledger entry due at the current vclock
+        (ordered by (delivery_ts, end_id)), re-add the held payload to the reorder
+        buffer keyed at delivery_ts so it commits stale through the normal path,
+        then pop the ledger. A slot-only entry (the C.3 abandon registered a
+        delivery_ts but the physical update never arrived) carries no payload —
+        just drop the ledger entry. No-op when the ledger is empty.
+        """
+        if not getattr(self, "pending_withheld", None):
+            return
+        buf = getattr(self, "_sim_buffer", None)
+        if buf is None:
+            return
+        for end, dts in self.ready_withheld(self._avail_now()):
+            payload = self._sim_withheld_payload.pop(end, None)
+            self.commit_withheld(end)
+            if payload is None:
+                continue  # slot-only registration; nothing to deliver
+            orig_sct, msgmd = payload
+            buf.add(end, float(dts), msgmd)
+            self._sim_withheld_delivering[end] = (float(orig_sct), float(dts))
+            logger.info(
+                f"[WITHHELD_REINJECT] end={str(end)[-4:]} "
+                f"sct={float(orig_sct):.1f} delivery_ts={float(dts):.1f}"
+            )
+
+    def _sim_withhold_if_unavail(self, channel, end, sct, msgmd) -> bool:
+        """Per-update send-gate: True if this completed update is HELD, else False.
+
+        The single-update primitive both commit loops share. When True the caller
+        must skip the update — it has been removed from the buffer/slot accounting
+        (held in the delivery ledger, delivered stale at delivery_ts). When False
+        the update is committable now (trainer available at completion, or gate
+        off). The caller applies any stack-specific gate (oort's still-computing
+        carry-over) BEFORE this — a still-computing future-sct straggler has not
+        reached its send-gate yet (Challenge 7), so carry-over wins.
+
+        Returns False unchanged when sim_unavailability is off (compute_delivery_ts
+        ⇒ sct), preserving byte-identity.
+        """
+        # Gate off (or a bare aggregator that never ran _init_availability): the
+        # update is always committable and no ledger is touched. Keeps the shared
+        # primitive safe to call from any partially-initialized commit loop.
+        if getattr(self, "trainer_event_dict", None) is None:
+            return False
+        # invariant 1: never re-register / double-count an end whose slot was
+        # already freed (C.3 abandon). Its arrived payload is stashed so the
+        # reinject delivers it at the registered delivery_ts.
+        if end in self.pending_withheld:
+            self._sim_withheld_payload[end] = (float(sct), msgmd)
+            self._avail_drop_inflight(end)
+            return True
+        dts = self.compute_delivery_ts(end, sct)
+        if dts <= sct:
+            return False  # available at completion (or gate off) — commit now
+        # withhold: trainer is UN_AVL at sct; hold the completed update.
+        if dts == math.inf:
+            # trace never recovers in-window: the update is undeliverable.
+            # free_stalled_slot still registers the ledger (end stays excluded);
+            # drop the payload (acceptable v1 edge, Challenge 10).
+            logger.info(
+                f"[WITHHELD_LOST] end={str(end)[-4:]} sct={float(sct):.1f} "
+                f"trace never recovers"
+            )
+        else:
+            self._sim_withheld_payload[end] = (float(sct), msgmd)
+        self.free_stalled_slot(
+            channel, end, reason="send_gate_withhold", sct=float(sct)
+        )
+        return True
+
+    def _sim_pop_committable(self, channel):
+        """C.2 (asyncfl): pop the smallest buffered update that is committable now.
+
+        Loops over _sim_withhold_if_unavail, skipping send-gated updates and
+        popping the next-smallest committable one. Returns (end, sct, (msg,
+        metadata)) or None (buffer drained). The vclock is NOT advanced for a
+        withheld pop — only the committed update drives the clock.
+
+        Off (or trainer available at sct) ⇒ a single pop identical to the prior
+        pop_min(); reinject a no-op. Byte-identical when sim_unavailability is off.
+        """
+        buf = self._sim_buffer
+        while True:
+            popped = buf.pop_min()
+            if popped is None:
+                return None
+            end, sct, msgmd = popped
+            if self._sim_withhold_if_unavail(channel, end, sct, msgmd):
+                continue
+            return popped
+
+    def _sim_take_withheld_delivering(self, end: str) -> Optional[tuple]:
+        """Pop (orig_sct, delivery_ts) if `end`'s commit is a late withheld delivery.
+
+        The commit body calls this to recognize a re-injected stale delivery (vs a
+        fresh/straggler commit) so it can emit the withheld_delivery rung and tag
+        the "withheld" past-dating bucket. Returns None for an ordinary commit.
+        """
+        d = getattr(self, "_sim_withheld_delivering", None)
+        if not d:
+            return None
+        return d.pop(end, None)
+
+    def _emit_withheld_delivery(self, end, msg, orig_sct, delivery_ts) -> None:
+        """Emit the withheld_delivery rung for a late stale commit (best-effort)."""
+        if not telemetry.is_enabled():
+            return
+        mv = msg.get(MessageType.MODEL_VERSION) if isinstance(msg, dict) else None
+        ev, f = build_withheld_delivery(
+            round_num=self._round, end_id=end,
+            sct=float(orig_sct), delivery_ts=float(delivery_ts),
+            staleness=(self._round - int(mv)) if mv is not None else None,
+            accepted=True, time_mode="sim",
+        )
+        telemetry.emit(ev, **f)
+
+    def _sim_abandon_stalled(self, channel) -> None:
+        """C.3: free in-flight slots stalled past the 90s vclock deadline.
+
+        Re-clocks the selector's wall-based abandon (inert in sim) onto the vclock.
+        A trainer dispatched > 90 vclock-seconds ago whose update has neither
+        buffered nor committed is assumed offline: free its slot (a replacement
+        becomes selectable) and register the delivery ledger. If its update later
+        physically arrives it is reconciled by _sim_pop_committable (payload stash)
+        / _sim_reinject_ready_withheld.
+
+        Slot ledger ⊥ delivery ledger (Challenge 4): the slot is freed here, the
+        completed update is NOT discarded — it still commits (stale) and is
+        accept/reject-gated by the baseline's existing staleness rule. No-op when
+        the gate is off (trainer_event_dict is None) ⇒ byte-identical.
+        """
+        if getattr(self, "trainer_event_dict", None) is None:
+            return
+        inflight = self._avail_inflight_ends(channel)
+        if not inflight:
+            return
+        now = self._avail_now()
+        buf = getattr(self, "_sim_buffer", None)
+        committed = getattr(self, "_sim_committed", set())
+        for end in list(inflight):
+            if buf is not None and buf.has(end):
+                continue  # already arrived — not stalled
+            if end in committed or end in self.pending_withheld:
+                continue  # invariant 1: already committed / abandoned
+            sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            if sst is None:
+                continue
+            if now - float(sst) <= _AVAIL_ABANDON_TIMEOUT_S:
+                continue
+            self.free_stalled_slot(
+                channel, end, reason="abandon_90s_vclock", sct=now
+            )
+            logger.info(
+                f"[ABANDON_90S] end={str(end)[-4:]} sim_send_ts={float(sst):.1f} "
+                f"vclock={now:.1f} age={now - float(sst):.1f}s"
+            )
+            if telemetry.is_enabled():
+                ev, f = build_abandon_timeout(
+                    round_num=getattr(self, "_round", -1), end_id=end,
+                    sim_send_ts=float(sst), vclock_now=now, time_mode="sim",
+                )
+                telemetry.emit(ev, **f)

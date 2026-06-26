@@ -244,10 +244,15 @@ def test_duty_cycle_skips_without_avail_change_telemetry():
 
 
 def test_duty_cycle_passes_matched_fractions():
-    """A4 passes when sim and real duty-cycles match."""
+    """A4 passes when sim and real duty-cycles match.
+
+    avail_change telemetry carries {old_state, new_state} (build_avail_change),
+    so "available" = new_state startswith AVL_*.
+    """
     from parity.checks import duty_cycle_parity
-    # 3 transitions per trainer: on/off/on → on_frac = 2/3
-    evs = [{"available": True}, {"available": False}, {"available": True}]
+    # 3 transitions per trainer: →AVL_TRAIN / →UN_AVL / →AVL_TRAIN → on_frac = 2/3
+    evs = [{"new_state": "AVL_TRAIN"}, {"new_state": "UN_AVL"},
+           {"new_state": "AVL_TRAIN"}]
     real_tr = {tid: {"avail_change": evs} for tid in TRAINERS}
     sim_tr = {tid: {"avail_change": evs} for tid in TRAINERS}
     res = duty_cycle_parity(real_tr, sim_tr)
@@ -258,8 +263,8 @@ def test_duty_cycle_fails_mismatch():
     """A4 fails when sim duty-cycle diverges from real by more than tolerance."""
     from parity.checks import duty_cycle_parity
     # Real: mostly available (on_frac=0.8); sim: mostly unavailable (on_frac=0.2).
-    real_evs = [{"available": True}] * 8 + [{"available": False}] * 2
-    sim_evs = [{"available": True}] * 2 + [{"available": False}] * 8
+    real_evs = [{"new_state": "AVL_TRAIN"}] * 8 + [{"new_state": "UN_AVL"}] * 2
+    sim_evs = [{"new_state": "AVL_TRAIN"}] * 2 + [{"new_state": "UN_AVL"}] * 8
     real_tr = {tid: {"avail_change": real_evs} for tid in TRAINERS}
     sim_tr = {tid: {"avail_change": sim_evs} for tid in TRAINERS}
     res = duty_cycle_parity(real_tr, sim_tr)

@@ -26,6 +26,8 @@ EVENT_TASK_SEND = "task_send"        # trainer finished & sent the update back
 EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain accounting (oort sync)
 EVENT_UTILITY_BELIEF = "utility_belief"  # believed (at selection) vs actual (at return) client utility
 EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validation (felix)
+EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
+EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
 
 KNOWN_EVENTS = frozenset(
     {
@@ -40,6 +42,9 @@ KNOWN_EVENTS = frozenset(
         EVENT_TASK_SEND,
         EVENT_INFLIGHT_RESIDENCE,
         EVENT_UTILITY_BELIEF,
+        EVENT_DISPATCH,
+        EVENT_WITHHELD_DELIVERY,
+        EVENT_ABANDON_TIMEOUT,
     }
 )
 
@@ -404,3 +409,61 @@ def build_utility_belief(
     if extra:
         fields.update(extra)
     return EVENT_UTILITY_BELIEF, fields
+
+
+def build_withheld_delivery(
+    *,
+    round_num: int,
+    end_id: str,
+    sct: float,
+    delivery_ts: float,
+    staleness: Optional[int] = None,
+    accepted: Optional[bool] = None,
+    time_mode: str = "sim",
+) -> tuple[str, dict[str, Any]]:
+    """A send-gated update committing late (stale) at its ``delivery_ts``.
+
+    ``delivery_ts − sct`` is the down-window delay the completed update waited
+    while its trainer was ``UN_AVL`` (the compute-completes / gate-the-send /
+    deliver-late model). ``staleness`` = the current round minus the update's
+    ``MODEL_VERSION``; ``accepted`` records the staleness-gate outcome (async
+    fedbuff always accepts; sync feddance may reject over tolerance — Stage E).
+    Backs the ``withheld_delivery`` parity rung.
+    """
+    fields: dict[str, Any] = {
+        "round": round_num,
+        "end_id": end_id,
+        "sct": sct,
+        "delivery_ts": delivery_ts,
+        "delay_s": float(delivery_ts) - float(sct),
+        "time_mode": time_mode,
+    }
+    if staleness is not None:
+        fields["staleness"] = staleness
+    if accepted is not None:
+        fields["accepted"] = accepted
+    return EVENT_WITHHELD_DELIVERY, fields
+
+
+def build_abandon_timeout(
+    *,
+    round_num: int,
+    end_id: str,
+    sim_send_ts: float,
+    vclock_now: float,
+    time_mode: str = "sim",
+) -> tuple[str, dict[str, Any]]:
+    """A stalled in-flight trainer freed at the 90s vclock abandon deadline.
+
+    ``vclock_now − sim_send_ts`` is the in-flight age at abandon (≥
+    ``SEND_TIMEOUT_WAIT_S``). Backs the ``abandon_timeout`` parity rung, which
+    fails loudly if the deadline is measured on the wall instead of the vclock.
+    """
+    return EVENT_ABANDON_TIMEOUT, {
+        "round": round_num,
+        "end_id": end_id,
+        "sim_send_ts": sim_send_ts,
+        "vclock_now": vclock_now,
+        "age_s": float(vclock_now) - float(sim_send_ts),
+        "time_mode": time_mode,
+    }

@@ -1,12 +1,42 @@
 # Sim Unavailability — Design & Staged Plan
 
-**Status:** **Stage C IN PROGRESS** (Jun 26) — delivery-ledger substrate landed + tested; live
-commit-loop wiring (C.2 emit / C.3 abandon re-clock / late re-commit) + syn_20 45-min validation
-remain. Stage B COMPLETE (Jun 26) — A3 exit criterion met on oort syn_20 smoke
+**Status:** **Stage C IN PROGRESS** (Jun 26) — delivery-ledger substrate AND live commit-loop wiring
+landed + tested on **both** stacks (asyncfl: felix/fedbuff; oort: oort/refl); **syn_20 45-min
+validation remains.** The C.2 send-gate withhold / late re-commit + C.3 vclock abandon now live as a
+**shared, library-level core in `AvailabilityMixin`** (`_sim_withhold_if_unavail`,
+`_sim_pop_committable`, `_sim_reinject_ready_withheld`, `_sim_abandon_stalled`, robust to both selector
+shapes), called from `asyncfl/_sim_recv_min` (single pop site) and `oort/_sim_drain_buffer` (pop loop,
+composed AFTER the §4.9 carry-over gate per Challenge 7). 436/436 unit tests pass (incl. 16 new in
+`tests/availability/test_live_wiring.py`); gate-off byte-identity preserved (helpers no-op without
+`_init_availability`). Stage B COMPLETE (Jun 26) — A3 exit criterion met on oort syn_20 smoke
 (`max_rel_diff=0.033 ≤ 0.20`). v1 scope **locked** (Jun 25) — *oracular trace-read
 for ALL baselines, `client_notify` deferred*. Same feature templates into fwdllm
 ([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built **library-level so
 it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
+
+**▶ NEXT ACTION (BLOCKING — do not proceed to felix/fedbuff or Stage D until this returns):**
+Run the **oort syn_20 smoke** (sim+real pair) and read the new rungs. refl is **not** needed for this
+smoke — it rides the identical oort-stack `_sim_drain_buffer` + mixin path (only the selector differs),
+so oort alone validates the wiring; refl/feddance follow at the full Stage-C exit.
+
+```bash
+cd lib/python/examples/async_cifar10
+# sim+real oort pair on syn_20. runtime MUST clear the first down window.
+scripts/debug_run.sh --baselines oort --mode both --runtime-s 1800 --trace syn_20
+# then check (auto-finds the sim/real pair by baseline tag):
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines oort --agg-goal 10
+#   or explicit:  python -m scripts.parity.cli --real experiments/run_..._real \
+#                    --sim experiments/run_..._sim --agg-goal 10 --json-out parity_oort_syn20.json
+```
+
+**Why `--runtime-s 1800`, not a 5-min smoke:** syn_20's **first `UN_AVL` transition is at vclock
+t=600s** (0/300 unavailable before that; ~30/300 from 600s on). A 300s run reaches **no** unavailability
+⇒ zero withholds/abandons ⇒ `withheld_delivery`/`abandon_timeout` stay SKIP and nothing is validated.
+The sim must reach ≥~900 vclock-s (1800 gives multiple down windows); real is wall-seconds, so 1800 ≈
+30 min wall. **What to look for in the report:** `abandon_timeout` PASS (no wall-clock leak),
+`withheld_delivery` PASS (deliveries occurred, `delay_s≥0`, staleness sane), `eligible_pool_reduction`
++ A1/A2/A3/A4 populated (not SKIP), and no new past-dating beyond the `"withheld"` bucket (U6). **Bring
+the parity report back before proceeding.**
 
 **Prerequisites (read first):** [PARITY.md](PARITY.md) §1–§2 (the causal ladder, role/tier tags,
 dependency gating) and its §3 mechanism reference (`_vclock`, §3.drain, §3.resid, §4.5/§4.9, §S.dur).
@@ -359,21 +389,59 @@ calls it (default OFF ⇒ byte-identical, 420/420 unit tests incl. 10 new in
   unavailable list in both `oort/top_aggregator._distribute_weights` and `asyncfl/...` so a held
   trainer stays out of the eligible pool until its `delivery_ts`.
 
-#### Stage C live-wiring implementation plan (RESUME HERE)
+#### Stage C live-wiring — ✅ LANDED (Jun 26), validation remains
 
-Detailed enough to start cold. The substrate above is in the tree (uncommitted) and unit-tested; the
-steps below are the live commit-loop/selector wiring that makes the feature behave. All paths relative
-to `lib/python/`. Everything stays gated by `trainer_event_dict is not None` ⇒ default-OFF byte-identity.
+The commit-loop/selector wiring below is **implemented and unit-tested on both stacks** (uncommitted).
+The next step is the **syn_20 45-min sim-vs-real validation** (exit criteria at the end of this stage),
+NOT more wiring. Everything stays gated by `trainer_event_dict is not None` ⇒ default-OFF byte-identity.
 
-**Already in the tree (uncommitted, do NOT re-do):**
-- `flame/availability/availability_mixin.py` — `compute_delivery_ts`, active `free_stalled_slot(...,
-  sct=)`, `withheld_held_ends`, `ready_withheld`, `commit_withheld`, `_AVL_STATES`.
+**Design decision (Jun 26): the C.2/C.3 core is shared, library-level in `AvailabilityMixin`.** felix/
+fedbuff run on the asyncfl stack (`_sim_recv_min`, single pop site); oort/refl run on the oort stack
+(`_sim_drain_buffer`, a carry-over generator) — two *different* commit loops. Rather than fork the
+withhold/abandon logic per stack (Challenge 12 spirit), the EFFECT lives once in the mixin and each loop
+calls in:
+- `_sim_withhold_if_unavail(channel, end, sct, msgmd) -> bool` — the per-update send-gate primitive
+  (invariant-1 stash for an already-abandoned end; else withhold if `state_at(sct)=UN_AVL`: stash payload,
+  `free_stalled_slot`, register ledger). Pure per-update decision — does **not** consult round_start, which
+  is exactly why the oort loop must apply its carry-over (still-computing) gate **first** (Challenge 7).
+- `_sim_pop_committable(channel)` — asyncfl pop loop over the primitive (returns the next committable;
+  withheld pops do not advance the vclock).
+- `_sim_reinject_ready_withheld()` — re-inject due withheld payloads at `delivery_ts` (ordered), drop
+  slot-only ledger entries; marks `_sim_withheld_delivering[end]` for the commit body.
+- `_sim_abandon_stalled(channel)` — C.3 vclock 90s abandon over the selector slot ledger
+  (`_avail_inflight_ends`, generic over both selector shapes). `free_stalled_slot` /
+  `_avail_free_slot_ledger` handle dict-by-requester (fedbuff) **and** flat-set (oort/refl/feddance)
+  selectors; `_avail_drop_inflight` clears the asyncfl gate tracker (no-op on oort).
+- `_sim_take_withheld_delivering` / `_emit_withheld_delivery` — late-stale-commit telemetry hook.
+
+All helpers are defensive (`getattr` guards) so a bare aggregator that never ran `_init_availability`
+is a no-op — gate-off byte-identity holds.
+
+**Wiring call sites (landed):**
+- `asyncfl/_sim_recv_min` pop site: `self._sim_reinject_ready_withheld(); popped =
+  self._sim_pop_committable(channel)`; commit body tags the `"withheld"` past-dating bucket + emits the
+  rung via `_sim_take_withheld_delivering`/`_emit_withheld_delivery`.
+- `asyncfl/_distribute_weights` + `oort/_distribute_weights`: `if self.simulated:
+  self._sim_abandon_stalled(channel)` before selection (freed slot selectable same round).
+- `oort/_sim_drain_buffer` pop loop: reinject at top; a re-injected delivery is exempt from BOTH the
+  carry-over gate and the send-gate (`_is_withheld_delivery`); otherwise carry-over gate, THEN
+  `_sim_withhold_if_unavail`, THEN commit + rung.
+
+**Telemetry:** `EVENT_WITHHELD_DELIVERY` + `EVENT_ABANDON_TIMEOUT` builders added to
+`flame/telemetry/events.py` (both registered in `KNOWN_EVENTS`).
+
+**Tests (landed, 436/436):** `tests/availability/test_delivery_ledger.py` (10, substrate) +
+`tests/availability/test_live_wiring.py` (16: per-update withhold for both selector shapes, gate-off
+no-op, never-recovers payload drop, pop-committable skip-and-return, reinject ordering/residence/
+slot-only-drop, **invariant 1** abandoned-then-arrived commits exactly once, C.3 abandon fires >90s /
+not <90s / skips buffered+committed+withheld for both selector shapes, and the Challenge-7 "send-gate
+does not consult round_start" contract).
+
+**Historical (for reference) — substrate that was already in the tree before this pass:**
+- `flame/availability/availability_mixin.py` — `compute_delivery_ts`, `free_stalled_slot(..., sct=)`,
+  `withheld_held_ends`, `ready_withheld`, `commit_withheld`, `_AVL_STATES`.
 - `flame/mode/horizontal/{asyncfl,oort}/top_aggregator.py` — invariant-2 union of `withheld_held_ends()`
   into the unavailable list in `_distribute_weights`.
-- `asyncfl/top_aggregator.py __init__` — `self._sim_withheld_payload: dict = {}` (end → `(sct, (msg,
-  metadata))`), plus the same key added to the `_sim_recv_min` bare-init guard. **This store is the only
-  half-done piece; C.2 below consumes it.**
-- `tests/availability/test_delivery_ledger.py` — 10 substrate tests (all green; full suite 420/420).
 
 **C.2 — send-time withhold + late re-commit (`asyncfl/top_aggregator.py::_sim_recv_min`).**
 The withhold gate fires at *completion* (`sct`) on the vclock: an in-flight update whose trainer is
@@ -446,31 +514,53 @@ wiring.
 - Invariant 1: abandoned-then-arrived end commits exactly once, in-flight count never negative.
 - C.3 vclock abandon fires at the 90s vclock deadline (not wall) and the replacement is selectable.
 
-**Parity rungs to populate** (`examples/async_cifar10/scripts/parity/checks.py`, append-only):
-`withheld_delivery` (`delivery_ts−sct` dist + staleness + accept/reject split), `abandon_timeout` (count
-+ vclock timing, fails loudly if wall leaks), `observation_lag` (boundary cadence, NOT asserted ≈0 in
-v1), `eligible_pool_reduction` (A2). Then **validation:** syn_20, 45-min, oort+refl first; exit =
-A1/A2/A3/A4 PASS, withheld/abandon rungs populated, no new past-dating beyond the `"withheld"` bucket
-(U6), K2/K3b hold vs the syn_20 real reference; then felix/feddance smoke confirms the same oracular path.
+**Parity rungs — ✅ LANDED (checking infra, Jun 26)** in `scripts/parity/checks.py` (append-only,
+wired into `run_all_parity` + `CHECK_META`, 14 new tests in `scripts/parity/test_availability_rungs.py`):
+- `withheld_delivery` (Stage 6 DIAG) — sim-side structural invariants of the send-gate path:
+  `delivery_ts ≥ sct` (no past-dating), `delay_s ≥ 0`, `staleness ≥ 0`; reports delay/staleness dist +
+  accept_frac. Sim-only (real's trainer send-gate is a different mechanism); cross-mode staleness
+  magnitude stays owned by the `staleness` rung / U3.
+- `abandon_timeout` (Stage 2 CONTROL) — **fails loudly on a wall-clock leak** (epoch-scale age ⇒ the 90s
+  deadline was read off the wall, not the vclock — Challenge 2) or a sub-threshold abandon; reports count
+  + age dist.
+- `eligible_pool_reduction` (Stage 2 DIAG) — isolates `num_candidates − num_eligible` and tracks it
+  across modes (complements A2's absolute `num_eligible`).
+- **Loader fixes:** `load_agg_jsonl` now surfaces `withheld_delivery`/`abandon_timeout`;
+  `load_trainer_jsonl_dir` surfaces `avail_change` (the A4 loader gap); `duty_cycle_parity` reads the real
+  `{old_state,new_state}` format (the A4 format bug). **Trace-name normalization** (`avl_events_syn_20` →
+  `syn_20`) in `flame/availability/trace.py` so the legacy oort/refl JSON configs actually activate the
+  gate (they resolved to 0 traces / silent-OFF before — confirmed: 300 traces load, 34/300 UN_AVL @ t=900s).
+- **HELD (needs run data):** `observation_lag` — the transition→effect boundary-cadence lag needs a
+  trace↔selection join + a real syn_20 reference to calibrate; building it blind risks a wrong check.
+  Tracked in §7.
+
+**Validation (REMAINS):** syn_20, 45-min, **oort+refl first** (their `tracking_mode: oracular` legacy
+config path is ready: `expt_scripts_2026/configs/oort_n300_oracular_9may25_syn20.json`,
+`refl_n300_syn20_prob0.7.json`). Exit = A1/A2/A3/A4 PASS, withheld/abandon rungs populated, no new
+past-dating beyond the `"withheld"` bucket (U6), K2/K3b hold vs the syn_20 real reference; then
+felix/feddance smoke. **felix activation needs the `sim_unavailability` master gate plumbed through the
+spawner** (asyncfl uses `tracking_mode: client_notify`, not the legacy `trackTrainerAvail` ORACULAR path
+oort/refl ride) — §7 follow-up; oort/refl do not need it.
 
 - **C.1** Activate `get_curr_unavail_trainers()` via the Stage-A resolver on `_vclock.now` →
   `channel.set_curr_unavailable_trainers`. **Gates new selection only.** ✅ wired (substrate path active
   when `trainer_event_dict` populated; both async + oort drivers call it pre-selection).
-- **C.2 Send-time withhold-deliver.** An in-flight trainer entering `UN_AVL` is **not** interrupted;
-  its modeled update is **held and delivered at `delivery_ts = max(sct, next_avail_ts)`**, committing
-  **stale**. Real-side: add the trainer **send gate** (block upload until `AVL_*`) — documented real
-  change. Held end excluded from the pool until `delivery_ts` (extend §4.5 `pending_after`:
-  `vclock < delivery_ts`, not `< sct`).
-- **C.3 Vclock abandon (slot ledger).** Re-clock `SEND_TIMEOUT_WAIT_S`/`RECV_TIMEOUT_WAIT_S` from
-  `time.time()` to `_vclock.now`. At the 90s vclock deadline, **free the stalled trainer from
-  in-flight → replacement selectable** (existing abandon path). Keep the **delivery ledger** separate
-  (`pending_withheld[end] = delivery_ts`); the late update still commits and is accept/reject-gated by
-  the baseline's existing staleness rule.
-- **C.4 Ordering.** drain/commit must key on **`delivery_ts`** for held ends (`delivery_ts > sct`),
-  or past-dating reappears (Challenge 1).
-- **C.5 Eviction hook (dormant).** Build the slot-free effect behind an abstraction callable by either
-  the boundary read (v1) or a future `avl_*` message (Stage H). Aware baselines free at the boundary;
-  unaware at the 90s abandon — single path, `availability_aware` flag.
+- **C.2 Send-time withhold-deliver.** ✅ **wired (sim, both stacks).** An in-flight trainer `UN_AVL`
+  at `sct` is **not** interrupted; its modeled update is **held and delivered at `delivery_ts =
+  max(sct, next_avail_ts)`**, committing **stale** (shared `_sim_withhold_if_unavail` +
+  `_sim_reinject_ready_withheld`). Held end excluded from the pool until `delivery_ts` (invariant-2
+  union, landed). **Real-side trainer send gate (block upload until `AVL_*`) still OUTSTANDING** —
+  the §7 follow-up; needed to confirm real withholds-then-delivers before C.2 is fully signed off.
+- **C.3 Vclock abandon (slot ledger).** ✅ **wired (sim, both stacks)** via `_sim_abandon_stalled`
+  (aggregator-side on `_vclock.now`, not the inert wall selector path). At the 90s vclock deadline the
+  stalled trainer is freed from in-flight → replacement selectable; the **delivery ledger** stays
+  separate (`pending_withheld[end] = delivery_ts`); the late update still commits, accept/reject-gated
+  by the baseline's existing staleness rule. The wall-based selector abandon remains the REAL-mode path.
+- **C.4 Ordering.** ✅ `ready_withheld` orders by `(delivery_ts, end_id)`; re-injected at `delivery_ts`
+  (> `sct`), so commits never past-date at `sct` (Challenge 1). U6/U3 re-validation lands with the run.
+- **C.5 Eviction hook.** ✅ `free_stalled_slot` / `_avail_free_slot_ledger` is the single slot-free
+  effect, called by the 90s abandon (C.3) and the C.2 withhold; the Stage-D aware boundary eviction and
+  the Stage-H `avl_*` message reuse it unchanged. Robust to both selector shapes.
 - **Tests:** compute completes but no send while `UN_AVL`; withheld delivers at `max(sct,next_avail)`,
   commits stale; accept-stale (async) vs reject-over-tolerance (sync) honored; held end excluded until
   `delivery_ts`; 90s abandon on the **vclock** frees the slot + replacement selectable; no
@@ -584,6 +674,19 @@ defined tie-break (Challenge 6). Re-measure `observation_lag` (now must be ≈0 
 
 ## 7. Open follow-ups (note here as work lands)
 
+- **felix master-gate plumbing (asyncfl activation):** oort/refl activate via the legacy
+  `trackTrainerAvail` ORACULAR path; felix/fedbuff use `tracking_mode: client_notify` and so need the
+  `sim_unavailability: true` master gate (+ `availability_trace`) emitted by the spawner into the asyncfl
+  JSON config. Until then `_init_availability` returns `trainer_event_dict=None` for felix (gate OFF). The
+  commit-loop wiring is already in place; this is config-compilation only. Needed before the felix/feddance
+  Stage-C smoke.
+- **`observation_lag` rung (HELD):** transition→effect boundary-cadence lag (F6). Needs a trace↔selection
+  join (resolve each selection's `vclock_now` against the per-trainer trace, measure lag to the next
+  boundary where the effect lands) and a real syn_20 reference to calibrate; deferred until run data
+  exists so the check isn't written blind. v1 target = matches real's boundary cadence (NOT ≈0).
+- **`A4b` trace-vs-dispatch duration validator (HELD):** the landed `duty_cycle` (A4) counts transition
+  composition, not time-in-state; the duration-weighted version reads `task_recv` `sim_send_ts`/wall vs
+  the trace per the Stage-B note. Needs run dirs.
 - **Real send-gate confirmation (Challenge 5):** on a real syn_20 run, verify the trainer
   withholds-then-delivers (stale) rather than dropping the update when it goes `UN_AVL` at send time.
   Decides whether the `max(sct,next_avail)` model is faithful before C.2 is signed off.

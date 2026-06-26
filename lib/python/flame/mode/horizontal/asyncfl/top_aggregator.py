@@ -117,6 +117,11 @@ class TopAggregator(SyncTopAgg):
         # re-injected into the buffer at its delivery_ts (commits stale). The
         # delivery_ts itself lives in the AvailabilityMixin pending_withheld ledger.
         self._sim_withheld_payload: dict = {}
+        # end -> (orig_sct, delivery_ts) for an update currently re-injected into the
+        # buffer awaiting its late (stale) commit. Lets the commit body recognize a
+        # withheld delivery (vs a fresh/straggler commit) so it tags the "withheld"
+        # past-dating bucket and emits the withheld_delivery rung with the true delay.
+        self._sim_withheld_delivering: dict = {}
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
         # Virtual-completion gate: the aggregator's record of each in-flight trainer's
         # EXPECTED completion = dispatch vclock + its MODELED budget. Lets _sim_recv_min hold
@@ -301,6 +306,11 @@ class TopAggregator(SyncTopAgg):
         except Exception:
             return False
 
+    # C.2 / C.3 commit-loop wiring (_sim_pop_committable, _sim_reinject_ready_withheld,
+    # _sim_abandon_stalled) is shared, library-level in AvailabilityMixin so the oort
+    # stack rides the identical logic. The asyncfl gate tracker (_sim_inflight_expected)
+    # is reached via the mixin's guarded _avail_drop_inflight hook.
+
     def _sim_recv_min(self, channel, recv_ends):
         """Barrier: drain the in-flight set, then commit the smallest
         sim_completion_ts. The virtual clock advances TO each committed completion
@@ -313,6 +323,7 @@ class TopAggregator(SyncTopAgg):
         if not hasattr(self, "_sim_inflight_expected"):  # bare-init guard (tests)
             self._sim_inflight_expected = {}
             self._sim_withheld_payload = {}
+            self._sim_withheld_delivering = {}
             self._sim_trainer_budget = {}
             self._sim_budget_running_mean = 12.0
             self._sim_budget_n = 0
@@ -437,8 +448,13 @@ class TopAggregator(SyncTopAgg):
         self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
-        # are not lost when an end is cleaned up before its commit.
-        popped = self._sim_buffer.pop_min()
+        # are not lost when an end is cleaned up before its commit. First re-inject
+        # any withheld update whose delivery_ts has arrived (C.2), then pop the
+        # smallest update that is actually committable — an in-flight trainer that is
+        # UN_AVL at its completion (sct) is send-gated: held now, delivered stale at
+        # delivery_ts. Gate off ⇒ both are no-ops / a single pop (byte-identical).
+        self._sim_reinject_ready_withheld()
+        popped = self._sim_pop_committable(channel)
         if popped is None:
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
@@ -466,6 +482,17 @@ class TopAggregator(SyncTopAgg):
             self._sim_commit_count = {}
         self._sim_commit_count[_end] = self._sim_commit_count.get(_end, 0) + 1
         self._sim_committed.add(_end)
+        # C.2 withheld delivery: this commit is the late (stale) delivery of an
+        # update that was send-gated while its trainer was UN_AVL. Tag it so the
+        # past-dating attribution uses the "withheld" bucket (intended staleness,
+        # not a pacing bug) and emit the withheld_delivery rung with the true
+        # down-window delay (delivery_ts − original sct) and resulting staleness.
+        # Async (fedbuff weighting) accept-stale ⇒ accepted=True; sync feddance
+        # reject-over-tolerance is wired in Stage E.
+        _withheld_meta = self._sim_take_withheld_delivering(_end)
+        _is_withheld = _withheld_meta is not None
+        if _is_withheld:
+            self._emit_withheld_delivery(_end, m, _withheld_meta[0], _withheld_meta[1])
         # start this end's post-commit re-dispatch cooldown. Held out of
         # selection (in _distribute_weights) until vclock >= sct + gap, so it
         # returns with a fresher model_version -- the gap spaces completions
@@ -520,7 +547,9 @@ class TopAggregator(SyncTopAgg):
             # rounds ago this update was trained (current round - its MODEL_VERSION).
             _mv = m.get(MessageType.MODEL_VERSION) if isinstance(m, dict) else None
             _round_lag = (self._round - int(_mv)) if _mv is not None else None
-            if self._round <= 1:
+            if _is_withheld:
+                _src = "withheld"  # intended late stale delivery, not a pacing bug
+            elif self._round <= 1:
                 _src = "round1"
             elif _was_recommit:
                 _src = "redispatch"
@@ -1448,6 +1477,11 @@ class TopAggregator(SyncTopAgg):
         if not self.simulated and self._real_distribute_settle_s > 0.0:
             # Settle channel state before selection (real only); 0 removes this brake.
             time.sleep(self._real_distribute_settle_s)
+
+        # C.3: re-clock the 90s abandon to the vclock and free stalled slots so a
+        # replacement is selectable this round (no-op when the gate is off).
+        if self.simulated:
+            self._sim_abandon_stalled(channel)
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
