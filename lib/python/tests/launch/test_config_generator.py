@@ -207,3 +207,69 @@ class TestFwdllmEndToEndConfigGeneration:
         # regex find the fwdllm stack on this file.
         runner = ExperimentRunner(FWDLLM_AGGREGATOR_MAIN.parents[1])
         runner._validate_stack(FWDLLM_AGGREGATOR_MAIN, merged)
+
+
+FWDLLM_EXPT_SCRIPTS = (
+    Path(__file__).resolve().parents[2] / "examples" / "fwdllm" / "expt_scripts"
+)
+
+
+@pytest.mark.skipif(
+    not SHARED_METADATA.is_dir() or not FWDLLM_TRAINER_BASE.is_file(),
+    reason="shared metadata or fwdllm trainer_base not present",
+)
+class TestFwdllmSmokeYamlsResolve:
+    """The n10_smoke.yaml for each of the three owner-spec baselines (fwdllm,
+    fwdllm_plus, fluxtune) must load, resolve its baseline, generate a
+    trainer config, and pass _validate_stack against the real entrypoint --
+    this is the dry-run Smoke Test D does live, kept as a permanent
+    regression test for all three so real/sim parity runs stay covered."""
+
+    @pytest.mark.parametrize(
+        "yaml_name,expected_baseline",
+        [
+            ("fwdllm_n10_smoke.yaml", "fwdllm"),
+            ("fwdllm_plus_n10_smoke.yaml", "fwdllm_plus"),
+            ("fluxtune_n10_smoke.yaml", "fluxtune"),
+        ],
+    )
+    def test_smoke_yaml_end_to_end(self, yaml_name, expected_baseline):
+        import json
+
+        from flame.launch.baselines import deep_merge, load_baselines
+        from flame.launch.experiment_config import load_experiment_config
+        from flame.launch.runner import ExperimentRunner
+        from flame.launch.spawner import ConfigGenerator, MetadataLoader
+
+        path = FWDLLM_EXPT_SCRIPTS / yaml_name
+        if not path.is_file():
+            pytest.skip(f"{yaml_name} not present in this checkout")
+
+        exp = load_experiment_config(path).experiments[0]
+        assert exp.baseline == expected_baseline
+        assert exp.trainer.num_trainers == 10
+
+        baselines = load_baselines(SHARED_METADATA)
+        baseline = baselines[exp.baseline]
+
+        meta = MetadataLoader(SHARED_METADATA)
+        cg = ConfigGenerator(meta, FWDLLM_TRAINER_BASE)
+        cg.set_baseline_overrides(baseline.get("trainer", {}))
+        cfg = cg.generate_trainer_config(
+            1,
+            alpha=0.1,
+            availability_mode=exp.trainer.availability.mode,
+            dataset_name=exp.trainer.dataset.name,
+            num_trainers=10,
+            skip_index_splits=exp.trainer.dataset.path_style,
+            **{"hyperparameters.client_idx": 0},
+        )
+        assert cfg["hyperparameters"]["client_idx"] == 0
+        assert "trainer_indices_list" not in cfg["hyperparameters"]
+
+        tmpl = json.load(open(SHARED_METADATA / "aggregator_base.json"))
+        merged_agg = deep_merge(tmpl, baseline["aggregator"])
+        merged_agg = deep_merge(merged_agg, exp.aggregator.config_overrides or {})
+
+        runner = ExperimentRunner(FWDLLM_AGGREGATOR_MAIN.parents[1])
+        runner._validate_stack(FWDLLM_AGGREGATOR_MAIN, merged_agg)
