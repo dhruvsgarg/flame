@@ -1,3 +1,9 @@
+# DEPRECATED — do not install from this file.
+# This is a stale full `pip freeze` snapshot, NOT fwdllm's essential deps. Its
+# `adapter-transformers==3.1.0` / `tokenizers==0.12.1` pins are not required and
+# do not build on modern toolchains. The dependency source of truth is the
+# `[examples]` extra in lib/python/setup.py (modern transformers + the
+# standalone `adapters` add-on). See MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 8.
 absl-py==2.0.0
 adapter-transformers==3.1.0
 aiostream==0.5.2

@@ -6,12 +6,17 @@ below before resuming work in any new session — it is always current.
 
 ## Status & next step
 
-**Phases 1–7 are DONE.** The only remaining work is **Phase 7 step P8: live
-smoke tests**, blocked on an environment gap (below). Everything else in
-this document is historical record, kept for context — skip to it only if
-you need to understand *why* something is the way it is.
+**Phases 1–8 are DONE.** The single-env dependency reconciliation (Phase 8)
+shipped — the `[examples]` extra in `lib/python/setup.py` now provisions one
+env (`pip install -e lib/python[examples,dev]`) that runs both async_cifar10
+and fwdllm, the code was migrated to modern `transformers` + the standalone
+`adapters` add-on, and both launcher entrypoints + the adapter create-path
+were verified to import/run on `dg_flame`. The only remaining work is **Phase 7
+step P8: live smoke tests**, the current `[NEXT]` — purely an "actually run it
+on real GPUs with the real agnews H5 data" gap. Everything between here and
+Phase 8 is historical record.
 
-**Run P8 once you have a host with fwdllm's pinned ML stack installed:**
+**Run P8 in the single `dg_flame` env (Phase 8 already applied):**
 
 ```bash
 python -m flame.launch.run_experiment lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml
@@ -27,24 +32,32 @@ Pass criteria for each: aggregator + trainer processes start and don't crash;
 Optional parity check: confirm `client_idx = (trainer_id-1) % 100` reproduces
 the same H5 partitions as the legacy `json_scripts/trainer_*.json`.
 
-**The blocker — fwdllm's pinned ML stack is not installable in this sandbox:**
-- `req.txt` pins `adapter-transformers==3.1.0`, which pins `tokenizers==0.12.1`.
-- `tokenizers==0.12.1`'s Rust source is from ~2022 and trips
-  `invalid_reference_casting`, a lint that became **deny-by-default** in
-  every `rustc` available here — it fails to compile, full stop.
-- This sandbox has mainline `transformers==4.54.0` instead, which lacks the
-  adapter API (`AdamW` import, custom adapter classes) that
-  `examples/fwdllm/trainer/forward_training/tc_transformer_trainer_distribute.py`
-  imports at module load time.
-- Effect: **both** the trainer and aggregator entrypoints die at that import
-  line, before `__main__` runs — before any argv/config code from this
-  migration ever executes. Confirmed pre-existing and not migration-caused:
-  the untouched legacy `trainer/fl_main.py` dies at the identical line for
-  the identical reason.
-- To unblock: a host with either an older `rustc` (predates the
-  `invalid_reference_casting` deny-by-default change) or a prebuilt
-  `tokenizers==0.12.1` wheel, with `adapter-transformers==3.1.0` actually
-  installed (not mainline `transformers`).
+**What the blocker was (now RESOLVED in Phase 8) — corrected diagnosis
+(supersedes the old "tokenizers==0.12.1 won't compile" writeup, which was
+traced to the stale `req.txt` pip-freeze, not the code's real needs). Full
+analysis + what shipped in Phase 8 below.** In short:
+- `dg_flame` (the dev env shared with `async_cifar10`: py3.11, torch 2.12,
+  numpy 2.4) is simply **missing** the NLP/data stack — `transformers`,
+  `tokenizers`, `huggingface-hub`, `h5py`, `pandas`, `scikit-learn`. Nothing
+  *conflicts*; `async_cifar10` (CNN/torchvision) never pulled them in.
+- Both entrypoints (`trainer/main.py`, `aggregator/main_fedfwd_agg.py` — both
+  import `expts/initializer.py` and call `create_model`) die at two
+  module-level imports, **neither of which needs the un-buildable
+  `adapter-transformers==3.1.0` fork**:
+  1. `from transformers import AdamW`
+     (`tc_transformer_trainer_distribute.py:17`) — removed from transformers
+     top-level in v4.x; fix is `from torch.optim import AdamW`.
+  2. `from transformers.adapters import LoRAConfig` (`expts/initializer.py:35`)
+     — the old fork API; only *used* under `peft_method=lora`, but imported at
+     module level so it breaks regardless. Make lazy, or swap to the modern
+     standalone `adapters` package.
+- `functorch` is **fine** on torch 2.12 (the shim still ships
+  `make_functional_with_buffers`; verified live).
+- PEFT is **functionally required** — forward-gradient perturbations are only
+  generated for `requires_grad` params (`tc_..._distribute.py:302`), so the
+  full 66M-param DistilBERT won't converge. Production uses **`adapter`** PEFT
+  (verified: every `json_scripts/trainer_*.json` has `peft_method: adapter` on
+  `distilbert`), so the adapter library is genuinely exercised — see Phase 8.
 - Everything upstream of this wall was still verified: argv/config parsing
   (`load_config_from_argv`, `--time_mode`/`--log_to_wandb` side-channel
   parsing), config generation/merging for all four baselines, and
@@ -251,7 +264,7 @@ adaptive (`dynamic_kc`) K/C, switched purely by config — see Phase 7 step P5.
 
 ## Phase 7 — Implementation of Phase 6's taxonomy
 
-**[DONE: P1–P7] [NEXT: P8 — blocked, see Status & next step at the top]**
+**[DONE: P1–P7] [P8: env unblocked by Phase 8 — now the `[NEXT]`, pending GPUs + agnews H5 data]**
 
 ### Target baseline matrix
 
@@ -358,14 +371,124 @@ Full sweep: `pytest lib/python/tests/launch lib/python/tests/mode
 lib/python/tests/optimizer lib/python/tests/selector` → all green
 (300+ tests).
 
-### P8 — Live smoke tests [NEXT — see **Status & next step** at the top of this document for the exact commands and the full blocker writeup]
+### P8 — Live smoke tests [NEXT]
 
-Supersedes the old Smoke Test E. Run all three smoke YAMLs
-(`fwdllm`/`fwdllm_plus`/`fluxtune`) on a host with fwdllm's pinned ML stack
-installed; assert ≥3–5 rounds complete, `trainer_round` telemetry present,
+Supersedes the old Smoke Test E. The env blocker is resolved (Phase 8). Run all
+three smoke YAMLs (`fwdllm`/`fwdllm_plus`/`fluxtune`) in the single `dg_flame`
+env on a host with GPUs and the real agnews H5 data; assert ≥3–5 rounds
+complete, `trainer_round` telemetry present,
 and `aggregator_config.json` shows the matrix's expected merged values for
 that baseline. Optional: parity-check `client_idx` against the legacy
 `json_scripts/trainer_*.json` values.
+
+---
+
+## Phase 8 — Single-env dependency reconciliation [DONE]
+
+Goal: run `fwdllm` (DistilBERT forward-mode FL) in the **same single dev env
+already used by `async_cifar10`** (`dg_flame`), with no separate per-example
+env and no torch/numpy downgrade.
+
+### Shipped
+
+- **Durable dep spec** (not a one-off install): the NLP forward-mode stack was
+  folded into the `[examples]` extra in `lib/python/setup.py`
+  (`transformers>=4.57,<4.58`, `adapters>=1.3,<1.4`, `h5py`, `pandas`,
+  `scikit-learn`, `setproctitle`), so the existing canonical command
+  `pip install -e lib/python[examples,dev]` now provisions **one** env that
+  runs both async_cifar10 and fwdllm. Docs updated (`docs/prerequisites.md`,
+  both quickstarts, `examples/fwdllm/README.md`); `req.txt` headed with a
+  DEPRECATED banner pointing at `setup.py`.
+- **Code edits (the modern-`adapters` path, keeping `peft_method: adapter`):**
+  `tc_..._distribute.py` now imports `AdamW` from `torch.optim`;
+  `expts/initializer.py` imports `adapters`/`BnConfig`/`LoRAConfig` from the
+  `adapters` package, calls `adapters.init(model)` in the adapter/lora
+  branches, and builds the bottleneck adapter as `BnConfig(**adapter_config)`
+  (legacy dict keys map 1:1).
+- **Verified on `dg_flame`** (py3.11 / torch 2.12 / numpy 2.4): all four
+  deps installed from **prebuilt wheels** (no Rust/tokenizers compile —
+  transformers 4.57.6 / adapters 1.3.0 / tokenizers 0.22.2 / h5py 3.16.0);
+  both launcher entrypoints (`trainer/main.py`, `aggregator/main_fedfwd_agg.py`)
+  now import cleanly past the old wall; and `create_model`'s adapter path
+  freezes the base model leaving only adapter params trainable (~0.27%),
+  active for the forward pass. The remaining work is purely the live GPU run
+  (Phase 7 P8), which also needs the real agnews H5 data on the host.
+
+### Analysis & rationale (why the above)
+
+### Findings (live inspection of `dg_flame` + the real launcher import chain)
+
+- **No conflicts, only absences.** `dg_flame` = py3.11, torch **2.12**, numpy
+  **2.4**, torchvision/wandb. It has **none** of `transformers`, `tokenizers`,
+  `huggingface-hub`, `h5py`, `pandas`, `scikit-learn`. `async_cifar10`
+  (CNN/torchvision) never needed them, so nothing is broken — they're missing.
+- **`req.txt` is a stale full `pip freeze`, not an essential-deps list.** Its
+  `adapter-transformers==3.1.0` → `tokenizers==0.12.1` pin (the previously
+  cited Rust-compile wall) is **not** actually required by the launcher path.
+- **Real launcher import surface** (both `trainer/main.py` and
+  `aggregator/main_fedfwd_agg.py` → `tc_transformer_trainer_distribute` +
+  `expts/initializer.py`, both calling `create_model`):
+  - `from transformers import AdamW` (`tc_..._distribute.py:17`) — removed from
+    transformers top-level in v4.x. Fix: `from torch.optim import AdamW`.
+  - `from transformers.adapters import LoRAConfig` (`initializer.py:35`,
+    module-level) — old `adapter-transformers` *fork* API; this is the import
+    both entrypoints actually die on. Only *used* under `peft_method=lora`;
+    `add_adapter`/`train_adapter` used under `peft_method ∈ {adapter, lora}`.
+    Default config = `peft_method: adapter` (`trainer_base.yaml:65`).
+  - `functorch` — **fine** on torch 2.12 (shim ships
+    `make_functional_with_buffers`; verified live).
+  - `transformers.tokenization_bert` (`span_extraction_utils.py:8`, pre-4.0) —
+    dead on the text-classification path (not imported by `main.py`). Ignore.
+- **PEFT is functionally mandatory.** Perturbations are generated only for
+  `v.requires_grad` params (`tc_..._distribute.py:302`), so forward-grad over
+  the full 66M-param DistilBERT won't converge — *some* PEFT must leave only a
+  small trainable subset.
+- **Production = `adapter` PEFT on DistilBERT (verified, not assumed).** Every
+  legacy `json_scripts/trainer_*.json` carries `"model_type": "distilbert"` +
+  `"peft_method": "adapter"`, and `trainer_base.yaml:65` transcribes that
+  default. (`run_text_classification.sh:61-65` *looks* like it switches
+  distilbert→adapter / else→bitfit, but that shell var is **dead** — never
+  exported, never re-read; the JSON drives it.) So the adapter library is
+  **actually exercised** at runtime via `add_adapter`/`train_adapter`
+  (`initializer.py:116-138`) — it cannot simply be skipped without changing the
+  workload.
+
+### Recommended single-env path: modern `adapters` add-on (no torch/numpy downgrade)
+
+Keep `peft_method: adapter` (= what's been running). Install the standalone
+**`adapters`** package — the maintained successor to `adapter-transformers`; an
+add-on *on top of* mainline `transformers`, **not** the un-buildable fork, and
+it ships prebuilt wheels. **This is the only thing we skip from the old stack:
+`adapter-transformers==3.1.0` and its `tokenizers==0.12.1` pin.**
+
+Definitely need (install into `dg_flame`): modern `transformers` (pulls
+prebuilt `tokenizers` + `huggingface-hub` wheels — no Rust build), `adapters`,
+`h5py`, `pandas`, `scikit-learn`. Can skip: the `adapter-transformers` fork,
+the `tokenizers==0.12.1` pin, standalone `functorch` (torch-2.12 shim covers
+it), the whole stale `req.txt`, and the span/QA path's pre-4.0
+`transformers.tokenization_bert` (dead on the TC path).
+
+Code edits (small, contained):
+1. `from transformers import AdamW` → `from torch.optim import AdamW`
+   (`tc_..._distribute.py:17`).
+2. In `create_model` (`initializer.py`): `import adapters; adapters.init(model)`
+   after `from_pretrained`; `from adapters import LoRAConfig, BnConfig`; build
+   the bottleneck adapter as `BnConfig(**adapter_config)` (the raw dict's keys
+   — `mh_adapter`/`output_adapter`/`reduction_factor`/`non_linearity`/… — map
+   ~1:1 to `BnConfig`). `add_adapter`/`train_adapter` then work unchanged.
+   `LoRAConfig` now resolves from `adapters` (the `peft_method=lora` branch),
+   so the old `from transformers.adapters import LoRAConfig` line is replaced
+   outright — no lazy-guard needed once `adapters` is installed.
+
+**Fallback / simplification (only if `adapters` integration proves fiddly):**
+`peft_method: bitfit` (`initializer.py:139-142`) is pure PyTorch
+(`requires_grad=False` on all but bias+classifier) and needs **no** adapter
+library — but it is **not** the production workload, so use it only as a
+last-resort way to prove the launcher path end-to-end, not for real runs.
+
+**Not recommended:** a separate fwdllm env (abandons the single-env goal and
+still wouldn't build the old fork here), or dropping PEFT entirely (forward-grad
+won't converge — see the `requires_grad` finding).
 
 ---
 
