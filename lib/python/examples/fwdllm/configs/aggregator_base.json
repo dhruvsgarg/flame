@@ -51,6 +51,9 @@
         "dataset": "agnews",
         "partition_method": "niid_label_clients=100_alpha=1",
         "client_idx": 0,
+        "client_num_in_total": 0,
+        "data_loader_num_workers": 5,
+        "warmup_ratio": 1,
         "data_file_path": "PLACEHOLDER",
         "partition_file_path": "PLACEHOLDER"
     },
