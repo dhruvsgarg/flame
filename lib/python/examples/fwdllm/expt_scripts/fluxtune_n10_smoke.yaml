@@ -52,7 +52,7 @@ experiments:
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
 
     aggregator:
-      config_template: ../_metadata/aggregator_base.json
+      config_template: ../configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
       agg_goal: 3
@@ -62,7 +62,6 @@ experiments:
           id: fluxtune_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
-          manual_seed: 42
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
         selector:

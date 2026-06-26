@@ -6,7 +6,7 @@ below before resuming work in any new session — it is always current.
 
 ## Status & next step
 
-**Phases 1–8 are DONE.** The single-env dependency reconciliation (Phase 8)
+**Phases 1–9 are DONE.** The single-env dependency reconciliation (Phase 8)
 shipped — the `[examples]` extra in `lib/python/setup.py` now provisions one
 env (`pip install -e lib/python[examples,dev]`) that runs both async_cifar10
 and fwdllm, the code was migrated to modern `transformers` + the standalone
@@ -489,6 +489,64 @@ last-resort way to prove the launcher path end-to-end, not for real runs.
 **Not recommended:** a separate fwdllm env (abandons the single-env goal and
 still wouldn't build the old fork here), or dropping PEFT entirely (forward-grad
 won't converge — see the `requires_grad` finding).
+
+---
+
+## Phase 9 — Config-template design invariant (live-run fixes) [DONE]
+
+### Design invariant: `configs/` owns per-example config templates
+
+Established during live P8 smoke runs. Applicable to all examples, not just
+fwdllm — record it here for the eventual cross-example rule-set doc.
+
+**Rule:** `examples/<example>/configs/` holds all config templates for that
+example (trainer + aggregator base). `examples/_metadata/` is for shared FL
+metadata only (baselines, availability traces, dataset splits, trainer
+registry). Config templates do not belong there.
+
+**Rationale:** The shared `_metadata/aggregator_base.json` contains only
+generic FL fields (rounds, batchSize, selector/optimizer stubs). fwdllm's
+aggregator calls `create_model()` and needs 25+ NLP/model fields that are
+example-specific, not generic. Putting them in the shared template would
+pollute it for every other example. The `configs/trainer_base.yaml` precedent
+(established in Phase 2) already defines the right home — aggregator configs
+follow the same pattern.
+
+**Current state:**
+- `fwdllm/configs/trainer_base.yaml` — trainer template (Phase 2)
+- `fwdllm/configs/aggregator_base.json` — aggregator template (Phase 9); smoke
+  YAMLs use `config_template: ../configs/aggregator_base.json`
+- `async_cifar10/configs/trainer_base.yaml` — trainer template (pre-existing)
+- `async_cifar10/metadata/aggregator_base.json` — dead copy of the shared base
+  (unused; smoke YAMLs still point to `../_metadata/aggregator_base.json`);
+  migration target when async_cifar10 gets a `configs/aggregator_base.json`
+- `_metadata/aggregator_base.json` — legacy shared base; retires once all
+  examples migrate to per-example `configs/`
+
+**YAML migration path:** `runner.py` now accepts both `.json` and `.yaml`
+config templates (extension-sniffed). When the runner's own YAML support was
+added, `configs/aggregator_base.json` can be renamed to `.yaml` per example
+without changing the runner. The `_metadata/aggregator_base.json` should be
+the last file to migrate.
+
+### P8 live-run bug fixes (also shipped here)
+
+Four crashes found during P8 and fixed:
+1. `avl_events_syn_train_*` traces (`FedSgdTrainer.__init__`): these three
+   legacy custom traces are read unconditionally but have no `_metadata/`
+   equivalent and were never injected by the spawner. Fixed: defaults added to
+   `trainer_base.yaml` (`[[0, "AVL_TRAIN"]]` = syn_0 / always-available).
+2. Aggregator `model_name` / NLP model fields missing: the generic
+   `_metadata/aggregator_base.json` has no NLP fields; aggregator crashed on
+   `config.hyperparameters.model_name`. Fixed: `configs/aggregator_base.json`
+   with all 25 NLP/model fields (model_name/type, peft_method, fp16, etc.).
+3. `ast.literal_eval` on already-parsed lists (`FedSgdTrainer.py`): YAML
+   delivers `avl_events_*` as Python lists; the legacy JSON path delivered
+   string-encoded lists. Fixed: `_parse_avl_events()` helper (Phase 8 crash
+   batch, already shipped).
+4. Aggregator `manual_seed` missing: fixed by putting it in
+   `configs/aggregator_base.json` (not in the smoke YAML overrides, which is
+   the wrong layer for a stable default).
 
 ---
 

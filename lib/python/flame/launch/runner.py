@@ -11,6 +11,7 @@ Paths are resolved as follows (lowest precedence → highest):
 
 import json
 import os
+import yaml
 import re
 import signal
 import subprocess
@@ -461,7 +462,10 @@ class ExperimentRunner:
             if not template_path.exists():
                 raise FileNotFoundError(f"aggregator config_template not found: {template_path}")
             with open(template_path) as f:
-                tmpl = json.load(f)
+                if template_path.suffix in (".yaml", ".yml"):
+                    tmpl = yaml.safe_load(f)
+                else:
+                    tmpl = json.load(f)
             layers.append((f"config_template:{template_path.name}", tmpl))
 
         if baseline_entry:
