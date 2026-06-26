@@ -1,12 +1,10 @@
 # Sim Unavailability — Design & Staged Plan
 
-**Status:** **Stage A COMPLETE** (Jun 25) — substrate implemented, 410/410 unit tests pass.
-Smoke test (syn_0 5-min all-baseline, Jun 25) passed — 0 errors all 4 baselines, AvailabilityMixin
-active, `agg_version_state` deprecation fixed (Jun 26). **Stage B in progress** (Jun 26) — A3/A4 unit
-tests added; syn_20 oort smoke run needed to satisfy exit criterion. v1 scope **locked**
-(Jun 25) — *oracular trace-read for ALL baselines, `client_notify` deferred*. Same feature templates
-into fwdllm ([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built
-**library-level so it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
+**Status:** **Stage B COMPLETE** (Jun 26) — A3 exit criterion met on oort syn_20 smoke
+(`max_rel_diff=0.033 ≤ 0.20`). Stage C is next. v1 scope **locked** (Jun 25) — *oracular trace-read
+for ALL baselines, `client_notify` deferred*. Same feature templates into fwdllm
+([simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) §7) — the substrate is built **library-level so
+it spans examples** (async_cifar10, fwdllm), not bolted onto one example.
 
 **Prerequisites (read first):** [PARITY.md](PARITY.md) §1–§2 (the causal ladder, role/tier tags,
 dependency gating) and its §3 mechanism reference (`_vclock`, §3.drain, §3.resid, §4.5/§4.9, §S.dur).
@@ -289,11 +287,55 @@ See §8 for the file-level spec. Summary:
   `asyncfl/top_aggregator.py`; `logger.warn` → `logger.warning` in `flame/plugin/__init__.py`.
 - **Exit (relaxed):** syn_0 smoke clean, 0 errors → proceed to Stage B.
 
-### Stage B — A3 time-base CONTROL (gate for everything above it)
+### Stage B — A3 time-base CONTROL (gate for everything above it) ✅ COMPLETE (Jun 26)
 - **B.1** A3 `trace_time_base_consistency` (CONTROL/DIST, dep K3): resolved on/off windows align
   between modes within tolerance, origin = `agg_start`. **B.2** A4 `per_trainer_duty_cycle` (dep A3).
 - **Tests + a 5-min syn_20 smoke** (checker-side, validates instantly vs stored dirs).
   **Exit:** A3 PASS on a syn_20 smoke for oort.
+
+**Smoke run results** (Jun 26) —
+`run_20260626_112723_dbg_oort_n300_alpha0.1_syn_20_stream_sim` vs
+`run_20260626_113407_dbg_oort_n300_alpha0.1_syn_20_stream_real`:
+- **A3** ✅ PASS (`max_rel_diff=0.033 ≤ 0.20`) — exit criterion met.
+- **A4** ⚠️ SKIP — two bugs in the checker prevent activation (see below); not a Stage B blocker.
+- **A1/A2/A2b/A2c** all PASS — availability pool is consistent.
+- **K3/P3/T2/U3/U4/U6/C1/C2** all PASS.
+- **Pre-existing failures (not Stage B root causes):** K3b `overhead_residual` (rel=0.155, tol 0.10),
+  S3/4 `num_chosen` (real=16.85 vs sim=15.6, 7.4%), Sr `residence` (carry-over 32% vs tol 30%);
+  root is Sx `system_util` KS divergence (0.301) — utility beliefs differ, cascades into selection
+  count and straggler carry-over. Pre-existing; not caused by Stage B changes.
+
+**A4 known issues (to fix before Stage C validation):**
+1. **Loader**: `load_trainer_jsonl_dir` only collects `task_recv / trainer_round / task_send`; it
+   does not surface `avail_change` events, so `d.get("avail_change")` always returns `None` and A4
+   is permanently SKIP. Fix: add `avail_change` to the per-trainer event grouping.
+2. **Format mismatch**: `duty_cycle_parity._on_frac` checks `e.get("available")` (a bool) but
+   actual telemetry carries `{"old_state": …, "new_state": …}`. Fix: use `new_state.startswith("AVL")`.
+3. **No trainer-side transitions**: with `client_notify: null`, `state_avl_event_ts` is never
+   populated so the trainer stays `AVL_TRAIN` for the whole run — even in the 600–1200s vclock
+   window where syn_20 dictates UN_AVL. Expected for v1 oracular (aggregator reads the trace
+   directly in Stage C; trainer self-reporting is incidental). Fix A4 or build trace-based check (see
+   below) instead of relying on trainer-emitted transitions.
+
+**Trainer state duration check — design decision for Stage C:**
+A4 as written measures "fraction of `avail_change` events where state was available." This is
+insufficient: it counts transitions, not duration. The right check is trace-based:
+
+- **New check `Aa` (aggregator availability accuracy, add in Stage G ladder pass):** For each
+  selection event with a `vclock_now` (sim) or wall-elapsed timestamp (real), resolve the expected
+  per-trainer state from the trace, compare against `avail_composition` (populated once Stage C
+  activates `get_curr_unavail_trainers()`). Both modes should show the same unavail count at the
+  same normalized-progress bin — identical trace, same expected state.
+
+- **New check `A4b` (trace-vs-dispatch validator, can add now):** For each `task_recv` event,
+  resolve `state_at(sim_send_ts)` (sim) or `state_at(wall_elapsed)` (real) directly from the trace
+  YAML. Per-trainer, accumulate time-in-state over the run window. Compare real vs sim
+  state-duration distributions (AVL_TRAIN / AVL_EVAL / UN_AVL) within tolerance. This is
+  trace-grounded, bypasses trainer self-reporting entirely, and works from Stage B data.
+
+Until `get_curr_unavail_trainers()` is activated (Stage C), `avail_composition` is all UNKNOWN and
+`Aa` cannot fire. `A4b` CAN be run now; it will show both runs have 100% AVL_TRAIN because Stage C
+hasn't started filtering — confirming the baseline state before Stage C changes anything.
 
 ### Stage C — ORACULAR driver + send-time delivery gate + vclock abandon (oort, refl; then ALL)
 - **C.1** Activate `get_curr_unavail_trainers()` via the Stage-A resolver on `_vclock.now` →
