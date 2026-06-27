@@ -202,7 +202,8 @@ class FedBuffSelector(AbstractSelector):
                 ends,
                 eligible_ends.keys(),
                 list(results.keys()),
-                extra={"concurrency": concurrency, "requester": self.requester},
+                extra={"concurrency": concurrency, "requester": self.requester,
+                       "vclock_now": channel_props.get("vclock_now")},
             )
 
         elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:

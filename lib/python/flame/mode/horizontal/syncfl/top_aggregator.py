@@ -823,6 +823,11 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         # the selector ranks. No-op unless oracle_utility_injection is enabled.
         self._inject_oracle_utilities(channel, task_to_perform)
 
+        # Expose current vclock to selector so it can attach it to selection
+        # events (C.6.1 — mirrors the same exposure in oort/asyncfl top_aggregators).
+        if self.simulated:
+            channel.properties["vclock_now"] = self._vclock.now
+
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )

@@ -703,6 +703,11 @@ class TopAggregator(BaseTopAggregator):
             trainer_unavail_list=curr_unavail_trainer_list
         )
 
+        # Expose current vclock to selector so it can attach it to selection
+        # events (C.6.1 — restores per-trainer avl_state identity at emit time).
+        if self.simulated:
+            channel.properties["vclock_now"] = self._vclock.now
+
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )

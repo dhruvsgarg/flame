@@ -1325,45 +1325,45 @@ def _participation_heatmap(records, d, stamp):
     rounds = sorted(set(trained) | set(evalsel))
     if not trainers or not rounds:
         return []
-    # Per-trainer availability per round (forward-filled from avail_change), so
-    # idle cells can distinguish "available, not picked" from "unavailable".
-    unavail = defaultdict(dict)  # trainer -> {round: True if UN_AVL}
-    ac = defaultdict(list)
-    for r in by_event(records, EVENT_AVAIL_CHANGE):
-        ac[str(r.get("end_id"))].append((int(r.get("round", 0)),
-                                         str(r.get("new_state", ""))))
-    for t, evs in ac.items():
-        evs.sort()
-        cur = None
-        for rd, st in evs:
-            cur = st
-            unavail[t][rd] = ("UN_AVL" in cur)
+    # Per-trainer availability per round — the aggregator's own belief
+    # (C.6.1/C.6.2), populated even in pure-oracular mode where the trainer-
+    # side avail_change log is empty. Forward-filled across rounds so idle
+    # cells can distinguish "available, not picked" from "unavailable".
+    avl_by_round = _avl_state_by_round(records)
     idx = {t: i for i, t in enumerate(trainers)}
     ridx = {r: j for j, r in enumerate(rounds)}
-    # 0 not-selected, 1 eval, 2 train, 3 unavailable (not selected),
-    # 4 selected-but-unavailable. Availability forward-filled across rounds.
+    # 0 not-selected (AVL_TRAIN idle), 1 eval, 2 train, 3 unavailable (not
+    # selected), 4 selected-but-unavailable (stale dispatch), 5 idle during
+    # AVL_EVAL (3-state extension — was binary unavailable/available).
     m = np.zeros((len(trainers), len(rounds)))
     for t in trainers:
-        last_un = False
+        last_state = "AVL_TRAIN"
+        rs = avl_by_round.get(t, {})
         for r in rounds:
-            if r in unavail.get(t, {}):
-                last_un = unavail[t][r]
-            sel = (t in evalsel.get(r, set())) or (t in trained.get(r, set()))
+            if r in rs:
+                last_state = rs[r]
+            is_unavail = "UN_AVL" in last_state
+            is_eval_idle = "AVL_EVAL" in last_state
             if t in trained.get(r, set()):
-                v = 4 if last_un else 2
+                v = 4 if is_unavail else 2
             elif t in evalsel.get(r, set()):
-                v = 4 if last_un else 1
+                v = 4 if is_unavail else 1
+            elif is_unavail:
+                v = 3
+            elif is_eval_idle:
+                v = 5
             else:
-                v = 3 if last_un else 0
+                v = 0
             m[idx[t], ridx[r]] = v
     yl = [t[-3:] for t in trainers] if len(trainers) <= 40 else None
     p = ph.heatmap(m, "round", "trainer", "Participation per trainer x round", d,
                    "participation_heatmap.pdf", stamp=stamp, yticklabels=yl,
-                   discrete=[(0, "not selected", "#ededed"),
+                   discrete=[(0, "not selected (AVL_TRAIN idle)", "#ededed"),
                              (1, "eval", "#3182bd"),
                              (2, "train", "#31a354"),
                              (3, "unavailable", "#fdae6b"),
-                             (4, "selected but unavail", "#e6550d")])
+                             (4, "selected but unavail", "#e6550d"),
+                             (5, "idle (AVL_EVAL)", "#9e9ac8")])
     return [p] if p else []
 
 
@@ -1389,15 +1389,14 @@ def _state_fraction_plots(records, d, stamp):
         if s.get("task") == "eval":
             for c in (s.get("chosen") or []):
                 evalsel[int(s.get("round", 0))].add(str(c))
-    # availability forward-fill: track the full state string so idle can be split
-    # into idle_train (AVL_TRAIN) vs idle_eval (AVL_EVAL). UN_AVL = unavailable.
-    ac = defaultdict(list)
-    for r in by_event(records, EVENT_AVAIL_CHANGE):
-        ac[str(r.get("end_id"))].append((int(r.get("round", 0)),
-                                         str(r.get("new_state", ""))))
+    # availability — the aggregator's own belief (C.6.1/C.6.2), populated even
+    # in pure-oracular mode where the trainer-side avail_change log is empty.
+    # Forward-fill: track the full state string so idle can be split into
+    # idle_train (AVL_TRAIN) vs idle_eval (AVL_EVAL). UN_AVL = unavailable.
+    avl_by_round = _avl_state_by_round(records)
     trainers = sorted({t for s in trained.values() for t in s}
                       | {t for s in evalsel.values() for t in s}
-                      | set(ac))
+                      | set(avl_by_round))
     rounds = sorted(set(trained) | set(evalsel))
     rounds = [r for r in rounds if r >= 1]
     if not trainers or not rounds:
@@ -1407,8 +1406,8 @@ def _state_fraction_plots(records, d, stamp):
     counts = {t: {c: 0 for c in cats} for t in trainers}
     avail_count = {t: 0 for t in trainers}
     for t in trainers:
-        evs = sorted(ac.get(t, []))
-        ei, state = 0, ""
+        evs = sorted(avl_by_round.get(t, {}).items())
+        ei, state = 0, "AVL_TRAIN"
         for r in rounds:
             while ei < len(evs) and evs[ei][0] <= r:
                 state = evs[ei][1]; ei += 1
@@ -2139,65 +2138,127 @@ def system_plots(records, out, stamp, tdir):
 # ==========================================================================
 
 
+def _avl_state_by_round(records) -> dict:
+    """{end_id: {round: avl_state}} — the AGGREGATOR's belief (C.6.1/C.6.2).
+
+    Sourced from `per_trainer[end_id]["avl_state"]` on every `selection` event
+    (train AND eval), which `emit_selection` stamps for the FULL candidate pool
+    (not just eligible/chosen). Replaces the old EVENT_AVAIL_CHANGE source,
+    which is the TRAINER's self-reported transition log — empty in v1's
+    pure-oracular mode (`client_notify` OFF) where the trainer never emits it,
+    leaving every consumer below permanently blind. The aggregator's belief is
+    populated in every mode (oracular or not), so this is the one source that
+    actually lights up under the v1 availability gate.
+    """
+    by_round: dict = defaultdict(dict)
+    for s in sorted(by_event(records, EVENT_SELECTION),
+                    key=lambda e: (e.get("round", 0), e.get("ts", 0.0))):
+        rd = int(s.get("round", 0))
+        for end_id, info in (s.get("per_trainer") or {}).items():
+            state = info.get("avl_state")
+            if state and state != "UNKNOWN":
+                by_round[str(end_id)][rd] = state
+    return dict(by_round)
+
+
 def availability_plots(records, out, stamp, tdir):
     d = _sub(out, "availability"); saved = []
     sel = by_event(records, EVENT_SELECTION)
-    ac = by_event(records, EVENT_AVAIL_CHANGE)
+    avl_by_round = _avl_state_by_round(records)
 
-    # 1) candidates → eligible → chosen funnel (binned over progress_key —
-    # data_id/iteration-level for fwdllm-family selection events that carry
-    # them, plain round otherwise; see progress_key()'s docstring). Always
-    # meaningful: shows where the population is lost between availability and pick.
-    fx, cand, elig, chos = [], [], [], []
+    # 1) candidates → (AVL_TRAIN/AVL_EVAL/UN_AVL composition) → eligible →
+    # chosen funnel (binned over progress_key — data_id/iteration-level for
+    # fwdllm-family selection events that carry them, plain round otherwise;
+    # see progress_key()'s docstring. train+eval both included — avail_
+    # composition is stamped on every selection event regardless of task, so
+    # this no longer silently drops the eval pool).
+    fx, cand, n_train, n_eval, n_unavail, elig, chos = [], [], [], [], [], [], []
     for s in sel:
-        if s.get("task", "train") != "train":
-            continue
         if int(s.get("round", 0)) < 1:  # exclude pre-training warmup (raw round)
             continue
-        nc, ne, nch = s.get("num_candidates"), s.get("num_eligible"), s.get("num_chosen")
+        nc = s.get("num_candidates")
         if nc is None:
             continue
-        fx.append(progress_key(s)); cand.append(nc)
+        comp = s.get("avail_composition") or {}
+        fx.append(progress_key(s))
+        cand.append(nc)
+        n_train.append(comp.get("AVL_TRAIN", 0))
+        n_eval.append(comp.get("AVL_EVAL", 0))
+        n_unavail.append(comp.get("UN_AVL", 0))
+        ne, nch = s.get("num_eligible"), s.get("num_chosen")
         elig.append(ne if ne is not None else 0)
         chos.append(nch if nch is not None else 0)
     if fx:
         p = ph.binned_line(
-            {"candidates": (fx, cand), "eligible": (fx, elig), "chosen": (fx, chos)},
+            {"candidates": (fx, cand), "AVL_TRAIN": (fx, n_train),
+             "AVL_EVAL": (fx, n_eval), "UN_AVL": (fx, n_unavail),
+             "eligible": (fx, elig), "chosen": (fx, chos)},
             PROGRESS_AXIS_LABEL, "trainer count",
-            "Availability→selection funnel (candidates→eligible→chosen, mean/bin)",
+            "Availability→selection funnel (candidates→composition→eligible"
+            "→chosen, train+eval, mean/bin)",
             d, "selection_funnel_over_rounds.pdf", stamp=stamp, nbins=150, reducer="mean")
         if p: saved.append(p)
 
-    # Determine if availability is DYNAMIC. syn_0 emits one AVL_TRAIN per trainer
-    # at startup and never changes → duty-cycle / churn plots are degenerate.
-    by_trainer = defaultdict(list)
-    states_seen = set()
-    for r in ac:
-        by_trainer[str(r.get("end_id"))].append((int(r.get("round", 0)),
-                                                  str(r.get("new_state", ""))))
-        states_seen.add(str(r.get("new_state", "")))
+    # Determine if availability is DYNAMIC. syn_0 reports one state (AVL_TRAIN)
+    # for every trainer for the whole run → duty-cycle / churn plots are
+    # degenerate. (Distinct-state count, not sample count — avl_by_round
+    # samples every round densely, unlike the old transition-only log.)
+    states_seen = {s for rs in avl_by_round.values() for s in rs.values()}
     has_unavail = any("UN_AVL" in s for s in states_seen)
-    dynamic = has_unavail or any(len(v) > 1 for v in by_trainer.values())
+    dynamic = has_unavail or any(
+        len(set(rs.values())) > 1 for rs in avl_by_round.values()
+    )
     if not dynamic:
         p = ph.no_data_plot(
             "Availability is static (no UN_AVL transitions)",
             d, "availability_dynamics.pdf", stamp=stamp,
-            note=f"{len(by_trainer)} trainers, states={sorted(states_seen)} — "
+            note=f"{len(avl_by_round)} trainers, states={sorted(states_seen)} — "
                  f"duty-cycle/churn need a dynamic trace (non-syn_0)")
         if p: saved.append(p)
         return saved
 
-    # 2) per-trainer duty cycle (fraction of the run available). Forward-fill the
-    # state across the round span; available = not UN_AVL.
+    by_trainer = {t: sorted(rs.items()) for t, rs in avl_by_round.items()}
+
+    # 2) population 3-state fraction over rounds — the plot the dynamic branch
+    # previously never produced at all (only the static no_data_plot branch
+    # wrote this filename; the doc's "always missing in the dynamic case" bug).
     rounds = sorted({rd for evs in by_trainer.values() for rd, _ in evs})
     rmax = max(rounds) if rounds else 0
+    dyn_x, dyn_train, dyn_eval, dyn_unavail = [], [], [], []
+    last_state = {t: "AVL_TRAIN" for t in by_trainer}
+    by_trainer_iter = {t: iter(evs) for t, evs in by_trainer.items()}
+    next_evt = {t: next(it, None) for t, it in by_trainer_iter.items()}
+    for r in rounds:
+        for t, it in by_trainer_iter.items():
+            while next_evt[t] is not None and next_evt[t][0] <= r:
+                last_state[t] = next_evt[t][1]
+                next_evt[t] = next(it, None)
+        n = len(last_state) or 1
+        dyn_x.append(r)
+        dyn_train.append(sum(1 for s in last_state.values() if s == "AVL_TRAIN") / n)
+        dyn_eval.append(sum(1 for s in last_state.values() if s == "AVL_EVAL") / n)
+        dyn_unavail.append(sum(1 for s in last_state.values() if "UN_AVL" in s) / n)
+    if dyn_x:
+        p = ph.binned_line(
+            {"AVL_TRAIN": (dyn_x, dyn_train), "AVL_EVAL": (dyn_x, dyn_eval),
+             "UN_AVL": (dyn_x, dyn_unavail)},
+            "round", "fraction of population",
+            "Population 3-state availability over the run", d,
+            "availability_dynamics.pdf", stamp=stamp, nbins=150, reducer="mean")
+        if p: saved.append(p)
+
+    # 3) per-trainer duty cycle (fraction of the run available). Forward-fill
+    # the state across the round span (telescoping sum — exact whether the
+    # input is sparse transitions or this dense per-round sampling);
+    # available = not UN_AVL.
     duty = []
     churn_by_round = defaultdict(int)
     for t, evs in by_trainer.items():
-        evs = sorted(evs)
-        for rd, _ in evs:
-            churn_by_round[rd] += 1
-        # integrate availability over [0, rmax]
+        prev_state = None
+        for rd, st in evs:
+            if prev_state is not None and st != prev_state:
+                churn_by_round[rd] += 1
+            prev_state = st
         avail_rounds, cur_r, cur_un = 0, 0, False
         for rd, st in evs:
             if not cur_un:
@@ -2211,10 +2272,11 @@ def availability_plots(records, out, stamp, tdir):
                     "duty_cycle_cdf.pdf", stamp=stamp)
     if p: saved.append(p)
 
-    # 3) availability churn rate over rounds (avail_change events / round-bin)
+    # 4) availability churn rate over rounds (actual state TRANSITIONS per
+    # round-bin, not raw sample density).
     cr = sorted(churn_by_round)
-    p = ph.binned_line({"avail_change events": (cr, [churn_by_round[r] for r in cr])},
-                       "round", "transitions", "Availability churn rate (events/bin)",
+    p = ph.binned_line({"avl_state transitions": (cr, [churn_by_round[r] for r in cr])},
+                       "round", "transitions", "Availability churn rate (transitions/bin)",
                        d, "availability_churn_over_rounds.pdf", stamp=stamp,
                        nbins=150, reducer="sum")
     if p: saved.append(p)

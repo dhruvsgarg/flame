@@ -21,6 +21,7 @@ if _SCRIPTS not in sys.path:
 
 from parity.checks import (  # noqa: E402
     abandon_timeout_parity,
+    duration_duty_cycle_parity,
     eligible_pool_reduction_parity,
     load_agg_jsonl,
     load_trainer_jsonl_dir,
@@ -129,6 +130,57 @@ def test_eligible_pool_reduction_fails_when_divergent():
     sim = {"selection_train": [_sel(1, 300, 200), _sel(2, 300, 210)]}   # red ~95
     res = eligible_pool_reduction_parity(real, sim)
     assert not res["ok"]
+
+
+# ---------------------------------------------------------------------------
+# duty_cycle_duration (A4dur, C.6.3)
+# ---------------------------------------------------------------------------
+
+def _sel_avl(round_num, ts, vclock_now, per_trainer):
+    return {"event": "selection", "task": "train", "round": round_num, "ts": ts,
+            "vclock_now": vclock_now, "per_trainer": per_trainer}
+
+
+def test_duty_cycle_duration_skips_without_avl_state():
+    real = {"selection_train": [{"event": "selection", "round": 1, "ts": 1.0,
+                                  "per_trainer": {"t1": {}}}]}
+    sim = {"selection_train": [{"event": "selection", "round": 1, "ts": 1.0,
+                                 "vclock_now": 0.0, "per_trainer": {"t1": {}}}]}
+    res = duration_duty_cycle_parity(real, sim)
+    assert res["ok"] and res.get("status") == "SKIP"
+
+
+def test_duty_cycle_duration_passes_when_matched():
+    # t1: AVL_TRAIN for [0,600), UN_AVL for [600,900) in both modes.
+    real = {"selection_train": [
+        _sel_avl(1, 1000.0, None, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel_avl(2, 1600.0, None, {"t1": {"avl_state": "UN_AVL"}}),
+        _sel_avl(3, 1900.0, None, {"t1": {"avl_state": "UN_AVL"}}),
+    ]}
+    sim = {"selection_train": [
+        _sel_avl(1, 0.0, 0.0, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel_avl(2, 0.0, 600.0, {"t1": {"avl_state": "UN_AVL"}}),
+        _sel_avl(3, 0.0, 900.0, {"t1": {"avl_state": "UN_AVL"}}),
+    ]}
+    res = duration_duty_cycle_parity(real, sim)
+    assert res["ok"], res
+    assert res["n_trainers"] == 1
+    assert res["mean_err"] == 0.0
+
+
+def test_duty_cycle_duration_fails_when_divergent():
+    # real: AVL_TRAIN the whole span. sim: UN_AVL the whole span -> TVD = 1.0.
+    real = {"selection_train": [
+        _sel_avl(1, 1000.0, None, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel_avl(2, 1900.0, None, {"t1": {"avl_state": "AVL_TRAIN"}}),
+    ]}
+    sim = {"selection_train": [
+        _sel_avl(1, 0.0, 0.0, {"t1": {"avl_state": "UN_AVL"}}),
+        _sel_avl(2, 0.0, 900.0, {"t1": {"avl_state": "UN_AVL"}}),
+    ]}
+    res = duration_duty_cycle_parity(real, sim)
+    assert not res["ok"]
+    assert res["mean_err"] == 1.0
 
 
 # ---------------------------------------------------------------------------

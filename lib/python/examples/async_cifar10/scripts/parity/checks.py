@@ -26,6 +26,13 @@ import os
 import re
 import statistics
 from pathlib import Path
+
+from .avail_state_series import (
+    build_trainer_state_series,
+    run_span,
+    state_fractions,
+    total_variation_distance,
+)
 from typing import Optional
 
 
@@ -2384,6 +2391,67 @@ def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
             "max_dutycycle_diff": round(max_diff, 3), "n_trainers": len(keys)}
 
 
+def duration_duty_cycle_parity(real: dict, sim: dict,
+                               mean_tol: float = 0.05,
+                               within_tau: float = 0.10,
+                               frac_pass_tol: float = 0.95) -> dict:
+    """A4dur [DIST]: duration-weighted duty-cycle parity, real vs sim (C.6.3).
+
+    Replaces A4's transition-FRACTION counting (a bare max over `avail_change`
+    — brittle, and blind in pure-oracular mode; see Dead-ends §9) with time-
+    IN-STATE: per-trainer {state: fraction_of_run} from `trainer_state_series`
+    (C.6.2, reading the C.6.1 per-trainer `avl_state` on selection events),
+    dwell-integrated over each mode's own run span. Per-trainer error = total-
+    variation distance between the real/sim fraction vectors.
+
+    Population rollup is a DISTRIBUTION (mean/p50/p90/p99 +
+    frac_trainers_within_tol), not a single number — a systematic small drift
+    (mean) and a real diverging subset (tail) are different failure modes;
+    neither alone is robust (mirrors U6's "distribution + robust summary"
+    precedent already in this checker).
+
+    Pass rule: mean_err <= mean_tol AND frac_within_tol >= frac_pass_tol — two
+    independent conditions for the two failure modes above. Kept alongside the
+    existing transition-count `duty_cycle_parity` (A4), which catches a
+    different failure mode (transitions stopping entirely) cheaply. SKIP if
+    either mode has no per-trainer avl_state samples (gate off, or telemetry
+    predates C.6.1).
+    """
+    r_series = build_trainer_state_series(real["selection_train"], mode="real")
+    s_series = build_trainer_state_series(sim["selection_train"], mode="sim")
+    if not r_series or not s_series:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no per-trainer avl_state in selection telemetry "
+                        "(gate off, or predates C.6.1)"}
+
+    r_frac = state_fractions(r_series, t_end=run_span(r_series))
+    s_frac = state_fractions(s_series, t_end=run_span(s_series))
+    common = sorted(set(r_frac) & set(s_frac))
+    if not common:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no trainers with >=2 avl_state samples in both modes"}
+
+    errs = {tid: total_variation_distance(r_frac[tid], s_frac[tid]) for tid in common}
+    err_vals = list(errs.values())
+    mean_err = sum(err_vals) / len(err_vals)
+    frac_within_tol = sum(1 for e in err_vals if e <= within_tau) / len(err_vals)
+    worst = sorted(errs.items(), key=lambda kv: -kv[1])[:5]
+    return {
+        "ok": mean_err <= mean_tol and frac_within_tol >= frac_pass_tol,
+        "tier": "DIST",
+        "n_trainers": len(common),
+        "mean_err": round(mean_err, 4),
+        "p50_err": round(percentile(err_vals, 50), 4),
+        "p90_err": round(percentile(err_vals, 90), 4),
+        "p99_err": round(percentile(err_vals, 99), 4),
+        "frac_within_tol": round(frac_within_tol, 3),
+        "within_tau": within_tau,
+        "mean_tol": mean_tol,
+        "frac_pass_tol": frac_pass_tol,
+        "worst_trainers": [{"end": short(tid), "err": round(e, 4)} for tid, e in worst],
+    }
+
+
 def withheld_delivery_parity(real: dict, sim: dict) -> dict:
     """withheld_delivery [NEW, sim characterization]: send-gated updates deliver
     late and STALE, never before completion.
@@ -2674,6 +2742,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["eligible_speed"] = eligible_speed_composition_parity(real_agg, sim_agg)
     results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg)
     results["duty_cycle"] = duty_cycle_parity(real_trainers, sim_trainers)
+    results["duty_cycle_duration"] = duration_duty_cycle_parity(real_agg, sim_agg)
     results["eligible_pool_reduction"] = eligible_pool_reduction_parity(
         real_agg, sim_agg)
     results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
@@ -2758,6 +2827,7 @@ CHECK_META: dict = {
     "eligible_speed":          {"stage": 2, "role": "MECHANISM", "deps": ("eligibility",)},
     "avail_timebase":          {"stage": 2, "role": "CONTROL",  "deps": ("per_round_advance",)},
     "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
+    "duty_cycle_duration":     {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     "eligible_pool_reduction": {"stage": 2, "role": "DIAG",     "deps": ("eligibility",)},
     "abandon_timeout":         {"stage": 2, "role": "CONTROL",  "deps": ("avail_timebase",)},
     # ── Stage 3 Selection ──
