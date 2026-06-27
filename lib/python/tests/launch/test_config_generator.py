@@ -273,3 +273,98 @@ class TestFwdllmSmokeYamlsResolve:
 
         runner = ExperimentRunner(FWDLLM_AGGREGATOR_MAIN.parents[1])
         runner._validate_stack(FWDLLM_AGGREGATOR_MAIN, merged_agg)
+
+
+class TestTrainerSpawnerForwardsDatasetIdentity:
+    """Regression guard for the agg_goal-class bug found in TrainerSpawner:
+    spawn_trainer()/spawn_all() used to silently drop dataset_name/
+    num_trainers on the floor instead of forwarding them to
+    ConfigGenerator.generate_trainer_config(), which then fell back to its
+    own defaults ("cifar10", 300) regardless of the real experiment -- e.g.
+    a 48-trainer experiment would load the cifar10_alpha<a>_n300.yaml split
+    file instead of cifar10_alpha<a>_n48.yaml whenever both exist, silently
+    handing every trainer the wrong (but structurally valid, non-crashing)
+    partition. See MIGRATING_TO_LAUNCHER.md's "real config vs. dead fields"
+    section."""
+
+    class _RecordingConfigGenerator:
+        def __init__(self):
+            self.calls = []
+
+        def generate_trainer_config(self, trainer_id, alpha, availability_mode,
+                                     dataset_name="cifar10", num_trainers=300,
+                                     skip_index_splits=False, **overrides):
+            self.calls.append(
+                {"trainer_id": trainer_id, "dataset_name": dataset_name,
+                 "num_trainers": num_trainers}
+            )
+            return {"taskid": "t", "hyperparameters": {}, "job": {}}
+
+    def _spawner(self, recording_gen):
+        from flame.launch.spawner import TrainerSpawner
+
+        return TrainerSpawner(recording_gen, num_gpus=1, cpu_pinning=False)
+
+    def test_spawn_trainer_forwards_dataset_name_and_num_trainers(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda *a, **k: type("P", (), {"pid": 1})(),
+        )
+        gen = self._RecordingConfigGenerator()
+        spawner = self._spawner(gen)
+        spawner.spawn_trainer(
+            trainer_id=5, alpha=0.1, availability_mode="syn_0",
+            trainer_main_path=tmp_path / "main.py",
+            dataset_name="agnews", num_trainers=48,
+        )
+        assert gen.calls == [
+            {"trainer_id": 5, "dataset_name": "agnews", "num_trainers": 48}
+        ]
+
+    def test_spawn_all_forwards_dataset_name_and_num_trainers(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda *a, **k: type("P", (), {"pid": 1})(),
+        )
+        gen = self._RecordingConfigGenerator()
+        spawner = self._spawner(gen)
+        spawner.spawn_all(
+            trainer_ids=[1, 2, 3], alpha=0.1, availability_mode="syn_0",
+            trainer_main_path=tmp_path / "main.py",
+            dataset_name="agnews", num_trainers=48,
+        )
+        assert all(
+            c["dataset_name"] == "agnews" and c["num_trainers"] == 48
+            for c in gen.calls
+        )
+        assert len(gen.calls) == 3
+
+    def test_spawn_all_defaults_match_generate_trainer_config_defaults(
+        self, tmp_path, monkeypatch
+    ):
+        """Callers that don't pass dataset_name/num_trainers (e.g. direct,
+        non-launcher use) must fall back to the same defaults
+        generate_trainer_config itself documents -- not silently diverge."""
+        import subprocess
+
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda *a, **k: type("P", (), {"pid": 1})(),
+        )
+        gen = self._RecordingConfigGenerator()
+        spawner = self._spawner(gen)
+        spawner.spawn_trainer(
+            trainer_id=1, alpha=0.1, availability_mode="syn_0",
+            trainer_main_path=tmp_path / "main.py",
+        )
+        assert gen.calls == [
+            {"trainer_id": 1, "dataset_name": "cifar10", "num_trainers": 300}
+        ]

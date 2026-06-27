@@ -122,6 +122,7 @@ class ExperimentRunner:
             agg_cfg, agg_provenance = self._build_aggregator_config(
                 exp, agg_config_path, baseline_entry
             )
+            self._validate_selector_label(exp, agg_cfg)
             # Propagate the simulation time mode to the aggregator (it needs to
             # know whether to order updates by a virtual clock or by arrival).
             agg_cfg.setdefault("hyperparameters", {})["time_mode"] = exp.trainer.time_mode
@@ -226,6 +227,7 @@ class ExperimentRunner:
                     "aggregator": [str(c) for c in agg_spawn_cmd],
                     "trainers": [str(c) for c in trainer_spawn_cmd],
                 },
+                agg_cfg=agg_cfg,
             )
             save_execution_config(exec_config, self.current_exp_dir / "execution_config.yaml")
 
@@ -233,6 +235,7 @@ class ExperimentRunner:
             snapshot.create_snapshot(
                 exp, paths["metadata_dir"], agg_cfg_path_out,
                 trainer_spawn_cmd, agg_spawn_cmd,
+                agg_cfg=agg_cfg,
             )
 
             trainer_ids = list(
@@ -280,6 +283,8 @@ class ExperimentRunner:
                 availability_mode=exp.trainer.availability.mode,
                 trainer_main_path=paths["trainer_main"],
                 skip_index_splits=exp.trainer.dataset.path_style,
+                dataset_name=exp.trainer.dataset.name,
+                num_trainers=exp.trainer.num_trainers,
                 per_trainer_overrides=per_trainer_overrides,
                 **config_overrides,
             )
@@ -446,6 +451,26 @@ class ExperimentRunner:
                 f"{stack!r} (async={is_async_stack}). main={agg_main_path}"
             )
 
+    def _validate_selector_label(self, exp: ExperimentConfig, agg_cfg: dict) -> None:
+        """`aggregator.selector` is a descriptive label (log filename,
+        snapshot/execution_config records) -- it does not configure the
+        real selector, which comes from config_template/baseline/
+        config_overrides (see AggregatorConfig docstring). Catch the label
+        drifting from reality here rather than letting it silently mislabel
+        every record of the run.
+        """
+        if not exp.aggregator or not exp.aggregator.selector:
+            return
+        real_selector = (agg_cfg.get("selector") or {}).get("sort")
+        if real_selector and exp.aggregator.selector != real_selector:
+            raise ValueError(
+                f"aggregator.selector label {exp.aggregator.selector!r} does not "
+                f"match the real merged selector {real_selector!r} (from "
+                f"config_template/baseline/config_overrides). Fix the label "
+                f"under experiment.aggregator.selector, or check why the real "
+                f"selector resolved differently than intended."
+            )
+
     def _build_aggregator_config(
         self,
         exp: ExperimentConfig,
@@ -477,6 +502,29 @@ class ExperimentRunner:
             layers.append(
                 ("experiment.aggregator.config_overrides", exp.aggregator.config_overrides)
             )
+
+        # agg_goal is a single source of truth: fan it into every real
+        # runtime consumer as the final, highest-precedence layer so they
+        # can never disagree (see AggregatorConfig.agg_goal docstring).
+        # Selector implementations spell "how many to select/aggregate"
+        # under two different kwarg names depending on family -- aggGoal
+        # (fedbuff/async_random/async_oort/oracle) vs. aggr_num
+        # (oort/refl_oort/feddance) -- so set both; selectors that don't
+        # read a given key simply ignore the extra entry (kwargs is an
+        # unvalidated freeform dict, flame/config.py:Selector).
+        if exp.aggregator and exp.aggregator.agg_goal is not None:
+            layers.append((
+                "experiment.aggregator.agg_goal",
+                {
+                    "hyperparameters": {"aggGoal": exp.aggregator.agg_goal},
+                    "selector": {
+                        "kwargs": {
+                            "aggGoal": exp.aggregator.agg_goal,
+                            "aggr_num": exp.aggregator.agg_goal,
+                        }
+                    },
+                },
+            ))
 
         merged, provenance = merge_with_provenance(layers)
         return merged, provenance

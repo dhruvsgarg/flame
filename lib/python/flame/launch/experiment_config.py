@@ -56,12 +56,32 @@ class TrainerConfig:
 
 @dataclass
 class AggregatorConfig:
-    """Aggregator configuration."""
+    """Aggregator configuration.
+
+    `selector`/`tracking_mode` do NOT configure the aggregator -- they are
+    descriptive labels (log filename, snapshot/execution_config records)
+    only. The real selector/optimizer/hyperparameters come exclusively from
+    `config_template` -> baseline -> `config_overrides` (see
+    runner.py:_build_aggregator_config). The runner validates `selector`
+    against the real merged value and raises on mismatch, so a stale label
+    is caught rather than silently ignored.
+    """
 
     config_template: Optional[str] = None  # Path to aggregator JSON config (optional when using baseline)
     selector: str = "oort"
     tracking_mode: str = "oracular"  # oracular, default
-    agg_goal: int = 10
+    # Single source of truth for the aggregation-goal count. When set, the
+    # runner fans this value into every real runtime consumer as the final
+    # merge layer, so they can never drift apart:
+    #   - hyperparameters.aggGoal: aggregator's wait-for-N-contributions
+    #     threshold (config.hyperparameters.aggregation_goal).
+    #   - selector.kwargs.aggGoal: read by fedbuff/async_random/async_oort/
+    #     oracle selectors.
+    #   - selector.kwargs.aggr_num: read by oort/refl_oort/feddance
+    #     selectors (same concept, different kwarg name).
+    # None = leave whatever config_template/baseline/config_overrides
+    # already produced untouched.
+    agg_goal: Optional[int] = None
     log_to_wandb: bool = False
     wandb_run_name: Optional[str] = None
     config_overrides: Optional[dict] = None  # Deep-merged into aggregator JSON last (wins over baseline)
@@ -101,12 +121,20 @@ class ExampleConfig:
 
 @dataclass
 class MetadataPaths:
-    """Shared-metadata locations. Paths may be absolute or repo-relative."""
+    """Shared-metadata locations. Paths may be absolute or repo-relative.
+
+    Only `dir` and `registry` are real -- `MetadataLoader` (spawner.py)
+    takes a single root directory and reads fixed `dataset_splits/` and
+    `availability_traces/` subdirectories under it; there is no per-
+    component override hook to plug a separate location into. Don't re-add
+    `dataset_splits_dir`/`traces_dir`-shaped fields here unless
+    `MetadataLoader` is actually changed to accept them -- that pairing
+    (declared-but-never-wired field) is the exact bug class this file's
+    `AggregatorConfig.agg_goal` history is a cautionary tale for.
+    """
 
     dir: Optional[str] = None
     registry: Optional[str] = None
-    dataset_splits_dir: Optional[str] = None
-    traces_dir: Optional[str] = None
 
 
 @dataclass

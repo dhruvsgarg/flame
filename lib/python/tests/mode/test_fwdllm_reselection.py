@@ -24,11 +24,13 @@ class _FakeAggregator:
     """Minimal stand-in exposing only the state
     `_select_ends_respecting_reselect_gate` touches."""
 
-    def __init__(self, reselect_each_iteration):
+    def __init__(self, reselect_each_iteration, agg_goal=None):
         self._reselect_each_iteration = reselect_each_iteration
         self._round_selected_ends = None
         self._round_selected_ends_round = None
         self._round = 0
+        if agg_goal is not None:
+            self._agg_goal = agg_goal
 
     select = TopAggregator._select_ends_respecting_reselect_gate
 
@@ -83,4 +85,19 @@ class TestReselectGate:
 
         # Now cached -- a 4th call must not invoke the selector again.
         assert agg.select(channel, "train") == ["t1"]
+        assert channel.calls == 3
+
+    def test_per_round_accumulates_partial_selections_until_agg_goal(self):
+        """Must keep merging in newly-selected trainers until the cache
+        reaches `_agg_goal`, not freeze on the first partial result."""
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=3)
+        channel = _FakeChannel(selections=[["t1"], ["t2"], ["t3"]])
+
+        assert agg.select(channel, "train") == ["t1"]
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert agg.select(channel, "train") == ["t1", "t2", "t3"]
+        assert channel.calls == 3
+
+        # Cache has reached agg_goal -- further calls must not re-query.
+        assert agg.select(channel, "train") == ["t1", "t2", "t3"]
         assert channel.calls == 3

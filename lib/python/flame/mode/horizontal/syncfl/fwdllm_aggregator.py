@@ -709,6 +709,21 @@ class TopAggregator(AsyncTopAgg):
 
     @timer_decorator
     def _process_single_trainer_message(self, channel, msg, end, timestamp):
+        # An end may only contribute once per (round, data_id,
+        # iteration_per_data_id) collection cycle -- _per_agg_trainer_list is
+        # reset only when that tuple advances (_process_aggregation_goal_met).
+        # The trainer self-enforces this too, but resending WEIGHTS to the
+        # round's frozen trainer set on every distribute loop (per-round
+        # reselect) makes a duplicate/late message possible; guard here too.
+        if end in self._per_agg_trainer_list:
+            logger.info(
+                f"Duplicate contribution from {end} for round={self._round}, "
+                f"data_id={self.data_id}, iteration={self.iteration_per_data_id}; "
+                f"ignoring."
+            )
+            channel.cleanup_recvd_end(end)
+            return False
+
         if MessageType.MODEL_VERSION in msg:
             version = msg[MessageType.MODEL_VERSION]
             if version != self._model_version:
@@ -790,10 +805,17 @@ class TopAggregator(AsyncTopAgg):
             logger.debug(
                 f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
             )
+            # Use this message's stat_utility (always sent alongside
+            # GRADIENTS, see fwdllm_trainer.py's msg dict), not the channel
+            # property -- the property is set below, after this call, so
+            # reading it here was always None on a trainer's first
+            # contribution (crashing fedbuff's weight_factor() on
+            # `1 + None`, silently neutralizing the aggregation rate every
+            # time).
             self.aggregate_grads_from_trainers(
                 trainer_gradients,
                 version_for_rate=version_for_rate,
-                stat_utility=channel.get_end_property(end, PROP_STAT_UTILITY),
+                stat_utility=msg[MessageType.STAT_UTILITY],
                 grad_for_var_check=grad_for_var_check,
                 jvp_for_snr_check=jvp_for_snr_check,
             )
@@ -827,7 +849,10 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
-        channel.remove_from_selected_ends(end)
+        # cleanup_recvd_end(), not remove_from_selected_ends(): the latter
+        # never clears the selector's all_selected set, permanently
+        # blocking this trainer from future reselection.
+        channel.cleanup_recvd_end(end)
         return True
 
     def _log_and_reset_model_version_stats(self):
@@ -1432,33 +1457,40 @@ class TopAggregator(AsyncTopAgg):
         """Return the SEND-state-selected ends, honoring
         `self._reselect_each_iteration` (D4 / Phase 7 step P4).
 
-        True (default): re-invoke the selector every call (today's
-        behavior, used by every databin/iteration). False: select once per
-        round and reuse that cached set for the rest of the round's
-        databins/iterations, only re-invoking the selector once
-        `self._round` has advanced past the round the cache was built for.
+        True (default): re-invoke the selector every call. False: accumulate
+        selections into a per-round cache, re-invoking the selector each
+        call until the cache reaches `self._agg_goal` (trainers join the
+        channel asynchronously, so one early call may only see a few of
+        them); then reuse the cache until `self._round` advances.
         """
-        if (
-            not self._reselect_each_iteration
-            and self._round_selected_ends is not None
-            and self._round_selected_ends_round == self._round
-        ):
-            ends = list(self._round_selected_ends)
-            logger.info(
-                f"[ReselectGate] reselect_each_iteration=False; reusing "
-                f"cached per-round selection ends={ends} for round={self._round}"
-            )
-            return ends
-
-        ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
-        if not self._reselect_each_iteration and ends:
-            self._round_selected_ends = list(ends)
+        if self._round_selected_ends_round != self._round:
+            self._round_selected_ends = None
             self._round_selected_ends_round = self._round
+
+        if not self._reselect_each_iteration and self._round_selected_ends is not None:
+            target = getattr(self, "_agg_goal", len(self._round_selected_ends))
+            if len(self._round_selected_ends) >= target:
+                ends = list(self._round_selected_ends)
+                logger.info(
+                    f"[ReselectGate] reselect_each_iteration=False; reusing "
+                    f"cached per-round selection ends={ends} for round={self._round}"
+                )
+                return ends
+
+        new_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        if not self._reselect_each_iteration and new_ends:
+            merged = list(self._round_selected_ends or [])
+            for end in new_ends:
+                if end not in merged:
+                    merged.append(end)
+            self._round_selected_ends = merged
             logger.info(
-                f"[ReselectGate] reselect_each_iteration=False; cached "
-                f"new per-round selection ends={ends} for round={self._round}"
+                f"[ReselectGate] reselect_each_iteration=False; accumulated "
+                f"per-round selection ends={merged} "
+                f"({len(merged)}/{getattr(self, '_agg_goal', '?')}) for round={self._round}"
             )
-        return ends
+            return merged
+        return new_ends
 
     @timer_decorator
     def _distribute_weights_sync(

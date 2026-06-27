@@ -241,6 +241,8 @@ class TrainerSpawner:
         availability_mode: str,
         trainer_main_path: Path,
         skip_index_splits: bool = False,
+        dataset_name: str = "cifar10",
+        num_trainers: int = 300,
         **config_overrides,
     ) -> subprocess.Popen:
         """
@@ -254,6 +256,21 @@ class TrainerSpawner:
             skip_index_splits: True for path-style datasets with no
                 _metadata/dataset_splits/ index-list file (see
                 ConfigGenerator.generate_trainer_config).
+            dataset_name: Forwarded to generate_trainer_config()'s dataset
+                split lookup. Caller MUST pass the experiment's real
+                trainer.dataset.name -- the "cifar10" default here exists
+                only so direct/manual callers don't need to specify it for
+                the common case, not as a silent fallback for the launcher.
+            num_trainers: Forwarded to generate_trainer_config()'s dataset
+                split lookup (selects which <dataset>_alpha<a>_n<N>.yaml
+                split file to read). Caller MUST pass the experiment's real
+                trainer.num_trainers -- the 300 default here is the same
+                "don't require it for manual calls" exception as
+                dataset_name, not a safe fallback. Passing the wrong value
+                silently loads a *different*, structurally valid split file
+                (e.g. n=300's instead of n=48's) rather than erroring, which
+                is exactly the bug this parameter was added to close (no
+                caller threaded it through before).
             **config_overrides: Additional config overrides
 
         Returns:
@@ -262,6 +279,7 @@ class TrainerSpawner:
         # Generate config
         config = self.config_gen.generate_trainer_config(
             trainer_id, alpha, availability_mode,
+            dataset_name=dataset_name, num_trainers=num_trainers,
             skip_index_splits=skip_index_splits, **config_overrides
         )
 
@@ -331,6 +349,8 @@ class TrainerSpawner:
         availability_mode: str,
         trainer_main_path: Path,
         skip_index_splits: bool = False,
+        dataset_name: str = "cifar10",
+        num_trainers: int = 300,
         per_trainer_overrides: Optional[Dict[int, Dict]] = None,
         **config_overrides,
     ):
@@ -344,6 +364,17 @@ class TrainerSpawner:
             trainer_main_path: Path to trainer main.py
             skip_index_splits: True for path-style datasets with no
                 _metadata/dataset_splits/ index-list file.
+            dataset_name: The experiment's real trainer.dataset.name --
+                selects which <dataset>_alpha<a>_n<N>.yaml split file to
+                read (see spawn_trainer's docstring for why the "cifar10"
+                default here must not be relied on by the launcher).
+            num_trainers: The experiment's real trainer.num_trainers --
+                selects which <dataset>_alpha<a>_n<N>.yaml split file to
+                read. Pass it explicitly rather than inferring
+                len(trainer_ids); the split file's <N> means "this dataset
+                was partitioned for N trainers total," a property of the
+                experiment, not of whichever id range happens to be passed
+                here.
             per_trainer_overrides: Optional {trainer_id: {dotted.key: value}}
                 dict of overrides that vary per trainer (e.g. a computed
                 hyperparameters.client_idx), merged on top of the shared
@@ -368,6 +399,8 @@ class TrainerSpawner:
                 availability_mode,
                 trainer_main_path,
                 skip_index_splits=skip_index_splits,
+                dataset_name=dataset_name,
+                num_trainers=num_trainers,
                 **trainer_overrides,
             )
             time.sleep(self.sleep_between_spawns)

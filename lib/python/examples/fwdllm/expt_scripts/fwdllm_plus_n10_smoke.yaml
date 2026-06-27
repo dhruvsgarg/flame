@@ -48,6 +48,9 @@ experiments:
         hyperparameters:
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # Uniform/IID partition for smoke tests -- avoids the niid_label
+          # baseline default's data-skew confound while validating mechanics.
+          partition_method: uniform
 
     aggregator:
       config_template: configs/aggregator_base.json
@@ -62,12 +65,14 @@ experiments:
           rounds: 50  # short smoke run, not the full 300
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
         selector:
           kwargs:
             # Scaled down from the baseline's n=150-ish defaults (k=5, c=15)
             # to fit 10 trainers.
             k: 5
             c: 10
+            minInitialTrainers: 10
 
     execution:
       num_gpus: 1
