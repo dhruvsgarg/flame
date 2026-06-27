@@ -721,7 +721,10 @@ class TopAggregator(AsyncTopAgg):
                 f"data_id={self.data_id}, iteration={self.iteration_per_data_id}; "
                 f"ignoring."
             )
-            channel.cleanup_recvd_end(end)
+            if self.is_async:
+                channel.cleanup_provided_ends(end)
+            else:
+                channel.cleanup_recvd_end(end)
             return False
 
         if MessageType.MODEL_VERSION in msg:
@@ -849,10 +852,18 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
-        # cleanup_recvd_end(), not remove_from_selected_ends(): the latter
-        # never clears the selector's all_selected set, permanently
-        # blocking this trainer from future reselection.
-        channel.cleanup_recvd_end(end)
+        # cleanup_recvd_end()/cleanup_provided_ends(), not
+        # remove_from_selected_ends(): the latter never clears the
+        # selector's all_selected set, permanently blocking this trainer
+        # from future reselection. Async selectors (async_oort,
+        # async_random) only implement the batch _cleanup_recvd_ends/
+        # _cleanup_provided_ends path -- cleanup_recvd_end() is sync-only
+        # (random selector), so it must stay behind the is_async branch
+        # like the reject-stale-update branch above.
+        if self.is_async:
+            channel.cleanup_provided_ends(end)
+        else:
+            channel.cleanup_recvd_end(end)
         return True
 
     def _log_and_reset_model_version_stats(self):
@@ -1066,6 +1077,19 @@ class TopAggregator(AsyncTopAgg):
                 self._round += 1
                 self.data_id = 0
                 channel.set_property("round", self._round)
+
+                # fwdllm's TopAggregator extends the asyncfl base (not
+                # syncfl's), which has no rounds-based stop condition of its
+                # own -- self._work_done is otherwise never set here, so the
+                # composer loop (Loop(loop_check_fn=lambda: self._work_done))
+                # never exits and the aggregator process runs forever
+                # regardless of hyperparameters.rounds.
+                self._work_done = self._round > self.config.hyperparameters.rounds
+                if self._work_done:
+                    logger.info(
+                        f"rounds={self.config.hyperparameters.rounds} reached "
+                        f"at round {self._round}; stopping run."
+                    )
 
         else:
             logger.info(

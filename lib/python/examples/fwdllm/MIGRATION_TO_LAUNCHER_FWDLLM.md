@@ -6,9 +6,28 @@ below before resuming work in any new session — it is always current.
 
 ## Status & next step
 
-**Phases 1–11 are DONE. The only remaining work is Phase 7 step P8: live
-smoke tests** — purely an "actually run it on real GPUs with the real agnews
-H5 data" gap. Everything between here and P8 is historical record.
+**Phases 1–11 are DONE. Phase 12 ran the first live P8 smoke tests on
+2026-06-27 for all three baselines and triaged the results** — two real bugs
+found and fixed (both verified against the actual failure logs, with new
+regression tests, full suite green: see Phase 12). Several deeper issues were
+diagnosed but **deliberately left unfixed pending a decision from the repo
+owner** (scope/risk too high to guess at silently) — see Phase 12's
+"Flagged, open" list. **The `[NEXT]` action is to re-run the three smoke
+YAMLs with the Phase 12 fixes applied**, then move on to the telemetry/plots
+design work Phase 12 scoped out (also `[NEXT]`, in parallel or after).
+
+**fwdllm smoke-test pass/fail bar is different from async_cifar10's.**
+async_cifar10 judges a smoke run by rounds completed, because cifar10 rounds
+are fast. **fwdllm must not be judged by rounds** — one fwdllm "round" is
+`total_data_bins` (hardcoded to 150) data-id completions, each potentially
+needing up to `max_iterations_per_data_id` (15) real forward-mode training
+iterations; `rounds: 50` in the smoke YAMLs would in principle mean 7500
+data-id completions, far beyond smoke-test scope. **Until a finer-grained
+stop condition exists (see Phase 12's telemetry section), judge a smoke run
+by data-id advancement instead: ≥5 distinct `data_id` values reached on a
+single run, via `grep IterProgress` / the new telemetry once it lands, is
+"made real progress."** Getting stuck on `data_id=0` for the entire run is a
+fail even if the process is still alive.
 
 Phase 11's blocker (three missing `async_cifar10` split files whose absence
 was masked by the pre-fix n300 fallback) is resolved: all three were
@@ -17,7 +36,8 @@ test suite (326 passed, 7 skipped) remains green. The full sweep
 (`examples/_metadata/dataset_splits/` vs every non-`path_style` YAML in
 `expt_scripts_2026/`) now shows no missing files.
 
-**Run P8 in the single `dg_flame` env (Phase 8 already applied):**
+**Re-run P8 in the single `dg_flame` env (Phase 8 already applied, Phase 12
+fixes already applied):**
 
 ```bash
 python -m flame.launch.run_experiment lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml
@@ -27,13 +47,17 @@ python -m flame.launch.run_experiment lib/python/examples/fwdllm/expt_scripts/fl
 
 Each covers one of the three owner-spec baselines (10 trainers, ~50 rounds).
 Pass criteria for each: aggregator + trainer processes start and don't crash;
-≥3–5 rounds complete; `telemetry/trainer_*.jsonl` has `trainer_round` events;
+**≥5 distinct `data_id` values reached** (not rounds — see above);
+`telemetry/trainer_*.jsonl` has `trainer_round` events;
 `aggregator_config.json` shows the expected merged `selector.sort` /
 `is_async` / `optimizer.sort` for that baseline (see the matrix in Phase 7),
 **and** `hyperparameters.aggGoal` (+ `selector.kwargs.aggGoal`/`aggr_num` for
 fluxtune) matches that YAML's top-level `agg_goal` (2/2/3 respectively, per
 Phase 10 — confirm the fan-out actually landed, since this is exactly the
-class of bug Phase 10 fixed).
+class of bug Phase 10 fixed). Also confirm the run now **terminates on its
+own** within the launcher's watchdog window (Phase 12 fixed the dead
+`_work_done` loop for the sync path; the async/hybrid compose path and the
+trainer-side message-drop issue are still open — see Phase 12).
 Optional parity check: confirm `client_idx = (trainer_id-1) % 100` reproduces
 the same H5 partitions as the legacy `json_scripts/trainer_*.json`.
 
@@ -376,15 +400,14 @@ Full sweep: `pytest lib/python/tests/launch lib/python/tests/mode
 lib/python/tests/optimizer lib/python/tests/selector` → all green
 (300+ tests).
 
-### P8 — Live smoke tests [NEXT]
+### P8 — Live smoke tests [DONE (first pass) → triaged in Phase 12, re-run is the new [NEXT]]
 
-Supersedes the old Smoke Test E. The env blocker is resolved (Phase 8). Run all
-three smoke YAMLs (`fwdllm`/`fwdllm_plus`/`fluxtune`) in the single `dg_flame`
-env on a host with GPUs and the real agnews H5 data; assert ≥3–5 rounds
-complete, `trainer_round` telemetry present,
-and `aggregator_config.json` shows the matrix's expected merged values for
-that baseline. Optional: parity-check `client_idx` against the legacy
-`json_scripts/trainer_*.json` values.
+Supersedes the old Smoke Test E. The env blocker is resolved (Phase 8). First
+live run of all three smoke YAMLs happened 2026-06-27 — see Phase 12 for full
+triage (two bugs fixed, several deeper issues flagged open). The original
+"≥3–5 rounds complete" pass criterion in this step is **superseded** by
+Phase 12's data-id-based bar (see **Status & next step** above) — one fwdllm
+round is too coarse a unit to use as a smoke-test pass condition.
 
 ---
 
@@ -682,6 +705,289 @@ checklist (§10, item 8b).
 new §1 subsection ("`dataset.name`/`num_trainers` must be threaded through,
 not defaulted") documenting finding #1 above, cross-referenced from §4's
 existing "real config vs. descriptive labels" note from Phase 10.
+
+---
+
+## Phase 12 — First live P8 smoke-test triage (2026-06-27) [DONE: fixes 1–2.
+Items 3–7: FLAGGED, open — need an owner decision before fixing]
+
+Ran all three smoke YAMLs for real on GPUs with the real agnews H5 data:
+`run_20260627_163015_fwdllm_n10_smoke`, `run_20260627_164344_fwdllm_plus_n10_smoke`,
+`run_20260627_181243_fluxtune_n10_smoke` (paths under
+`examples/fwdllm/experiments/`). Results: fluxtune crashed with an
+`AttributeError`; fwdllm_plus ran for >1.5 hours without terminating;
+fwdllm got stuck on `data_id=0` and was manually killed (`KeyboardInterrupt`)
+after ~12 minutes. All three were triaged by reading the actual aggregator +
+trainer logs line-by-line (not guessed at) — findings below.
+
+### 1. [FIXED] fluxtune crash: `channel.cleanup_recvd_end()` is sync-selector-only, called unconditionally on the async path too
+
+**Crash:** `AttributeError: 'AsyncOortSelector' object has no attribute
+'_cleanup_recvd_end'` in `_process_single_trainer_message`, immediately on
+the first received gradient message.
+
+**Root cause:** `channel.cleanup_recvd_end(end)` (singular,
+`flame/channel.py`) unconditionally calls `self._selector._cleanup_recvd_end(end, ...)`.
+Only `RandomSelector` (`flame/selector/random.py`) implements that singular
+per-end method — `AsyncOortSelector`/`AsyncRandomSelector` (used by
+fluxtune/fluxtune_dynkc) only implement the batch `_cleanup_recvd_ends`
+(plural) / `_cleanup_provided_ends` path.
+`fwdllm_aggregator.py:_process_single_trainer_message` has **three** call
+sites for this cleanup; one of them (the stale-update-reject branch) already
+had the right `is_async` guard —
+`if self.is_async: channel.cleanup_provided_ends(end) else: channel.cleanup_recvd_end(end)`
+— but the other two (the duplicate-contribution guard, and the success
+path) called the sync-only `cleanup_recvd_end(end)` unconditionally. fwdllm
+and fwdllm_plus never hit this because they're sync (`is_async=False`,
+`RandomSelector`); fluxtune is the only baseline that's async, so it's the
+only one that ever exercised the missing branch.
+
+**Fix:** `flame/mode/horizontal/syncfl/fwdllm_aggregator.py` — both
+remaining call sites now use the same `is_async` branch as the
+already-correct third one. **Tests:**
+`tests/mode/test_fwdllm_duplicate_contribution.py` (added
+`test_async_path_uses_cleanup_provided_ends_not_cleanup_recvd_end`,
+reproducing the exact production crash against a fake selector; updated the
+existing fixture to accept an `is_async` flag).
+
+### 2. [FIXED] fwdllm/fwdllm_plus never terminate — `self._work_done` is never set anywhere in fwdllm_aggregator.py
+
+**This is the real cause of "doesn't terminate," independent of any
+variance-check or availability stall below.** Every other FL stack in this
+codebase (`syncfl/top_aggregator.py`, `lifl_coord_syncfl/coordinator.py`,
+`coord_syncfl/coordinator.py`, `distributed/trainer.py`, ...) sets
+`self._work_done = self._round > self._rounds` (or an equivalent) somewhere,
+which is what makes `Loop(loop_check_fn=lambda: self._work_done)` ever exit.
+fwdllm's `TopAggregator` extends `flame.mode.horizontal.asyncfl.top_aggregator.TopAggregator`
+(not `syncfl`'s, despite living under the `syncfl/` module path — same class
+hierarchy quirk already flagged at the top of this doc), and **neither
+class ever sets `self._work_done = True`, nor ever reads
+`self._rounds`/`hyperparameters.rounds` at all.** The composer loop runs
+forever; `rounds: 50` in the smoke YAMLs was silently dead. The only things
+that ever stopped a run were a manual kill or the launcher's external
+watchdog (`runner.py`'s `aggregator_spawner.wait(timeout=...)`, itself
+disabled unless `max_runtime_s`/`sim_wall_ceiling_s` is set — none of the
+three smoke YAMLs set either).
+
+Verified live: `aggregator_fwdllm_plus_n10_smoke` ran 16:44→18:11 (>1.5h)
+continuously active (steady ~11k log lines/min the whole time, not idle),
+never crashing, never exiting on its own.
+
+**Fix:** `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`'s
+`_process_aggregation_goal_met`, in the round-rollover branch (`if
+self.data_id == self.total_data_bins:`), now also sets `self._work_done =
+self._round > self.config.hyperparameters.rounds` and logs when it fires.
+**Tests:** `tests/mode/test_fwdllm_rounds_termination.py` (4 cases: sets
+`_work_done` once rounds are exhausted, leaves it unset/False while rounds
+remain, and confirms the check is never touched on the non-rollover or
+variance-check-failed branches).
+
+**Caveat — only the sync compose path was fixed.** This fix is in
+`_process_aggregation_goal_met`, called from both the sync and the
+hybrid/async compose paths, so it should cover all three baselines'
+round-rollover. But the **sync compose path's `c.tasklet("inform_end_of_training")`
+is commented out** (`fwdllm_aggregator.py`, end of the `else:` branch of
+`compose()`) — so even with the aggregator now exiting its own loop on
+schedule, trainers are never sent a clean `EOT` broadcast on the sync path
+(fwdllm/fwdllm_plus). They'll instead be force-killed by the launcher's
+hardcoded `trainer_spawner.wait_all(timeout_per_trainer=30.0)` grace period
+in `runner.py`. Good enough for "the experiment as a whole terminates," not
+a clean per-trainer shutdown. Left as-is (re-enabling a commented-out
+tasklet block with several alternate commented variants nearby looked like
+an active WIP decision point, not something to flip blindly without a live
+GPU re-run to confirm it doesn't break the sync distribute loop).
+
+### 3. [FLAGGED, open] fwdllm_plus real hang: ORACULAR `mobiperf_2st` trace + only 10 trainers can leave fewer than `aggGoal` simultaneously available for very long real-time stretches
+
+Even after fix #2 makes the run terminate eventually (once `rounds` is hit or
+the watchdog fires), this is a **separate, real liveness problem**: with
+`reject_stale_updates=False` and `aggGoal=2`, the run can go for a very long
+real-clock time making zero progress if fewer than 2 of the 10 trainers are
+ever simultaneously available.
+
+**Evidence:** `random.py`'s `select` log (`available ends: ...`) shows the
+run starting with all 10 trainers available, but by the run's final ~75
+minutes (continuously, every ~0.5–1s poll) **exactly one** trainer
+(`...580370`) was ever in the available set — never two. With `aggGoal=2`,
+no aggregation can ever complete in that state; the selector just logs
+`Waiting on 1, need 10 more to maintain concurrency 10` /
+`0 new selection less than concurrency 10` forever.
+
+**Why:** `mobiperf_2st`/`mobiperf_3st_50` (`_metadata/availability_traces/mobiperf_traces.yaml`)
+are **real per-device MobiPerf availability traces**, one independent
+on/off timeline per `device_{trainer_id:03d}`, looked up 1:1 by
+`trainer_id`. They are not percentage/synthetic traces. A 10-trainer smoke
+test only samples 10 of these real device timelines; whether ≥2 of those 10
+specific devices are online at the same real wall-clock moment is governed
+by real MobiPerf data, not anything we control, and `time_mode: real` means
+no time acceleration — a long mutual-offline stretch in the real trace data
+is a long real wait, with no guarantee it ever recovers before `rounds`/the
+watchdog ends the run.
+
+**Not fixed — needs an owner decision**, because the right fix is an
+experiment-design choice, not a code bug:
+  - Use a synthetic/always-available trace (`syn_0`, like plain `fwdllm`) for
+    the **smoke test** specifically, reserving `mobiperf_2st`/`_3st_*` for
+    longer, non-smoke ORACULAR/3-tier experiments where a multi-hour budget
+    is expected anyway.
+  - Or pick 10 specific `device_*` IDs known to have good simultaneous
+    coverage in the trace data, instead of the default `trainer_id` 1–10.
+  - Or lower the smoke YAML's `aggGoal` to 1 (changes what's being tested).
+  - Or accept it and just budget more real wall-clock time + set
+    `max_runtime_s` for ORACULAR smoke runs.
+
+### 4. [FLAGGED, open] Distribute-loop has no back-pressure → duplicate-broadcast storm → channel silently drops legitimate retraining submissions
+
+This is the most likely reason **plain fwdllm** (no availability trace,
+`syn_0`-equivalent default) still stalled on `data_id=0` after only 5
+variance-check iterations, separate from issue #3.
+
+**Evidence chain (from the fwdllm_n10_smoke run):**
+- `_distribute_weights_sync`/`_aggregate_grads_sync` are re-invoked on
+  **every composer tick with no gating** — nothing waits for trainers to
+  respond to broadcast N before sending broadcast N+1. Observed: ~2,082
+  "Model distributed to clients" broadcasts in 12.5 minutes, all for the
+  same `(round=1, data_id=0)`, i.e. one every ~0.35s, the entire time the
+  run was "stuck."
+- This is by design at the trainer level (a documented, deliberate
+  duplicate-guard: a trainer's `_fetch_weights` compares the incoming
+  message's `iteration_per_data_id` against its own; if equal, it's a
+  resend of something already handled and is aborted/discarded — see the
+  comment at `fwdllm_aggregator.py:712-717`). But each FAILED variance
+  check increments `iteration_per_data_id` and re-broadcasts to **all**
+  selected trainers (not just the ones who haven't responded yet), so all
+  10 trainers retrain and resend on every iteration, not just the 2 needed
+  for `aggGoal`.
+- Trace of one trainer (`...580372`) across `data_id=0`: it genuinely
+  retrained and called `_send_grads` **6 separate times** (6 distinct grad
+  hashes logged, one per iteration 0 through ~5), but the aggregator's own
+  `_updates_received` counter only ever recorded **1** contribution from
+  this trainer for the entire `data_id=0` cycle. 8 of its legitimately
+  recomputed retraining submissions were never counted.
+- `_streamer_for_recv_fifo` (`channel.py`) logs
+  `[RECV_FIFO] Skipping end_id ... - already has active task` repeatedly
+  for the same end — i.e. when a second message from the same end arrives
+  before the first one's "active task" is cleared, **the channel skips
+  (drops) it rather than queuing it**. Combined with the broadcast storm
+  above, a trainer that resends faster than the aggregator drains its
+  queue loses messages outright, silently.
+- Net effect: which 2 (of 10) trainers' contributions get counted toward a
+  given iteration's `aggGoal` is effectively a race, not a deterministic
+  selection. Convergence of the variance check (whether it ever reaches
+  `var_good_enough` within `max_iterations_per_data_id`) depends on this
+  race resolving favorably, which it didn't within the iterations this run
+  got to before being killed.
+
+**Not fixed — this is a structural concurrency/flow-control gap spanning
+`fwdllm_aggregator.py`'s distribute loop and `channel.py`'s chunked-recv
+dedup, pre-dating the launcher migration, and risky to change blindly
+without a live GPU re-run to confirm the fix doesn't change FwdLLM's actual
+training semantics.** Recommended directions for whoever picks this up:
+  - Add back-pressure to `_distribute_weights_sync`: don't re-broadcast to
+    an end that already has a message in flight / already responded this
+    iteration, instead of broadcasting to the full selected set every tick.
+  - And/or change `_streamer_for_recv_fifo`'s "already has active task"
+    branch to queue rather than drop, so a fast-resending trainer's later
+    messages aren't silently lost.
+  - Either change needs a live re-run to confirm data_id throughput
+    actually improves and nothing else (e.g. fluxtune's async paths, which
+    share `channel.py`) regresses.
+
+### 5. [FLAGGED, design gap] `total_data_bins` is hardcoded to 150, never read from config — makes "rounds" a bad smoke-test unit
+
+`self.total_data_bins = 150` is a hardcoded literal in
+`fwdllm_aggregator.py`'s init, not sourced from `config`/the H5 partition
+file. One fwdllm "round" = 150 data-id completions. The smoke YAMLs'
+`rounds: 50` therefore nominally means 7,500 data-id completions to reach
+"50 rounds done" — nowhere close to smoke-test scope. This is why
+**Status & next step** above replaces "rounds complete" with "≥5 distinct
+`data_id`s reached" as the smoke-test bar. Not fixed; flagged because a
+real fix (e.g. exposing `total_data_bins` as a config override, or a
+separate small-N smoke-specific cap) is an API design choice, not picked
+unilaterally here.
+
+### 6. [FLAGGED, minor] `timer_decorator`'s `(Round=.., DataId=.., Iter=..)` log suffix can show a later call's state than the one it's reporting on
+
+`flame/monitor/runtime.py:timer_decorator` reads `self.fwd_llm_stage`
+**after** the wrapped function returns, not a snapshot taken when the
+function was entered. Since `self.fwd_llm_stage` is shared mutable state
+that later calls (on the same single-threaded composer loop) overwrite
+before the decorator gets to log, a decorator line for, e.g., `_send_grads`
+can print `Iter=5` even though that particular `_send_grads` call actually
+ran for iteration 4 — the next `_fetch_weights` call had already advanced
+`fwd_llm_stage` by the time the decorator's `logger.info` executed. This
+caused real confusion during this triage (initially looked like a
+concurrency race; it isn't — everything here runs on `MainThread`). Purely
+a logging/observability inaccuracy, not a behavior bug; worth a future
+cleanup (snapshot the stage at function entry, not in the wrapper after
+return) but not fixed here since it's tangential to the actual hangs.
+
+### 7. [FLAGGED, design input needed] Telemetry/plots for FwdLLM's data-id/iteration/variance dynamics — WORK IN PROGRESS, needs owner input before building
+
+**Current state (verified, not assumed):** the aggregator-side telemetry
+file (`telemetry/aggregator_<job>.jsonl`) was **completely empty (0 events)**
+in all three smoke runs — `fwdllm_aggregator.py` never calls
+`telemetry.emit(...)` anywhere; the rich `[IterProgress]`/variance-check
+state that drove this entire triage only exists as plain-text `logger.info`
+calls, not structured events. Trainer-side telemetry does exist
+(`trainer_round` events, `selection` events) and **already carries**
+`data_id`/`iteration_per_data_id`/`model_version` in its `extra` fields
+(`FedSgdTrainer.py`'s `train_with_data_id`), so that half is in better shape
+than the aggregator half. The post-run plotting pipeline
+(`runner.py:_run_post_analysis()`) is the generic one built for
+async_cifar10 — `selection`/`availability`/`sanity`/`system` plot
+categories, all centered on **rounds** as the unit of progress.
+
+**What maps cleanly onto the existing (cifar10-shared) plots, as-is:**
+selection fairness/composition, availability dynamics, send/recv-lag and
+other system-timing sanity plots — these are generic FL concepts and should
+be reusable for fwdllm baselines without change once aggregator-side events
+exist to drive them.
+
+**What has no cifar10 analog and currently has *no* telemetry backing it at
+all** (this is the gap worth designing for):
+  - `data_id`/`iteration_per_data_id` progress and throughput (the unit
+    that actually matters for fwdllm's pacing — see issue #5).
+  - Variance-check convergence: `var` vs `var_threshold` across iterations
+    of a given `data_id`, pass/fail/force-commit outcome.
+  - Perturbation/JVP signals (`jvp_for_snr_check`, `grad_for_var_check`) and
+    `perturbation_sampling`/`select_perturbation_using_jvp` behavior.
+  - `model_version` cadence relative to `data_id` (when
+    `inc_model_version_per_data_id` is set) rather than relative to round.
+  - `fluxtune_dynkc`'s adaptive K/C trace over time
+    (`DynamicKCController.step()`'s history) — currently only logged, not
+    captured as telemetry.
+  - Per-(data_id, iteration) accepted-vs-attempted submission counts per
+    trainer — would have made issue #4's message-drop directly visible from
+    a plot instead of requiring manual log archaeology.
+
+**Initial ideas (genuinely unverified — confirm with the user before
+building any of this):**
+  a. A new aggregator-side telemetry event (e.g. `agg_data_id`, parallel to
+     the existing `build_agg_round`/`build_agg_eval` builders in
+     `flame/telemetry/events.py`), emitted once per
+     `_process_aggregation_goal_met` call: round, data_id,
+     iteration_per_data_id, var, var_threshold, var_good_enough,
+     force_commit, agg_goal_cnt, elapsed wall time since data_id start.
+  b. A "variance convergence" plot per data_id: iteration on the x-axis,
+     var (and the threshold line) on the y-axis — shows how many
+     iterations each data_id actually needed and whether/when it
+     converged.
+  c. A "data-id throughput over wall-clock time" plot — the fwdllm analog
+     of cifar10's round-over-time plots, and the natural metric to
+     automate the "≥5 data_ids" smoke-test bar instead of grepping logs by
+     hand.
+  d. A per-trainer "accepted vs. attempted" plot per data_id, fed by issue
+     #4's accounting once it exists.
+  e. A K/C-over-time plot for `fluxtune_dynkc`.
+
+These are starting points only. Before any of (a)–(e) gets built: ask the
+user which signals they actually want plotted (this list is not
+exhaustive and some items may not be worth the effort), whether any
+existing cifar10-style plot categories should be reused unmodified, and
+whether the new aggregator-telemetry event should land before or after
+issues #3/#4 above are resolved (since #4 in particular would change what
+"accepted vs. attempted" actually means).
 
 ---
 
