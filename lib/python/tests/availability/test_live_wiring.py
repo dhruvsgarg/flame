@@ -23,7 +23,8 @@ import math
 from sortedcontainers import SortedDict
 
 from flame.availability.availability_mixin import AvailabilityMixin
-from flame.selector.properties import PROP_SIM_SEND_TS
+from flame.config import TrainerAvailState
+from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_SEND_TS
 from flame.sim import SimReorderBuffer
 
 
@@ -48,6 +49,9 @@ class _FakeEnd:
 
     def set_property(self, k, v):
         self.props[k] = v
+
+    def get_property(self, k):
+        return self.props.get(k)
 
 
 class _AsyncSelector:
@@ -241,14 +245,35 @@ def test_reinject_excludes_future():
     assert not h._sim_buffer.has("t1")
 
 
-def test_reinject_drops_slot_only_entry():
-    # C.3 abandon registered a delivery_ts but the physical update never arrived.
+def test_reinject_keeps_slot_only_entry_until_payload_arrives():
+    # Eviction registered an ESTIMATED delivery_ts before the trainer's update
+    # had physically completed. A reinject tick that lands after the estimate
+    # but before the payload shows up must NOT drop the ledger entry (Next
+    # actions §2 under-emission bug) — it stays registered, still excluded via
+    # withheld_held_ends() at the original dts is moot once now > dts, but the
+    # ledger entry itself must survive for the payload to be recognized later.
     h = _Harness({"t1": _DOWN}, now=250)
-    h.pending_withheld = {"t1": 200.0}  # no payload
+    h.pending_withheld = {"t1": 200.0}  # no payload yet
     h._sim_reinject_ready_withheld()
-    assert h.pending_withheld == {}                 # ledger dropped
-    assert not h._sim_buffer.has("t1")              # nothing delivered
+    assert h.pending_withheld == {"t1": 200.0}       # NOT dropped
+    assert not h._sim_buffer.has("t1")                # nothing to deliver yet
     assert "t1" not in h._sim_withheld_delivering
+
+    # the physical update now arrives (actual sct=250, past the original
+    # estimate) via the normal pop path -> recognized as still-withheld,
+    # delivery_ts bumped to the real completion time (no past-dating).
+    sel = _OortSelector()
+    ch = _Channel(sel, ["t1"])
+    p = _payload("t1")
+    h._sim_buffer.add("t1", 250.0, p)
+    assert h._sim_pop_committable(ch) is None         # held, not committed
+    assert h.pending_withheld == {"t1": 250.0}        # bumped from the estimate
+    assert h._sim_withheld_payload["t1"] == (250.0, p)
+
+    h._sim_reinject_ready_withheld()
+    assert h.pending_withheld == {}
+    assert h._sim_buffer.has("t1")
+    assert h._sim_withheld_delivering["t1"] == (250.0, 250.0)
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +453,71 @@ def test_evict_multiple_trainers_partial():
     assert sel.holds("t2")
     assert "t1" in h.pending_withheld
     assert "t2" not in h.pending_withheld
+
+
+# ---------------------------------------------------------------------------
+# _avail_stamp_end_states — avail_composition/avl_state blind-spot fix
+# ---------------------------------------------------------------------------
+
+def test_stamp_end_states_writes_every_known_end():
+    # t1 in-flight UN_AVL[100,200) (e.g. just D.1-evicted); t2 plain AVL_TRAIN.
+    # Both are stamped, including the in-flight/evicted one — the whole point
+    # is this no longer depends on being in a "fresh candidate" subset.
+    h = _Harness({"t1": _DOWN, "t2": _trace((0, "AVL_TRAIN"))}, now=150)
+    sel = _OortSelector(); sel.add("t1")
+    ch = _Channel(sel, ["t1", "t2"])
+    h._avail_stamp_end_states(ch)
+    assert ch.get_end_property("t1", PROP_AVL_STATE) == TrainerAvailState.UN_AVL
+    assert ch.get_end_property("t2", PROP_AVL_STATE) == TrainerAvailState.AVL_TRAIN
+
+
+def test_stamp_end_states_defaults_avl_train_when_no_trace():
+    h = _Harness({"t1": _DOWN}, now=150)
+    sel = _OortSelector()
+    ch = _Channel(sel, ["t1", "t2"])  # t2 has no per-trainer trace entry
+    h._avail_stamp_end_states(ch)
+    assert ch.get_end_property("t2", PROP_AVL_STATE) == TrainerAvailState.AVL_TRAIN
+
+
+def test_stamp_end_states_noop_when_gate_off():
+    h = _Harness(trainer_event_dict=None, now=150)
+    sel = _OortSelector()
+    ch = _Channel(sel, ["t1"])
+    h._avail_stamp_end_states(ch)
+    assert ch.get_end_property("t1", PROP_AVL_STATE) is None
+
+
+# ---------------------------------------------------------------------------
+# get_curr_task_ineligible_trainers — D.2 task-type (AVL_TRAIN/AVL_EVAL) gate
+# ---------------------------------------------------------------------------
+
+_TRAIN_THEN_EVAL = _trace((0, "AVL_TRAIN"), (100, "AVL_EVAL"))
+
+
+def test_task_ineligible_excludes_un_avl_for_both_tasks():
+    h = _Harness({"t1": _DOWN}, now=150)  # UN_AVL[100,200)
+    assert h.get_curr_task_ineligible_trainers("train") == ["t1"]
+    assert h.get_curr_task_ineligible_trainers("eval") == ["t1"]
+
+
+def test_task_ineligible_excludes_avl_eval_from_train_dispatch():
+    h = _Harness({"t1": _TRAIN_THEN_EVAL}, now=150)  # AVL_EVAL at t=150
+    assert h.get_curr_task_ineligible_trainers("train") == ["t1"]
+    assert h.get_curr_task_ineligible_trainers("eval") == []
+
+
+def test_task_ineligible_excludes_avl_train_from_eval_dispatch():
+    h = _Harness({"t1": _TRAIN_THEN_EVAL}, now=50)  # AVL_TRAIN at t=50
+    assert h.get_curr_task_ineligible_trainers("eval") == ["t1"]
+    assert h.get_curr_task_ineligible_trainers("train") == []
+
+
+def test_task_ineligible_unknown_task_matches_unavail_only():
+    h = _Harness({"t1": _TRAIN_THEN_EVAL}, now=150)  # AVL_EVAL
+    assert h.get_curr_task_ineligible_trainers("htbt") == []
+
+
+def test_task_ineligible_gate_off_is_noop():
+    h = _Harness(trainer_event_dict=None, now=150)
+    assert h.get_curr_task_ineligible_trainers("train") == []
+    assert h.get_curr_task_ineligible_trainers("eval") == []

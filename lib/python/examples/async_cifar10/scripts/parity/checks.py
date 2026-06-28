@@ -1059,12 +1059,25 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     the barrier wait, matching in both. Either way fidelity = sim dist == real
     dist, so we KS the two and also flag the mean gap. Upstream of staleness:
     a sim that commits updates late (past-dating) inflates staleness downstream.
+
+    A withheld-then-delivered update (D.1/C.2) commits at
+    ``delivery_ts = max(sct, next_avail_ts)`` by construction (the down-window
+    delay), so its ``update_visibility_lag_s`` for that one commit equals the
+    delay already measured by the dedicated ``withheld_delivery`` rung
+    (`delivery_ts - sct`). Folding it into this distribution double-counts the
+    same signal and inflates the mean with an outlier this metric isn't
+    measuring (commit timeliness) — excluded by (round, end) cross-reference
+    against ``withheld_deliveries`` so the two rungs stay separable, per the
+    intended "withheld past-dating bucket" split (Stage C invariant notes).
     """
-    def vals(agg_rounds):
+    def vals(agg_rounds, withheld_keys):
         out = []
         for e in agg_rounds:
             v = e.get("update_visibility_lag_s")
             if v is None:
+                continue
+            ends = e.get("contributing_trainers") or []
+            if any((e.get("round"), end) in withheld_keys for end in ends):
                 continue
             if isinstance(v, (int, float)):
                 out.append(float(v))
@@ -1072,7 +1085,11 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
                 out.extend(float(x) for x in v if x is not None)
         return out
 
-    rv, sv = vals(real["agg_rounds"]), vals(sim["agg_rounds"])
+    def withheld_keys(loaded):
+        return {(e.get("round"), e.get("end_id")) for e in loaded.get("withheld_deliveries", [])}
+
+    rv = vals(real["agg_rounds"], withheld_keys(real))
+    sv = vals(sim["agg_rounds"], withheld_keys(sim))
     if not rv or not sv:
         return {"ok": True, "tier": "DIST", "skipped": True,
                 "reason": "update_visibility_lag_s absent in one mode "
@@ -2507,42 +2524,66 @@ def abandon_timeout_parity(real: dict, sim: dict,
                            wall_leak_ceiling_s: float = 1e7) -> dict:
     """abandon_timeout [NEW, CONTROL]: the 90s abandon fires on the VCLOCK.
 
-    Each abandon frees a stalled in-flight slot at age >= SEND_TIMEOUT_WAIT_S.
-    Control purpose (Challenge 2): the deadline must be measured on the vclock,
-    not the wall — a wall-clock leak surfaces as an age in epoch-scale seconds
-    (~1.7e9) instead of sim-seconds. Fails loudly if any age is wall-scale or
-    below the threshold. Sim-only (real uses the wall selector abandon); SKIP
-    when no abandons fired.
+    Each C.3 abandon (``reason="abandon_90s_vclock"``) frees a stalled
+    in-flight slot at age >= SEND_TIMEOUT_WAIT_S. Control purpose
+    (Challenge 2): the deadline must be measured on the vclock, not the wall —
+    a wall-clock leak surfaces as an age in epoch-scale seconds (~1.7e9)
+    instead of sim-seconds. Fails loudly if any C.3 age is wall-scale or below
+    the threshold.
+
+    D.1 boundary evictions (``reason="aware_boundary_eviction"``) are a
+    *different* mechanism — they free the slot proactively at the next
+    selection boundary specifically to avoid the 90s wait, so a low age is
+    their correct, expected behavior, not a violation. They're tracked
+    separately and never measured against ``threshold_s``; only a wall-clock
+    leak (age epoch-scale) would be a bug for them too.
+
+    Sim-only (real uses the wall selector abandon); SKIP when no abandons
+    fired.
     """
     evs = sim.get("abandon_timeouts", []) or []
     if not evs:
         return {"ok": True, "tier": "CONTROL", "status": "SKIP",
                 "note": "no abandon_timeout events (gate off or none stalled)"}
-    ages, wall_leak, below = [], [], []
-    for e in evs:
+
+    def _age(e):
         age = e.get("age_s")
         if age is None:
             sst, now = e.get("sim_send_ts"), e.get("vclock_now")
             if sst is not None and now is not None:
                 age = float(now) - float(sst)
+        return None if age is None else float(age)
+
+    c3_ages, d1_ages, wall_leak, below = [], [], [], []
+    for e in evs:
+        age = _age(e)
         if age is None:
             continue
-        ages.append(float(age))
-        if float(age) >= wall_leak_ceiling_s:
+        if age >= wall_leak_ceiling_s:
             wall_leak.append(e.get("end_id"))
-        elif float(age) + 1e-6 < threshold_s:
-            below.append({"end": e.get("end_id"), "age_s": round(float(age), 1)})
-    amean, _ = mean_std(ages) if ages else (float("nan"), 0.0)
+            continue
+        if e.get("reason") == "aware_boundary_eviction":
+            d1_ages.append(age)
+        else:
+            c3_ages.append(age)
+            if age + 1e-6 < threshold_s:
+                below.append({"end": e.get("end_id"), "age_s": round(age, 1)})
+    c3_mean, _ = mean_std(c3_ages) if c3_ages else (float("nan"), 0.0)
     out = {
         "ok": not wall_leak and not below,
         "tier": "CONTROL",
-        "n_abandon": len(evs),
-        "mean_age_s": round(amean, 1) if ages else None,
-        "max_age_s": round(max(ages), 1) if ages else None,
+        "n_abandon": len(c3_ages),
+        "mean_age_s": round(c3_mean, 1) if c3_ages else None,
+        "max_age_s": round(max(c3_ages), 1) if c3_ages else None,
         "threshold_s": threshold_s,
         "wall_leak_ends": wall_leak[:10],
         "below_threshold": below[:10],
     }
+    if d1_ages:
+        d1_mean, _ = mean_std(d1_ages)
+        out["n_aware_boundary_eviction"] = len(d1_ages)
+        out["aware_boundary_eviction_mean_age_s"] = round(d1_mean, 1)
+        out["aware_boundary_eviction_max_age_s"] = round(max(d1_ages), 1)
     if wall_leak:
         out["note"] = "WALL-CLOCK LEAK: abandon age is epoch-scale; vclock not used"
     return out

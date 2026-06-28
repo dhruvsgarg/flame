@@ -31,7 +31,7 @@ from flame import telemetry
 from flame.availability.trace import load_trace, next_avail_after, state_at
 from flame.config import TrainerAvailState
 from flame.mode.message import MessageType
-from flame.selector.properties import PROP_SIM_SEND_TS
+from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_SEND_TS
 from flame.telemetry.events import build_abandon_timeout, build_withheld_delivery
 
 logger = logging.getLogger(__name__)
@@ -214,6 +214,65 @@ class AvailabilityMixin:
             f"@ t={now:.1f}s"
         )
         return unavail
+
+    def get_curr_task_ineligible_trainers(self, task: str) -> list:
+        """D.2: UN_AVL + task-type-ineligible trainers per the oracular trace.
+
+        Extends get_curr_unavail_trainers with the F3 task-type partition:
+        AVL_TRAIN-only trainers are excluded from "eval" dispatch; AVL_EVAL-only
+        trainers are excluded from "train" dispatch ("AVL_TRAIN->AVL_EVAL:
+        train-pool removal, eval-eligible only"). UN_AVL is excluded from both.
+        Returns [] when trainer_event_dict is None (gate off), matching
+        get_curr_unavail_trainers's byte-identity contract.
+
+        Inert (== get_curr_unavail_trainers()) for any task other than "train"/
+        "eval", and for baselines that never dispatch "eval" (oort: Challenge 8)
+        since no trainer is ever drawn from a pool excluding AVL_EVAL there.
+        """
+        if self.trainer_event_dict is None:
+            return []
+        excluded_state = (
+            TrainerAvailState.AVL_EVAL if task == "train"
+            else TrainerAvailState.AVL_TRAIN if task == "eval"
+            else None
+        )
+        now = self._avail_now()
+        ineligible = [
+            tid
+            for tid, trace in self.trainer_event_dict.items()
+            if state_at(trace, now) == TrainerAvailState.UN_AVL
+            or (excluded_state is not None and state_at(trace, now) == excluded_state)
+        ]
+        logger.info(
+            f"[ORACULAR] task={task!r} ineligible="
+            f"{len(ineligible)}/{len(self.trainer_event_dict)} @ t={now:.1f}s"
+        )
+        return ineligible
+
+    def _avail_stamp_end_states(self, channel) -> None:
+        """C.6.1 follow-up: write each known end's CURRENT oracular state onto
+        PROP_AVL_STATE before selection, so emit_selection's avail_composition /
+        per_trainer["avl_state"] reflect reality instead of staying all-UNKNOWN.
+
+        PROP_AVL_STATE (flame.selector.properties) was never written anywhere in
+        the v1 oracular path — only the legacy client_notify push (channel.py
+        update_state -> PROP_END_AVL_STATE, a DIFFERENT property, off in v1) set
+        an end's availability property. Without this, avail_composition's
+        `end.get_property(PROP_AVL_STATE)` read None for every end, every round.
+
+        Stamps EVERY known end (channel._ends), not just the eligible/candidate
+        subset — this is what makes an in-flight trainer D.1/C.3 just evicted
+        show up as UN_AVL in the very next selection's telemetry, instead of
+        being structurally invisible to it. No-op when the gate is off
+        (trainer_event_dict is None) ⇒ byte-identical at sim_unavailability=False.
+        """
+        if self.trainer_event_dict is None:
+            return
+        now = self._avail_now()
+        for end_id in list(channel._ends.keys()):
+            trace = self.trainer_event_dict.get(end_id)
+            state = state_at(trace, now) if trace else TrainerAvailState.AVL_TRAIN
+            channel.set_end_property(end_id, PROP_AVL_STATE, state)
 
     # ------------------------------------------------------------------
     # Delivery ledger (Stage C) — withheld update bookkeeping
@@ -398,9 +457,15 @@ class AvailabilityMixin:
         Call before each pop. For every ledger entry due at the current vclock
         (ordered by (delivery_ts, end_id)), re-add the held payload to the reorder
         buffer keyed at delivery_ts so it commits stale through the normal path,
-        then pop the ledger. A slot-only entry (the C.3 abandon registered a
-        delivery_ts but the physical update never arrived) carries no payload —
-        just drop the ledger entry. No-op when the ledger is empty.
+        then pop the ledger. A slot-only entry (registered at eviction time, before
+        the trainer's update physically completed) carries no payload yet — it
+        STAYS registered past its (estimate) delivery_ts rather than being dropped;
+        once the payload genuinely arrives, _sim_withhold_if_unavail recognizes the
+        end is still in pending_withheld, stashes it, and bumps delivery_ts to the
+        real completion time, so the NEXT call here delivers it (Next actions §2:
+        dropping eagerly here is what made an evicted-but-still-computing end's
+        late commit go through the normal path with no withheld_delivery tag).
+        No-op when the ledger is empty.
         """
         if not getattr(self, "pending_withheld", None):
             return
@@ -409,9 +474,9 @@ class AvailabilityMixin:
             return
         for end, dts in self.ready_withheld(self._avail_now()):
             payload = self._sim_withheld_payload.pop(end, None)
-            self.commit_withheld(end)
             if payload is None:
-                continue  # slot-only registration; nothing to deliver
+                continue  # no payload yet; stays registered until it arrives
+            self.commit_withheld(end)
             orig_sct, msgmd = payload
             buf.add(end, float(dts), msgmd)
             self._sim_withheld_delivering[end] = (float(orig_sct), float(dts))
@@ -445,6 +510,18 @@ class AvailabilityMixin:
         if end in self.pending_withheld:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
             self._avail_drop_inflight(end)
+            # The ledger's delivery_ts was an ESTIMATE made at eviction time
+            # (sct=now then, before this update had even finished computing).
+            # Now that the real completion time is known, bump delivery_ts up
+            # to whichever is later — never earlier, so a still-down trainer
+            # is never released before the registered window (invariant 2) —
+            # so a late-completing eviction doesn't register a delivery_ts the
+            # vclock has already passed by the time the payload shows up
+            # (the under-emission bug: _sim_reinject_ready_withheld would have
+            # nothing to deliver yet and only gets one shot at the stale dts).
+            self.pending_withheld[end] = max(
+                self.pending_withheld[end], self.compute_delivery_ts(end, float(sct))
+            )
             return True
         dts = self.compute_delivery_ts(end, sct)
         if dts <= sct:

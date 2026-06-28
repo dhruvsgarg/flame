@@ -344,12 +344,17 @@ class Trainer(Role, metaclass=ABCMeta):
             f"### SEND WEIGHTS for tag: {tag} "
             f"and trainer_id: {self.trainer_id}, model_version: {self._round}, and avl_state = {self.avl_state}"
         )
-        # if switch to do three_state_avl is on and the trainer is
-        # unavailable - check the wait_to_become_avl switch depending
-        # on the switch we decide whether to wait for availability or
-        # exit
+        # [SEND_GATE] (UNAVAILABILITY_DESIGN §8.3) real-mode send-time gate: hold
+        # the upload (already-completed result) until the trainer is AVL_* again.
+        # Decoupled from client_notify["enabled"] (which v1 keeps OFF — the
+        # aggregator learns oracularly, not via this push) so the gate fires
+        # whenever avl_state tracking is active. Sim-only: this code path is a
+        # no-op there because sim time can't advance while blocked on
+        # time.sleep — sim availability is instead enforced agg-side by
+        # AvailabilityMixin's send-time withhold (Stage C), keyed on the
+        # trainer-reported completion time, not a trainer-side wall block.
         if (
-            self.client_notify["enabled"] == "True"
+            not getattr(self, "simulated", False)
             and self.avl_state == TrainerAvailState.UN_AVL
         ):
             if self.wait_until_next_avl == "True":

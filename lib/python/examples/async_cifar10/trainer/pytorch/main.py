@@ -679,31 +679,17 @@ class PyTorchCifar10Trainer(Trainer):
         # simulated mode: refresh availability from the trace at this task's
         # sim-time before deciding (sim-time advances only with new tasks).
         self._refresh_avl_for_sim()
-        # don't enter the if condition if the three_state_avl switch is off
-        # if we are checking for three_state_avl - check if the mechanism is to wait or exit
+        # [SEND_GATE] compute-completes / gate-the-send model (UNAVAILABILITY_DESIGN
+        # §8.3): training always runs to completion regardless of avl_state — a
+        # trainer dispatched while AVL_* that goes UN_AVL (or AVL_EVAL) mid-flight is
+        # NOT skipped here. The upload is gated instead, in _send_weights, where the
+        # completed result is held and delivered once the trainer is AVL_* again.
         if self.avl_state != TrainerAvailState.AVL_TRAIN:
-            if self.simulated:
-                # sim-time can't advance while we block, so a real-time wait
-                # would hang. The aggregator selects available trainers; being
-                # unavailable here means skip this task (it will re-select).
-                logger.info(
-                    f"Trainer id {self.trainer_id} not available to train "
-                    f"(simulated, sim_t={self._sim_now()}); skipping task."
-                )
-                return
-            if self.wait_until_next_avl == "True":
-                logger.info(
-                    f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
-                )
-                _wait_start = time.time()
-                while self.avl_state != TrainerAvailState.AVL_TRAIN:
-                    time.sleep(1)
-                _wait_time_s = time.time() - _wait_start
-            else:
-                logger.info(
-                    f"Trainer id {self.trainer_id} is not available to train. Exiting training."
-                )
-                return
+            logger.info(
+                f"Trainer {self.trainer_id} training while avl_state="
+                f"{self.avl_state.value} (compute always completes; the send-time "
+                f"gate withholds the upload if still UN_AVL)."
+            )
 
         logger.info(f"Trainer {self.trainer_id} available to train")
 
@@ -1007,18 +993,12 @@ class PyTorchCifar10Trainer(Trainer):
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
         # Evaluate after train is written in the train_epoch method itself
 
-        # Evaluate will be skipped if one of these three is satisfied:
+        # Evaluate will be skipped if one of these two is satisfied:
         # 1. task_to_perform is train
         # 2. switch to check for three_state_avl is off
-        # 3. Trainer is unavailable and we don't want it to wait for availability
-        if (
-            self.task_to_perform != "eval"
-            or self.client_notify["trace"] == "two_state"
-            or (
-                self.avl_state == TrainerAvailState.UN_AVL
-                and self.wait_until_next_avl == "False"
-            )
-        ):
+        # Availability no longer gates the eval task-start (§8.3 compute-completes
+        # model, mirrors train()) — only the send-time gate withholds the upload.
+        if self.task_to_perform != "eval" or self.client_notify["trace"] == "two_state":
             logger.warning(
                 f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}"
             )
@@ -1027,17 +1007,10 @@ class PyTorchCifar10Trainer(Trainer):
         # simulated mode: refresh availability at this task's sim-time.
         self._refresh_avl_for_sim()
         if self.avl_state == TrainerAvailState.UN_AVL:
-            if self.simulated:
-                logger.info(
-                    f"Trainer id {self.trainer_id} unavailable for eval "
-                    f"(simulated, sim_t={self._sim_now()}); skipping."
-                )
-                return
-            logger.warning(
-                f"Trainer id {self.trainer_id} is not available to perform forward pass evaluate. Waiting for it to be available"
+            logger.info(
+                f"Trainer {self.trainer_id} evaluating while avl_state=UN_AVL "
+                f"(compute always completes; the send-time gate withholds the upload)."
             )
-            while self.avl_state == TrainerAvailState.UN_AVL:
-                time.sleep(1)
 
         # Use the same currently-visible data as training (no-op if off)
         if self.data_streaming_enabled:

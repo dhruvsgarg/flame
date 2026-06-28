@@ -1487,7 +1487,12 @@ class TopAggregator(SyncTopAgg):
             self._sim_evict_unavail_inflight(channel)
 
         if self.trainer_event_dict is not None:
-            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            # D.2: task-aware — also excludes AVL_EVAL from "train" dispatch and
+            # AVL_TRAIN from "eval" dispatch (inert where a baseline never
+            # dispatches eval, Challenge 8).
+            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                task_to_perform
+            )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
             _held_withheld = self.withheld_held_ends()
@@ -1529,6 +1534,10 @@ class TopAggregator(SyncTopAgg):
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
+        # Stamp PROP_AVL_STATE on every known end (incl. in-flight ones D.1/C.3
+        # just evicted) so emit_selection's avail_composition/per_trainer reflect
+        # the oracular read instead of staying all-UNKNOWN (Next actions §2).
+        self._avail_stamp_end_states(channel)
 
         # Expose current vclock to selector so it can attach it to selection events.
         if self.simulated:

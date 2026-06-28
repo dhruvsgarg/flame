@@ -669,7 +669,12 @@ class TopAggregator(BaseTopAggregator):
         # before invoking channel.ends() to select, set the
         # trainer_unavail if it isn't None
         if self.trainer_event_dict is not None:
-            curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+            # D.2: task-aware — also excludes AVL_EVAL from "train" dispatch and
+            # AVL_TRAIN from "eval" dispatch (inert where a baseline never
+            # dispatches eval, e.g. oort, Challenge 8).
+            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                task_to_perform
+            )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
             _held_withheld = self.withheld_held_ends()
@@ -705,6 +710,10 @@ class TopAggregator(BaseTopAggregator):
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
+        # Stamp PROP_AVL_STATE on every known end (incl. in-flight ones D.1/C.3
+        # just evicted) so emit_selection's avail_composition/per_trainer reflect
+        # the oracular read instead of staying all-UNKNOWN (Next actions §2).
+        self._avail_stamp_end_states(channel)
 
         # Expose current vclock to selector so it can attach it to selection
         # events (C.6.1 — restores per-trainer avl_state identity at emit time).
@@ -726,7 +735,9 @@ class TopAggregator(BaseTopAggregator):
             
             # Get unavailable trainers
             if self.trainer_event_dict is not None:
-                unavail_trainers = set(self.get_curr_unavail_trainers())
+                unavail_trainers = set(
+                    self.get_curr_task_ineligible_trainers(task_to_perform)
+                )
             else:
                 unavail_trainers = set()
             
@@ -775,7 +786,9 @@ class TopAggregator(BaseTopAggregator):
                     retry_count += 1
                     # Update unavailability list before retry
                     if self.trainer_event_dict is not None:
-                        curr_unavail_trainer_list = self.get_curr_unavail_trainers()
+                        curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                            task_to_perform
+                        )
                         channel.set_curr_unavailable_trainers(
                             trainer_unavail_list=curr_unavail_trainer_list
                         )
