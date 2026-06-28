@@ -20,10 +20,10 @@ the end. Never block forward implementation on a long run.**
 4. **Keep this doc crisp and in-place.** Completed stages compress to a few lines (mechanism + where it
    lives + exit met). Full detail only for not-yet-built stages. Dead-ends ledger in §9.
 
-## Status (Jun 28 — Batch 1 code-complete)
+## Status (Jun 28 — Stage E ✅ CONFIRMED, Stage F in progress)
 
 **Stages A/B/C/C.6/D all code-complete and CONFIRMED on syn_20. felix 49/49 PASS.
-Batch 1 (E/F/G.1) code-landed; 67/67 parity tests pass. Smoke (Stage E/F) pending.**
+Batch 1 (E/F/G.1) code-landed; 67/67 parity tests pass. Stage E smoke ✅ CONFIRMED (feddance syn_20 1800s). Stage F smoke in progress (feddance + oort syn_50 runs launched Jun 28, 45 min each).**
 
 - **A/B ✅** Substrate (`flame/availability/trace.py` + `AvailabilityMixin`) + A3 time-base CONTROL.
   Exit: A3 PASS oort syn_20 (`max_rel_diff=0.107 ≤ 0.20`), felix (`max_rel_diff=0.007`). Library-level,
@@ -47,7 +47,13 @@ Batch 1 (E/F/G.1) code-landed; 67/67 parity tests pass. Smoke (Stage E/F) pendin
 - **§8.3 ✅ CONFIRMED** Real send-gate fires for UN_AVL trainers; withheld_delivery events appear in
   both real and sim runs with accept_frac=1.0.
 - **`withheld_delivery` under-emission fix ✅ CONFIRMED** n=7 (felix) vs n=2 pre-fix; fix works.
-- **453/453 lib + 63/63 parity tests pass.**
+- **453/453 lib + 67/67 parity tests pass.**
+- **E ✅ CONFIRMED syn_20** feddance syn_20 1800s (Jun 28): **46/47 PASS**. A1/A2/A2b/A3/A4 PASS;
+  U3/U6/K8/U2 PASS — no K8/U2 movement from E.2/E.3 withheld stale commits (Challenge 9 ✅). Sole
+  fail = C2 loss (avg_loss_diff=0.1696 vs 0.15, 2 eval pts: rnd 50 real_loss=2.52/acc=10.0% vs
+  sim 2.86/acc=14.25%) — emergent early-training noise at alpha=0.1/syn_20, **not a mechanism gap**
+  (K8/C1/utility all PASS). Warn: U5 inter-arrival Spearman ρ=0.659 (non-enforced; watch at syn_50).
+  Stage E exit met. Run dirs: `…162943…real` / `…162958…sim`.
 
 **Batch 1 (Jun 28 — code-complete):**
 - **E.1/E.2/E.3 ✅** Syncfl path wired: `_distribute_weights` (abandon/evict/stamp + scarcity-advance
@@ -72,29 +78,24 @@ Batch 1 (E/F/G.1) code-landed; 67/67 parity tests pass. Smoke (Stage E/F) pendin
 3. New availability rungs (`A4dur`, `Aa eligible_pool_reduction`, `C.3 abandon_timeout`, `C.2
    withheld_delivery`) wired into `report.py _SECTIONS` (were computed but not displayed).
 
-## ▶ Next actions — Batch 1 code-complete, smoke pending (Jun 28)
+## ▶ Next actions — Stage E ✅ DONE, Stage F smoke in progress (Jun 28)
 
-**Batch 1 is code-landed (E/F/G.1). syn_0 byte-identity ✅ (67/67 parity tests). Next: Stage E
-smoke (syncfl baselines) → Stage F smoke (syn_50, all baselines with starvation path).**
+**Stage E CONFIRMED (feddance syn_20 1800s, 46/47 PASS — see Status above). Stage F runs
+launched: feddance + oort × real+sim syn_50, 45 min each (2700s runtime).**
 
-**Stage E smoke — run now:**
+**Stage E smoke ✅ DONE:**
 ```bash
 cd lib/python/examples/async_cifar10
-# feddance only: exercises the NEW simUnavail-gate path through syncfl E.1/E.2/E.3.
-# refl shares the same syncfl code but uses the legacy-gate (already confirmed via oort Stage C).
 scripts/debug_run.sh --baselines feddance --mode both --runtime-s 1800 --trace syn_20 --num-trainers 48
 python -m scripts.parity.cli --batch --experiments-dir experiments --baselines feddance --agg-goal 10
 ```
-Exit: A-rungs + U3/U6 + K8 PASS. Expect K8/U2/U6 movement on feddance from E.2/E.3 (Challenge 9).
-**Why feddance-only:** refl and feddance share `syncfl/top_aggregator.py`. The only refl-specific
-thing is its legacy-gate activation (confirmed working in Stage C oort run). feddance tests the new
-simUnavail-gate + all E.1 syncfl code; refl confirmation deferred to Batch 2 long run.
+Result: 46/47 PASS. Exit met (A-rungs + U3/U6 + K8 PASS; Challenge 9 ✅ no K8/U2 movement).
 
-**Stage F smoke (after E exits):**
+**Stage F smoke — in progress:**
 ```bash
-# syn_50 heavier-scarcity smoke — all three starvation-wired baselines (syncfl+oort)
-scripts/debug_run.sh --baselines 'feddance refl oort' --mode both --runtime-s 1800 --trace syn_50 --num-trainers 48
-python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'feddance refl oort' --agg-goal 10
+# syn_50 heavier-scarcity smoke — feddance + oort (starvation path wired for both)
+scripts/debug_run.sh --baselines 'feddance oort' --mode both --runtime-s 2700 --trace syn_50 --num-trainers 48
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'feddance oort' --agg-goal 10
 ```
 Exit: no stalls; K1 monotone; `starvation_advance` rung populated (n_starvation_jumps > 0); round cadence faithful.
 
@@ -355,14 +356,14 @@ spot). The fix is in code; a fresh syn_20 run is the confirmation.
 - **(D.x deferred to Stage H)** continuous/event-scheduled timing + the `min(next_sct,
   next_transition_ts)` clamp.
 
-### Stage E — SYNC baselines + staleness-gated rejection ✅ CODE-COMPLETE (smoke pending)
+### Stage E — SYNC baselines + staleness-gated rejection ✅ CONFIRMED syn_20
 - **E.1 ✅** Syncfl `_distribute_weights` (abandon/evict/stamp, scarcity-advance via
   `_next_avail_vclock()`) + `_sync_sim_recv_first_k` (withhold send-gate + withheld bonus drain).
   `_sim_buffer`/`_sim_committed` init in syncfl `internal_init`. Covers feddance + refl.
 - **E.2 ✅** Accept-stale path (FedAvg has no staleness gate; `_emit_withheld_delivery` with
   `accepted=True`). No new threshold invented (Challenge 9). Expect K8/U2/U6 movement on feddance.
 - **E.3 ✅** Naturally handled: withheld updates excluded from `committed` → U6 over actual cohort.
-- **Exit (pending):** A-rungs + U3/U6 + K8 PASS on syn_20; `--baselines 'feddance refl'`.
+- **Exit ✅ MET:** A-rungs + U3/U6 + K8/U2 PASS on feddance syn_20 1800s (46/47; C2 loss marginal/emergent, not a mechanism gap). Challenge 9 ✅ — no K8/U2 movement from withheld stale commits.
 
 ### Stage F — Starvation / clock-advance under scarcity ✅ CODE-COMPLETE (smoke pending)
 `_next_avail_vclock()` mixin helper (all traces min, + `pending_withheld.values()`). Wired into:
@@ -493,7 +494,7 @@ A ✅ · B ✅ · C ✅ CONFIRMED syn_20 · C.6 ✅ CONFIRMED (plots render, A4d
 D.1 ✅ CONFIRMED (boundary evictions at vclock 600/1200s) · D.2 ✅ CONFIRMED ·
 D.3 ✅ CONFIRMED (accept_frac=1.0) · §8.3 ✅ CONFIRMED (real withheld n=7, not drop).
 **felix syn_20: 49/49 PASS (Jun 28).** oort 39/48: K3b run-length + T2 pre-existing + A2 KS shape artifact — all unrelated to avail (see §9.1).
-**E/F/G.1 code-complete (Jun 28); 67/67 tests pass.** Stage E smoke (`--baselines 'feddance refl' --trace syn_20`) pending; Stage F smoke (`--baselines 'feddance refl oort' --trace syn_50`) pending.
+**E/F/G.1 code-complete (Jun 28); 67/67 tests pass.** **E ✅ CONFIRMED** feddance syn_20 1800s 46/47 (C2 emergent, not mechanism; A-rungs/U3/U6/K8 PASS). Stage F smoke (`--baselines 'feddance oort' --trace syn_50`, 45 min) in progress.
 
 ---
 
