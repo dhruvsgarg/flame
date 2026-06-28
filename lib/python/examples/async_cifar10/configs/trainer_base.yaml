@@ -48,6 +48,7 @@ hyperparameters:
   epochs: 1
   use_oort_loss_fn: "True"
   training_delay_enabled: "True"
+  satellite_latencies_path: "lib/python/examples/_metadata/leo/satellite_latencies.npy"
   # training_delay_s: injected at runtime from trainer registry
   # avl_events_*: injected at runtime from availability traces
   client_notify:

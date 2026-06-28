@@ -130,6 +130,7 @@ class ConfigGenerator:
         # training_delay_s deprecated in favour of computation_time_ms (per-device dict, in ms)
         config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
         config["hyperparameters"]["satellite_index"] = trainer_meta["satellite_index"]
+        config["hyperparameters"]["satellite_latencies_path"] = "lib/python/examples/_metadata/leo/satellite_latencies.npy"
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
         config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled

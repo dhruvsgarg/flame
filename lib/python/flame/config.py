@@ -263,7 +263,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     rtt_period_s: t.Optional[float] = Field(
         alias="rttPeriodS", default=120.0
     )
-
+    satellite_latencies_path: t.Optional[str] = Field(
+        alias="satelliteLatenciesPath", default=None
+    )  
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False
