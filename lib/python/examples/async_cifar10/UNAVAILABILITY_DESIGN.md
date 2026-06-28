@@ -374,6 +374,13 @@ spot). The fix is in code; a fresh syn_20 run is the confirmation.
 - **G.1 ✅** `starvation_advance` rung in `checks.py` + `report.py` §2; 67/67 parity tests.
   `withheld_delivery` deps updated to include `abandon_timeout`.
 - **G.2** Ramp: syn_0 → syn_20 → syn_50 → mobiperf_*. **G.3** Per-baseline sign-off.
+- **G.4 (Batch 2 todo) Terminology in code/tests:** the doc now uses trace-read / proactive /
+  reactive-90s / legacy-gate / simUnavail-gate / message-transport. Code still uses the old
+  "ORACULAR" string (config field value — keep as-is in YAML since it's a legacy key, but update
+  comments and log messages), `oracular_trainer_avail_check` function name (rename to
+  `_trace_read_avail_check`), and `availability_aware` flag (already clear — keep). Also consolidate
+  the two config-gate paths (legacy-gate + simUnavail-gate) into one canonical field. Defer until
+  after Batch 2 long runs confirm all baselines pass (no-op refactor risk otherwise).
 
 ### Stage H (FUTURE) — true `avl_*` message transport + continuous scheduling
 Turn `client_notify` back ON for aware baselines: swap oracular boundary read for real trainer→agg
@@ -492,26 +499,31 @@ D.3 ✅ CONFIRMED (accept_frac=1.0) · §8.3 ✅ CONFIRMED (real withheld n=7, n
 
 ## 9. Dead-ends (settled — do not retry)
 
-### 9.1 oort syn_20 parity failures — settled diagnosis (Jun 28)
+### 9.1 oort syn_20 parity failures — updated diagnosis (Jun 28, two runs)
 
-oort scored **39/48** at 1800s syn_20 vs **42/46** at 1.5h 100%-avail (Jun 24). The denominator grew
-(5 new avail rungs, all PASS for oort). The three failures are pre-existing or run-length artifacts;
-none are caused by the availability implementation.
+**Run 1 (Jun 28, n=48, 1800s):** oort scored 39/48. **Run 2 (Jun 28, n=300, 3600s):** oort scored **40/48**.
+Denominator grew by 1 (starvation_advance rung added in G.1, PASS). Root causes shifted.
 
-| Check | Old (Jun 24, 1.5h, 100% avail) | Current (Jun 28, 1800s, syn_20) | Verdict |
-|---|---|---|---|
-| K3b overhead_residual | PASS (rel=0.059) | FAIL (rel=0.116) | Run-length: 205 rounds vs ~450 at 1.5h → noisier estimate. Expect PASS at 3h. |
-| T2 training_budget | FAIL (sim p99=36 vs real=31, "minor") | FAIL (sim p99=18.0 vs real=13.91) | Pre-existing, same nature. Run-length sensitive. |
-| A2 eligibility | PASS (100% avail = no bimodal) | FAIL (KS=0.437) | New with syn_20. Means match (real=46.9, sim=47.3 of 48). Sim distribution is bimodal (48 outside avail windows, ~39 inside); real rounds don't align precisely to vclock window boundaries → smoother real distribution. KS detects shape, not mean. Not a mechanism bug. |
+| Check | Jun 24 1.5h 100%-avail | Jun 28 n=48 1800s syn_20 | Jun 28 n=300 3600s syn_20 | Settled verdict |
+|---|---|---|---|---|
+| T2 training_budget | FAIL (sim p99=36 vs real=31) | FAIL (sim p99=18.0 vs real=13.91) | **PASS** ratio=1.133 ≤ 1.15 | ✅ Self-corrected at 3600s. Run-length sensitive. |
+| K3b overhead_residual | PASS (rel=0.059) | ROOT CAUSE (rel=0.116) | **DOWNSTREAM** rel=0.116 (gated by P3) | ❌ Did NOT self-correct as predicted. Consistently ~0.116. Investigate at Batch 2 long run. |
+| A2 eligibility | PASS (100%-avail, trivial) | FAIL KS=0.437 | FAIL **KS=0.338** (improving) | ⚠️ Shape artifact confirmed. KS improving with longer run (more rounds smooth the bimodal). Still needs more rounds. |
+| P3 trainer_speed | PASS | PASS (n=48 clean) | **FAIL** ratio=1.153 vs tol 1.15 | 🆕 New marginal root cause at n=300. sim_p99=15.0s real_p99=13.01s. 1.3% over tolerance; possibly speed-tail noise at full cohort. Investigate at Batch 2. |
+| Fst starvation_advance | (not yet wired) | (not yet wired) | **PASS** "no starvation advances detected" | ✅ Correct: at n=300 with syn_20, ~240 trainers always available; Stage F never fires. |
 
-**Why A2 isn't a regression:** in 100%-avail runs both modes always have ~48 eligible trainers, so
-distributions match trivially. With syn_20, the availability window causes a bimodal sim distribution
-vs gradual real distribution — because real wall-clock rounds don't fall exactly at vclock window
-boundaries. The mechanism is correct (means match); only the intra-window timing differs.
+**P3 root cause consequence:** P3's failure gates K3b as downstream in Run 2, masking whether K3b
+itself would have improved. Separating them requires P3 to pass first. At n=48 P3 passes — the
+tail divergence is a full-cohort (n=300) effect.
 
-**What to do:** run oort syn_20 at 3600s. Expect K3b and T2 to self-correct (more rounds). If A2
-still fails, investigate the round-boundary timing of real vs sim through avail windows. Do not block
-Stage E on this.
+**Why A2 isn't a regression:** in 100%-avail runs, both modes always have ~48 eligible trainers,
+distributions match trivially. With syn_20, sim has a bimodal distribution (full pool outside avail
+windows, ~39-47 inside); real rounds don't fall exactly at vclock window boundaries → smoother real
+distribution. The mechanism is correct (means match: real=47.1, sim=47.3); only shape differs.
+
+**What to do:** in Batch 2 long run (3h, n=300), expect: (a) A2 KS to improve further (trend: 0.437
+→ 0.338 → hopefully ≤ 0.2), (b) P3 to clarify (noise or systematic), (c) K3b truth revealed once
+P3 passes. Do not block Stage E/F on any of these.
 
 - **busy → `UN_AVL` routing**: ramped in-flight to ~300. Busy/unavailable/withheld are three distinct
   states with separate ledgers.
