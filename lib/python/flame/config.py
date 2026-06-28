@@ -183,9 +183,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_enabled: t.Optional[bool] = Field(
         alias="trainingDelayEnabled", default=False
     )
-    training_delay_s: t.Optional[t.Any] = Field(
-        alias="trainingDelaySeconds", default=None
-    )
+    
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )
@@ -250,8 +248,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
     )
-    computation_time_ms: t.Optional[float] = Field(
-        alias="computationTimeMs", default=None
+    computation_time_ms: t.Optional[t.Any] = Field(
+    alias="computationTimeMs", default=None
     )
     rtt_communication_time_ms: t.Optional[float] = Field(
         alias="rttCommunicationTimeMs", default=None
