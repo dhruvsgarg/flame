@@ -62,6 +62,12 @@ experiments:
           id: fwdllm_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (see MIGRATION_TO_LAUNCHER_FWDLLM.md "Status & next step" /
+          # Phase 12 item 5 -- `rounds` alone is much too coarse, since one
+          # round is 150 data-id completions).
+          max_data_id_progress: 10  # stop once data_id reaches 10
+          max_runtime_s: 1800  # ...or after 30 minutes wall time
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform

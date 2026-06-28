@@ -1767,7 +1767,64 @@ class TopAggregator(AsyncTopAgg):
             self.ends_not_selected_yet = False
             logger.info("Distributed to c ends and can wait for k updates")
 
+    def _check_early_stop_conditions(self) -> None:
+        """Optional caps for short/smoke runs, checked independently of
+        whether an aggregation goal is ever met: `max_data_id_progress`
+        (stop once `self.data_id` reaches it) and `max_runtime_s` (stop once
+        this much wall time has elapsed since the aggregator started).
+        Whichever fires first wins. Both are unset (None) by default, so
+        production runs are unaffected. Called from `_distribute_weights`,
+        which runs on every composer tick on both the sync and async paths
+        -- unlike the rounds-based stop in `_process_aggregation_goal_met`,
+        this also fires when aggregation never completes (e.g. issue #4 in
+        MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 12).
+        """
+        if self._work_done:
+            return
+
+        max_data_id = getattr(
+            self.config.hyperparameters, "max_data_id_progress", None
+        )
+        if max_data_id is not None and self.data_id >= max_data_id:
+            logger.info(
+                f"max_data_id_progress={max_data_id} reached "
+                f"(data_id={self.data_id}); stopping run."
+            )
+            self._work_done = True
+            return
+
+        max_runtime_s = getattr(self.config.hyperparameters, "max_runtime_s", None)
+        if max_runtime_s is not None:
+            elapsed = time.time() - self.agg_start_time_ts
+            if elapsed >= float(max_runtime_s):
+                logger.info(
+                    f"max_runtime_s={max_runtime_s}s reached "
+                    f"(elapsed={elapsed:.0f}s); stopping run."
+                )
+                self._work_done = True
+
+    def _async_inner_loop_done(self) -> bool:
+        """Exit condition for the async/hybrid compose path's inner
+        `asyncfl_loop` (see `compose()`).
+
+        Must OR in `self._work_done`, not just check the agg-goal match: the
+        outer `loop` only re-checks `_work_done` once this inner loop's
+        ender (`task_get_weights`) completes, which can block for a long
+        time if contributions trickle in slowly (Phase 12 issue #4 in
+        MIGRATION_TO_LAUNCHER_FWDLLM.md). Without this OR,
+        `_check_early_stop_conditions()` reaching a cap (e.g.
+        `max_data_id_progress`) mid-distribute sets `_work_done`, but the
+        inner loop keeps spinning until an agg-goal happens to complete on
+        its own -- silently swallowing the early-stop until the launcher's
+        external watchdog force-kills the process instead (observed live:
+        Phase 13 smoke re-run, fluxtune_n10_smoke hit max_data_id_progress
+        in ~5 minutes but wasn't actually killed until the 30-minute
+        watchdog fired).
+        """
+        return self._agg_goal_cnt == self._agg_goal or self._work_done
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
+        self._check_early_stop_conditions()
         if self.is_async:
             logger.info("Inside distribute of async")
             self._distribute_weights_async(tag, task_to_perform)
@@ -1820,9 +1877,7 @@ class TopAggregator(AsyncTopAgg):
             loop = Loop(loop_check_fn=lambda: self._work_done)
             # create a loop object for asyncfl to manage concurrency as
             # well as aggregation goal
-            asyncfl_loop = Loop(
-                loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal
-            )
+            asyncfl_loop = Loop(loop_check_fn=self._async_inner_loop_done)
             logger.info("Hybrid compose")
 
             # chain them again with new tasklets introduced in this class

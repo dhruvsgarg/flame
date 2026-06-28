@@ -6,15 +6,22 @@ below before resuming work in any new session — it is always current.
 
 ## Status & next step
 
-**Phases 1–11 are DONE. Phase 12 ran the first live P8 smoke tests on
-2026-06-27 for all three baselines and triaged the results** — two real bugs
+**Phases 1–13 are DONE.** Phase 12 ran the first live P8 smoke tests on
+2026-06-27 for all three baselines and triaged the results — two real bugs
 found and fixed (both verified against the actual failure logs, with new
 regression tests, full suite green: see Phase 12). Several deeper issues were
 diagnosed but **deliberately left unfixed pending a decision from the repo
 owner** (scope/risk too high to guess at silently) — see Phase 12's
-"Flagged, open" list. **The `[NEXT]` action is to re-run the three smoke
-YAMLs with the Phase 12 fixes applied**, then move on to the telemetry/plots
-design work Phase 12 scoped out (also `[NEXT]`, in parallel or after).
+"Flagged, open" list. Phase 13 gave the smoke YAMLs a real auto-termination
+bar (`max_data_id_progress` / `max_runtime_s`, whichever fires first),
+found+fixed a second real bug live (the async path's inner loop didn't
+honor `_work_done`), and **re-verified all three smoke YAMLs self-terminate
+promptly** (`fwdllm_n10_smoke` 948s, `fwdllm_plus_n10_smoke` 625s,
+`fluxtune_n10_smoke` 487s post-fix, all clean — see Phase 13 for the full
+live trace). **The `[NEXT]` action is the telemetry/plots design work Phase
+12 scoped out** (its "Flagged, open" issues #3/#4/#6/#7 remain unfixed by
+design — see Phase 12 — and #7 in particular needs owner input before any
+code is written).
 
 **fwdllm smoke-test pass/fail bar is different from async_cifar10's.**
 async_cifar10 judges a smoke run by rounds completed, because cifar10 rounds
@@ -22,12 +29,14 @@ are fast. **fwdllm must not be judged by rounds** — one fwdllm "round" is
 `total_data_bins` (hardcoded to 150) data-id completions, each potentially
 needing up to `max_iterations_per_data_id` (15) real forward-mode training
 iterations; `rounds: 50` in the smoke YAMLs would in principle mean 7500
-data-id completions, far beyond smoke-test scope. **Until a finer-grained
-stop condition exists (see Phase 12's telemetry section), judge a smoke run
-by data-id advancement instead: ≥5 distinct `data_id` values reached on a
-single run, via `grep IterProgress` / the new telemetry once it lands, is
-"made real progress."** Getting stuck on `data_id=0` for the entire run is a
-fail even if the process is still alive.
+data-id completions, far beyond smoke-test scope. **Phase 13 made this an
+actual auto-terminating stop condition** (`max_data_id_progress: 10` /
+`max_runtime_s: 1800`, whichever fires first, set in all three smoke YAMLs)
+instead of the old "watch `grep IterProgress` by hand and kill it" bar —
+judge a smoke run a **pass** if it reaches `data_id=10` before the 30-minute
+ceiling, and a **fail** if the 30-minute ceiling fires first (stuck on a low
+`data_id` the whole time counts as a fail even if the process exited
+cleanly via the time cap, not a crash).
 
 Phase 11's blocker (three missing `async_cifar10` split files whose absence
 was masked by the pre-fix n300 fallback) is resolved: all three were
@@ -991,6 +1000,113 @@ issues #3/#4 above are resolved (since #4 in particular would change what
 
 ---
 
+## Phase 13 — Smoke-test auto-termination: `max_data_id_progress` + `max_runtime_s` [DONE]
+
+Phase 12 item 5 flagged that `rounds` is a useless smoke-test stop unit
+(`total_data_bins=150` is hardcoded, so one round is 150 data-id
+completions) and **Status & next step** above had been working around it
+with a manual, post-hoc bar (`grep IterProgress` for ≥5 distinct `data_id`
+values). That bar was never wired up as an actual stop condition — runs
+still had to be watched and killed by hand (as Phase 12's own triage was).
+
+**Fix:** `flame/mode/horizontal/syncfl/fwdllm_aggregator.py` gained
+`_check_early_stop_conditions()`, called from `_distribute_weights` (shared
+by both the sync and async/hybrid compose paths, and invoked on **every**
+composer tick regardless of whether an aggregation goal is ever met — unlike
+the Phase 12 #2 rounds-based stop in `_process_aggregation_goal_met`, which
+only ever runs on the round-rollover branch of a *successful* aggregation).
+Two new optional `hyperparameters` (both `None`/off by default, so
+unmodified production YAMLs are unaffected):
+
+- `max_data_id_progress`: stop once `self.data_id` reaches this value.
+- `max_runtime_s`: stop once this many wall-clock seconds have elapsed since
+  `agg_start_time_ts` (the aggregator's own start). This hyperparameter
+  already existed and was already read by `runner.py` to size the launcher's
+  external watchdog timeout — but nothing on the fwdllm aggregator side ever
+  *consumed* it (fwdllm never calls the inherited `increment_round()`, which
+  is where `syncfl/top_aggregator.py` implements this cap for every other
+  stack), so it was silently dead for fwdllm/fwdllm_plus/fluxtune until now.
+
+Whichever cap is hit first sets `self._work_done = True`, which is what
+actually exits the composer `Loop`. All three smoke YAMLs
+(`fwdllm_n10_smoke.yaml`, `fwdllm_plus_n10_smoke.yaml`,
+`fluxtune_n10_smoke.yaml`) now set `max_data_id_progress: 10` and
+`max_runtime_s: 1800` (30 min) alongside the existing `rounds: 50`, so a
+smoke run now terminates on its own — by data-id progress or a 30-minute
+wall-clock ceiling, whichever comes first — instead of relying on a human to
+watch logs and kill it. `rounds: 50` remains as an outer safety net only.
+
+A sequential runner script was also added:
+`expt_scripts/run_smoke_sequential.sh` (conda-activates an env, then runs
+the three smoke YAMLs back to back, logging each to its own
+`smoke_logs/<timestamp>/<name>.{yaml,out}`). It patches `max_runtime_s`/
+`max_data_id_progress` into a generated copy of each YAML per invocation
+(`--max-runtime-s`, `--max-data-id`, default 600s/10) rather than editing
+the checked-in YAMLs, and supports `--stop-on-fail`.
+
+**Live re-run (2026-06-28) found and fixed a second bug, in the same area:**
+First pass, all three smoke YAMLs were run via the script with a tightened
+600s/data_id=10 cap (for a faster smoke iteration than the YAMLs' checked-in
+1800s). `fwdllm_n10_smoke` (948s) and `fwdllm_plus_n10_smoke` (625s) — both
+**sync** baselines — passed and self-terminated cleanly. `fluxtune_n10_smoke`
+(**async**) did not: its own log showed `_check_early_stop_conditions()`
+correctly logging `max_data_id_progress=10 reached` at 02:36:57, only ~4.5
+minutes after the aggregator started — but the process kept running for
+another ~26 minutes until the launcher's external watchdog (sized at
+budget + 1200s = 1800s here) force-killed it as a suspected deadlock.
+
+**Root cause:** `compose()`'s async/hybrid path nests a nested loop inside
+the outer one — `loop(task_reset_agg_goal_vars >>
+asyncfl_loop(task_put_train >> task_get_weights) >> ...)`. The outer `loop`
+checks `self._work_done` (good), but the inner `asyncfl_loop` only checked
+`self._agg_goal_cnt == self._agg_goal`. Setting `_work_done` inside
+`_distribute_weights` (called from `task_put_train`, *inside* the inner
+loop) has no effect on the inner loop's own exit test, so the inner loop
+just keeps spinning — and the outer loop never gets a turn to observe
+`_work_done` — until an aggregation goal happens to complete on its own.
+This is the same family of issue as Phase 12 #4 (slow/blocked contributions
+on the async path), just hitting the *new* early-stop flag instead of the
+pre-existing rounds-based one.
+
+**Fix:** extracted the inner loop's exit test into
+`_async_inner_loop_done()` (`fwdllm_aggregator.py`,
+`return self._agg_goal_cnt == self._agg_goal or self._work_done`), used in
+`compose()` in place of the old inline lambda. **Tests:**
+`tests/mode/test_fwdllm_early_stop_conditions.py` (13 cases total — the
+original 10 for `_check_early_stop_conditions`/`_distribute_weights`, plus
+3 new in `TestAsyncInnerLoopExitsOnWorkDone` reproducing this exact
+scenario: exits on `_work_done` alone, exits on agg-goal alone, stays open
+when neither holds). Full sweep re-run green: `pytest lib/python/tests/launch
+lib/python/tests/mode lib/python/tests/optimizer lib/python/tests/selector`
+→ 344 passed, 7 skipped.
+
+**Re-verified live after the fix:** `fluxtune_n10_smoke` alone, same 600s/
+data_id=10 caps — `max_data_id_progress=10 reached` logged at 03:35:20
+(~5 min in), process exited cleanly with **no** watchdog/deadlock warning
+this time, total script time 487s (~8 min, including spawn/grace/
+post-analysis overhead). All three smoke YAMLs now self-terminate promptly
+on the data-id cap rather than relying on the 30-minute external watchdog.
+
+**Environment note (unrelated to the code, but cost real time during this
+verification):** the `dg_flame` conda env's editable `flame` install points
+at a *different* checkout (`/home/dgarg39/flame`, an older branch predating
+even Phase 1 of this migration — no `DatasetConfig.path_style`, etc.). Running
+the smoke script with `dg_flame` fails instantly with
+`TypeError: DatasetConfig.__init__() got an unexpected keyword argument
+'path_style'`, before touching any GPU. Use `aish_smoke_flame` (or
+`FLAME_CONDA_ENV=<env>` to the script) for this checkout —
+`run_smoke_sequential.sh` now defaults to `aish_smoke_flame`.
+
+Not addressed here (still open, per Phase 12): issues #3 (ORACULAR
+mutual-offline stalls) and #4 (distribute-loop broadcast storm / message
+drop) remain real liveness problems on the async path — a run can still
+take the full cap to make any data-id progress if contributions are
+sufficiently delayed/dropped. This phase guarantees a run that *does* reach
+a stop condition actually exits promptly; it does not fix how long it takes
+to reach one.
+
+---
+
 ## Reference: critical files
 
 - `flame/launch/runner.py` — `_validate_stack`, `_sweep_stragglers`,
@@ -1000,7 +1116,13 @@ issues #3/#4 above are resolved (since #4 in particular would change what
 - `flame/launch/experiment_config.py` — `DatasetConfig`, `TrainerConfig`.
 - `flame/mode/horizontal/syncfl/fwdllm_aggregator.py` —
   `_weighted_aggregation_enabled`, `_select_ends_respecting_reselect_gate`,
-  `read_trainer_unavailability`, `check_trainer_availability`.
+  `read_trainer_unavailability`, `check_trainer_availability`,
+  `_check_early_stop_conditions`/`_async_inner_loop_done` (Phase 13).
+- `examples/fwdllm/expt_scripts/run_smoke_sequential.sh` — runs the three
+  smoke YAMLs back to back with overridable `max_runtime_s`/
+  `max_data_id_progress` caps (Phase 13); defaults to the `aish_smoke_flame`
+  conda env (the one whose editable `flame` install points at this
+  checkout).
 - `flame/optimizer/fedbuff.py` — learning-rate dispatch.
 - `flame/selector/random.py` vs `async_random.py` vs `async_oort.py`.
 - `examples/_metadata/baselines.yaml` — `felix` (CNN/speech family) vs.
