@@ -56,22 +56,36 @@ the end. Never block forward implementation on a long run.**
 3. New availability rungs (`A4dur`, `Aa eligible_pool_reduction`, `C.3 abandon_timeout`, `C.2
    withheld_delivery`) wired into `report.py _SECTIONS` (were computed but not displayed).
 
-## ▶ Next actions
+## ▶ Next actions — OPTIMIZED BATCHED PLAN (Jun 28)
 
-**syn_20 CONFIRMED (Jun 28). Next: Stage E (feddance sync path).**
+**syn_20 CONFIRMED. All of v1's async + aware-felix path is done. What remains: E (feddance
+sync), F (starvation clock-advance), G (integration + ramp + sign-off). Stage H is out of v1.**
 
-All three syn_20 goals confirmed:
-1. ✅ `withheld_delivery` n=7 (felix), n=5 (oort), accept_frac=1.0 — delivery_ts bump fix works.
-2. ✅ D.2 under unavailability: avail_composition shows UN_AVL; boundary evictions at vclock ≈600s.
-3. ✅ K2 disambiguator: oort K2 failure is K3b overhead_residual (pre-existing), independent of avail.
+Steps left: **5 code-steps (E.1/E.2/E.3, F, G.1) + 2 confirmation steps (G.2, G.3).** Collapse them
+into **one code batch + one long-run batch**, with the oort confirmation overlapped for free. The
+code-steps touch non-conflicting surfaces (E=feddance commit loop, F=asyncfl/sync wait-retry,
+G.1=`scripts/parity/{checks,report}.py`), so they land together and gate on cheap signals only.
 
-**Priority order:**
-1. **Stage E** — wire feddance sync path + staleness-gated rejection (E.1/E.2). See §Stage E below.
-2. **oort long runs (parallel)** — 3600s syn_20 to confirm K3b+T2 self-correct (see §9.1).
+**Now (parallel, zero added wall-time):** kick off the oort 3600s syn_20 long run in the background
+(§9.1 — confirms K3b+T2 self-correct, independent of E/F).
+
+**Batch 1 — one code push, cheap-signal gated:**
+E.1/E.2/E.3 + F + G.1 + prereqs (felix master-gate config plumbing §7; Q-new-2 verify feddance's
+existing staleness threshold). Verify with: unit tests → syn_0 byte-identity (all baselines) →
+syn_20 feddance smoke (E exit) → syn_50 smoke (F exit). No long run gates any of this. Expect
+K8/U2/U6 movement on feddance from E.2/E.3 (Challenge 9) — analysis, not a blocker. Write G.1 last
+within the push (needs E's + F's rungs to exist).
+
+**Batch 2 — one batched long-run pass:** G.2 ramp (syn_50 → mobiperf, all baselines, 3h) + G.3
+sign-off. **The syn_50 run from F doubles as the ramp's first rung** — don't re-run it. One long run
+per baseline confirms E+F+G together; never one stage each.
+
+**Run sharing that cuts total runs:** (1) F-validation run = G.2's syn_50 ramp rung. (2) the oort
+3600s confirmation is independent and overlaps Batch 1.
 
 ```bash
 cd lib/python/examples/async_cifar10
-# oort long run (parallel, optional — confirm K3b+T2 self-correct at 3h)
+# oort long run (background, parallel — confirm K3b+T2 self-correct at 3h; §9.1)
 scripts/debug_run.sh --baselines oort --mode both --runtime-s 3600 --trace syn_20 --num-trainers 48
 python -m scripts.parity.cli --batch --experiments-dir experiments --baselines oort --agg-goal 10
 ```
