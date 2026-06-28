@@ -2593,6 +2593,56 @@ def abandon_timeout_parity(real: dict, sim: dict,
     return out
 
 
+def starvation_advance_parity(real: dict, sim: dict,
+                              jump_factor: float = 5.0) -> dict:
+    """starvation_advance [NEW, DIAG, Stage F]: vclock-advance events under scarcity.
+
+    Stage F replaces wall-sleeping with vclock-advances when no trainers are
+    selectable. This rung detects such advances from the sim's agg_round timeline:
+    a vclock jump between consecutive rounds that exceeds ``jump_factor × mean_advance``
+    suggests a starvation advance fired (the round completed without a commit).
+
+    SKIP when the gate is off (no avail events) or when fewer than 3 rounds are
+    present (too few points to establish a baseline). PASS when no anomalous jumps
+    are detected (or syn_0 / 100%-availability runs where F never fires).
+    """
+    rounds = sim.get("agg_rounds", [])
+    if not rounds:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no agg_round events"}
+    # Check if availability gate was active: any withheld_deliveries or
+    # abandon_timeouts events indicate the sim-unavailability path ran.
+    gate_active = bool(
+        sim.get("withheld_deliveries") or sim.get("abandon_timeouts")
+        or any(e.get("avail_composition") for e in sim.get("selection_train", []))
+    )
+    if not gate_active:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "availability gate off (syn_0 / 100%-avail)"}
+    vclocks = sorted(
+        [float(r["vclock_now"]) for r in rounds if r.get("vclock_now") is not None]
+    )
+    if len(vclocks) < 3:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": f"only {len(vclocks)} vclock points; need ≥3"}
+    gaps = [vclocks[i + 1] - vclocks[i] for i in range(len(vclocks) - 1)]
+    mean_gap = sum(gaps) / len(gaps)
+    threshold = jump_factor * mean_gap
+    jumps = [(i, g) for i, g in enumerate(gaps) if g > threshold]
+    return {
+        "ok": True,   # informational only — starvation advances are expected
+        "tier": "DIAG",
+        "n_rounds": len(vclocks),
+        "mean_advance_s": round(mean_gap, 2),
+        "jump_threshold_s": round(threshold, 2),
+        "n_starvation_jumps": len(jumps),
+        "max_jump_s": round(max(g for _, g in jumps), 1) if jumps else 0.0,
+        "note": (f"{len(jumps)} starvation advance(s) detected "
+                 f"(jump > {threshold:.1f}s = {jump_factor}× mean)") if jumps
+                else "no starvation advances detected",
+    }
+
+
 def eligible_pool_reduction_parity(real: dict, sim: dict,
                                    tol_rel: float = 0.25) -> dict:
     """eligible_pool_reduction [NEW, DIAG]: availability shrinks the eligible pool
@@ -2806,6 +2856,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["eligible_pool_reduction"] = eligible_pool_reduction_parity(
         real_agg, sim_agg)
     results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
+    results["starvation_advance"] = starvation_advance_parity(real_agg, sim_agg)
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
@@ -2919,7 +2970,7 @@ CHECK_META: dict = {
     "commit_visibility":       {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance",)},
     "eval_commit_timeliness":  {"stage": 6, "role": "MECHANISM", "deps": ("commit_visibility",)},
     "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
-    "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness",)},
+    "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness", "abandon_timeout")},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 7 Statistical utility ──
@@ -2932,6 +2983,8 @@ CHECK_META: dict = {
     # ── Stage 9 Budget / stop sanity (orthogonal) ──
     "budget_not_cap":          {"stage": 9, "role": "DIAG",     "deps": ()},
     "failsafe":                {"stage": 9, "role": "MECHANISM", "deps": ()},
+    # ── Stage F Starvation clock-advance ──
+    "starvation_advance":      {"stage": 2, "role": "DIAG",     "deps": ("abandon_timeout",)},
 }
 
 # Checks whose FAIL is downgraded to WARN regardless of tier (expected-noisy).

@@ -779,19 +779,47 @@ class TopAggregator(BaseTopAggregator):
                 )
                 
                 if retry_count < max_retries:
-                    logger.warning(
-                        f"[DISTRIBUTE] Waiting {retry_wait_seconds}s before retry {retry_count + 2}/{max_retries + 1}..."
-                    )
-                    time.sleep(retry_wait_seconds)
-                    retry_count += 1
-                    # Update unavailability list before retry
-                    if self.trainer_event_dict is not None:
+                    # Stage F: in sim with availability gate on, advance the
+                    # vclock to the next availability event rather than wall-
+                    # sleeping — the retry then immediately sees the newly-
+                    # available cohort without burning wall time.
+                    if self.simulated and self.trainer_event_dict is not None:
+                        _nxt = self._next_avail_vclock()
+                        if _nxt is not None and _nxt > self._vclock.now:
+                            self._vclock.advance(_nxt)
+                            self._sim_abandon_stalled(channel)
+                            logger.info(
+                                f"[SIM_STARVATION] round={self._round} "
+                                f"retry={retry_count + 1}/{max_retries} "
+                                f"vclock advanced to {_nxt:.1f}"
+                            )
+                        # Re-stamp availability at the new vclock before retry
                         curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                             task_to_perform
                         )
+                        _held_withheld = self.withheld_held_ends()
+                        if _held_withheld:
+                            curr_unavail_trainer_list = list(
+                                set(curr_unavail_trainer_list) | _held_withheld
+                            )
                         channel.set_curr_unavailable_trainers(
                             trainer_unavail_list=curr_unavail_trainer_list
                         )
+                        self._avail_stamp_end_states(channel)
+                    else:
+                        logger.warning(
+                            f"[DISTRIBUTE] Waiting {retry_wait_seconds}s before retry {retry_count + 2}/{max_retries + 1}..."
+                        )
+                        time.sleep(retry_wait_seconds)
+                        # Update unavailability list before retry
+                        if self.trainer_event_dict is not None:
+                            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                                task_to_perform
+                            )
+                            channel.set_curr_unavailable_trainers(
+                                trainer_unavail_list=curr_unavail_trainer_list
+                            )
+                    retry_count += 1
                 else:
                     # Max retries exceeded - proceed with warning
                     logger.error(

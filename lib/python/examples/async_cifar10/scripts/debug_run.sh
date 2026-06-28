@@ -207,6 +207,17 @@ for e in cfg.get("experiments", []):
         avail["mode"] = trace_override
         if "trackTrainerAvail" in h:
             h["trackTrainerAvail"]["trace"] = trace_override
+            # For baselines NOT on the ORACULAR legacy path (felix, feddance,
+            # oracle, fedbuff): activate the new sim_unavailability gate so
+            # _init_availability picks up the trace (§7 felix master-gate).
+            # ORACULAR baselines (oort, refl) already activate via the legacy path.
+            if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
+                h["simUnavailability"] = True
+                # felix / oracle are availability-aware (D.1 proactive eviction);
+                # detected by client_notify.enabled="True" in trainer HP.
+                t_hp = e.get("trainer", {}).get("hyperparameters", {})
+                if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
+                    h["availabilityAware"] = True
         elif "client_notify" in h and isinstance(h["client_notify"], dict):
             h["client_notify"]["trace"] = trace_override
         # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.

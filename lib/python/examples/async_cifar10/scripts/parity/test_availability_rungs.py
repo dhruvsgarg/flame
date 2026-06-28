@@ -25,6 +25,7 @@ from parity.checks import (  # noqa: E402
     eligible_pool_reduction_parity,
     load_agg_jsonl,
     load_trainer_jsonl_dir,
+    starvation_advance_parity,
     withheld_delivery_parity,
 )
 
@@ -202,6 +203,53 @@ def test_load_agg_jsonl_surfaces_new_events(tmp_path):
     assert len(agg["withheld_deliveries"]) == 1
     assert len(agg["abandon_timeouts"]) == 1
     assert agg["withheld_deliveries"][0]["end_id"] == "t1"
+
+
+# ---------------------------------------------------------------------------
+# starvation_advance
+# ---------------------------------------------------------------------------
+
+def _agg_round(vclock_now):
+    return {"event": "agg_round", "vclock_now": vclock_now}
+
+
+def _sim_with_avail(rounds, withheld=True):
+    """Build a sim dict with gate-active marker and given agg_round list."""
+    return {
+        "agg_rounds": rounds,
+        "withheld_deliveries": [{"end_id": "t0"}] if withheld else [],
+        "abandon_timeouts": [],
+        "selection_train": [],
+    }
+
+
+def test_starvation_advance_skips_without_avail():
+    # no withheld/abandon/avail_composition → gate off → SKIP
+    sim = {"agg_rounds": [_agg_round(10.0), _agg_round(20.0), _agg_round(30.0)],
+           "withheld_deliveries": [], "abandon_timeouts": [], "selection_train": []}
+    res = starvation_advance_parity({}, sim)
+    assert res["ok"] and res.get("status") == "SKIP"
+
+
+def test_starvation_advance_skips_with_no_agg_rounds():
+    sim = _sim_with_avail([])
+    res = starvation_advance_parity({}, sim)
+    assert res["ok"] and res.get("status") == "SKIP"
+
+
+def test_starvation_advance_no_jumps():
+    sim = _sim_with_avail([_agg_round(float(i * 100)) for i in range(10)])
+    res = starvation_advance_parity({}, sim)
+    assert res["ok"] and res["n_starvation_jumps"] == 0
+
+
+def test_starvation_advance_detects_jump():
+    # 8 normal 100s gaps then one 3000s gap (30× mean)
+    vclocks = [float(i * 100) for i in range(8)] + [800.0 + 3000.0]
+    sim = _sim_with_avail([_agg_round(v) for v in vclocks])
+    res = starvation_advance_parity({}, sim, jump_factor=5.0)
+    assert res["ok"] and res["n_starvation_jumps"] >= 1
+    assert res["max_jump_s"] > 1000.0
 
 
 def test_load_trainer_jsonl_dir_surfaces_avail_change(tmp_path):

@@ -705,3 +705,28 @@ class AvailabilityMixin:
                     reason="aware_boundary_eviction",
                 )
                 telemetry.emit(ev, **f)
+
+    def _next_avail_vclock(self) -> Optional[float]:
+        """Stage F: earliest vclock at which any trainer next becomes selectable.
+
+        Returns the minimum of:
+        - next AVL_* transition for each currently-UN_AVL trainer's trace
+        - earliest pending withheld delivery_ts (withheld end re-enters pool then)
+
+        Used by starvation clock-advance: when no trainers are selectable, the
+        sim advances the vclock here rather than wall-sleeping, so the outer
+        retry immediately sees the newly-available cohort. Returns None when the
+        gate is off or no future availability exists in any trace.
+        """
+        if not getattr(self, "trainer_event_dict", None):
+            return None
+        now = self._avail_now()
+        candidates: list = []
+        for trace in self.trainer_event_dict.values():
+            nxt = next_avail_after(trace, now)
+            if nxt != math.inf:
+                candidates.append(nxt)
+        pw = getattr(self, "pending_withheld", None)
+        if pw:
+            candidates.extend(pw.values())
+        return min(candidates) if candidates else None

@@ -223,6 +223,11 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         # all current runs; gate-on enables the oracular trace-read path.
         self._init_availability(self.config)
 
+        # E.1: shared sim reorder buffer for withheld-update re-injection
+        # (mirrors asyncfl's _sim_buffer; stays empty when gate is off).
+        self._sim_buffer = SimReorderBuffer()
+        self._sim_committed: set = set()
+
         self._updates_recevied = {}
 
         self._agg_training_stats = {}
@@ -362,7 +367,18 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
 
         Sync aggregation is order-independent (weighted average), so parity only
         requires the right *set* of k committers and the round duration.
+
+        E.1: applies the availability send-gate (_sim_withhold_if_unavail) to
+        each popped update so trainers that went UN_AVL before their completion
+        have their update held and delivered stale at delivery_ts. After the
+        first_k barrier loop, drains _sim_buffer for any withheld updates now
+        due (re-injected stale bonus; E.2 accept-stale for feddance/FedAvg).
+        Gate off (trainer_event_dict=None) ⇒ byte-identical to prior behaviour.
         """
+        # E.1: re-inject withheld updates whose delivery_ts ≤ current vclock
+        # into self._sim_buffer (no-op when gate is off).
+        self._sim_reinject_ready_withheld()
+
         # Barrier: drain the whole selected set in one recv_fifo pass, then pick
         # the first_k smallest sim_completion_ts (never before a smaller is in).
         buf = SimReorderBuffer()
@@ -388,19 +404,27 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
                 f"buf_depth={len(buf)}"
             )
 
-        committed = []
-        for _ in range(min(first_k, len(buf))):
-            popped = buf.pop_min()
-            if popped is None:
+        # Drain buf (fresh updates from current cohort), applying the send-gate.
+        # Pop smallest-sct first; try to fill first_k even when some are withheld.
+        all_popped = []
+        while True:
+            p = buf.pop_min()
+            if p is None:
                 break
-            end, sct, (msg, md) = popped
-            # Lazy deserialize: trainer pre-serialized weights as raw bytes so
-            # N-K non-committed messages didn't pay tensor-reconstruction cost.
-            # Reconstruct only for this committed update.
+            all_popped.append(p)
+
+        committed = []
+        for end, sct, (msg, md) in all_popped:
+            # Lazy deserialize before gate check (payload may be needed for stash).
             if MessageType.WEIGHTS_BYTES in msg:
                 msg[MessageType.WEIGHTS] = cloudpickle.loads(
                     msg.pop(MessageType.WEIGHTS_BYTES)
                 )
+            # E.1: send-gate — withhold if trainer is UN_AVL at completion.
+            if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
+                continue
+            if len(committed) >= first_k:
+                break  # first_k quota met; remaining straggler updates dropped
             self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
@@ -415,6 +439,30 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
                 f"T_v={self._vclock.now:.1f}"
             )
             committed.append((msg, md))
+
+        # E.1 / E.2: drain withheld-delivery bonus. After the barrier advances the
+        # clock, re-inject any newly-due entries, then commit them as stale bonus
+        # updates (accept-stale; no new scalar — E.2 for feddance/FedAvg).
+        self._sim_reinject_ready_withheld()
+        while True:
+            wh = self._sim_buffer.pop_min()
+            if wh is None:
+                break
+            wend, wdts, (wmsg, wmd) = wh
+            if MessageType.WEIGHTS_BYTES in wmsg:
+                wmsg[MessageType.WEIGHTS] = cloudpickle.loads(
+                    wmsg.pop(MessageType.WEIGHTS_BYTES)
+                )
+            _wd = self._sim_take_withheld_delivering(wend)
+            if _wd is not None:
+                self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
+            self._advance_sim_clock(wdts)
+            logger.info(
+                f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
+                f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
+            )
+            committed.append((wmsg, wmd))
+
         return committed
 
     @staticmethod
@@ -818,6 +866,35 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         # before distributing weights, update it from global model
         self._update_weights()
 
+        # E.1: re-clock the 90s abandon to the vclock and free stalled slots so a
+        # replacement is selectable this round (no-op when the gate is off).
+        if self.simulated:
+            self._sim_abandon_stalled(channel)
+            # D.1: for availability_aware baselines, proactively free any
+            # in-flight slot the trace now shows as UN_AVL — no 90s wait.
+            self._sim_evict_unavail_inflight(channel)
+
+        # E.1: oracular gate — build the unavailability list for this selection.
+        if self.trainer_event_dict is not None:
+            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                task_to_perform
+            )
+            # invariant 2: a trainer with a withheld update stays out of the
+            # eligible pool until its delivery_ts.
+            _held_withheld = self.withheld_held_ends()
+            if _held_withheld:
+                curr_unavail_trainer_list = list(
+                    set(curr_unavail_trainer_list) | _held_withheld
+                )
+        else:
+            curr_unavail_trainer_list = []
+        channel.set_curr_unavailable_trainers(
+            trainer_unavail_list=curr_unavail_trainer_list
+        )
+        # Stamp PROP_AVL_STATE so emit_selection's avail_composition/per_trainer
+        # reflect the oracular read instead of staying all-UNKNOWN.
+        self._avail_stamp_end_states(channel)
+
         # Per-baseline online oracle: overwrite candidate stat-utility with the
         # TRUE current value (computed from the just-updated global model) before
         # the selector ranks. No-op unless oracle_utility_injection is enabled.
@@ -836,9 +913,19 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         # the state and return their normal selection.
         selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         if not selected_ends:
-            # ends() can be None/empty before trainers join + get selected
-            # (notably in simulated mode where the loop spins without sleeps).
-            time.sleep(0.5)
+            # Stage F: in sim with availability gate on, advance the vclock to the
+            # next availability event instead of wall-sleeping — the outer loop
+            # then immediately retries and sees the newly-available cohort.
+            if self.simulated and self.trainer_event_dict is not None:
+                _nxt = self._next_avail_vclock()
+                if _nxt is not None and _nxt > self._vclock.now:
+                    self._vclock.advance(_nxt)
+                    logger.info(
+                        f"[SIM_STARVATION] round={self._round} no selectable trainers; "
+                        f"vclock advanced to {_nxt:.1f}"
+                    )
+            else:
+                time.sleep(0.5)
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 

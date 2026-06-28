@@ -20,9 +20,10 @@ the end. Never block forward implementation on a long run.**
 4. **Keep this doc crisp and in-place.** Completed stages compress to a few lines (mechanism + where it
    lives + exit met). Full detail only for not-yet-built stages. Dead-ends ledger in §9.
 
-## Status (Jun 28 — updated post syn_20 confirmation)
+## Status (Jun 28 — Batch 1 code-complete)
 
-**Stages A/B/C/C.6/D all code-complete and CONFIRMED on syn_20. felix 49/49 PASS.**
+**Stages A/B/C/C.6/D all code-complete and CONFIRMED on syn_20. felix 49/49 PASS.
+Batch 1 (E/F/G.1) code-landed; 67/67 parity tests pass. Smoke (Stage E/F) pending.**
 
 - **A/B ✅** Substrate (`flame/availability/trace.py` + `AvailabilityMixin`) + A3 time-base CONTROL.
   Exit: A3 PASS oort syn_20 (`max_rel_diff=0.107 ≤ 0.20`), felix (`max_rel_diff=0.007`). Library-level,
@@ -48,6 +49,21 @@ the end. Never block forward implementation on a long run.**
 - **`withheld_delivery` under-emission fix ✅ CONFIRMED** n=7 (felix) vs n=2 pre-fix; fix works.
 - **453/453 lib + 63/63 parity tests pass.**
 
+**Batch 1 (Jun 28 — code-complete):**
+- **E.1/E.2/E.3 ✅** Syncfl path wired: `_distribute_weights` (abandon/evict/stamp + scarcity-advance
+  via `_next_avail_vclock()`) + `_sync_sim_recv_first_k` (withhold send-gate + withheld bonus drain).
+  Covers feddance AND refl (both use syncfl stack). `_sim_buffer`/`_sim_committed` init added to
+  syncfl `internal_init`. E.2 = accept-stale (FedAvg has no staleness gate in feddance). E.3 naturally
+  handled: withheld updates excluded from `committed` → barrier-anchor U6 over actual contributors only.
+- **Stage F ✅** Vclock-advance under scarcity added: (a) syncfl `if not selected_ends:` block, and
+  (b) oort `max_retries` loop. Both call `_next_avail_vclock()` (new mixin helper, considers all trace
+  transitions + `pending_withheld.values()`). Felix asyncfl (line 639 `time.sleep(0.5)`) NOT YET WIRED
+  — defer to syn_50 observation (felix already passed 49/49 syn_20 without it).
+- **G.1 ✅** `starvation_advance` rung (`checks.py` + `report.py` section 2); 67/67 parity tests pass
+  (was 63; +4 starvation tests). `withheld_delivery` deps updated to include `abandon_timeout`.
+- **Felix master-gate ✅** `debug_run.sh` trace-override block injects `simUnavailability: True` +
+  `availabilityAware: True` for non-ORACULAR baselines when `--trace syn_X` is passed.
+
 **Parity check fixes (Jun 28):** Three parity check issues found and fixed:
 1. `NEAR_ZERO_LAG_S` raised 0.05→0.10s (U6): carry-over burst after avail windows inflates sim mean
    to ~70ms — still "immediate commit" semantically, KS uninformative at near-zero.
@@ -56,36 +72,38 @@ the end. Never block forward implementation on a long run.**
 3. New availability rungs (`A4dur`, `Aa eligible_pool_reduction`, `C.3 abandon_timeout`, `C.2
    withheld_delivery`) wired into `report.py _SECTIONS` (were computed but not displayed).
 
-## ▶ Next actions — OPTIMIZED BATCHED PLAN (Jun 28)
+## ▶ Next actions — Batch 1 code-complete, smoke pending (Jun 28)
 
-**syn_20 CONFIRMED. All of v1's async + aware-felix path is done. What remains: E (feddance
-sync), F (starvation clock-advance), G (integration + ramp + sign-off). Stage H is out of v1.**
+**Batch 1 is code-landed (E/F/G.1). syn_0 byte-identity ✅ (67/67 parity tests). Next: Stage E
+smoke (syncfl baselines) → Stage F smoke (syn_50, all baselines with starvation path).**
 
-Steps left: **5 code-steps (E.1/E.2/E.3, F, G.1) + 2 confirmation steps (G.2, G.3).** Collapse them
-into **one code batch + one long-run batch**, with the oort confirmation overlapped for free. The
-code-steps touch non-conflicting surfaces (E=feddance commit loop, F=asyncfl/sync wait-retry,
-G.1=`scripts/parity/{checks,report}.py`), so they land together and gate on cheap signals only.
+**Stage E smoke — run now:**
+```bash
+cd lib/python/examples/async_cifar10
+# feddance (syncfl, non-ORACULAR, new master-gate) + refl (syncfl, ORACULAR, legacy path)
+# Both exercise E.1/E.2/E.3 via the shared syncfl _distribute_weights/_sync_sim_recv_first_k path.
+scripts/debug_run.sh --baselines 'feddance refl' --mode both --runtime-s 1800 --trace syn_20 --num-trainers 48
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'feddance refl' --agg-goal 10
+```
+Exit: A-rungs + U3/U6 + K8 PASS. Expect K8/U2/U6 movement on feddance from E.2/E.3 (Challenge 9).
 
-**Now (parallel, zero added wall-time):** kick off the oort 3600s syn_20 long run in the background
-(§9.1 — confirms K3b+T2 self-correct, independent of E/F).
+**Stage F smoke (after E exits):**
+```bash
+# syn_50 heavier-scarcity smoke — all three starvation-wired baselines (syncfl+oort)
+scripts/debug_run.sh --baselines 'feddance refl oort' --mode both --runtime-s 1800 --trace syn_50 --num-trainers 48
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'feddance refl oort' --agg-goal 10
+```
+Exit: no stalls; K1 monotone; `starvation_advance` rung populated (n_starvation_jumps > 0); round cadence faithful.
 
-**Batch 1 — one code push, cheap-signal gated:**
-E.1/E.2/E.3 + F + G.1 + prereqs (felix master-gate config plumbing §7; Q-new-2 verify feddance's
-existing staleness threshold). Verify with: unit tests → syn_0 byte-identity (all baselines) →
-syn_20 feddance smoke (E exit) → syn_50 smoke (F exit). No long run gates any of this. Expect
-K8/U2/U6 movement on feddance from E.2/E.3 (Challenge 9) — analysis, not a blocker. Write G.1 last
-within the push (needs E's + F's rungs to exist).
+**Felix asyncfl Stage F gap:** asyncfl has a `time.sleep(0.5)` at `top_aggregator.py:639` (no-recv-ends path). NOT wired in Batch 1. Felix passed 49/49 at syn_20 without it. Wire before syn_50 if stalls appear.
 
 **Batch 2 — one batched long-run pass:** G.2 ramp (syn_50 → mobiperf, all baselines, 3h) + G.3
 sign-off. **The syn_50 run from F doubles as the ramp's first rung** — don't re-run it. One long run
 per baseline confirms E+F+G together; never one stage each.
 
-**Run sharing that cuts total runs:** (1) F-validation run = G.2's syn_50 ramp rung. (2) the oort
-3600s confirmation is independent and overlaps Batch 1.
-
+**oort 3600s syn_20 long run (parallel, independent):**
 ```bash
 cd lib/python/examples/async_cifar10
-# oort long run (background, parallel — confirm K3b+T2 self-correct at 3h; §9.1)
 scripts/debug_run.sh --baselines oort --mode both --runtime-s 3600 --trace syn_20 --num-trainers 48
 python -m scripts.parity.cli --batch --experiments-dir experiments --baselines oort --agg-goal 10
 ```
@@ -319,21 +337,24 @@ spot). The fix is in code; a fresh syn_20 run is the confirmation.
 - **(D.x deferred to Stage H)** continuous/event-scheduled timing + the `min(next_sct,
   next_transition_ts)` clamp.
 
-### Stage E — SYNC baselines + staleness-gated rejection (feddance)
-- **E.1** Apply C/D to the sync path (barrier re-selects the cohort each round).
-- **E.2** Staleness rejection: over-stale withheld update dropped by feddance's existing rule, no new
-  threshold. Shifts K8/U2/round-count — validate it's faithful (Challenge 9).
-- **E.3** Barrier-anchor U6: compute over the *actually contributing* cohort.
-- **Exit:** A-rungs + U3/U6 + K8 PASS on syn_20 feddance.
+### Stage E — SYNC baselines + staleness-gated rejection ✅ CODE-COMPLETE (smoke pending)
+- **E.1 ✅** Syncfl `_distribute_weights` (abandon/evict/stamp, scarcity-advance via
+  `_next_avail_vclock()`) + `_sync_sim_recv_first_k` (withhold send-gate + withheld bonus drain).
+  `_sim_buffer`/`_sim_committed` init in syncfl `internal_init`. Covers feddance + refl.
+- **E.2 ✅** Accept-stale path (FedAvg has no staleness gate; `_emit_withheld_delivery` with
+  `accepted=True`). No new threshold invented (Challenge 9). Expect K8/U2/U6 movement on feddance.
+- **E.3 ✅** Naturally handled: withheld updates excluded from `committed` → U6 over actual cohort.
+- **Exit (pending):** A-rungs + U3/U6 + K8 PASS on syn_20; `--baselines 'feddance refl'`.
 
-### Stage F — Starvation / clock-advance under scarcity (F10)
-In the `max_retries` wait-retry, when no one is selectable, **advance the vclock to the next
-availability event (or next in-flight `delivery_ts`)** rather than wall-sleeping. Clamp to
-nearest of {next transition, next `delivery_ts`, next `sct`}; guard K1 monotone + K5 failsafe.
-**Validation:** syn_50. **Exit:** no stalls; K1 monotone; round cadence faithful at syn_50.
+### Stage F — Starvation / clock-advance under scarcity ✅ CODE-COMPLETE (smoke pending)
+`_next_avail_vclock()` mixin helper (all traces min, + `pending_withheld.values()`). Wired into:
+(a) syncfl `if not selected_ends:` block (feddance + refl), (b) oort `max_retries` loop.
+**Felix asyncfl gap:** `asyncfl/top_aggregator.py:639` `time.sleep(0.5)` NOT yet wired — watch at syn_50.
+**Exit (pending):** no stalls; K1 monotone; `starvation_advance` rung populated; cadence faithful. Validation: `--trace syn_50`.
 
 ### Stage G — Ladder integration + ramp + sign-off
-- **G.1** All new rungs enforced in `scripts/parity/{checks.py,report.py}` with deps.
+- **G.1 ✅** `starvation_advance` rung in `checks.py` + `report.py` §2; 67/67 parity tests.
+  `withheld_delivery` deps updated to include `abandon_timeout`.
 - **G.2** Ramp: syn_0 → syn_20 → syn_50 → mobiperf_*. **G.3** Per-baseline sign-off.
 
 ### Stage H (FUTURE) — true `avl_*` message transport + continuous scheduling
@@ -390,11 +411,14 @@ hook was built for exactly this). Add the continuous/event-scheduled vclock clam
 - **C.3 abandon (90s vclock) still SKIP at syn_20**: train ≤60s rarely crosses 90s. For aware
   baselines (felix), D.1 fires first and masks C.3. To exercise C.3, use oort/refl (C.3-only path) or
   syn_50 (heavier unavailability).
-- **felix master-gate plumbing:** oort/refl activate via legacy `trackTrainerAvail` ORACULAR path;
-  felix/fedbuff need `sim_unavailability: true` + `availability_trace` emitted by the spawner into the
-  asyncfl JSON config. Config-compilation only (commit-loop wiring already in place).
-- **Q-new-2:** verify feddance's existing staleness threshold is the right rejection gate on a real
-  syn_20 run before E.2 (don't assume the async tolerance transfers).
+- **felix master-gate plumbing ✅ DONE:** `debug_run.sh` trace-override block now injects
+  `simUnavailability: True` (+ `availabilityAware: True` if `client_notify.enabled`) for non-ORACULAR
+  baselines (felix, feddance, fedbuff). oort/refl activate via legacy ORACULAR path unchanged.
+- **Q-new-2 (open):** verify feddance's staleness threshold is the right rejection gate on a real
+  syn_20 run — async accept-stale (E.2) vs feddance FedAvg with no staleness gate; any K8/U2 shift
+  to analyze.
+- **Felix asyncfl Stage F gap:** `asyncfl/top_aggregator.py:639` `time.sleep(0.5)` still wall-sleeps
+  under scarcity. Felix passed 49/49 syn_20 without it; watch for stalls at syn_50 and wire if needed.
 - **[Stage H] Real notification lag (Challenge 5):** measure on a real felix run before turning
   `client_notify` back on; decides whether lag-0 reflection is admissible.
 
@@ -429,17 +453,17 @@ pending syn_20.**
 `abandon_timeout`, `withheld_delivery` (`delivery_ts−sct`, staleness, accept/reject) builders in
 `flame/telemetry/events.py`. `avl_state` on `emit_selection` via `_avail_stamp_end_states` (§8.1).
 
-### 8.6 Tests ✅ 453/453 lib + 63/63 parity
+### 8.6 Tests ✅ 453/453 lib + 67/67 parity
 Resolver determinism + syn_0-inert; all four aggregators; ledger invariants; `delivery_ts` ordering
 (incl. late-stash bump); gate-off byte-identity; `_avail_stamp_end_states`; `_trace_has_avl_eval`
-2-state guard. Remaining: run validation (syn_20), not test coverage.
+2-state guard; `starvation_advance` gate/jump detection (+4 tests, Jun 28). Remaining: run validation.
 
 ### 8.7 Exit criteria (status)
 A ✅ · B ✅ · C ✅ CONFIRMED syn_20 · C.6 ✅ CONFIRMED (plots render, A4dur PASS) ·
 D.1 ✅ CONFIRMED (boundary evictions at vclock 600/1200s) · D.2 ✅ CONFIRMED ·
 D.3 ✅ CONFIRMED (accept_frac=1.0) · §8.3 ✅ CONFIRMED (real withheld n=7, not drop).
 **felix syn_20: 49/49 PASS (Jun 28).** oort 39/48: K3b run-length + T2 pre-existing + A2 KS shape artifact — all unrelated to avail (see §9.1).
-Stage E (feddance) is next; oort long runs can run in parallel to confirm K3b+T2 self-correct.
+**E/F/G.1 code-complete (Jun 28); 67/67 tests pass.** Stage E smoke (`--baselines 'feddance refl' --trace syn_20`) pending; Stage F smoke (`--baselines 'feddance refl oort' --trace syn_50`) pending.
 
 ---
 

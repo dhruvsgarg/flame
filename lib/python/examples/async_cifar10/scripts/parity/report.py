@@ -53,6 +53,7 @@ _SECTIONS = [
         ("A4dur  duration duty-cycle parity",   "duty_cycle_duration"),
         ("Aa   eligible-pool reduction (diag)", "eligible_pool_reduction"),
         ("C.3  abandon_timeout (vclock CTRL)",  "abandon_timeout"),
+        ("Fst  starvation_advance (diag)",      "starvation_advance"),
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
