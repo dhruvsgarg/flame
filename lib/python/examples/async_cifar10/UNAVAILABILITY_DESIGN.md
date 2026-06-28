@@ -80,12 +80,15 @@ smoke (syncfl baselines) → Stage F smoke (syn_50, all baselines with starvatio
 **Stage E smoke — run now:**
 ```bash
 cd lib/python/examples/async_cifar10
-# feddance (syncfl, non-ORACULAR, new master-gate) + refl (syncfl, ORACULAR, legacy path)
-# Both exercise E.1/E.2/E.3 via the shared syncfl _distribute_weights/_sync_sim_recv_first_k path.
-scripts/debug_run.sh --baselines 'feddance refl' --mode both --runtime-s 1800 --trace syn_20 --num-trainers 48
-python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'feddance refl' --agg-goal 10
+# feddance only: exercises the NEW simUnavail-gate path through syncfl E.1/E.2/E.3.
+# refl shares the same syncfl code but uses the legacy-gate (already confirmed via oort Stage C).
+scripts/debug_run.sh --baselines feddance --mode both --runtime-s 1800 --trace syn_20 --num-trainers 48
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines feddance --agg-goal 10
 ```
 Exit: A-rungs + U3/U6 + K8 PASS. Expect K8/U2/U6 movement on feddance from E.2/E.3 (Challenge 9).
+**Why feddance-only:** refl and feddance share `syncfl/top_aggregator.py`. The only refl-specific
+thing is its legacy-gate activation (confirmed working in Stage C oort run). feddance tests the new
+simUnavail-gate + all E.1 syncfl code; refl confirmation deferred to Batch 2 long run.
 
 **Stage F smoke (after E exits):**
 ```bash
@@ -124,20 +127,28 @@ deadlocks.
 
 ## v1 SCOPE (read this before anything else)
 
-The single biggest simplification, decided Jun 25: **for v1, the aggregator reads the shared trace
-directly (oracular) for EVERY baseline — aware and unaware alike — and `client_notify` is OFF.**
-That collapses the old asymmetry into **one oracular knowledge path**. The aware/unaware distinction
-then reduces to *when and how a stalled slot is freed* (a timing/trigger difference), **not** to *how
-the agg learns* a transition.
+### Three axes — keep them separate
 
-| | v1 (this spec) | End goal (Stage H, FUTURE) |
+There are three orthogonal properties that easy to conflate. Pin them now:
+
+| Axis | Term used here | v1 value | Stage H change |
+|---|---|---|---|
+| **How the agg learns a trainer's state** | **knowledge model** | **trace-read** (agg binary-searches `trainer_event_dict` directly) — all baselines | aware baselines move to **message-transport** (real `avl_*` trainer→agg msgs) |
+| **When the agg frees a stalled in-flight slot** | **slot-free timing** | **proactive** (felix only: next selection boundary) OR **reactive-90s** (oort/refl/feddance: 90s vclock deadline) | proactive timing becomes instant-on-message for aware (Stage H) |
+| **Which config knob activates the gate** | **config-gate** | **legacy-gate** (oort/refl: `trackTrainerAvail.type: ORACULAR` already in YAML) OR **simUnavail-gate** (felix/feddance: `simUnavailability: True` injected by `debug_run.sh` Batch 1) | no change planned |
+
+**The word "ORACULAR" in code/YAML means only the legacy-gate config type** (the field name that oort/refl already had). It says nothing about the knowledge model — which is trace-read for ALL baselines in v1. Don't use "oracular" to describe individual baselines; use "trace-read" for the knowledge model.
+
+The single biggest simplification decided Jun 25: **v1 uses trace-read for every baseline** and `client_notify` is OFF. That collapses the old asymmetry into one knowledge path. The proactive/reactive-90s distinction is purely a slot-free timing difference, not a knowledge difference.
+
+| | v1 (this spec) | Stage H (FUTURE) |
 |---|---|---|
-| How agg learns a transition | **oracular trace read** (all baselines) | aware: real `avl_*` trainer→agg message; unaware: still oracular |
-| When availability is applied | **selection boundaries only** (no mid-round clamp) | continuous / event-scheduled at the exact transition vclock |
-| Aware mid-flight slot-free | **deferred** (hook built, dormant) → behaves like unaware in v1 | proactive eviction the instant the message lands |
+| Knowledge model | **trace-read** (all baselines) | aware: **message-transport** (`avl_*` msgs); unaware: still trace-read |
+| When availability is applied | **selection boundaries only** | continuous / event-scheduled at exact transition vclock |
+| Aware mid-flight slot-free | **deferred** (hook built, dormant) → behaves like reactive-90s in v1 | proactive eviction the instant the message lands |
 | `client_notify` | OFF | ON for aware baselines |
 
-Everything below is written for v1 unless tagged **[Stage H]**. The architecture keeps the
+Everything below is written for v1 unless tagged **[Stage H]**. The architecture keeps
 state-resolution + effect logic identical so Stage H swaps only *transport/timing*, not *effect*.
 
 ---
@@ -149,9 +160,9 @@ The tree already has **three** availability paths; the 100%-avail runs left them
 
 | # | Path | Where | Time-base | Drives | v1 role |
 |---|---|---|---|---|---|
-| **A. Agg pull (event trace)** | `get_curr_unavail_trainers()` binary-searches `trainer_event_dict` | oort `top_aggregator.py:643` | `_vclock.now` (sim) / `time.time()−agg_start` (real) | `channel.set_curr_unavailable_trainers` at selection | **THE v1 path** |
-| **B. Agg pull (duration windows)** | `oracular_trainer_avail_check(end)` | `asyncfl/top_aggregator.py:1226` | same | per-pick veto | folded onto A |
-| **C. Trainer push (notifications)** | `check_and_update_state_avl` → `channel.update_trainer_state` | `trainer/pytorch/main.py:330` | `_sim_now()` / wall (real) | MQTT message | **OFF in v1** → Stage H |
+| **A. Agg pull / trace-read** | `get_curr_unavail_trainers()` binary-searches `trainer_event_dict` | oort `top_aggregator.py:643` | `_vclock.now` (sim) / `time.time()−agg_start` (real) | `channel.set_curr_unavailable_trainers` at selection | **THE v1 path (all baselines)** |
+| **B. Agg pull (duration windows)** | `oracular_trainer_avail_check(end)` — confusingly named; same trace-read model as A | `asyncfl/top_aggregator.py:1226` | same | per-pick veto | folded onto A |
+| **C. Trainer push / message-transport** | `check_and_update_state_avl` → `channel.update_trainer_state` | `trainer/pytorch/main.py:330` | `_sim_now()` / wall (real) | MQTT message | **OFF in v1** → Stage H aware baselines |
 
 **Two anchoring facts:**
 1. **A/B already key on `_vclock.now` in sim.** Agg-pull on the virtual clock = no-comms, deterministic,
@@ -163,11 +174,11 @@ The tree already has **three** availability paths; the 100%-avail runs left them
 
 ## 1. Core decisions (all resolved)
 
-### Source of truth — ORACULAR for all baselines in v1
+### Knowledge model — trace-read for all baselines in v1
 One shared trace + one `state_at(trainer, vclock)` resolver + one effect path, read by the aggregator
-for **oort, refl, felix, feddance alike**. Per-baseline difference in v1 = only the trigger/timing
-of freeing a stalled slot: aware frees proactively at the next selection boundary; unaware frees
-reactively at the 90s vclock deadline. **[Stage H]** aware moves to `avl_*` transport, effect unchanged.
+for **oort, refl, felix, feddance alike**. Per-baseline difference in v1 = only the slot-free timing:
+proactive (felix: at next selection boundary) vs reactive-90s (oort/refl/feddance: at 90s vclock
+deadline). **[Stage H]** aware moves to `avl_*` message-transport, effect unchanged.
 Per-tick broadcast rejected (comms-heavy, induces sub-optimal decisions).
 
 ### Mid-flight unavailability = COMPUTE-COMPLETES, GATE THE *SEND*, then DELIVER-LATE (stale)
@@ -192,8 +203,8 @@ Both are simultaneously correct; the discipline is never conflating them (Challe
    contribution. In-flight counter must not go negative.
 2. **Cannot re-select a still-down trainer.** `withheld_held_ends()` unioned into unavailable list;
    held end stays out of pool until `delivery_ts`.
-3. **Aware vs unaware = trigger only.** Single code path with `availability_aware` flag; identical
-   downstream effect.
+3. **Proactive vs reactive-90s = trigger only.** Single code path with `availability_aware` flag; identical
+   downstream effect regardless of when the slot-free fires.
 
 ### Busy ≠ unavailable ≠ withheld — three distinct non-pool states
 Do **NOT** route busy→`UN_AVL` (§3.resid dead-end ramped in-flight to ~300). Separate states, separate
@@ -215,9 +226,16 @@ Single-source the trace + resolver: `flame/availability/trace.py`, loaded by nam
 `examples/_metadata/availability_traces`.
 
 ### Config-gating
-**Everything config-gated, default OFF** ⇒ byte-identical. Master `sim_unavailability: bool = False`
-+ per-baseline `availability_aware: bool` + `availability_trace: str`. Reconcile with
-`client_notify["trace"]`/`["enabled"]`; do NOT add a parallel fourth knob.
+**Everything config-gated, default OFF** ⇒ byte-identical. Two activation paths, both activate the
+same trace-read code:
+- **legacy-gate** (oort/refl): `trackTrainerAvail.type: ORACULAR` in YAML (pre-existing field name;
+  "ORACULAR" there refers only to this config mechanism, not the knowledge model — all v1 baselines
+  are trace-read).
+- **simUnavail-gate** (felix/feddance/fedbuff): `simUnavailability: True` injected by `debug_run.sh`
+  when `--trace syn_X` is passed; `availabilityAware: True` additionally if `client_notify.enabled`.
+
+Master knob: `sim_unavailability: bool = False`; per-baseline: `availability_aware: bool`,
+`availability_trace: str`. Reconcile with `client_notify["trace"]`/`["enabled"]`; do NOT add a fourth knob.
 
 ---
 
@@ -225,10 +243,10 @@ Single-source the trace + resolver: `flame/availability/trace.py`, loaded by nam
 
 - **F1 Clock authority.** One monotonic vclock owns "now"; every availability decision is indexed by it.
   Trace is sim-seconds since `agg_start` (same origin both modes); parity rung **A3** is the CONTROL.
-- **F2 Source of truth** — v1: oracular for all baselines (§1). **[Stage H]** aware moves to `avl_*`
-  transport, effect unchanged.
-- **F3 Event semantics.** `→UN_AVL`: excluded from selection + in-flight slot freed (proactive at
-  boundary for aware; at 90s vclock deadline for unaware); update **withheld, not discarded**.
+- **F2 Knowledge model** — v1: trace-read for all baselines (§1). **[Stage H]** aware moves to `avl_*`
+  message-transport, effect unchanged.
+- **F3 Event semantics.** `→UN_AVL`: excluded from selection + in-flight slot freed (proactive-at-boundary
+  for aware/felix; reactive-90s for unaware/oort/refl/feddance); update **withheld, not discarded**.
   `AVL_TRAIN→AVL_EVAL`: train-pool removal, eval-eligible only (inert for baselines dispatching 0 eval,
   Challenge 8). `→AVL_TRAIN`: re-enters pool + withheld delivery commits.
 - **F4 Compute-completes / gate-the-send / deliver-late** (§1). Return fates: on-time /
@@ -411,9 +429,11 @@ hook was built for exactly this). Add the continuous/event-scheduled vclock clam
 - **C.3 abandon (90s vclock) still SKIP at syn_20**: train ≤60s rarely crosses 90s. For aware
   baselines (felix), D.1 fires first and masks C.3. To exercise C.3, use oort/refl (C.3-only path) or
   syn_50 (heavier unavailability).
-- **felix master-gate plumbing ✅ DONE:** `debug_run.sh` trace-override block now injects
-  `simUnavailability: True` (+ `availabilityAware: True` if `client_notify.enabled`) for non-ORACULAR
-  baselines (felix, feddance, fedbuff). oort/refl activate via legacy ORACULAR path unchanged.
+- **felix/feddance config-gate plumbing ✅ DONE:** `debug_run.sh` trace-override block now injects
+  `simUnavailability: True` (+ `availabilityAware: True` if `client_notify.enabled`) for simUnavail-gate
+  baselines (felix, feddance, fedbuff). oort/refl still activate via their legacy-gate config field
+  (`trackTrainerAvail.type: ORACULAR`) — that field name is a legacy artifact; both paths activate the
+  same trace-read knowledge model.
 - **Q-new-2 (open):** verify feddance's staleness threshold is the right rejection gate on a real
   syn_20 run — async accept-stale (E.2) vs feddance FedAvg with no staleness gate; any K8/U2 shift
   to analyze.
@@ -445,9 +465,12 @@ pending syn_20.**
 
 ### 8.4 Config surface (`flame/config.py` + spawner)
 - `sim_unavailability: bool = False` (master gate; off ⇒ byte-identical).
-- `availability_aware: bool`, `availability_trace: str`. Reuse `client_notify["trace"]` as
-  `availability_trace`; keep `client_notify["enabled"]="False"` in v1. Do NOT add a parallel fourth knob.
+- `availability_aware: bool` (proactive-at-boundary slot-free for felix; reactive-90s when False).
+- `availability_trace: str`. Reuse `client_notify["trace"]`; keep `client_notify["enabled"]="False"` in v1.
+- Do NOT add a parallel fourth knob.
 - `availability_trace_dir` (optional) → `base_dir` for the resolver.
+- **Config-gate mapping:** oort/refl activate via legacy-gate (`trackTrainerAvail.type: ORACULAR`);
+  felix/feddance activate via simUnavail-gate (`simUnavailability: True`, injected by `debug_run.sh`).
 
 ### 8.5 Telemetry ✅ LANDED
 `abandon_timeout`, `withheld_delivery` (`delivery_ts−sct`, staleness, accept/reject) builders in
