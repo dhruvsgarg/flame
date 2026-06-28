@@ -37,7 +37,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
 import torchvision.transforms as transforms
-import numpy as np
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry
@@ -165,7 +164,7 @@ class PyTorchCifar10Trainer(Trainer):
         # training_delay_s deprecated in favour of computation_time_ms (per-device dict)
         self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms["gpu_a40"])
         self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
-	    self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
+        self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
         self.rtt_amplitude = float(self.config.hyperparameters.rtt_amplitude)
         self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
         _sat_path = self.config.hyperparameters.satellite_latencies_path
