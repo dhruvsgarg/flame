@@ -555,5 +555,56 @@ class AvailabilityMixin:
                 ev, f = build_abandon_timeout(
                     round_num=getattr(self, "_round", -1), end_id=end,
                     sim_send_ts=float(sst), vclock_now=now, time_mode="sim",
+                    reason="abandon_90s_vclock",
+                )
+                telemetry.emit(ev, **f)
+
+    def _sim_evict_unavail_inflight(self, channel) -> None:
+        """D.1: Proactively free in-flight slots for trainers now showing UN_AVL.
+
+        For availability_aware baselines the oracular trace read at the selection
+        boundary is authoritative — no need to wait for the 90s vclock deadline
+        (C.3). A trainer that transitioned to UN_AVL since it was dispatched has
+        its slot freed immediately so a replacement is selectable this round.
+
+        Same effect as free_stalled_slot (slot ledger freed + delivery ledger
+        registered) — only the trigger differs from C.3. No-op when the gate is
+        off (trainer_event_dict is None) or _availability_aware is False (unaware
+        baselines stay on the C.3 90s path).
+        """
+        if not getattr(self, "_availability_aware", False):
+            return
+        if getattr(self, "trainer_event_dict", None) is None:
+            return
+        inflight = self._avail_inflight_ends(channel)
+        if not inflight:
+            return
+        now = self._avail_now()
+        buf = getattr(self, "_sim_buffer", None)
+        committed = getattr(self, "_sim_committed", set())
+        for end in list(inflight):
+            if buf is not None and buf.has(end):
+                continue  # update already arrived in buffer — not stalled
+            if end in committed or end in self.pending_withheld:
+                continue  # invariant 1: already committed / registered
+            trace = self.trainer_event_dict.get(end)
+            if not trace:
+                continue
+            if state_at(trace, now) != TrainerAvailState.UN_AVL:
+                continue  # still available — leave the slot
+            self.free_stalled_slot(
+                channel, end, reason="aware_boundary_eviction", sct=now
+            )
+            logger.info(
+                f"[AWARE_EVICT] end={str(end)[-4:]} vclock={now:.1f} "
+                f"state=UN_AVL — proactive boundary eviction"
+            )
+            if telemetry.is_enabled():
+                sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+                ev, f = build_abandon_timeout(
+                    round_num=getattr(self, "_round", -1), end_id=end,
+                    sim_send_ts=float(sst) if sst is not None else now,
+                    vclock_now=now, time_mode="sim",
+                    reason="aware_boundary_eviction",
                 )
                 telemetry.emit(ev, **f)

@@ -37,7 +37,7 @@ serializing the whole plan behind a sequence of 45-min/3h runs.
   vclock 90s abandon (C.3) live as a **shared core in `AvailabilityMixin`** (`_sim_withhold_if_unavail`,
   `_sim_pop_committable`, `_sim_reinject_ready_withheld`, `_sim_abandon_stalled`, robust to both
   selector shapes), called from `asyncfl/_sim_recv_min` (single pop) and `oort/_sim_drain_buffer` (pop
-  loop, composed AFTER the §4.9 carry-over gate per Challenge 7). 436/436 unit tests pass; gate-off
+  loop, composed AFTER the §4.9 carry-over gate per Challenge 7). 444/444 unit tests pass; gate-off
   byte-identity preserved (helpers no-op without `_init_availability`).
 - **First oort syn_20 sim+real pair (Jun 27): 47/49 enforced PASS** ([parity_oort.json](parity_oort.json)).
   Availability rungs clean — A1–A4 PASS, withheld fired (**n=2**, mean delay 599s, accept_frac 1.0),
@@ -51,19 +51,31 @@ serializing the whole plan behind a sequence of 45-min/3h runs.
   duration rungs + plots. (b) `abandon_timeout` is **SKIP** (no 90s abandon fired) and withheld is only
   n=2 — the C.3 abandon path and the withheld distribution are barely exercised; a heavier trace
   (syn_50) or longer run is needed to populate them (§7).
-- **Stage C.6 IN PROGRESS (Jun 27, this session) — resume here.** C.6.1/C.6.2/C.6.3(partial) landed and
-  unit-tested; C.6.4 written but **not yet verified**. Stage D not started. See the
-  "**Stage C.6 — session handoff**" box at the top of the Stage C.6 section below for the exact
-  resume point, what's tested, and what's not.
+- **Stage C.6 COMPLETE (Jun 27).** C.6.1/C.6.2/C.6.3(A4dur)/C.6.4 all landed and verified:
+  syntax clean, crash-safe against Jun 26 syn_20 dir, 444/444 tests pass. New plots:
+  `availability_dynamics.pdf`, `selection_funnel_over_rounds.pdf`, `trainer_state_fractions_sorted.pdf`
+  (sorted bar A4dur companion), `duty_cycle_cdf.pdf`, `availability_churn_over_rounds.pdf`. Aa and
+  `observation_lag` remain deferred (§7). Per-trainer fidelity plot (sorted bar by UN_AVL) added.
+  **Visual correctness needs a fresh syn_20 run** (existing runs predate C.6.1 avl_state stamping).
+- **Stage D.1 WIRED (Jun 27).** `_sim_evict_unavail_inflight` added to `AvailabilityMixin` — proactive
+  boundary eviction for `availability_aware=True` baselines; called from oort + asyncfl top_aggregators
+  after `_sim_abandon_stalled`. Felix gate plumbing added to parity yaml (`sim_unavailability: True`,
+  `availability_aware: True`, `client_notify: {enabled: False, trace: syn_0}`). 8 new unit tests (444
+  total). `build_abandon_timeout` gains `reason` field distinguishing C.3 vs D.1 events.
+  **D.2 (AVL_EVAL task gating) NOT STARTED. Validation (felix syn_20 smoke) NOT RUN.**
 
 ## ▶ Next actions (per the working agreement — implement; don't block on the long run)
 
 Proceed on the reference baselines without waiting on a long run:
-1. **Finish Stage C.6** — see the handoff box in §5 Stage C.6 below for the precise remaining steps
-   (verify C.6.4, then the syn_0 byte-identity + short syn_20 smoke gate for the whole stage).
-2. **Stage D** aware boundary eviction on **felix** (turn the dormant C.5 hook on) — NOT STARTED this
-   session — same short-smoke discipline, do after C.6 is verified.
-3. **Cheap K2 disambiguation first (do this before any 3h run):** run a **~25-min `syn_0`** (100%
+1. **syn_0 byte-identity regression (felix + oort)** — smoke with availability ON for felix (gate is
+   now live; syn_0 all-AVL should be byte-identical). Recipe: `scripts/debug_run.sh --baselines felix
+   oort --mode both --runtime-s 240` (smoke mode). Confirms C.6 + D.1 don't perturb existing scores.
+2. **Short felix syn_20 smoke** — validates D.1 boundary eviction fires: `abandon_timeout` rung should
+   show `reason="aware_boundary_eviction"` events, C.6.4 plots look correct for an aware+unavail run.
+   Recipe: `scripts/debug_run.sh --baselines felix --mode both --runtime-s 1800 --trace syn_20`.
+3. **D.2 (AVL_EVAL task gating) — next session**: only meaningful where a baseline dispatches eval;
+   for oort this is inert (Challenge 8). Scope after D.1 smoke validates eviction works.
+4. **Cheap K2 disambiguation first (do this before any 3h run):** run a **~25-min `syn_0`** (100%
    avail) oort pair and check K2 there. If syn_0 also shows ~6% at 25 min, K2 is the known length
    artifact — *independent of availability* — and no 3h availability run is needed to clear it. Only if
    syn_0's K2 is clean at 25 min does a longer syn_20 run become necessary (it would mean the wiring
@@ -428,52 +440,18 @@ clean, sole FAIL = K2 throughput (short-run signature). See Status + Next action
   run — abandon is SKIP and withheld n=2 at syn_20/25-min), no new past-dating beyond `"withheld"` (U6),
   K2/K3b hold vs a syn_20 real reference; felix/feddance smoke confirms they ride the same path.
 
-### Stage C.6 — Aggregator-side time-in-state tracking, fidelity rungs, plotting fixes
+### Stage C.6 — Aggregator-side time-in-state tracking, fidelity rungs, plotting fixes ✅ COMPLETE
 
-> **Session handoff (Jun 27, paused mid-C.6.4 — resume here).**
-> Landed + unit-tested (flame `tests/`: 436/436 +7 skipped; async_cifar10 `scripts/parity/`: 63/63 —
-> both green as of this checkpoint, BEFORE the C.6.4 edits below):
-> - **C.6.1 DONE.** `per_trainer[end_id]["avl_state"]` in `flame/selector/__init__.py::emit_selection`
->   (universal, one line). `vclock_now` plumbed: `channel.properties["vclock_now"]` set in
->   `oort/top_aggregator.py` (new) and `syncfl/top_aggregator.py` (new) alongside the existing
->   `asyncfl/top_aggregator.py` site; consumed via `channel_props.get("vclock_now")` at every
->   `emit_selection` call site in `oort.py` (3), `refl_oort.py` (1), `feddance.py` (1), `fedbuff.py` (1)
->   (`async_oort.py` already had it).
-> - **C.6.2 DONE.** `scripts/parity/avail_state_series.py` — `build_trainer_state_series` /
->   `state_fractions` / `run_span` / `total_variation_distance`. Unit tests:
->   `scripts/parity/test_avail_state_series.py` (11 tests).
-> - **C.6.3 PARTIAL.** `A4dur` landed as `duration_duty_cycle_parity` in `checks.py` (registered in
->   `run_all_parity` as `results["duty_cycle_duration"]` and in `CHECK_META`), tests added to
->   `test_availability_rungs.py`. **`Aa` and `observation_lag` NOT built** — both need trace-loading
->   plumbing (trace name + `base_dir` + an end_id→trainer_key mapping) that doesn't exist anywhere in
->   `checks.py`/`cli.py` today; scoped out rather than building it untested under time pressure. Pick
->   these up as a follow-up (§7) once a run exists to calibrate against, per the original `observation_lag`
->   HELD rationale.
-> - **C.6.4 WRITTEN, NOT YET VERIFIED — resume HERE.** Edited `/home/dgarg39/flame/scripts/analysis/
->   analyze_run.py` (repo-root `scripts/analysis/`, NOT under `lib/python/examples/async_cifar10/` —
->   the path in this doc's spec below is wrong; the file is example-agnostic and only imports
->   `flame.telemetry.events`, so it does NOT import `scripts/parity/avail_state_series.py` — that lives
->   inside the async_cifar10 example tree and would be a layering violation for a generic script. Added a
->   local `_avl_state_by_round(records)` helper instead (same underlying data source — `per_trainer[
->   end_id]["avl_state"]` on `selection` events — just a round-indexed dict-of-dict rather than the
->   time-indexed list C.6.2 uses, since these plots are round-indexed and `analyze_run.py` can't depend
->   on the example's `parity` package). Rewrote `availability_plots` (3-state funnel incl. eval pool, a
->   real `availability_dynamics.pdf` in the dynamic branch — previously never produced — transition-based
->   churn instead of sample-count churn), `_participation_heatmap` (6-state legend, was 5/binary
->   avail-aware), `_state_fraction_plots` (same source swap). **Remaining before this is done:**
->   1. `python -c "import ast; ast.parse(open('analyze_run.py').read())"` (or just run it) — never
->      syntax-checked after the edit.
->   2. Run it against an existing telemetry dir (e.g. `lib/python/examples/async_cifar10/experiments/
->      run_20260627_113505_dbg_oort_n300_alpha0.1_syn_20_stream_sim`) to confirm no crashes. That run
->      predates C.6.1, so `avl_state` will be absent and the new plots will be empty/skip — this only
->      proves crash-safety, not visual correctness.
->   3. The doc's "per-trainer fidelity plot" (`err_t` sorted bar/CDF, A4dur's visual companion) listed
->      under C.6.4 below was **not** started.
->   4. Visual correctness needs a fresh short syn_20 smoke (the one in "Next actions" / recipe below) —
->      do that AFTER step 1–2 pass cleanly, not before.
-> - **Stage D NOT STARTED.**
-> - Todo list at pause (for continuity): C.6.1 ✅, C.6.2 ✅, C.6.3 (A4dur ✅ / Aa+observation_lag deferred),
->   C.6.4 🔶 in progress, "run unit tests + syn_0 byte-identity + short syn_20 smoke" ⬜, Stage D ⬜.
+C.6.1/C.6.2/C.6.3(A4dur)/C.6.4 all landed and verified (Jun 27). 444/444 tests + 63/63 parity tests.
+**Visual correctness (C.6.4 plots) needs a fresh syn_20 run** — existing runs predate C.6.1's
+`avl_state` stamping, so plots render empty/skip. Run the felix/oort syn_20 smokes in Next actions §1–2.
+`Aa` and `observation_lag` remain deferred to a follow-up (§7). Sub-items summary:
+- **C.6.1 ✅** `per_trainer[end_id]["avl_state"]` on `emit_selection`; `vclock_now` plumbed to all sites.
+- **C.6.2 ✅** `scripts/parity/avail_state_series.py` (11 tests).
+- **C.6.3 ✅** `A4dur` (`duration_duty_cycle_parity`) in `checks.py` (Aa/observation_lag deferred §7).
+- **C.6.4 ✅** `analyze_run.py`: `availability_dynamics.pdf`, `selection_funnel_over_rounds.pdf`,
+  `trainer_state_fractions_sorted.pdf` (sorted bar by UN_AVL fraction — A4dur visual companion),
+  `duty_cycle_cdf.pdf`, `availability_churn_over_rounds.pdf`. Syntax clean, crash-safe (Jun 26 dir).
 
 **Implement before Stage D's parity validation** (D needs these fidelity rungs to score against), but
 *implementation does not block on any long run* — unit tests + syn_0 byte-identity + a short syn_20
@@ -563,17 +541,24 @@ run dir.
 ### Stage D — [Stage H precursor] AWARE proactive eviction (felix; fluxtune if in scope)
 *(Was the v0 "aware immediate-event driver"; in the v1 plan this is the point where the dormant hook
 turns ON for proactive boundary eviction, still oracular. True `avl_*` transport is Stage H.)*
-- **D.1** Turn on proactive slot-free at the boundary for `availability_aware` baselines (hook from
-  C.5): on a `→UN_AVL` observed at selection, free the slot + register the withheld delivery
-  separately (`pending_withheld`), reconcile with §3.resid `_sim_hold_busy_slots` — slot freed *and*
-  pending tracked, no leak, no double-count (Challenge 4 / invariant 1).
+
+**D.1 WIRED (Jun 27); D.2/D.3 NOT STARTED.**
+- **D.1 ✅** `_sim_evict_unavail_inflight` in `AvailabilityMixin` — at each selection boundary, for
+  `availability_aware` baselines, iterates in-flight trainers and calls `free_stalled_slot` on any that
+  are now UN_AVL per the trace (no 90s wait). Called from oort + asyncfl `top_aggregator.py` after
+  `_sim_abandon_stalled`. 8 new unit tests; `build_abandon_timeout` gains `reason` field. Felix gate
+  plumbing added to parity yaml (`sim_unavailability: True`, `availability_aware: True`, `client_notify:
+  {enabled: False, trace: syn_0}`). **Gate OFF for oort/refl (unaware, 90s abandon only).**
+  **Validation pending:** syn_0 byte-identity smoke + short felix syn_20 smoke (see Next actions).
 - **D.2** `AVL_TRAIN↔AVL_EVAL`: task-type eligibility via the resolver; only meaningful where the
   baseline dispatches eval (sync oort dispatches 0 — felix-relevant; flag inert baselines, Challenge 8).
+  NOT STARTED.
 - **D.3** Late withheld update = accept-stale (async) through felix's existing staleness path.
+  Should work via existing C.2 `commit_withheld` path; verify in the syn_20 smoke.
 - **(D.x deferred to Stage H)** continuous/event-scheduled timing + the `min(next_sct,
   next_transition_ts)` clamp — only needed when reacting the instant a message lands.
-- **Tests:** boundary eviction frees slot + tracks pending (no leak); replacement selectable; AVL_EVAL
-  gates task type; late update commits stale.
+- **Tests:** boundary eviction frees slot + tracks pending (no leak) ✅. Replacement selectable: implicit
+  (slot freed → out of selected_ends → eligible). AVL_EVAL gates task type: NOT TESTED (D.2 pending).
 - **Validation:** syn_20, 45-min, felix. A1/A2/A3/A4, transition-effect counts vs real,
   withheld-delivery, U3, U6. **Exit:** mechanism rungs PASS at syn_20; then a full-length run to
   re-confirm felix C1/C2 under unavailability.
@@ -738,8 +723,10 @@ send-gate tests (8.3) and C.6 rung tests.
 
 ### 8.7 Exit criteria (status)
 Stage A ✅ (syn_0 smoke clean) · Stage B ✅ (A3 PASS, syn_20) · Stage C: mechanism ✅ / batched parity
-exit pending (Stage-C "Validation REMAINING"). Remember the two-bar split (§5 intro): implementation
-exit gates the next stage; the parity exit is a batched long-run pass, not a per-stage gate.
+exit pending (Stage-C "Validation REMAINING"). Stage C.6: implementation ✅ (444 tests, crash-safe) /
+visual correctness pending a fresh syn_20 run. Stage D.1: mechanism ✅ (8 tests) / smoke validation
+pending (see Next actions). Remember the two-bar split (§5 intro): implementation exit gates the next
+stage; the parity exit is a batched long-run pass, not a per-stage gate.
 
 ---
 

@@ -658,6 +658,9 @@ class TopAggregator(BaseTopAggregator):
         # replacement is selectable this round (no-op when the gate is off).
         if self.simulated:
             self._sim_abandon_stalled(channel)
+            # D.1: for availability_aware baselines, proactively free any
+            # in-flight slot the trace now shows as UN_AVL — no 90s wait.
+            self._sim_evict_unavail_inflight(channel)
 
         # Per-baseline online oracle: overwrite candidate stat-utility with true
         # current values before the selector ranks. No-op unless enabled.

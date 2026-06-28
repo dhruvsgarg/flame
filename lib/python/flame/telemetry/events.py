@@ -452,12 +452,14 @@ def build_abandon_timeout(
     sim_send_ts: float,
     vclock_now: float,
     time_mode: str = "sim",
+    reason: str = "abandon_90s_vclock",
 ) -> tuple[str, dict[str, Any]]:
-    """A stalled in-flight trainer freed at the 90s vclock abandon deadline.
+    """A stalled in-flight trainer freed by a slot-free trigger.
 
-    ``vclock_now − sim_send_ts`` is the in-flight age at abandon (≥
-    ``SEND_TIMEOUT_WAIT_S``). Backs the ``abandon_timeout`` parity rung, which
-    fails loudly if the deadline is measured on the wall instead of the vclock.
+    ``reason`` distinguishes C.3 90s-vclock abandons from D.1 aware boundary
+    evictions. ``vclock_now − sim_send_ts`` is the in-flight age at trigger.
+    Backs the ``abandon_timeout`` parity rung, which fails loudly if the
+    deadline is measured on the wall instead of the vclock.
     """
     return EVENT_ABANDON_TIMEOUT, {
         "round": round_num,
@@ -466,4 +468,5 @@ def build_abandon_timeout(
         "vclock_now": vclock_now,
         "age_s": float(vclock_now) - float(sim_send_ts),
         "time_mode": time_mode,
+        "reason": reason,
     }

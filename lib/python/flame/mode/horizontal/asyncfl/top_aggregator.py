@@ -1482,6 +1482,9 @@ class TopAggregator(SyncTopAgg):
         # replacement is selectable this round (no-op when the gate is off).
         if self.simulated:
             self._sim_abandon_stalled(channel)
+            # D.1: for availability_aware baselines, proactively free any
+            # in-flight slot the trace now shows as UN_AVL — no 90s wait.
+            self._sim_evict_unavail_inflight(channel)
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()

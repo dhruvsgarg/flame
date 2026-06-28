@@ -334,3 +334,97 @@ def test_abandon_gate_off_is_noop():
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 0.0)
     h._sim_abandon_stalled(ch)
     assert sel.holds("t1") and h.pending_withheld == {}
+
+
+# ---------------------------------------------------------------------------
+# _sim_evict_unavail_inflight — Stage D.1 proactive boundary eviction
+# ---------------------------------------------------------------------------
+# Uses _DOWN: AVL_TRAIN[0,100) → UN_AVL[100,200) → AVL_TRAIN[200,∞)
+
+
+def _harness_aware(now, ends=("t1",), selector_cls=_OortSelector):
+    """Harness with availability_aware=True, vclock at `now`."""
+    h = _Harness({"t1": _DOWN, "t2": _DOWN}, now=now)
+    h._availability_aware = True
+    sel = selector_cls()
+    for e in ends:
+        sel.add(e)
+    ch = _Channel(sel, list(ends))
+    return h, sel, ch
+
+
+def test_evict_frees_slot_for_unavail_trainer_oort():
+    # vclock=150 → t1 is UN_AVL [100,200); should be evicted immediately.
+    h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1")
+    assert "t1" in h.pending_withheld
+    assert h.pending_withheld["t1"] == 200.0  # next AVL_TRAIN from trace
+
+
+def test_evict_frees_slot_for_unavail_trainer_async():
+    h, sel, ch = _harness_aware(150, ("t1",), _AsyncSelector)
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1")
+    assert h.pending_withheld["t1"] == 200.0
+
+
+def test_evict_leaves_available_trainer():
+    # vclock=50 → t1 is AVL_TRAIN; no eviction.
+    h, sel, ch = _harness_aware(50, ("t1",), _OortSelector)
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1")
+    assert h.pending_withheld == {}
+
+
+def test_evict_skips_buffered_trainer():
+    # t1 is UN_AVL at vclock=150 but its update already arrived in the buffer
+    # → not stalled → eviction skipped.
+    h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
+    h._sim_buffer.add("t1", 120.0, _payload("t1"))
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1")
+    assert h.pending_withheld == {}
+
+
+def test_evict_skips_already_withheld():
+    # Invariant 1: t1 already in pending_withheld → no double-count.
+    h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
+    h.pending_withheld["t1"] = 200.0
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1")             # nothing changed
+    assert h.pending_withheld == {"t1": 200.0}
+
+
+def test_evict_noop_when_awareness_false():
+    # _availability_aware=False → falls through to 90s abandon; evict is inert.
+    h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
+    h._availability_aware = False
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1")
+    assert h.pending_withheld == {}
+
+
+def test_evict_noop_when_gate_off():
+    h = _Harness(trainer_event_dict=None, now=150)
+    h._availability_aware = True
+    sel = _OortSelector(); sel.add("t1")
+    ch = _Channel(sel, ["t1"])
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1")
+    assert h.pending_withheld == {}
+
+
+def test_evict_multiple_trainers_partial():
+    # t1 in UN_AVL[100,200), t2 has a different trace where it's AVL at vclock=150.
+    # Only t1 should be evicted.
+    _avl_trace = _trace((0, "AVL_TRAIN"))
+    h = _Harness({"t1": _DOWN, "t2": _avl_trace}, now=150)
+    h._availability_aware = True
+    sel = _OortSelector(); sel.add("t1"); sel.add("t2")
+    ch = _Channel(sel, ["t1", "t2"])
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1")
+    assert sel.holds("t2")
+    assert "t1" in h.pending_withheld
+    assert "t2" not in h.pending_withheld

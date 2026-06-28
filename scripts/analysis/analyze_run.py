@@ -2280,6 +2280,36 @@ def availability_plots(records, out, stamp, tdir):
                        d, "availability_churn_over_rounds.pdf", stamp=stamp,
                        nbins=150, reducer="sum")
     if p: saved.append(p)
+
+    # 5) Per-trainer state fraction sorted bar — the visual companion to A4dur.
+    # Sorted by UN_AVL fraction (most unavailable first); uses the same dense
+    # per-round `by_trainer` observations as the duty-cycle CDF above, not the
+    # old sparse EVENT_AVAIL_CHANGE transition log.
+    trainer_fracs = []
+    for t, evs in by_trainer.items():
+        states = [st for _, st in evs]
+        n = len(states) or 1
+        tr_frac = sum(1 for s in states if s == "AVL_TRAIN") / n
+        ev_frac = sum(1 for s in states if s == "AVL_EVAL") / n
+        un_frac = sum(1 for s in states if "UN_AVL" in s) / n
+        trainer_fracs.append((t, tr_frac, ev_frac, un_frac))
+    trainer_fracs.sort(key=lambda x: x[3], reverse=True)
+    if trainer_fracs:
+        cats = [str(i + 1) for i in range(len(trainer_fracs))]
+        segs = {
+            "UN_AVL":    [x[3] for x in trainer_fracs],
+            "AVL_EVAL":  [x[2] for x in trainer_fracs],
+            "AVL_TRAIN": [x[1] for x in trainer_fracs],
+        }
+        colors = {"AVL_TRAIN": "#2196F3", "AVL_EVAL": "#4CAF50", "UN_AVL": "#F44336"}
+        p = ph.stacked_bar(
+            cats, segs, "fraction of run",
+            f"Per-trainer state fractions sorted by UN_AVL (n={len(trainer_fracs)}; "
+            f"visual companion to A4dur)",
+            d, "trainer_state_fractions_sorted.pdf",
+            stamp=stamp, horizontal=True, colors=colors,
+        )
+        if p: saved.append(p)
     return saved
 
 
