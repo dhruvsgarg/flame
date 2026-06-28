@@ -291,9 +291,10 @@ class ExperimentRunner:
 
             print(f"\nexperiment running. logs: {agg_log}, {trainers_log}")
             # Wait for the aggregator to finish all rounds first, then give
-            # trainers a short grace window to process the EOT broadcast and
-            # exit cleanly. Without this, wait_all()'s per-trainer timeout fires
-            # immediately after spawn and kills trainers every 30s regardless of
+            # trainers a short grace window (shared across the whole cohort,
+            # not serialized per-process) to process the EOT broadcast and
+            # exit cleanly. Without this, wait_all()'s timeout fires
+            # immediately after spawn and kills trainers regardless of
             # whether training is still in progress.
             # Watchdog: the aggregator self-stops at max_runtime_s (real) / sim_wall_ceiling_s
             # (sim). If it instead DEADLOCKS (MQTT/barrier) it would block this wait forever and

@@ -57,6 +57,7 @@ RUNTIME_S=10800
 BASELINES="felix refl"
 SIM_WALL_CEILING_S=""  # empty = max_runtime_s (1×, tight guard; sim should be faster than real)
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
+NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
 
 usage() {
   echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
@@ -74,6 +75,11 @@ usage() {
   echo "  --trace               availability trace name to substitute (e.g. syn_20, syn_50)."
   echo "                        Replaces trainer availability.mode and aggregator trackTrainerAvail.trace."
   echo "                        Default: use whatever is in the parity config (syn_0)."
+  echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
+  echo "                        scaling min_trainers_to_start down with it (gap of 8, same ratio as"
+  echo "                        smoke). Use this instead of 'smoke' when you need a real --runtime-s"
+  echo "                        budget (e.g. a vclock floor for an availability trace) that smoke's"
+  echo "                        hardcoded rounds=4/runtime=240 would cut short."
   exit 2
 }
 
@@ -100,6 +106,7 @@ else
       --sim-wall-ceiling-s)  SIM_WALL_CEILING_S="$2"; shift 2 ;;
       --wall-runtime-s)      SIM_WALL_CEILING_S="$2"; shift 2 ;;  # backward compat alias
       --trace)               TRACE="$2"; shift 2 ;;
+      --num-trainers)        NUM_TRAINERS="$2"; shift 2 ;;
       # --node is DEPRECATED (node1/node2 split removed): baselines are filtered
       # from a single node-agnostic parity config, so the node is irrelevant.
       # Accept+ignore so existing wrappers don't hard-error.
@@ -113,9 +120,9 @@ case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (
 # Generate a single filtered+patched YAML from the parity source config.
 # $1 = baselines (space-separated), $2 = runtime_s, $3 = output path,
 # [$4 = smoke: 1|0], [$5 = sim_wall_ceiling_s: int or ""], [$6 = mode: sim|real|both],
-# [$7 = trace: trace name or ""]
+# [$7 = trace: trace name or ""], [$8 = num_trainers override: int or "", non-smoke only]
 make_debug_yaml() {
-  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" "${7:-}" <<'PY'
+  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" "${7:-}" "${8:-}" <<'PY'
 import yaml, sys, copy, os
 scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5] == "1",
@@ -123,6 +130,7 @@ scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
 )
 mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
 trace_override = sys.argv[8].strip() if len(sys.argv) > 8 else ""
+num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 requested = set(baselines_str.lower().split())
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
 _seed_env = os.environ.get("SEED", "1234").strip()
@@ -184,6 +192,13 @@ for e in cfg.get("experiments", []):
         # High round cap so the wall/vclock budget (max_runtime_s) is the
         # binding stop condition, not an early round-count termination.
         h["rounds"] = 20000
+        if num_trainers_override:
+            # Shrink the cohort but keep runtime_s as the real budget (unlike
+            # smoke, which hardcodes rounds=4/runtime=240 — too short for a
+            # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
+            # Same join-barrier slack ratio as smoke (gap of 8 below the count).
+            e["trainer"]["num_trainers"] = num_trainers_override
+            h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
         e["name"] = f"dbg_{e['name']}"
     # --trace override: substitute availability trace in trainer + aggregator config.
     if trace_override:
@@ -241,12 +256,12 @@ if [ "$SMOKE" = "1" ]; then
 fi
 
 # ---- normal run mode ----
-echo "=== DEBUG RUN: baselines='$BASELINES' mode=$MODE runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} ==="
+echo "=== DEBUG RUN: baselines='$BASELINES' mode=$MODE runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} num_trainers=${NUM_TRAINERS:-300(default)} ==="
 cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE"
+make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."
