@@ -89,19 +89,37 @@ serializing the whole plan behind a sequence of 45-min/3h runs.
   early — it stays registered until a payload shows up; `_sim_withhold_if_unavail`'s "already withheld"
   branch now bumps `delivery_ts = max(registered, compute_delivery_ts(end, real_sct))` on arrival (never
   earlier — no past-dating, invariant 2 intact). 8 new unit tests (`tests/availability/test_live_wiring.py`).
-- **D.2 (AVL_TRAIN/AVL_EVAL task-type gating) LANDED.** New `AvailabilityMixin.get_curr_task_ineligible_trainers(task)`
-  extends `get_curr_unavail_trainers` with the F3 partition (AVL_EVAL excluded from "train" dispatch,
-  AVL_TRAIN excluded from "eval" dispatch, UN_AVL excluded from both); wired into both
-  `_distribute_weights` call sites (oort incl. its retry loop, asyncfl) in place of the plain UN_AVL
-  list. Inert for oort (never dispatches eval, Challenge 8); meaningful for felix.
-- **452/452 + 63/63 unit/parity tests pass** after all four changes above (was 444/444). syn_0/syn_20
-  smoke confirmation **not yet run** — see Next actions.
+- **D.2 (AVL_TRAIN/AVL_EVAL task-type gating) LANDED, with a found-and-fixed hang.** New
+  `AvailabilityMixin.get_curr_task_ineligible_trainers(task)` extends `get_curr_unavail_trainers` with
+  the F3 partition (AVL_EVAL excluded from "train" dispatch, AVL_TRAIN excluded from "eval" dispatch,
+  UN_AVL excluded from both); wired into both `_distribute_weights` call sites (oort incl. its retry
+  loop, asyncfl) in place of the plain UN_AVL list.
+  **Real felix syn_0 smoke (Jun 28) hung**: 0/1388 `AGG_RECV_WEIGHTS` over a full run despite all 48
+  trainers training+sending (confirmed via `[TRAINER_SEND_WEIGHTS]`/`[MSG_ARRIVAL]`). Root cause: `syn_0`/
+  `syn_20`/`syn_50` are **2-state traces** (only `AVL_TRAIN`/`UN_AVL` — confirmed by inspecting
+  `synthetic_traces.yaml`, never `AVL_EVAL`). Excluding `AVL_TRAIN` from "eval" eligibility therefore made
+  eval's eligible pool **permanently empty**; an empty pool fed into `async_oort.py`/`fedbuff.py`
+  `_handle_send_state`'s pre-existing "invalid prior selection" cleanup loop (`if end_id not in ends:
+  selected_ends.remove(end_id)`, intended for disconnection, not availability) wiped `selected_ends` —
+  shared across train+eval — which is why the aggregator stopped reading completed *train* responses
+  too. **Fixed**: `_init_availability` now computes `_trace_has_avl_eval` once (does this trace produce
+  `AVL_EVAL` for *any* trainer?); `get_curr_task_ineligible_trainers` only applies the eval-side
+  AVL_TRAIN-exclusion when true, matching the design's own "2-state collapses the split" statement (§1
+  Trace representation). Train-side exclusion (AVL_EVAL trainers excluded from train) is NOT similarly
+  guarded — no 3-state synthetic trace exists yet to exercise that symmetric risk; flagged as a residual
+  risk if/when one is added (§6 Challenge 13).
+- **452/452 + 63/63 → 453/453 + 63/63 unit/parity tests pass** (regression test added for the 2-state
+  guard). syn_0 smoke (felix, n=48, real+sim) re-run pending with the fix — see Next actions.
 
 ## ▶ Next actions (per the working agreement — implement; don't block on the long run)
 
-1. **Run the syn_0 byte-identity regression + felix syn_20 smoke for the four changes just landed**
-   (real-side send-gate, avl_state stamping, withheld_delivery fix, D.2). Recipe below. This is the
-   immediate next step — the code is in place but unconfirmed against a real run.
+1. **Re-run the syn_0 byte-identity regression for felix (real+sim) to confirm the D.2 hang fix** — the
+   one that hung (`run_20260628_012941_..._sim` / `run_20260628_013120_..._real`) used the buggy
+   pre-fix code; re-run with the fix and confirm `AGG_RECV_WEIGHTS`/aggregation events are non-zero in
+   real mode and the run completes its rounds (don't just check "no crash" — confirm progress, per the
+   Jun 28 lesson: a hang looks identical to a healthy run in `ps`/exit-code terms once it's killed by
+   `max_runtime_s`). Then the felix syn_20 smoke for all four changes (real send-gate, avl_state
+   stamping, withheld_delivery fix, D.2). Recipe below.
 2. **Cheap K2 disambiguator (do before any 3h run):** a ~25-min `syn_0` oort pair — if K2 is ~6% there
    too, it's the known length artifact independent of availability and no long availability run is
    needed to clear it.
@@ -668,6 +686,21 @@ defined tie-break (Challenge 6). Re-measure `observation_lag` (now must be ≈0 
     `flame/` and are mixed into all four `TopAggregator`s and reused by fwdllm. Resist re-adding an
     example-local `read_trainer_unavailability`; the three existing copies are being deleted, not
     forked.
+13. **An empty per-task eligible pool corrupts the OTHER task's in-flight tracking (found Jun 28, D.2).**
+    `async_oort.py`/`fedbuff.py` `_handle_send_state`'s "invalid prior selection" cleanup
+    (`if end_id not in ends: selected_ends.remove(end_id)`) was written for disconnection, but it's fed
+    the *availability-filtered* `eligible_ends`, not the full connected pool — and `selected_ends` is
+    shared across train+eval for one requester. Any change that drives one task's eligible pool to fully
+    empty (D.2 on a 2-state trace did this for "eval", guarded — §1 Trace representation) silently wipes
+    the *other* task's in-flight bookkeeping too: the aggregator forgets who it's waiting on and never
+    reads their completed responses (zero `AGG_RECV_WEIGHTS`, run hangs until `max_runtime_s`, looks
+    identical to "fine" until you check telemetry for actual aggregation events). **Only the 2-state
+    trigger is guarded today** (`_trace_has_avl_eval`); the symmetric case — a 3-state trace where every
+    trainer is simultaneously `AVL_EVAL`, emptying *train's* eligible pool — would hit the same selector
+    defect and isn't guarded, because no 3-state synthetic trace exists yet to exercise it. The root-cause
+    fix (pass the full connected pool to the cleanup loop, `eligible_ends` only for picking new
+    candidates) lives in shared selector code used by every baseline and was deliberately NOT made here
+    (out of scope, higher blast radius) — revisit if/when a 3-state trace is added (ties to F9/Challenge 8).
 
 ---
 

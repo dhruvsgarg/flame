@@ -120,6 +120,15 @@ class AvailabilityMixin:
         self.trainer_event_dict = self.read_trainer_unavailability(
             trace=trace_name, base_dir=trace_dir
         )
+        # D.2 guard: does this trace ever produce AVL_EVAL anywhere, for any
+        # trainer? syn_0/syn_20/syn_50 are 2-state (AVL_TRAIN/UN_AVL only) —
+        # "the AVL_TRAIN<->AVL_EVAL split a 2-state trace collapses" (§1 Trace
+        # representation). Computed once here, not per-call (would be an
+        # O(trainers) scan of every SortedDict on every selection boundary).
+        self._trace_has_avl_eval: bool = bool(self.trainer_event_dict) and any(
+            TrainerAvailState.AVL_EVAL in trace.values()
+            for trace in self.trainer_event_dict.values()
+        )
 
     # ------------------------------------------------------------------
     # Time source — single call site for "what time is it on the trace timeline"
@@ -226,14 +235,25 @@ class AvailabilityMixin:
         get_curr_unavail_trainers's byte-identity contract.
 
         Inert (== get_curr_unavail_trainers()) for any task other than "train"/
-        "eval", and for baselines that never dispatch "eval" (oort: Challenge 8)
-        since no trainer is ever drawn from a pool excluding AVL_EVAL there.
+        "eval", for baselines that never dispatch "eval" (oort: Challenge 8)
+        since no trainer is ever drawn from a pool excluding AVL_EVAL there, AND
+        for a 2-state trace (syn_0/syn_20/syn_50 today — never produces AVL_EVAL,
+        checked via _trace_has_avl_eval). That last guard is load-bearing, not
+        cosmetic: without it, "eval" dispatch's eligible pool is permanently
+        EMPTY on a 2-state trace (nobody is ever AVL_EVAL), and an empty eligible
+        pool fed into the selector's send-state "invalid prior selection"
+        cleanup (async_oort.py/fedbuff.py _handle_send_state, shared
+        selected_ends across train+eval) wipes out train's in-flight tracking
+        too — the aggregator forgets it's waiting on trainers and never reads
+        their completed responses (discovered via a real felix syn_0 hang,
+        zero AGG_RECV_WEIGHTS over a full run despite all trainers sending).
         """
         if self.trainer_event_dict is None:
             return []
+        has_eval = getattr(self, "_trace_has_avl_eval", False)
         excluded_state = (
             TrainerAvailState.AVL_EVAL if task == "train"
-            else TrainerAvailState.AVL_TRAIN if task == "eval"
+            else TrainerAvailState.AVL_TRAIN if (task == "eval" and has_eval)
             else None
         )
         now = self._avail_now()

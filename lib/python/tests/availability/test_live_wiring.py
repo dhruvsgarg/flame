@@ -104,6 +104,13 @@ class _Harness(AvailabilityMixin):
 
     def __init__(self, trainer_event_dict=None, now=0.0, inflight_tracker=False):
         self.trainer_event_dict = trainer_event_dict
+        # Mirrors _init_availability's derivation (production sets this once at
+        # load time, not per-call) — kept in sync here so harness tests exercise
+        # the same guard real runs do.
+        self._trace_has_avl_eval = bool(trainer_event_dict) and any(
+            TrainerAvailState.AVL_EVAL in trace.values()
+            for trace in trainer_event_dict.values()
+        )
         self.pending_withheld = {}
         self._sim_withheld_payload = {}
         self._sim_withheld_delivering = {}
@@ -521,3 +528,18 @@ def test_task_ineligible_gate_off_is_noop():
     h = _Harness(trainer_event_dict=None, now=150)
     assert h.get_curr_task_ineligible_trainers("train") == []
     assert h.get_curr_task_ineligible_trainers("eval") == []
+
+
+def test_task_ineligible_2state_trace_does_not_exclude_avl_train_from_eval():
+    # Regression (found via a real felix syn_0 hang, Jun 28): syn_0/syn_20 are
+    # 2-state (AVL_TRAIN/UN_AVL only, no AVL_EVAL ever). Excluding AVL_TRAIN
+    # from eval on such a trace makes eval's eligible pool PERMANENTLY EMPTY,
+    # which corrupts the selector's shared in-flight tracking for train too
+    # (async_oort.py/fedbuff.py _handle_send_state's "invalid prior selection"
+    # cleanup wipes selected_ends when ends={}) — the aggregator stops reading
+    # completed train responses entirely. _trace_has_avl_eval must gate this off
+    # for a trace that never produces AVL_EVAL for ANY trainer.
+    h = _Harness({"t1": _DOWN, "t2": _trace((0, "AVL_TRAIN"))}, now=50)  # all AVL_TRAIN
+    assert h._trace_has_avl_eval is False
+    assert h.get_curr_task_ineligible_trainers("eval") == []
+    assert h.get_curr_task_ineligible_trainers("train") == []
