@@ -50,6 +50,9 @@ _SECTIONS = [
         ("A2b eligible-pool speed composition", "eligible_speed"),
         ("A3  trace time-base consistency",     "avail_timebase"),
         ("A4  per-trainer duty-cycle",          "duty_cycle"),
+        ("A4dur  duration duty-cycle parity",   "duty_cycle_duration"),
+        ("Aa   eligible-pool reduction (diag)", "eligible_pool_reduction"),
+        ("C.3  abandon_timeout (vclock CTRL)",  "abandon_timeout"),
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
@@ -82,6 +85,7 @@ _SECTIONS = [
     ("6", "Aggregation", [
         ("U6  commit visibility lag",           "commit_visibility"),
         ("U3  staleness distribution",          "staleness"),
+        ("C.2  withheld_delivery (diag)",       "withheld_delivery"),
         ("P1  aggregation sequence",            "aggregation_sequence"),
         ("U1  first divergence",                "first_divergence_summary"),
     ]),
@@ -413,6 +417,41 @@ def _fmt_metric(name: str, res: dict) -> list:
                 f"         max_dutycycle_diff={res.get('max_dutycycle_diff')}  "
                 f"n_trainers={res.get('n_trainers')}"
             )
+    elif name == "duty_cycle_duration":
+        if res.get("mean_err") is not None:
+            lines.append(
+                f"         mean_err={res.get('mean_err')} (<={res.get('mean_tol')})  "
+                f"frac_within_tol={res.get('frac_within_tol')} (>={res.get('frac_pass_tol')} "
+                f"@ tau={res.get('within_tau')})  n_trainers={res.get('n_trainers')}"
+            )
+    elif name == "eligible_pool_reduction":
+        if res.get("real_mean_reduction") is not None:
+            lines.append(
+                f"         real_mean_reduction={res.get('real_mean_reduction')}  "
+                f"sim_mean_reduction={res.get('sim_mean_reduction')}  "
+                f"rel_diff={res.get('rel_diff')} (<={res.get('tol_rel')})"
+            )
+    elif name == "abandon_timeout":
+        if res.get("n_abandon") is not None:
+            parts = [f"         n_abandon={res.get('n_abandon')}"]
+            if res.get("mean_age_s") is not None:
+                parts.append(f"mean_age_s={res.get('mean_age_s')}")
+            if res.get("n_aware_boundary_eviction") is not None:
+                parts.append(
+                    f"aware_evictions={res.get('n_aware_boundary_eviction')} "
+                    f"(mean_age={res.get('aware_boundary_eviction_mean_age_s')}s)"
+                )
+            lines.append("  ".join(parts))
+    elif name == "withheld_delivery":
+        if res.get("n_withheld") is not None:
+            lines.append(
+                f"         n_withheld={res.get('n_withheld')}  "
+                f"mean_delay_s={res.get('mean_delay_s')}  "
+                f"mean_staleness={res.get('mean_staleness')}  "
+                f"accept_frac={res.get('accept_frac')}"
+            )
+            if res.get("violations"):
+                lines.append(f"         violations={res.get('violations')}")
     elif name == "training_budget":
         if res.get("ks_stat") is not None:
             defer = "  [mix-deferred to A2c]" if res.get("mix_deferred") else ""
