@@ -55,7 +55,8 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: random
       tracking_mode: default
-      agg_goal: 2
+      # Matches selector.kwargs.c below -- every selected trainer is required.
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:

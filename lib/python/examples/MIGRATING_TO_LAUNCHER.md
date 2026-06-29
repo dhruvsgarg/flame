@@ -137,7 +137,15 @@ before adding a new field anywhere in the trainer or aggregator config path.
    `selection` (selected trainer IDs, scores, round) and `aggregation`
    (aggregation time, staleness stats). See §5 for the full telemetry contract.
 
-6. **CPU partitioning and watchdog (handled by the runner, no example code
+6. **Per-example aggregator config template**: Create
+   `<example>/configs/aggregator_base.json` (or `.yaml`). Do not put
+   example-specific fields (model hyperparameters, NLP config, etc.) into
+   `_metadata/aggregator_base.json` — that is a generic FL stub reused by all
+   examples. Reference it as `config_template: configs/aggregator_base.json`
+   in your smoke YAMLs. The runner accepts `.json` or `.yaml`
+   (extension-sniffed).
+
+7. **CPU partitioning and watchdog (handled by the runner, no example code
    needed)**: `flame/launch/runner.py` reserves
    `min(8, max(2, len(all_cores) // 8))` CPU cores for the aggregator before
    spawning anything, so the 300 pinned trainers (see §3) don't time-slice
