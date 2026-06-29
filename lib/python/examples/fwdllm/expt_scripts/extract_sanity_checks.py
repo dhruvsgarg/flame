@@ -64,16 +64,16 @@ TRAINER_PID_RE = re.compile(
     r"PID: (?P<pid>\d+)"
 )
 CLIENT_HASH_RE = re.compile(
-    r"^(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
+    r"(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
     r"\{base_data_manager\.py \(\d+\)\} - _load_federated_data_local\(\): "
     r"CLIENT (?P<client_idx>\d+) DATA HASH: (?P<data_hash>[0-9a-f]+)"
 )
 CLIENT_SAMPLES_RE = re.compile(
-    r"^(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
+    r"(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
     r"\{FedSgdTrainer\.py \(\d+\)\} - _write_client_data_to_file\(\): "
     r"Successfully wrote (?P<n_samples>\d+) samples to .*?flame_client_(?P<client_idx>\d+)_"
 )
-PID_PREFIX_RE = re.compile(r"^(?P<pid>\d+) ")
+PID_PREFIX_RE = re.compile(r"(?P<pid>\d+) ")
 
 
 def find_logs(run_dir: Path):
@@ -166,11 +166,11 @@ def check_client_partitions(trainer_text: str) -> list[str]:
     hashes = {}  # pid -> (client_idx, data_hash, ts)
     samples = {}  # pid -> (client_idx, n_samples, ts)
     for line in trainer_text.splitlines():
-        m = CLIENT_HASH_RE.match(line)
+        m = CLIENT_HASH_RE.search(line)
         if m:
             hashes[m.group("pid")] = (m.group("client_idx"), m.group("data_hash"), m.group("ts"))
             continue
-        m = CLIENT_SAMPLES_RE.match(line)
+        m = CLIENT_SAMPLES_RE.search(line)
         if m:
             samples[m.group("pid")] = (m.group("client_idx"), m.group("n_samples"), m.group("ts"))
 
