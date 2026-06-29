@@ -6,7 +6,7 @@ below before resuming work in any new session — it is always current.
 
 ## Status & next step
 
-**Phases 1–13 are DONE.** Phase 12 ran the first live P8 smoke tests on
+**Phases 1–14 are DONE.** Phase 12 ran the first live P8 smoke tests on
 2026-06-27 for all three baselines and triaged the results — two real bugs
 found and fixed (both verified against the actual failure logs, with new
 regression tests, full suite green: see Phase 12). Several deeper issues were
@@ -18,10 +18,21 @@ found+fixed a second real bug live (the async path's inner loop didn't
 honor `_work_done`), and **re-verified all three smoke YAMLs self-terminate
 promptly** (`fwdllm_n10_smoke` 948s, `fwdllm_plus_n10_smoke` 625s,
 `fluxtune_n10_smoke` 487s post-fix, all clean — see Phase 13 for the full
-live trace). **The `[NEXT]` action is the telemetry/plots design work Phase
-12 scoped out** (its "Flagged, open" issues #3/#4/#6/#7 remain unfixed by
-design — see Phase 12 — and #7 in particular needs owner input before any
-code is written).
+live trace). **Phase 14 found and fixed Phase 12 issue #4's actual root
+cause** (not just its symptom): `_select_ends_respecting_reselect_gate`'s
+per-round cache permanently stopped re-arming the selector's RECV-eligible
+end set after the round's first full pass, so `fwdllm_n10_smoke` could only
+ever complete iteration 0 of `data_id=0` no matter how long it ran. Fixed
+and live-reverified — see Phase 14: a 10-minute re-run now clears all 10
+target `data_id`s (22 successful aggregation cycles, 0 stranded trainer
+messages) and self-terminates via `max_data_id_progress`, not the watchdog.
+**The `[NEXT]` action is the telemetry/plots design work Phase 12 scoped
+out** (its "Flagged, open" issues #3/#6/#7 remain unfixed by design — see
+Phase 12 — and #7 in particular needs owner input before any code is
+written). Issue #4 itself is now resolved (Phase 14); only fwdllm_plus's
+ORACULAR-availability liveness concern (issue #3) and fluxtune/
+fwdllm_plus's re-verification against the Phase 14 fix (not yet live-run
+post-fix, only fwdllm itself was) remain open from that list.
 
 **fwdllm smoke-test pass/fail bar is different from async_cifar10's.**
 async_cifar10 judges a smoke run by rounds completed, because cifar10 rounds
@@ -1097,13 +1108,104 @@ the smoke script with `dg_flame` fails instantly with
 `FLAME_CONDA_ENV=<env>` to the script) for this checkout —
 `run_smoke_sequential.sh` now defaults to `aish_smoke_flame`.
 
-Not addressed here (still open, per Phase 12): issues #3 (ORACULAR
-mutual-offline stalls) and #4 (distribute-loop broadcast storm / message
-drop) remain real liveness problems on the async path — a run can still
-take the full cap to make any data-id progress if contributions are
-sufficiently delayed/dropped. This phase guarantees a run that *does* reach
-a stop condition actually exits promptly; it does not fix how long it takes
-to reach one.
+Not addressed here (still open, per Phase 12 at the time): issues #3
+(ORACULAR mutual-offline stalls) and #4 (distribute-loop broadcast storm /
+message drop) remain real liveness problems — a run can still take the
+full cap to make any data-id progress if contributions are sufficiently
+delayed/dropped. This phase guarantees a run that *does* reach a stop
+condition actually exits promptly; it does not fix how long it takes to
+reach one. **Issue #4's actual root cause was found and fixed in Phase
+14** (it turned out to be a permanent listener-starvation bug, not just a
+broadcast-volume problem — see Phase 14). Issue #3 remains open.
+
+---
+
+## Phase 14 — Root-caused and fixed Phase 12 issue #4: selector RECV-eligibility never refilled mid-round [DONE: fwdllm re-verified live. fwdllm_plus/fluxtune share the same code path but have not yet been re-run post-fix]
+
+Phase 12 item #4 described the symptom (a distribute-loop broadcast storm
+and a channel-level "already has active task" message drop) but didn't
+trace it to a single root cause. Live log analysis of
+`run_20260628_020543_fwdllm_n10_smoke` (agg_goal=2, c=10) and a follow-up
+run with `agg_goal` raised to match `c` (10=10,
+`run_20260628_195228_fwdllm_n10_smoke`) showed the **same** signature in
+both, independent of the agg_goal/c relationship: `_aggregate_grads_sync`'s
+listener-spawning call (`channel.ends(VAL_CH_STATE_RECV)` →
+`_streamer_for_recv_fifo`, logged as `"Starting merge stream"`) fired
+exactly **10 times total** (once per trainer's very first contribution),
+then **zero** times for the rest of the run — regardless of how many more
+times `distribute` fired (1644 and 3837 respectively, across the two
+diagnostic runs) or how `agg_goal` related to `c`. Every trainer kept
+dutifully retraining and resending on every iteration the whole time; the
+aggregator's receive path was simply never listening for any of it after
+the first pass.
+
+**Root cause**, pinned to one function:
+`fwdllm_aggregator.py::_select_ends_respecting_reselect_gate` (Phase 7 step
+P4 / D4) — once its per-round cache (`self._round_selected_ends`) reaches
+`self._agg_goal` in size, every subsequent call takes an early-return
+branch and **never calls `channel.ends(VAL_CH_STATE_SEND, ...)` again for
+the rest of the round**. That SEND-state call is the *only* code path
+(`flame/selector/random.py`'s `select()`, SEND branch, line ~260) that adds
+entries to `RandomSelector.selected_ends` — and `selected_ends` is also
+exactly what backs the RECV-state query
+(`random.py`'s RECV branch just returns `selected_ends` verbatim). Each
+trainer's processed contribution removes its end from `selected_ends` via
+`cleanup_recvd_end`/`cleanup_recvd_ends` (so it isn't double-counted) — but
+nothing ever added entries back in for iteration 2+ of the same round,
+since the cache-hit branch skips the only call that would do so. Because
+`c` (concurrency) is typically ≈ num_trainers for these smoke YAMLs, the
+cache fills to target size on literally the first call, so this starvation
+hit on the very first iteration's retry, independent of `agg_goal`'s
+value — explaining why raising `agg_goal` to match `c` (an earlier
+mitigation attempt this session) had no effect on the hang.
+
+**Fix:** added `_rearm_recv_eligibility(channel, ends)` (static helper,
+`fwdllm_aggregator.py`), called from both of
+`_select_ends_respecting_reselect_gate`'s return paths (the cache-hit
+branch and the accumulate-until-`agg_goal` branch): unions the round's
+selected `ends` back into `channel._selector.selected_ends` every call,
+regardless of whether `channel.ends(SEND)` was actually invoked that call.
+**Tests:** `tests/mode/test_fwdllm_reselection.py` gained
+`test_cache_hit_rearms_selector_recv_eligibility` (reproduces the exact bug:
+clears `selected_ends` to simulate post-processing drain, asserts a
+cache-hit call re-arms it without re-querying the channel) and
+`test_accumulate_path_also_rearms_selector_recv_eligibility`. Full sweep
+re-run green: `pytest lib/python/tests/launch lib/python/tests/mode
+lib/python/tests/optimizer lib/python/tests/selector` → 346 passed, 7
+skipped (4 new vs. Phase 13's count: the 2 new tests above, accounting for
+the small delta).
+
+**Live re-verification** (`run_20260628_213257_fwdllm_n10_smoke`, 10-minute
+cap): reached all **10/10** target `data_id`s (vs. 1 before the fix) across
+22 successful aggregation cycles in ~5.5 minutes, several `data_id`s
+correctly needing 2-3 variance-check retries before passing (e.g.
+`data_id=2`/`3`/`6`/`8`), others converging at iteration 0. `0` messages
+drained/discarded from any trainer at shutdown (vs. 2-5 per trainer, 29
+total, pre-fix). The run stopped via the intended
+`max_data_id_progress=10 reached` condition, not the `max_runtime_s`
+watchdog. No exceptions; one pre-existing, unrelated `logging.info` line
+(`log_error_distribution`'s "wrong probs len" message, reporting
+misclassification counts) appeared more often simply because the run now
+progresses far enough to exercise it.
+
+**Not yet done:** `fwdllm_plus_n10_smoke` and `fluxtune_n10_smoke` go
+through the same `_select_ends_respecting_reselect_gate`/`RandomSelector`
+code (fluxtune uses `async_oort`, not `RandomSelector`, but shares the
+gate function) and were not re-run live after this fix — only `fwdllm`
+was. `fwdllm_plus` additionally still carries Phase 12 issue #3's ORACULAR
+mutual-offline liveness risk independently of this fix. Re-running both
+post-fix is reasonable follow-up work before calling the full
+real/sim-parity sweep current again.
+
+A config-level mitigation attempt was also tried and kept on disk:
+`examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml`'s top-level `agg_goal`
+was raised from `2` to `10` to match `selector.kwargs.c: 10` (every
+selected trainer's contribution required, none stranded) — this is a
+reasonable independent improvement (it did eliminate the
+"extra-trainers'-contributions-never-counted" waste pattern observed in
+the original failing run) but, as found above, was **not** what fixed the
+hang; the real fix is the code change in this phase. Kept since it's a
+genuine smoke-test-scope improvement on its own merits.
 
 ---
 
@@ -1115,8 +1217,9 @@ to reach one.
   `TrainerSpawner.spawn_trainer`/`spawn_all`.
 - `flame/launch/experiment_config.py` — `DatasetConfig`, `TrainerConfig`.
 - `flame/mode/horizontal/syncfl/fwdllm_aggregator.py` —
-  `_weighted_aggregation_enabled`, `_select_ends_respecting_reselect_gate`,
-  `read_trainer_unavailability`, `check_trainer_availability`,
+  `_weighted_aggregation_enabled`,
+  `_select_ends_respecting_reselect_gate`/`_rearm_recv_eligibility` (Phase
+  14), `read_trainer_unavailability`, `check_trainer_availability`,
   `_check_early_stop_conditions`/`_async_inner_loop_done` (Phase 13).
 - `examples/fwdllm/expt_scripts/run_smoke_sequential.sh` — runs the three
   smoke YAMLs back to back with overridable `max_runtime_s`/

@@ -1477,6 +1477,28 @@ class TopAggregator(AsyncTopAgg):
             self.jvp_for_snr_check_list = []
             self._is_model_updated = False
 
+    @staticmethod
+    def _rearm_recv_eligibility(channel, ends):
+        """Re-add `ends` to the selector's RECV-eligible set.
+
+        `reselect_each_iteration=False` (below) intentionally skips
+        re-invoking `channel.ends(VAL_CH_STATE_SEND, ...)` once the round's
+        selection is cached -- but that SEND-state call is the *only* thing
+        that normally populates `RandomSelector.selected_ends`, which is
+        also what backs `channel.ends(VAL_CH_STATE_RECV)`
+        (`random.py::select`'s RECV branch just returns `selected_ends`).
+        Each trainer's contribution removes its end from `selected_ends` via
+        `cleanup_recvd_end`/`cleanup_recvd_ends` once processed (so it isn't
+        double-counted); without re-arming it here, `selected_ends`
+        permanently empties out after the round's first full pass over the
+        cached trainers, even though `max_iterations_per_data_id` expects
+        many more send/receive iterations from that same selected set
+        before the round advances.
+        """
+        selector = getattr(channel, "_selector", None)
+        if selector is not None and hasattr(selector, "selected_ends"):
+            selector.selected_ends = set(selector.selected_ends) | set(ends)
+
     def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
         """Return the SEND-state-selected ends, honoring
         `self._reselect_each_iteration` (D4 / Phase 7 step P4).
@@ -1499,6 +1521,7 @@ class TopAggregator(AsyncTopAgg):
                     f"[ReselectGate] reselect_each_iteration=False; reusing "
                     f"cached per-round selection ends={ends} for round={self._round}"
                 )
+                self._rearm_recv_eligibility(channel, ends)
                 return ends
 
         new_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
@@ -1513,6 +1536,7 @@ class TopAggregator(AsyncTopAgg):
                 f"per-round selection ends={merged} "
                 f"({len(merged)}/{getattr(self, '_agg_goal', '?')}) for round={self._round}"
             )
+            self._rearm_recv_eligibility(channel, merged)
             return merged
         return new_ends
 
