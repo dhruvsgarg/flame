@@ -26,13 +26,17 @@ ever complete iteration 0 of `data_id=0` no matter how long it ran. Fixed
 and live-reverified — see Phase 14: a 10-minute re-run now clears all 10
 target `data_id`s (22 successful aggregation cycles, 0 stranded trainer
 messages) and self-terminates via `max_data_id_progress`, not the watchdog.
-**The `[NEXT]` action is the telemetry/plots design work Phase 12 scoped
-out** (its "Flagged, open" issues #3/#6/#7 remain unfixed by design — see
-Phase 12 — and #7 in particular needs owner input before any code is
-written). Issue #4 itself is now resolved (Phase 14); only fwdllm_plus's
-ORACULAR-availability liveness concern (issue #3) and fluxtune/
-fwdllm_plus's re-verification against the Phase 14 fix (not yet live-run
-post-fix, only fwdllm itself was) remain open from that list.
+All three owner-spec baselines were re-verified live post-fix the same day
+(`fwdllm_plus_n10_smoke`/`fluxtune_n10_smoke`, both 10-minute-capped,
+both clean — see Phase 14's update). **The `[NEXT]` action is the
+telemetry/plots design work Phase 12 scoped out** (its "Flagged, open"
+issues #3/#6/#7 remain unfixed by design — see Phase 12 — and #7 in
+particular needs owner input before any code is written). Issue #4 is
+fully resolved and re-verified across all three baselines (Phase 14); only
+issue #3 (ORACULAR mutual-offline liveness risk — not guaranteed to
+reproduce every run, and didn't in the Phase 14 re-verification, but still
+a real risk for longer/unluckier ORACULAR experiments) remains open from
+that list.
 
 **fwdllm smoke-test pass/fail bar is different from async_cifar10's.**
 async_cifar10 judges a smoke run by rounds completed, because cifar10 rounds
@@ -1188,14 +1192,22 @@ watchdog. No exceptions; one pre-existing, unrelated `logging.info` line
 misclassification counts) appeared more often simply because the run now
 progresses far enough to exercise it.
 
-**Not yet done:** `fwdllm_plus_n10_smoke` and `fluxtune_n10_smoke` go
-through the same `_select_ends_respecting_reselect_gate`/`RandomSelector`
-code (fluxtune uses `async_oort`, not `RandomSelector`, but shares the
-gate function) and were not re-run live after this fix — only `fwdllm`
-was. `fwdllm_plus` additionally still carries Phase 12 issue #3's ORACULAR
-mutual-offline liveness risk independently of this fix. Re-running both
-post-fix is reasonable follow-up work before calling the full
-real/sim-parity sweep current again.
+**`fwdllm_plus`/`fluxtune` re-verified live post-fix, same session
+(2026-06-28).** `fwdllm_plus_n10_smoke` (`run_20260628_222823`, 10-minute
+cap): all 10/10 target `data_id`s reached in ~4.7 min, 69 successful
+aggregation cycles, stopped via `max_data_id_progress=10 reached`, only 2
+stray messages drained at shutdown (in-flight at the exact shutdown
+moment, not the pre-fix stranding pattern) — and no recurrence of Phase 12
+issue #3's ORACULAR mutual-offline stall in this run (all 10 trainers had
+workable simultaneous availability this time; issue #3 is a real-trace
+liveness risk, not guaranteed to reproduce every run, so this one clean
+run doesn't retire it as a concern for longer ORACULAR experiments).
+`fluxtune_n10_smoke` (`run_20260628_223828`, 10-minute cap): all 10/10
+`data_id`s in ~5.2 min, 80 successful aggregation cycles, clean
+`max_data_id_progress` stop, 7 stray end-of-run messages (same harmless
+in-flight pattern), no `AttributeError` recurrence (Phase 12 issue #1,
+already fixed, stayed fixed). No errors/exceptions in either run. All
+three owner-spec baselines are now confirmed working end-to-end post-fix.
 
 A config-level mitigation attempt was also tried and kept on disk:
 `examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml`'s top-level `agg_goal`
