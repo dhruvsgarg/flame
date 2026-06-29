@@ -42,11 +42,6 @@ class MetadataLoader:
             with open(traces_dir / "mobiperf_traces.yaml") as f:
                 self.mobiperf_traces = yaml.safe_load(f)
 
-        self.location_traces = {"traces": {}}
-        if (self.metadata_dir / "location_traces.yaml").is_file():
-            with open(self.metadata_dir / "location_traces.yaml") as f:
-                self.location_traces = yaml.safe_load(f)
-
     def get_trainer_metadata(self, trainer_id: int) -> Dict:
         """Get metadata for a specific trainer."""
         trainer_key = f"trainer_{trainer_id:03d}"
@@ -87,10 +82,6 @@ class MetadataLoader:
         """Get mobiperf trace for a trainer."""
         device_id = f"device_{trainer_id:03d}"
         return self.mobiperf_traces["traces"][device_id][f"states_{variant}"]
-
-    def get_location_trace(self, trainer_id: int) -> List:
-        device_id = f"device_{trainer_id:03d}"
-        return self.location_traces["traces"][device_id]
 
 
 class ConfigGenerator:
@@ -160,10 +151,11 @@ class ConfigGenerator:
             config["hyperparameters"]["trainer_indices_list"] = dataset_indices
 
         config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
-
+        
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
         config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled
+        config["hyperparameters"]["satellite_index"] = trainer_id - 1
 
         # Add availability traces
         if availability_mode.startswith("mobiperf"):
@@ -188,9 +180,6 @@ class ConfigGenerator:
             config["hyperparameters"][f"avl_events_mobiperf_{variant}"] = (
                 self.metadata.get_mobiperf_trace(trainer_id, variant)
             )
-
-        # Add location trace
-        config["hyperparameters"]["location_trace"] = self.metadata.get_location_trace(trainer_id)
 
         # client_notify defaults only when not provided by base/baseline/overrides.
         cn = config["hyperparameters"].setdefault("client_notify", {})
