@@ -120,7 +120,7 @@ def main() -> None:
     parser.add_argument("--rounds-cap", type=int, default=None,
                         help="rounds cap from config (enables K9 truncation check)")
     parser.add_argument("--budget-s", type=float, default=None,
-                        help="max_runtime_s / sim_wall_ceiling_s (enables K5/K9)")
+                        help="max_experiment_runtime_s / sim_wall_ceiling_s (enables K5/K9)")
     parser.add_argument("--strict", action="store_true",
                         help="Treat WARN as FAIL")
     parser.add_argument("--lenient", action="store_true",

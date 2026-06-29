@@ -153,7 +153,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     # Target-accuracy stopping: stop once test accuracy stays >= target for
     # `stable_evals_above_target` consecutive evals (resets on any dip). The
-    # existing `rounds` / `max_runtime_s` caps remain as the safety net so a
+    # existing `rounds` / `max_experiment_runtime_s` caps remain as the safety net so a
     # non-converging run still terminates. None disables the rule.
     target_accuracy: t.Optional[float] = Field(alias="targetAccuracy", default=None)
     stable_evals_above_target: t.Optional[int] = Field(

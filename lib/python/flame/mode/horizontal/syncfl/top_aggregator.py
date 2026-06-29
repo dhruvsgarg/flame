@@ -183,7 +183,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
 
         # Target-accuracy stopping: count consecutive evals at/above the target
         # test accuracy; stop once we reach `stable_evals_above_target`. Reset on
-        # any dip. `rounds`/`max_runtime_s` remain the safety cap.
+        # any dip. `rounds`/`max_experiment_runtime_s` remain the safety cap.
         self._target_accuracy = getattr(
             self.config.hyperparameters, "target_accuracy", None
         )
@@ -1036,14 +1036,16 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         self._round += 1
         self._work_done = self._round > self._rounds
 
-        # Optional runtime cap: stop once max_runtime_s has elapsed.
-        # In simulated mode use the virtual clock (vclock_now = simulated seconds
-        # elapsed) so the run covers max_runtime_s of *virtual* time, not wall
-        # time. In real mode use wall-clock elapsed.
-        _max_rt = getattr(self.config.hyperparameters, "max_runtime_s", None)
+        # Optional runtime cap: stop once max_experiment_runtime_s has elapsed.
+        # Clock interpretation is mode-dependent:
+        #   real mode  → wall-clock seconds (time.time() elapsed)
+        #   sim mode   → virtual-clock seconds (vclock.now)
+        # This lets one YAML value govern both modes: the same 1800s means
+        # "30 wall-clock minutes" in real and "1800 virtual seconds" in sim.
+        _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
         # sim_wall_ceiling_s: tight wall-clock guard for sim mode (iii-b).
-        # A sim run should finish in <= max_runtime_s wall (it runs faster than
-        # real when the parity bug is fixed). Default = max_runtime_s (1×).
+        # A sim run should finish in <= max_experiment_runtime_s wall (it runs
+        # faster than real when the parity bug is fixed). Default = 1× budget.
         # Separate from max_wall_runtime_s (kept for backward compat, used as
         # secondary fallback if sim_wall_ceiling_s is absent).
         _sim_wall_ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
@@ -1057,13 +1059,13 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
                 clock_label = "wall"
             if elapsed > float(_max_rt):
                 logger.info(
-                    f"max_runtime_s={_max_rt}s reached ({clock_label}_elapsed={elapsed:.0f}s) "
+                    f"max_experiment_runtime_s={_max_rt}s reached ({clock_label}_elapsed={elapsed:.0f}s) "
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True
             # Failsafe: in sim mode the primary check is virtual time.
-            # sim_wall_ceiling_s (default = max_runtime_s = 1×) caps the wall time
-            # a sim may use — a well-behaved sim finishes in ≤ real-mode wall time.
+            # sim_wall_ceiling_s (default = max_experiment_runtime_s × 1) caps the
+            # wall time a sim may use — well-behaved sim finishes in ≤ real wall time.
             if self.simulated and not self._work_done:
                 _wall_elapsed = time.time() - self.agg_start_time_ts
                 if _sim_wall_ceil:
@@ -1076,7 +1078,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
                     logger.warning(
                         f"[SIM_WALL_CEILING] sim_wall_ceiling={_failsafe_s:.0f}s reached "
                         f"(wall_elapsed={_wall_elapsed:.0f}s, "
-                        f"vclock={self._vclock.now:.0f}s, max_runtime_s={_max_rt}s) "
+                        f"vclock={self._vclock.now:.0f}s, max_experiment_runtime_s={_max_rt}s) "
                         f"at round {self._round}. "
                         f"Sim is slower than real — investigate per-round parity (bug iii-c). "
                         f"Stopping run."

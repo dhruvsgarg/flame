@@ -17,7 +17,7 @@
 # baseline is a no-op (not an error).
 #
 # Runtime:
-#   --runtime-s sets max_runtime_s for BOTH real and sim variants.
+#   --runtime-s sets max_experiment_runtime_s for BOTH real and sim variants.
 #   Real mode:  wall-clock seconds (passes directly).
 #   Sim mode:   virtual-clock seconds (vclock fix ensures sim stops at this
 #               many virtual seconds, which completes in far less wall-clock
@@ -55,7 +55,7 @@ export FLAME_BATCH_CONTINUE_ON_ERROR=1
 # defaults
 RUNTIME_S=10800
 BASELINES="felix refl"
-SIM_WALL_CEILING_S=""  # empty = max_runtime_s (1×, tight guard; sim should be faster than real)
+SIM_WALL_CEILING_S=""  # empty = max_experiment_runtime_s (1×, tight guard; sim should be faster than real)
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
 
@@ -171,7 +171,7 @@ for e in cfg.get("experiments", []):
         continue
     e = copy.deepcopy(e)
     h = e["aggregator"]["config_overrides"]["hyperparameters"]
-    h["max_runtime_s"] = runtime_s
+    h["max_experiment_runtime_s"] = runtime_s
     # Deterministic seed: the SAME value for every experiment so the real and sim
     # variants of each baseline make identical selection draws (dedicated per-
     # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are
@@ -180,7 +180,7 @@ for e in cfg.get("experiments", []):
     if seed_val is not None:
         h["seed"] = seed_val
     # sim_wall_ceiling_s: tight wall guard — sim must finish in <= this many
-    # wall-seconds (default = max_runtime_s = 1×; a healthy sim is faster).
+    # wall-seconds (default = max_experiment_runtime_s = 1×; a healthy sim is faster).
     h["sim_wall_ceiling_s"] = int(ceil_arg) if ceil_arg else runtime_s
     if smoke:
         e["trainer"]["num_trainers"] = 48
@@ -189,7 +189,7 @@ for e in cfg.get("experiments", []):
         h["min_trainers_join_timeout_s"] = 120
         e["name"] = "dbg_smoke_" + e["name"]
     else:
-        # High round cap so the wall/vclock budget (max_runtime_s) is the
+        # High round cap so the wall/vclock budget (max_experiment_runtime_s) is the
         # binding stop condition, not an early round-count termination.
         h["rounds"] = 20000
         if num_trainers_override:

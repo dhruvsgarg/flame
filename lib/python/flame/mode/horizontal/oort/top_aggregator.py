@@ -247,6 +247,34 @@ class TopAggregator(BaseTopAggregator):
 
         received_end_count = 0
 
+        # Real mode only: bound recv_fifo with a wall-clock timeout so unavailable
+        # trainers can't stall the aggregator indefinitely.
+        #
+        # trainer_recv_wall_timeout_s (YAML HP, default 90s) — wall-clock seconds
+        #   the aggregator waits for a single trainer message before giving up on
+        #   that trainer for this round.  Set comfortably above the slowest
+        #   legitimate per-round compute time so live stragglers always make it;
+        #   the default 90s is >> the 18s max trainer speed in async_cifar10.
+        #   WALL-CLOCK only — has no relation to the virtual clock.
+        #
+        # max_experiment_runtime_s (YAML HP) — total experiment budget; wall-clock
+        #   in real mode, virtual-clock in sim mode (see inc_round()).  The recv
+        #   timeout is also capped at the remaining wall budget so the process
+        #   never overshoots it.
+        #
+        # Sim mode: _recv_timeout stays None — the vclock drives termination.
+        _recv_timeout = None
+        if not self.simulated:
+            _stall = float(getattr(
+                self.config.hyperparameters, "trainer_recv_wall_timeout_s", 90.0
+            ))
+            _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
+            if _max_rt:
+                _remaining = max(1.0, float(_max_rt) - (time.time() - self.agg_start_time_ts))
+                _recv_timeout = min(_stall, _remaining)
+            else:
+                _recv_timeout = _stall
+
         # simulated: commit the aggr_num updates with the smallest
         # sim_completion_ts (the k that would physically finish first in real),
         # reordering away physical arrival jitter and advancing the virtual
@@ -258,7 +286,7 @@ class TopAggregator(BaseTopAggregator):
             self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
-            _recv = channel.recv_fifo(end_ids, aggr_num)
+            _recv = channel.recv_fifo(end_ids, aggr_num, timeout=_recv_timeout)
 
         for msg, metadata in _recv:
             end, _ = metadata
@@ -369,7 +397,7 @@ class TopAggregator(BaseTopAggregator):
             _recv2 = (
                 self._oort_sim_recv(channel, end_ids)
                 if self.simulated
-                else channel.recv_fifo(end_ids, 1)
+                else channel.recv_fifo(end_ids, 1, timeout=_recv_timeout)
             )
             for msg, metadata in _recv2:
                 end, _ = metadata
