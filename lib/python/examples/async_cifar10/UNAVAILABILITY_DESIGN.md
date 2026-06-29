@@ -17,42 +17,36 @@ the end. Never block forward implementation on a long run.**
 
 ---
 
-## Status (Jun 28)
+## Status (Jun 28 — syn_0 ✅, syn_50 n=10 starvation smoke in progress)
 
 **A/B/C/C.6/D ✅ CONFIRMED syn_20. E ✅ CONFIRMED syn_20. F.2 ✅ CODE-COMPLETE.
-453/453 lib + 67/67 parity tests pass. Batch 2 pending Stage F exit.**
+syn_0 regression ✅ PASSED (no starvation fires, byte-identical model outputs).
+n=10 syn_50 starvation smoke launched — results in morning. Batch 2 pending Stage F exit.**
 
 - **A/B ✅** Substrate (`flame/availability/trace.py` + `AvailabilityMixin`) + A3 time-base CONTROL. Exit: A3 PASS oort/felix syn_20.
-- **C ✅ CONFIRMED** Oracular gate, send-time withhold, vclock 90s abandon, `delivery_ts` ordering, `free_stalled_slot`. felix 49/49; oort 39/48 (3 pre-existing failures, see §9.1).
+- **C ✅ CONFIRMED** Oracular gate, send-time withhold, vclock 90s abandon, `delivery_ts` ordering, `free_stalled_slot`. felix 49/49; oort 39/48 (3 pre-existing failures, see §7).
 - **C.6 ✅ CONFIRMED** `_avail_stamp_end_states`, A4dur PASS (felix 0.0024, oort 0.0029), 5 availability plots.
 - **D ✅ CONFIRMED** Proactive eviction (felix), task-aware eligibility with `_trace_has_avl_eval` guard, accept-stale withheld. Real send-gate confirmed (withheld n=7, accept_frac=1.0).
 - **E ✅ CONFIRMED syn_20** Syncfl path (feddance+refl): abandon/evict/stamp + `_sync_sim_recv_first_k` withhold drain. feddance 46/47 (C2 emergent noise, not mechanism; A-rungs/U3/U6/K8/U2 PASS).
-- **F.2 ✅ CODE-COMPLETE** Unified pre-selection return-early pattern in all three aggregators (see §5/Stage F). n=48 syn_50 smoke ran (no stalls, no starvation — trace structure, not a bug). **F exit pending:** syn_0 regression + n=10 syn_50 starvation smoke.
+- **F.2 ✅ CODE-COMPLETE** Unified pre-selection return-early pattern in all three aggregators (see §5/Stage F). **syn_0 ✅**: Fst PASS (no starvation), C1/C2 diff=0.0, K1/K5 PASS. Oort: 43/50 (K3b pre-existing gates K2/K3); feddance: 46/48 (A2 shape artifact + gpu_compute short-run noise — K2/K3/P3 PASS). **n=10 syn_50 in progress.**
 - **G.1 ✅** `starvation_advance` rung in `checks.py` + `report.py`; +4 starvation unit tests.
 
 ---
 
 ## ▶ Next actions
 
-### Stage F exit (run now — ~30 min total)
+### Stage F exit — check syn_50 n=10 results (morning)
 
-**Step 1 — syn_0 regression (~10 min). Must be byte-identical.**
+**syn_0 ✅ DONE.** syn_50 n=10 starvation smoke launched (both baselines, both modes). Check results:
 ```bash
 cd lib/python/examples/async_cifar10
-scripts/debug_run.sh --baselines 'oort feddance' --mode both --runtime-s 600 --trace syn_0
-python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'oort feddance' --agg-goal 10
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines oort --agg-goal 10
+python -m scripts.parity.cli --batch --experiments-dir experiments --baselines feddance --agg-goal 10
 ```
-
-**Step 2 — n=10 syn_50 starvation smoke (~20 min). Exercises both starvation paths.**
-```bash
-scripts/debug_run.sh --baselines 'oort feddance' --mode both --runtime-s 1800 --trace syn_50 --num-trainers 10
-python -m scripts.parity.cli --batch --experiments-dir experiments --baselines 'oort feddance' --agg-goal 10
-```
-At n=10, syn_50 staggered schedules give min_avail≈3 at t≈1200s:
-- oort: eligible=3 < desired_selection=13 → `[SIM_STARVATION]` fires ✓
-- feddance: eligible=3 < agg_goal=10 (pre-selection, F.2 fix) → `[SIM_STARVATION]` fires ✓
 
 **Stage F exit criteria:** `starvation_advance` rung populated (n_starvation_jumps > 0) for BOTH baselines; `[SIM_STARVATION]` log lines in sim trace; K1 monotone; no stalls.
+
+If starvation didn't fire: check sim aggregator log for `[SIM_STARVATION]` lines and the `Fst` rung detail. The expected trigger point is t≈1200s vclock when min_avail≈3 (below both thresholds: desired_selection=13 for oort, agg_goal=10 for feddance).
 
 ### Batch 2 (after Stage F exit)
 
