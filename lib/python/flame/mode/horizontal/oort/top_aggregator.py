@@ -629,26 +629,10 @@ class TopAggregator(BaseTopAggregator):
         aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         overcommitment = getattr(channel._selector, 'overcommitment', 1.3)
         desired_selection = int(aggr_num * overcommitment)
-        
-        # Configuration for wait-retry mechanism
-        max_retries = self.config.selector.kwargs.get('max_selection_retries', 5)
-        retry_wait_seconds = self.config.selector.kwargs.get('selection_retry_wait', 2.0)
-        min_trainers_ratio = self.config.selector.kwargs.get('min_trainers_ratio', 0.5)  # At least 50% of aggr_num
-        
-        # CRITICAL: If min_trainers_ratio >= overcommitment, wait for FULL desired_selection
-        # This prevents sending weights to partial sets that may never respond
-        if min_trainers_ratio >= overcommitment:
-            min_required_trainers = desired_selection  # Wait for all 13 trainers
-            logger.info(
-                f"[DISTRIBUTE] Round {self._round}: Strict mode - will wait for FULL desired_selection={desired_selection} trainers"
-            )
-        else:
-            min_required_trainers = max(1, int(aggr_num * min_trainers_ratio))
-        
+
         logger.info(
-            f"[DISTRIBUTE] Round {self._round}: Desired selection={desired_selection} "
-            f"(aggr_num={aggr_num}, overcommit={overcommitment}), "
-            f"min_required={min_required_trainers}"
+            f"[DISTRIBUTE] Round {self._round}: desired_selection={desired_selection} "
+            f"(aggr_num={aggr_num}, overcommit={overcommitment})"
         )
 
         # before distributing weights, update it from global model
@@ -723,125 +707,52 @@ class TopAggregator(BaseTopAggregator):
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
-        
-        # CRITICAL FIX: Implement wait-retry mechanism for trainer selection
-        # If insufficient trainers are available, wait and retry instead of proceeding
-        selected_ends = None
-        retry_count = 0
-        
-        while retry_count <= max_retries:
-            # Get currently available trainer ends
-            all_ends = list(channel._ends.keys())
-            
-            # Get unavailable trainers
-            if self.trainer_event_dict is not None:
-                unavail_trainers = set(
-                    self.get_curr_task_ineligible_trainers(task_to_perform)
-                )
-            else:
-                unavail_trainers = set()
-            
-            # Get in-flight trainers (already selected, waiting for updates)
-            in_flight_trainers = getattr(channel._selector, 'selected_ends', set())
-            if not isinstance(in_flight_trainers, set):
-                in_flight_trainers = set(in_flight_trainers) if in_flight_trainers else set()
-            
-            # Calculate eligible trainers
-            eligible_trainers = [
-                end for end in all_ends
-                if end not in unavail_trainers and end not in in_flight_trainers
-            ]
-            
-            num_eligible = len(eligible_trainers)
-            
-            logger.info(
-                f"[DISTRIBUTE] Round {self._round}, Attempt {retry_count + 1}/{max_retries + 1}: "
-                f"total_ends={len(all_ends)}, unavailable={len(unavail_trainers)}, "
-                f"in_flight={len(in_flight_trainers)}, eligible={num_eligible}, "
-                f"required={min_required_trainers}"
-            )
-            
-            # Check if we have enough eligible trainers
-            if num_eligible >= min_required_trainers:
-                logger.info(
-                    f"[DISTRIBUTE] Round {self._round}: Sufficient trainers available "
-                    f"({num_eligible} >= {min_required_trainers}), proceeding with selection. "
-                    f"Will select min({desired_selection}, {num_eligible}) trainers."
-                )
-                break
-            else:
-                # Insufficient trainers - log warning
-                logger.warning(
-                    f"[DISTRIBUTE] Round {self._round}, Attempt {retry_count + 1}: "
-                    f"INSUFFICIENT trainers! eligible={num_eligible} < required={min_required_trainers}. "
-                    f"Breakdown: total={len(all_ends)}, unavail={len(unavail_trainers)}, "
-                    f"in_flight={len(in_flight_trainers)}"
-                )
-                
-                if retry_count < max_retries:
-                    # Stage F: in sim with availability gate on, advance the
-                    # vclock to the next availability event rather than wall-
-                    # sleeping — the retry then immediately sees the newly-
-                    # available cohort without burning wall time.
-                    if self.simulated and self.trainer_event_dict is not None:
-                        _nxt = self._next_avail_vclock()
-                        if _nxt is not None and _nxt > self._vclock.now:
-                            self._vclock.advance(_nxt)
-                            self._sim_abandon_stalled(channel)
-                            logger.info(
-                                f"[SIM_STARVATION] round={self._round} "
-                                f"retry={retry_count + 1}/{max_retries} "
-                                f"vclock advanced to {_nxt:.1f}"
-                            )
-                        # Re-stamp availability at the new vclock before retry
-                        curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                            task_to_perform
-                        )
-                        _held_withheld = self.withheld_held_ends()
-                        if _held_withheld:
-                            curr_unavail_trainer_list = list(
-                                set(curr_unavail_trainer_list) | _held_withheld
-                            )
-                        channel.set_curr_unavailable_trainers(
-                            trainer_unavail_list=curr_unavail_trainer_list
-                        )
-                        self._avail_stamp_end_states(channel)
-                    else:
-                        logger.warning(
-                            f"[DISTRIBUTE] Waiting {retry_wait_seconds}s before retry {retry_count + 2}/{max_retries + 1}..."
-                        )
-                        time.sleep(retry_wait_seconds)
-                        # Update unavailability list before retry
-                        if self.trainer_event_dict is not None:
-                            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                                task_to_perform
-                            )
-                            channel.set_curr_unavailable_trainers(
-                                trainer_unavail_list=curr_unavail_trainer_list
-                            )
-                    retry_count += 1
-                else:
-                    # Max retries exceeded - proceed with warning
-                    logger.error(
-                        f"[DISTRIBUTE] Round {self._round}: Max retries ({max_retries}) exceeded. "
-                        f"Proceeding with ONLY {num_eligible} trainers (required: {min_required_trainers}, "
-                        f"desired: {desired_selection}). THIS MAY IMPACT TRAINING QUALITY!"
-                    )
-                    break
 
-        # Now perform the actual selection
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
-        
-        if not selected_ends or len(selected_ends) == 0:
-            logger.error(
-                f"[DISTRIBUTE] Round {self._round}: No trainers selected! "
-                f"Cannot proceed with weight distribution."
-            )
+        # F.2: Pre-selection threshold check — return-early if pool is scarce.
+        # Threshold = desired_selection (full overcommitted batch); unbounded retry,
+        # no max_retries ceiling, no "proceed anyway" fallback for sync FL.
+        _in_flight = getattr(channel._selector, 'selected_ends', set())
+        if not isinstance(_in_flight, set):
+            _in_flight = set(_in_flight) if _in_flight else set()
+        num_eligible = len(
+            set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight
+        )
+
+        if num_eligible < desired_selection:
+            if self.simulated and self.trainer_event_dict is not None:
+                _nxt = self._next_avail_vclock()
+                if _nxt is not None and _nxt > self._vclock.now:
+                    self._vclock.advance(_nxt)
+                    self._sim_abandon_stalled(channel)
+                    curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                        task_to_perform
+                    )
+                    _held = self.withheld_held_ends()
+                    if _held:
+                        curr_unavail_trainer_list = list(
+                            set(curr_unavail_trainer_list) | _held
+                        )
+                    channel.set_curr_unavailable_trainers(
+                        trainer_unavail_list=curr_unavail_trainer_list
+                    )
+                    self._avail_stamp_end_states(channel)
+                    channel.properties["vclock_now"] = self._vclock.now
+                logger.info(
+                    f"[SIM_STARVATION] round={self._round} eligible={num_eligible} "
+                    f"< {desired_selection}; vclock→{_nxt}"
+                )
+            else:
+                time.sleep(0.5)
             return
-        
+
+        # Threshold met — proceed with selection.
+        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        if not selected_ends:
+            return
+
         logger.info(
-            f"[DISTRIBUTE] Round {self._round}: Selected {len(selected_ends)} trainers. "
-            f"Will aggregate when {min(aggr_num, len(selected_ends))} updates received."
+            f"[DISTRIBUTE] Round {self._round}: selected {len(selected_ends)} trainers "
+            f"(eligible={num_eligible}, desired={desired_selection})"
         )
 
         # Same model goes to every recipient this round; build + serialize once.

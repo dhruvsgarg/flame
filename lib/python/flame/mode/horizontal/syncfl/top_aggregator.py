@@ -908,24 +908,54 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
+
+        # F.2: Pre-selection threshold check — return-early if pool is scarce.
+        # Threshold = agg_goal: sync FL must have exactly agg_goal eligible trainers
+        # before starting a round. Random selector (fwdllm syncfl) uses this same
+        # aggregator; the pre-selection threshold ensures it is never called with
+        # fewer than agg_goal eligible trainers.
+        _agg_goal = self.config.hyperparameters.aggregation_goal
+        _threshold = _agg_goal if _agg_goal and _agg_goal > 0 else 1
+        _in_flight = getattr(channel._selector, 'selected_ends', set())
+        if not isinstance(_in_flight, set):
+            _in_flight = set(_in_flight) if _in_flight else set()
+        num_eligible = len(
+            set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight
+        )
+
+        if num_eligible < _threshold:
+            if self.simulated and self.trainer_event_dict is not None:
+                _nxt = self._next_avail_vclock()
+                if _nxt is not None and _nxt > self._vclock.now:
+                    self._vclock.advance(_nxt)
+                    self._sim_abandon_stalled(channel)
+                    curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
+                        task_to_perform
+                    )
+                    _held = self.withheld_held_ends()
+                    if _held:
+                        curr_unavail_trainer_list = list(
+                            set(curr_unavail_trainer_list) | _held
+                        )
+                    channel.set_curr_unavailable_trainers(
+                        trainer_unavail_list=curr_unavail_trainer_list
+                    )
+                    self._avail_stamp_end_states(channel)
+                    channel.properties["vclock_now"] = self._vclock.now
+                logger.info(
+                    f"[SIM_STARVATION] round={self._round} eligible={num_eligible} "
+                    f"< {_threshold}; vclock→{_nxt}"
+                )
+            else:
+                time.sleep(0.5)
+            return
+
+        # Threshold met — proceed with selection.
         # SEND state: pick (new) trainers to send the model to. With a buffered
         # selector (random) this fills concurrency; stateless selectors ignore
         # the state and return their normal selection.
         selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
         if not selected_ends:
-            # Stage F: in sim with availability gate on, advance the vclock to the
-            # next availability event instead of wall-sleeping — the outer loop
-            # then immediately retries and sees the newly-available cohort.
-            if self.simulated and self.trainer_event_dict is not None:
-                _nxt = self._next_avail_vclock()
-                if _nxt is not None and _nxt > self._vclock.now:
-                    self._vclock.advance(_nxt)
-                    logger.info(
-                        f"[SIM_STARVATION] round={self._round} no selectable trainers; "
-                        f"vclock advanced to {_nxt:.1f}"
-                    )
-            else:
-                time.sleep(0.5)
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 

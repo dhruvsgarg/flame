@@ -649,7 +649,18 @@ class TopAggregator(SyncTopAgg):
                 recv_ends = []  # buffer still has entries to drain — don't block
             else:
                 logger.debug(f"[AGG_RECV] no live recv ends (round={self._round}); skipping")
-                time.sleep(0.5)
+                # F.2: in sim, advance vclock to next availability event instead of
+                # wall-sleeping — covers felix and fedbuff asyncfl starvation paths.
+                if self.simulated and self.trainer_event_dict is not None:
+                    _nxt = self._next_avail_vclock()
+                    if _nxt is not None and _nxt > self._vclock.now:
+                        self._vclock.advance(_nxt)
+                        logger.info(
+                            f"[SIM_STARVATION] round={self._round} no recv ends; "
+                            f"vclock→{_nxt:.1f}"
+                        )
+                else:
+                    time.sleep(0.5)
                 return
         if self.simulated:
             msg, metadata = self._sim_recv_min(channel, recv_ends)
