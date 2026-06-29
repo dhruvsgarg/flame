@@ -38,8 +38,9 @@ for all (v1 keeps `client_notify` OFF — message-transport is the future Stage 
 
 **What we run, and how to verify correctness (real AND sim).**
 1. **Regression first:** `syn_0` (always-available) must be **byte-identical** with the gate ON vs OFF.
-2. **Unit tests:** `cd lib/python && conda run -n dg_flame python -m pytest tests/availability tests/selector`
-   (226) + `examples/async_cifar10 && pytest scripts/parity/test_ladder.py` (24).
+2. **Unit tests:** `cd lib/python && conda run -n dg_flame python -m pytest tests/` (456 pass / 7 skip)
+   + `examples/async_cifar10 && conda run -n dg_flame python -m pytest scripts/parity/test_ladder.py` (24).
+   Must be 0 failures.
 3. **Smoke a baseline in BOTH modes:**
    `scripts/debug_run.sh --baselines <b> --mode both --runtime-s 1800 --trace <syn_20|syn_50> --num-trainers <n>`.
 4. **Parity check:** `python -m scripts.parity.cli --batch --experiments-dir experiments --baselines <b> --agg-goal <g>`.
@@ -74,10 +75,11 @@ the end. Never block forward implementation on a long run.**
 
 ---
 
-## Status (Jun 29 — Batch 2 in progress. ✅ Real-mode recv-barrier hang FIXED; feddance n≈20 syn_50 ready to run)
+## Status (Jun 29 — Batch 2 in progress. ✅ Real-mode recv-barrier hang FIXED; full test suite GREEN; feddance n≈20 syn_50 ready to run)
 
 **A/B/C/C.6/D ✅ CONFIRMED syn_20. E ✅ CONFIRMED syn_20. F.2 ✅ CODE-COMPLETE. syn_0 ✅.
-oort n=25 syn_50 1800s ✅ CONFIRMED (starvation fires). Batch 2 B2.0 ✅ (cohort-floor guardrail + Challenge 13 root-fix shipped; the 3 scoped pre-ramp fixes were all non-issues — see B2.0).**
+oort n=25 syn_50 1800s ✅ CONFIRMED (starvation fires). Batch 2 B2.0 ✅ (cohort-floor guardrail + Challenge 13 root-fix shipped; the 3 scoped pre-ramp fixes were all non-issues — see B2.0).
+✅ Tests 100% green: 456 passed / 0 failed / 7 skipped + parity ladder 24/24 (the 7 long-standing fixture failures in test_sync_sim_ordering / test_sim_barrier are now fixed — see B2.0.1 Verification).**
 
 **✅ B2.0.1 FIXED (found + fixed Jun 29; was blocking ALL real-mode parity at syn_50+ small-n):**
 **The real-mode aggregate recv barrier had no timeout.** `syncfl/_aggregate_weights` called
@@ -130,11 +132,16 @@ self-stops *at* the budget. WALL-CLOCK only; sim path untouched; harmless with t
 arrive well within 90 s). The `recv_fifo` timeout terminator `(None, ("", now))` is already handled by the
 loop's `if not msg: continue`.
 
-**Verification.** Full suite green except 7 **pre-existing** failures (`test_sync_sim_ordering`,
-`test_sim_barrier` — fixtures missing `_sim_buffer`, fail identically on clean HEAD); parity ladder 24/24;
-Challenge 13 tests pass. No unit test added for the recv path itself — it is a faithful copy of the
-already-shipped oort timeout and would need heavy `recv_fifo`/channel mocking for low marginal value; the
-n=20 run is the live confirmation.
+**Verification.** ✅ **Full suite now 100% green: 456 passed / 0 failed / 7 skipped + parity ladder 24/24.**
+The 7 failures that pre-dated this work (`test_sync_sim_ordering` ×6, `test_sim_barrier` ×1) were **stale
+fixtures**, not product bugs: they `__new__` an aggregator (bypassing `__init__` + `_init_availability`),
+so the availability state the E/F stages added (`_sim_buffer`, `pending_withheld`, `trainer_event_dict`,
+and the oort recv-timeout's `config.hyperparameters`) was never set. Fixed by giving the fixtures the
+**gate-OFF** availability state (`_sim_buffer=SimReorderBuffer()`, `trainer_event_dict=None`,
+`pending_withheld={}`, a minimal `_HP`) — byte-identical to a real gate-off run, so the sim-ordering /
+stale-reject logic is still exercised in isolation. No unit test added for the new syncfl recv-timeout path
+itself — it is a faithful copy of the already-shipped oort timeout and would need heavy `recv_fifo`/channel
+mocking for low marginal value; the n=20 run is the live confirmation.
 
 **Exit:** real feddance n≈20 syn_50 self-stops at `max_experiment_runtime_s` (`"stopping run"` in the agg
 log), not via the watchdog; completes real training rounds with partial cohorts.
