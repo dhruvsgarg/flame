@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the three fwdllm smoke YAMLs (fwdllm, fwdllm_plus, fluxtune) one after
+# Run multiple fwdllm YAMLs (fwdllm, fwdllm_plus, fluxtune) one after
 # another, in a single conda env, logging each run separately.
 #
 # Each YAML carries the Phase 13 auto-termination bar
@@ -10,10 +10,16 @@
 # rather than editing the originals.
 #
 # Usage (from anywhere):
-#   run_smoke_sequential.sh [--max-runtime-s 600] [--max-data-id 10] [--stop-on-fail]
+#   run_sequential.sh [--max-runtime-s 600] [--max-data-id 10]
+#       [--num-trainers N] [--c C] [--k K] [--stop-on-fail]
 #
 #   --max-runtime-s  wall-clock cap in seconds for each run (default: 600 = 10 min)
 #   --max-data-id    stop a run once data_id reaches this value (default: 10)
+#   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10)
+#   --c              override selector.kwargs.c + minInitialTrainers + agg_goal
+#                     (agg_goal matches c so no selected trainer goes stranded,
+#                     same rationale as MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 14)
+#   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
 set -u
@@ -48,31 +54,49 @@ REPO_ROOT="$(cd "$EXAMPLE_DIR/../../../.." && pwd)"       # flame/
 MAX_RUNTIME_S=600   # 10 minutes
 MAX_DATA_ID=10
 STOP_ON_FAIL=0
+NUM_TRAINERS=""   # empty = leave each YAML's own value
+SEL_C=""
+SEL_K=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-runtime-s) MAX_RUNTIME_S="$2"; shift 2 ;;
     --max-data-id)   MAX_DATA_ID="$2"; shift 2 ;;
+    --num-trainers)  NUM_TRAINERS="$2"; shift 2 ;;
+    --c)             SEL_C="$2"; shift 2 ;;
+    --k)             SEL_K="$2"; shift 2 ;;
     --stop-on-fail)  STOP_ON_FAIL=1; shift ;;
-    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--stop-on-fail]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--c C] [--k K] [--stop-on-fail]" >&2; exit 2 ;;
   esac
 done
 
 LOGDIR="$SCRIPT_DIR/smoke_logs/$(date '+%Y%m%d_%H%M%S')"
 mkdir -p "$LOGDIR"
 
-# Patch hyperparameters.max_runtime_s / max_data_id_progress in a copy of the
+# Patch hyperparameters.max_runtime_s / max_data_id_progress, and optionally
+# num_trainers / selector c+k+minInitialTrainers+agg_goal, in a copy of the
 # YAML rather than the original -- keeps the checked-in smoke configs stable
-# while letting this script's caller pick the cap per invocation.
+# while letting this script's caller pick the scale per invocation.
 patch_yaml() {
-  python - "$1" "$2" "$MAX_RUNTIME_S" "$MAX_DATA_ID" <<'PY'
+  python - "$1" "$2" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$SEL_C" "$SEL_K" <<'PY'
 import sys, yaml
-src, dst, max_runtime_s, max_data_id = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+src, dst, max_runtime_s, max_data_id, num_trainers, sel_c, sel_k = sys.argv[1:8]
 cfg = yaml.safe_load(open(src))
 for exp in cfg.get("experiments", []):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-    h["max_runtime_s"] = max_runtime_s
-    h["max_data_id_progress"] = max_data_id
+    h["max_runtime_s"] = int(max_runtime_s)
+    h["max_data_id_progress"] = int(max_data_id)
+    if num_trainers:
+        exp["trainer"]["num_trainers"] = int(num_trainers)
+    kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
+    if sel_c:
+        kwargs["c"] = int(sel_c)
+        kwargs["minInitialTrainers"] = int(num_trainers) if num_trainers else int(sel_c)
+        # agg_goal matches c so no selected trainer goes uncounted/stranded
+        # (MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 14).
+        exp["aggregator"]["agg_goal"] = int(sel_c)
+    if sel_k:
+        kwargs["k"] = int(sel_k)
 yaml.safe_dump(cfg, open(dst, "w"), sort_keys=False)
 PY
 }
@@ -86,8 +110,17 @@ RUNS=(
 declare -A RESULT
 declare -A DURATION_S
 
+CHILD_PID=""
+cleanup() {
+  echo ""
+  echo "Interrupted. Killing child (PID=${CHILD_PID:-none})..."
+  [ -n "$CHILD_PID" ] && kill -- -"$CHILD_PID" 2>/dev/null
+  exit 130
+}
+trap cleanup INT TERM
+
 cd "$REPO_ROOT" || exit 1
-echo "=== fwdllm smoke sequence: ${#RUNS[@]} runs, max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID, logs in $LOGDIR ==="
+echo "=== fwdllm sequential run: ${#RUNS[@]} runs, max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>}, logs in $LOGDIR ==="
 
 for entry in "${RUNS[@]}"; do
   name="${entry%%:*}"
@@ -97,10 +130,14 @@ for entry in "${RUNS[@]}"; do
   patch_yaml "$src_cfg" "$cfg"
 
   start_ts=$(date +%s)
-  echo "[$(date '+%F %T')] START $name -> $cfg (log: $log)"
   python -m flame.launch.run_experiment "$cfg" --example-dir "$EXAMPLE_DIR" \
-      < /dev/null > "$log" 2>&1
+      < /dev/null > "$log" 2>&1 &
+  CHILD_PID=$!
+  echo "[$(date '+%F %T')] START $name (PID=$CHILD_PID) -> $cfg (log: $log)"
+  echo "  (to kill: kill -9 $CHILD_PID   or Ctrl+C)"
+  wait "$CHILD_PID"
   rc=$?
+  CHILD_PID=""
   end_ts=$(date +%s)
   DURATION_S[$name]=$((end_ts - start_ts))
   if [ $rc -eq 0 ]; then

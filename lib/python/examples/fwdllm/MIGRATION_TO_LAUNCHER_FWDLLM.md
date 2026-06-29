@@ -1052,7 +1052,7 @@ wall-clock ceiling, whichever comes first — instead of relying on a human to
 watch logs and kill it. `rounds: 50` remains as an outer safety net only.
 
 A sequential runner script was also added:
-`expt_scripts/run_smoke_sequential.sh` (conda-activates an env, then runs
+`expt_scripts/run_sequential.sh` (conda-activates an env, then runs
 the three smoke YAMLs back to back, logging each to its own
 `smoke_logs/<timestamp>/<name>.{yaml,out}`). It patches `max_runtime_s`/
 `max_data_id_progress` into a generated copy of each YAML per invocation
@@ -1110,7 +1110,7 @@ the smoke script with `dg_flame` fails instantly with
 `TypeError: DatasetConfig.__init__() got an unexpected keyword argument
 'path_style'`, before touching any GPU. Use `aish_smoke_flame` (or
 `FLAME_CONDA_ENV=<env>` to the script) for this checkout —
-`run_smoke_sequential.sh` now defaults to `aish_smoke_flame`.
+`run_sequential.sh` now defaults to `aish_smoke_flame`.
 
 Not addressed here (still open, per Phase 12 at the time): issues #3
 (ORACULAR mutual-offline stalls) and #4 (distribute-loop broadcast storm /
@@ -1233,7 +1233,7 @@ genuine smoke-test-scope improvement on its own merits.
   `_select_ends_respecting_reselect_gate`/`_rearm_recv_eligibility` (Phase
   14), `read_trainer_unavailability`, `check_trainer_availability`,
   `_check_early_stop_conditions`/`_async_inner_loop_done` (Phase 13).
-- `examples/fwdllm/expt_scripts/run_smoke_sequential.sh` — runs the three
+- `examples/fwdllm/expt_scripts/run_sequential.sh` — runs the three
   smoke YAMLs back to back with overridable `max_runtime_s`/
   `max_data_id_progress` caps (Phase 13); defaults to the `aish_smoke_flame`
   conda env (the one whose editable `flame` install points at this

@@ -159,7 +159,7 @@ before adding a new field anywhere in the trainer or aggregator config path.
    still running past that (deadlock), the runner hard-`terminate()`s it
    instead of hanging the whole batch.
 
-7. **Running the launcher**: `python -m flame.launch.run_experiment
+8. **Running the launcher**: `python -m flame.launch.run_experiment
    <experiment.yaml> [--example-dir DIR] [--metadata-dir DIR]`
    (`flame/launch/run_experiment.py:main()`). `--example-dir` and
    `--metadata-dir` are optional — if omitted, the example dir is
@@ -300,6 +300,23 @@ The check is a regex over the aggregator main file's import line
 coord_asyncfl}` and `_ASYNC_SELECTORS = {async_oort, async_random, fedbuff}`
 — it raises `ValueError` before any process is spawned if the selector's
 async-ness doesn't match the stack's.
+
+**If the aggregator entrypoint imports only a subclass of `TopAggregator` (not
+`TopAggregator` itself), the regex won't match and `_validate_stack` silently
+falls back to `stack="syncfl"`.** Add a marker import to the entrypoint so the
+regex hits:
+
+```python
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator  # noqa: F401
+```
+
+See `fwdllm/aggregator/main_fedfwd_agg.py` for the pattern. Always test
+`_validate_stack` against the real entrypoint file, not synthetic text —
+synthetic-only tests can pass while the real file is never matched.
+
+For stacks where sync/async is selector-driven (the `selector.kwargs.is_async`
+kwarg), not fixed by module path, `_validate_stack` reads that kwarg directly
+instead of using set membership — see the fwdllm handling in `runner.py`.
 
 ### `experiment.aggregator` block: real config vs. descriptive labels
 
@@ -506,198 +523,110 @@ one process**, via `ExperimentRunner.run_experiment_batch()`
 
 ## 9. fwdllm-specific migration notes
 
-fwdllm differs from async_cifar10 in two key areas: (a) its dataset is stored as
-H5 partitions on disk (not index lists injected by the spawner), and (b) its
-existing trainer/aggregator already use `flame.config.Config` and have partial
-availability support. This makes the port narrower than a greenfield migration.
+fwdllm (FedFwd text-classification on agnews/DistilBERT) is now migrated and
+serves as the reference for NLP/H5-path-style examples. It differs from
+async_cifar10 in several ways that recur in similar examples.
 
-### What's already compatible
+### H5 path-style dataset (not index splits)
 
-- Trainer (`trainer/fl_main.py`) and aggregator (`aggregator/fl_main.py`) both
-  use `flame.config.Config`. Only the config-loading call needs to change.
-- Availability notification thread and `client_notify` struct are already present.
-- Oracular tracking (`track_trainer_avail`) is already implemented in
-  `FedSGDAggregator.py`.
+fwdllm stores training data as H5 partitions on disk. The spawner cannot inject
+a `trainer_indices_list` from `_metadata/dataset_splits/`. Instead,
+`data_file_path` and `partition_file_path` live in `configs/trainer_base.yaml`
+with placeholder values; experiments inject the real paths via
+`config_overrides.hyperparameters`. Set `trainer.dataset.path_style: true` in
+the experiment YAML so the spawner skips the index-split lookup.
 
-### What must change
-
-**1. Config intake** (trainer and aggregator)
-
-Replace:
-```python
-parser.add_argument("--config", required=True)
-config = Config(args.config)
+```yaml
+# fwdllm/configs/trainer_base.yaml (dataset section)
+hyperparameters:
+  dataset: agnews
+  data_file_path: PLACEHOLDER              # inject via config_overrides
+  partition_file_path: PLACEHOLDER         # inject via config_overrides
+  partition_method: niid_label_clients=100_alpha=1
+  client_idx: 0                            # injected by spawner per trainer
+  training_delay_s: 4.0                    # injected from registry
+  training_delay_enabled: "False"
+  # avl_events_* — injected by spawner for all five trace types
 ```
-with:
+
+### Per-trainer `client_idx` injection
+
+fwdllm selects its H5 partition by `client_idx` (0–99), not a static index
+list. The launcher computes `client_idx = (trainer_id - 1) % client_idx_modulo`
+and injects it per trainer. Set `trainer.client_idx_modulo` in the experiment
+YAML (`client_idx_modulo: 100` for a 100-client H5 file); no custom wrapper
+needed.
+
+### Single aggregator entrypoint with custom `TopAggregator`
+
+`FedSgdAggregator.py` extends `flame.mode.horizontal.syncfl.fwdllm_aggregator.TopAggregator`,
+a FedFwd-specific class — not the generic swappable `asyncfl`/`syncfl`
+hierarchy. fwdllm therefore uses **one** aggregator entrypoint
+(`aggregator/main_fedfwd_agg.py`) for all baselines; sync vs. async is
+dispatched at runtime by the `is_async` kwarg in `selector.kwargs`.
+
+`_validate_stack`'s regex matches `from flame.mode.horizontal.<stack>.top_aggregator import`
+— it doesn't match `fwdllm_aggregator` by pattern. The entrypoint adds a
+marker import that does match (see §4 for the general pattern):
+
+```python
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator  # noqa: F401
+```
+
+### Config intake
+
+Both trainer and aggregator replace the legacy `--config <file>` path with:
+
 ```python
 from flame.launch.cli import load_config_from_argv
 config = load_config_from_argv()
 ```
-Also add `--time_mode` as a side-channel CLI arg (not in config JSON) if you want
-simulated mode support:
-```python
-import argparse, sys
-_p = argparse.ArgumentParser(add_help=False)
-_p.add_argument("--time_mode", default="real")
-_known, _ = _p.parse_known_args()
-time_mode = _known.time_mode
-```
 
-**2. trainer_base.yaml for fwdllm**
+Add `--time_mode` as a side-channel arg. Note: `--time_mode simulated` is
+accepted but is a no-op for fwdllm (no simulated-clock support in the
+FedFwd aggregator — real-time only).
 
-Create `fwdllm/configs/trainer_base.yaml`. Unlike async_cifar10, the dataset
-fields cannot come from `_metadata/dataset_splits/` (H5 paths are not index
-lists). Put the dataset fields in the base template with placeholder comments, and
-let experiments override them via `config_overrides.hyperparameters`:
+### Custom stopping criteria
 
-```yaml
-# fwdllm/configs/trainer_base.yaml (minimal skeleton)
-backend: mqtt
-brokers:
-  - host: localhost
-    port: 1883
-channels:
-  # ... same channel block as current trainer JSON configs
-hyperparameters:
-  # Dataset — override per experiment or per baseline
-  dataset: agnews                          # override in experiment YAML
-  data_file_path: PLACEHOLDER              # inject via config_overrides
-  partition_file_path: PLACEHOLDER         # inject via config_overrides
-  partition_method: niid_label_clients=100_alpha=1
-  # Model
-  model_type: distilbert
-  model_name: distilbert-base-uncased
-  max_seq_length: 64
-  peft_method: adapter
-  # FL
-  fl_algorithm: FedFwd
-  epochs: 1
-  comm_round: 3000
-  learning_rate: 0.01
-  server_lr: 0.1
-  train_batch_size: 32
-  eval_batch_size: 32
-  forward_mode: "True"
-  use_adapter: "True"
-  freeze_layers: "True"
-  fp16: "True"
-  # Per-trainer fields — injected by spawner
-  client_idx: 0                            # injected: (trainer_id - 1) % 100
-  training_delay_s: 4.0                   # injected from registry
-  training_delay_enabled: "False"
-  training_delay_factor: "10"
-  # Availability
-  wait_until_next_avl: "True"
-  client_notify:
-    enabled: "False"
-    trace: syn_0
-  # avl_events_* — injected by spawner for all five trace types
-```
+fwdllm's `rounds` is a poor stopping unit: one round is 150 `data_id`
+completions (hardcoded `total_data_bins`), each with up to 15 variance-check
+iterations. Use the `max_data_id_progress` and `max_runtime_s` hyperparameters
+instead (both off by default). Smoke YAMLs set `max_data_id_progress: 10` /
+`max_runtime_s: 1800`; pass criterion is reaching the data-id cap before the
+wall-clock ceiling fires.
 
-**3. Per-trainer `client_idx` injection**
+### Availability traces and wandb
 
-fwdllm uses `client_idx` (0–99) to select the trainer's data partition from the
-H5 file. The spawner injects `taskid` and `training_delay_s` automatically from
-the registry. For `client_idx`, add it to `experiment.trainer.config_overrides`
-or implement a custom injection hook in a thin wrapper around `TrainerSpawner`.
+Reuse `synthetic_traces.yaml` and `mobiperf_traces.yaml` as-is. Gate wandb
+behind `--log_to_wandb` per §2.
 
-Simplest approach: add `client_idx` as a dotted-key override per trainer. In the
-experiment YAML, set a formula under `config_overrides.hyperparameters.client_idx`
-that the spawner evaluates to `(trainer_id - 1) % num_clients`. If the spawner
-doesn't support per-trainer formula evaluation, inject it via a small wrapper
-script that calls the spawner with per-trainer overrides.
+### NLP dependencies
 
-**4. Baselines in `_metadata/baselines.yaml`**
+Install `transformers>=4.57,<4.58`, `adapters>=1.3,<1.4`, `h5py`, `pandas`,
+`scikit-learn` from the `[examples]` extra (`pip install -e lib/python[examples,dev]`).
+Two legacy import issues fixed in the codebase: `AdamW` now comes from
+`torch.optim` (not `transformers`, removed in v4.x); `LoRAConfig`/`BnConfig`
+come from the standalone `adapters` package (not the old `adapter-transformers`
+fork).
 
-Add fwdllm baselines. Minimal entries:
+### Baseline taxonomy
 
-```yaml
-fedfwd_async_oort:
-  description: FedFwd + async_oort selector + fedbuff optimizer (asyncfl stack)
-  example:
-    aggregator_main: aggregator/main_asyncfl_agg.py
-  aggregator:
-    selector:
-      sort: async_oort
-      kwargs:
-        evalGoalFactor: 1.0
-    optimizer:
-      sort: fedbuff
-      kwargs: {}
-    hyperparameters:
-      trackTrainerAvail:
-        enabled: "False"
-        type: "NA"
-  trainer:
-    hyperparameters:
-      client_notify:
-        enabled: "True"
-      fl_algorithm: FedFwd
-      forward_mode: "True"
+| Baseline | stack (`is_async`) | selector | optimizer | availability |
+|---|---|---|---|---|
+| `fwdllm` | sync | `random` (per-round) | `fedavg` | unaware |
+| `fwdllm_plus` | sync | `random` (per-iteration) | `fedavg` | ORACULAR |
+| `fluxtune` | async | `async_oort` | `fedbuff` | 3-tier `client_notify` |
+| `fluxtune_dynkc` | async | `async_random` + `dynamic_kc` | `fedbuff` | off |
 
-fedfwd_oort_oracular:
-  description: FedFwd + oort selector + fedavg optimizer + oracular tracking (syncfl stack)
-  example:
-    aggregator_main: aggregator/main_oort_sync_agg.py
-  aggregator:
-    selector:
-      sort: oort
-      kwargs: {}
-    optimizer:
-      sort: fedavg
-      kwargs: {}
-    hyperparameters:
-      trackTrainerAvail:
-        enabled: "True"
-        type: oracular
-  trainer:
-    hyperparameters:
-      client_notify:
-        enabled: "False"
-      fl_algorithm: FedFwd
-```
+`fluxtune`'s fedbuff optimizer uses an explicit `learning_rate` kwarg (not a
+dataset-name table lookup — see `fedbuff.py`) so it doesn't need to be forked
+from the felix/oracle baselines.
 
-**5. Availability traces** — reuse `synthetic_traces.yaml` and
-`mobiperf_traces.yaml` as-is. fwdllm currently embeds trace arrays inline in
-trainer JSONs; the launcher will inject them from `_metadata/` instead. No new
-trace files needed for the standard syn_0/syn_20/syn_50/mobiperf variants.
+### Telemetry
 
-**6. Aggregator entrypoints**
-
-fwdllm currently has a single `aggregator/fl_main.py`. Split into per-stack
-files matching async_cifar10's pattern, then register each in `baselines.yaml`:
-
-| Stack | File | Baseline |
-|-------|------|---------|
-| asyncfl | `aggregator/main_asyncfl_agg.py` | fedfwd_async_oort |
-| syncfl (oort) | `aggregator/main_oort_sync_agg.py` | fedfwd_oort_oracular |
-
-Each file only changes the `TopAggregator` import; all FL logic stays in
-`FedSGDAggregator.py`.
-
-**7. Wandb gating**
-
-fwdllm aggregator likely calls `wandb.init()` unconditionally. Gate it behind
-`--log_to_wandb` following `main_fedavg_agg.py`'s `initialize_wandb()` pattern.
-The launcher sets `log_to_wandb: false` by default; override in the experiment
-YAML if needed.
-
-**8. Telemetry**
-
-fwdllm does not yet emit structured JSONL telemetry. Add `trainer_round` events
-at minimum to get loss/accuracy curves from the post-run analyzer. The env var
-`FLAME_TELEMETRY_DIR` is set by the launcher; check it and open a JSONL file:
-
-```python
-import json, os, pathlib
-_tel_dir = os.environ.get("FLAME_TELEMETRY_DIR")
-_tel_file = open(pathlib.Path(_tel_dir) / f"trainer_{trainer_id}.jsonl", "a") if _tel_dir else None
-
-def _emit(event, **fields):
-    if _tel_file:
-        _tel_file.write(json.dumps({"event": event, **fields}) + "\n")
-        _tel_file.flush()
-```
+`trainer_round` events are emitted at the end of each successful
+`train_with_data_id()` call (`FedSgdTrainer.py`). See §5 for the JSONL
+contract; the env var `FLAME_TELEMETRY_DIR` is set by the launcher.
 
 ---
 
@@ -708,8 +637,13 @@ def _emit(event, **fields):
    For path-style datasets (fwdllm), skip this step and inject paths via
    `config_overrides` instead (§9).
 3. Add `<example>/configs/trainer_base.yaml` (static per-example trainer
-   template; per-trainer fields are injected by the launcher).
+   template; per-trainer fields are injected by the launcher) and
+   `<example>/configs/aggregator_base.json` (example-specific aggregator
+   config template — do not use `_metadata/aggregator_base.json` for
+   example-specific fields; see §2).
 4. Provide one aggregator entrypoint per stack you run (§2); delete the rest.
+   If your aggregator extends a custom `TopAggregator` subclass, add a marker
+   import to the entrypoint so `_validate_stack` detects it correctly (§4).
 5. Make trainer + aggregator entrypoints use `load_config_from_argv()` and read
    all per-trainer values from `hyperparameters` (§2–§3).
 6. Add the example's baselines to `baselines.yaml` with `example.aggregator_main`.
@@ -765,4 +699,4 @@ Keep (still current):
 | `async_cifar10` | Migrated (reference). 5 baselines: felix, fedbuff, fedavg, oort, refl. Includes telemetry, streaming, time_mode, memory profiler. |
 | `feddance_cifar10` | Has launcher YAMLs; FedDance baseline blockers tracked in `async_cifar10/FEDDANCE_TODO.md`. |
 | `async_google_speech` | **TODO** — migrate per this guide (needs google-speech dataset splits + per-stack aggregator entrypoints). |
-| `fwdllm` | **TODO** — see §9 for fwdllm-specific steps. Main blockers: (1) config intake switch to `load_config_from_argv()`; (2) per-trainer `client_idx` injection; (3) split aggregator into per-stack entrypoints; (4) add baselines to `baselines.yaml`; (5) gate wandb; (6) add JSONL telemetry. Dataset splits are H5-path-based, not index-list-based — use `config_overrides` for data paths rather than `_metadata/dataset_splits/`. |
+| `fwdllm` | Migrated. 4 baselines: `fwdllm` (syncfl/unaware), `fwdllm_plus` (syncfl/ORACULAR), `fluxtune` (asyncfl/async_oort+fedbuff), `fluxtune_dynkc`. H5 path-style dataset via `config_overrides`; `client_idx_modulo` injection; single aggregator entrypoint with marker import + `is_async`-kwarg-driven stack detection; `trainer_round` JSONL telemetry; `max_data_id_progress` auto-stop. See §9 for fwdllm-specific patterns. |
