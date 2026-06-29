@@ -220,6 +220,13 @@ for e in cfg.get("experiments", []):
                     h["availabilityAware"] = True
         elif "client_notify" in h and isinstance(h["client_notify"], dict):
             h["client_notify"]["trace"] = trace_override
+            h["simUnavailability"] = True
+        elif e["aggregator"].get("tracking_mode", "oracular").lower() != "oracular":
+            # Non-oracular baseline with no HP-level tracking block (e.g. feddance
+            # in v1, which has no client_notify in HP and no trackTrainerAvail).
+            # Inject trace via availability_trace so _init_availability finds it.
+            h["availability_trace"] = trace_override
+            h["simUnavailability"] = True
         # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
         import re
         e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
