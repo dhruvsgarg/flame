@@ -245,13 +245,55 @@ print(f"Generated {outpath} with {len(kept)} experiment(s): "
 PY
 }
 
+# Count experiments in a generated YAML (used to estimate budget and track progress).
+_count_exps() {
+  python3 - "$1" <<'PY'
+import yaml, sys
+d = yaml.safe_load(open(sys.argv[1]))
+print(len(d.get('experiments', [])))
+PY
+}
+
 run_node() {
-  local label="$1" cfg="$2"
-  echo "[$(date '+%F %T')] START $label -> $cfg" | tee -a "$LOGDIR/debug_run.log"
+  local label="$1" cfg="$2" budget_s="${3:-0}" n_exps="${4:-1}"
+  local start_ts; start_ts=$(date +%s)
+  # Baseline run-dir count — new dirs that appear are newly-started experiments.
+  local initial_runs; initial_runs=$(find experiments -maxdepth 1 -name "run_*" -type d 2>/dev/null | wc -l)
+
+  echo "[$(date '+%F %T')] START $label ($n_exps exp(s), ~${budget_s}s budget)" | tee -a "$LOGDIR/debug_run.log"
+
+  # Background progress ticker: fires every 30s, prints elapsed/remaining/percent
+  # and how many experiments have started (each start creates a new run_* dir).
+  (
+    while true; do
+      sleep 30
+      local now; now=$(date +%s)
+      local elapsed=$(( now - start_ts ))
+      local pct=0 remaining=0
+      if [ "$budget_s" -gt 0 ]; then
+        pct=$(( elapsed * 100 / budget_s ))
+        remaining=$(( budget_s - elapsed ))
+        [ "$pct" -gt 100 ] && pct=100
+        [ "$remaining" -lt 0 ] && remaining=0
+      fi
+      local curr; curr=$(find experiments -maxdepth 1 -name "run_*" -type d 2>/dev/null | wc -l)
+      local started=$(( curr - initial_runs ))
+      [ "$started" -lt 0 ] && started=0
+      printf "  [%s] %s | %ds elapsed / ~%ds (%d%%) | exp started: %d/%d\n" \
+        "$(date '+%T')" "$label" "$elapsed" "$budget_s" "$pct" "$started" "$n_exps"
+    done
+  ) &
+  local ticker_pid=$!
+
   python -m flame.launch.run_experiment "$cfg" --example-dir "$EX" \
       < /dev/null >> "$LOGDIR/${label}.out" 2>&1
   local rc=$?
-  echo "[$(date '+%F %T')] DONE  $label exit=$rc" | tee -a "$LOGDIR/debug_run.log"
+
+  kill "$ticker_pid" 2>/dev/null
+  wait "$ticker_pid" 2>/dev/null
+
+  local elapsed=$(( $(date +%s) - start_ts ))
+  echo "[$(date '+%F %T')] DONE  $label exit=$rc (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$LOGDIR/debug_run.log"
 }
 
 # ---- smoke mode ----
@@ -262,7 +304,10 @@ if [ "$SMOKE" = "1" ]; then
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
   make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE"
-  [ -f "$cfg" ] && run_node "dbg_smoke" "$cfg"
+  if [ -f "$cfg" ]; then
+    _n=$(_count_exps "$cfg")
+    run_node "dbg_smoke" "$cfg" $(( _n * 240 )) "$_n"
+  fi
   echo "=== SMOKE RESULTS ==="
   for dd in experiments/run_*dbg_smoke_*; do
     [ -d "$dd" ] || continue
@@ -286,6 +331,9 @@ if [ ! -f "$cfg" ]; then
   exit 0
 fi
 
-run_node "debug_run" "$cfg"
+_n_exps=$(_count_exps "$cfg")
+_budget=$(( _n_exps * RUNTIME_S ))
+echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
+run_node "debug_run" "$cfg" "$_budget" "$_n_exps"
 echo "Logs: $LOGDIR/debug_run.out"
 echo "Run dirs: experiments/run_*dbg_*"
