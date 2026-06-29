@@ -1,34 +1,20 @@
 #!/usr/bin/env python
-"""Extract smoke-test sanity-check signals from a fwdllm launcher run's
-aggregator/trainer logs into one consolidated, human-readable log file.
+"""Extract fwdllm smoke-test sanity-check signals into one log file.
 
-Covers four checks, each its own section in the output:
-  1. Selected clients per selection event (who was picked to train, in
-     order) -- covers both RandomSelector (sync: fwdllm/fwdllm_plus) and
-     AsyncOortSelector (async: fluxtune) log formats.
-  2. Selected data bin (data_id) sequence -- which data_id the aggregator
-     was distributing/working on, in chronological order, collapsed to
-     transitions (not one line per broadcast).
-  3. Eval accuracy + iterations-taken-per-data_id, from eval_model()'s
-     periodic eval log line (carries both 'acc' and 'data_id_iterations').
-  4. Per-client data partition: which client_idx each trainer process
-     loaded, the data hash, and the sample count, keyed by trainer_id (via
-     the "[Trainer <id>] PID: <pid>" line that ties a log's PID prefix back
-     to its trainer_id).
+Four sections: (1) selected clients per selection event, (2) data_id
+sequence, (3) eval accuracy + iterations taken per data_id, (4) per-client
+data partition (client_idx, hash, sample count).
 
 Usage:
     python extract_sanity_checks.py <run_dir> [run_dir ...]
 
-Writes <run_dir>/sanity_checks.log for each run_dir given. Auto-discovers
-the aggregator/trainer log files inside each run_dir (the launcher names
-them <timestamp>_<...>_aggregator.log / <...>_trainers.log).
+Writes <run_dir>/sanity_checks.log, auto-discovering that run's
+*_aggregator.log / *_trainers.log.
 """
 import argparse
 import re
 import sys
 from pathlib import Path
-
-TS_RE = r"(?P<ts>\d{2}_\d{2}_\d{2},\d{2}:\d{2}:\d{2}\.\d{3})"
 
 SELECTED_ENDS_RE = re.compile(
     r"(?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "

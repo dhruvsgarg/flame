@@ -1481,19 +1481,11 @@ class TopAggregator(AsyncTopAgg):
     def _rearm_recv_eligibility(channel, ends):
         """Re-add `ends` to the selector's RECV-eligible set.
 
-        `reselect_each_iteration=False` (below) intentionally skips
-        re-invoking `channel.ends(VAL_CH_STATE_SEND, ...)` once the round's
-        selection is cached -- but that SEND-state call is the *only* thing
-        that normally populates `RandomSelector.selected_ends`, which is
-        also what backs `channel.ends(VAL_CH_STATE_RECV)`
-        (`random.py::select`'s RECV branch just returns `selected_ends`).
-        Each trainer's contribution removes its end from `selected_ends` via
-        `cleanup_recvd_end`/`cleanup_recvd_ends` once processed (so it isn't
-        double-counted); without re-arming it here, `selected_ends`
-        permanently empties out after the round's first full pass over the
-        cached trainers, even though `max_iterations_per_data_id` expects
-        many more send/receive iterations from that same selected set
-        before the round advances.
+        Skipping the SEND-state call below (cache hit) also skips the only
+        thing that normally repopulates `selected_ends`, which backs
+        `channel.ends(VAL_CH_STATE_RECV)`. Each processed contribution
+        removes its end from it via `cleanup_recvd_end(s)`; without this,
+        it permanently empties out after one pass over the cached trainers.
         """
         selector = getattr(channel, "_selector", None)
         if selector is not None and hasattr(selector, "selected_ends"):
