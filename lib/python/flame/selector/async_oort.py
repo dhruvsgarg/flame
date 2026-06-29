@@ -361,6 +361,7 @@ class AsyncOortSelector(AbstractSelector):
                 task_to_perform=task_to_perform,
                 agg_version_state=agg_version_state,
                 trainer_version_states=trainer_version_states,
+                connected_ends=ends,  # Challenge 13: full pool for cleanup
             )
 
             if len(results) is not 0:
@@ -1400,6 +1401,7 @@ class AsyncOortSelector(AbstractSelector):
         task_to_perform: str = "train",
         agg_version_state=None,  # (model_version, data_id, iteration_id)
         trainer_version_states: dict[str, tuple[int, int, int]] = None,
+        connected_ends: dict[str, End] = None,
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
         logger.debug(
@@ -1481,9 +1483,21 @@ class AsyncOortSelector(AbstractSelector):
                         del self.all_selected[end]
                     selected_ends.discard(end)
 
+        # Challenge 13: the "invalid prior selection" cleanup must check
+        # CONNECTED membership, not availability-eligibility. `ends` here is the
+        # availability-filtered eligible pool — an in-flight trainer that merely
+        # went UN_AVL (or is currently the wrong task-type, e.g. AVL_EVAL on a
+        # train dispatch) is absent from `ends` yet is still connected and
+        # computing. Removing it from selected_ends would make the aggregator
+        # forget it is waiting on that update. When the per-task eligible pool is
+        # EMPTY (all trainers AVL_EVAL on a 3-state trace, or the 2-state eval
+        # path) this wipes ALL in-flight tracking across train+eval (shared
+        # selected_ends) → run hangs. Use the full connected pool when provided;
+        # fall back to `ends` for backward compat / direct callers.
+        _connected = connected_ends if connected_ends is not None else ends
         # Check for invalid selections and remove them
         for end_id in list(selected_ends):
-            if end_id not in ends:
+            if end_id not in _connected:
                 # something happened to end of end_id (e.g.,
                 # connection loss) let's remove it from selected_ends
                 # so that you can fill that spot with another trainer

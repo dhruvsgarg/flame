@@ -538,7 +538,33 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             _resolved_k = first_k if first_k > 0 else len(ends)
             updates = self._sync_sim_recv_first_k(channel, ends, _resolved_k)
         else:
-            updates = channel.recv_fifo(ends, first_k=first_k)
+            # B2.0.1 / Challenge 16: bound the real recv barrier with a wall-clock
+            # timeout. The sync barrier waits for first_k=agg_goal of the selected
+            # set; under unavailability the withheld trainers never send, so an
+            # un-timed recv_fifo blocks forever (the feddance n=12 real hang: round
+            # 1 dispatched 12, ~6 withheld, recv_fifo stalled on the 10th for 46
+            # min until the watchdog killed it). Mirror the oort real-recv timeout
+            # and the sim 90s vclock abandon: wait up to trainer_recv_wall_timeout_s
+            # (default 90s, >> the ~18s max trainer compute, so live stragglers
+            # still land) per next message, capped at the remaining experiment
+            # budget so the round proceeds with whatever arrived and
+            # increment_round's budget check can then fire. WALL-CLOCK only; sim
+            # path is unchanged. Harmless with the gate OFF — all first_k arrive
+            # well within the timeout, so recv_fifo returns before it triggers.
+            _stall = float(getattr(
+                self.config.hyperparameters, "trainer_recv_wall_timeout_s", 90.0
+            ))
+            _max_rt = getattr(
+                self.config.hyperparameters, "max_experiment_runtime_s", None
+            )
+            if _max_rt:
+                _remaining = max(
+                    1.0, float(_max_rt) - (time.time() - self.agg_start_time_ts)
+                )
+                _recv_timeout = min(_stall, _remaining)
+            else:
+                _recv_timeout = _stall
+            updates = channel.recv_fifo(ends, first_k=first_k, timeout=_recv_timeout)
 
         # receive local model parameters from trainers
         # [U6 real barrier-anchor] Real applies all K updates at ONE post-loop

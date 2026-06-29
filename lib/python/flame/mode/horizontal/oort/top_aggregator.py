@@ -742,11 +742,30 @@ class TopAggregator(BaseTopAggregator):
         _in_flight = getattr(channel._selector, 'selected_ends', set())
         if not isinstance(_in_flight, set):
             _in_flight = set(_in_flight) if _in_flight else set()
-        num_eligible = len(
-            set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight
-        )
+        _connected = set(channel._ends.keys())
+        num_eligible = len(_connected - set(curr_unavail_trainer_list) - _in_flight)
 
-        if num_eligible < desired_selection:
+        # Cohort-floor guardrail: the starvation gate must never demand more
+        # trainers than are physically connected. If desired_selection exceeds
+        # the cohort size (e.g. an oort run at n=12 with desired_selection=13),
+        # the gate fires EVERY round — the run advances the vclock on scarcity
+        # indefinitely and exhausts max_experiment_runtime_s with zero training
+        # (observed Jun 29, accidental n=12 oort). Clamp the threshold to the
+        # connected cohort and warn once so the misconfiguration is visible
+        # instead of silently degenerating into an all-starvation run.
+        _starv_threshold = min(desired_selection, len(_connected))
+        if desired_selection > len(_connected) and not getattr(
+            self, "_oort_cohort_floor_warned", False
+        ):
+            logger.warning(
+                f"[COHORT_FLOOR] desired_selection={desired_selection} > connected "
+                f"cohort={len(_connected)}: the overcommitted batch can never be met. "
+                f"Clamping starvation threshold to {len(_connected)}. Increase "
+                f"num_trainers to >= desired_selection for a valid oort starvation run."
+            )
+            self._oort_cohort_floor_warned = True
+
+        if num_eligible < _starv_threshold:
             if self.simulated and self.trainer_event_dict is not None:
                 _nxt = self._next_avail_vclock()
                 if _nxt is not None and _nxt > self._vclock.now:
@@ -767,7 +786,7 @@ class TopAggregator(BaseTopAggregator):
                     channel.properties["vclock_now"] = self._vclock.now
                 logger.info(
                     f"[SIM_STARVATION] round={self._round} eligible={num_eligible} "
-                    f"< {desired_selection}; vclock→{_nxt}"
+                    f"< {_starv_threshold}; vclock→{_nxt}"
                 )
             else:
                 time.sleep(0.5)
