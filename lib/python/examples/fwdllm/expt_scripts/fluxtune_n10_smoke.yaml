@@ -87,7 +87,13 @@ experiments:
             minInitialTrainers: 10
 
     execution:
-      num_gpus: 1
+      # 8, not 1, even though this YAML's own default is 10 trainers --
+      # run_sequential.sh's --num-trainers commonly scales this up to 100+
+      # without a matching GPU bump (it has no num_gpus override of its
+      # own), and cramming 100 trainer processes onto 1 GPU OOMs almost
+      # immediately (see fluxtune_n10_smoke run 20260629_221116). Spreading
+      # across 8 GPUs even at the 10-trainer default is harmless headroom.
+      num_gpus: 8
       sleep_between_spawns: 2.0
       aggregator_warmup_time: 20
       monitoring:

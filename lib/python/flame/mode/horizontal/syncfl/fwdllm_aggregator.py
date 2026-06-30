@@ -733,17 +733,45 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"Received grad with staleness={self._model_version-version}."
                 )
-            if self.reject_stale_updates == True:
+            # Mode semantics: Hyperparameters.staleness_policy (flame/config.py).
+            # Implementation note: model_version alone already identifies
+            # (round, data_id) when inc_model_version_per_data_id is set (it
+            # only advances on a data_id transition), so "round_data_id" needs
+            # no extra fields; "exact" additionally checks iteration_per_data_id.
+            policy = getattr(self, "staleness_policy", "none")
+            stale, stale_reason = False, None
+            if policy == "round_data_id":
                 if version != self._model_version:
-                    logger.info(
-                        f"Rejecting trainer update from {end} of version {version}, "
-                        f"agg self._model_version: {self._model_version}. Will return."
+                    stale, stale_reason = True, (
+                        f"version={version} != agg model_version={self._model_version}"
                     )
-                    if self.is_async:
-                        channel.cleanup_provided_ends(end)
-                    else:
-                        channel.cleanup_recvd_end(end)
-                    return False
+            elif policy == "exact":
+                msg_iter = msg.get(MessageType.ITERATION_PER_DATA_ID)
+                if version != self._model_version:
+                    stale, stale_reason = True, (
+                        f"version={version} != agg model_version={self._model_version}"
+                    )
+                elif msg_iter != self.iteration_per_data_id:
+                    stale, stale_reason = True, (
+                        f"iteration_per_data_id={msg_iter} != "
+                        f"agg iteration_per_data_id={self.iteration_per_data_id}"
+                    )
+            elif policy != "none":
+                logger.warning(
+                    f"Unrecognized staleness_policy={policy!r}; treating as 'none' "
+                    f"(no staleness gate)."
+                )
+
+            if stale:
+                logger.info(
+                    f"Rejecting trainer update from {end} under "
+                    f"staleness_policy={policy} ({stale_reason})."
+                )
+                if self.is_async:
+                    channel.cleanup_provided_ends(end)
+                else:
+                    channel.cleanup_recvd_end(end)
+                return False
 
         if MessageType.GRADIENTS in msg and MessageType.GRADIENTS_FOR_VAR_CHECK in msg:
             logger.info(

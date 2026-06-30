@@ -81,7 +81,10 @@ experiments:
             minInitialTrainers: 10
 
     execution:
-      num_gpus: 1
+      # 8, not 1 -- see fluxtune_n10_smoke.yaml's execution.num_gpus comment;
+      # run_sequential.sh's --num-trainers scales trainer count without a
+      # matching GPU bump, and 100 trainers on 1 GPU OOMs almost immediately.
+      num_gpus: 8
       sleep_between_spawns: 2.0
       aggregator_warmup_time: 20
       monitoring:

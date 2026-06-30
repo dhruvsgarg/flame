@@ -299,7 +299,14 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NONE"
-        rejectStaleUpdates: false
+        # rejectStaleUpdates (the older boolean gate) is superseded by
+        # stalenessPolicy below for FedFwd baselines -- see
+        # Hyperparameters.staleness_policy (flame/config.py). "exact" is the
+        # strictest mode, matching fwdllm's strict-sync design. TODO(verify):
+        # confirm this doesn't starve progress under the oracular/mobiperf
+        # availability traces at full (300+) trainer scale, where round-trip
+        # latency variance is much higher than the n=10 smoke default.
+        stalenessPolicy: exact
         inc_model_version_per_data_id: true
         max_iterations_per_data_id: 15
         var_threshold: 0.3
@@ -337,7 +344,16 @@ baselines:
           enabled: "True"
           type: ORACULAR
           trace: mobiperf_2st
-        rejectStaleUpdates: false
+        # rejectStaleUpdates (the older boolean gate) is superseded by
+        # stalenessPolicy below -- see Hyperparameters.staleness_policy
+        # (flame/config.py). Looser than fwdllm's "exact" since
+        # reselect_each_iteration=true below already re-picks trainers every
+        # iteration, making per-iteration staleness not meaningful here.
+        # TODO(verify): confirm this is still the intended FedFwd+ semantics
+        # at full trainer scale; an unbounded version mismatch here is what
+        # let the 21:30 smoke-test crash (a model_version-45 update accepted
+        # into a model_version-53 cycle) happen in the first place.
+        stalenessPolicy: round_data_id
         inc_model_version_per_data_id: true
         max_iterations_per_data_id: 15
         var_threshold: 0.3
@@ -424,7 +440,14 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
-        rejectStaleUpdates: false
+        # rejectStaleUpdates (the older boolean gate) is superseded by
+        # stalenessPolicy below for FedFwd baselines -- see
+        # Hyperparameters.staleness_policy (flame/config.py). Async by
+        # design: fluxtune's fedbuff optimizer intentionally aggregates
+        # whatever's in flight, weighting by staleness (agg_rate_conf above)
+        # rather than rejecting it. Explicit "none" here so the gate's
+        # absence is a documented choice, not a default.
+        stalenessPolicy: none
         inc_model_version_per_data_id: true
         var_threshold: 0.3
     trainer:
