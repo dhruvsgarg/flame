@@ -4,7 +4,7 @@
 
 state_at / next_avail_after replace the three inlined bisect_right copies in
 get_curr_unavail_trainers (main_oort_sync_agg.py:311),
-oracular_trainer_avail_check (asyncfl/top_aggregator.py:1226), and
+_trace_read_avail_check (asyncfl/top_aggregator.py), and
 check_and_update_state_avl (trainer/pytorch/main.py:336).
 """
 

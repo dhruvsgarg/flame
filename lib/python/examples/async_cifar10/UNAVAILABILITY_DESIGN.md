@@ -18,8 +18,7 @@ trace-read effect path:
 - **Proactive in-flight eviction** — **felix only** (the one fully-aware baseline): frees a slot the
   trace shows UN_AVL at the next selection boundary, no 90 s wait.
 - **Starvation / vclock-advance under scarcity.** When the eligible pool is too small to start a round,
-  sim advances the vclock to the next availability transition instead of spinning. **⚠ BUG B2.0.2 open
-  — see Status.**
+  sim advances the vclock to the next availability transition instead of spinning. **B2.0.2 FIXED (T0).**
 - **Parity ladder** (`scripts/parity/`) — availability rungs A1/A3/A4/A4dur, withheld_delivery,
   abandon_timeout, starvation_advance, eligible_pool_reduction.
 
@@ -103,11 +102,31 @@ Today a single `_availability_aware` HP gates `_sim_evict_unavail_inflight`. Spl
 
 ---
 
-## Status (Jun 30 — Batch 2. ⚠ NEW BLOCKING BUG B2.0.2 from feddance n=18. Recategorization + new baselines + local test suite scoped as T1–T5 below.)
+## Status (Jun 29 — Batch 2 pre-flight ✅ COMPLETE. T5 (overnight run campaign) is next.)
 
-**A/B/C/C.6/D/E ✅ CONFIRMED syn_20. F.2 CODE-COMPLETE but starvation self-termination BROKEN (B2.0.2).
+**A/B/C/C.6/D/E ✅ CONFIRMED syn_20. F.2 ✅ FIXED (B2.0.2 starvation self-termination).
 syn_0 ✅. oort n=25 syn_50 ✅ (starvation fires, K1/K3a PASS). B2.0.1 real recv-barrier ✅ FIXED + confirmed.
-Tests green: 456 pass / 7 skip + ladder 24/24.**
+T0–T5 pre-work ✅ COMPLETE. Tests green: 536 pass / 7 skip.**
+
+**T0 ✅** B2.0.2 starvation self-termination fixed (syncfl/oort/asyncfl); budget check >= ; real-mode wall
+guard; 10 regression tests in `test_starvation_termination.py`.
+
+**T1 ✅** `_availability_aware` → `avail_select_filter` + `proactive_inflight_evict` (two-axis flag split);
+`[ORACULAR]` → `[TRACE_READ]`; `oracular_trainer_avail_check` → `_trace_read_avail_check`.
+
+**T2 ✅** Per-baseline flags set in parity YAML: felix (filter+evict), oort (off/off), refl/feddance (filter/off).
+
+**T3 ✅** oort_star + fedbuff scaffolded in parity YAML (sim+real entries, 12 total); debug_run.sh updated
+to include `oort_star fedbuff` in smoke defaults.
+
+**T4 ✅** 41-test state-fidelity suite in `tests/availability/test_state_fidelity.py` covering
+T-state-exact, T-eval-pool, T-withhold-deliver, T-aware-vs-reactive, T-starvation-sync.
+
+**T5 pre-work ✅ (Jun 29)** Overnight-run blockers cleared:
+- `oort_star` added to `baselines.yaml` (critical: was missing → `ValueError` at run start).
+- `availability_trace: syn_0` added to fedbuff aggregator HP in parity YAML (belt-and-suspenders: `_init_availability` now finds trace via top-level key).
+- A5 `state_timeline_agreement` wired into `checks.py` + `report.py` (per-(trainer,t) state agreement, DIST tier, 0.95 tol).
+- 28-test config-wiring suite `tests/launch/test_baseline_wiring.py`: verifies all 6 baselines have correct HP after merge, catches `oort_star`-missing class of bug.
 
 ### ⚠ B2.0.2 — Sim starvation does not self-terminate at the trace end-horizon (BLOCKING; found feddance n=18 syn_50, Jun 29)
 
@@ -167,14 +186,14 @@ n=19 try; if it won't cleanly straddle, **deprioritize** (sync FL rarely starves
 > Each task: scope, files, exit. Land T0 first (it blocks runs). T1–T4 are local/code (no long runs). T5 is the
 > run campaign. "Across stages before across baselines, long runs last."
 
-### T0 — Fix B2.0.2 starvation self-termination (BLOCKING)
+### T0 ✅ — Fix B2.0.2 starvation self-termination (BLOCKING)
 - **Scope:** see B2.0.2 above (4 sub-items).
 - **Files:** `flame/mode/horizontal/{syncfl,oort,asyncfl}/top_aggregator.py` (F.2 starvation branch);
   `flame/mode/horizontal/*/top_aggregator.py` `increment_round` budget check (`>` → `>=`);
   new `tests/.../test_starvation_termination.py`.
 - **Exit:** deterministic pytest green; feddance perpetual-scarcity smoke self-stops both modes (no wall ceiling).
 
-### T1 — G.4 rename + two-axis flag redesign (no-op refactor + flag split; land early)
+### T1 ✅ — G.4 rename + two-axis flag redesign (no-op refactor + flag split; land early)
 - **Renames:** `oracular_trainer_avail_check` → `_trace_read_avail_check` (5 refs:
   `asyncfl/top_aggregator.py`, `syncfl/fwdllm_aggregator.py`, `availability/trace.py`, callers); log tag
   `[ORACULAR]` → `[TRACE_READ]` (`availability_mixin.py:266`); comments/docstrings "oracular" → "trace-read".
@@ -187,21 +206,21 @@ n=19 try; if it won't cleanly straddle, **deprioritize** (sync FL rarely starves
   `syncfl/fwdllm_aggregator.py`; metadata template `_metadata/aggregator_base.json`.
 - **Exit:** unit tests green; syn_0 byte-identity (gate OFF) preserved; `[TRACE_READ]` in logs.
 
-### T2 — Baseline categorization fixes (docs + yaml + code) to match the Baseline matrix
+### T2 ✅ — Baseline categorization fixes (docs + yaml + code) to match the Baseline matrix
 - Set per-baseline flags in `expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_parity.yaml`:
   felix `avail_select_filter+proactive_inflight_evict`; oort none; refl/feddance `avail_select_filter` only.
 - Verify selector→base mapping (felix→async_oort/asyncfl, oort→oort/sync, refl→refl_oort/sync,
   feddance→feddance/sync). Fix any doc/comment that still says "oort = async" or "feddance/refl = unaware".
 - **Exit:** matrix reflected in config + code comments; smoke each baseline gate-ON syn_20 (no behavior regression).
 
-### T3 — Scaffold new baselines: oort_star (aware sync) + fedbuff (unaware async)
+### T3 ✅ — Scaffold new baselines: oort_star (aware sync) + fedbuff (unaware async)
 - **oort_star:** oort-sync base + `avail_select_filter=True`, `proactive_inflight_evict=False`. New parity-yaml
   entries (sim+real) + config. Selector = oort with select-filter enabled.
 - **fedbuff:** asyncfl base + `FedBuffSelector` (`flame/selector/fedbuff.py` exists) + both flags OFF (unaware).
   New parity-yaml entries + config + `main_asyncfl_agg.py` wiring if needed.
 - **Exit:** both run gate-OFF (byte-identical regression) and gate-ON syn_20 smoke; appear in the parity CLI batch.
 
-### T4 — Local state-fidelity test suite (catch bugs before runs) — point 7
+### T4 ✅ — Local state-fidelity test suite (catch bugs before runs) — point 7
 New `scripts/parity/test_state_fidelity.py` (deterministic, no cluster), driving a tiny synthetic trace through
 sim and a mocked-real path, asserting identical state timelines:
 - **T-state-exact:** scripted AVL_TRAIN→UN_AVL→AVL_TRAIN; `state_at(trace,t)` and stamped `PROP_AVL_STATE` match

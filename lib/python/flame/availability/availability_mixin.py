@@ -72,14 +72,29 @@ class AvailabilityMixin:
         keep working without adding the new flag.
 
         Sets:
-            self.trainer_event_dict  — dict[task_id → SortedDict] or None
-            self._availability_aware — bool (Stage D proactive eviction)
-            self.pending_withheld    — dict[end → delivery_ts] (Stage C)
+            self.trainer_event_dict     — dict[task_id → SortedDict] or None
+            self.avail_select_filter    — bool (exclude UN_AVL from selection pool)
+            self.proactive_inflight_evict — bool (Stage D proactive boundary eviction)
+            self.pending_withheld       — dict[end → delivery_ts] (Stage C)
         """
         hp = config.hyperparameters
         self.trainer_event_dict: Optional[dict] = None
-        self._availability_aware: bool = bool(
-            getattr(hp, "availability_aware", False)
+        # avail_select_filter: whether UN_AVL trainers are excluded from the
+        # selection pool (get_curr_task_ineligible_trainers). True for aware
+        # baselines (felix/oort_star/refl/feddance); False for unaware (oort/fedbuff).
+        self.avail_select_filter: bool = bool(
+            getattr(hp, "avail_select_filter", True)
+        )
+        # proactive_inflight_evict: whether in-flight slots are freed at the next
+        # selection boundary when the trace shows UN_AVL (felix only).
+        # NOTE: the `_legacy_aware` fallback below is dead in practice — the
+        # pydantic field always exists (default=None), so getattr returns None
+        # rather than falling back to _legacy_aware. bool(None)=False, which is
+        # the correct safe default. All YAMLs set proactive_inflight_evict
+        # explicitly after T1, so this path is never reached.
+        _legacy_aware = bool(getattr(hp, "availability_aware", False))
+        self.proactive_inflight_evict: bool = bool(
+            getattr(hp, "proactive_inflight_evict", _legacy_aware)
         )
         self.pending_withheld: dict = {}
         # C.2 send-time withhold ledgers (shared by asyncfl + oort commit loops):
@@ -200,16 +215,19 @@ class AvailabilityMixin:
     # ------------------------------------------------------------------
 
     def get_curr_unavail_trainers(self) -> list:
-        """Trainers in UN_AVL state per oracular trace read at _avail_now().
+        """Trainers in UN_AVL state per trace-read at _avail_now().
 
-        Returns [] when trainer_event_dict is None (gate off) — byte-identical
-        to today's behavior when sim_unavailability=False.
+        Returns [] when trainer_event_dict is None (gate off) or
+        avail_select_filter is False (unaware baselines: oort/fedbuff).
+        Byte-identical to today's behavior when sim_unavailability=False.
 
         Replaces the inlined bisect_right loop formerly duplicated in:
             syncfl/top_aggregator.py:1163
             main_oort_sync_agg.py:298  (wall-time bug now corrected)
         """
         if self.trainer_event_dict is None:
+            return []
+        if not getattr(self, "avail_select_filter", True):
             return []
 
         now = self._avail_now()
@@ -219,20 +237,20 @@ class AvailabilityMixin:
             if state_at(trace, now) == TrainerAvailState.UN_AVL
         ]
         logger.info(
-            f"[ORACULAR] unavail={len(unavail)}/{len(self.trainer_event_dict)} "
+            f"[TRACE_READ] unavail={len(unavail)}/{len(self.trainer_event_dict)} "
             f"@ t={now:.1f}s"
         )
         return unavail
 
     def get_curr_task_ineligible_trainers(self, task: str) -> list:
-        """D.2: UN_AVL + task-type-ineligible trainers per the oracular trace.
+        """D.2: UN_AVL + task-type-ineligible trainers per the trace-read.
 
         Extends get_curr_unavail_trainers with the F3 task-type partition:
         AVL_TRAIN-only trainers are excluded from "eval" dispatch; AVL_EVAL-only
         trainers are excluded from "train" dispatch ("AVL_TRAIN->AVL_EVAL:
         train-pool removal, eval-eligible only"). UN_AVL is excluded from both.
-        Returns [] when trainer_event_dict is None (gate off), matching
-        get_curr_unavail_trainers's byte-identity contract.
+        Returns [] when trainer_event_dict is None (gate off) or
+        avail_select_filter is False (unaware baselines: oort/fedbuff).
 
         Inert (== get_curr_unavail_trainers()) for any task other than "train"/
         "eval", for baselines that never dispatch "eval" (oort: Challenge 8)
@@ -250,6 +268,8 @@ class AvailabilityMixin:
         """
         if self.trainer_event_dict is None:
             return []
+        if not getattr(self, "avail_select_filter", True):
+            return []
         has_eval = getattr(self, "_trace_has_avl_eval", False)
         excluded_state = (
             TrainerAvailState.AVL_EVAL if task == "train"
@@ -264,7 +284,7 @@ class AvailabilityMixin:
             or (excluded_state is not None and state_at(trace, now) == excluded_state)
         ]
         logger.info(
-            f"[ORACULAR] task={task!r} ineligible="
+            f"[TRACE_READ] task={task!r} ineligible="
             f"{len(ineligible)}/{len(self.trainer_event_dict)} @ t={now:.1f}s"
         )
         return ineligible
@@ -666,10 +686,10 @@ class AvailabilityMixin:
 
         Same effect as free_stalled_slot (slot ledger freed + delivery ledger
         registered) — only the trigger differs from C.3. No-op when the gate is
-        off (trainer_event_dict is None) or _availability_aware is False (unaware
-        baselines stay on the C.3 90s path).
+        off (trainer_event_dict is None) or proactive_inflight_evict is False (unaware
+        and aware-at-selection-only baselines stay on the C.3 90s path).
         """
-        if not getattr(self, "_availability_aware", False):
+        if not getattr(self, "proactive_inflight_evict", False):
             return
         if getattr(self, "trainer_event_dict", None) is None:
             return

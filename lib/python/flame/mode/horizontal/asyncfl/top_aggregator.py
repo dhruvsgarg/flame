@@ -653,13 +653,35 @@ class TopAggregator(SyncTopAgg):
                 # wall-sleeping — covers felix and fedbuff asyncfl starvation paths.
                 if self.simulated and self.trainer_event_dict is not None:
                     _nxt = self._next_avail_vclock()
-                    if _nxt is not None and _nxt > self._vclock.now:
+                    _budget = float(
+                        getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
+                    )
+                    if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
                         self._vclock.advance(_nxt)
                         logger.info(
                             f"[SIM_STARVATION] round={self._round} no recv ends; "
                             f"vclock→{_nxt:.1f}"
                         )
+                    else:
+                        # Trace horizon or budget reached — stop instead of spinning.
+                        self._work_done = True
+                        logger.info(
+                            f"[SIM_STARVATION] trace horizon or budget reached at "
+                            f"vclock={self._vclock.now:.1f}s (nxt={_nxt}, "
+                            f"budget={_budget:.0f}s, round={self._round}); stopping run."
+                        )
                 else:
+                    _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
+                    if _max_rt:
+                        _wall_elapsed = time.time() - self.agg_start_time_ts
+                        if _wall_elapsed >= float(_max_rt):
+                            self._work_done = True
+                            logger.info(
+                                f"max_experiment_runtime_s={_max_rt}s reached "
+                                f"(wall_elapsed={_wall_elapsed:.0f}s) at round {self._round}; "
+                                f"stopping run."
+                            )
+                            return
                     time.sleep(0.5)
                 return
         if self.simulated:
@@ -1292,8 +1314,8 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             self._sim_hold_busy_slots(channel)
 
-    def oracular_trainer_avail_check(self, end: str) -> bool:
-        logger.debug("In oracular_trainer_avail_check")
+    def _trace_read_avail_check(self, end: str) -> bool:
+        logger.debug("In _trace_read_avail_check")
 
         picked_trainer_is_available = True
 
@@ -1406,7 +1428,7 @@ class TopAggregator(SyncTopAgg):
         if self.track_trainer_avail["enabled"] == "False":
             return True
         elif self.track_trainer_avail["type"] == "ORACULAR":
-            picked_trainer_is_available = self.oracular_trainer_avail_check(end)
+            picked_trainer_is_available = self._trace_read_avail_check(end)
         elif self.track_trainer_avail["type"] == "HEARTBEAT":
             picked_trainer_is_available = self.hearbeat_trainer_avail_check(end)
 
@@ -1493,7 +1515,7 @@ class TopAggregator(SyncTopAgg):
         # replacement is selectable this round (no-op when the gate is off).
         if self.simulated:
             self._sim_abandon_stalled(channel)
-            # D.1: for availability_aware baselines, proactively free any
+            # D.1: for proactive_inflight_evict baselines (felix only), free any
             # in-flight slot the trace now shows as UN_AVL — no 90s wait.
             self._sim_evict_unavail_inflight(channel)
 

@@ -2673,6 +2673,92 @@ def eligible_pool_reduction_parity(real: dict, sim: dict,
             "rel_diff": round(rel, 3), "tol_rel": tol_rel}
 
 
+def state_timeline_agreement(real: dict, sim: dict,
+                              n_bins: int = 20,
+                              tol: float = 0.95) -> dict:
+    """A5 [DIST]: per-(trainer, t) avl_state agreement between real and sim.
+
+    Real and sim both read availability from the SAME trace, so at any
+    normalised time t ∈ [0, 1], a trainer's avl_state should be identical in
+    both runs. Forward-fills the per-trainer series (from C.6.1 avl_state on
+    selection events) at n_bins equally-spaced normalised time points, compares
+    the result per (trainer, bin), and reports match_frac.
+
+    Time is normalised within each mode (t / run_span) so wall-time vs vclock
+    differences are removed before comparison. SKIP if either mode has no
+    per-trainer avl_state, or if the two modes share no common trainers.
+    PASS when match_frac >= tol (default 0.95).
+    """
+    r_series = build_trainer_state_series(real["selection_train"], mode="real")
+    s_series = build_trainer_state_series(sim["selection_train"], mode="sim")
+    if not r_series or not s_series:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no per-trainer avl_state in selection telemetry "
+                        "(gate off, or predates C.6.1)"}
+
+    r_span = run_span(r_series)
+    s_span = run_span(s_series)
+    if r_span <= 0 or s_span <= 0:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "degenerate run span (zero duration)"}
+
+    common = sorted(set(r_series) & set(s_series))
+    if not common:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no common trainers between real and sim series"}
+
+    def _state_at_frac(pts, frac, span):
+        """Forward-fill: trainer state at absolute time frac*span."""
+        target = frac * span
+        state = None
+        for t, s in pts:
+            if t <= target:
+                state = s
+            else:
+                break
+        return state
+
+    bin_fracs = [(b + 0.5) / n_bins for b in range(n_bins)]
+    matched = 0
+    total = 0
+    mismatched: list = []
+
+    for tid in common:
+        r_pts, s_pts = r_series[tid], s_series[tid]
+        if not r_pts or not s_pts:
+            continue
+        for frac in bin_fracs:
+            rs = _state_at_frac(r_pts, frac, r_span)
+            ss = _state_at_frac(s_pts, frac, s_span)
+            if rs is None or ss is None:
+                continue
+            total += 1
+            if rs == ss:
+                matched += 1
+            elif len(mismatched) < 5:
+                mismatched.append({
+                    "trainer": short(tid),
+                    "frac": round(frac, 2),
+                    "real": rs, "sim": ss,
+                })
+
+    if total == 0:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no (trainer, bin) pairs with data in both modes"}
+
+    match_frac = matched / total
+    return {
+        "ok": match_frac >= tol,
+        "tier": "DIST",
+        "match_frac": round(match_frac, 4),
+        "matched": matched,
+        "total": total,
+        "tol": tol,
+        "n_bins": n_bins,
+        "n_trainers": len(common),
+        "mismatched_examples": mismatched,
+    }
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.4x  Training input control & per-phase split  (T2 / T_*)  — Stage 4
 # ═══════════════════════════════════════════════════════════════════
@@ -2857,6 +2943,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg)
     results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
     results["starvation_advance"] = starvation_advance_parity(real_agg, sim_agg)
+    results["state_timeline_agreement"] = state_timeline_agreement(real_agg, sim_agg)
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)

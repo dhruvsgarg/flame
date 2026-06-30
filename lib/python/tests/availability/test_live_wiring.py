@@ -375,9 +375,9 @@ def test_abandon_gate_off_is_noop():
 
 
 def _harness_aware(now, ends=("t1",), selector_cls=_OortSelector):
-    """Harness with availability_aware=True, vclock at `now`."""
+    """Harness with proactive_inflight_evict=True, vclock at `now`."""
     h = _Harness({"t1": _DOWN, "t2": _DOWN}, now=now)
-    h._availability_aware = True
+    h.proactive_inflight_evict = True
     sel = selector_cls()
     for e in ends:
         sel.add(e)
@@ -429,9 +429,9 @@ def test_evict_skips_already_withheld():
 
 
 def test_evict_noop_when_awareness_false():
-    # _availability_aware=False → falls through to 90s abandon; evict is inert.
+    # proactive_inflight_evict=False → falls through to 90s abandon; evict is inert.
     h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
-    h._availability_aware = False
+    h.proactive_inflight_evict = False
     h._sim_evict_unavail_inflight(ch)
     assert sel.holds("t1")
     assert h.pending_withheld == {}
@@ -439,7 +439,7 @@ def test_evict_noop_when_awareness_false():
 
 def test_evict_noop_when_gate_off():
     h = _Harness(trainer_event_dict=None, now=150)
-    h._availability_aware = True
+    h.proactive_inflight_evict = True
     sel = _OortSelector(); sel.add("t1")
     ch = _Channel(sel, ["t1"])
     h._sim_evict_unavail_inflight(ch)
@@ -452,7 +452,7 @@ def test_evict_multiple_trainers_partial():
     # Only t1 should be evicted.
     _avl_trace = _trace((0, "AVL_TRAIN"))
     h = _Harness({"t1": _DOWN, "t2": _avl_trace}, now=150)
-    h._availability_aware = True
+    h.proactive_inflight_evict = True
     sel = _OortSelector(); sel.add("t1"); sel.add("t2")
     ch = _Channel(sel, ["t1", "t2"])
     h._sim_evict_unavail_inflight(ch)

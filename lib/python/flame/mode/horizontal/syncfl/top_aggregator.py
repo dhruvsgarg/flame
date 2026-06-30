@@ -952,7 +952,10 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         if num_eligible < _threshold:
             if self.simulated and self.trainer_event_dict is not None:
                 _nxt = self._next_avail_vclock()
-                if _nxt is not None and _nxt > self._vclock.now:
+                _budget = float(
+                    getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
+                )
+                if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
                     self._vclock.advance(_nxt)
                     self._sim_abandon_stalled(channel)
                     curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
@@ -968,11 +971,30 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
                     )
                     self._avail_stamp_end_states(channel)
                     channel.properties["vclock_now"] = self._vclock.now
-                logger.info(
-                    f"[SIM_STARVATION] round={self._round} eligible={num_eligible} "
-                    f"< {_threshold}; vclock→{_nxt}"
-                )
+                    logger.info(
+                        f"[SIM_STARVATION] round={self._round} eligible={num_eligible} "
+                        f"< {_threshold}; vclock→{_nxt}"
+                    )
+                else:
+                    # Trace horizon or budget reached — stop instead of spinning.
+                    self._work_done = True
+                    logger.info(
+                        f"[SIM_STARVATION] trace horizon or budget reached at "
+                        f"vclock={self._vclock.now:.1f}s (nxt={_nxt}, "
+                        f"budget={_budget:.0f}s, round={self._round}); stopping run."
+                    )
             else:
+                _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
+                if _max_rt:
+                    _wall_elapsed = time.time() - self.agg_start_time_ts
+                    if _wall_elapsed >= float(_max_rt):
+                        self._work_done = True
+                        logger.info(
+                            f"max_experiment_runtime_s={_max_rt}s reached "
+                            f"(wall_elapsed={_wall_elapsed:.0f}s) at round {self._round}; "
+                            f"stopping run."
+                        )
+                        return
                 time.sleep(0.5)
             return
 
@@ -1083,7 +1105,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             else:
                 elapsed = time.time() - self.agg_start_time_ts
                 clock_label = "wall"
-            if elapsed > float(_max_rt):
+            if elapsed >= float(_max_rt):
                 logger.info(
                     f"max_experiment_runtime_s={_max_rt}s reached ({clock_label}_elapsed={elapsed:.0f}s) "
                     f"at round {self._round}; stopping run."

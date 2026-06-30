@@ -54,6 +54,7 @@ _SECTIONS = [
         ("Aa   eligible-pool reduction (diag)", "eligible_pool_reduction"),
         ("C.3  abandon_timeout (vclock CTRL)",  "abandon_timeout"),
         ("Fst  starvation_advance (diag)",      "starvation_advance"),
+        ("A5   state_timeline_agreement",         "state_timeline_agreement"),
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
@@ -432,6 +433,15 @@ def _fmt_metric(name: str, res: dict) -> list:
                 f"sim_mean_reduction={res.get('sim_mean_reduction')}  "
                 f"rel_diff={res.get('rel_diff')} (<={res.get('tol_rel')})"
             )
+    elif name == "state_timeline_agreement":
+        if res.get("match_frac") is not None:
+            lines.append(
+                f"         match_frac={res.get('match_frac')} (>={res.get('tol')})  "
+                f"matched={res.get('matched')}/{res.get('total')} bins  "
+                f"n_trainers={res.get('n_trainers')}  n_bins={res.get('n_bins')}"
+            )
+            if res.get("mismatched_examples"):
+                lines.append(f"         mismatch_examples={res.get('mismatched_examples')}")
     elif name == "abandon_timeout":
         if res.get("n_abandon") is not None:
             parts = [f"         n_abandon={res.get('n_abandon')}"]

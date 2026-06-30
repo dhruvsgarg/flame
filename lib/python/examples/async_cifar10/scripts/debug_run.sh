@@ -63,7 +63,7 @@ usage() {
   echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
   echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20]"
   echo ""
-  echo "  --baselines           which baselines to run (any of felix oort refl feddance);"
+  echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff);"
   echo "                        filtered from the parity config, node-agnostic."
   echo "  --mode                which time_mode variant(s) to run for each baseline:"
   echo "                        'sim' (only the simulated run), 'real' (only the real run),"
@@ -87,7 +87,7 @@ usage() {
 TRACE=""  # empty = use whatever is in the parity config (syn_0)
 if [ "${1:-}" = "smoke" ]; then
   SMOKE=1; shift
-  BASELINES="felix oort refl feddance"   # smoke default: validate all
+  BASELINES="felix oort oort_star refl feddance fedbuff"   # smoke default: validate all
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --baselines) BASELINES="$2"; shift 2 ;;
@@ -213,11 +213,14 @@ for e in cfg.get("experiments", []):
             # ORACULAR baselines (oort, refl) already activate via the legacy path.
             if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
                 h["simUnavailability"] = True
-                # felix / oracle are availability-aware (D.1 proactive eviction);
-                # detected by client_notify.enabled="True" in trainer HP.
+                # proactive_inflight_evict is set directly in each experiment's
+                # config_overrides HP (T1 two-axis split); no auto-detection needed
+                # here. The client_notify.enabled check below is always False
+                # (Stage H is future), so proactiveInflightEvict is never set by
+                # this branch — the explicit YAML value is authoritative.
                 t_hp = e.get("trainer", {}).get("hyperparameters", {})
                 if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
-                    h["availabilityAware"] = True
+                    h["proactiveInflightEvict"] = True
         elif "client_notify" in h and isinstance(h["client_notify"], dict):
             h["client_notify"]["trace"] = trace_override
             h["simUnavailability"] = True
