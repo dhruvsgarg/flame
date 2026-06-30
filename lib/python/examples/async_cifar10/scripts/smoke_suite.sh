@@ -59,6 +59,10 @@ STEPS="1,2,3,4,5"
 OUTPUT_DIR="/tmp/smoke_suite_$(date +%Y%m%d_%H%M%S)"
 DRY_RUN=0
 
+# ── Progress counters (set after arg-parse via _compute_total_runs) ───────────
+TOTAL_RUNS=0
+COMPLETED_RUNS=0
+
 # ── Arg parsing ──────────────────────────────────────────────────────────────
 usage() {
   grep '^#' "$0" | grep -v '^#!/' | sed 's/^# \{0,1\}//'
@@ -97,6 +101,27 @@ declare -a RUN_RESULTS=()
 
 _record() {
   RUN_RESULTS+=("${1}|${2}|${3}|${4}|${5}")
+  COMPLETED_RUNS=$(( COMPLETED_RUNS + 1 ))
+}
+
+# ── Total-run count (computed once after arg-parse) ──────────────────────────
+_compute_total_runs() {
+  local total=0
+  local n_all; n_all=$(echo "$ALL_BASELINES" | wc -w)
+  local n_starv; n_starv=$(echo "$STARV_BASELINES" | wc -w)
+  local _s
+  IFS=',' read -ra _sa <<< "$STEPS"
+  for _s in "${_sa[@]}"; do
+    _s="${_s// /}"
+    case "$_s" in
+      1) total=$(( total + 1 )) ;;
+      2) total=$(( total + n_all )) ;;
+      3) total=$(( total + n_all )) ;;
+      4) total=$(( total + 2 * n_all )) ;;
+      5) total=$(( total + 2 * n_starv )) ;;
+    esac
+  done
+  TOTAL_RUNS=$total
 }
 
 # ── Per-run timeout wrapper ───────────────────────────────────────────────────
@@ -164,9 +189,19 @@ _run_baseline() {
 
   local deadline=$(( ts_start + wall_timeout ))
   local timed_out=0
+  local _ela _kill_in _prun _pdone   # ticker temporaries
   while kill -0 "$runner_pid" 2>/dev/null; do
     sleep 5
+    _ela=$(( $(date +%s) - ts_start ))
+    _kill_in=$(( deadline - $(date +%s) )); [[ "$_kill_in" -lt 0 ]] && _kill_in=0
+    _prun=0; [[ "$runtime_s" -gt 0 ]] && _prun=$(( _ela * 100 / runtime_s ))
+    [[ "$_prun" -gt 100 ]] && _prun=100
+    _pdone=0; [[ "$TOTAL_RUNS" -gt 0 ]] && _pdone=$(( COMPLETED_RUNS * 100 / TOTAL_RUNS ))
+    printf '\r  %-52s  %4ds/%-4ds(%3d%%)  kill in %4ds  |  %d/%d done(%d%%)   ' \
+      "[$label]" "$_ela" "$runtime_s" "$_prun" "$_kill_in" \
+      "$COMPLETED_RUNS" "$TOTAL_RUNS" "$_pdone" >&2
     if [[ "$(date +%s)" -ge "$deadline" ]]; then
+      printf '\n' >&2
       _log "  [$label] TIMEOUT after ${wall_timeout}s — killing process group $runner_pid"
       # SIGTERM first: lets ExperimentRunner._signal_handler call _cleanup()
       # (terminate_all trainers + terminate aggregator). 20s grace lets Python
@@ -180,6 +215,7 @@ _run_baseline() {
       break
     fi
   done
+  printf '\n' >&2
   [[ "$timed_out" == "0" ]] && wait "$runner_pid" 2>/dev/null
   local run_rc=$?
 
@@ -209,9 +245,9 @@ _run_baseline() {
   while IFS= read -r agg_log; do
     [[ -f "$agg_log" ]] || continue
     found_agg_logs+=("$agg_log")
-    stopping=$(( stopping + $(grep -ic "stopping run"       "$agg_log" 2>/dev/null || echo 0) ))
-    ceiling=$((  ceiling  + $(grep -c  "SIM_WALL_CEILING"   "$agg_log" 2>/dev/null || echo 0) ))
-    starv=$((    starv    + $(grep -c  "\[SIM_STARVATION\]" "$agg_log" 2>/dev/null || echo 0) ))
+    stopping=$(( stopping + $(grep -ic "stopping run"       "$agg_log" 2>/dev/null || true) ))
+    ceiling=$((  ceiling  + $(grep -c  "SIM_WALL_CEILING"   "$agg_log" 2>/dev/null || true) ))
+    starv=$((    starv    + $(grep -c  "\[SIM_STARVATION\]" "$agg_log" 2>/dev/null || true) ))
   done < <(find "$EX_DIR/experiments" -name "*_aggregator.log" -newer "$ts_marker" 2>/dev/null)
 
   # Record aggregator log paths in the run dir for easy post-mortem access.
@@ -374,7 +410,8 @@ _final_report() {
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
-_log "Smoke suite started"
+_compute_total_runs
+_log "Smoke suite started  (total runs: $TOTAL_RUNS)"
 _log "  output      : $OUTPUT_DIR"
 _log "  steps       : $STEPS"
 _log "  baselines   : $ALL_BASELINES"

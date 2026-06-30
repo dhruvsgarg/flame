@@ -242,17 +242,16 @@ sim and a mocked-real path, asserting identical state timelines:
 Validates all 6 baselines self-terminate cleanly across syn_0/syn_20/syn_50; new scaffolding (fedbuff,
 oort_star) runs without `ValueError`; B2.0.2 starvation fix holds; no `SIM_WALL_CEILING`.
 
-**Command (6h budget):**
+**Command (6h budget — run inside a tmux session; nohup not needed):**
 ```bash
 cd lib/python/examples/async_cifar10
-nohup bash scripts/smoke_suite.sh \
+bash scripts/smoke_suite.sh \
   --runtime-syn0-s 600 --runtime-syn20-s 900 --runtime-syn50-s 1800 \
   --timeout-buffer-s 300 \
   --steps 1,2,4,5 \
-  --output-dir experiments/smoke_$(date +%Y%m%d_%H%M) \
-  > /tmp/smoke_suite.out 2>&1 &
-echo $!   # monitor: tail -f /tmp/smoke_suite.out
-          # report:  cat experiments/smoke_*/report.txt
+  --output-dir experiments/smoke_$(date +%Y%m%d_%H%M)
+# ticker updates in-place on stderr; suite.log + report.txt written to output-dir
+# report: cat experiments/smoke_*/report.txt
 ```
 
 Step 3 (syn_20 sim) is omitted — step 4 already runs syn_20 sim as its first half, so step 3 is fully redundant.
@@ -281,25 +280,43 @@ Step 3 (syn_20 sim) is omitted — step 4 already runs syn_20 sim as its first h
 Sim speedup (1.5–2×) comes from skipping wall-sleep delays; actual GPU training still runs at real speed.
 Worst case (all 22 FL runs hit wall_timeout + buffer): ~8h — requires every run to stall, not expected.
 
-**Hypothesized outcomes:**
+**Per-run plan — hypothesis + actual result** (fill Actual column after each run):
 
-| Step | Baseline | Prediction | Key risk |
-|------|----------|------------|----------|
-| 1 | all | ✅ PASS (536p/7s) | — |
-| 2 | felix / oort / refl / feddance | ✅ PASS | syn_0 = always-avail; avail logic not exercised |
-| 2 | fedbuff | 🟡 LIKELY PASS | first live run; lrDecay HP must survive merge |
-| 2 | oort_star | 🟠 UNCERTAIN | first live run; YAML scaffold may miss a required field |
-| 4 | felix / refl / feddance sim+real | ✅ PASS | well-validated at syn_20 |
-| 4 | oort sim+real | 🟡 LIKELY PASS | unaware; tested at small n; n=300 adds scale only |
-| 4 | fedbuff sim+real | 🟠 UNCERTAIN | FedBuff selector + avail events untested live |
-| 4 | oort_star sim+real | 🟠 UNCERTAIN | aware-sync + oort selector combo untested live |
-| 5 | feddance + oort both | ⚠️ see note | starvation NOT expected at n=300 (see below) |
+> Step 5 starvation note: syn_50 peaks at ~43 % unavail → eligible ≈ 171 at n=300, well above the
+> selection threshold for both feddance (agg_goal=10) and oort. `[SIM_STARVATION]` events will likely
+> be **absent** — this is **correct**, not a failure. Pass criteria for step 5: `"stopping run"` present +
+> no `SIM_WALL_CEILING`. B2.0.2 regression is covered by unit tests and oort n=25 smoke; step 5 at n=300
+> tests clean self-termination under high unavailability, not starvation.
 
-**⚠️ Step 5 starvation note.** syn_50 peaks at ~43 % unavail → eligible ≈ 171 for feddance (agg_goal=10)
-and ~171 for oort, both far above the selection threshold at n=300. `[SIM_STARVATION]` events will likely
-be **absent** — this is **correct** at n=300, not a failure. Step 5 pass criteria: `"stopping run"` present
-+ no `SIM_WALL_CEILING`. B2.0.2 starvation regression is covered by unit tests and by oort n=25 smoke;
-the step-5 purpose at n=300 is clean self-termination under high unavailability, not starvation validation.
+| # | Label | Step | Baseline | Trace | Mode | Runtime | Hypothesis | Key risk | Actual |
+|---|-------|------|----------|-------|------|---------|------------|----------|--------|
+| 1 | `s1_pytest` | 1 | — | — | — | ~10 min | ✅ PASS 536p/7s | — | ✅ PASS (536p/7s, 58s) |
+| 2 | `s2_felix_syn_0_sim` | 2 | felix | syn_0 | sim | 600s | ✅ PASS | syn_0 always-avail; avail logic not exercised | ran, exit=0 (unrecorded — grep bug¹) |
+| 3 | `s2_oort_syn_0_sim` | 2 | oort | syn_0 | sim | 600s | ✅ PASS | — | NOT RUN (campaign aborted by grep bug¹) |
+| 4 | `s2_oort_star_syn_0_sim` | 2 | oort_star | syn_0 | sim | 600s | 🟠 UNCERTAIN | first live run; YAML scaffold may miss required field | NOT RUN |
+| 5 | `s2_refl_syn_0_sim` | 2 | refl | syn_0 | sim | 600s | ✅ PASS | — | NOT RUN |
+| 6 | `s2_feddance_syn_0_sim` | 2 | feddance | syn_0 | sim | 600s | ✅ PASS | — | NOT RUN |
+| 7 | `s2_fedbuff_syn_0_sim` | 2 | fedbuff | syn_0 | sim | 600s | 🟡 LIKELY PASS | first live run; lrDecay HP must survive merge | NOT RUN |
+| 8 | `s4_felix_syn_20_sim` | 4 | felix | syn_20 | sim | 900s | ✅ PASS | well-validated at syn_20 | NOT RUN |
+| 9 | `s4_felix_syn_20_real` | 4 | felix | syn_20 | real | 900s | ✅ PASS | — | NOT RUN |
+| 10 | `s4_oort_syn_20_sim` | 4 | oort | syn_20 | sim | 900s | 🟡 LIKELY PASS | unaware; tested at small n; n=300 adds scale only | NOT RUN |
+| 11 | `s4_oort_syn_20_real` | 4 | oort | syn_20 | real | 900s | 🟡 LIKELY PASS | — | NOT RUN |
+| 12 | `s4_oort_star_syn_20_sim` | 4 | oort_star | syn_20 | sim | 900s | 🟠 UNCERTAIN | aware-sync + oort selector combo untested live | NOT RUN |
+| 13 | `s4_oort_star_syn_20_real` | 4 | oort_star | syn_20 | real | 900s | 🟠 UNCERTAIN | — | NOT RUN |
+| 14 | `s4_refl_syn_20_sim` | 4 | refl | syn_20 | sim | 900s | ✅ PASS | — | NOT RUN |
+| 15 | `s4_refl_syn_20_real` | 4 | refl | syn_20 | real | 900s | ✅ PASS | — | NOT RUN |
+| 16 | `s4_feddance_syn_20_sim` | 4 | feddance | syn_20 | sim | 900s | ✅ PASS | — | NOT RUN |
+| 17 | `s4_feddance_syn_20_real` | 4 | feddance | syn_20 | real | 900s | ✅ PASS | — | NOT RUN |
+| 18 | `s4_fedbuff_syn_20_sim` | 4 | fedbuff | syn_20 | sim | 900s | 🟠 UNCERTAIN | FedBuff selector + avail events untested live | NOT RUN |
+| 19 | `s4_fedbuff_syn_20_real` | 4 | fedbuff | syn_20 | real | 900s | 🟠 UNCERTAIN | — | NOT RUN |
+| 20 | `s5_feddance_syn_50_sim` | 5 | feddance | syn_50 | sim | 1800s | ✅ PASS (no starvation at n=300) | self-terminate cleanly; no SIM_WALL_CEILING | NOT RUN |
+| 21 | `s5_feddance_syn_50_real` | 5 | feddance | syn_50 | real | 1800s | ✅ PASS | 1800s budget may be tight for n=300 join ramp | NOT RUN |
+| 22 | `s5_oort_syn_50_sim` | 5 | oort | syn_50 | sim | 1800s | ✅ PASS (no starvation at n=300) | — | NOT RUN |
+| 23 | `s5_oort_syn_50_real` | 5 | oort | syn_50 | real | 1800s | ✅ PASS | — | NOT RUN |
+
+¹ **grep bug (fixed before re-run):** `grep -c` always prints a count even when 0 matches and exits 1; the `|| echo 0`
+fallback then also fired, producing `0\n0`; arithmetic `$(( ceiling + 0\n0 ))` crashed `_run_baseline` before
+`_record` was called. Fixed in `scripts/smoke_suite.sh` (lines 212–214): `|| echo 0` → `|| true`.
 
 **Failure watch-list:**
 
