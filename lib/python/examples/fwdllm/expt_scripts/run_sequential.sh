@@ -28,10 +28,13 @@
 #   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
-#   --only           comma-separated subset of run names to execute, e.g.
-#                     --only fwdllm_plus_n10_smoke,fluxtune_n10_smoke
-#                     (default: all three -- fwdllm_n10_smoke,
-#                     fwdllm_plus_n10_smoke, fluxtune_n10_smoke)
+#   --only           comma-separated subset of baselines to execute, e.g.
+#                     --only fwdllm_plus,fluxtune
+#                     (default: all three -- fwdllm, fwdllm_plus, fluxtune)
+#                     These are plain baseline names, independent of
+#                     --num-trainers -- the "n10" in each source YAML's
+#                     filename is just that file's own default trainer
+#                     count, not part of the run's identity.
 set -u
 
 # --- robust conda activation (same pattern as scripts/debug_run.sh) ---
@@ -91,10 +94,14 @@ mkdir -p "$LOGDIR"
 # num_trainers / selector c+k+minInitialTrainers+agg_goal, in a copy of the
 # YAML rather than the original -- keeps the checked-in smoke configs stable
 # while letting this script's caller pick the scale per invocation.
+# run_key is the plain baseline name (e.g. "fwdllm_plus", from RUNS/--only
+# below), NOT the source YAML's own "n10"-suffixed name -- it's the basis
+# for exp["name"], so the run directory it produces is never stale/wrong
+# regardless of what naming convention the source YAML file happens to use.
 patch_yaml() {
-  python - "$1" "$2" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" <<'PY'
-import re, sys, yaml
-src, dst, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c, sel_k = sys.argv[1:9]
+  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" <<'PY'
+import sys, yaml
+src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c, sel_k = sys.argv[1:10]
 cfg = yaml.safe_load(open(src))
 for exp in cfg.get("experiments", []):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
@@ -102,14 +109,14 @@ for exp in cfg.get("experiments", []):
     h["max_data_id_progress"] = int(max_data_id)
     if num_trainers:
         exp["trainer"]["num_trainers"] = int(num_trainers)
-        # exp["name"] feeds the run directory name (run_<ts>_<name>) and is
-        # otherwise just copied verbatim from the YAML's checked-in "n10"
-        # default -- left alone, a 100-trainer run's directory would still
-        # be named "..._n10_smoke", which is what made run dirs misleading
-        # to browse after the fact. Rewrite the nNN token to match reality.
-        new_name = re.sub(r"_n\d+_", f"_n{num_trainers}_", exp["name"])
-        if new_name != exp["name"]:
-            exp["name"] = new_name
+        # exp["name"] feeds the run directory name (run_<ts>_<name>).
+        # Derive it from run_key (this run's plain baseline identity) and
+        # the actual trainer count, instead of copying the source YAML's
+        # own checked-in name verbatim -- that name encodes only that
+        # file's own default trainer count (10), so left alone, a
+        # 100-trainer run's directory would stay misleadingly named
+        # "..._n10_smoke".
+        exp["name"] = f"{run_key}_n{num_trainers}_smoke"
     if num_gpus:
         exp["execution"]["num_gpus"] = int(num_gpus)
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
@@ -125,10 +132,13 @@ yaml.safe_dump(cfg, open(dst, "w"), sort_keys=False)
 PY
 }
 
+# Keys are plain baseline names -- independent of --num-trainers and of
+# whatever scale is baked into each source YAML's own filename/checked-in
+# default. The mapping to the actual YAML file lives only here.
 ALL_RUNS=(
-  "fwdllm_n10_smoke:$SCRIPT_DIR/fwdllm_n10_smoke.yaml"
-  "fwdllm_plus_n10_smoke:$SCRIPT_DIR/fwdllm_plus_n10_smoke.yaml"
-  "fluxtune_n10_smoke:$SCRIPT_DIR/fluxtune_n10_smoke.yaml"
+  "fwdllm:$SCRIPT_DIR/fwdllm_n10_smoke.yaml"
+  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n10_smoke.yaml"
+  "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml"
 )
 
 if [ -n "$ONLY" ]; then
@@ -172,7 +182,7 @@ for entry in "${RUNS[@]}"; do
   src_cfg="${entry#*:}"
   cfg="$LOGDIR/${name}.yaml"
   log="$LOGDIR/${name}.out"
-  patch_yaml "$src_cfg" "$cfg"
+  patch_yaml "$src_cfg" "$cfg" "$name"
 
   start_ts=$(date +%s)
   python -m flame.launch.run_experiment "$cfg" --example-dir "$EXAMPLE_DIR" \
