@@ -32,6 +32,7 @@
 #   --runtime-syn20-s N    Budget for syn_20 runs                  [default: 1800]
 #   --runtime-syn50-s N    Budget for syn_50 starvation runs       [default: 3600]
 #   --timeout-buffer-s N   Extra wall-sec before force-kill        [default: 600]
+#   --kill-settle-s N      GPU memory settle wait after force-kill [default: 20]
 #   --steps LIST           Comma-separated steps to run (1–5)      [default: 1,2,3,4,5]
 #   --baselines NAMES      Space-separated baseline list (steps 2–4) [default: all 6]
 #   --starvation-baselines NAMES  Baselines for step 5            [default: feddance oort]
@@ -51,6 +52,7 @@ RUNTIME_SYN0_S=900
 RUNTIME_SYN20_S=1800
 RUNTIME_SYN50_S=3600
 TIMEOUT_BUFFER_S=600
+KILL_SETTLE_S=20       # GPU settle wait (seconds) after a force-killed run
 ALL_BASELINES="felix oort oort_star refl feddance fedbuff"
 STARV_BASELINES="feddance oort"
 STEPS="1,2,3,4,5"
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --runtime-syn20-s)      RUNTIME_SYN20_S="$2";   shift 2 ;;
     --runtime-syn50-s)      RUNTIME_SYN50_S="$2";   shift 2 ;;
     --timeout-buffer-s)     TIMEOUT_BUFFER_S="$2";  shift 2 ;;
+    --kill-settle-s)        KILL_SETTLE_S="$2";     shift 2 ;;
     --steps)                STEPS="$2";             shift 2 ;;
     --baselines)            ALL_BASELINES="$2";     shift 2 ;;
     --starvation-baselines) STARV_BASELINES="$2";   shift 2 ;;
@@ -99,10 +102,30 @@ _record() {
 # ── Per-run timeout wrapper ───────────────────────────────────────────────────
 # _run_baseline <label> <runtime_s> [debug_run_args...]
 #
-# Launches debug_run.sh in a new session (setsid) so the entire process tree
-# (launcher + 300 trainers) is in one killable group.  Kills on timeout via
-# SIGTERM → 20s grace → SIGKILL.  Isolates each run's Python output into
-# <output-dir>/runs/<label>/debug_run.out via FLAME_LOGDIR.
+# Process tree (one per invocation):
+#   smoke_suite.sh
+#   └─ bash debug_run.sh          ← PGID = runner_pid (via set -m)
+#      └─ python run_experiment    ← inherits PGID (plain Popen, no setsid)
+#         ├─ python aggregator/pytorch/main_*.py   ← inherits PGID
+#         └─ python trainer/pytorch/main.py × 300  ← inherits PGID
+#
+# Termination (timeout path):
+#   1. kill -TERM -$runner_pid  → SIGTERM to whole group simultaneously.
+#      ExperimentRunner._signal_handler fires on the runner → _cleanup()
+#      (terminate_all trainers + terminate aggregator). Group members also
+#      receive SIGTERM directly, so cleanup is redundant but harmless.
+#      20s grace: gives Python time to flush files and release MQTT connections.
+#   2. kill -KILL -$runner_pid  → SIGKILL to any survivors (hung GPU op,
+#      stuck MQTT recv). OS reclaims GPU memory immediately after.
+#   3. Post-kill sweep (this script): pkill the trainer/aggregator patterns
+#      in case any process escaped the group (edge case). Then sleep
+#      KILL_SETTLE_S to let GPU memory drain before the next run allocates.
+#      Mirrors run_experiment_batch's _sweep_stragglers(), which is killed
+#      mid-execution during a hard timeout.
+#
+# Grep checks scan experiments/run_*/*_aggregator.log (NOT debug_run.out).
+# AggregatorSpawner redirects the aggregator subprocess's stdout/stderr to
+# that dedicated file; debug_run.out is only the runner's own print()s.
 #
 # Returns 0 (PASS), 1 (FAIL/ERROR), 124 (TIMEOUT).
 _run_baseline() {
@@ -120,6 +143,10 @@ _run_baseline() {
   fi
 
   local ts_start; ts_start=$(date +%s)
+  # Marker for finding experiment dirs (and their aggregator logs) created
+  # during this run. Touch before launch so any dir created after belongs here.
+  local ts_marker="$run_dir/.ts_start"
+  touch "$ts_marker"
 
   # set -m (job control) forces bash to assign PGID = runner_pid to the
   # background job regardless of whether the suite is running interactively
@@ -141,27 +168,55 @@ _run_baseline() {
     sleep 5
     if [[ "$(date +%s)" -ge "$deadline" ]]; then
       _log "  [$label] TIMEOUT after ${wall_timeout}s — killing process group $runner_pid"
+      # SIGTERM first: lets ExperimentRunner._signal_handler call _cleanup()
+      # (terminate_all trainers + terminate aggregator). 20s grace lets Python
+      # flush open files and release MQTT connections before the hard kill.
       kill -TERM -"$runner_pid" 2>/dev/null || true
       sleep 20
+      # SIGKILL for anything that survived (hung GPU op, stuck MQTT recv).
       kill -KILL -"$runner_pid" 2>/dev/null || true
+      wait "$runner_pid" 2>/dev/null
       timed_out=1
       break
     fi
   done
-  wait "$runner_pid" 2>/dev/null
+  [[ "$timed_out" == "0" ]] && wait "$runner_pid" 2>/dev/null
   local run_rc=$?
+
+  # ── Post-kill cleanup ─────────────────────────────────────────────────────
+  # When SIGKILL fires, run_experiment_batch's finally block (_sweep_stragglers)
+  # is in the killed group and may not complete. Replicate it here: hard-kill
+  # any surviving trainer/aggregator processes and wait for GPU memory to drain
+  # so the next run starts from a clean slate.
+  if [[ "$timed_out" == "1" ]]; then
+    _log "  [$label] post-kill sweep: clearing straggler trainer/aggregator processes"
+    pkill -9 -f "trainer/pytorch/main.py"  2>/dev/null || true
+    pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
+    _log "  [$label] waiting ${KILL_SETTLE_S}s for GPU memory to drain before next run"
+    sleep "$KILL_SETTLE_S"
+  fi
+
   local elapsed=$(( $(date +%s) - ts_start ))
 
-  # ── Grep checks on the Python aggregator output ───────────────────────────
-  # debug_run.sh writes Python output to $FLAME_LOGDIR/debug_run.out via
-  # run_node(). All logger.info messages (stopping run, SIM_WALL_CEILING,
-  # SIM_STARVATION) appear in that file.
-  local agg_log="$run_dir/debug_run.out"
+  # ── Grep checks: scan the aggregator's dedicated log file ─────────────────
+  # AggregatorSpawner redirects the aggregator subprocess's stdout/stderr to
+  #   experiments/run_<ts>_<name>/<prefix>_aggregator.log
+  # NOT to $FLAME_LOGDIR/debug_run.out (that file is only run_experiment.py's
+  # own print()s — high-level orchestration, not FL logic messages).
+  # Scan all aggregator logs created after ts_marker (handles batches of > 1).
   local stopping=0 ceiling=0 starv=0
-  if [[ -f "$agg_log" ]]; then
-    stopping=$(grep -ic "stopping run"    "$agg_log" 2>/dev/null || echo 0)
-    ceiling=$( grep -c  "SIM_WALL_CEILING" "$agg_log" 2>/dev/null || echo 0)
-    starv=$(   grep -c  "\[SIM_STARVATION\]" "$agg_log" 2>/dev/null || echo 0)
+  local found_agg_logs=()
+  while IFS= read -r agg_log; do
+    [[ -f "$agg_log" ]] || continue
+    found_agg_logs+=("$agg_log")
+    stopping=$(( stopping + $(grep -ic "stopping run"       "$agg_log" 2>/dev/null || echo 0) ))
+    ceiling=$((  ceiling  + $(grep -c  "SIM_WALL_CEILING"   "$agg_log" 2>/dev/null || echo 0) ))
+    starv=$((    starv    + $(grep -c  "\[SIM_STARVATION\]" "$agg_log" 2>/dev/null || echo 0) ))
+  done < <(find "$EX_DIR/experiments" -name "*_aggregator.log" -newer "$ts_marker" 2>/dev/null)
+
+  # Record aggregator log paths in the run dir for easy post-mortem access.
+  if [[ ${#found_agg_logs[@]} -gt 0 ]]; then
+    printf '%s\n' "${found_agg_logs[@]}" > "$run_dir/agg_logs.txt"
   fi
 
   # ── Classify ─────────────────────────────────────────────────────────────
@@ -266,8 +321,8 @@ _final_report() {
     printf "  Generated  : %s\n"  "$(date '+%F %T')"
     printf "  Duration   : %ds\n" "$(( $(date +%s) - SUITE_START ))"
     printf "  Output     : %s\n"  "$OUTPUT_DIR"
-    printf "  Runtimes   : syn_0=%ss  syn_20=%ss  syn_50=%ss  buffer=%ss\n" \
-      "$RUNTIME_SYN0_S" "$RUNTIME_SYN20_S" "$RUNTIME_SYN50_S" "$TIMEOUT_BUFFER_S"
+    printf "  Runtimes   : syn_0=%ss  syn_20=%ss  syn_50=%ss  buffer=%ss  kill_settle=%ss\n" \
+      "$RUNTIME_SYN0_S" "$RUNTIME_SYN20_S" "$RUNTIME_SYN50_S" "$TIMEOUT_BUFFER_S" "$KILL_SETTLE_S"
     echo "$divider"
     echo ""
     printf "%-48s  %-20s  %8s  %9s  %11s\n" \
@@ -302,8 +357,12 @@ _final_report() {
       echo "Runs needing investigation:"
       printf '%s\n' "${bad[@]}"
       echo ""
-      echo "Logs:  $OUTPUT_DIR/runs/<label>/debug_run.out  (Python agg output)"
-      echo "       $OUTPUT_DIR/runs/<label>/shell.log       (debug_run.sh output)"
+      echo "Logs:  <label>/shell.log       — debug_run.sh + run_experiment.py stdout"
+      echo "       <label>/debug_run.out   — run_experiment.py stdout (FL orchestration)"
+      echo "       <label>/agg_logs.txt    — paths to aggregator log(s) for this run"
+      echo "       (aggregator logs live in experiments/run_*/..._aggregator.log)"
+      echo "       (grep 'stopping run'/'SIM_WALL_CEILING' in the aggregator log)"
+      echo "  All under: $OUTPUT_DIR/runs/"
     else
       echo "All runs clean."
     fi
@@ -320,7 +379,7 @@ _log "  output      : $OUTPUT_DIR"
 _log "  steps       : $STEPS"
 _log "  baselines   : $ALL_BASELINES"
 _log "  starvation  : $STARV_BASELINES"
-_log "  runtimes    : syn_0=${RUNTIME_SYN0_S}s  syn_20=${RUNTIME_SYN20_S}s  syn_50=${RUNTIME_SYN50_S}s  buffer=${TIMEOUT_BUFFER_S}s"
+_log "  runtimes    : syn_0=${RUNTIME_SYN0_S}s  syn_20=${RUNTIME_SYN20_S}s  syn_50=${RUNTIME_SYN50_S}s  buffer=${TIMEOUT_BUFFER_S}s  kill_settle=${KILL_SETTLE_S}s"
 
 IFS=',' read -ra _steps_arr <<< "$STEPS"
 for s in "${_steps_arr[@]}"; do
