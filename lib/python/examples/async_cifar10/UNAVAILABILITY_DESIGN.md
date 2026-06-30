@@ -3,434 +3,328 @@
 ## Preamble — what this is, what's done, how to verify (read first)
 
 **Goal.** Model client *unavailability* (devices dropping offline mid-training) in the FLAME FL
-simulator such that a fast **simulated** run (virtual clock, no real sleeps) reproduces what a
-**real** run (wall-clock, MQTT, true delays) does — i.e. **sim/real parity** — for every baseline,
-with the feature **config-gated and default-OFF** (byte-identical to today when off).
+simulator so a fast **simulated** run (virtual clock, no real sleeps) reproduces what a **real** run
+(wall-clock, MQTT, true delays) does — **sim/real parity** — for every baseline, with the feature
+**config-gated and default-OFF** (byte-identical to today when off).
 
-**What was built (v1).** A shared availability substrate driven by a per-trainer **trace** the
-aggregator reads (`trainer_event_dict`), mixed into all four `TopAggregator`s via `AvailabilityMixin`:
-- **Send-time gate, deliver-late-stale.** A trainer mid-flight that goes unavailable *keeps computing*;
-  its upload is gated at send-time (real) / buffered to `delivery_ts = max(sct, next_avail)` (sim) and
+**What was built (v1).** A shared availability substrate (`flame/availability/trace.py` +
+`AvailabilityMixin`) mixed into the syncfl base and inherited by asyncfl, so all baselines share one
+trace-read effect path:
+- **Send-time gate, deliver-late-stale.** A trainer that goes UN_AVL mid-flight *keeps computing*; its
+  upload is gated at send-time (real) / buffered to `delivery_ts = max(sct, next_avail)` (sim) and
   committed later as a stale update. Nothing is cancelled or dropped.
 - **Two ledgers, never conflated.** Slot ledger (90 s vclock *abandon* frees the in-flight slot) +
   delivery ledger (`pending_withheld[end]=delivery_ts`, commits through the existing staleness gate).
-- **Proactive eviction** for the aware baseline (felix): free a slot the trace shows UN_AVL at the next
-  selection boundary, no 90 s wait.
+- **Proactive in-flight eviction** — **felix only** (the one fully-aware baseline): frees a slot the
+  trace shows UN_AVL at the next selection boundary, no 90 s wait.
 - **Starvation / vclock-advance under scarcity.** When the eligible pool is too small to start a round,
-  sim advances the vclock to the next availability transition instead of spinning.
+  sim advances the vclock to the next availability transition instead of spinning. **⚠ BUG B2.0.2 open
+  — see Status.**
 - **Parity ladder** (`scripts/parity/`) — availability rungs A1/A3/A4/A4dur, withheld_delivery,
-  abandon_timeout, starvation_advance, eligible_pool_reduction — on top of the existing clock/selector rungs.
+  abandon_timeout, starvation_advance, eligible_pool_reduction.
 
-**Baselines covered.** `felix` (aware, async), `oort` (unaware, async), `feddance` + `refl`
-(unaware, **sync**). Async vs sync differ in *slot-free timing* only; the knowledge model is trace-read
-for all (v1 keeps `client_notify` OFF — message-transport is the future Stage H).
+**Two orthogonal axes per baseline (keep separate — see Baseline matrix below).**
+1. **Knowledge at selection** (`avail_select_filter`): does the selector read the trace to avoid
+   *selecting* trainers currently UN_AVL? aware = yes, unaware = select blind.
+2. **In-flight slot-free timing** (`proactive_inflight_evict`): when a *dispatched* trainer goes UN_AVL
+   mid-round, free its slot at the next boundary (proactive, felix only) or wait the 90 s vclock abandon
+   (reactive-90s, everyone else). Aware-at-selection ≠ in-flight eviction.
+
+The knowledge *model* (how the agg learns state) is **trace-read** for all v1 baselines; message-transport
+(`client_notify`) and predictive models are Stage H.
 
 **Hardest parts (where the bodies are buried).**
 1. **A3 time-base CONTROL** — sim vclock and real wall must share one origin (`agg_start`); every other
-   availability rung is meaningless until A3 passes. It is a *hard gate*.
-2. **Two-ledger discipline** — ordering withheld commits by `delivery_ts`, never `sct` (past-dating bug).
-3. **Empty per-task pool corrupts shared `selected_ends`** (Challenge 13) — a silent hang; the cleanup
-   must key off the *connected* pool, not the availability-filtered one.
-4. **Sync vs async starvation threshold** (Challenge 15) — async subtracts in-flight, sync does not; the
-   same scenario starves differently. Scenario design (cohort size vs unavailability %) is itself a trap:
-   too small ⇒ *perpetual* starvation (degenerate), too large ⇒ never starves.
-5. **Sim/real symmetry of budget consumption under scarcity** — *currently broken in real mode*, see Status.
+   availability rung is gated on A3. Hard gate.
+2. **Two-ledger discipline** — order withheld commits by `delivery_ts`, never `sct` (past-dating bug).
+3. **Empty per-task pool corrupts shared `selected_ends`** (Challenge 13) — silent hang; cleanup must key
+   off the *connected* pool, not the availability-filtered one.
+4. **Per-baseline in-flight accounting** (Challenge 15) — in-flight is NOT a constant: oort over-selects
+   (overcommitment), async holds > agg_goal at high concurrency, sync-FedAvg clears each round. Starvation
+   threshold and scenario sizing must be derived per baseline.
+5. **Starvation must self-terminate** — under perpetual scarcity at the trace end-horizon the sim spins
+   without advancing the budget (**BUG B2.0.2**, found at feddance n=18).
 
-**What we run, and how to verify correctness (real AND sim).**
-1. **Regression first:** `syn_0` (always-available) must be **byte-identical** with the gate ON vs OFF.
-2. **Unit tests:** `cd lib/python && conda run -n dg_flame python -m pytest tests/` (456 pass / 7 skip)
-   + `examples/async_cifar10 && conda run -n dg_flame python -m pytest scripts/parity/test_ladder.py` (24).
-   Must be 0 failures.
-3. **Smoke a baseline in BOTH modes:**
-   `scripts/debug_run.sh --baselines <b> --mode both --runtime-s 1800 --trace <syn_20|syn_50> --num-trainers <n>`.
-4. **Parity check:** `python -m scripts.parity.cli --batch --experiments-dir experiments --baselines <b> --agg-goal <g>`.
-   The report prints a **ROOT-CAUSE** (lowest broken rung with passing upstreams). Read A3 first; if A3
-   FAILs, ignore A1/A2/A4 (they are gated). Mechanism rungs: A1 (composition), A2 (eligibility), A4/A4dur
-   (duty-cycle), withheld_delivery, abandon_timeout, starvation_advance.
-5. **Per-mode sanity (independent of parity):**
-   - *sim* agg log: `[SIM_STARVATION]` only under genuine scarcity, `[VCLOCK_PROGRESS]` advancing, and the
-     run **self-stops** at `max_experiment_runtime_s` (`"stopping run"`).
-   - *real* agg log: withheld-then-delivered (not dropped), `accept_frac` sane, completes **within** the
-     wall budget. **A real run that exceeds the budget or completes 0 rounds is a hang — see Status #1.**
-6. **Training-performance / accuracy** is read from the C-rungs (C1 accuracy, C2 loss) + the accuracy/loss
-   curves emitted by `analyze_run.py` (see `PLOTTING.md`). Parity must hold *before* accuracy numbers are
-   trusted — a diverging clock or eligibility makes the accuracy curve meaningless.
+**How to verify (real AND sim).**
+1. **Regression:** `syn_0` (always-available) byte-identical gate ON vs OFF.
+2. **Unit tests:** `cd lib/python && conda run -n dg_flame python -m pytest tests/` +
+   `examples/async_cifar10 && conda run -n dg_flame python -m pytest scripts/parity/`. 0 failures.
+3. **Smoke:** `scripts/debug_run.sh --baselines <b> --mode both --runtime-s 1800 --trace <syn_20|syn_50> --num-trainers <n>`.
+4. **Parity:** `python -m scripts.parity.cli --batch --experiments-dir experiments --baselines <b> --agg-goal <g>`.
+   Read **A3 first** (CONTROL gate); if A3 FAILs ignore A1/A2/A4. ROOT-CAUSE = lowest broken rung.
+5. **Per-mode sanity:** sim → `[SIM_STARVATION]` only under genuine scarcity, `[VCLOCK_PROGRESS]` advancing,
+   **self-stops** at `max_experiment_runtime_s` (`"stopping run"`) — NOT via `[SIM_WALL_CEILING]`. real →
+   withheld-then-delivered (not dropped), completes within wall budget, `"stopping run"` present.
+6. **Accuracy** (C1/C2) is only trustworthy once parity holds.
 
 ---
 
-## Working agreement (standing instructions — read every session)
+## Working agreement (standing — read every session)
 
-**Implement breadth-first across stages on ONE baseline with short runs; batch the long parity runs at
-the end. Never block forward implementation on a long run.**
-
-1. **Common first, one baseline first.** Land shared/library-level changes once, drive through a single
-   reference baseline — oort/refl for async/unaware, felix only for aware-specific. Don't fan out until it
-   behaves on the reference.
-2. **Short runs to debug, long runs to confirm.** Gate forward work on unit tests + syn_0 byte-identity +
-   shortest syn_20 smoke (~1800s vclock). Long runs confirm; never find first bugs.
-3. **Across stages before across baselines, long runs last.** Stack mechanisms across stages on the reference
-   baseline, then widen to other baselines, then batch longer parity runs. One long run confirms several stages.
-4. **Keep this doc crisp.** Completed stages: mechanism + where it lives + exit met (2–3 lines max). Full
-   detail only for active and next stages. Dead-ends in §9.
+1. **Common first, one baseline first.** Land shared/library changes once, drive a single reference
+   baseline (oort/refl async-vs-sync, felix only for proactive-evict). Don't fan out until it behaves.
+2. **Short runs to debug, long runs to confirm.** Gate on unit tests + syn_0 byte-identity + shortest
+   syn_20 smoke. Long runs confirm; never find first bugs.
+3. **Local deterministic tests before runs.** Prefer a synthetic-trace pytest that exhibits the bug over a
+   long run that hunts for it.
+4. **Keep this doc crisp.** Completed stages: mechanism + where it lives + exit (2–3 lines). Full detail
+   only for active/next. Dead-ends in §6.
 
 ---
 
-## Status (Jun 29 — Batch 2 in progress. ✅ Real-mode recv-barrier hang FIXED; full test suite GREEN; feddance n≈20 syn_50 ready to run)
+## Baseline matrix (CANONICAL — supersedes scattered categorization)
 
-**A/B/C/C.6/D ✅ CONFIRMED syn_20. E ✅ CONFIRMED syn_20. F.2 ✅ CODE-COMPLETE. syn_0 ✅.
-oort n=25 syn_50 1800s ✅ CONFIRMED (starvation fires). Batch 2 B2.0 ✅ (cohort-floor guardrail + Challenge 13 root-fix shipped; the 3 scoped pre-ramp fixes were all non-issues — see B2.0).
-✅ Tests 100% green: 456 passed / 0 failed / 7 skipped + parity ladder 24/24 (the 7 long-standing fixture failures in test_sync_sim_ordering / test_sim_barrier are now fixed — see B2.0.1 Verification).**
+| baseline | sync/async | agg base / entry | knowledge @ selection (`avail_select_filter`) | in-flight slot-free (`proactive_inflight_evict`) | config-gate |
+|---|---|---|---|---|---|
+| **felix** | **async** | `asyncfl` (← syncfl) / `main_asyncfl_agg.py` | ✅ aware | ✅ **proactive** (felix only) | `simUnavailability` |
+| **fedbuff** | **async** | `asyncfl` / `main_asyncfl_agg.py` | ❌ unaware | ❌ reactive-90s | `simUnavailability` |
+| **oort** | **sync** | `oort/top_aggregator` / `main_oort_sync_agg.py` | ❌ unaware | ❌ reactive-90s | legacy `trackTrainerAvail` |
+| **oort_star** | **sync** | `oort/top_aggregator` / `main_oort_sync_agg.py` | ✅ aware | ❌ reactive-90s | legacy `trackTrainerAvail` |
+| **refl** | **sync** | `syncfl` FedAvg / `main_fedavg_agg.py` | ✅ aware | ❌ reactive-90s | `simUnavailability` |
+| **feddance** | **sync** | `syncfl` FedAvg / `main_fedavg_agg.py` | ✅ aware | ❌ reactive-90s | `simUnavailability` |
 
-**✅ B2.0.1 FIXED (found + fixed Jun 29; was blocking ALL real-mode parity at syn_50+ small-n):**
-**The real-mode aggregate recv barrier had no timeout.** `syncfl/_aggregate_weights` called
-`channel.recv_fifo(ends, first_k=agg_goal)` with no `timeout`; under unavailability the withheld trainers
-never send, so fewer than `first_k` arrive and the barrier blocked forever (real feddance n=12:
-15:40:55→16:27:20 ≈ 46 min on a 30 min budget, 0 completed rounds, killed only by the runner watchdog).
-**Not the scarcity poll** — pure scarcity self-terminates via `increment_round` (the **sim** n=12 run proved
-this, ending cleanly at round 4). oort/asyncfl already bounded their real recv; only the syncfl base lacked
-it. Fix: `timeout = min(trainer_recv_wall_timeout_s=90 s, remaining budget)`, mirroring oort. See B2.0.1.
+**Notes.** (1) `AvailabilityMixin` lives at `syncfl/top_aggregator.py` (`class TopAggregator(AvailabilityMixin, Role)`);
+asyncfl extends it (`class TopAggregator(SyncTopAgg)`); oort's base also carries it — so all six get the same
+substrate. (2) "aware using trace" is v1; the knowledge model becomes message-transport / predictive in Stage H,
+but the select-filter / in-flight-evict *behavior* is unchanged. (3) **felix is the only baseline that de-selects
+an in-flight trainer** when it goes UN_AVL; the four aware-at-selection-only baselines (oort_star/refl/feddance and
+— at selection — nobody for unaware oort/fedbuff) still hit the 90 s abandon for mid-round drop-offs.
 
-**Secondary (scenario, not a bug): n=12 syn_50 is DEGENERATE for feddance.** The doc's "~3 unavailable"
-math was wrong — syn_50 ⇒ ~50 % unavailable ⇒ eligible ≈ 6 ≪ threshold 10 ⇒ *perpetual* starvation, no
-training. sim n=12 confirmed this (3 starvations → vclock 1200→2400 → budget-stopped at round 4, ~0
-training). Feddance starvation needs the pool to **oscillate around** the threshold: target **n≈20 syn_50**
-(mean eligible ≈10, straddles) or n≈22–24 for mostly-training-with-occasional-starvation. See Challenge 15.
+### Flag redesign (replaces the conflated `_availability_aware`) — task T1
 
-- **A/B ✅** Substrate (`flame/availability/trace.py` + `AvailabilityMixin`) + A3 time-base CONTROL. Exit: A3 PASS oort/felix syn_20.
-- **C ✅ CONFIRMED** Oracular gate, send-time withhold, vclock 90s abandon, `delivery_ts` ordering, `free_stalled_slot`. felix 49/49; oort 39/48 (3 pre-existing failures, see §7).
-- **C.6 ✅ CONFIRMED** `_avail_stamp_end_states`, A4dur PASS (felix 0.0024, oort 0.0029), 5 availability plots.
-- **D ✅ CONFIRMED** Proactive eviction (felix), task-aware eligibility with `_trace_has_avl_eval` guard, accept-stale withheld. Real send-gate confirmed (withheld n=7, accept_frac=1.0).
-- **E ✅ CONFIRMED syn_20** Syncfl path (feddance+refl): abandon/evict/stamp + `_sync_sim_recv_first_k` withhold drain. feddance 46/47 (C2 emergent noise, not mechanism; A-rungs/U3/U6/K8/U2 PASS).
-- **F.2 ✅ CODE-COMPLETE** Unified pre-selection return-early pattern in all three aggregators (see §5/Stage F). **syn_0 ✅**: Fst PASS (no starvation), C1/C2 diff=0.0, K1/K5 PASS. **oort n=25 syn_50 1800s ✅**: Fst PASS (1 starvation advance, jump 74.3s = 5× mean), K1 monotone, K3a PASS, 46/53 (P3/K2/K3 pre-existing §7). **feddance n=25 syn_50**: mechanism fires withhold (n=4, accept_frac=1.0), K1/K2/K3/P3 all PASS, BUT Fst 0 starvation advances — sync threshold gap (see §5/Challenge 15). **feddance n=12 syn_50 ran Jun 29 → degenerate (sim: all-starvation, budget-stop round 4; real: HUNG 46 min, 0 rounds → surfaced B2.0.1). Re-run at n≈20 after B2.0.1.**
-- **G.1 ✅** `starvation_advance` rung in `checks.py` + `report.py`; +4 starvation unit tests.
+Today a single `_availability_aware` HP gates `_sim_evict_unavail_inflight`. Split into two unambiguous flags:
+- `avail_select_filter: bool` — selector excludes currently-UN_AVL trainers from the **selection** pool
+  (`get_curr_task_ineligible_trainers`). ON: felix/oort_star/refl/feddance. OFF: oort/fedbuff.
+- `proactive_inflight_evict: bool` — gates `_sim_evict_unavail_inflight` (in-flight boundary eviction).
+  ON: **felix only**. OFF: everyone else (reactive-90s).
 
----
-
-## ▶ Next actions
-
-### ✅ B2.0.1 — Real-mode recv-barrier timeout under unavailability (FIXED Jun 29)
-
-**Symptom:** real feddance n=12 syn_50 ran ~46 min on a 30 min budget, then died only to the external
-runner watchdog (`budget+1200 s`). The agg log went **silent after 12 s** (one `feddance select`, then
-nothing) — a *blocking* wait, not a busy-spin.
-
-**Actual root cause (different from the first hypothesis — corrected here).** The hang was NOT the
-pre-selection scarcity poll. Pure scarcity (0 selected) self-terminates fine: `_distribute_weights`
-returns early → `_aggregate_weights` hits `if not ends: sleep+return` → `increment_round` runs → budget
-fires (this is exactly why the **sim** n=12 run ended cleanly at round 4). The real hang was the
-**aggregate recv barrier**: round 1 dispatched 12 trainers, ~6 went UN_AVL and withheld their uploads, and
-`syncfl/_aggregate_weights` called `channel.recv_fifo(ends, first_k=agg_goal)` **with no `timeout`** → it
-blocked forever waiting for the 10th of 12. Sim avoids this via `_sync_sim_recv_first_k(..., timeout=grace)`.
-**oort and asyncfl already passed a real-recv `timeout`** (oort `trainer_recv_wall_timeout_s`, asyncfl
-`RECV_TIMEOUT_WAIT_S`) — **only the syncfl base lacked it**, which is why oort completed and feddance hung.
-
-**Fix (`syncfl/top_aggregator.py:_aggregate_weights`, real branch — mirrors oort exactly).** Bound the real
-`recv_fifo` with `timeout = min(trainer_recv_wall_timeout_s [default 90 s], remaining experiment budget)`.
-90 s ≫ the ~18 s max trainer compute, so live stragglers still land; under unavailability the round
-proceeds with whatever arrived after the timeout, then `increment_round`'s budget check runs and the run
-self-stops *at* the budget. WALL-CLOCK only; sim path untouched; harmless with the gate OFF (all `first_k`
-arrive well within 90 s). The `recv_fifo` timeout terminator `(None, ("", now))` is already handled by the
-loop's `if not msg: continue`.
-
-**Verification.** ✅ **Full suite now 100% green: 456 passed / 0 failed / 7 skipped + parity ladder 24/24.**
-The 7 failures that pre-dated this work (`test_sync_sim_ordering` ×6, `test_sim_barrier` ×1) were **stale
-fixtures**, not product bugs: they `__new__` an aggregator (bypassing `__init__` + `_init_availability`),
-so the availability state the E/F stages added (`_sim_buffer`, `pending_withheld`, `trainer_event_dict`,
-and the oort recv-timeout's `config.hyperparameters`) was never set. Fixed by giving the fixtures the
-**gate-OFF** availability state (`_sim_buffer=SimReorderBuffer()`, `trainer_event_dict=None`,
-`pending_withheld={}`, a minimal `_HP`) — byte-identical to a real gate-off run, so the sim-ordering /
-stale-reject logic is still exercised in isolation. No unit test added for the new syncfl recv-timeout path
-itself — it is a faithful copy of the already-shipped oort timeout and would need heavy `recv_fifo`/channel
-mocking for low marginal value; the n=20 run is the live confirmation.
-
-**Exit:** real feddance n≈20 syn_50 self-stops at `max_experiment_runtime_s` (`"stopping run"` in the agg
-log), not via the watchdog; completes real training rounds with partial cohorts.
-
-**Not done (deferred, lower priority): sim no-vclock-advance edge case.** If `_next_avail_vclock()` ever
-returns `None`/≤now while eligible < threshold, the sim scarcity branch would `return` without advancing or
-sleeping → tight busy-loop (still bounded by `increment_round`'s vclock budget each iteration, so it
-*terminates*, just hot). Not observed (sim always had a future transition). Add a guard if a long sim run
-ever pegs a core under scarcity.
-
-### Stage F exit — feddance starvation (scenario CORRECTED to n≈20 syn_50)
-
-**oort n=25 ✅ DONE** (starvation fires, 1 event, K1/K3a PASS). Feddance n=25 did not starve (eligible
-min=11 > 10); feddance **n=12 was the wrong correction** — syn_50 ⇒ ~6 unavailable ⇒ eligible ≈ 6 ≪ 10 ⇒
-*perpetual* starvation, no training (see Status / Challenge 15). **Relaunch after B2.0.1 lands:**
-
-```bash
-cd lib/python/examples/async_cifar10
-# Target: eligible oscillates around agg_goal=10 → mix of starvation + training.
-scripts/debug_run.sh --baselines feddance --mode both --runtime-s 1800 --trace syn_50 --num-trainers 20
-```
-
-**Why n≈20 (not 12, not 25):** feddance threshold = `agg_goal=10`; sync clears `selected_ends` each round
-so `eligible = n − unavail`. syn_50 ⇒ unavail ≈ 0.5 n ⇒ eligible ≈ 0.5 n. For eligible to straddle 10
-(starve sometimes, train otherwise) ⇒ n ≈ 20. n=25 ⇒ eligible ≈ 12–19 (never starves); n=12 ⇒ eligible
-≈ 6 (always starves). If n=20 still skews one way, nudge: more starvation → n=18; more training → n=22–24.
-
-**⚠️ n=12 is never valid here. oort floor is n ≳ 16** (`desired_selection=13`; n<13 starves every round —
-the cohort-floor guardrail now clamps + warns, but the run is still degenerate). Pick n per *baseline
-threshold ÷ availability*, not a fixed number.
-
-**Previous bug fixes (Jun 29, still apply):** (1) `debug_run.sh` injects `simUnavailability=True` for
-feddance (was missing → `trainer_event_dict=None` → vclock deadlock). (2) `runner.py` logs aggregator
-exit code + `PYTHONFAULTHANDLER=1`. (3) **Teardown abort** (`Fatal Python error: Aborted` after
-`channel leave done`) is cosmetic — runner does not gate success on exit code (B2.0 #2).
-
-**After run completes:**
-```bash
-python -m scripts.parity.cli --batch --experiments-dir experiments --baselines feddance --agg-goal 10
-```
-
-**Stage F exit criteria:** `starvation_advance` populated (n_jumps > 0) for feddance AND ≥1 real training
-round completes (not all-starvation); `[SIM_STARVATION]` in sim agg log; K1 monotone; both modes self-stop
-at the budget; parity report ROOT-CAUSE is not a starvation/budget rung.
-
-### Batch 2 — Long-run parity campaign + deferred-fix sweep (DETAILED)
-
-**Theme:** This is the "long runs last" phase of the working agreement. The mechanism code (A–G) is complete across all three stacks (asyncfl, syncfl-feddance, syncfl-refl). Batch 2 does NOT add new mechanisms — it (1) lands a handful of cheap deferred code fixes, (2) widens validation to the least-tested baseline (refl), (3) runs the full-cohort (n=300) long parity campaign across syn_50 → mobiperf, and (4) resolves or re-classifies the §7 known failures with real long-run data.
-
-**Entry gate (UPDATED Jun 29):** ✅ **B2.0.1 (real-mode recv-barrier timeout) is FIXED** — real runs now bound the aggregate recv under unavailability, so real/sim parity pairs at syn_50+ small-n are trustworthy. Stage F *code* is confirmed firing on oort (async) + unit-tested for syncfl (G.1); feddance live-confirmation (now at n≈20, not n=12) is a validation nicety, **not a code gate** — refl/oort/felix Batch 2 work does NOT wait on it. **Next concrete step: run feddance n≈20 syn_50 `--mode both` to confirm the fix + starvation mix.**
-
-#### ▷ Decision tree — feddance n=12 syn_50 (resolve when logs arrive)
-
-| Outcome | Signal | Action |
-|---|---|---|
-| **(A) Pass** | `starvation_advance` populated (n_jumps > 0), K1 monotone, training rounds interleave, no stall/crash | Stage F fully closed on all stacks. Proceed to Batch 2 at full confidence. |
-| **(B) Mechanism bug** | starvation fires BUT K1 non-monotone / event skipped / stall / abandon-path crash / teardown-abort masks a real failure | **BLOCKS Batch 2.** syncfl F.2 code is shared with refl — must fix before refl/feddance long runs. Debug with short syn_50 n=12 runs + unit tests; do not burn a 3h run to find the bug. |
-| **(C) Won't trigger** | clean run, withhold/abandon fire, but eligible never < 10 (peak simultaneous unavail ≤ 2) | One tuning retry (n=10, or syn_50→a denser trace). If still no trigger: **deprioritize** — accept oort-confirmed + syncfl unit-test (G.1) as sufficient starvation proof, record here, move on. The n=300 mobiperf runs may trigger it naturally; if not, that's acceptable (sync FL rarely starves by construction — Challenge 15). |
-| **(D) Known small-n noise only** | A3/A2 fail with join-ramp signature (§7), starvation otherwise fine | Ignore — clears at n=300 (B2.2). Does not affect Stage F exit. |
-
-**Recommendation:** treat Stage F as code-complete now; let feddance n=12 either confirm (A) or be deprioritized (C). Only outcome (B) holds up Batch 2.
-
-#### B2.0 — Pre-ramp code work ✅ DONE (verified Jun 29 against the n=25 syn_50 runs)
-
-The three "cheap fixes" originally scoped here were investigated against live code/telemetry and **all three turned out to be non-issues** — the code is already correct. The only real change was a defensive guardrail. Detail (so this is not re-litigated):
-
-1. **A4dur syncfl — ALREADY PASSES, no fix needed.** The §7 "syncfl stamps post-selection → SKIP" claim was stale: F.2's restructure already stamps `_avail_stamp_end_states` pre-selection (`syncfl/top_aggregator.py:896`, before `channel.ends(VAL_CH_STATE_SEND)` at :957). Confirmed: running the parity CLI on the feddance n=25 syn_50 pair gives **A4dur PASS** (avl_state present 71/71 sim, 67/67 real). K3b also PASS for feddance. §7 rows updated.
-2. **Teardown abort — cosmetic, not a bookkeeping bug.** `runner.py:300-302` logs the aggregator exit code as a *warning only* (`exit=N ⚠`) and proceeds to post-analysis + the next batch regardless. Run success is judged from telemetry/log content, never the exit code. The `Fatal Python error: Aborted` is a C++-level torch/MQTT/grpc teardown abort that fires *after* "stopping run" + `channel leave done` — purely shutdown noise. No code change; not worth chasing.
-3. **Starvation-budget semantics — current behavior is parity-CORRECT; changing it would BREAK parity.** In real mode the scarcity path is `time.sleep(0.5)` + retry (`syncfl/top_aggregator.py:949-951`), so real consumes *wall* budget while polling through scarcity, and `increment_round` measures `elapsed = time.time() - agg_start`. In sim the starvation vclock jump consumes *virtual* budget symmetrically (`increment_round` measures `elapsed = vclock.now`). They match. Subtracting starvation skips from the sim budget (the originally-"preferred" option) would let sim run more training rounds than real for the same budget → divergence. **Recorded as a dead-end (§6).** The oort n=12 budget exhaustion was 100% the invalid-cohort footgun (#4), not a budget bug.
-4. **✅ NEW — oort cohort-floor guardrail (implemented).** `oort/top_aggregator.py`: the starvation gate now clamps its threshold to `min(desired_selection, len(connected))` and emits a one-time `[COHORT_FLOOR]` warning when `desired_selection > connected`. Prevents the n<desired_selection footgun (n=12 with desired_selection=13 starved every round → vclock storm → budget exhausted at round 4, zero training) from silently degenerating; the run now proceeds with the available cohort and the misconfig is loud. No-op when the cohort is adequately sized (the normal case). 24/24 parity-ladder tests pass.
-
-#### B2.1 — refl: first dedicated unavailability validation (widen baselines)
-
-refl shares the syncfl E+F code with feddance but has **no dedicated unavailability run confirmation** (only the parity-fidelity work pre-dates this branch). Before committing refl to a 3h run: refl syn_20 then syn_50 short smokes (sim+real), confirm E (abandon/evict/stamp/withhold-drain) + F (starvation pattern, same `agg_goal` threshold as feddance) + A-rungs. This is the breadth-across-baselines step; it also re-confirms the syncfl path that B2.0 #1 touched.
-
-#### B2.2 — syn_50 n=300 long runs (3h, sim+real), per baseline
-
-felix, oort, refl, feddance. **First true full-cohort unavailability validation.** Note: the existing Jun 29 syn_50 runs are small-n starvation smokes (oort n=12, feddance n=25) — they are NOT the n=300 parity runs and must be re-run at n=300. Expected resolutions:
-- **A3/A2 join-ramp artifacts clear** (§7 feddance A3=0.245, A2 KS=0.509 at n=25): at n=300 the first-decile bin no longer dominates. Confirm A3 PASS gates open, then read A2/A4.
-- **C.3 90s-vclock abandon exercises** on oort/refl (longer train times cross 90s where syn_20/n=48 did not).
-- **oort K3b/A2/P3 re-evaluated at length** (§7): K3b `overhead_residual` ~0.116 and A2 KS were run-length-sensitive (0.437→0.338 across 1.5h→3h). Confirm trend to PASS or root-cause if they plateau.
-
-#### B2.3 — mobiperf ramp (3h, sim+real), per baseline
-
-Order: `mobiperf_2st` (real 2-state schedule — closest to syn) → `mobiperf_3st_50` / `mobiperf_3st_75` (3-state, introduces **AVL_EVAL**). The 3-state traces activate code paths dormant in v1's 2-state syn traces:
-- **D.2 eval-pool path** un-guards (`_trace_has_avl_eval` now true) — D.2 logic gets first real exercise.
-- **Challenge 13 — root-fix already landed (Jun 29), needs live exercise here.** `_handle_send_state` now keys its cleanup off the full connected pool (`connected_ends`), so an empty per-task eligible pool no longer corrupts shared `selected_ends` (see §5/Challenge 13; +3 unit tests). mobiperf_3st is the first trace that exercises the all-AVL_EVAL → empty-train-pool case live — confirm no hang and correct in-flight retention.
-- **HELD rungs calibrate here**: `observation_lag` and `Aa` (eligible_pool_reduction) need real run data to set tolerances — build them once B2.2/B2.3 data exists.
-
-#### B2.4 — Deferred-fix sweep (resolve §7 with long-run data)
-
-After B2.2/B2.3 surface real numbers: close out each §7 row — confirm cleared, root-cause if persistent, or formally re-classify as expected. Targets: oort K3b/A2/P3, feddance A3/A2 (expect cleared), feddance U5 inter-arrival ρ (watch at mobiperf), feddance C2 loss noise.
-
-#### B2.5 — G.4 terminology cleanup (no-op refactor, LAST)
-
-Only after all baselines are green: rename `oracular_trainer_avail_check` → `_trace_read_avail_check`; update log/comment "ORACULAR" references (keep the YAML field *value* `ORACULAR` as-is); consolidate legacy-gate + simUnavail-gate paths. Pure refactor — defer until nothing else is in flight.
-
-**Batch 2 exit / sign-off:** per-baseline parity green at syn_50 + mobiperf n=300 (A3 gate open, A2/A4/A4dur PASS); `starvation_advance` populated where the scenario admits it (or deprioritization recorded per decision tree); all §7 rows resolved or re-classified; Challenge 13 root-fixed; HELD rungs calibrated; doc trimmed to completed-stage form.
-
-### Stage H (FUTURE — out of Batch 2 scope)
-
-- **Message-transport + continuous scheduling** (see §4 Stage H): turn `client_notify` ON for aware baselines; swap trace-read for real `avl_*` messages; re-measure `observation_lag` (must be ≈0). Effect logic unchanged — the C.5/D.1 hook was built for this.
-- **Real notification lag**: measure on a real felix run before turning `client_notify` back on.
+`tracking_mode` becomes the **knowledge-model** axis: `trace_read` (v1) | `client_notify` (Stage H) |
+`predictive` (future). Replaces the `oracular` value at concept/log level (YAML field *value* compat kept).
 
 ---
 
-## v1 Scope
+## Status (Jun 30 — Batch 2. ⚠ NEW BLOCKING BUG B2.0.2 from feddance n=18. Recategorization + new baselines + local test suite scoped as T1–T5 below.)
 
-### Three axes — keep them separate
+**A/B/C/C.6/D/E ✅ CONFIRMED syn_20. F.2 CODE-COMPLETE but starvation self-termination BROKEN (B2.0.2).
+syn_0 ✅. oort n=25 syn_50 ✅ (starvation fires, K1/K3a PASS). B2.0.1 real recv-barrier ✅ FIXED + confirmed.
+Tests green: 456 pass / 7 skip + ladder 24/24.**
 
-| Axis | Term | v1 value | Stage H |
-|---|---|---|---|
-| How the agg learns trainer state | **knowledge model** | **trace-read** (all baselines — agg binary-searches `trainer_event_dict`) | aware → **message-transport** (`avl_*` msgs) |
-| When the agg frees a stalled slot | **slot-free timing** | **proactive** (felix: next selection boundary) OR **reactive-90s** (oort/refl/feddance: 90s vclock) | proactive → instant-on-message for aware |
-| Which config knob activates | **config-gate** | **legacy-gate** (oort/refl: `trackTrainerAvail.type: ORACULAR`) OR **simUnavail-gate** (felix/feddance: `simUnavailability: True`) | no change |
+### ⚠ B2.0.2 — Sim starvation does not self-terminate at the trace end-horizon (BLOCKING; found feddance n=18 syn_50, Jun 29)
 
-**"ORACULAR" in code/YAML = only the legacy config field name.** All v1 baselines are trace-read. Use "trace-read" for the knowledge model.
+**Symptom.** sim ran **3443 `[SIM_STARVATION]` spins** (rounds 68→3511), every line `vclock→1800.0`, and was
+killed by `[SIM_WALL_CEILING]` at 30 min wall instead of self-stopping. Real also lacked `"stopping run"`
+(trained 136 rounds, died ~23 min). The `[SIM_WALL_CEILING] ... Sim slower than real (bug iii-c)` message is a
+**misdiagnosis** — cause is the spin, not per-round slowness.
 
-v1 uses trace-read for every baseline; `client_notify` OFF. The proactive/reactive-90s distinction is slot-free timing only, not knowledge.
+**Root cause.** Under perpetual scarcity at the **trace end-horizon**, `_next_avail_vclock()` returns
+`1800.0` (= trace horizon = budget). Once vclock is already 1800, `_vclock.advance(1800)` is a no-op and the
+guard `_nxt > vclock.now` is false → the F.2 path **returns to spin without advancing**. `increment_round`
+runs each spin but its budget stop uses strict `>`, and vclock is pinned **exactly at** budget → `1800 > 1800`
+is false → never stops. Empty 0-duration rounds accumulate nothing → ~3400 spins until the wall guillotine.
 
-| | v1 (this spec) | Stage H (FUTURE) |
-|---|---|---|
-| Knowledge model | trace-read (all) | aware: message-transport; unaware: trace-read |
-| When applied | selection boundaries only | continuous / event-scheduled |
-| `client_notify` | OFF | ON for aware |
+**Fix (scoped — T0, do FIRST, before any long run; F.2 path is shared syncfl/oort/asyncfl).**
+1. In the F.2 starvation branch: if `_next_avail_vclock()` returns `None`/≤ vclock.now **or** vclock ≥ budget,
+   **stop the run** (set the budget-stop flag / fall through to `increment_round`'s terminal path) instead of
+   returning to spin.
+2. Make the budget check `>=` (vclock == budget must stop).
+3. Real branch: the `else: time.sleep(0.5); return` path also bypasses the budget check under perpetual
+   scarcity — ensure real consults the wall budget before sleeping.
+4. Regression: add a deterministic pytest (trace that exhausts mid-scarcity) asserting both modes hit
+   `"stopping run"`, NOT the wall ceiling.
+
+**Exit:** feddance perpetual-scarcity run self-stops at `max_experiment_runtime_s` in both modes; no
+`[SIM_WALL_CEILING]`; spin count bounded.
+
+### Scenario note (secondary): syn_50 caps at ~43 % unavail, sync starvation is finicky
+
+syn_50's connected-cohort unavail peaks at **129/300 ≈ 43 %** (not 50 %). For feddance (`agg_goal=10`),
+`eligible ≈ (1−unavail_frac)·n`: n=25 → min 11 (never starves); n=20 → min 11 (never); n=18 → eligible hits 0
+(perpetual). The straddle window is narrow. Starvation is **already proven on oort** (n=25, 1 event) and
+unit-tested (G.1) — feddance live starvation is a *validation nicety, not a code gate*. After B2.0.2, one
+n=19 try; if it won't cleanly straddle, **deprioritize** (sync FL rarely starves by construction — Challenge 15).
+
+### Completed stages (mechanism + where it lives + exit)
+- **A/B ✅** Substrate + A3 time-base CONTROL (origin `agg_start` both modes). A3 PASS oort/felix syn_20.
+- **C ✅** Send-time gate, vclock 90 s abandon, `delivery_ts` ordering, `free_stalled_slot` (`AvailabilityMixin`).
+  felix 49/49; oort 39/48 (pre-existing §7).
+- **C.6 ✅** `_avail_stamp_end_states` writes `PROP_AVL_STATE` pre-selection. A4dur PASS. 5 availability plots.
+- **D ✅** Proactive in-flight eviction `_sim_evict_unavail_inflight` (felix-gated). Task-aware eligibility with
+  `_trace_has_avl_eval` 2-state guard. Real send-gate confirmed (withheld n=7, accept_frac=1.0).
+- **E ✅** Syncfl path (feddance+refl): abandon/evict/stamp + `_sync_sim_recv_first_k` withhold drain. Accept-stale
+  (FedAvg has no staleness gate). feddance 46/47 syn_20.
+- **F.2 ✅ code / ⚠ B2.0.2** Unified pre-selection return-early starvation pattern in all three aggregators.
+  oort n=25 ✅ (1 event, K1/K3a PASS); feddance starvation blocked by B2.0.2.
+- **G.1 ✅** `starvation_advance` rung in `checks.py`+`report.py`; +4 tests.
+- **B2.0.1 ✅** Real syncfl recv-barrier bounded with `timeout=min(90 s, remaining budget)`. Confirmed feddance
+  n=20 syn_50 (real self-stopped, 54 rounds, no watchdog). Challenge 16 closed.
+- **B2.0 ✅** oort cohort-floor guardrail (`[COHORT_FLOOR]` warn + clamp). The other 3 pre-ramp items were
+  non-issues (see §6 / §7).
 
 ---
 
-## 1. Core decisions (all resolved)
+## ▶ Batch 2 — ordered task sequence (pick up in order, outside this conversation)
 
-- **Knowledge model:** trace-read for all baselines. One shared trace + `state_at(trainer, vclock)` + one effect path in `AvailabilityMixin`. Per-baseline difference = slot-free timing only.
-- **Mid-flight unavailability = compute-completes, gate the send, deliver-late (stale).** Trainer never stops computing. Upload gated at send-time (real) / agg-side buffer at `delivery_ts = max(sct, next_avail_ts)` (sim).
-- **Two ledgers, never conflated:** slot ledger (90s vclock abandon, frees `selected_ends`) + delivery ledger (`pending_withheld[end] = delivery_ts`, commits stale through existing staleness gate).
-- **Three invariants:** (1) no double-count — freed slot ≠ cancelled update; (2) withheld end stays out of pool until `delivery_ts`; (3) proactive vs reactive-90s = trigger only, identical downstream effect.
-- **Busy ≠ unavailable ≠ withheld** — three distinct non-pool states, separate ledgers. Do NOT route busy→UN_AVL.
-- **All availability time on the vclock in sim.** Never wall, never frozen per-trainer clock.
-- **Config-gated, default OFF** → byte-identical. Legacy-gate (oort/refl) or simUnavail-gate (felix/feddance/fedbuff).
+> Each task: scope, files, exit. Land T0 first (it blocks runs). T1–T4 are local/code (no long runs). T5 is the
+> run campaign. "Across stages before across baselines, long runs last."
+
+### T0 — Fix B2.0.2 starvation self-termination (BLOCKING)
+- **Scope:** see B2.0.2 above (4 sub-items).
+- **Files:** `flame/mode/horizontal/{syncfl,oort,asyncfl}/top_aggregator.py` (F.2 starvation branch);
+  `flame/mode/horizontal/*/top_aggregator.py` `increment_round` budget check (`>` → `>=`);
+  new `tests/.../test_starvation_termination.py`.
+- **Exit:** deterministic pytest green; feddance perpetual-scarcity smoke self-stops both modes (no wall ceiling).
+
+### T1 — G.4 rename + two-axis flag redesign (no-op refactor + flag split; land early)
+- **Renames:** `oracular_trainer_avail_check` → `_trace_read_avail_check` (5 refs:
+  `asyncfl/top_aggregator.py`, `syncfl/fwdllm_aggregator.py`, `availability/trace.py`, callers); log tag
+  `[ORACULAR]` → `[TRACE_READ]` (`availability_mixin.py:266`); comments/docstrings "oracular" → "trace-read".
+  **Keep** YAML field *values* `trackTrainerAvail.type: ORACULAR` and `tracking_mode` for config compat.
+- **Flag split:** replace `_availability_aware` with `avail_select_filter` (gates
+  `get_curr_task_ineligible_trainers` selection filtering) + `proactive_inflight_evict` (gates
+  `_sim_evict_unavail_inflight`). Wire `__init__`/`_init_availability` to read both HPs.
+- **tracking_mode enum:** `trace_read | client_notify | predictive` (knowledge-model axis); document.
+- **Files:** `flame/availability/{availability_mixin.py,trace.py}`, the three `top_aggregator.py`,
+  `syncfl/fwdllm_aggregator.py`; metadata template `_metadata/aggregator_base.json`.
+- **Exit:** unit tests green; syn_0 byte-identity (gate OFF) preserved; `[TRACE_READ]` in logs.
+
+### T2 — Baseline categorization fixes (docs + yaml + code) to match the Baseline matrix
+- Set per-baseline flags in `expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_parity.yaml`:
+  felix `avail_select_filter+proactive_inflight_evict`; oort none; refl/feddance `avail_select_filter` only.
+- Verify selector→base mapping (felix→async_oort/asyncfl, oort→oort/sync, refl→refl_oort/sync,
+  feddance→feddance/sync). Fix any doc/comment that still says "oort = async" or "feddance/refl = unaware".
+- **Exit:** matrix reflected in config + code comments; smoke each baseline gate-ON syn_20 (no behavior regression).
+
+### T3 — Scaffold new baselines: oort_star (aware sync) + fedbuff (unaware async)
+- **oort_star:** oort-sync base + `avail_select_filter=True`, `proactive_inflight_evict=False`. New parity-yaml
+  entries (sim+real) + config. Selector = oort with select-filter enabled.
+- **fedbuff:** asyncfl base + `FedBuffSelector` (`flame/selector/fedbuff.py` exists) + both flags OFF (unaware).
+  New parity-yaml entries + config + `main_asyncfl_agg.py` wiring if needed.
+- **Exit:** both run gate-OFF (byte-identical regression) and gate-ON syn_20 smoke; appear in the parity CLI batch.
+
+### T4 — Local state-fidelity test suite (catch bugs before runs) — point 7
+New `scripts/parity/test_state_fidelity.py` (deterministic, no cluster), driving a tiny synthetic trace through
+sim and a mocked-real path, asserting identical state timelines:
+- **T-state-exact:** scripted AVL_TRAIN→UN_AVL→AVL_TRAIN; `state_at(trace,t)` and stamped `PROP_AVL_STATE` match
+  the trace at every selection boundary, both modes.
+- **T-eval-pool (3-state):** AVL_EVAL trainer excluded from train dispatch, included in eval, both modes (closes
+  the AVL_EVAL coverage gap before mobiperf).
+- **T-withhold-deliver:** mid-flight UN_AVL → withheld→delivered-stale (not dropped), identical `delivery_ts`.
+- **T-aware-vs-reactive:** same trace, proactive-evict ON (felix) vs OFF → proactive frees the slot one boundary
+  earlier; quantify the *expected* divergence.
+- **T-starvation-sync:** scripted scarcity → exactly one vclock advance to the right transition; K1 monotone;
+  self-terminates (regression for B2.0.2).
+- **New rung A5 `state_timeline_agreement`:** per-trainer exact-state agreement (binned time, KS=0) — closes the
+  "no per-(trainer,t) exact agreement" gap (A3/A4 only aggregate).
+- **Run T4 across all six baselines** on synthetic + mobiperf traces.
+- **Exit:** suite green for all six; A5 wired into `checks.py`/`report.py`.
+
+### T5 — Parity-table campaign (syn_0 → syn_20 → syn_50 → mobiperf, sim+real, all six baselines)
+Produce a `PARITY.md`-style table (rows = baselines, cols = traces × modes, cells = pass/tot + ROOT). Order:
+1. **syn_0** regression (byte-identity gate ON/OFF) — all six.
+2. **syn_20** then **syn_50** n=300, 3 h, sim+real — all six. (Existing small-n runs are starvation smokes, not
+   parity runs; re-run at n=300.) Expect §7 join-ramp artifacts (A3/A2) to clear at n=300.
+3. **mobiperf:** `mobiperf_2st` → `mobiperf_3st_50`/`_3st_75` (3-state → AVL_EVAL + D.2 eval-pool + Challenge 13
+   live exercise). Calibrate HELD rungs (`observation_lag`, `Aa` eligible_pool_reduction) once real data exists.
+4. **§7 sweep:** resolve/re-classify each row with long-run data (oort K3b/A2/P3; feddance A3/A2 expect cleared;
+   U5 ρ watch; C2 loss noise).
+- **Exit / sign-off:** per-baseline parity green at syn_50 + mobiperf n=300 (A3 gate open, A2/A4/A4dur/A5 PASS);
+  `starvation_advance` populated where the scenario admits it (or deprioritized per Challenge 15); all §7 rows
+  resolved; HELD rungs calibrated.
+
+### Stage H (FUTURE — out of scope)
+Message-transport (`client_notify` ON for aware) + continuous/event-scheduled vclock clamp + predictive
+knowledge model. Re-measure `observation_lag` (must be ≈0). Effect logic unchanged (C.5/D.1 hook built for it).
 
 ---
 
-## 2. Concepts to keep crisp
+## Parity rungs (availability tier)
 
-- **availability state** (`AVL_TRAIN/AVL_EVAL/UN_AVL`) × **busy?** × **has in-flight update?** — orthogonal, never conflate.
-- **send-time gate** (v1) vs **task-start gate** (old real behavior). Compute always completes.
-- **slot ledger** (freed at boundary/90s) vs **delivery ledger** (commits at `delivery_ts`).
-- **transition instant** vs **observation instant**; v1 lag = until next selection boundary.
-- Return fates: on-time / straggler-hold / withheld-then-delivered (stale). No result cancellation.
-- `syn_0/syn_20/syn_50` are **2-state** (AVL_TRAIN/UN_AVL only); `_trace_has_avl_eval` guard collapses D.2 for these traces.
-
----
-
-## 3. Parity rungs (availability tier)
-
-- **A1** `avail_composition`: per-state counts, binned. **A3** `trace_time_base_consistency` — hard gate, CONTROL (dep K3). **A4** `per_trainer_duty_cycle`. **A4dur** duration-weighted TVD (pass: `mean_err ≤ 0.05`, `frac_within_tol(τ=0.10) ≥ 0.95`).
-- **withheld_delivery**: dist of `delivery_ts − sct` + staleness + accept/reject split.
-- **abandon_timeout**: count + timing of 90s vclock abandons. Fails loud on wall-clock leak.
-- **eligible_pool_reduction** (`Aa`): agg-observed fraction vs trace ground truth (HELD — needs run data).
-- **observation_lag** (HELD): transition→effect boundary lag.
-- **starvation_advance**: vclock jumps under scarcity, count + timing.
-- **Ramp:** `syn_0` (regression) → `syn_20` (first validation) → `syn_50` → `mobiperf_*`.
+- **A1** `avail_composition` — per-state counts, binned. **A3** `trace_time_base_consistency` — CONTROL hard
+  gate (dep K3). **A4** `per_trainer_duty_cycle`. **A4dur** duration-weighted TVD (pass `mean_err≤0.05`,
+  `frac_within_tol(τ=0.10)≥0.95`). **A5** `state_timeline_agreement` (NEW, T4) — per-(trainer,t) exact match.
+- **withheld_delivery** — dist of `delivery_ts − sct` + staleness + accept/reject split.
+- **abandon_timeout** — count/timing of 90 s vclock abandons; fails loud on wall-clock leak.
+- **eligible_pool_reduction** (`Aa`, HELD), **observation_lag** (HELD) — calibrate at T5.
+- **starvation_advance** — vclock jumps under scarcity, count + timing.
+- **Ramp:** syn_0 → syn_20 → syn_50 → mobiperf_*.
 
 ---
 
-## 4. Staged plan
+## v1 core decisions (resolved)
 
-### A ✅ — Substrate
-`flame/availability/trace.py` + `AvailabilityMixin` (mixed into all four `TopAggregator`s). Default OFF → byte-identical. Exit: syn_0 clean.
-
-### B ✅ — A3 time-base CONTROL
-A3/A4 rungs, origin = `agg_start` both modes. Exit: A3 PASS oort syn_20.
-
-### C ✅ CONFIRMED — Oracular driver + send-time gate + vclock abandon
-`AvailabilityMixin` shared effect (not forked per stack): `compute_delivery_ts`, `free_stalled_slot`, `withheld_held_ends`, `_sim_withhold_if_unavail`, `_sim_pop_committable`, `_sim_reinject_ready_withheld`, `_sim_abandon_stalled`, `_emit_withheld_delivery`. felix 49/49 syn_20; oort 39/48 (pre-existing failures, §9.1).
-
-### C.6 ✅ CONFIRMED — Aggregator tracking + plots
-`_avail_stamp_end_states` writes `PROP_AVL_STATE` pre-selection (was all-UNKNOWN). A4dur PASS. Five availability plots in `analyze_run.py`.
-
-### D ✅ CONFIRMED — Aware proactive eviction (felix)
-`_sim_evict_unavail_inflight` (felix-gated, sim-only). Task-aware eligibility (`get_curr_task_ineligible_trainers`) with `_trace_has_avl_eval` 2-state guard. Real send-gate confirmed (withheld n=7, accept_frac=1.0).
-
-### E ✅ CONFIRMED syn_20 — Sync baselines (feddance + refl)
-Syncfl `_distribute_weights` (abandon/evict/stamp) + `_sync_sim_recv_first_k` (withhold + bonus drain). Accept-stale path (E.2: FedAvg has no staleness gate). feddance 46/47 syn_20 (C2 emergent noise; A-rungs/U3/U6/K8/U2 PASS; Challenge 9 ✅).
-
-### F ✅ F.2 CODE-COMPLETE — Starvation / vclock-advance under scarcity
-
-`_next_avail_vclock()` mixin helper returns `min(next_avail_transition_ts, next_pending_withheld_delivery_ts)`.
-
-**F.2 unified pre-selection return-early pattern** (all three aggregators):
-
-```python
-_in_flight = getattr(channel._selector, 'selected_ends', set())
-num_eligible = len(set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight)
-
-if num_eligible < threshold:  # oort: desired_selection=13; syncfl: agg_goal=10
-    if self.simulated and self.trainer_event_dict is not None:
-        _nxt = self._next_avail_vclock()
-        if _nxt is not None and _nxt > self._vclock.now:
-            self._vclock.advance(_nxt)
-            self._sim_abandon_stalled(channel)
-            # re-stamp at new vclock
-            curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(task)
-            _held = self.withheld_held_ends()
-            if _held:
-                curr_unavail_trainer_list = list(set(curr_unavail_trainer_list) | _held)
-            channel.set_curr_unavailable_trainers(trainer_unavail_list=curr_unavail_trainer_list)
-            self._avail_stamp_end_states(channel)
-            channel.properties["vclock_now"] = self._vclock.now
-        logger.info(f"[SIM_STARVATION] round={self._round} eligible={num_eligible} < {threshold}; vclock→{_nxt}")
-    else:
-        time.sleep(0.5)
-    return  # outer run() loop retries non-blocking
-
-selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
-```
-
-**What was wrong and what F.2 fixed:**
-- Oort had `min_required=5` (50% of agg_goal) + `max_retries=5` + "proceed anyway" fallback + 2s blocking sleep. Fixed: threshold=`desired_selection=int(aggr_num×overcommitment)=13`, unbounded, non-blocking.
-- SyncFL fired only at pool=0 post-selection (`if not selected_ends:`). FedDanceSelector returns partial selections (e.g., 3/10) which are non-empty → never caught. Fixed: `agg_goal=10` PRE-selection.
-- AsyncFL had `time.sleep(0.5)` at no-recv-ends path in both modes. Fixed: sim path advances vclock.
-
-**n=48 syn_50 smoke (Jun 28):** no stalls ✅, K1 cadence ✅, starvation not populated — correct (staggered n300 schedules: min_avail=24 at n=48 >> both thresholds).
-
-**n=25 syn_50 1800s (Jun 29 — both baselines):**
-- **oort** ✅: 1 `[SIM_STARVATION]` at round=121 (eligible=12 < 13); Fst PASS (jump=74.3s, 5× mean); K1/K3a PASS; 46/53 (P3/K2/K3 pre-existing §7).
-- **feddance**: mechanism correct (withheld n=4, accept_frac=1.0, K1/K2/K3/P3 PASS), BUT 0 starvation events. Root: sync FL clears `selected_ends` at round boundary → eligible = n − unavail (no in_flight term) ≈ 25 − 6 = 19 at peak, min observed=11 > threshold=10. The n=25 reasoning assumed oort-style in_flight reduction, which doesn't apply to sync. A3/A2 fail at n=25 due to join-ramp artifact (not a time-base bug, see §7).
-
-**Exit (pending B2.0.1 hang fix + feddance n≈20 syn_50 smoke — n=12 was degenerate, see Status/Challenge 15):** `starvation_advance` populated for feddance AND ≥1 real training round; `[SIM_STARVATION]` log lines; K1 monotone; both modes self-stop at the budget.
-
-### G.1 ✅ — Ladder integration
-`starvation_advance` rung in `checks.py` + `report.py`; 67/67 parity tests (+4 starvation tests).
-
-### G.2/G.3 — Ramp + sign-off (Batch 2, pending Stage F exit)
-syn_50 → mobiperf, all baselines, 3h. Per-baseline sign-off. **Full detail + contingency decision tree in ▶ Next actions → "Batch 2 — Long-run parity campaign" (B2.0–B2.5).**
-
-### G.4 — Terminology cleanup (after Batch 2)
-Rename `oracular_trainer_avail_check` → `_trace_read_avail_check`; update log/comment "ORACULAR" references (keep YAML field value); consolidate config-gate paths. No-op refactor — defer until all baselines confirmed passing.
-
-### H (FUTURE) — Message-transport + continuous scheduling
-Turn `client_notify` ON for aware baselines: swap trace-read for real `avl_*` trainer→agg messages, processed mid-round. Add event-scheduled vclock clamp. Effect logic unchanged (C.5/D.1 hook was built for this). Re-measure `observation_lag` (must be ≈0).
+- **Knowledge model:** trace-read for all; one shared trace + `state_at(trainer, vclock)` + one effect path.
+- **Mid-flight UN_AVL = compute-completes, gate the send, deliver-late (stale).** Real: gate at send-time. Sim:
+  buffer at `delivery_ts = max(sct, next_avail_ts)`.
+- **Two ledgers, never conflated:** slot ledger (frees `selected_ends`) + delivery ledger (`pending_withheld`,
+  commits stale through existing staleness gate). Order commits by `(delivery_ts, end_id)`, never `sct`.
+- **Busy ≠ unavailable ≠ withheld** — three distinct non-pool states. Never route busy→UN_AVL.
+- **All availability time on the vclock in sim.** Never wall, never a frozen per-trainer clock.
+- **Config-gated, default OFF** → byte-identical. `simUnavailability` (felix/fedbuff/refl/feddance) or legacy
+  `trackTrainerAvail` (oort/oort_star).
+- **availability state** (`AVL_TRAIN/AVL_EVAL/UN_AVL`) × **busy?** × **has in-flight update?** are orthogonal.
+  `syn_0/20/50` are 2-state (no AVL_EVAL); `_trace_has_avl_eval` guard collapses D.2 for them.
 
 ---
 
 ## 5. Challenges / land-mines
 
-Resolved challenges are noted briefly; open ones have full detail.
-
-1. ✅ **Ordering on `delivery_ts`, not `sct`** — withheld commits at `max(sct, next_avail) > sct`. Fixed; U6/U3 validated.
-2. ✅ **A3 time-base drift** — hard CONTROL gate; 90s abandon re-clocked to vclock. Do not read A1/A2/A4 until A3 passes.
-3. ⚠️ **A2 two-tolerance trap:** `eligible = candidates − in_flight − unavailable`; bimodal sim distribution (avail windows) vs smoother real → KS shape artifact. Means match (real=47.1, sim=47.3); not a mechanism bug. KS improving with run length (0.437→0.338). Expect ≤0.2 at Batch 2 3h run.
-4. ✅ **Busy ≠ unavailable ≠ withheld** — three ledgers, never conflated.
-5. ✅ **Real send-gate fidelity** — confirmed withheld-then-delivered (not drop); n=7 accept_frac=1.0.
-6. ✅ **Determinism** — commit ordered by `(delivery_ts, end_id)`. [Stage H] full vclock tie-break.
-7. ✅ **Compound states with carry-over** — oort §4.9 straggler + UN_AVL cross-product covered in unit tests.
-8. ✅ **AVL_EVAL inert for oort** — oort dispatches 0 eval; `_trace_has_avl_eval` guard handles 2-state traces.
-9. ✅ **Staleness on sync changes cohort** — K8/U2 movement expected; reuse existing threshold, no new scalar.
-10. ✅ **Scarcity advance must not skip events** — `_next_avail_vclock()` = min(transitions, withheld deliveries). K1 guarded.
-11. ✅ **Regression discipline** — syn_0 byte-identity on every stage before syn_20 validation.
-12. ✅ **Library mixin spans examples** — `AvailabilityMixin` + `trace.py` in `flame/`; never re-add example-local copy.
-13. ✅ **Empty per-task pool corrupts shared `selected_ends`** — ROOT-CAUSE FIXED (Jun 29, ahead of the mobiperf ramp). `_handle_send_state`'s "invalid prior selection" cleanup checked `end_id not in ends` where `ends` was the availability-filtered eligible pool, so an in-flight trainer that merely went UN_AVL (or wrong task-type) was dropped from `selected_ends` though still connected; an empty per-task eligible pool (all AVL_EVAL on a 3-state trace, or the 2-state eval path) wiped ALL in-flight tracking across the shared train+eval `selected_ends` → hang. Fix: added `connected_ends` param to `_handle_send_state` in all three selectors (`async_oort`, `async_random`, `fedbuff`); cleanup now keys off the full connected pool, new-candidate selection still uses `eligible_ends`. Falls back to `ends` when omitted (backward-compat). The interim `_trace_has_avl_eval` 2-state guard is KEPT (defense-in-depth; it also drives task-type partitioning). +3 regression tests (`TestChallenge13SendStateCleanup`). **Still needs live exercise at mobiperf_3st (B2.3).**
-14. ✅ **Scarcity threshold mismatch** — oort `min_required=5` + `max_retries` + proceed-anyway; syncfl pool=0 post-selection. Fixed by F.2 unified pattern.
-15. ⚠️ **Sync vs async starvation threshold gap + scenario-sizing trap** — async (oort): `eligible = n − unavail − in_flight`; `in_flight ≈ agg_goal` so threshold is effectively `n − unavail > desired_selection + agg_goal`. Sync (feddance): `on_round_completed` clears `selected_ends` before next `_distribute_weights` → `eligible = n − unavail`; starvation fires when `unavail > n − agg_goal`. At n=25 syn_50, peak unavail=14 < 15 (=25−10) → never fires. **The n=12 "fix" was WRONG** (assumed ~3 unavailable; syn_50 ⇒ ~6 ⇒ eligible≈6 ≪ 10 ⇒ *perpetual* starvation, ~0 training — confirmed Jun 29). **Correct scenario = make eligible straddle the threshold:** `eligible ≈ 0.5 n` at syn_50, so **n ≈ 20** centers it on agg_goal=10 (n=18 for more starvation, n=22–24 for mostly-training). Generalize: pick **n ≈ threshold ÷ (1 − unavail_frac)**, not a fixed number; per-baseline (oort floor n ≳ 16).
-16. ✅ **Real-mode aggregate-recv hang under unavailability** (FIXED Jun 29 — B2.0.1). The syncfl base called `channel.recv_fifo(ends, first_k=agg_goal)` in real mode with **no `timeout`**; when withheld (unavailable) trainers don't send, fewer than `first_k` arrive and the barrier blocks forever (real feddance n=12: ~46 min, 0 rounds, killed by the watchdog). NOT the scarcity poll — pure scarcity self-terminates via `increment_round` (sim proved this at round 4). oort/asyncfl already bounded their real recv; only syncfl lacked it. Fix: `timeout = min(trainer_recv_wall_timeout_s=90 s, remaining budget)` on the real `recv_fifo`, mirroring oort. Distinct from B2.0 #3 (which is *what counts* against the budget — parity-correct); this is the *real recv having no abandon* under withholding.
+1. ✅ Ordering on `delivery_ts`, not `sct` — U6/U3 validated.
+2. ✅ A3 time-base drift — hard CONTROL gate; 90 s abandon re-clocked to vclock.
+3. ⚠️ A2 two-tolerance trap — bimodal sim vs smoother real → KS shape artifact; means match; improving with run
+   length (0.437→0.338). Expect ≤0.2 at n=300/3 h.
+4. ✅ Busy ≠ unavailable ≠ withheld — three ledgers.
+5. ✅ Real send-gate fidelity — withheld-then-delivered (not drop); accept_frac=1.0.
+6. ✅ Determinism — commit ordered by `(delivery_ts, end_id)`.
+7. ✅ Compound straggler + UN_AVL cross-product — unit-tested.
+8. ✅ AVL_EVAL inert for oort (dispatches 0 eval); `_trace_has_avl_eval` guard.
+9. ✅ Staleness on sync changes cohort — K8/U2 movement expected; reuse existing threshold.
+10. ✅ Scarcity advance must not skip events — `_next_avail_vclock()` = min(transitions, withheld deliveries).
+11. ✅ Regression discipline — syn_0 byte-identity every stage.
+12. ✅ Library mixin spans examples — `AvailabilityMixin`+`trace.py` in `flame/`; never example-local copy.
+13. ✅ Empty per-task pool corrupts shared `selected_ends` — ROOT-FIXED: `_handle_send_state` cleanup keys off
+    `connected_ends` (not the availability-filtered pool) in all three selectors; +3 tests. `_trace_has_avl_eval`
+    guard KEPT (defense-in-depth). **Needs live exercise at mobiperf_3st (T5).**
+14. ✅ Scarcity threshold mismatch — fixed by F.2 unified pre-selection pattern.
+15. ⚠️ **Per-baseline in-flight accounting + scenario sizing.** In-flight is NOT constant across baselines:
+    - **oort (sync, over-selects):** `in_flight ≈ overcommitment·agg_goal − completed` (~0.3·agg_goal extra);
+      effective starve trigger `n − unavail < desired_selection (=13)`.
+    - **felix/fedbuff (async):** concurrency-bound, `in_flight` can exceed agg_goal; trigger uses the async pool.
+    - **refl/feddance (sync FedAvg):** `on_round_completed` clears `selected_ends`; FedDance returns *partial*
+      selections, so `eligible ≈ (1−unavail_frac)·n`; trigger `unavail > n − agg_goal`.
+    Manage in-flight per baseline — do NOT assume "sync has no in-flight term." Scenario sizing: syn_50 caps at
+    ~43 % unavail, so feddance straddle window is narrow (n≈19); pick `n ≈ threshold ÷ (1 − unavail_frac)`.
+16. ✅ Real-mode aggregate-recv hang (B2.0.1) — syncfl real `recv_fifo` bounded with `timeout=min(90 s, budget)`.
+17. ⚠️ **Sim starvation self-termination (B2.0.2)** — perpetual scarcity at the trace end-horizon pins vclock at
+    budget; strict-`>` budget check never trips → spin until wall ceiling. Fix in T0.
 
 ---
 
 ## 6. Dead-ends (settled — do not retry)
 
-- **busy → UN_AVL routing**: ramped in-flight to ~300; busy/unavailable/withheld are three distinct states.
-- **Frozen per-trainer clock** (`_sim_now()` = last-dispatch `_sim_send_ts`): stuck UN_AVL forever. Availability reads `_vclock.now`.
-- **Wall-clock in sim** for selection gate or 90s abandon: wall barely advances vs vclock → every deadline missed.
-- **Per-tick MQTT broadcast**: comms storm + sub-optimal decisions. v1 = oracular pull (zero comms).
-- **Ordering withheld commits by `sct`**: re-introduces past-dating. Fixed: order by `(delivery_ts, end_id)`.
-- **Forking withhold/abandon per stack**: single shared `AvailabilityMixin` (Challenge 12).
-- **A4 counting bare transition fraction**: brittle, blind in oracular mode. Replaced by `A4dur` + `Aa`.
-- **Silent-OFF trace-name mismatch** (`avl_events_syn_20` → `syn_20`): fixed in `trace.py` name normalization.
-- **D.2 excluding AVL_TRAIN from eval on 2-state traces**: made eval pool permanently empty → `_handle_send_state` cleanup wiped `selected_ends` across both tasks → run hangs exit-code 0. Fixed by `_trace_has_avl_eval` guard.
-- **Subtracting starvation vclock-jumps from `max_experiment_runtime_s`** (Jun 29, B2.0 #3): would break sim/real parity. Real mode polls scarcity (`time.sleep(0.5)`+retry) and consumes WALL budget; sim's vclock jump consumes virtual budget symmetrically — they match by design. Discounting sim jumps would let sim run more training rounds than real per budget. The budget counts scarcity wait by design; size `--runtime-s` accordingly and pick a valid cohort (oort: n ≥ desired_selection, see cohort-floor guardrail).
+- **busy → UN_AVL routing** — three distinct states.
+- **Frozen per-trainer clock** (`_sim_now()` = last-dispatch ts) — stuck UN_AVL forever; read `_vclock.now`.
+- **Wall-clock in sim** for selection gate / 90 s abandon — wall barely advances vs vclock.
+- **Per-tick MQTT broadcast** — comms storm; v1 = trace-read pull (zero comms).
+- **Ordering withheld commits by `sct`** — past-dating; order by `(delivery_ts, end_id)`.
+- **Forking withhold/abandon per stack** — single shared `AvailabilityMixin`.
+- **A4 bare transition fraction** — brittle in trace-read mode; replaced by A4dur + Aa.
+- **D.2 excluding AVL_TRAIN from eval on 2-state traces** — empty eval pool wiped `selected_ends`; fixed by
+  `_trace_has_avl_eval` guard.
+- **Subtracting starvation vclock-jumps from the budget** — breaks parity (real polls scarcity on wall budget;
+  sim vclock jump consumes virtual budget symmetrically — they match). Size `--runtime-s` accordingly. *(B2.0.2
+  is the opposite problem — failing to advance/stop at all — not a reason to revisit this.)*
 
 ---
 
-## 7. Known parity failures (non-blocking — investigate at Batch 2)
+## 7. Known parity failures (non-blocking — resolve at T5 with long-run data)
 
 | Check | Baseline | Status | Verdict |
 |---|---|---|---|
-| K3b `overhead_residual` | oort | rel≈0.116 consistently | Was PASS at 1.5h → run-length sensitive. Root-cause unclear (P3 gates it at n=300). Investigate at Batch 2. |
-| A2 `eligibility` KS | oort | 0.437 (1800s) → 0.338 (3600s) | Shape artifact: bimodal sim vs smoother real distribution. Means match. Improving with run length. |
-| P3 `trainer_speed` | oort | ratio=1.153 at n=300 (tol 1.15) | Marginal tail divergence at full cohort. Possibly noise; gates K3b. Investigate at Batch 2. |
-| C2 `loss` | feddance | avg_diff≈0.16 (2–3 eval pts) | Emergent early-training noise at α=0.1. K8/C1/utility PASS; not a mechanism gap. |
-| U5 `inter-arrival` ρ | feddance | ρ=0.381 at syn_50 (non-enforced) | Worsened vs syn_20 (0.659). Watch at mobiperf. |
-| A4dur | feddance | ✅ RESOLVED — PASS | Was wrongly diagnosed as "stamps post-selection". F.2 already stamps pre-selection (`syncfl:896` < `:957`). Parity CLI on n=25 syn_50 pair → A4dur PASS (avl_state 71/71 sim, 67/67 real). K3b also PASS for feddance. |
-| A3 `avail_timebase` | feddance | max_rel_diff=0.245 at n=25 | Join-ramp artifact: real trainers all connect by round 2 (eligible=25 immediately), sim ramps 17→25. First-decile bin dominates at small n. Not a time-base bug. Expect clear at Batch 2 n=300. |
-| A2 `eligibility` KS | feddance | KS=0.509 at n=25 (gated by A3) | Same join-ramp artifact + downstream of A3 FAIL. real_mean=20.5, sim_mean=18.6 (sim correctly applies unavailability; real ramps faster). Not a mechanism gap. |
+| K3b `overhead_residual` | oort | rel≈0.116 | Run-length sensitive; P3 gates at n=300. Investigate T5. |
+| A2 `eligibility` KS | oort | 0.437→0.338 (1.5h→3h) | Bimodal-vs-smooth shape artifact; means match; improving. |
+| P3 `trainer_speed` | oort | ratio=1.153 (tol 1.15) | Marginal tail at n=300; gates K3b. Investigate T5. |
+| C2 `loss` | feddance | avg_diff≈0.16 (few eval pts) | Early-training noise at α=0.1; K8/C1/utility PASS. |
+| U5 `inter-arrival` ρ | feddance | 0.659→0.381 (syn_20→50) | Watch at mobiperf. |
+| A4dur | feddance | ✅ RESOLVED — PASS | F.2 stamps pre-selection; n=25 pair A4dur PASS. |
+| A3 `avail_timebase` | feddance | 0.245 (n=25), 0.315 (n=20) | Small-n join-ramp artifact (divergence only in first 1–2 deciles, then ~0); means match. Expect clear at n=300. |
+| A2 `eligibility` KS | feddance | 0.509 (n=25), 0.286 (n=20) | Same join-ramp + gated by A3; real ramps faster, sim applies unavailability correctly. Clears at n=300. |
