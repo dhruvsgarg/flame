@@ -328,7 +328,7 @@ step3_syn20_sim() {
 # ── Step 4: syn_20 both modes ────────────────────────────────────────────────
 step4_syn20_both() {
   _step "4  syn_20 — sim then real, all 6 baselines"
-  _log "  (real runs take ~${RUNTIME_SYN20_S}s wall each; total step ~$(( ${#ALL_BASELINES//[! ]/} * RUNTIME_SYN20_S / 60 ))+ min)"
+  _log "  (real runs take ~${RUNTIME_SYN20_S}s wall each; total step ~$(( $(wc -w <<< "$ALL_BASELINES") * RUNTIME_SYN20_S / 60 ))+ min)"
   for bl in $ALL_BASELINES; do
     _run_one "$bl" sim  syn_20 "$RUNTIME_SYN20_S" s4
     _run_one "$bl" real syn_20 "$RUNTIME_SYN20_S" s4
