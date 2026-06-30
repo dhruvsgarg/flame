@@ -105,7 +105,6 @@ if __name__ == "__main__":
     config = load_config_from_argv()
 
     logger.setLevel(_cli_args.log_level)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logging.basicConfig(
         level=logging._nameToLevel[_cli_args.log_level],
@@ -113,6 +112,13 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d,%H:%M:%S",
     )
     logger.info(config)
+
+    # Logged before the CUDA call so a wedged/hung GPU driver shows up as a
+    # stalled log file right after this line, instead of a silently empty one
+    # (torch.cuda.is_available() can block indefinitely on a wedged driver).
+    logger.info("checking CUDA availability...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"using device: {device}")
     set_seed(config.hyperparameters.manual_seed)
 
     # dataset attributes
