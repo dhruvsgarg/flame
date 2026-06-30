@@ -116,7 +116,17 @@ for exp in cfg.get("experiments", []):
         # file's own default trainer count (10), so left alone, a
         # 100-trainer run's directory would stay misleadingly named
         # "..._n10_smoke".
-        exp["name"] = f"{run_key}_n{num_trainers}_smoke"
+        new_name = f"{run_key}_n{num_trainers}_smoke"
+        exp["name"] = new_name
+        # job.id is a separate field (MQTT job/task identifier, shared
+        # verbatim with trainers via the job.id dotted override in
+        # runner.py) -- every checked-in source YAML keeps it equal to
+        # exp["name"], so keep that invariant here too. Same value on both
+        # sides isn't required for correctness within a single run (the
+        # aggregator's job.id is what gets propagated to trainers either
+        # way), but leaving it as the stale "n10" id is the same kind of
+        # misleading-after-the-fact metadata exp["name"] was fixed for above.
+        exp["aggregator"]["config_overrides"]["job"]["id"] = new_name
     if num_gpus:
         exp["execution"]["num_gpus"] = int(num_gpus)
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
