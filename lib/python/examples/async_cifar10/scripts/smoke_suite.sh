@@ -121,12 +121,19 @@ _run_baseline() {
 
   local ts_start; ts_start=$(date +%s)
 
-  # setsid gives the child a new session whose SID=PGID=pid, so
-  # kill -TERM/-KILL on -$runner_pid reaches the whole process tree.
-  env FLAME_LOGDIR="$run_dir" \
-    setsid bash "$DEBUG_RUN" "$@" \
+  # set -m (job control) forces bash to assign PGID = runner_pid to the
+  # background job regardless of whether the suite is running interactively
+  # or not.  All descendants inherit that PGID (flame's spawner.py uses plain
+  # subprocess.Popen with no start_new_session/os.setsid), so
+  # kill -TERM/-KILL on -$runner_pid reliably reaches the whole process tree.
+  # Rationale: setsid forks when the calling process is already a pg-leader
+  # (interactive terminals do this), making runner_pid point to a dead parent
+  # instead of the actual session leader → kill misses the tree entirely.
+  set -m
+  env FLAME_LOGDIR="$run_dir" bash "$DEBUG_RUN" "$@" \
     >"$run_dir/shell.log" 2>&1 &
   local runner_pid=$!
+  set +m
 
   local deadline=$(( ts_start + wall_timeout ))
   local timed_out=0
