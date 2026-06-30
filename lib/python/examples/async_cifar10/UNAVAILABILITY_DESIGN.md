@@ -102,7 +102,7 @@ Today a single `_availability_aware` HP gates `_sim_evict_unavail_inflight`. Spl
 
 ---
 
-## Status (Jun 29 — Batch 2 pre-flight ✅ COMPLETE. T5 (overnight run campaign) is next.)
+## Status (Jun 30 — T5-smoke scripted; launch before full T5 parity campaign.)
 
 **A/B/C/C.6/D/E ✅ CONFIRMED syn_20. F.2 ✅ FIXED (B2.0.2 starvation self-termination).
 syn_0 ✅. oort n=25 syn_50 ✅ (starvation fires, K1/K3a PASS). B2.0.1 real recv-barrier ✅ FIXED + confirmed.
@@ -236,6 +236,85 @@ sim and a mocked-real path, asserting identical state timelines:
   "no per-(trainer,t) exact agreement" gap (A3/A4 only aggregate).
 - **Run T4 across all six baselines** on synthetic + mobiperf traces.
 - **Exit:** suite green for all six; A5 wired into `checks.py`/`report.py`.
+
+### T5-smoke — Overnight smoke gate (6h; run before full T5)
+
+Validates all 6 baselines self-terminate cleanly across syn_0/syn_20/syn_50; new scaffolding (fedbuff,
+oort_star) runs without `ValueError`; B2.0.2 starvation fix holds; no `SIM_WALL_CEILING`.
+
+**Command (6h budget):**
+```bash
+cd lib/python/examples/async_cifar10
+nohup bash scripts/smoke_suite.sh \
+  --runtime-syn0-s 600 --runtime-syn20-s 900 --runtime-syn50-s 1800 \
+  --timeout-buffer-s 300 \
+  --steps 1,2,4,5 \
+  --output-dir experiments/smoke_$(date +%Y%m%d_%H%M) \
+  > /tmp/smoke_suite.out 2>&1 &
+echo $!   # monitor: tail -f /tmp/smoke_suite.out
+          # report:  cat experiments/smoke_*/report.txt
+```
+
+Step 3 (syn_20 sim) is omitted — step 4 already runs syn_20 sim as its first half, so step 3 is fully redundant.
+
+**Run count: 23 jobs / 22 FL experiments.**
+
+| Step | Description | Runs | Runtime |
+|------|-------------|------|---------|
+| 1 | pytest (all tests in `lib/python/tests/`) | 1 | — |
+| 2 | syn_0 sim × 6 baselines | 6 | 600s vclock |
+| 4 | syn_20 sim × 6 + syn_20 real × 6 | 12 | 900s each |
+| 5 | syn_50 {sim, real} × {feddance, oort} | 4 | 1800s each |
+
+**Expected wall time: ~4h 40min. Fits 6h with ~1h 20min margin.**
+
+| Segment | Count | Estimate |
+|---------|-------|----------|
+| pytest | 1 | ~10 min |
+| syn_0 sim ×6 (600s vclock, ~1.5–2× faster than real) | 6 | ~6 min each → 36 min |
+| syn_20 sim ×6 (900s vclock) | 6 | ~8 min each → 48 min |
+| syn_20 real ×6 (= exactly 900s wall) | 6 | 15 min each → 90 min |
+| syn_50 sim ×2 (1800s vclock) | 2 | ~17 min each → 34 min |
+| syn_50 real ×2 (= exactly 1800s wall) | 2 | 30 min each → 60 min |
+| **Total** | **23** | **~278 min ≈ 4h 38min** |
+
+Sim speedup (1.5–2×) comes from skipping wall-sleep delays; actual GPU training still runs at real speed.
+Worst case (all 22 FL runs hit wall_timeout + buffer): ~8h — requires every run to stall, not expected.
+
+**Hypothesized outcomes:**
+
+| Step | Baseline | Prediction | Key risk |
+|------|----------|------------|----------|
+| 1 | all | ✅ PASS (536p/7s) | — |
+| 2 | felix / oort / refl / feddance | ✅ PASS | syn_0 = always-avail; avail logic not exercised |
+| 2 | fedbuff | 🟡 LIKELY PASS | first live run; lrDecay HP must survive merge |
+| 2 | oort_star | 🟠 UNCERTAIN | first live run; YAML scaffold may miss a required field |
+| 4 | felix / refl / feddance sim+real | ✅ PASS | well-validated at syn_20 |
+| 4 | oort sim+real | 🟡 LIKELY PASS | unaware; tested at small n; n=300 adds scale only |
+| 4 | fedbuff sim+real | 🟠 UNCERTAIN | FedBuff selector + avail events untested live |
+| 4 | oort_star sim+real | 🟠 UNCERTAIN | aware-sync + oort selector combo untested live |
+| 5 | feddance + oort both | ⚠️ see note | starvation NOT expected at n=300 (see below) |
+
+**⚠️ Step 5 starvation note.** syn_50 peaks at ~43 % unavail → eligible ≈ 171 for feddance (agg_goal=10)
+and ~171 for oort, both far above the selection threshold at n=300. `[SIM_STARVATION]` events will likely
+be **absent** — this is **correct** at n=300, not a failure. Step 5 pass criteria: `"stopping run"` present
++ no `SIM_WALL_CEILING`. B2.0.2 starvation regression is covered by unit tests and by oort n=25 smoke;
+the step-5 purpose at n=300 is clean self-termination under high unavailability, not starvation validation.
+
+**Failure watch-list:**
+
+| Symptom | Probable cause | Action |
+|---------|---------------|--------|
+| oort_star `ValueError` at run start | Missing field in `baselines.yaml` or parity YAML | Fix scaffold; re-run step 2 for oort_star |
+| fedbuff NaN / loss explosion | lrDecay HP absent after baseline→experiment merge | Check `agg_logs.txt`; verify HP in aggregator_config.json |
+| Real run TIMEOUT (syn_20, n=300) | MQTT reconnect storm from 300 trainers under 20 % unavail | Increase `--runtime-syn20-s 1800` and re-run |
+| `SIM_WALL_CEILING` in any sim run | Avail overhead slowing sim below 1× real (vclock progress < wall) | Investigate that baseline's sim:real wall ratio; not a B2.0.2 regression |
+| `FAIL(no_stop)` on step-5 real | 1800s budget too tight for n=300 join ramp at 43 % unavail | Increase `--runtime-syn50-s 2400` and re-run step 5 |
+
+**Post-smoke gate:**
+- Steps 1+2+4 PASS for all 6 → proceed to full T5 overnight (n=300, 3h, all traces).
+- fedbuff or oort_star FAIL in step 2/4 → fix scaffolding before T5 (new code, not regressions).
+- Any `SIM_WALL_CEILING` in step 4/5 → fix sim overhead before T5.
 
 ### T5 — Parity-table campaign (syn_0 → syn_20 → syn_50 → mobiperf, sim+real, all six baselines)
 Produce a `PARITY.md`-style table (rows = baselines, cols = traces × modes, cells = pass/tot + ROOT). Order:
