@@ -3,15 +3,15 @@
 """Smoke-test stop bar: a run should stop once `self.data_id` reaches
 `hyperparameters.max_data_id_progress`, or once `hyperparameters.max_runtime_s`
 of wall time has elapsed since the aggregator started -- whichever comes
-first. Both caps are independent of `rounds`/`total_data_bins` (see
-MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 12 item 5) and are checked from
-`_distribute_weights`, which runs on every composer tick on both the sync and
-async paths -- unlike the rounds-based stop in `_process_aggregation_goal_met`,
-this also fires when an aggregation goal is never met (issue #4).
+first. Both caps are independent of `rounds`/`total_data_bins` and are
+checked from `_distribute_weights`, which runs on every composer tick on
+both the sync and async paths -- unlike the rounds-based stop in
+`_process_aggregation_goal_met`, this also fires when an aggregation goal is
+never met.
 
 Also covers `_async_inner_loop_done`: the async/hybrid compose path's inner
 `asyncfl_loop` must also exit on `_work_done`, not just an agg-goal match --
-see `TestAsyncInnerLoopExitsOnWorkDone` below for the live bug this fixes."""
+see `TestAsyncInnerLoopExitsOnWorkDone` below."""
 
 import time
 from types import SimpleNamespace
@@ -136,14 +136,12 @@ class _FakeAsyncLoopAggregator:
 
 
 class TestAsyncInnerLoopExitsOnWorkDone:
-    """Reproduces the live Phase 13 finding: fluxtune_n10_smoke's
-    `_check_early_stop_conditions()` set `_work_done` within ~5 minutes
-    (data_id reached max_data_id_progress), but the process kept running
-    until the launcher's 30-minute external watchdog force-killed it,
-    because the async/hybrid compose path's inner `asyncfl_loop` only
-    checked `_agg_goal_cnt == _agg_goal`, never `_work_done` -- so it kept
-    spinning, and the outer loop (which does check `_work_done`) never got a
-    chance to observe it."""
+    """Reproduces a live smoke-test finding: `_check_early_stop_conditions()`
+    can set `_work_done`, but the process keeps running until the launcher's
+    external watchdog force-kills it, because the async/hybrid compose
+    path's inner `asyncfl_loop` only checked `_agg_goal_cnt == _agg_goal`,
+    never `_work_done` -- so it kept spinning, and the outer loop (which
+    does check `_work_done`) never got a chance to observe it."""
 
     def test_exits_on_work_done_even_if_agg_goal_not_met(self):
         agg = _FakeAsyncLoopAggregator(agg_goal_cnt=0, agg_goal=3, work_done=True)

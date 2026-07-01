@@ -2,12 +2,10 @@
 # Run multiple fwdllm YAMLs (fwdllm, fwdllm_plus, fluxtune) one after
 # another, in a single conda env, logging each run separately.
 #
-# Each YAML carries the Phase 13 auto-termination bar
-# (MIGRATION_TO_LAUNCHER_FWDLLM.md): stop once data_id reaches a threshold,
-# or after a wall-time cap, whichever comes first. This script overrides
-# that wall-time cap (and the data_id cap) per invocation via
-# --max-runtime-s/--max-data-id, generating a patched copy of each YAML
-# rather than editing the originals.
+# Each YAML auto-terminates once data_id reaches a threshold or after a
+# wall-time cap, whichever comes first. This script overrides those caps
+# per invocation via --max-runtime-s/--max-data-id, generating a patched
+# copy of each YAML rather than editing the originals.
 #
 # Usage (from anywhere):
 #   run_sequential.sh [--max-runtime-s 600] [--max-data-id 10]
@@ -18,13 +16,10 @@
 #   --max-data-id    stop a run once data_id reaches this value (default: 10)
 #   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10)
 #   --num-gpus       override execution.num_gpus (default: each YAML's own, 1).
-#                     Each YAML's default of 1 GPU is sized for that default
-#                     10-trainer count -- scaling --num-trainers up without
-#                     also scaling this crams every trainer process onto one
-#                     GPU and OOMs it almost immediately.
+#                     Scale this with --num-trainers -- each YAML's default of
+#                     1 GPU is sized for its own default 10-trainer count.
 #   --c              override selector.kwargs.c + minInitialTrainers + agg_goal
-#                     (agg_goal matches c so no selected trainer goes stranded,
-#                     same rationale as MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 14)
+#                     (agg_goal matches c so no selected trainer goes stranded)
 #   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
@@ -94,10 +89,6 @@ mkdir -p "$LOGDIR"
 # num_trainers / selector c+k+minInitialTrainers+agg_goal, in a copy of the
 # YAML rather than the original -- keeps the checked-in smoke configs stable
 # while letting this script's caller pick the scale per invocation.
-# run_key is the plain baseline name (e.g. "fwdllm_plus", from RUNS/--only
-# below), NOT the source YAML's own "n10"-suffixed name -- it's the basis
-# for exp["name"], so the run directory it produces is never stale/wrong
-# regardless of what naming convention the source YAML file happens to use.
 patch_yaml() {
   python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" <<'PY'
 import sys, yaml
@@ -109,23 +100,14 @@ for exp in cfg.get("experiments", []):
     h["max_data_id_progress"] = int(max_data_id)
     if num_trainers:
         exp["trainer"]["num_trainers"] = int(num_trainers)
-        # exp["name"] feeds the run directory name (run_<ts>_<name>).
-        # Derive it from run_key (this run's plain baseline identity) and
-        # the actual trainer count, instead of copying the source YAML's
-        # own checked-in name verbatim -- that name encodes only that
-        # file's own default trainer count (10), so left alone, a
-        # 100-trainer run's directory would stay misleadingly named
-        # "..._n10_smoke".
+        # exp["name"] feeds the run directory name (run_<ts>_<name>); derive
+        # it from run_key + the actual trainer count rather than copying the
+        # source YAML's own checked-in name, which only reflects that file's
+        # default count. job.id must track exp["name"] (every checked-in
+        # YAML keeps them equal; it's the MQTT job/task id shared with
+        # trainers via runner.py).
         new_name = f"{run_key}_n{num_trainers}_smoke"
         exp["name"] = new_name
-        # job.id is a separate field (MQTT job/task identifier, shared
-        # verbatim with trainers via the job.id dotted override in
-        # runner.py) -- every checked-in source YAML keeps it equal to
-        # exp["name"], so keep that invariant here too. Same value on both
-        # sides isn't required for correctness within a single run (the
-        # aggregator's job.id is what gets propagated to trainers either
-        # way), but leaving it as the stale "n10" id is the same kind of
-        # misleading-after-the-fact metadata exp["name"] was fixed for above.
         exp["aggregator"]["config_overrides"]["job"]["id"] = new_name
     if num_gpus:
         exp["execution"]["num_gpus"] = int(num_gpus)
@@ -133,8 +115,7 @@ for exp in cfg.get("experiments", []):
     if sel_c:
         kwargs["c"] = int(sel_c)
         kwargs["minInitialTrainers"] = int(num_trainers) if num_trainers else int(sel_c)
-        # agg_goal matches c so no selected trainer goes uncounted/stranded
-        # (MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 14).
+        # agg_goal matches c so no selected trainer goes uncounted/stranded.
         exp["aggregator"]["agg_goal"] = int(sel_c)
     if sel_k:
         kwargs["k"] = int(sel_k)

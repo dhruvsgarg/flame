@@ -1,9 +1,8 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for fwdllm_aggregator.read_trainer_unavailability() (P3 of the
-fwdllm launcher migration's Phase 7) -- it must read availability traces
-from a `_metadata` bundle (registry + traces), not from the legacy
-json_scripts/trainer_*.json directory."""
+"""Tests for fwdllm_aggregator.read_trainer_unavailability() -- it must read
+availability traces from a `_metadata` bundle (registry + traces), not from
+the legacy json_scripts/trainer_*.json directory."""
 
 import glob as glob_module
 

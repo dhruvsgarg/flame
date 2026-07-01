@@ -1,15 +1,12 @@
 # FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
 # 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
-# (FedFwd has no simulated-clock support yet -- see
-# MIGRATION_TO_LAUNCHER_FWDLLM.md "New aspects" #6).
+# (FedFwd has no simulated-clock support yet).
 #
 # Uses the `fluxtune` baseline (async, async_oort selector, fedbuff with an
 # explicit learning_rate, 3-tier client_notify, fixed K/C i.e.
-# selector.kwargs.dynamic_kc.enabled left at the baseline default of false) --
-# exercises Phase 7 step P2 (explicit learning_rate) and the JVP perturbation
-# + 3-tier client_notify axes. Sibling of fwdllm_n10_smoke.yaml/
-# fwdllm_plus_n10_smoke.yaml; run all three for full real/sim parity coverage
-# across the taxonomy.
+# selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
+# Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
+# for full real/sim parity coverage across the taxonomy.
 #
 # Run:
 #   python -m flame.launch.run_experiment \
@@ -66,9 +63,8 @@ experiments:
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
           # Smoke-test stop bar: whichever of these fires first ends the run
-          # (see MIGRATION_TO_LAUNCHER_FWDLLM.md "Status & next step" /
-          # Phase 12 item 5 -- `rounds` alone is much too coarse, since one
-          # round is 150 data-id completions).
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
           max_data_id_progress: 10  # stop once data_id reaches 10
           max_runtime_s: 1800  # ...or after 30 minutes wall time
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5

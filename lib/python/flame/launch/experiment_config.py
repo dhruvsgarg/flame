@@ -1,5 +1,5 @@
 """
-Experiment configuration schema for Phase 3.
+Experiment configuration schema.
 
 Defines data structures for experiment configurations.
 """

@@ -88,9 +88,9 @@ FWDLLM_AGGREGATOR_MAIN = (
     reason="shared metadata or fwdllm trainer_base not present",
 )
 class TestFwdllmEndToEndConfigGeneration:
-    """Phase 7 step P7: for each of the four fwdllm baselines, generate the
-    aggregator + a trainer config end-to-end (mirrors Smoke Test D, extended
-    from the single retired fedfwd_async_random_dynkc to all four)."""
+    """For each of the four fwdllm baselines, generate the aggregator + a
+    trainer config end-to-end (extends the single retired
+    fedfwd_async_random_dynkc coverage to all four)."""
 
     @pytest.fixture
     def baselines(self):

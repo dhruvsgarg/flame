@@ -1,9 +1,9 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the `reselect_each_iteration` selection-granularity gate (P4
-of the fwdllm launcher migration's Phase 7): per-round (False) selects
-once and reuses the same trainer set for the whole round; per-iteration
-(True, default) re-invokes the selector every call."""
+"""Tests for the `reselect_each_iteration` selection-granularity gate:
+per-round (False) selects once and reuses the same trainer set for the
+whole round; per-iteration (True, default) re-invokes the selector every
+call."""
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 

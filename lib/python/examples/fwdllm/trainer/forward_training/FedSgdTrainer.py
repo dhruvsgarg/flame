@@ -251,8 +251,7 @@ class FedSGDTrainer(Trainer):
         # own historical convention) and the short form ("mobiperf_2st", the
         # flame.launch spawner's availability_mode/client_notify.trace
         # convention mirrored from async_cifar10) -- the launcher's
-        # _metadata/ injects the short form. See
-        # MIGRATION_TO_LAUNCHER_FWDLLM.md step 11.
+        # _metadata/ injects the short form.
         elif self.client_notify["trace"] in (
             "avl_events_mobiperf_2st",
             "mobiperf_2st",

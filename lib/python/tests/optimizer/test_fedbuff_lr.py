@@ -1,8 +1,8 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for FedBuff's explicit learning_rate kwarg (P2 of the fwdllm
-launcher migration's Phase 7) -- when present it overrides the
-dataset_name lookup table; when absent, the legacy table is unchanged."""
+"""Tests for FedBuff's explicit learning_rate kwarg -- when present it
+overrides the dataset_name lookup table; when absent, the legacy table is
+unchanged."""
 
 import torch
 

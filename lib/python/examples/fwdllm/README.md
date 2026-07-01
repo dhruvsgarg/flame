@@ -17,7 +17,7 @@ Notes:
   replaces them. `setup.py` is the source of truth.
 - fwdllm uses `peft_method: adapter` on DistilBERT (parameter-efficient
   adapters keep the forward-gradient trainable set small). See
-  `MIGRATION_TO_LAUNCHER_FWDLLM.md` Phase 8 for the full dependency rationale.
+  `../MIGRATING_TO_LAUNCHER.md` §9 "NLP dependencies" for the full rationale.
 
 # Data
 The system by default caches the data on each run and builds a key based on max sequence length and partition type. 

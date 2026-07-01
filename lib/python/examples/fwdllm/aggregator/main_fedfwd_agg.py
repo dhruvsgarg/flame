@@ -4,9 +4,7 @@ Single entrypoint for FedFwd: flame.mode.horizontal.syncfl.fwdllm_aggregator.
 TopAggregator (which FedSGDAggregator extends) is a FedFwd-specific
 implementation (dynamic_kc controller, JVP/forward-mode variance gating,
 max_iterations_per_data_id), not the generic swappable asyncfl/syncfl/oort
-hierarchy async_cifar10 splits into per-stack files. See
-MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 2b for why there is only one aggregator
-entrypoint here.
+hierarchy async_cifar10 splits into per-stack files.
 """
 
 import os

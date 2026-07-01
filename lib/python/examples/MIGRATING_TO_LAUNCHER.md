@@ -628,6 +628,43 @@ from the felix/oracle baselines.
 `train_with_data_id()` call (`FedSgdTrainer.py`). See §5 for the JSONL
 contract; the env var `FLAME_TELEMETRY_DIR` is set by the launcher.
 
+### Lessons from smoke-testing fwdllm
+
+- **CUDA init blocks before logging is configured.** In
+  `aggregator/main_fedfwd_agg.py`, call `logging.basicConfig()` (and log a
+  line) *before* `torch.cuda.is_available()`. That call can hang
+  indefinitely on a wedged GPU driver; logging first turns a silently empty
+  log file into one that visibly stalls right after "checking CUDA
+  availability...".
+- **Guard variance checks against `n < 2`.**
+  `fwdgrad_utils.calculate_var`/`calculate_real_var` must skip (not crash on
+  `torch.stack([])`) when fewer than 2 gradients are available, matching the
+  existing `n<2` guard in `calculate_snr`/`calculate_cv`. A stale trainer
+  update can race into a freshly-cleared `grad_for_var_check_list` right at
+  a data_id transition.
+- **`Hyperparameters.staleness_policy`** (`flame/config.py`) has three modes
+  — `exact` (must match round/data_id/iteration), `round_data_id` (must
+  match round/data_id, any iteration), `none` (no gate) — and supersedes the
+  plain `reject_stale_updates` boolean for FedFwd baselines. `exact` needs
+  `ITERATION_PER_DATA_ID` echoed back in the trainer's `GRADIENTS` message.
+  Wired per baseline: `fwdllm`=exact, `fwdllm_plus`=round_data_id,
+  `fluxtune`=none.
+- **`run_sequential.sh`'s `--num-gpus` must scale with `--num-trainers`.**
+  Each smoke YAML's checked-in `execution.num_gpus` default is sized for its
+  own trainer count; overriding trainer count without also overriding GPU
+  count crams all trainers onto too few GPUs and OOMs. The script's
+  `--only`/`RUNS` keys and the run directory name it produces are the plain
+  baseline name (`fwdllm`, `fwdllm_plus`, `fluxtune`) plus the actual
+  `--num-trainers` value, not the source YAML's own checked-in `n10` suffix
+  — including `aggregator.config_overrides.job.id`, which every checked-in
+  YAML keeps equal to `exp["name"]`.
+- **`syn_train_100_eval_0_unavail_0`/`syn_train_90_eval_10_unavail_0`/
+  `syn_train_50_eval_30_unavail_20`** now have real per-trainer data in
+  `synthetic_traces.yaml` (ported from the 150-trainer JSON source in
+  `expts/run_tc_expts/json_scripts/`, trainers 151–300 wrap trainers 1–150).
+  Spawner auto-injection for these three keys isn't wired up yet — that's
+  future work, not part of this data port.
+
 ---
 
 ## 10. Migration checklist for a new example

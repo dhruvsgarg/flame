@@ -836,13 +836,10 @@ class TopAggregator(AsyncTopAgg):
             logger.debug(
                 f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
             )
-            # Use this message's stat_utility (always sent alongside
-            # GRADIENTS, see fwdllm_trainer.py's msg dict), not the channel
-            # property -- the property is set below, after this call, so
-            # reading it here was always None on a trainer's first
-            # contribution (crashing fedbuff's weight_factor() on
-            # `1 + None`, silently neutralizing the aggregation rate every
-            # time).
+            # Use this message's stat_utility, not the channel property --
+            # the property is set below, after this call, so reading it here
+            # was always None on a trainer's first contribution (crashing
+            # fedbuff's weight_factor() on `1 + None`).
             self.aggregate_grads_from_trainers(
                 trainer_gradients,
                 version_for_rate=version_for_rate,
@@ -880,14 +877,11 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
-        # cleanup_recvd_end()/cleanup_provided_ends(), not
-        # remove_from_selected_ends(): the latter never clears the
-        # selector's all_selected set, permanently blocking this trainer
-        # from future reselection. Async selectors (async_oort,
-        # async_random) only implement the batch _cleanup_recvd_ends/
-        # _cleanup_provided_ends path -- cleanup_recvd_end() is sync-only
-        # (random selector), so it must stay behind the is_async branch
-        # like the reject-stale-update branch above.
+        # Not remove_from_selected_ends(): it never clears the selector's
+        # all_selected set, permanently blocking this trainer from future
+        # reselection. Async selectors only implement the batch
+        # _cleanup_recvd_ends/_cleanup_provided_ends path; cleanup_recvd_end()
+        # is sync-only (random selector).
         if self.is_async:
             channel.cleanup_provided_ends(end)
         else:
@@ -1521,7 +1515,7 @@ class TopAggregator(AsyncTopAgg):
 
     def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
         """Return the SEND-state-selected ends, honoring
-        `self._reselect_each_iteration` (D4 / Phase 7 step P4).
+        `self._reselect_each_iteration`.
 
         True (default): re-invoke the selector every call. False: accumulate
         selections into a per-round cache, re-invoking the selector each
@@ -1820,8 +1814,7 @@ class TopAggregator(AsyncTopAgg):
         production runs are unaffected. Called from `_distribute_weights`,
         which runs on every composer tick on both the sync and async paths
         -- unlike the rounds-based stop in `_process_aggregation_goal_met`,
-        this also fires when aggregation never completes (e.g. issue #4 in
-        MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 12).
+        this also fires when aggregation never completes.
         """
         if self._work_done:
             return
@@ -1854,16 +1847,12 @@ class TopAggregator(AsyncTopAgg):
         Must OR in `self._work_done`, not just check the agg-goal match: the
         outer `loop` only re-checks `_work_done` once this inner loop's
         ender (`task_get_weights`) completes, which can block for a long
-        time if contributions trickle in slowly (Phase 12 issue #4 in
-        MIGRATION_TO_LAUNCHER_FWDLLM.md). Without this OR,
+        time if contributions trickle in slowly. Without this OR,
         `_check_early_stop_conditions()` reaching a cap (e.g.
         `max_data_id_progress`) mid-distribute sets `_work_done`, but the
         inner loop keeps spinning until an agg-goal happens to complete on
         its own -- silently swallowing the early-stop until the launcher's
-        external watchdog force-kills the process instead (observed live:
-        Phase 13 smoke re-run, fluxtune_n10_smoke hit max_data_id_progress
-        in ~5 minutes but wasn't actually killed until the 30-minute
-        watchdog fired).
+        external watchdog force-kills the process instead.
         """
         return self._agg_goal_cnt == self._agg_goal or self._work_done
 

@@ -169,8 +169,8 @@ class TestSharedBaselinesYaml:
 
 
 class TestFwdllmBaselines:
-    """Phase 7 step P5/P7: fwdllm/fwdllm_plus/fluxtune/fluxtune_dynkc replace
-    the retired fedfwd_async_random_dynkc/fedfwd_oracular (decision D6)."""
+    """fwdllm/fwdllm_plus/fluxtune/fluxtune_dynkc replace the retired
+    fedfwd_async_random_dynkc/fedfwd_oracular."""
 
     @pytest.fixture
     def baselines(self):
