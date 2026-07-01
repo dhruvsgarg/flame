@@ -1975,6 +1975,7 @@ class TopAggregator(AsyncTopAgg):
                     # >> task_get_heartbeat
                     >> task_aggregate_grads_sync
                 )
+                >> c.tasklet("inform_end_of_training")
                 # >> c.tasklet("load_data") c.tasklet("initialize")
                 # >> task_get_heartbeat task_put_train c.tasklet("heartbeat") loop(
                 # >> task_reset_agg_goal_vars # >> asyncfl_loop(task_put >>
