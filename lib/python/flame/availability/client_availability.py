@@ -182,7 +182,7 @@ class ClientAvailability:
 
         registry_path = _METADATA_DIR / "trainer_registry.yaml"
         try:
-            with open(registry_path) as f:
+            with open(registry_path, encoding="utf-8") as f:
                 registry = yaml.safe_load(f)["trainers"]
         except FileNotFoundError:
             logger.error(f"[AVAIL] trainer registry not found: {registry_path}")

@@ -39,13 +39,18 @@ _AVL_STATE_VALUES = frozenset(
 
 @lru_cache(maxsize=16)
 def _raw_mobiperf(trace_dir: str) -> dict:
-    with open(Path(trace_dir) / "mobiperf_traces.yaml") as f:
+    # encoding="utf-8" explicit: open() otherwise falls back to the node's
+    # locale-preferred encoding, which mis-decodes any non-ASCII byte on a
+    # non-UTF-8 locale (e.g. C/POSIX) and yaml.safe_load then rejects the
+    # resulting control chars — bit us once already on the sibling parity
+    # YAML (see debug_run.sh).
+    with open(Path(trace_dir) / "mobiperf_traces.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)["traces"]
 
 
 @lru_cache(maxsize=16)
 def _raw_synthetic(trace_dir: str) -> dict:
-    with open(Path(trace_dir) / "synthetic_traces.yaml") as f:
+    with open(Path(trace_dir) / "synthetic_traces.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)["traces"]
 
 

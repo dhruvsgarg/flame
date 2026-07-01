@@ -157,7 +157,11 @@ def exp_mode(e):
 # feddance) × {sim, real}; filter it to the requested baselines/mode.
 src = f"{scr}/felix_oort_refl_feddance_alpha0.1_parity.yaml"
 try:
-    cfg = yaml.safe_load(open(src))
+    # encoding="utf-8" explicit: the config has non-ASCII chars (e.g. "->" arrows
+    # in comments/descriptions); without this, open() falls back to the node's
+    # locale-preferred encoding, which mis-decodes them on non-UTF-8 locales
+    # (e.g. C/POSIX) and yaml.safe_load then rejects the resulting control chars.
+    cfg = yaml.safe_load(open(src, encoding="utf-8"))
 except FileNotFoundError:
     print(f"ERROR: parity config not found: {src}", flush=True)
     sys.exit(1)
@@ -242,7 +246,7 @@ if not kept:
     sys.exit(0)
 
 cfg["experiments"] = kept
-yaml.safe_dump(cfg, open(outpath, "w"), sort_keys=False)
+yaml.safe_dump(cfg, open(outpath, "w", encoding="utf-8"), sort_keys=False)
 print(f"Generated {outpath} with {len(kept)} experiment(s): "
       f"{[e['name'] for e in kept]}", flush=True)
 PY
@@ -252,7 +256,7 @@ PY
 _count_exps() {
   python3 - "$1" <<'PY'
 import yaml, sys
-d = yaml.safe_load(open(sys.argv[1]))
+d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 print(len(d.get('experiments', [])))
 PY
 }
