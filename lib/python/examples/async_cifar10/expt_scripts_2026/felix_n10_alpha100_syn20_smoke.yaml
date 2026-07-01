@@ -18,7 +18,7 @@ experiments:
         name: cifar10
         dirichlet_alpha: 100.0
       availability:
-        mode: syn_0
+        mode: syn_20
       enable_training_delays: true
       hyperparameters:
         batchSize: 32
@@ -26,7 +26,7 @@ experiments:
       config_overrides:
         hyperparameters:
           client_notify:
-            trace: syn_0
+            trace: syn_20
 
     aggregator:
       config_template: ../_metadata/aggregator_base.json
