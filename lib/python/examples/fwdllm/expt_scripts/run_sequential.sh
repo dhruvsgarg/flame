@@ -20,6 +20,28 @@
 #                     1 GPU is sized for its own default 10-trainer count.
 #   --c              override selector.kwargs.c + minInitialTrainers + agg_goal
 #                     (agg_goal matches c so no selected trainer goes stranded)
+#                     -- superseded per-field by --agg-goal/--min-initial-trainers
+#                     when those are also passed (see below).
+#   --c-async        override selector.kwargs.c only for the async baseline
+#                     (fluxtune) -- lets sync baselines run concurrency==agg_goal
+#                     via --c/--agg-goal while fluxtune overcommits concurrency
+#                     independent of agg_goal (matches async_oort's design: c
+#                     ends in flight, agg_goal of them counted per round).
+#   --agg-goal       override aggregator.agg_goal directly (fans into
+#                     hyperparameters.aggGoal + selector.kwargs.aggGoal/aggr_num
+#                     per runner.py) independent of --c/--c-async. When --c is
+#                     also given without this, legacy behavior (agg_goal==c)
+#                     still applies.
+#   --min-initial-trainers  override selector.kwargs.minInitialTrainers
+#                     directly, independent of --num-trainers/--c.
+#   --avail-trace    override the availability trace used by ALL baselines:
+#                     trainer.availability.mode (cosmetic/consistency),
+#                     trainer hyperparameters.client_notify.trace (fluxtune's
+#                     real signal), and aggregator
+#                     hyperparameters.trackTrainerAvail.trace (fwdllm_plus's
+#                     real ORACULAR signal). Use e.g. "syn_0" (always
+#                     available) to isolate selection/aggregation bugs from
+#                     trace-driven scarcity/churn.
 #   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
@@ -87,7 +109,11 @@ STOP_ON_FAIL=0
 NUM_TRAINERS=""   # empty = leave each YAML's own value
 NUM_GPUS=""       # empty = leave each YAML's own value
 SEL_C=""
+SEL_C_ASYNC=""
 SEL_K=""
+AGG_GOAL=""
+MIN_INIT_TRAINERS=""
+AVAIL_TRACE=""
 PARTITION_METHOD=""   # empty = leave each YAML's own value ("uniform")
 ONLY=""           # empty = run all three
 
@@ -98,11 +124,15 @@ while [[ $# -gt 0 ]]; do
     --num-trainers)      NUM_TRAINERS="$2"; shift 2 ;;
     --num-gpus)          NUM_GPUS="$2"; shift 2 ;;
     --c)                 SEL_C="$2"; shift 2 ;;
+    --c-async)           SEL_C_ASYNC="$2"; shift 2 ;;
     --k)                 SEL_K="$2"; shift 2 ;;
+    --agg-goal)          AGG_GOAL="$2"; shift 2 ;;
+    --min-initial-trainers) MIN_INIT_TRAINERS="$2"; shift 2 ;;
+    --avail-trace)       AVAIL_TRACE="$2"; shift 2 ;;
     --stop-on-fail)      STOP_ON_FAIL=1; shift ;;
     --partition-method)  PARTITION_METHOD="$2"; shift 2 ;;
     --only)              ONLY="$2"; shift 2 ;;
-    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--k K] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N] [--avail-trace NAME] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
   esac
 done
 
@@ -114,9 +144,15 @@ mkdir -p "$LOGDIR"
 # YAML rather than the original -- keeps the checked-in smoke configs stable
 # while letting this script's caller pick the scale per invocation.
 patch_yaml() {
-  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" "$PARTITION_METHOD" <<'PY'
+  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" "$PARTITION_METHOD" "$SEL_C_ASYNC" "$AGG_GOAL" "$MIN_INIT_TRAINERS" "$AVAIL_TRACE" <<'PY'
 import sys, yaml
-src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c, sel_k, partition_method = sys.argv[1:11]
+(src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c,
+ sel_k, partition_method, sel_c_async, agg_goal, min_init_trainers,
+ avail_trace) = sys.argv[1:15]
+# Only baseline in ALL_RUNS below that's async; --c-async targets it
+# specifically so one invocation can decouple sync concurrency (==agg_goal)
+# from async concurrency (overcommitted vs agg_goal) -- see async_oort.py.
+IS_ASYNC_BASELINE = run_key == "fluxtune"
 cfg = yaml.safe_load(open(src))
 for exp in cfg.get("experiments", []):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
@@ -141,11 +177,31 @@ for exp in cfg.get("experiments", []):
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
     if sel_c:
         kwargs["c"] = int(sel_c)
-        kwargs["minInitialTrainers"] = int(num_trainers) if num_trainers else int(sel_c)
-        # agg_goal matches c so no selected trainer goes uncounted/stranded.
-        exp["aggregator"]["agg_goal"] = int(sel_c)
+        if not min_init_trainers:
+            kwargs["minInitialTrainers"] = int(num_trainers) if num_trainers else int(sel_c)
+        if not agg_goal:
+            # legacy behavior: agg_goal matches c so no selected trainer goes
+            # uncounted/stranded. Superseded by --agg-goal below when given.
+            exp["aggregator"]["agg_goal"] = int(sel_c)
+    if sel_c_async and IS_ASYNC_BASELINE:
+        kwargs["c"] = int(sel_c_async)
     if sel_k:
         kwargs["k"] = int(sel_k)
+    if agg_goal:
+        exp["aggregator"]["agg_goal"] = int(agg_goal)
+    if min_init_trainers:
+        kwargs["minInitialTrainers"] = int(min_init_trainers)
+    if avail_trace:
+        # Cosmetic/consistency: trainer-side self-reported mode.
+        exp["trainer"].setdefault("availability", {})["mode"] = avail_trace
+        # Real signal for fluxtune (client_notify) and fwdllm/fwdllm_plus
+        # (dormant unless trackTrainerAvail below is ORACULAR).
+        t_hp = exp["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+        t_hp.setdefault("client_notify", {})["trace"] = avail_trace
+        # Real signal for fwdllm_plus (ORACULAR tracking reads this trace
+        # directly rather than waiting on trainer self-reports).
+        a_hp = exp["aggregator"]["config_overrides"]["hyperparameters"]
+        a_hp.setdefault("trackTrainerAvail", {})["trace"] = avail_trace
 yaml.safe_dump(cfg, open(dst, "w"), sort_keys=False)
 PY
 }
