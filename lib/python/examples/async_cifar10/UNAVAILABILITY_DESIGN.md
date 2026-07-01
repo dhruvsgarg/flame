@@ -8,16 +8,27 @@ Launch from `lib/python/examples/async_cifar10`:
 bash scripts/smoke_suite.sh \
   --steps 4,5 \
   --starvation-baselines feddance \
+  --num-trainers 100 \
   --runtime-syn20-s 900 --runtime-syn50-s 1800 \
   --output-dir experiments/smoke_confirm_$(date +%Y%m%d_%H%M) \
   --background
 ```
 
+`--num-trainers 100` (down from the parity config's 300, resource constraints) is safe for *both*
+confirmations here: A4dur's fix is mechanism-level, already confirmed n-independent (n=20 felix,
+`mean_err=0.0`); B2.0.3's fix re-anchors the real-mode trace clock to *whenever* the join barrier
+actually resolves, not to a fixed ~300s figure, so it's self-correcting to n=100's shorter join ramp —
+no need to reproduce the original n=300 magnitude to confirm the fix works. (Only a true apples-to-apples
+comparison against the existing n=300 `parity_*.json` snapshots would require n=300; that's not the goal
+here.) `debug_run.sh` auto-scales `min_trainers_to_start` with `--num-trainers`, so the join barrier
+threshold scales down consistently too.
+
 Unattended — `--background` re-execs the suite via `nohup`+`disown` and returns immediately; it survives
 the launching shell/SSH session closing. Prints a PID, a `nohup.log` to `tail -f`, and the eventual
-`report.txt` path. 14 runs (12 for the 6 syn_20 sim+real pairs, 2 for feddance syn_50 sim+real), ~1–3h
-wall depending on GPU load. When done: re-run `python -m scripts.parity.cli` on the fresh pairs and
-confirm `duty_cycle_duration` (A4dur) and `avail_timebase` (A3, feddance syn_50) both clear — see
+`report.txt` path. 14 runs (12 for the 6 syn_20 sim+real pairs, 2 for feddance syn_50 sim+real), faster
+than the original n=300 T5-smoke pass since n=100 trains/joins quicker. When done: re-run
+`python -m scripts.parity.cli` on the fresh pairs and confirm `duty_cycle_duration` (A4dur) and
+`avail_timebase` (A3, feddance syn_50) both clear — see
 T5-smoke below for full context on both fixes.
 
 ---
