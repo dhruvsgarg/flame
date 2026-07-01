@@ -169,6 +169,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
         _sat_path = self.config.hyperparameters.satellite_latencies_path
         self.satellite_rtt_latencies_ms = np.load(_sat_path)
+        self.satellite_index = int(self.config.hyperparameters.satellite_index)
         self.start_time = time.time()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
@@ -748,7 +749,11 @@ class PyTorchCifar10Trainer(Trainer):
 
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
-        _D = self.computation_time_ms / 1000.0 if self.training_delay_enabled else 0.0
+        if self.training_delay_enabled:
+            _timestep = min(int(self._sim_now()), self.satellite_rtt_latencies_ms.shape[0] - 1)
+            _D = (self.computation_time_ms + float(self.satellite_rtt_latencies_ms[_timestep, self.satellite_index]) * 2) / 1000.0
+        else:
+            _D = 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
         else:
@@ -802,7 +807,13 @@ class PyTorchCifar10Trainer(Trainer):
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
 
-        _modeled_delay_s = self.computation_time_ms / 1000.0 if self.training_delay_enabled else 0.0
+        if self.training_delay_enabled:
+            _timestep = min(int(self._sim_now()), self.satellite_rtt_latencies_ms.shape[0] - 1)
+            _current_rtt_ms = float(self.satellite_rtt_latencies_ms[_timestep, self.satellite_index]) * 2 
+            _modeled_delay_s = (self.computation_time_ms + _current_rtt_ms) / 1000.0 
+        else:
+            _current_rtt_ms = 0.0
+            _modeled_delay_s = 0.0
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
