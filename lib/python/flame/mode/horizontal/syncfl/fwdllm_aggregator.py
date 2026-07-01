@@ -31,7 +31,8 @@ import torch.nn.functional as F
 from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
-from flame.config import OptimizerType
+from flame.config import OptimizerType, TrainerAvailState
+from flame.end import PROP_END_AVL_STATE
 from flame.mode.composer import CloneComposer
 import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
@@ -1513,6 +1514,38 @@ class TopAggregator(AsyncTopAgg):
         if selector is not None and hasattr(selector, "selected_ends"):
             selector.selected_ends = set(selector.selected_ends) | set(ends)
 
+    def _prune_departed_from_round_cache(self, channel):
+        """Drop ends from `self._round_selected_ends` that have since
+        departed (disconnected, or explicitly reported `UN_AVL`).
+
+        The selector-level reclaim (`_cleanup_removed_ends`, invoked by
+        `channel.remove`/`channel.update_state`) forgets a departed end at
+        the selector's own bookkeeping level, but nothing else prunes it
+        from this aggregator's own per-round cache. Left unpruned, the
+        cache-size check below keeps reporting "full" forever with a
+        member that can never respond, and the round stalls waiting on a
+        contribution that can never arrive.
+        """
+        if not self._round_selected_ends:
+            return
+        still_present = []
+        for end in self._round_selected_ends:
+            if not channel.has(end):
+                logger.info(
+                    f"[ReselectGate] pruning departed (removed) end {end} "
+                    f"from per-round cache for round={self._round}"
+                )
+                continue
+            if channel.get_end_property(end, PROP_END_AVL_STATE) == TrainerAvailState.UN_AVL:
+                logger.info(
+                    f"[ReselectGate] pruning departed (UN_AVL) end {end} "
+                    f"from per-round cache for round={self._round}"
+                )
+                continue
+            still_present.append(end)
+        if len(still_present) != len(self._round_selected_ends):
+            self._round_selected_ends = still_present
+
     def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
         """Return the SEND-state-selected ends, honoring
         `self._reselect_each_iteration`.
@@ -1526,6 +1559,9 @@ class TopAggregator(AsyncTopAgg):
         if self._round_selected_ends_round != self._round:
             self._round_selected_ends = None
             self._round_selected_ends_round = self._round
+
+        if not self._reselect_each_iteration:
+            self._prune_departed_from_round_cache(channel)
 
         if not self._reselect_each_iteration and self._round_selected_ends is not None:
             target = getattr(self, "_agg_goal", len(self._round_selected_ends))

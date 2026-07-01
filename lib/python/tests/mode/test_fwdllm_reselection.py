@@ -5,6 +5,7 @@ per-round (False) selects once and reuses the same trainer set for the
 whole round; per-iteration (True, default) re-invokes the selector every
 call."""
 
+from flame.config import TrainerAvailState
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 
 
@@ -16,16 +17,33 @@ class _FakeSelector:
 
 
 class _FakeChannel:
-    """Records each `ends()` call and returns the next canned selection."""
+    """Records each `ends()` call and returns the next canned selection.
+
+    Also models end departure: `_removed` mimics a fully disconnected end
+    (as `channel.remove()` would leave it -- `has()` returns False);
+    `_unavail` mimics an end that explicitly reported `UN_AVL` but is
+    still connected (as `channel.update_state()` would leave it -- `has()`
+    still True, but its avl-state property reads `UN_AVL`).
+    """
 
     def __init__(self, selections):
         self._selections = list(selections)
         self.calls = 0
         self._selector = _FakeSelector()
+        self._removed = set()
+        self._unavail = set()
 
     def ends(self, state, task_to_perform):
         self.calls += 1
         return self._selections[min(self.calls - 1, len(self._selections) - 1)]
+
+    def has(self, end_id):
+        return end_id not in self._removed
+
+    def get_end_property(self, end_id, key):
+        if end_id in self._unavail:
+            return TrainerAvailState.UN_AVL
+        return None
 
 
 class _FakeAggregator:
@@ -42,6 +60,9 @@ class _FakeAggregator:
 
     select = TopAggregator._select_ends_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
+    _prune_departed_from_round_cache = (
+        TopAggregator._prune_departed_from_round_cache
+    )
 
 
 def _drive_two_databins_two_iterations(agg, channel):
@@ -142,3 +163,54 @@ class TestReselectGate:
 
         agg.select(channel, "train")
         assert channel._selector.selected_ends == {"t1", "t2"}
+
+
+class TestStaleCachePruning:
+    """Regression tests for the `_round_selected_ends` stale-cache gap:
+    a cached-but-departed end must be pruned so the cache-size check stops
+    reporting "full" and the round can backfill the freed slot, instead of
+    stalling forever on a contribution that can never arrive."""
+
+    def test_disconnected_end_pruned_and_backfilled(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
+
+        # t1 fully disconnects (channel.remove() -- has() now False).
+        channel._removed.add("t1")
+
+        ends = agg.select(channel, "train")
+        assert ends == ["t2", "t3"]
+        assert channel.calls == 2  # re-queried the selector to backfill
+
+        # Now cached again at agg_goal -- no further re-query.
+        assert agg.select(channel, "train") == ["t2", "t3"]
+        assert channel.calls == 2
+
+    def test_un_avl_end_pruned_and_backfilled(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
+
+        # t1 stays connected but reports UN_AVL (channel.update_state()).
+        channel._unavail.add("t1")
+
+        ends = agg.select(channel, "train")
+        assert ends == ["t2", "t3"]
+        assert channel.calls == 2
+
+        assert agg.select(channel, "train") == ["t2", "t3"]
+        assert channel.calls == 2
+
+    def test_still_present_end_not_pruned(self):
+        """Control case: no departure means no pruning and no re-query."""
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
