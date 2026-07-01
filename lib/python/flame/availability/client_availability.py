@@ -22,21 +22,23 @@ Stage C will activate free_stalled_slot and wire the pending_withheld ledger.
 import logging
 import math
 import time
-from pathlib import Path
 from typing import Optional
-
-import yaml
 
 from flame import telemetry
 from flame.availability.trace import load_trace, next_avail_after, state_at
+from flame.availability.trace import (
+    read_trainer_unavailability as _read_trainer_unavailability,
+)
 from flame.config import TrainerAvailState
 from flame.mode.message import MessageType
 from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_SEND_TS
-from flame.telemetry.events import build_abandon_timeout, build_withheld_delivery
+from flame.telemetry.events import (
+    build_abandon_timeout,
+    build_agg_belief_change,
+    build_withheld_delivery,
+)
 
 logger = logging.getLogger(__name__)
-
-_METADATA_DIR = Path(__file__).resolve().parents[2] / "examples/_metadata"
 
 _AVL_STATES = frozenset(
     {TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL}
@@ -173,42 +175,13 @@ class ClientAvailability:
     ) -> Optional[dict]:
         """Build task_id → SortedDict[ts_s → state_str] from the canonical store.
 
-        Reads examples/_metadata/trainer_registry.yaml once; individual trace
-        SortedDicts are built via load_trace() which caches the raw YAML.
-        Returns None on fatal errors (caller treats None as gate-off).
+        Thin wrapper (Batch 3 T3.2 Phase 2): the actual implementation lives in
+        flame.availability.trace.read_trainer_unavailability, a free function
+        so scripts/parity/ground_truth.py can call it without instantiating
+        this mixin. Kept here for backward compatibility with existing callers
+        (self.read_trainer_unavailability(...) in _init_availability).
         """
-        if not trace:
-            return None
-
-        registry_path = _METADATA_DIR / "trainer_registry.yaml"
-        try:
-            with open(registry_path, encoding="utf-8") as f:
-                registry = yaml.safe_load(f)["trainers"]
-        except FileNotFoundError:
-            logger.error(f"[AVAIL] trainer registry not found: {registry_path}")
-            return None
-
-        trainer_events_dict: dict = {}
-        errors = 0
-        for tk, meta in registry.items():
-            task_id = meta["task_id"]
-            try:
-                trainer_events_dict[task_id] = load_trace(
-                    trace, tk, base_dir=base_dir
-                )
-            except (KeyError, FileNotFoundError) as exc:
-                logger.warning(f"[AVAIL] skipping {tk}: {exc}")
-                errors += 1
-
-        if errors:
-            logger.warning(
-                f"[AVAIL] {errors}/{len(registry)} trainers had missing trace data"
-            )
-        logger.info(
-            f"[AVAIL] loaded {len(trainer_events_dict)} trainer traces "
-            f"(trace={trace!r})"
-        )
-        return trainer_events_dict or None
+        return _read_trainer_unavailability(trace, base_dir=base_dir)
 
     # ------------------------------------------------------------------
     # Oracular selection gate
@@ -313,6 +286,74 @@ class ClientAvailability:
             trace = self.trainer_event_dict.get(end_id)
             state = state_at(trace, now) if trace else TrainerAvailState.AVL_TRAIN
             channel.set_end_property(end_id, PROP_AVL_STATE, state)
+        # T3.3 selection-checkpoint belief is NOT re-emitted here as a separate
+        # agg_belief_change stream — investigated while building T3.3 (Jul 1):
+        # PROP_AVL_STATE, stamped just above, is already read by
+        # flame/selector/__init__.py's emit_selection into
+        # per_trainer[end]["avl_state"] on every selection event, so it's
+        # already fully persisted (avail_state_series.build_trainer_state_series
+        # is exactly this data, already used by A4dur/A5). Re-emitting it here
+        # too would double telemetry volume (up to 300 events/round) for data
+        # that already has a telemetry trail — the doc's original "no telemetry
+        # trail" premise for this checkpoint was wrong (same class of
+        # design-vs-actual-code gap as T3.2's avail_change/sim_now finding).
+        # A7's "selection" checkpoint score reads per_trainer.avl_state
+        # directly; only the "commit" checkpoint below is genuinely new.
+
+    # ------------------------------------------------------------------
+    # Aggregator belief tracking (Batch 3 T3.3) — mechanism-agnostic hook
+    # ------------------------------------------------------------------
+
+    def _record_avail_belief(
+        self, end: str, state: str, *, observed_at: float,
+        checkpoint: str, source: str = "trace_read",
+    ) -> None:
+        """Persist the aggregator's BELIEF about `end`'s availability state.
+
+        Tagged by ``checkpoint`` ("selection" | "commit") and knowledge-source
+        ``source`` (the mechanism populating this belief — "trace_read" today,
+        "client_notify"/"predictive" later per Stage H). Mechanism-agnostic by
+        design: a future populator calls this with a different `source`, no
+        telemetry/checker/plot change needed. Emits `agg_belief_change`;
+        no-op when telemetry is disabled.
+        """
+        if not telemetry.is_enabled():
+            return
+        ev, f = build_agg_belief_change(
+            round_num=getattr(self, "_round", -1), end_id=end, state=str(state),
+            observed_at=float(observed_at), checkpoint=checkpoint, source=source,
+        )
+        telemetry.emit(ev, **f)
+
+    def _record_commit_belief(self, end: str, sct: Optional[float] = None) -> None:
+        """T3.3 commit checkpoint: record the trace-read belief at an update's
+        completion instant — one shared call site for both modes and all
+        three aggregator stacks (asyncfl/oort/syncfl), rather than each
+        re-deriving `state_at()` independently.
+
+        sim: called from `_sim_withhold_if_unavail`, so this reads the exact
+        state that gate's own withhold decision is based on. real: called
+        from each stack's real receive loop; the aggregator never gates on
+        this in real mode (enforcement is trainer-side, T3.1a/T3.1b's
+        send-gate) — recording it anyway gives A7 a same-instant
+        ground-truth comparison point for every baseline, including unaware
+        ones (oort/fedbuff) that don't filter at selection.
+
+        No-op when the gate is off (trainer_event_dict is None), or on a
+        bare/partially-initialized aggregator that never ran
+        _init_availability (mirrors _sim_withhold_if_unavail's own guard, so
+        this is safe to call from any real-mode commit loop unconditionally),
+        or when `end` has no trace entry (e.g. a registry mismatch).
+        """
+        trainer_event_dict = getattr(self, "trainer_event_dict", None)
+        if trainer_event_dict is None:
+            return
+        trace = trainer_event_dict.get(end)
+        if trace is None:
+            return
+        now = float(sct) if sct is not None else self._avail_now()
+        state = state_at(trace, now)
+        self._record_avail_belief(end, state.value, observed_at=now, checkpoint="commit")
 
     # ------------------------------------------------------------------
     # Delivery ledger (Stage C) — withheld update bookkeeping
@@ -544,6 +585,9 @@ class ClientAvailability:
         # primitive safe to call from any partially-initialized commit loop.
         if getattr(self, "trainer_event_dict", None) is None:
             return False
+        # T3.3 commit-checkpoint belief: read once here, covering both branches
+        # below (fresh commit and re-registered/re-stashed) with one call.
+        self._record_commit_belief(end, sct)
         # invariant 1: never re-register / double-count an end whose slot was
         # already freed (C.3 abandon). Its arrived payload is stashed so the
         # reinject delivers it at the registered delivery_ts.
@@ -616,7 +660,23 @@ class ClientAvailability:
         return d.pop(end, None)
 
     def _emit_withheld_delivery(self, end, msg, orig_sct, delivery_ts) -> None:
-        """Emit the withheld_delivery rung for a late stale commit (best-effort)."""
+        """Emit the withheld_delivery rung for a late stale commit (best-effort).
+
+        Batch 3 T3.5 (K11): stamps ``actual_commit_ts`` via ``_avail_now()`` —
+        the caller should invoke this AFTER advancing its own clock
+        (``_advance_sim_clock`` or equivalent) for this specific update, as
+        asyncfl's commit loop already did. syncfl/oort's dedicated
+        withheld-drain loops were reordered to match for the same defensive
+        reason, though NOT because it was observably broken: a withheld
+        item's ``_advance_sim_clock(delivery_ts)`` there is providably always
+        a no-op (``_sim_reinject_ready_withheld`` only ever re-injects entries
+        whose ``delivery_ts`` is already <= the CURRENT vclock, so the advance
+        can never move it), meaning emit-before-advance and emit-after-advance
+        read the identical value in that specific code path today. Kept
+        emit-after-advance everywhere anyway for one uniform rule across all
+        three stacks rather than relying on that no-op invariant holding
+        forever as the drain loops evolve.
+        """
         if not telemetry.is_enabled():
             return
         mv = msg.get(MessageType.MODEL_VERSION) if isinstance(msg, dict) else None
@@ -625,6 +685,7 @@ class ClientAvailability:
             sct=float(orig_sct), delivery_ts=float(delivery_ts),
             staleness=(self._round - int(mv)) if mv is not None else None,
             accepted=True, time_mode="sim",
+            actual_commit_ts=self._avail_now(),
         )
         telemetry.emit(ev, **f)
 

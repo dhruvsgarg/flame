@@ -453,10 +453,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 wmsg[MessageType.WEIGHTS] = cloudpickle.loads(
                     wmsg.pop(MessageType.WEIGHTS_BYTES)
                 )
+            # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
+            # existing order — see _emit_withheld_delivery's docstring for why
+            # this specific advance is provably a no-op here either way, but
+            # the uniform ordering is kept as a defensive rule across stacks.
             _wd = self._sim_take_withheld_delivering(wend)
+            self._advance_sim_clock(wdts)
             if _wd is not None:
                 self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
-            self._advance_sim_clock(wdts)
             logger.info(
                 f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
                 f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
@@ -578,6 +582,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if not msg:
                 logger.debug(f"No data from {end}; skipping it")
                 continue
+
+            # T3.3 commit-checkpoint belief (real mode only — sim's own commit
+            # loop already recorded it inside _sim_withhold_if_unavail).
+            if not self.simulated:
+                self._record_commit_belief(end)
 
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
@@ -1044,6 +1053,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         }
         if self.simulated:
             msg[MessageType.SIM_SEND_TS] = _sim_send_ts
+        else:
+            # T3.0: broadcast the trace-read origin so a trainer's own wall-clock
+            # availability lookups anchor to the SAME point the aggregator uses
+            # (post-join-barrier-reanchor), not a per-trainer local origin.
+            msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
         _payload = channel.dumps(msg)
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in selected_ends:

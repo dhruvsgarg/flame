@@ -71,6 +71,80 @@ def build_trainer_state_series(
     return series
 
 
+def build_observed_timeline_from_avail_change(avail_change_events: list) -> list:
+    """Sorted [(sim_now, new_state), ...] from one trainer's own avail_change telemetry.
+
+    ``sim_now`` (Batch 3 T3.2) is the trainer's own trace-time-basis clock at
+    the moment it applied the transition — sim: virtual-clock seconds; real:
+    wall-elapsed since the shared AGG_START_TS origin (T3.0). Distinct from
+    the record's ``ts`` (always wall time.time(), meaningless against a trace
+    indexed in trace-seconds). Events recorded before ``sim_now`` existed are
+    dropped; an entirely-empty result means "no fidelity signal for this
+    trainer" (old telemetry), not "trainer never transitioned" — the A6
+    caller must treat empty-with-no-events differently only if it also has no
+    sim_now-tagged events at all across the whole run (checked once, not per
+    trainer).
+    """
+    pts: list = []
+    for e in sorted(
+        avail_change_events, key=lambda x: (x.get("round", 0), x.get("ts", 0.0))
+    ):
+        t = e.get("sim_now")
+        state = e.get("new_state")
+        if t is None or state is None:
+            continue
+        if pts and pts[-1][0] == t:
+            pts[-1] = (t, state)
+        else:
+            pts.append((t, state))
+    return pts
+
+
+def build_observed_timeline_from_agg_belief(events: list) -> list:
+    """Sorted [(observed_at, state), ...] from one trainer's own
+    agg_belief_change telemetry (Batch 3 T3.3), already filtered by the
+    caller to a single end_id and checkpoint ("selection" | "commit").
+
+    ``observed_at`` is the trace-time-basis clock the belief was read at
+    (vclock seconds / wall-elapsed since the shared origin) -- same role as
+    avail_change's ``sim_now`` in build_observed_timeline_from_avail_change,
+    just a different telemetry stream (aggregator belief vs. trainer's own
+    self-report).
+    """
+    pts: list = []
+    for e in sorted(
+        events, key=lambda x: (x.get("round", 0), x.get("observed_at", 0.0))
+    ):
+        t = e.get("observed_at")
+        state = e.get("state")
+        if t is None or state is None:
+            continue
+        if pts and pts[-1][0] == t:
+            pts[-1] = (t, state)
+        else:
+            pts.append((t, state))
+    return pts
+
+
+def selection_run_span(selection_events: list, mode: str) -> float:
+    """Max observed time across all selection events.
+
+    Unlike run_span() (which needs a built per-trainer avl_state series),
+    this only needs the events' own ts/vclock_now -- usable by checks that
+    just need the run's overall time horizon and nothing about per-trainer
+    avail state (e.g. A6, which reads its own per-trainer state from
+    avail_change telemetry instead). Same t = vclock_now / (ts - t0)
+    time-base convention as build_trainer_state_series.
+    """
+    real_ts = [e.get("ts") for e in selection_events if e.get("ts") is not None]
+    t0 = min(real_ts) if (mode == "real" and real_ts) else 0.0
+    times = [
+        t for t in (_event_time(e, mode, t0) for e in selection_events)
+        if t is not None
+    ]
+    return max(times) if times else 0.0
+
+
 def run_span(series: dict) -> float:
     """Max observed t across all trainers — the run's own time horizon."""
     return max((pts[-1][0] for pts in series.values() if pts), default=0.0)

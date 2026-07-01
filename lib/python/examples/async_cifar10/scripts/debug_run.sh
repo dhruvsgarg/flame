@@ -206,9 +206,27 @@ for e in cfg.get("experiments", []):
         e["name"] = f"dbg_{e['name']}"
     # --trace override: substitute availability trace in trainer + aggregator config.
     if trace_override:
+        # trainer.availability.mode is NOT read by anything (main.py/config.py never
+        # touch config.availability) -- vestigial from an earlier design, kept
+        # write-only here so as not to silently drop a field some other consumer may
+        # still expect. The trainer's ACTUAL trace selection comes from
+        # hyperparameters.client_notify.trace (see main.py's state_avl_event_ts
+        # assignment), which lives under trainer.config_overrides.hyperparameters,
+        # not trainer.hyperparameters (that block is base-model HP only: batchSize/
+        # learningRate/etc, merged from configs/trainer_base.yaml's own client_notify
+        # default of trace=syn_0). Before this fix, ONLY the aggregator's own trace
+        # read (via `h` below) was ever overridden -- every debug_run.sh-launched
+        # trainer, real and sim, ran with client_notify.trace stuck at the
+        # trainer_base.yaml default (syn_0, always-available) regardless of the
+        # requested --trace, silently no-op'ing the trainer-side avl_state machinery
+        # (and hence the real-mode send-gate and all avail_change telemetry) for
+        # every trace-driven run this project has ever launched. Root-caused Jul 1
+        # via UNAVAILABILITY_DESIGN.md Batch 3 T3.1.
         avail = e["trainer"].setdefault("availability", {})
         old_trace = avail.get("mode", "syn_0")
         avail["mode"] = trace_override
+        t_co_hp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+        t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
         if "trackTrainerAvail" in h:
             h["trackTrainerAvail"]["trace"] = trace_override
             # For baselines NOT on the ORACULAR legacy path (felix, feddance,

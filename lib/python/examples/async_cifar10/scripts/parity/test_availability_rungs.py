@@ -21,6 +21,7 @@ if _SCRIPTS not in sys.path:
 
 from parity.checks import (  # noqa: E402
     abandon_timeout_parity,
+    commit_promptness_parity,
     duration_duty_cycle_parity,
     eligible_pool_reduction_parity,
     load_agg_jsonl,
@@ -69,6 +70,73 @@ def test_withheld_delivery_fails_on_negative_staleness():
     evs = [{"end_id": "t1", "sct": 100.0, "delivery_ts": 120.0, "staleness": -2}]
     res = withheld_delivery_parity({}, {"withheld_deliveries": evs})
     assert not res["ok"]
+
+
+# ---------------------------------------------------------------------------
+# commit_promptness (K11, Batch 3 T3.5)
+# ---------------------------------------------------------------------------
+
+def test_commit_promptness_skips_when_empty():
+    res = commit_promptness_parity({"withheld_deliveries": []})
+    assert res["ok"] and res.get("status") == "SKIP"
+
+
+def test_commit_promptness_skips_when_no_actual_commit_ts():
+    # Telemetry predating T3.5: delivery_ts present, actual_commit_ts absent.
+    evs = [{"end_id": "t1", "sct": 100.0, "delivery_ts": 150.0}]
+    res = commit_promptness_parity({"withheld_deliveries": evs})
+    assert res.get("status") == "SKIP"
+
+
+def test_commit_promptness_passes_near_zero_slack():
+    evs = [
+        {"end_id": "t1", "delivery_ts": 200.0, "actual_commit_ts": 200.0},
+        {"end_id": "t2", "delivery_ts": 300.0, "actual_commit_ts": 300.4},
+    ]
+    res = commit_promptness_parity({"withheld_deliveries": evs})
+    assert res["ok"], res
+    assert res["n_events"] == 2
+    assert res["n_early_violations"] == 0
+    assert res["n_late_violations"] == 0
+
+
+def test_commit_promptness_fails_on_early_violation():
+    # Committed BEFORE its legal delivery_ts -- a hard correctness bug.
+    evs = [{"end_id": "t1", "delivery_ts": 200.0, "actual_commit_ts": 150.0}]
+    res = commit_promptness_parity({"withheld_deliveries": evs})
+    assert not res["ok"], res
+    assert res["n_early_violations"] == 1
+    assert res["early_violations"] == [{"end": "t1", "slack_s": -50.0}]
+    assert res["n_late_violations"] == 0
+
+
+def test_commit_promptness_fails_on_late_violation():
+    # Held far longer than delivery_ts required -- a promptness/scheduling bug.
+    evs = [{"end_id": "t1", "delivery_ts": 200.0, "actual_commit_ts": 260.0}]
+    res = commit_promptness_parity({"withheld_deliveries": evs}, late_slack_tol_s=30.0)
+    assert not res["ok"], res
+    assert res["n_late_violations"] == 1
+    assert res["late_violations"] == [{"end": "t1", "slack_s": 60.0}]
+    assert res["n_early_violations"] == 0
+
+
+def test_commit_promptness_early_and_late_scored_independently():
+    evs = [
+        {"end_id": "t1", "delivery_ts": 200.0, "actual_commit_ts": 150.0},  # early
+        {"end_id": "t2", "delivery_ts": 200.0, "actual_commit_ts": 260.0},  # late
+        {"end_id": "t3", "delivery_ts": 200.0, "actual_commit_ts": 200.5},  # fine
+    ]
+    res = commit_promptness_parity({"withheld_deliveries": evs}, late_slack_tol_s=30.0)
+    assert not res["ok"]
+    assert res["n_events"] == 3
+    assert res["n_early_violations"] == 1
+    assert res["n_late_violations"] == 1
+
+
+def test_commit_promptness_ignores_events_missing_delivery_ts():
+    evs = [{"end_id": "t1", "actual_commit_ts": 200.0}]
+    res = commit_promptness_parity({"withheld_deliveries": evs})
+    assert res.get("status") == "SKIP"
 
 
 # ---------------------------------------------------------------------------

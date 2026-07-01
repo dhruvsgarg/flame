@@ -87,3 +87,14 @@ class MessageType(Enum):
     WALL_RECV_TS = 39        # wall-clock unix timestamp (float) when trainer's channel.recv() returns (weights received from agg)
     CLIENT_TASK_TRAIN_COMPUTE_S = 40     # modeled compute duration in seconds: max(real_gpu_time, training_delay_s); stamped by trainer unconditionally (real and sim)
     WEIGHTS_BYTES = 41       # pre-serialized weights (raw cloudpickle bytes) for lazy sync-barrier deserialization in sim mode
+
+    # Real-mode-only counterpart to SIM_SEND_TS: the aggregator's own
+    # availability trace-read origin (agg_start_time_ts, unix timestamp,
+    # re-anchored to join-barrier resolution -- see _mark_join_barrier_done()),
+    # broadcast on every dispatch so a trainer's own wall-clock trace lookups
+    # share the exact origin the aggregator uses, instead of each trainer
+    # deriving its own (which reintroduces a per-trainer join-ramp-style skew,
+    # the same class of bug as B2.0.3 just moved to the trainer side). Sim mode
+    # never sends this -- sim's shared origin is the single _vclock instance,
+    # already exposed via SIM_SEND_TS. See UNAVAILABILITY_DESIGN.md Batch 3 T3.0.
+    AGG_START_TS = 42

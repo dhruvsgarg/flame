@@ -153,10 +153,13 @@ class TopAggregator(BaseTopAggregator):
                 ):
                     continue
                 # Late stale delivery: emit the withheld_delivery rung (best-effort).
+                # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
+                # existing order — see _emit_withheld_delivery's docstring for why
+                # this specific advance is provably a no-op here either way.
                 _wd = self._sim_take_withheld_delivering(end)
+                self._advance_sim_clock(sct)
                 if _wd is not None:
                     self._emit_withheld_delivery(end, msg, _wd[0], _wd[1])
-                self._advance_sim_clock(sct)
                 _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
                 _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
                 if _srd is not None:
@@ -295,6 +298,11 @@ class TopAggregator(BaseTopAggregator):
                 logger.info(f"[MSG_SKIP] No data from ...{end[-8:]}; skipping it")
                 continue
 
+            # T3.3 commit-checkpoint belief (real mode only — sim's own commit
+            # loop already recorded it inside _sim_withhold_if_unavail).
+            if not self.simulated:
+                self._record_commit_belief(end)
+
             # Calculate staleness
             trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
             staleness = self._round - trainer_round
@@ -406,6 +414,11 @@ class TopAggregator(BaseTopAggregator):
                     logger.info(f"[MSG_SKIP] (loop2) No data from ...{end[-8:]}; skipping it")
                     continue
                 progressed = True
+
+                # T3.3 commit-checkpoint belief (real mode only — sim's own
+                # commit loop already recorded it inside _sim_withhold_if_unavail).
+                if not self.simulated:
+                    self._record_commit_belief(end)
 
                 # Calculate staleness
                 trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -835,6 +848,10 @@ class TopAggregator(BaseTopAggregator):
         }
         if self.simulated:
             msg[MessageType.SIM_SEND_TS] = _sim_send_ts
+        else:
+            # T3.0: broadcast the trace-read origin so a trainer's own wall-clock
+            # availability lookups anchor to the SAME point the aggregator uses.
+            msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
         _payload = channel.dumps(msg)
         _send_t0 = time.time()
         for end in selected_ends:

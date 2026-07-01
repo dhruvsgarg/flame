@@ -55,6 +55,13 @@ _SECTIONS = [
         ("C.3  abandon_timeout (vclock CTRL)",  "abandon_timeout"),
         ("Fst  starvation_advance (diag)",      "starvation_advance"),
         ("A5   state_timeline_agreement",         "state_timeline_agreement"),
+        ("A6r  trainer_trace_fidelity (real, abs)", "trainer_trace_fidelity_real"),
+        ("A6s  trainer_trace_fidelity (sim, abs)",  "trainer_trace_fidelity_sim"),
+        ("A7r.sel  agg_belief_fidelity (real, selection, abs)", "agg_belief_fidelity_real_selection"),
+        ("A7r.com  agg_belief_fidelity (real, commit, abs)",    "agg_belief_fidelity_real_commit"),
+        ("A7s.sel  agg_belief_fidelity (sim, selection, abs)",  "agg_belief_fidelity_sim_selection"),
+        ("A7s.com  agg_belief_fidelity (sim, commit, abs)",     "agg_belief_fidelity_sim_commit"),
+        ("A8r  send_gate_wait_fidelity (real, abs)", "send_gate_wait_fidelity_real"),
     ]),
     ("3", "Selection", [
         ("S3/4 num_chosen / in_flight / eff_c", "selection_detail"),
@@ -88,6 +95,7 @@ _SECTIONS = [
         ("U6  commit visibility lag",           "commit_visibility"),
         ("U3  staleness distribution",          "staleness"),
         ("C.2  withheld_delivery (diag)",       "withheld_delivery"),
+        ("K11  commit_promptness (sim, INV)",   "commit_promptness"),
         ("P1  aggregation sequence",            "aggregation_sequence"),
         ("U1  first divergence",                "first_divergence_summary"),
     ]),
@@ -442,6 +450,30 @@ def _fmt_metric(name: str, res: dict) -> list:
             )
             if res.get("mismatched_examples"):
                 lines.append(f"         mismatch_examples={res.get('mismatched_examples')}")
+    elif name in ("trainer_trace_fidelity_real", "trainer_trace_fidelity_sim",
+                 "agg_belief_fidelity_real_selection", "agg_belief_fidelity_real_commit",
+                 "agg_belief_fidelity_sim_selection", "agg_belief_fidelity_sim_commit"):
+        if res.get("mean_err") is not None:
+            lines.append(
+                f"         mean_err={res.get('mean_err')} (<={res.get('mean_tol')})  "
+                f"frac_within_tol={res.get('frac_within_tol')} (>={res.get('frac_pass_tol')} "
+                f"@ tau={res.get('within_tau')})  n_trainers={res.get('n_trainers')}"
+            )
+            lines.append(
+                f"         n_missed_transitions={res.get('n_missed_transitions')}  "
+                f"n_spurious_transitions={res.get('n_spurious_transitions')}  "
+                f"max_lag_s={res.get('max_lag_s')}"
+            )
+            if res.get("worst_trainers"):
+                lines.append(f"         worst_trainers={res.get('worst_trainers')}")
+    elif name == "send_gate_wait_fidelity_real":
+        if res.get("mean_err_s") is not None:
+            lines.append(
+                f"         mean_err_s={res.get('mean_err_s')} (<={res.get('mean_tol_s')})  "
+                f"frac_within_tol={res.get('frac_within_tol')} (>={res.get('frac_pass_tol')} "
+                f"@ tau={res.get('within_tau_s')}s)  n_scored={res.get('n_scored')}/"
+                f"{res.get('n_events')}  n_uncomparable={res.get('n_uncomparable')}"
+            )
     elif name == "abandon_timeout":
         if res.get("n_abandon") is not None:
             parts = [f"         n_abandon={res.get('n_abandon')}"]
@@ -463,6 +495,24 @@ def _fmt_metric(name: str, res: dict) -> list:
             )
             if res.get("violations"):
                 lines.append(f"         violations={res.get('violations')}")
+    elif name == "commit_promptness":
+        if res.get("n_events") is not None:
+            lines.append(
+                f"         n_events={res.get('n_events')}  "
+                f"mean_slack_s={res.get('mean_slack_s')}  "
+                f"max_slack_s={res.get('max_slack_s')}  "
+                f"min_slack_s={res.get('min_slack_s')}"
+            )
+            lines.append(
+                f"         n_early_violations={res.get('n_early_violations')} "
+                f"(<={res.get('early_tol_s')}s)  "
+                f"n_late_violations={res.get('n_late_violations')} "
+                f"(<={res.get('late_slack_tol_s')}s)"
+            )
+            if res.get("early_violations"):
+                lines.append(f"         early_violations={res.get('early_violations')}")
+            if res.get("late_violations"):
+                lines.append(f"         late_violations={res.get('late_violations')}")
     elif name == "training_budget":
         if res.get("ks_stat") is not None:
             defer = "  [mix-deferred to A2c]" if res.get("mix_deferred") else ""

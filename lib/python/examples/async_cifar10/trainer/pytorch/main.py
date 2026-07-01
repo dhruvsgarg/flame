@@ -173,6 +173,11 @@ class PyTorchCifar10Trainer(Trainer):
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
         self._sim_send_ts = None  # set by aggregator stamp on each task (sim mode)
+        # Aggregator's trace-read origin (agg_start_time_ts), broadcast on every
+        # dispatch in real mode -- see AGG_START_TS in trainer.py:_fetch_weights.
+        # None until the first message arrives; _sim_now() falls back to
+        # trainer_start_ts until then (Batch 3 T3.0).
+        self._agg_start_origin = None
 
         # Use the battery_threshold to determine the
         # avl_events_3_state config. Default to 50 if not provided
@@ -309,15 +314,40 @@ class PyTorchCifar10Trainer(Trainer):
         pass
 
     def _sim_now(self) -> float:
-        """Wall-elapsed (real) or last-task sim_send_ts (simulated)."""
+        """Wall-elapsed since the aggregator's trace-read origin (real) or
+        last-task sim_send_ts (simulated).
+
+        Real mode anchors to `_agg_start_origin` (broadcast by the aggregator,
+        Batch 3 T3.0) rather than this trainer's own `trainer_start_ts`, so
+        every trainer's trace lookups share the exact origin the aggregator
+        uses -- computing elapsed time against a local, per-trainer origin
+        instead would reintroduce a join-ramp-style skew (the same class of
+        bug as B2.0.3, moved to the trainer side). Falls back to
+        `trainer_start_ts` only until the first dispatch arrives (no origin
+        received yet), so early calls don't explode/return negative.
+        """
         if self.simulated:
             return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
-        return time.time() - self.trainer_start_ts
+        origin = self._agg_start_origin if self._agg_start_origin is not None else self.trainer_start_ts
+        return time.time() - origin
 
-    def _refresh_avl_for_sim(self) -> None:
-        """Advance availability state to current sim-time (sim mode only)."""
-        if not self.simulated:
-            return
+    def _refresh_avl_state(self) -> None:
+        """Advance availability state to the current point in the trace, both
+        modes -- pop every due transition, not just the next one, so a trainer
+        that's been busy computing catches up on any transitions it missed
+        rather than only ever seeing the first.
+
+        One code path for both modes (Batch 3 T3.1b): `_sim_now()` already
+        dispatches on `self.simulated` internally (sim: `_sim_send_ts`; real:
+        wall-elapsed since the aggregator's broadcast origin, T3.0), so this
+        function doesn't need its own mode gate -- it used to (`_refresh_avl_
+        for_sim`, sim-only), which made it silently inert in real mode. That
+        was never the actual reason real trainers didn't track the trace (see
+        Challenges §5 item 20 -- `notify_trainer_avail`'s background thread
+        called `check_and_update_state_avl()` directly, bypassing the gate,
+        the whole time), but it was still real dead code, worth collapsing to
+        avoid exactly this kind of two-divergent-paths confusion recurring.
+        """
         guard = 0
         while (
             self.state_avl_event_ts
@@ -352,6 +382,7 @@ class PyTorchCifar10Trainer(Trainer):
                             round_num=int(getattr(self, "_round", 0)),
                             old_state=str(old_status),
                             new_state=str(new_status),
+                            sim_now=self._sim_now(),
                         )
                         telemetry.emit(ev, **fields)
                     if self.client_notify["enabled"] == "True":
@@ -676,9 +707,9 @@ class PyTorchCifar10Trainer(Trainer):
             return
         # telemetry: measure time spent waiting on availability (vs. computing)
         _wait_time_s = 0.0
-        # simulated mode: refresh availability from the trace at this task's
-        # sim-time before deciding (sim-time advances only with new tasks).
-        self._refresh_avl_for_sim()
+        # Refresh availability from the trace at this task's current time
+        # (both modes) before deciding.
+        self._refresh_avl_state()
         # [SEND_GATE] compute-completes / gate-the-send model (UNAVAILABILITY_DESIGN
         # §8.3): training always runs to completion regardless of avl_state — a
         # trainer dispatched while AVL_* that goes UN_AVL (or AVL_EVAL) mid-flight is
@@ -1004,8 +1035,8 @@ class PyTorchCifar10Trainer(Trainer):
             )
             return
 
-        # simulated mode: refresh availability at this task's sim-time.
-        self._refresh_avl_for_sim()
+        # Refresh availability at this task's current time (both modes).
+        self._refresh_avl_state()
         if self.avl_state == TrainerAvailState.UN_AVL:
             logger.info(
                 f"Trainer {self.trainer_id} evaluating while avl_state=UN_AVL "

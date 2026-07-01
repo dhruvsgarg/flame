@@ -28,10 +28,19 @@ import statistics
 from pathlib import Path
 
 from .avail_state_series import (
+    build_observed_timeline_from_agg_belief,
+    build_observed_timeline_from_avail_change,
     build_trainer_state_series,
     run_span,
+    selection_run_span,
     state_fractions,
     total_variation_distance,
+)
+from .ground_truth import (
+    by_short_id,
+    expected_send_gate_wait,
+    state_fractions_over_range,
+    transitions_in_range,
 )
 from typing import Optional
 
@@ -199,6 +208,7 @@ def load_agg_jsonl(path: str) -> dict:
     residence: list = []
     withheld_deliveries: list = []
     abandon_timeouts: list = []
+    agg_belief_changes: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -212,6 +222,8 @@ def load_agg_jsonl(path: str) -> dict:
                 withheld_deliveries.append(e)
             elif ev == "abandon_timeout":
                 abandon_timeouts.append(e)
+            elif ev == "agg_belief_change":
+                agg_belief_changes.append(e)
             elif ev == "agg_round":
                 # Eval commits emit event=agg_round (tagged task=eval) so U6/U6e can
                 # read their commit timeliness, but they carry no agg_goal_count and
@@ -233,6 +245,7 @@ def load_agg_jsonl(path: str) -> dict:
     residence.sort(key=lambda x: (x["round"], x["ts"]))
     withheld_deliveries.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
     abandon_timeouts.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
+    agg_belief_changes.sort(key=lambda x: (x.get("round", 0), x.get("observed_at", 0.0)))
     return {
         "selection_train": selection_train,
         "agg_rounds": agg_rounds,
@@ -243,6 +256,9 @@ def load_agg_jsonl(path: str) -> dict:
         # deliveries and the 90s vclock abandons.
         "withheld_deliveries": withheld_deliveries,
         "abandon_timeouts": abandon_timeouts,
+        # Batch 3 T3.3: aggregator belief-tracking (commit checkpoint only —
+        # the selection checkpoint is already in selection_train.per_trainer.avl_state).
+        "agg_belief_changes": agg_belief_changes,
     }
 
 
@@ -2523,6 +2539,83 @@ def withheld_delivery_parity(real: dict, sim: dict) -> dict:
     }
 
 
+def commit_promptness_parity(sim: dict, early_tol_s: float = 1.0,
+                             late_slack_tol_s: float = 30.0) -> dict:
+    """K11 [INV]: per-event hard invariant -- actual commit time vs.
+    earliest-legally-committable time (Batch 3 T3.5, "Pillar 3" aggregator
+    half — general/mechanism-agnostic, not availability-specific in principle,
+    though today's only telemetry source for it is the availability send-gate).
+
+    Scope: the withheld-then-delivered population only (`withheld_deliveries`),
+    not every commit. A NORMAL (non-gated) commit's earliest-legally-committable
+    time is trivially its own `sct` — checking `actual_commit_ts >= sct` there
+    would just be re-measuring ordinary round-batching queue depth (multiple
+    commits sharing one monotonic vclock inside a round always show positive
+    "slack" against their own sct, by construction of `_advance_sim_clock`'s
+    max()), not a real promptness bug. The withheld population is where
+    `earliest_legally_committable_time` is a MEANINGFUL constraint distinct
+    from `sct` — and, per `compute_delivery_ts` (client_availability.py, T3.5
+    finding, see UNAVAILABILITY_DESIGN.md), `delivery_ts` there already IS
+    `earliest_legally_committable_time` (the max of whichever gates are
+    active, generalized as far as v1 has more than one gate type to take a
+    max over) — no separate bookkeeping field was needed, just an
+    `actual_commit_ts` stamp to compare it against.
+
+    `commit_slack_s = actual_commit_ts - delivery_ts`. Two distinct failure
+    modes, reported separately:
+      * EARLY (`slack < -early_tol_s`): committed before it was legally
+        available — a correctness bug (past-dating), same class as
+        `withheld_delivery`'s `delivery_ts >= sct` check but stricter (against
+        the ACTUAL commit instant, not just the registered delivery_ts).
+      * LATE (`slack > late_slack_tol_s`): held longer than the gate strictly
+        required — a promptness/scheduling bug (e.g. coarse reinjection
+        polling — `_sim_reinject_ready_withheld` only runs once per
+        commit-loop invocation).
+    Both gate `ok`; `late_slack_tol_s`'s default is a starting point pending
+    real-run calibration (Phase 6), same caveat as A6/A7/A8's DIST tolerances.
+
+    Sim-only: real emits no `withheld_delivery` at all (its trainer send-gate
+    is a different, trainer-side mechanism — see `withheld_delivery_parity`).
+    SKIP when no withheld_delivery event carries `actual_commit_ts` (gate off,
+    no withholds, or telemetry predates T3.5).
+    """
+    evs = sim.get("withheld_deliveries", []) or []
+    slacks: list = []
+    early_violations: list = []
+    late_violations: list = []
+    for e in evs:
+        act, dts = e.get("actual_commit_ts"), e.get("delivery_ts")
+        if act is None or dts is None:
+            continue
+        slack = float(act) - float(dts)
+        slacks.append(slack)
+        if slack < -early_tol_s:
+            early_violations.append({"end": e.get("end_id"), "slack_s": round(slack, 2)})
+        elif slack > late_slack_tol_s:
+            late_violations.append({"end": e.get("end_id"), "slack_s": round(slack, 2)})
+
+    if not slacks:
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no withheld_delivery events with actual_commit_ts "
+                        "(gate off, no withholds, or predates T3.5)"}
+
+    mean_slack, _ = mean_std(slacks)
+    return {
+        "ok": not early_violations and not late_violations,
+        "tier": "INV",
+        "n_events": len(slacks),
+        "mean_slack_s": round(mean_slack, 2),
+        "max_slack_s": round(max(slacks), 2),
+        "min_slack_s": round(min(slacks), 2),
+        "n_early_violations": len(early_violations),
+        "n_late_violations": len(late_violations),
+        "early_tol_s": early_tol_s,
+        "late_slack_tol_s": late_slack_tol_s,
+        "early_violations": early_violations[:10],
+        "late_violations": late_violations[:10],
+    }
+
+
 def abandon_timeout_parity(real: dict, sim: dict,
                            threshold_s: float = 90.0,
                            wall_leak_ceiling_s: float = 1e7) -> dict:
@@ -2759,6 +2852,347 @@ def state_timeline_agreement(real: dict, sim: dict,
         "mismatched_examples": mismatched,
     }
 
+
+def _match_transitions(gt_transitions: list, obs_transitions: list,
+                       lag_tol_s: float) -> tuple:
+    """Greedy in-order pairing of ground-truth vs observed transition events.
+
+    Both lists are chronological per-trainer transition sequences, so an
+    accurate observer's transitions should appear in the same order as ground
+    truth's (states alternate the same way in both). Walks ground truth in
+    order; each gt event consumes the *next* unconsumed observed event if it
+    has the same new_state and lands within lag_tol_s, else it's counted
+    missed. Any observed events never consumed are spurious. Returns
+    (lags, n_missed, n_spurious).
+    """
+    lags: list = []
+    missed = 0
+    j = 0
+    for gt_t, gt_s in gt_transitions:
+        if j < len(obs_transitions):
+            obs_t, obs_s = obs_transitions[j]
+            if obs_s == gt_s and abs(obs_t - gt_t) <= lag_tol_s:
+                lags.append(abs(obs_t - gt_t))
+                j += 1
+                continue
+        missed += 1
+    spurious = len(obs_transitions) - j
+    return lags, missed, spurious
+
+
+def _pad_tail(obs: list, span: float) -> list:
+    """Ensure a (t, state) series reaches `span` with >= 2 points.
+
+    state_fractions() drops single-point series outright (no dwell segment to
+    integrate) -- append a synthetic tail point at the run's own span so a
+    trainer with exactly one observed point (its only transition landed at
+    t=0, or it never changed again after one early change) still contributes
+    a full-span dwell estimate instead of being silently excluded.
+    """
+    if not obs:
+        return obs
+    if obs[-1][0] < span:
+        return obs + [(span, obs[-1][1])]
+    return obs
+
+
+def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
+                    seed_state: Optional[str] = None) -> Optional[tuple]:
+    """Shared A6/A7 core: one trainer's duration-weighted TVD vs ground truth,
+    plus event-level diagnostics (missed/spurious transitions, lags) from a
+    greedy in-order match against the raw trace's own transition points.
+
+    `seed_state`: prepend (0.0, seed_state) when raw_obs doesn't already
+    start at/before t=0 -- the known initial-belief anchor (A6: a trainer
+    inits AVL_TRAIN, see main.py; A7 commit-checkpoint belief has no such
+    anchor -- a trainer with zero commits has no belief to seed, pass None).
+    Without a seed, the window before the first observation is EXCLUDED from
+    both sides of the comparison (t_start = first observed t) rather than
+    penalizing a belief that couldn't exist yet — a commit-checkpoint belief
+    only starts at the first commit, always > 0, so scoring against [0, span)
+    would otherwise blame a fixed, unavoidable "missing prefix" as if it were
+    genuine drift.
+    Returns None if there's nothing to score (empty input, or ground-truth /
+    observed fraction computation comes up empty).
+    """
+    if not raw_obs:
+        return None
+    obs = raw_obs
+    t_start = 0.0
+    if seed_state is not None and raw_obs[0][0] > 0.0:
+        obs = [(0.0, seed_state)] + raw_obs
+    elif seed_state is None and raw_obs[0][0] > 0.0:
+        t_start = raw_obs[0][0]
+    obs = _pad_tail(obs, span)
+    obs_frac = state_fractions({"_": obs}, t_end=span).get("_")
+    gt_frac = state_fractions_over_range(gt, t_start, span)
+    if obs_frac is None or not gt_frac:
+        return None
+    tvd = total_variation_distance(obs_frac, gt_frac)
+    gt_transitions = transitions_in_range(gt, t_start, span)
+    lags, missed, spurious = _match_transitions(gt_transitions, raw_obs, lag_tol_s)
+    return tvd, lags, missed, spurious
+
+
+def _fidelity_result(errs: dict, n_missed: int, n_spurious: int, max_lag: float,
+                     mode: str, mean_tol: float, within_tau: float,
+                     frac_pass_tol: float, skip_note: str) -> dict:
+    """Shared A6/A7 result shape: DIST-tier population rollup (mean/p50/p90/
+    p99 + frac_within_tol) over a {short_id: tvd_error} map, same pass rule
+    and worst-trainers reporting for both rungs."""
+    if not errs:
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": skip_note}
+    err_vals = list(errs.values())
+    mean_err = sum(err_vals) / len(err_vals)
+    frac_within_tol = sum(1 for e in err_vals if e <= within_tau) / len(err_vals)
+    worst = sorted(errs.items(), key=lambda kv: -kv[1])[:5]
+    return {
+        "ok": mean_err <= mean_tol and frac_within_tol >= frac_pass_tol,
+        "tier": "DIST",
+        "mode": mode,
+        "n_trainers": len(errs),
+        "mean_err": round(mean_err, 4),
+        "p50_err": round(percentile(err_vals, 50), 4),
+        "p90_err": round(percentile(err_vals, 90), 4),
+        "p99_err": round(percentile(err_vals, 99), 4),
+        "frac_within_tol": round(frac_within_tol, 3),
+        "within_tau": within_tau,
+        "mean_tol": mean_tol,
+        "frac_pass_tol": frac_pass_tol,
+        "n_missed_transitions": n_missed,
+        "n_spurious_transitions": n_spurious,
+        "max_lag_s": round(max_lag, 1),
+        "worst_trainers": [{"end": tid, "err": round(e, 4)} for tid, e in worst],
+    }
+
+
+def trainer_trace_fidelity_parity(trainer_dict: dict, selection_events: list,
+                                  mode: str, ground_truth: Optional[dict],
+                                  mean_tol: float = 0.05,
+                                  within_tau: float = 0.10,
+                                  frac_pass_tol: float = 0.95,
+                                  lag_tol_s: float = 30.0) -> dict:
+    """A6 [DIST]: per-trainer observed-vs-ground-truth-trace fidelity, ONE
+    mode at a time (Batch 3 T3.2 — "Pillar 1").
+
+    Unlike A4dur/A5 (real vs sim compared *to each other*), this compares a
+    single mode's own trainer-side telemetry (avail_change, i.e. what the
+    trainer itself believes/logs about its availability) against the raw
+    trace file directly — the absolute check that would have caught
+    Challenges §5 item 20 (real trainers running their send-gate against a
+    trivial always-available trace) on its own, without needing a companion
+    sim run to diff against.
+
+    SKIP if no ground-truth trace was resolved for this run (predates T3.2 /
+    aggregator_config.json missing), the run span is degenerate, or no
+    trainer carries sim_now-tagged avail_change telemetry (predates T3.2).
+    """
+    if not ground_truth:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no ground-truth trace resolved for this run"}
+
+    span = selection_run_span(selection_events, mode)
+    if span <= 0:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "degenerate run span"}
+
+    gt_by_short = by_short_id(ground_truth)
+    errs: dict = {}
+    n_missed = n_spurious = 0
+    max_lag = 0.0
+    for short_id, d in trainer_dict.items():
+        gt = gt_by_short.get(short_id)
+        if gt is None:
+            continue
+        raw_obs = build_observed_timeline_from_avail_change(d.get("avail_change", []))
+        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state="AVL_TRAIN")
+        if scored is None:
+            continue
+        tvd, lags, missed, spurious = scored
+        errs[short_id] = tvd
+        n_missed += missed
+        n_spurious += spurious
+        if lags:
+            max_lag = max(max_lag, max(lags))
+
+    return _fidelity_result(
+        errs, n_missed, n_spurious, max_lag, mode, mean_tol, within_tau, frac_pass_tol,
+        skip_note="no trainers with both ground-truth and sim_now-tagged "
+                  "avail_change telemetry (gate off, or predates T3.2)")
+
+
+def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict],
+                               mean_tol: float = 0.05, within_tau: float = 0.10,
+                               frac_pass_tol: float = 0.95,
+                               lag_tol_s: float = 30.0) -> dict:
+    """A7 [DIST]: aggregator BELIEF vs ground-truth trace, ONE mode, BOTH
+    checkpoints (Batch 3 T3.3 — "Pillar 2"). Returns
+    {"selection": {...}, "commit": {...}}; the caller flattens each into its
+    own top-level result key so the causal ladder can localize a
+    selection-only vs commit-only divergence separately.
+
+    **selection checkpoint** reuses the EXISTING per-candidate avl_state
+    stamped every selection cycle (`PROP_AVL_STATE` via
+    `_avail_stamp_end_states`, already read into `selection_train`'s
+    `per_trainer.avl_state` by `flame/selector/__init__.py`'s
+    `emit_selection`) — already the aggregator's belief, no new telemetry
+    (found while building T3.3: emitting a *fresh* `agg_belief_change` here
+    too would have doubled telemetry volume — up to 300 events/round — for
+    data that's already fully persisted; same class of "verify the doc's
+    assumption against actual code" correction as T3.2's `avail_change`/
+    `sim_now` finding).
+
+    **commit checkpoint** reads the NEW `agg_belief_change` telemetry
+    (`checkpoint="commit"`), emitted by `_record_commit_belief` from every
+    stack's real receive loop and from `_sim_withhold_if_unavail` in sim —
+    meaningful for ALL baselines, including unaware ones (oort/fedbuff) that
+    don't filter at selection but still get a commit-time belief reading.
+    """
+    if not ground_truth:
+        skip = {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no ground-truth trace resolved for this run"}
+        return {"selection": skip, "commit": skip}
+
+    sel_events = agg.get("selection_train", [])
+    span = selection_run_span(sel_events, mode)
+    if span <= 0:
+        skip = {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "degenerate run span"}
+        return {"selection": skip, "commit": skip}
+
+    gt_by_short = by_short_id(ground_truth)
+
+    # --- selection checkpoint: reuse the existing per-candidate avl_state series ---
+    sel_series = build_trainer_state_series(sel_events, mode=mode)
+    sel_errs: dict = {}
+    sel_missed = sel_spurious = 0
+    sel_max_lag = 0.0
+    for end_id, raw_obs in sel_series.items():
+        short_id = str(end_id)[-4:]
+        gt = gt_by_short.get(short_id)
+        if gt is None:
+            continue
+        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state="AVL_TRAIN")
+        if scored is None:
+            continue
+        tvd, lags, missed, spurious = scored
+        sel_errs[short_id] = tvd
+        sel_missed += missed
+        sel_spurious += spurious
+        if lags:
+            sel_max_lag = max(sel_max_lag, max(lags))
+    sel_result = _fidelity_result(
+        sel_errs, sel_missed, sel_spurious, sel_max_lag, mode, mean_tol, within_tau,
+        frac_pass_tol,
+        skip_note="no trainers with ground-truth-matched avl_state in "
+                  "selection telemetry")
+
+    # --- commit checkpoint: NEW agg_belief_change telemetry ---
+    commit_by_end: dict = collections.defaultdict(list)
+    for e in agg.get("agg_belief_changes", []):
+        if e.get("checkpoint") == "commit":
+            commit_by_end[e.get("end_id")].append(e)
+    commit_errs: dict = {}
+    commit_missed = commit_spurious = 0
+    commit_max_lag = 0.0
+    for end_id, evs in commit_by_end.items():
+        short_id = str(end_id)[-4:]
+        gt = gt_by_short.get(short_id)
+        if gt is None:
+            continue
+        raw_obs = build_observed_timeline_from_agg_belief(evs)
+        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state=None)
+        if scored is None:
+            continue
+        tvd, lags, missed, spurious = scored
+        commit_errs[short_id] = tvd
+        commit_missed += missed
+        commit_spurious += spurious
+        if lags:
+            commit_max_lag = max(commit_max_lag, max(lags))
+    commit_result = _fidelity_result(
+        commit_errs, commit_missed, commit_spurious, commit_max_lag, mode, mean_tol,
+        within_tau, frac_pass_tol,
+        skip_note="no trainers with ground-truth-matched commit-checkpoint "
+                  "agg_belief_change telemetry (gate off, or predates T3.3)")
+
+    return {"selection": sel_result, "commit": commit_result}
+
+
+def send_gate_wait_fidelity_parity(trainer_dict: dict, ground_truth: Optional[dict],
+                                   mean_tol_s: float = 10.0,
+                                   within_tau_s: float = 30.0,
+                                   frac_pass_tol: float = 0.95) -> dict:
+    """A8 [DIST, real mode only]: observed [SEND_GATE] wait vs. ground-truth-
+    expected wait (Batch 3 T3.4 — "Pillar 3", trainer half).
+
+    For every real-mode task_send event carrying both send_gate_wait_s (the
+    actual wall-time spent blocked in _send_weights's UN_AVL wait loop) and
+    send_gate_sct (the trainer's own trace-time-basis clock, sampled right
+    before the gate check — same clock T3.2's avail_change.sim_now uses),
+    computes the ground-truth-expected wait directly from the raw trace
+    (expected_send_gate_wait, ground_truth.py) and compares it against the
+    observed wait. This validates the WAIT DURATION matches what the trace
+    says it should be — not just that some wait happened (a weaker property
+    already visible in the real send-gate's own [SEND_GATE] log line).
+
+    Real mode only: sim's send-time gate is agg-side (Stage C); trainer-side
+    send_gate_wait_s/send_gate_sct are always None in sim telemetry by
+    construction, so a sim run naturally contributes nothing here.
+
+    SKIP if no ground truth resolved, or no event carries both fields
+    (gate off, gate never engaged in this run, or telemetry predates T3.4).
+    Events whose trace never recovers after sct (expected wait undefined,
+    "would wait forever") are excluded from scoring, not treated as error.
+    """
+    if not ground_truth:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no ground-truth trace resolved for this run"}
+
+    gt_by_short = by_short_id(ground_truth)
+    errs: list = []
+    n_events = 0
+    n_uncomparable = 0
+    for short_id, d in trainer_dict.items():
+        gt = gt_by_short.get(short_id)
+        if gt is None:
+            continue
+        for e in d.get("task_send", []):
+            obs = e.get("send_gate_wait_s")
+            sct = e.get("send_gate_sct")
+            if obs is None or sct is None:
+                continue
+            n_events += 1
+            expected = expected_send_gate_wait(gt, float(sct))
+            if expected is None:
+                n_uncomparable += 1
+                continue
+            errs.append(abs(float(obs) - expected))
+
+    if not errs:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no real-mode task_send events with both "
+                        "send_gate_wait_s and send_gate_sct (gate off, gate "
+                        "never engaged, or predates T3.4)"}
+
+    mean_err = sum(errs) / len(errs)
+    frac_within_tol = sum(1 for e in errs if e <= within_tau_s) / len(errs)
+    return {
+        "ok": mean_err <= mean_tol_s and frac_within_tol >= frac_pass_tol,
+        "tier": "DIST",
+        "n_events": n_events,
+        "n_scored": len(errs),
+        "n_uncomparable": n_uncomparable,
+        "mean_err_s": round(mean_err, 2),
+        "p50_err_s": round(percentile(errs, 50), 2),
+        "p90_err_s": round(percentile(errs, 90), 2),
+        "p99_err_s": round(percentile(errs, 99), 2),
+        "frac_within_tol": round(frac_within_tol, 3),
+        "within_tau_s": within_tau_s,
+        "mean_tol_s": mean_tol_s,
+        "frac_pass_tol": frac_pass_tol,
+    }
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.4x  Training input control & per-phase split  (T2 / T_*)  — Stage 4
 # ═══════════════════════════════════════════════════════════════════
@@ -2900,7 +3334,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    agg_goal: int = 0,
                    max_rounds: Optional[int] = None,
                    rounds_cap: Optional[int] = None,
-                   budget_s: Optional[float] = None) -> dict:
+                   budget_s: Optional[float] = None,
+                   real_ground_truth: Optional[dict] = None,
+                   sim_ground_truth: Optional[dict] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -2944,6 +3380,18 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
     results["starvation_advance"] = starvation_advance_parity(real_agg, sim_agg)
     results["state_timeline_agreement"] = state_timeline_agreement(real_agg, sim_agg)
+    results["trainer_trace_fidelity_real"] = trainer_trace_fidelity_parity(
+        real_trainers, real_agg["selection_train"], "real", real_ground_truth)
+    results["trainer_trace_fidelity_sim"] = trainer_trace_fidelity_parity(
+        sim_trainers, sim_agg["selection_train"], "sim", sim_ground_truth)
+    _a7_real = agg_belief_fidelity_parity(real_agg, "real", real_ground_truth)
+    _a7_sim = agg_belief_fidelity_parity(sim_agg, "sim", sim_ground_truth)
+    results["agg_belief_fidelity_real_selection"] = _a7_real["selection"]
+    results["agg_belief_fidelity_real_commit"] = _a7_real["commit"]
+    results["agg_belief_fidelity_sim_selection"] = _a7_sim["selection"]
+    results["agg_belief_fidelity_sim_commit"] = _a7_sim["commit"]
+    results["send_gate_wait_fidelity_real"] = send_gate_wait_fidelity_parity(
+        real_trainers, real_ground_truth)
 
     # ── Stage 3 Selection ──
     results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
@@ -2974,6 +3422,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["eval_commit_timeliness"] = eval_commit_timeliness(sim_agg)
     results["staleness"] = staleness_parity(real_agg, sim_agg)
     results["withheld_delivery"] = withheld_delivery_parity(real_agg, sim_agg)
+    results["commit_promptness"] = commit_promptness_parity(sim_agg)
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
 
@@ -3028,6 +3477,15 @@ CHECK_META: dict = {
     "duty_cycle_duration":     {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     "eligible_pool_reduction": {"stage": 2, "role": "DIAG",     "deps": ("eligibility",)},
     "abandon_timeout":         {"stage": 2, "role": "CONTROL",  "deps": ("avail_timebase",)},
+    # A6/A7 (Batch 3 T3.2/T3.3) are absolute (vs. ground truth), not real-vs-sim
+    # — no dependency on avail_timebase (A3), unlike the relative Stage 2 checks above.
+    "trainer_trace_fidelity_real": {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "trainer_trace_fidelity_sim":  {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "agg_belief_fidelity_real_selection": {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "agg_belief_fidelity_real_commit":    {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "agg_belief_fidelity_sim_selection":  {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "agg_belief_fidelity_sim_commit":     {"stage": 2, "role": "MECHANISM", "deps": ()},
+    "send_gate_wait_fidelity_real":       {"stage": 2, "role": "MECHANISM", "deps": ()},
     # ── Stage 3 Selection ──
     "selection_detail":        {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
     "residence":               {"stage": 3, "role": "MECHANISM", "deps": ("eligibility",)},
@@ -3058,6 +3516,7 @@ CHECK_META: dict = {
     "eval_commit_timeliness":  {"stage": 6, "role": "MECHANISM", "deps": ("commit_visibility",)},
     "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
     "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness", "abandon_timeout")},
+    "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 7 Statistical utility ──

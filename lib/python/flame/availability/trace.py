@@ -8,6 +8,7 @@ _trace_read_avail_check (asyncfl/top_aggregator.py), and
 check_and_update_state_avl (trainer/pytorch/main.py:336).
 """
 
+import logging
 import math
 from functools import lru_cache
 from pathlib import Path
@@ -18,9 +19,12 @@ from sortedcontainers import SortedDict
 
 from flame.config import TrainerAvailState
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_TRACE_DIR = (
     Path(__file__).resolve().parents[2] / "examples/_metadata/availability_traces"
 )
+_METADATA_DIR = Path(__file__).resolve().parents[2] / "examples/_metadata"
 
 _MOBIPERF_SUBS: dict = {
     "mobiperf_2st": "states_2st",
@@ -144,3 +148,49 @@ def next_avail_after(trace: SortedDict, t: float) -> float:
         if state in _AVL_STATE_VALUES:
             return float(ts)
     return math.inf
+
+
+def read_trainer_unavailability(
+    trace: Optional[str],
+    base_dir: Optional[str] = None,
+) -> Optional[dict]:
+    """Build task_id → SortedDict[ts_s → state_str] from the canonical store.
+
+    Free function (Batch 3 T3.2 Phase 2): extracted from
+    ClientAvailability.read_trainer_unavailability so scripts/parity/
+    ground_truth.py can call it directly without instantiating the mixin
+    class. That method now delegates here — same behavior, one implementation.
+
+    Reads examples/_metadata/trainer_registry.yaml once; individual trace
+    SortedDicts are built via load_trace() which caches the raw YAML.
+    Returns None on fatal errors (caller treats None as gate-off).
+    """
+    if not trace:
+        return None
+
+    registry_path = _METADATA_DIR / "trainer_registry.yaml"
+    try:
+        with open(registry_path, encoding="utf-8") as f:
+            registry = yaml.safe_load(f)["trainers"]
+    except FileNotFoundError:
+        logger.error(f"[AVAIL] trainer registry not found: {registry_path}")
+        return None
+
+    trainer_events_dict: dict = {}
+    errors = 0
+    for tk, meta in registry.items():
+        task_id = meta["task_id"]
+        try:
+            trainer_events_dict[task_id] = load_trace(trace, tk, base_dir=base_dir)
+        except (KeyError, FileNotFoundError) as exc:
+            logger.warning(f"[AVAIL] skipping {tk}: {exc}")
+            errors += 1
+
+    if errors:
+        logger.warning(
+            f"[AVAIL] {errors}/{len(registry)} trainers had missing trace data"
+        )
+    logger.info(
+        f"[AVAIL] loaded {len(trainer_events_dict)} trainer traces (trace={trace!r})"
+    )
+    return trainer_events_dict or None

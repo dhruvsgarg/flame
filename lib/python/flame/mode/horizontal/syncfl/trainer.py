@@ -256,6 +256,15 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.SIM_SEND_TS in msg:
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
 
+        # T3.0: cache the aggregator's trace-read origin (real mode only) so this
+        # trainer's own wall-clock availability lookups (_sim_now()'s real-mode
+        # branch) share the exact origin the aggregator uses, instead of each
+        # trainer deriving its own from its own process-start time -- see
+        # UNAVAILABILITY_DESIGN.md Batch 3 T3.0. Re-cached on every dispatch
+        # (cheap, idempotent, self-healing if an early message was missed).
+        if MessageType.AGG_START_TS in msg:
+            self._agg_start_origin = msg[MessageType.AGG_START_TS]
+
         if telemetry.is_enabled():
             _sim_send_ts_val = getattr(self, "_sim_send_ts", None)
             _time_mode = getattr(self, "time_mode", "real")
@@ -353,6 +362,19 @@ class Trainer(Role, metaclass=ABCMeta):
         # time.sleep — sim availability is instead enforced agg-side by
         # ClientAvailability's send-time withhold (Stage C), keyed on the
         # trainer-reported completion time, not a trainer-side wall block.
+        #
+        # Batch 3 T3.4 "Pillar 3" (trainer half): sample send_gate_sct — the
+        # trainer's own trace-time-basis clock (_sim_now(), same clock T3.2's
+        # avail_change.sim_now uses) right before the gate check — regardless
+        # of whether the gate actually engages, so A8 can also confirm the
+        # NO-wait case is correctly not waiting, not just score the wait cases.
+        # Real mode only; hasattr-guarded since _sim_now() is example-specific
+        # (main.py), not defined on this generic base class.
+        _send_gate_sct = (
+            self._sim_now()
+            if not getattr(self, "simulated", False) and hasattr(self, "_sim_now")
+            else None
+        )
         if (
             not getattr(self, "simulated", False)
             and self.avl_state == TrainerAvailState.UN_AVL
@@ -361,8 +383,9 @@ class Trainer(Role, metaclass=ABCMeta):
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
                 )
-                while self.avl_state == TrainerAvailState.UN_AVL:
-                    time.sleep(1)
+                with self._phase("send_gate_wait_s"):
+                    while self.avl_state == TrainerAvailState.UN_AVL:
+                        time.sleep(1)
             else:
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights."
@@ -472,6 +495,12 @@ class Trainer(Role, metaclass=ABCMeta):
                 wall_recv_ts=getattr(self, "_wall_recv_ts", None),
                 wall_send_ts=_wall_send_ts,
                 time_mode=getattr(self, "time_mode", "real"),
+                send_gate_wait_s=(
+                    float(self._phase_times.get("send_gate_wait_s", 0.0))
+                    if not getattr(self, "simulated", False)
+                    else None
+                ),
+                send_gate_sct=_send_gate_sct,
             )
             telemetry.emit(ev, **fields)
 

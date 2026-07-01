@@ -46,13 +46,16 @@ try:
         ),
     )
     from flame.telemetry.events import (  # noqa: E402
+        EVENT_AGG_BELIEF_CHANGE,
         EVENT_AGG_EVAL,
         EVENT_AGG_ROUND,
         EVENT_AVAIL_CHANGE,
         EVENT_SELECTION,
+        EVENT_TASK_SEND,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
         EVENT_UTILITY_BELIEF,
+        EVENT_WITHHELD_DELIVERY,
     )
 except Exception:  # pragma: no cover
     EVENT_SELECTION = "selection"
@@ -62,6 +65,40 @@ except Exception:  # pragma: no cover
     EVENT_UTIL_DISPARITY = "util_disparity"
     EVENT_AVAIL_CHANGE = "avail_change"
     EVENT_UTILITY_BELIEF = "utility_belief"
+    EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"
+    EVENT_TASK_SEND = "task_send"
+    EVENT_WITHHELD_DELIVERY = "withheld_delivery"
+
+# Batch 3 T3.2 (UNAVAILABILITY_DESIGN.md): the A6 trainer_trace_fidelity ground-
+# truth lookups live under the async_cifar10 example's parity checker package
+# (trace names / the trainer registry are example-specific), not in generic
+# flame/. Optional: absent for examples without an availability trace store.
+try:
+    sys.path.insert(
+        0,
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "lib", "python", "examples", "async_cifar10", "scripts",
+        ),
+    )
+    from parity.avail_state_series import (  # noqa: E402
+        build_observed_timeline_from_agg_belief,
+        build_observed_timeline_from_avail_change,
+        build_trainer_state_series,
+        selection_run_span,
+    )
+    from parity.checks import _fidelity_score  # noqa: E402
+    from parity.ground_truth import (  # noqa: E402
+        by_short_id,
+        expected_send_gate_wait,
+        load_ground_truth,
+        resolve_trace_name,
+        transitions_in_range,
+    )
+    from flame.availability.trace import state_at as _gt_state_at  # noqa: E402
+    _HAVE_GROUND_TRUTH = True
+except Exception:  # pragma: no cover
+    _HAVE_GROUND_TRUTH = False
 
 
 # Communication is reported in MEGABYTES. One model = MODEL_PARAM_COUNT fp32
@@ -2313,6 +2350,264 @@ def availability_plots(records, out, stamp, tdir):
     return saved
 
 
+def _gt_segments(trace, t_end) -> list:
+    """[(t_start, t_end, state), ...] ground-truth segments over [0, t_end]."""
+    pts = [(0.0, _gt_state_at(trace, 0.0).value)]
+    pts.extend(transitions_in_range(trace, 0.0, t_end))
+    segs = [(a, b, s) for (a, s), (b, _) in zip(pts, pts[1:])]
+    if pts:
+        segs.append((pts[-1][0], t_end, pts[-1][1]))
+    return segs
+
+
+def _obs_segments(pts, t_end) -> list:
+    """[(t_start, t_end, state), ...] observed segments from a forward-fill series."""
+    segs = [(a, b, s) for (a, s), (b, _) in zip(pts, pts[1:])]
+    if pts:
+        segs.append((pts[-1][0], t_end, pts[-1][1]))
+    return segs
+
+
+def trace_fidelity_plots(records, out, stamp, tdir):
+    """A6 trainer_trace_fidelity deep-dive (Batch 3 T3.2): each trainer's own
+    OBSERVED availability timeline (from its avail_change telemetry, Batch 3
+    T3.0/T3.1a/T3.1b/T3.2's sim_now field) plotted directly against the raw
+    ground-truth trace file — absolute, single-mode, no real-vs-sim compare
+    (that's the existing availability_plots()/A5 deep-dive above). This is the
+    plot that would have made Challenges §5 item 20 (real trainers running
+    their send-gate against a trivial always-available trace) visually
+    obvious: every real trainer's bottom band would have been a flat
+    AVL_TRAIN bar under a ground-truth top band that clearly transitions.
+    """
+    d = _sub(out, "availability")
+    if not _HAVE_GROUND_TRUTH:
+        return []
+    run_dir = os.path.dirname(os.path.abspath(tdir))
+    trace_name = resolve_trace_name(run_dir)
+    ground_truth = load_ground_truth(trace_name)
+    if not ground_truth:
+        return []
+    gt_by_short = by_short_id(ground_truth)
+
+    sel = by_event(records, EVENT_SELECTION)
+    mode = "sim" if any(s.get("vclock_now") is not None for s in sel) else "real"
+    span = selection_run_span(sel, mode)
+    if span <= 0:
+        return []
+
+    by_end: dict = defaultdict(list)
+    for r in by_event(records, EVENT_AVAIL_CHANGE):
+        end_id = r.get("end_id")
+        if end_id is not None:
+            by_end[str(end_id)].append(r)
+
+    errs, gt_segs_by_short, obs_segs_by_short = {}, {}, {}
+    for end_id, evs in by_end.items():
+        short_id = end_id[-4:]
+        gt = gt_by_short.get(short_id)
+        if gt is None:
+            continue
+        raw_obs = build_observed_timeline_from_avail_change(evs)
+        scored = _fidelity_score(raw_obs, gt, span, seed_state="AVL_TRAIN")
+        if scored is None:
+            continue
+        errs[short_id] = scored[0]
+        gt_segs_by_short[short_id] = _gt_segments(gt, span)
+        obs_segs_by_short[short_id] = _obs_segments(raw_obs, span)
+
+    saved = []
+    if not errs:
+        return saved
+
+    # (b) fidelity-error distribution — outliers are exactly the trainers this
+    # rung exists to catch (item 20 would show as *every* real trainer here).
+    p = ph.cdf_plot(
+        list(errs.values()), "trace fidelity error (TVD, lower=better)",
+        f"A6 trainer_trace_fidelity error CDF ({mode}, n={len(errs)})",
+        d, f"trace_fidelity_error_cdf_{mode}.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    # (a) per-trainer timeline overlay, worst-fidelity-first, capped so the
+    # figure stays legible — outlier trainers are the ones actually shown.
+    worst = sorted(errs.items(), key=lambda kv: -kv[1])[:12]
+    rows = [
+        (f"{short_id} (err={err:.3f})", gt_segs_by_short[short_id], obs_segs_by_short[short_id])
+        for short_id, err in worst
+    ]
+    p = ph.state_band_timeline(
+        rows, span,
+        f"A6 trainer_trace_fidelity: worst {len(rows)} trainers, "
+        f"ground-truth vs observed ({mode})",
+        d, f"trace_fidelity_timeline_{mode}.pdf", stamp=stamp)
+    if p: saved.append(p)
+    return saved
+
+
+def agg_belief_fidelity_plots(records, out, stamp, tdir):
+    """A7 agg_belief_fidelity deep-dive (Batch 3 T3.3): the AGGREGATOR's own
+    belief about each trainer's availability plotted against the raw
+    ground-truth trace, independently per checkpoint --
+    **selection** (reuses the existing per-candidate avl_state already
+    stamped every selection cycle) and **commit** (new agg_belief_change
+    telemetry, from _record_commit_belief). Companion to trace_fidelity_plots
+    (A6, the TRAINER's own self-report) -- this is the aggregator's side of
+    the same absolute (vs. ground truth, not real-vs-sim) question.
+    """
+    d = _sub(out, "availability")
+    if not _HAVE_GROUND_TRUTH:
+        return []
+    run_dir = os.path.dirname(os.path.abspath(tdir))
+    trace_name = resolve_trace_name(run_dir)
+    ground_truth = load_ground_truth(trace_name)
+    if not ground_truth:
+        return []
+    gt_by_short = by_short_id(ground_truth)
+
+    sel = by_event(records, EVENT_SELECTION)
+    mode = "sim" if any(s.get("vclock_now") is not None for s in sel) else "real"
+    span = selection_run_span(sel, mode)
+    if span <= 0:
+        return []
+
+    def _score_all(series_by_end, seed_state):
+        errs, gt_segs, obs_segs = {}, {}, {}
+        for end_id, raw_obs in series_by_end.items():
+            short_id = str(end_id)[-4:]
+            gt = gt_by_short.get(short_id)
+            if gt is None:
+                continue
+            scored = _fidelity_score(raw_obs, gt, span, seed_state=seed_state)
+            if scored is None:
+                continue
+            errs[short_id] = scored[0]
+            gt_segs[short_id] = _gt_segments(gt, span)
+            obs_segs[short_id] = _obs_segments(raw_obs, span)
+        return errs, gt_segs, obs_segs
+
+    sel_series = build_trainer_state_series(sel, mode=mode)
+    sel_scores = _score_all(sel_series, seed_state="AVL_TRAIN")
+
+    commit_by_end: dict = defaultdict(list)
+    for r in by_event(records, EVENT_AGG_BELIEF_CHANGE):
+        if r.get("checkpoint") != "commit":
+            continue
+        end_id = r.get("end_id")
+        if end_id is not None:
+            commit_by_end[str(end_id)].append(r)
+    commit_series = {
+        end_id: build_observed_timeline_from_agg_belief(evs)
+        for end_id, evs in commit_by_end.items()
+    }
+    commit_scores = _score_all(commit_series, seed_state=None)
+
+    saved = []
+    for checkpoint, (errs, gt_segs, obs_segs) in (
+        ("selection", sel_scores), ("commit", commit_scores),
+    ):
+        if not errs:
+            continue
+        p = ph.cdf_plot(
+            list(errs.values()), "belief fidelity error (TVD, lower=better)",
+            f"A7 agg_belief_fidelity error CDF ({mode}, {checkpoint}, n={len(errs)})",
+            d, f"belief_fidelity_error_cdf_{mode}_{checkpoint}.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+        worst = sorted(errs.items(), key=lambda kv: -kv[1])[:12]
+        rows = [
+            (f"{short_id} (err={err:.3f})", gt_segs[short_id], obs_segs[short_id])
+            for short_id, err in worst
+        ]
+        p = ph.state_band_timeline(
+            rows, span,
+            f"A7 agg_belief_fidelity: worst {len(rows)} trainers, "
+            f"belief vs ground-truth ({mode}, {checkpoint})",
+            d, f"belief_fidelity_timeline_{mode}_{checkpoint}.pdf", stamp=stamp)
+        if p: saved.append(p)
+    return saved
+
+
+def send_gate_wait_plots(records, out, stamp, tdir):
+    """A8 send_gate_wait_fidelity deep-dive (Batch 3 T3.4): real-mode
+    [SEND_GATE] wait duration vs. what the raw ground-truth trace says it
+    should have been. Reads task_send (not trainer_round) -- the wait loop
+    runs strictly after trainer_round is emitted for the same round (train()
+    then put()/_send_weights, per the tasklet composition), so task_send is
+    the event that can actually carry it, same reason wall_send_ts lives
+    there instead of trainer_round.
+    """
+    d = _sub(out, "availability")
+    if not _HAVE_GROUND_TRUTH:
+        return []
+    run_dir = os.path.dirname(os.path.abspath(tdir))
+    trace_name = resolve_trace_name(run_dir)
+    ground_truth = load_ground_truth(trace_name)
+    if not ground_truth:
+        return []
+    gt_by_short = by_short_id(ground_truth)
+
+    observed, expected = [], []
+    for r in by_event(records, EVENT_TASK_SEND):
+        obs = r.get("send_gate_wait_s")
+        sct = r.get("send_gate_sct")
+        end_id = r.get("end_id")
+        if obs is None or sct is None or end_id is None:
+            continue
+        gt = gt_by_short.get(str(end_id)[-4:])
+        if gt is None:
+            continue
+        exp = expected_send_gate_wait(gt, float(sct))
+        if exp is None:
+            continue
+        observed.append(float(obs))
+        expected.append(exp)
+
+    saved = []
+    if not observed:
+        return saved
+
+    p = ph.cdf_plot(
+        observed, "send_gate_wait_s (observed)",
+        f"A8 send_gate_wait_s distribution (real, n={len(observed)})",
+        d, "send_gate_wait_cdf.pdf", stamp=stamp)
+    if p: saved.append(p)
+
+    p = ph.scatter_diag(
+        expected, observed,
+        "ground-truth-expected wait (s)", "observed send_gate_wait_s (s)",
+        f"A8 send_gate_wait_fidelity: observed vs expected (n={len(observed)})",
+        d, "send_gate_wait_scatter.pdf", stamp=stamp)
+    if p: saved.append(p)
+    return saved
+
+
+def commit_promptness_plots(records, out, stamp, tdir):
+    """K11 commit_promptness deep-dive (Batch 3 T3.5): distribution of
+    "commit slack" (actual_commit_ts - delivery_ts) across every withheld-
+    then-delivered update. Should cluster near 0; a heavy right tail flags a
+    promptness/scheduling bug (e.g. coarse reinjection polling); any mass left
+    of the marked zero-line is a hard correctness bug (a commit landing
+    before it was legally available). Sim-only (real emits no
+    withheld_delivery telemetry at all — a different, trainer-side gate).
+    """
+    d = _sub(out, "availability")
+    slacks = []
+    for r in by_event(records, EVENT_WITHHELD_DELIVERY):
+        act, dts = r.get("actual_commit_ts"), r.get("delivery_ts")
+        if act is None or dts is None:
+            continue
+        slacks.append(float(act) - float(dts))
+
+    saved = []
+    if not slacks:
+        return saved
+    p = ph.hist_plot(
+        slacks, "commit_slack_s (actual_commit_ts - delivery_ts)",
+        f"K11 commit_promptness: commit slack (sim, n={len(slacks)})",
+        d, "commit_slack_hist.pdf", stamp=stamp, vline=0.0)
+    if p: saved.append(p)
+    return saved
+
+
 # ==========================================================================
 # selection/why/  — deep-dive: which factor drove selection?
 # ==========================================================================
@@ -2542,7 +2837,9 @@ def analyze(telemetry_dir, out_dir=None):
     saved = []
     for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
                system_plots, sim_speedup_plots, mqtt_delivery_plots,
-               availability_plots, selection_why_plots, aggregation_plots):
+               availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
+               send_gate_wait_plots, commit_promptness_plots,
+               selection_why_plots, aggregation_plots):
         try:
             saved.extend(fn(records, out_dir, stamp, telemetry_dir))
         except Exception as e:

@@ -694,6 +694,10 @@ class TopAggregator(SyncTopAgg):
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
             return
+        # T3.3 commit-checkpoint belief (real mode only — sim's own commit
+        # loop already recorded it inside _sim_withhold_if_unavail).
+        if not self.simulated:
+            self._record_commit_belief(end)
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
         # NOTE: Only 2 types of messages are expected here: (i) model
@@ -1637,6 +1641,11 @@ class TopAggregator(SyncTopAgg):
         if not _staggered:
             if self.simulated:
                 base_msg[MessageType.SIM_SEND_TS] = _round_now
+            else:
+                # T3.0: broadcast the trace-read origin so a trainer's own
+                # wall-clock availability lookups anchor to the SAME point the
+                # aggregator uses.
+                base_msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
             _shared_payload = channel.dumps(base_msg)
 
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
