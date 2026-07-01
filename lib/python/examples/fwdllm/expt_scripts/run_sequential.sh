@@ -10,7 +10,7 @@
 # Usage (from anywhere):
 #   run_sequential.sh [--max-runtime-s 600] [--max-data-id 10]
 #       [--num-trainers N] [--num-gpus N] [--c C] [--k K] [--stop-on-fail]
-#       [--only name1,name2]
+#       [--partition-method NAME] [--only name1,name2]
 #
 #   --max-runtime-s  wall-clock cap in seconds for each run (default: 600 = 10 min)
 #   --max-data-id    stop a run once data_id reaches this value (default: 10)
@@ -23,6 +23,14 @@
 #   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
+#   --partition-method  override hyperparameters.partition_method on both the
+#                     trainer and aggregator sides (default: each YAML's own,
+#                     "uniform" -- IID, chosen for smoke tests to isolate
+#                     launcher-mechanics validation from data-skew effects).
+#                     Must be one of agnews_partition.h5's own group names,
+#                     e.g. "niid_label_clients=100_alpha=0.1" for the most
+#                     heterogeneous split available in the 100-client group
+#                     (smaller alpha = more skewed/non-IID).
 #   --only           comma-separated subset of baselines to execute, e.g.
 #                     --only fwdllm_plus,fluxtune
 #                     (default: all three -- fwdllm, fwdllm_plus, fluxtune)
@@ -80,19 +88,21 @@ NUM_TRAINERS=""   # empty = leave each YAML's own value
 NUM_GPUS=""       # empty = leave each YAML's own value
 SEL_C=""
 SEL_K=""
+PARTITION_METHOD=""   # empty = leave each YAML's own value ("uniform")
 ONLY=""           # empty = run all three
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-runtime-s) MAX_RUNTIME_S="$2"; shift 2 ;;
-    --max-data-id)   MAX_DATA_ID="$2"; shift 2 ;;
-    --num-trainers)  NUM_TRAINERS="$2"; shift 2 ;;
-    --num-gpus)      NUM_GPUS="$2"; shift 2 ;;
-    --c)             SEL_C="$2"; shift 2 ;;
-    --k)             SEL_K="$2"; shift 2 ;;
-    --stop-on-fail)  STOP_ON_FAIL=1; shift ;;
-    --only)          ONLY="$2"; shift 2 ;;
-    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--k K] [--stop-on-fail] [--only name1,name2]" >&2; exit 2 ;;
+    --max-runtime-s)     MAX_RUNTIME_S="$2"; shift 2 ;;
+    --max-data-id)       MAX_DATA_ID="$2"; shift 2 ;;
+    --num-trainers)      NUM_TRAINERS="$2"; shift 2 ;;
+    --num-gpus)          NUM_GPUS="$2"; shift 2 ;;
+    --c)                 SEL_C="$2"; shift 2 ;;
+    --k)                 SEL_K="$2"; shift 2 ;;
+    --stop-on-fail)      STOP_ON_FAIL=1; shift ;;
+    --partition-method)  PARTITION_METHOD="$2"; shift 2 ;;
+    --only)              ONLY="$2"; shift 2 ;;
+    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--k K] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
   esac
 done
 
@@ -104,14 +114,17 @@ mkdir -p "$LOGDIR"
 # YAML rather than the original -- keeps the checked-in smoke configs stable
 # while letting this script's caller pick the scale per invocation.
 patch_yaml() {
-  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" <<'PY'
+  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" "$PARTITION_METHOD" <<'PY'
 import sys, yaml
-src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c, sel_k = sys.argv[1:10]
+src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c, sel_k, partition_method = sys.argv[1:11]
 cfg = yaml.safe_load(open(src))
 for exp in cfg.get("experiments", []):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = int(max_runtime_s)
     h["max_data_id_progress"] = int(max_data_id)
+    if partition_method:
+        h["partition_method"] = partition_method
+        exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = partition_method
     if num_trainers:
         exp["trainer"]["num_trainers"] = int(num_trainers)
         # exp["name"] feeds the run directory name (run_<ts>_<name>); derive
@@ -180,7 +193,7 @@ cleanup() {
 trap cleanup INT TERM
 
 cd "$REPO_ROOT" || exit 1
-echo "=== fwdllm sequential run: ${#RUNS[@]} runs (${RUNS[*]%%:*}), max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} num_gpus=${NUM_GPUS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>}, logs in $LOGDIR ==="
+echo "=== fwdllm sequential run: ${#RUNS[@]} runs (${RUNS[*]%%:*}), max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} num_gpus=${NUM_GPUS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>} partition_method=${PARTITION_METHOD:-<yaml default>}, logs in $LOGDIR ==="
 
 for entry in "${RUNS[@]}"; do
   name="${entry%%:*}"
