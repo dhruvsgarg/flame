@@ -1,6 +1,6 @@
 # Copyright 2024 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""AvailabilityMixin — library-level oracular availability for all aggregators.
+"""ClientAvailability — library-level oracular availability for all aggregators.
 
 Mixed into flame/mode/horizontal/syncfl/top_aggregator.TopAggregator (the
 common ancestor of the oort, asyncfl, syncfl, and fwdllm stacks). All four
@@ -48,7 +48,7 @@ _AVL_STATES = frozenset(
 _AVAIL_ABANDON_TIMEOUT_S = 90.0
 
 
-class AvailabilityMixin:
+class ClientAvailability:
     """Oracular availability substrate for TopAggregator subclasses.
 
     Depends on attributes set by syncfl TopAggregator.internal_init():

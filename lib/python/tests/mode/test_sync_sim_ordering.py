@@ -92,7 +92,7 @@ def _make_agg():
     # Gate-off availability state. Production sets _sim_buffer in __init__ and the
     # ledgers in _init_availability; __new__ bypasses both, so set them here.
     # _sync_sim_recv_first_k references self._sim_buffer directly; trainer_event_dict
-    # =None + empty pending_withheld keep the AvailabilityMixin helpers no-op, so the
+    # =None + empty pending_withheld keep the ClientAvailability helpers no-op, so the
     # sim-ordering logic is exercised in isolation (byte-identical to gate OFF).
     agg._sim_buffer = SimReorderBuffer()
     agg.trainer_event_dict = None

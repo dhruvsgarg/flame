@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Availability tracking modules."""
 
-from .availability_mixin import AvailabilityMixin
+from .client_availability import ClientAvailability
 from .feddance_predictor import FedDancePredictor
 from .refl_tracker import REFLAvailabilityTracker
 from .trace import load_trace, next_avail_after, state_at
 
 __all__ = [
-    "AvailabilityMixin",
+    "ClientAvailability",
     "FedDancePredictor",
     "REFLAvailabilityTracker",
     "load_trace",

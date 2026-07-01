@@ -24,7 +24,7 @@ import cloudpickle
 import numpy as np
 
 from diskcache import Cache
-from flame.availability.availability_mixin import AvailabilityMixin
+from flame.availability.client_availability import ClientAvailability
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -99,7 +99,7 @@ _NETWORK_SLACK_S = 2.0
 MIN_TRAINERS_JOIN_TIMEOUT_S = 180
 
 
-class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
+class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     """Top level Aggregator implements an ML aggregation role."""
 
     @abstract_attribute
@@ -218,7 +218,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         self._trainers_used_in_curr_round = []
         self.agg_start_time_ts = time.time()
 
-        # Initialize availability substrate (AvailabilityMixin). Sets
+        # Initialize availability substrate (ClientAvailability). Sets
         # trainer_event_dict=None when sim_unavailability=False → no-op on
         # all current runs; gate-on enables the oracular trace-read path.
         self._init_availability(self.config)
@@ -821,6 +821,28 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             self.dist_tag = tag
             self._distribute_weights(tag, task_to_perform)
 
+    def _mark_join_barrier_done(self) -> None:
+        """Latch the one-shot join barrier and re-anchor the real-mode trace-read
+        origin to "now" (round-0 start), not aggregator __init__.
+
+        `agg_start_time_ts` is stamped at __init__ (internal_init), before
+        `channel.await_join()` / `_await_min_trainers()` run. In sim mode that's
+        fine — `_avail_now()` reads `_vclock.now`, which only starts advancing
+        once round-0 selection begins, so the join wait (real OS process
+        spawn/connect, which happens in wall-clock time in BOTH modes) never
+        touches it. In real mode `_avail_now()` reads
+        `time.time() - agg_start_time_ts`, so without this re-anchor the join
+        wait (~300s wall at n=300) is silently baked into every subsequent
+        trace read — real ends up reading the availability trace ~300s ahead
+        of where sim/ground-truth says it should be (confirmed via feddance
+        syn_50: real's num_eligible drops at wall~300s, sim/trace ground-truth
+        agree the drop is at t~600s — see UNAVAILABILITY_DESIGN.md A3 section).
+        Re-anchoring here makes real's origin self-correcting to however long
+        the join actually takes, not tied to today's ~300s figure."""
+        self._join_barrier_done = True
+        if not self.simulated:
+            self.agg_start_time_ts = time.time()
+
     def _await_min_trainers(self, channel) -> None:
         """One-shot startup barrier: block until ``min_trainers_to_start`` ends
         have joined the channel before the first selection.
@@ -839,7 +861,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             return
         min_start = getattr(self.config.hyperparameters, "min_trainers_to_start", None)
         if not min_start or int(min_start) <= 0:
-            self._join_barrier_done = True
+            self._mark_join_barrier_done()
             return
         min_start = int(min_start)
         # Allow override: large cohorts (e.g. n300 at sleep_between_spawns=1s take
@@ -852,7 +874,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             n = len(channel._ends)
             if n >= min_start:
                 logger.info(f"[JOIN_BARRIER] {n}/{min_start} trainers joined; starting")
-                self._join_barrier_done = True
+                self._mark_join_barrier_done()
                 return
             logger.info(f"[JOIN_BARRIER] waiting for {min_start} trainers to join; have {n}")
             time.sleep(1.0)
@@ -860,7 +882,7 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
             f"[JOIN_BARRIER] timed out after {timeout_s:.0f}s; "
             f"proceeding with {len(channel._ends)}/{min_start} trainers"
         )
-        self._join_barrier_done = True
+        self._mark_join_barrier_done()
 
     @timer_decorator
     def _inject_oracle_utilities(self, channel, task_to_perform: str) -> None:
@@ -926,10 +948,14 @@ class TopAggregator(AvailabilityMixin, Role, metaclass=ABCMeta):
         # the selector ranks. No-op unless oracle_utility_injection is enabled.
         self._inject_oracle_utilities(channel, task_to_perform)
 
-        # Expose current vclock to selector so it can attach it to selection
-        # events (C.6.1 — mirrors the same exposure in oort/asyncfl top_aggregators).
-        if self.simulated:
-            channel.properties["vclock_now"] = self._vclock.now
+        # Expose current availability-timeline time to selector so it can attach
+        # it to selection events (C.6.1 — mirrors the same exposure in
+        # oort/asyncfl top_aggregators). _avail_now() covers both modes (sim
+        # vclock / real wall-elapsed-since-agg_start) — real used to be skipped
+        # here, leaving real selection events with no shared time-base and
+        # forcing parity's A4dur to fall back to a wrong, join-ramp-skewed
+        # origin (ts of first selection event, not agg_start).
+        channel.properties["vclock_now"] = self._avail_now()
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"

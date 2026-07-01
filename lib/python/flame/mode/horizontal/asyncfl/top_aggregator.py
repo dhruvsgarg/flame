@@ -115,7 +115,7 @@ class TopAggregator(SyncTopAgg):
         # C.2 send-time withhold: an in-flight update whose trainer is UN_AVL at
         # its completion (sct) is HELD here (end -> (sct, (msg, metadata))) and
         # re-injected into the buffer at its delivery_ts (commits stale). The
-        # delivery_ts itself lives in the AvailabilityMixin pending_withheld ledger.
+        # delivery_ts itself lives in the ClientAvailability pending_withheld ledger.
         self._sim_withheld_payload: dict = {}
         # end -> (orig_sct, delivery_ts) for an update currently re-injected into the
         # buffer awaiting its late (stale) commit. Lets the commit body recognize a
@@ -307,7 +307,7 @@ class TopAggregator(SyncTopAgg):
             return False
 
     # C.2 / C.3 commit-loop wiring (_sim_pop_committable, _sim_reinject_ready_withheld,
-    # _sim_abandon_stalled) is shared, library-level in AvailabilityMixin so the oort
+    # _sim_abandon_stalled) is shared, library-level in ClientAvailability so the oort
     # stack rides the identical logic. The asyncfl gate tracker (_sim_inflight_expected)
     # is reached via the mixin's guarded _avail_drop_inflight hook.
 
@@ -1572,9 +1572,10 @@ class TopAggregator(SyncTopAgg):
         # the oracular read instead of staying all-UNKNOWN (Next actions §2).
         self._avail_stamp_end_states(channel)
 
-        # Expose current vclock to selector so it can attach it to selection events.
-        if self.simulated:
-            channel.properties["vclock_now"] = self._vclock.now
+        # Expose current availability-timeline time to selector so it can attach
+        # it to selection events. _avail_now() covers both modes — real used to
+        # be skipped here (see syncfl/top_aggregator.py for the parity fallout).
+        channel.properties["vclock_now"] = self._avail_now()
 
         # Per-baseline online oracle: refresh candidate stat-utility to true values
         # before selection. No-op unless oracle_utility_injection is enabled.

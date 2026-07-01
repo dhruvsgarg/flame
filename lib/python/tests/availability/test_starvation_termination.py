@@ -17,7 +17,7 @@ import types
 import pytest
 from sortedcontainers import SortedDict
 
-from flame.availability.availability_mixin import AvailabilityMixin
+from flame.availability.client_availability import ClientAvailability
 from flame.availability.trace import next_avail_after
 
 
@@ -53,8 +53,8 @@ class _VClock:
             self._now = float(ts)
 
 
-class _Harness(AvailabilityMixin):
-    """Minimal AvailabilityMixin host for starvation-termination tests."""
+class _Harness(ClientAvailability):
+    """Minimal ClientAvailability host for starvation-termination tests."""
 
     def __init__(self, trainer_event_dict, vclock_now, budget, simulated=True):
         self.trainer_event_dict = trainer_event_dict

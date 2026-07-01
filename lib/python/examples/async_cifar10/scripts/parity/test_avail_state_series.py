@@ -47,6 +47,20 @@ def test_build_series_real_uses_ts_minus_t0():
     assert series["t1"] == [(0.0, "AVL_TRAIN"), (300.0, "UN_AVL")]
 
 
+def test_build_series_real_prefers_vclock_now_over_ts_minus_t0():
+    # Real-mode first selection event fires well after the true run start
+    # (e.g. ~300s of MQTT join-ramp for n=300) — ts - t0 would understate
+    # elapsed time relative to the trace's agg_start-anchored origin. Once
+    # vclock_now is stamped on real events too (ClientAvailability._avail_now()),
+    # it must win over the ts - t0 fallback.
+    events = [
+        _sel(1, 1000.0, 600.0, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel(2, 1300.0, 900.0, {"t1": {"avl_state": "UN_AVL"}}),
+    ]
+    series = build_trainer_state_series(events, mode="real")
+    assert series["t1"] == [(600.0, "AVL_TRAIN"), (900.0, "UN_AVL")]
+
+
 def test_build_series_skips_unknown_state():
     events = [_sel(1, 0.0, 0.0, {"t1": {"avl_state": "UNKNOWN"}})]
     series = build_trainer_state_series(events, mode="sim")

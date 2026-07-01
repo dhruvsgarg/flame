@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Stage C live-wiring: the shared commit-loop primitives in AvailabilityMixin.
+"""Stage C live-wiring: the shared commit-loop primitives in ClientAvailability.
 
 The send-gate withhold / late re-commit / vclock-abandon EFFECT is library-level
 (both the asyncfl _sim_recv_min pop site and the oort _sim_drain_buffer pop loop
@@ -22,7 +22,7 @@ import math
 
 from sortedcontainers import SortedDict
 
-from flame.availability.availability_mixin import AvailabilityMixin
+from flame.availability.client_availability import ClientAvailability
 from flame.config import TrainerAvailState
 from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_SEND_TS
 from flame.sim import SimReorderBuffer
@@ -99,7 +99,7 @@ class _Channel:
         self._props[(end, key)] = value
 
 
-class _Harness(AvailabilityMixin):
+class _Harness(ClientAvailability):
     """Minimal mixin host with a controllable clock + a real reorder buffer."""
 
     def __init__(self, trainer_event_dict=None, now=0.0, inflight_tracker=False):

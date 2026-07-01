@@ -727,10 +727,11 @@ class TopAggregator(BaseTopAggregator):
         # the oracular read instead of staying all-UNKNOWN (Next actions §2).
         self._avail_stamp_end_states(channel)
 
-        # Expose current vclock to selector so it can attach it to selection
-        # events (C.6.1 — restores per-trainer avl_state identity at emit time).
-        if self.simulated:
-            channel.properties["vclock_now"] = self._vclock.now
+        # Expose current availability-timeline time to selector so it can attach
+        # it to selection events (C.6.1 — restores per-trainer avl_state identity
+        # at emit time). _avail_now() covers both modes — real used to be
+        # skipped here (see syncfl/top_aggregator.py for the parity fallout).
+        channel.properties["vclock_now"] = self._avail_now()
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"

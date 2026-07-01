@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Stage C substrate: delivery ledger + slot-free hook on AvailabilityMixin.
+"""Stage C substrate: delivery ledger + slot-free hook on ClientAvailability.
 
 These exercise the pure delivery-ledger logic (compute_delivery_ts, the
 pending_withheld ordering/residence/commit helpers, and free_stalled_slot's
@@ -14,7 +14,7 @@ And the gate-off no-op that preserves byte-identity.
 
 from sortedcontainers import SortedDict
 
-from flame.availability.availability_mixin import AvailabilityMixin
+from flame.availability.client_availability import ClientAvailability
 
 
 def _trace(*pairs):
@@ -48,7 +48,7 @@ class _FakeChannel:
         return end in self._ends
 
 
-class _Harness(AvailabilityMixin):
+class _Harness(ClientAvailability):
     """Minimal mixin host with a controllable clock and gate state."""
 
     def __init__(self, trainer_event_dict=None, now=0.0):

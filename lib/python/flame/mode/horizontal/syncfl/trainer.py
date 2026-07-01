@@ -351,7 +351,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # whenever avl_state tracking is active. Sim-only: this code path is a
         # no-op there because sim time can't advance while blocked on
         # time.sleep — sim availability is instead enforced agg-side by
-        # AvailabilityMixin's send-time withhold (Stage C), keyed on the
+        # ClientAvailability's send-time withhold (Stage C), keyed on the
         # trainer-reported completion time, not a trainer-side wall block.
         if (
             not getattr(self, "simulated", False)

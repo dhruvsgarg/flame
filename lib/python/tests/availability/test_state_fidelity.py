@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""T4 — State-fidelity tests for AvailabilityMixin.
+"""T4 — State-fidelity tests for ClientAvailability.
 
 Deterministic, no cluster. Drives tiny synthetic traces through the mixin's
 selection-filter and delivery-ledger methods:
@@ -18,7 +18,7 @@ import types
 import pytest
 from sortedcontainers import SortedDict
 
-from flame.availability.availability_mixin import AvailabilityMixin
+from flame.availability.client_availability import ClientAvailability
 from flame.availability.trace import next_avail_after, state_at
 from flame.config import TrainerAvailState
 
@@ -98,8 +98,8 @@ class _Channel:
         return self._props.get((end, key))
 
 
-class _Harness(AvailabilityMixin):
-    """Minimal AvailabilityMixin host for state-fidelity tests."""
+class _Harness(ClientAvailability):
+    """Minimal ClientAvailability host for state-fidelity tests."""
 
     def __init__(
         self,

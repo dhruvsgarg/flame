@@ -8,9 +8,16 @@ semantics never diverge between the checker and the plotter (Challenge 12
 discipline — one function, not a duplicated copy in each consumer).
 
 Reads `per_trainer[end_id]["avl_state"]` on each `selection` event (C.6.1).
-Time-base: sim uses `vclock_now` (stamped on the event by C.6.1); real uses
-`ts - t0` where t0 = the run's first selection event ts — the same wall-elapsed
-approximation A3/K8 already use elsewhere in this checker.
+Time-base: both modes prefer `vclock_now`, stamped on the event via
+`ClientAvailability._avail_now()` (sim: `_vclock.now`; real: wall-elapsed since
+`agg_start_time_ts`) — the same shared origin the rest of the availability
+substrate uses. Telemetry recorded before real-mode `vclock_now` stamping was
+added falls back to `ts - t0` (t0 = the run's first selection event ts), which
+is a *biased* estimate: real's first selection event fires only once enough
+trainers have joined over MQTT (~300s for n=300), so it under-counts elapsed
+time relative to the trace's true origin and skews any duration-weighted
+comparison (A4dur) for trainers whose state changes mid-run. Kept only for
+backward-compat with old runs — new telemetry should always carry vclock_now.
 """
 
 from __future__ import annotations
@@ -19,8 +26,11 @@ from typing import Optional
 
 
 def _event_time(e: dict, mode: str, t0: float) -> Optional[float]:
+    vclock = e.get("vclock_now")
+    if vclock is not None:
+        return vclock
     if mode == "sim":
-        return e.get("vclock_now")
+        return None
     ts = e.get("ts")
     return None if ts is None else ts - t0
 
@@ -30,7 +40,9 @@ def build_trainer_state_series(
 ) -> dict[str, list]:
     """{end_id: [(t, avl_state), ...]} forward-fill series, sorted by t.
 
-    mode: "sim" (t = vclock_now) or "real" (t = ts - t0). One sample per
+    mode: "sim" or "real", both preferring t = vclock_now, falling back to
+    ts - t0 only for real-mode telemetry recorded before vclock_now was
+    stamped on real selection events. One sample per
     end_id per selection event it appears as a candidate in (whether or not
     selected) — `avail_composition`/`per_trainer` already cover every
     candidate in the pool, not just the chosen subset. Consecutive samples at
