@@ -37,6 +37,11 @@
 #   --baselines NAMES      Space-separated baseline list (steps 2–4) [default: all 6]
 #   --starvation-baselines NAMES  Baselines for step 5            [default: feddance oort]
 #   --output-dir DIR       Log + report directory                  [default: /tmp/smoke_suite_<ts>]
+#   --background           Re-exec via nohup+disown and return immediately;
+#                          survives the launching shell/SSH session closing.
+#                          Prints the PID, nohup log, and report path, then
+#                          exits 0 right away — the suite keeps running
+#                          detached. Use this for unattended/overnight runs.
 #   --dry-run              Print commands without running them
 #   --help
 # ============================================================================
@@ -58,6 +63,7 @@ STARV_BASELINES="feddance oort"
 STEPS="1,2,3,4,5"
 OUTPUT_DIR="/tmp/smoke_suite_$(date +%Y%m%d_%H%M%S)"
 DRY_RUN=0
+BACKGROUND=0
 
 # ── Progress counters (set after arg-parse via _compute_total_runs) ───────────
 TOTAL_RUNS=0
@@ -68,6 +74,8 @@ usage() {
   grep '^#' "$0" | grep -v '^#!/' | sed 's/^# \{0,1\}//'
   exit 0
 }
+
+ORIG_ARGS=("$@")   # preserved pre-shift for the --background re-exec below
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,10 +89,26 @@ while [[ $# -gt 0 ]]; do
     --starvation-baselines) STARV_BASELINES="$2";   shift 2 ;;
     --output-dir)           OUTPUT_DIR="$2";        shift 2 ;;
     --dry-run)              DRY_RUN=1;              shift   ;;
+    --background)           BACKGROUND=1;           shift   ;;
     --help|-h)              usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
 done
+
+# ── --background: re-exec detached, return control immediately ───────────────
+# Guarded by SMOKE_SUITE_BG so the re-exec'd child (which still sees
+# --background in ORIG_ARGS) runs the real suite instead of looping.
+if [[ "$BACKGROUND" == "1" && -z "${SMOKE_SUITE_BG:-}" ]]; then
+  mkdir -p "$OUTPUT_DIR"
+  NOHUP_LOG="$OUTPUT_DIR/nohup.log"
+  SMOKE_SUITE_BG=1 nohup bash "$0" "${ORIG_ARGS[@]}" >"$NOHUP_LOG" 2>&1 < /dev/null &
+  disown
+  echo "[smoke_suite] backgrounded — PID $!  (survives this shell/SSH session closing)"
+  echo "[smoke_suite] nohup log : $NOHUP_LOG"
+  echo "[smoke_suite] report    : $OUTPUT_DIR/report.txt   (written when the suite finishes)"
+  echo "[smoke_suite] progress  : tail -f $NOHUP_LOG"
+  exit 0
+fi
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 mkdir -p "$OUTPUT_DIR/runs"
