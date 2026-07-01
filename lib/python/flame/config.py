@@ -183,9 +183,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_enabled: t.Optional[bool] = Field(
         alias="trainingDelayEnabled", default=False
     )
-    training_delay_s: t.Optional[float] = Field(
-        alias="trainingDelaySeconds", default=None
-    )
+    
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )
@@ -249,6 +247,30 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # sim_inflight_residence gates pool re-entry.
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
+    )
+    computation_time_ms: t.Optional[t.Any] = Field(
+    alias="computationTimeMs", default=None
+    )
+    rtt_communication_time_ms: t.Optional[float] = Field(
+        alias="rttCommunicationTimeMs", default=None
+    )
+    rtt_base_ms: t.Optional[float] = Field(
+        alias="rttBaseMs", default=None
+    )
+    rtt_amplitude: t.Optional[float] = Field(
+        alias="rttAmplitude", default=0.3
+    )
+    rtt_period_s: t.Optional[float] = Field(
+        alias="rttPeriodS", default=120.0
+    )
+    satellite_latencies_path: t.Optional[str] = Field(
+        alias="satelliteLatenciesPath", default=None
+    )  
+    bandwidth_mbps: t.Optional[float] = Field(
+        alias="bandwidthMbps", default=100.0
+    )
+    data_size_megabits: t.Optional[float] = Field(
+        alias="dataSizeMegabits", default=1.0
     )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(

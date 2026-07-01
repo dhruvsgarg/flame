@@ -161,7 +161,18 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = (
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
-        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        # training_delay_s deprecated in favour of computation_time_ms (per-device dict)
+        self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms["gpu_a40"])
+        self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
+	    self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
+        self.rtt_amplitude = float(self.config.hyperparameters.rtt_amplitude)
+        self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
+        _sat_path = self.config.hyperparameters.satellite_latencies_path
+        self.satellite_rtt_latencies_ms = np.load(_sat_path)
+        self.satellite_index = int(self.config.hyperparameters.satellite_index)
+        self.bandwidth_mbps = float(self.config.hyperparameters.bandwidth_mbps)
+        self.data_size_megabits = float(self.config.hyperparameters.data_size_megabits)
+        self.start_time = time.time()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -740,7 +751,11 @@ class PyTorchCifar10Trainer(Trainer):
 
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
-        _D = self.training_delay_s if self.training_delay_enabled else 0.0
+        if self.training_delay_enabled:
+            _timestep = min(int(self._sim_now()), self.satellite_rtt_latencies_ms.shape[0] - 1)
+            _D = (self.computation_time_ms + float(self.satellite_rtt_latencies_ms[_timestep, self.satellite_index]) * 2) / 1000.0
+        else:
+            _D = 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
         else:
@@ -794,7 +809,15 @@ class PyTorchCifar10Trainer(Trainer):
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
 
-        _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
+        if self.training_delay_enabled:
+            _timestep = min(int(self._sim_now()), self.satellite_rtt_latencies_ms.shape[0] - 1)
+            _current_rtt_ms = float(self.satellite_rtt_latencies_ms[_timestep, self.satellite_index]) * 2 
+            _transfer_time_ms = (self.data_size_megabits / self.bandwidth_mbps) * 1000.0
+            _modeled_delay_s = (self.computation_time_ms + _current_rtt_ms + _transfer_time_ms) / 1000.0
+        else:
+            _current_rtt_ms = 0.0
+            _transfer_time_ms = 0.0
+            _modeled_delay_s = 0.0
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
@@ -1071,9 +1094,9 @@ class PyTorchCifar10Trainer(Trainer):
             self.normalize_stat_utility(epoch)
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
         # Eval is ~20x faster than training (NPUs don't support training), so the
-        # modeled eval delay is training_delay_s/20.
+        # modeled eval delay is computation_time_ms/20.
         _modeled_eval_delay_s = (
-            self.training_delay_s / 20.0 if self.training_delay_enabled else 0.0
+            (self.computation_time_ms / 1000.0) / 20.0 if self.training_delay_enabled else 0.0
         )
         if self.simulated:
             # Stamp THIS eval's own completion ts (= send_ts + max(gpu, D_eval)).
@@ -1087,10 +1110,10 @@ class PyTorchCifar10Trainer(Trainer):
                 + _eval_dur
             )
         elif self.training_delay_enabled:
-            eval_delay = math.floor(self.training_delay_s / 20.0)
+            eval_delay = math.floor((self.computation_time_ms / 1000.0) / 20.0)
             time.sleep(eval_delay)
             logger.debug(
-                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
+                f"Delayed eval time for trainer {self.trainer_id} by {eval_delay}s"
             )
 
     def initiate_heartbeat(self) -> None:
@@ -1194,7 +1217,7 @@ def main():
         f"has heartbeats_enabled: {t.heartbeats_enabled}, "
         f"has client_notify: {t.client_notify['enabled']}, "
         f"training_delay_enabled: {t.training_delay_enabled}, "
-        f"training_delay_s: {t.training_delay_s}"
+        f"computation_time_ms: {t.computation_time_ms}"
     )
 
     # Register exit handler to generate memory report
