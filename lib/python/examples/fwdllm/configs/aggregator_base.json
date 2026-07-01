@@ -18,11 +18,8 @@
             }
         }
     ],
-    "dataset": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
-    "dependencies": ["numpy >= 1.2.0"],
+    "dataset": "unused (ExperimentConfig.dataset is a required generic field; fwdllm reads hyperparameters.dataset instead)",
     "hyperparameters": {
-        "batchSize": 32,
-        "learningRate": 0.01,
         "rounds": 1000,
         "aggGoal": 10,
         "model_type": "distilbert",
