@@ -266,6 +266,12 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     satellite_latencies_path: t.Optional[str] = Field(
         alias="satelliteLatenciesPath", default=None
     )  
+    bandwidth_mbps: t.Optional[float] = Field(
+        alias="bandwidthMbps", default=100.0
+    )
+    data_size_megabits: t.Optional[float] = Field(
+        alias="dataSizeMegabits", default=1.0
+    )
     use_oort_loss_fn: t.Optional[str] = Field(alias="useOORTLossFn", default="False")
     wait_until_next_avl: t.Optional[bool] = Field(
         alias="waitUntilNextAvail", default=False

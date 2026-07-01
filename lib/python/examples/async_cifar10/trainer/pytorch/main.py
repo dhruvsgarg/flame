@@ -170,6 +170,8 @@ class PyTorchCifar10Trainer(Trainer):
         _sat_path = self.config.hyperparameters.satellite_latencies_path
         self.satellite_rtt_latencies_ms = np.load(_sat_path)
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
+        self.bandwidth_mbps = float(self.config.hyperparameters.bandwidth_mbps)
+        self.data_size_megabits = float(self.config.hyperparameters.data_size_megabits)
         self.start_time = time.time()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
@@ -810,9 +812,11 @@ class PyTorchCifar10Trainer(Trainer):
         if self.training_delay_enabled:
             _timestep = min(int(self._sim_now()), self.satellite_rtt_latencies_ms.shape[0] - 1)
             _current_rtt_ms = float(self.satellite_rtt_latencies_ms[_timestep, self.satellite_index]) * 2 
-            _modeled_delay_s = (self.computation_time_ms + _current_rtt_ms) / 1000.0 
+            _transfer_time_ms = (self.data_size_megabits / self.bandwidth_mbps) * 1000.0
+            _modeled_delay_s = (self.computation_time_ms + _current_rtt_ms + _transfer_time_ms) / 1000.0
         else:
             _current_rtt_ms = 0.0
+            _transfer_time_ms = 0.0
             _modeled_delay_s = 0.0
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
