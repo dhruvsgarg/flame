@@ -36,6 +36,9 @@
 #   --steps LIST           Comma-separated steps to run (1–5)      [default: 1,2,3,4,5]
 #   --baselines NAMES      Space-separated baseline list (steps 2–4) [default: all 6]
 #   --starvation-baselines NAMES  Baselines for step 5            [default: feddance oort]
+#   --num-trainers N       Shrink the cohort below the parity config's 300
+#                          (forwarded to debug_run.sh --num-trainers on every
+#                          run) [default: "" = use the parity config's 300]
 #   --output-dir DIR       Log + report directory                  [default: /tmp/smoke_suite_<ts>]
 #   --background           Re-exec via nohup+disown and return immediately;
 #                          survives the launching shell/SSH session closing.
@@ -64,6 +67,7 @@ STEPS="1,2,3,4,5"
 OUTPUT_DIR="/tmp/smoke_suite_$(date +%Y%m%d_%H%M%S)"
 DRY_RUN=0
 BACKGROUND=0
+NUM_TRAINERS=""
 
 # ── Progress counters (set after arg-parse via _compute_total_runs) ───────────
 TOTAL_RUNS=0
@@ -88,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --baselines)            ALL_BASELINES="$2";     shift 2 ;;
     --starvation-baselines) STARV_BASELINES="$2";   shift 2 ;;
     --output-dir)           OUTPUT_DIR="$2";        shift 2 ;;
+    --num-trainers)         NUM_TRAINERS="$2";      shift 2 ;;
     --dry-run)              DRY_RUN=1;              shift   ;;
     --background)           BACKGROUND=1;           shift   ;;
     --help|-h)              usage ;;
@@ -298,8 +303,11 @@ _run_baseline() {
 _run_one() {
   local baseline="$1" mode="$2" trace="$3" runtime_s="$4" step_pfx="$5"
   local label="${step_pfx}_${baseline}_${trace}_${mode}"
+  local -a _nt_args=()
+  [[ -n "$NUM_TRAINERS" ]] && _nt_args=(--num-trainers "$NUM_TRAINERS")
   _run_baseline "$label" "$runtime_s" \
     --baselines "$baseline" --mode "$mode" --trace "$trace" --runtime-s "$runtime_s" \
+    "${_nt_args[@]}" \
     || true   # never abort the suite on a single run failure
 }
 
@@ -440,6 +448,7 @@ _log "  output      : $OUTPUT_DIR"
 _log "  steps       : $STEPS"
 _log "  baselines   : $ALL_BASELINES"
 _log "  starvation  : $STARV_BASELINES"
+_log "  num_trainers: ${NUM_TRAINERS:-300(parity config default)}"
 _log "  runtimes    : syn_0=${RUNTIME_SYN0_S}s  syn_20=${RUNTIME_SYN20_S}s  syn_50=${RUNTIME_SYN50_S}s  buffer=${TIMEOUT_BUFFER_S}s  kill_settle=${KILL_SETTLE_S}s"
 
 IFS=',' read -ra _steps_arr <<< "$STEPS"
