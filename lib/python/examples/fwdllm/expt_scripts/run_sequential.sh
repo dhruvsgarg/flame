@@ -33,7 +33,16 @@
 set -u
 
 # --- robust conda activation (same pattern as scripts/debug_run.sh) ---
-ENVNAME="${FLAME_CONDA_ENV:-aish_smoke_flame}"
+# Env choice: FLAME_CONDA_ENV overrides; otherwise use whatever conda env is
+# already active in the launching shell (CONDA_DEFAULT_ENV). No hardcoded
+# fallback -- activate an env before calling this script, or set
+# FLAME_CONDA_ENV explicitly.
+ENVNAME="${FLAME_CONDA_ENV:-${CONDA_DEFAULT_ENV:-}}"
+if [ -z "$ENVNAME" ]; then
+  echo "ERROR: no conda env active in this shell and FLAME_CONDA_ENV not set." >&2
+  echo "       Activate an env first (conda activate <name>) or pass FLAME_CONDA_ENV=<name>." >&2
+  exit 1
+fi
 CB=""
 if command -v conda >/dev/null 2>&1; then
   CB="$(conda info --base 2>/dev/null)"
@@ -57,6 +66,11 @@ echo "conda: base=$CB env=$ENVNAME python=$(which python)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXAMPLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"               # .../examples/fwdllm
 REPO_ROOT="$(cd "$EXAMPLE_DIR/../../../.." && pwd)"       # flame/
+
+# Force this checkout's flame package ahead of anything already on
+# sys.path (e.g. a stale `pip install -e` editable pointing at a
+# different clone) so the code that actually runs matches this repo.
+export PYTHONPATH="$REPO_ROOT/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 
 # defaults
 MAX_RUNTIME_S=600   # 10 minutes
