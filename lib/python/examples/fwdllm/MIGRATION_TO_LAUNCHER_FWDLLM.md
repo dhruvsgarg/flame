@@ -13,11 +13,11 @@ This doc tracks a *new* phase: two rounds of runs across the three baselines
 (`fwdllm`, `fwdllm_plus`, `fluxtune`) surfaced very different progress rates.
 That investigation found and fixed a real deadlock bug (and two related
 correctness gaps), plus a second, fwdllm-specific gap in the per-round
-reselection cache. **All four fixes are implemented and covered by
-regression tests; the full suite passes (426 passed, 7 skipped, 0 failed).
-Nothing has been committed yet and no GPU experiments have been (re-)run
-against the fixes below** — that's the immediate next step. Living doc —
-update as findings land.
+reselection cache. **All four fixes are implemented, covered by regression
+tests, and committed** (`ba622a38`, `e76d54f1`, `4d8d3281`, `dc2a166b`); the
+full suite passes (426 passed, 7 skipped, 0 failed). **Not yet pushed, and
+no GPU experiments have been (re-)run against the fixes below** — that's
+the immediate next step. Living doc — update as findings land.
 
 ## TL;DR — where things stand
 
@@ -37,9 +37,10 @@ update as findings land.
   baseline to confirm either way.
 - **Telemetry/plotting harness parity (fluxtune's missing `plots/` dir)**:
   not started.
-- **No commits made this session.** Next: commit → push → user runs GPU
-  experiments against a list of goals/tests to pass (to be defined at that
-  point).
+- **All 4 fixes committed this session, not yet pushed.** Next: verify the
+  3-baseline `run_sequential.sh` configs (fluxtune, fwdllm_plus, fwdllm) for
+  a ~1.5h run, then push and run the GPU experiments against a list of
+  goals/tests to pass (to be defined at that point).
 
 ---
 
@@ -403,12 +404,17 @@ that point).
 2. ~~Run the full test suite~~ — **DONE**: `python3 -m pytest lib/python/tests/`
    passes clean, 426 passed, 7 skipped, 0 failed, including all new tests
    from Parts 2–3.
-3. **Commit + push** — not yet done, next up.
-4. **Then**, with the user: define the list of goals/tests the GPU
+3. ~~Commit~~ — **DONE**, 4 commits (see TL;DR). **Push — not yet done.**
+4. **Verify `run_sequential.sh` configs for a ~1.5h, 3-baseline run** — the
+   actual fwdllm baseline trio, in this order: `fluxtune`, `fwdllm_plus`,
+   `fwdllm`. Confirm the flags from Part 4 (`--agg-goal`, `--c-async`,
+   `--min-initial-trainers`, `--avail-trace`, `--max-runtime-s`) produce the
+   intended per-baseline config before spending GPU time — not yet done.
+5. **Then**, with the user: define the list of goals/tests the GPU
    experiments need to pass (throughput expectations, no-deadlock checks
-   across all 3 baselines under the new `run_sequential.sh` flags, etc.) and
-   actually run them — this hasn't happened yet this session.
-5. Still open, lower priority: root-cause `fwdllm_plus`'s 200-round throttle
+   across all 3 baselines, etc.), push, and actually run them — this hasn't
+   happened yet this session.
+6. Still open, lower priority: root-cause `fwdllm_plus`'s 200-round throttle
    (needs an expected-throughput baseline from trace density × aggGoal, not
    yet built) and telemetry/plotting harness parity for `fluxtune` (its
    `plots/` dir was empty/missing in the round-2 run — not yet investigated
