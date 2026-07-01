@@ -1,6 +1,6 @@
 # Base trainer configuration template for FedFwd (fwdllm).
 # Common properties shared across all trainers; trainer-specific values are
-# injected at runtime by flame.launch (see MIGRATION_TO_LAUNCHER_FWDLLM.md).
+# injected at runtime by flame.launch (see ../../MIGRATING_TO_LAUNCHER.md §9).
 #
 # Transcribed from expts/run_tc_expts/json_scripts/trainer_1.json and
 # aggregator.json (the existing production defaults), not redesigned.
@@ -38,9 +38,8 @@ channels:
 
 hyperparameters:
   # --- Dataset (H5 path-style; fwdllm is path-style, NOT index-list, so
-  # these live here as placeholders rather than in
-  # _metadata/dataset_splits/ -- see MIGRATING_TO_LAUNCHER.md §9 and
-  # MIGRATION_TO_LAUNCHER_FWDLLM.md Phase 1b. Inject real values via
+  # these live here as placeholders rather than in _metadata/dataset_splits/
+  # -- see MIGRATING_TO_LAUNCHER.md §9. Inject real values via
   # experiment.trainer.config_overrides.hyperparameters). ---
   dataset: agnews
   data_file_path: PLACEHOLDER  # inject via config_overrides.hyperparameters
@@ -48,8 +47,8 @@ hyperparameters:
   partition_method: "niid_label_clients=100_alpha=1"
   # client_idx: injected per-trainer at runtime as
   # (trainer_id - 1) % client_idx_modulo -- see experiment YAML's
-  # trainer.client_idx_modulo field (Phase 1b). NOT a trainer_indices_list
-  # lookup -- this dataset has no _metadata/dataset_splits/ file
+  # trainer.client_idx_modulo field. NOT a trainer_indices_list lookup --
+  # this dataset has no _metadata/dataset_splits/ file
   # (trainer.dataset.path_style: true skips that lookup entirely).
   client_idx: 0
   client_num_in_total: 0
@@ -98,8 +97,10 @@ hyperparameters:
 
   # --- Availability ---
   # syn_0/syn_20/syn_50 and mobiperf_2st/3st_50/3st_75 are injected by the spawner.
-  # The three legacy custom traces below have no _metadata equivalents; default to
-  # syn_0 (always available) so FedSgdTrainer.__init__ can read them unconditionally.
+  # The three syn_train_* traces below now also exist in
+  # _metadata/availability_traces/synthetic_traces.yaml, but the spawner doesn't
+  # inject them yet -- these placeholders are read unconditionally by
+  # FedSgdTrainer.__init__ until that injection is wired up.
   avl_events_syn_train_100_eval_0_unavail_0: [[0, "AVL_TRAIN"]]
   avl_events_syn_train_90_eval_10_unavail_0: [[0, "AVL_TRAIN"]]
   avl_events_syn_train_50_eval_30_unavail_20: [[0, "AVL_TRAIN"]]
