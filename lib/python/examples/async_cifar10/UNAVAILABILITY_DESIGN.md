@@ -1,13 +1,49 @@
 # Sim Unavailability — Design & Staged Plan
 
-## ▶ NEXT STEP (Jul 1 — Batch 4: all 3 findings FIXED + unit-tested; live re-confirmation run is next)
+## ▶ NEXT STEP (Jul 1 — Batch 4's live re-confirmation found fix 1 is INCOMPLETE + a new bug; PR still blocked)
 
-**Phase 5/6 (Jul 1) found 3 issues (see "Phase 5/6 results" below for the original diagnosis); all 3 are now
-fixed and unit-tested** (code + 12 new/updated tests, `tests/` 586 pass / 7 skip, `scripts/parity/` +
-`trainer/pytorch/` 125 pass — both suites green). **Not yet re-confirmed on a live run** — that's the
-remaining gate before Open item #3 (PR write-up).
+**Phase 5/6 (Jul 1) found 3 issues (see "Phase 5/6 results" below); fixes 2 and 3 held up on unit tests, but
+the live re-confirmation run for fix 1 (felix real TIMEOUT) found the fix is necessary but not sufficient —
+felix real still doesn't self-stop.** Two things are open, tracked separately so fixing one doesn't get
+credited to the other by accident:
 
-1. **Fix 1 — felix real-mode TIMEOUT (D.1 proactive eviction, sim-only by accident).**
+**Open A — D.1 eviction still misses most stalled trainers in real mode.** The fix below (un-nesting D.1 from
+`if self.simulated:`) is real and does something — some evictions now happen where zero did before — but a
+fresh felix-real run (`run_20260701_223602_..._stream_real`, n=100, syn_20) still hung: stuck at round 198 for
+10+ minutes, 21 distinct trainers piled up unresponsive, only 5 `AWARE_EVICT` events fired total (all in two
+tight bursts exactly at the trace's t=600s/t=1200s boundaries), had to be killed externally (SIGINT/SIGTERM
+in the trainer log at the same instant the aggregator log goes silent — no internal `"stopping run"` ever
+logged). **Two from-scratch reproductions against the real `AsyncOortSelector` + `ClientAvailability` code
+(not mocks)** — one stalled trainer, one 40/100 simultaneously UN_AVL — both show eviction working correctly
+every cycle, so the mechanism is sound in isolation; something about the live run's actual conditions differs
+from both repros. Added temporary diagnostic logging (`[EVICT_DEBUG]` in `_sim_evict_unavail_inflight`,
+`client_availability.py`) to pin the exact skip reason (still-available / buffered / already-committed / no
+trace) on the next live run instead of guessing further — **remove this logging once root-caused.** A fresh
+short real run (`--runtime-s 700`, just past the t=600s boundary) is in flight to nail this down.
+
+**Open B — NEW, separate bug found while diagnosing A: trace loading silently falls back to the shared
+`pattern` for most trainers instead of each trainer's individually-assigned `per_trainer` entry.**
+Hand-verified on two trainers in the same run: `...0423` (registry key `trainer_054`) is assigned a trace
+whose first transition is at t=13800s, `...0374` (`trainer_005`) at t=34200s — neither should ever go UN_AVL
+within a 900s run — yet both actually transitioned UN_AVL at t≈600s and back at t≈1200s, exactly matching
+`syn_20`'s shared `pattern` entry (`load_trace`'s fallback, `flame/availability/trace.py`:
+`per_trainer.get(trainer_key) or pattern`), not their own assigned entry. This explains why so many trainers
+(21+) pile up simultaneously at the same boundary — most of the n=100 cohort appears to be silently sharing
+one timeline instead of each having its own. **Not yet root-caused** (why does `per_trainer.get(trainer_key)`
+come back falsy for most of them, when the static YAML clearly has non-empty entries for both checked keys)
+or fixed — deliberately not touched yet, investigating Open A first so the two don't get tangled together.
+This is pre-existing (not something Batch 3/4 introduced) — it was likely masked until now because this is
+the first real run at n=100 scale where D.1 eviction/the send-gate were both live and correct enough to
+expose the downstream effect.
+
+**Fixes 2 and 3 below are unaffected by A/B and remain code-complete + unit-tested** (12 tests, `tests/` 586
+pass / 7 skip, `scripts/parity/` + `trainer/pytorch/` 125 pass). They still need their own live
+re-confirmation once A/B are resolved and a clean felix-real run exists to check A6/K6/A7-commit against.
+
+**PR is blocked on A and B, not just "needs a re-run."** Do not raise it yet.
+
+1. **Fix 1 — felix real-mode TIMEOUT (D.1 proactive eviction, sim-only by accident). ⚠️ Necessary but NOT
+   sufficient — see Open A above; live re-confirmation found felix real still hangs.**
    `_sim_evict_unavail_inflight` (D.1, the trace-read boundary eviction felix alone uses) was called only
    inside `if self.simulated:`, alongside `_sim_abandon_stalled` (which genuinely *is* sim-only — real mode
    already has a native wall-clock abandon in the selector itself, `SEND_TIMEOUT_WAIT_S=90` in

@@ -760,16 +760,26 @@ class ClientAvailability:
         now = self._avail_now()
         buf = getattr(self, "_sim_buffer", None)
         committed = getattr(self, "_sim_committed", set())
+        # TEMP DIAGNOSTIC (Batch 4 follow-up, remove once the eviction-miss
+        # mystery is root-caused): summarize why UN_AVL inflight ends are or
+        # aren't evicted each call, so a live run's log can show which guard
+        # is actually firing instead of inferring it from AWARE_EVICT alone.
+        _skip_buf = _skip_committed = _skip_no_trace = _skip_still_avl = _n_evicted = 0
         for end in list(inflight):
             if buf is not None and buf.has(end):
+                _skip_buf += 1
                 continue  # update already arrived in buffer — not stalled
             if end in committed or end in self.pending_withheld:
+                _skip_committed += 1
                 continue  # invariant 1: already committed / registered
             trace = self.trainer_event_dict.get(end)
             if not trace:
+                _skip_no_trace += 1
                 continue
             if state_at(trace, now) != TrainerAvailState.UN_AVL:
+                _skip_still_avl += 1
                 continue  # still available — leave the slot
+            _n_evicted += 1
             self.free_stalled_slot(
                 channel, end, reason="aware_boundary_eviction", sct=now
             )
@@ -786,6 +796,11 @@ class ClientAvailability:
                     reason="aware_boundary_eviction",
                 )
                 telemetry.emit(ev, **f)
+        logger.info(
+            f"[EVICT_DEBUG] now={now:.1f} inflight={len(inflight)} evicted={_n_evicted} "
+            f"skip_still_avl={_skip_still_avl} skip_buf={_skip_buf} "
+            f"skip_committed_or_withheld={_skip_committed} skip_no_trace={_skip_no_trace}"
+        )
 
     def _next_avail_vclock(self) -> Optional[float]:
         """Stage F: earliest vclock at which any trainer next becomes selectable.
