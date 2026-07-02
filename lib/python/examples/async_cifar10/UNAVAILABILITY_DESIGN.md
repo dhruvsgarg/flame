@@ -42,6 +42,37 @@ re-confirmation once A/B are resolved and a clean felix-real run exists to check
 
 **PR is blocked on A and B, not just "needs a re-run."** Do not raise it yet.
 
+**Checklist to reach PR-ready (work top to bottom; this is the state as of commit `8722aed2`):**
+- [ ] **Waiting on user**: a short felix-real run (`--runtime-s 700`, n=100, syn_20 — just past the t=600s
+  boundary, don't need the full 900s) with the `[EVICT_DEBUG]`/`[AWARE_EVICT]` diagnostic logging already
+  committed. If this hasn't arrived yet in a fresh session, don't re-run it yourself unprompted — check with
+  the user first (their env has been the one with a reachable MQTT broker; this repo's own env does not).
+- [ ] **Open A**: read the `[EVICT_DEBUG]` lines from that run (`grep -E "EVICT_DEBUG|AWARE_EVICT" <agg log>`)
+  and root-cause exactly which skip branch (`skip_still_avl` / `skip_buf` / `skip_committed_or_withheld` /
+  `skip_no_trace`) is firing for the stuck trainers, or whether `inflight` itself excludes them (in which case
+  the bug is upstream of `_sim_evict_unavail_inflight`, e.g. in `_avail_inflight_ends`'s read of
+  `selected_ends`, or the SELECTION_CHECK `_track_trainer_version_duration_s` bookkeeping in
+  `asyncfl/top_aggregator.py` — flagged as an untested hypothesis, not confirmed). Fix + add a regression
+  test that would have caught it (the two existing manual repros in this session's transcript, not committed,
+  are a starting point but didn't reproduce the bug — a new test needs to actually reproduce it first).
+- [ ] **Open B**: root-cause why `flame/availability/trace.py:load_trace`'s `per_trainer.get(trainer_key) or
+  pattern` fallback is returning falsy for most trainers in a real n=100 run, when the static
+  `synthetic_traces.yaml` has valid non-empty entries for every checked key. Suspect areas: whether
+  `trainer_key` passed into `load_trace` at runtime matches the registry's key format exactly, whether
+  `--num-trainers 100` cohort-shrinking touches trace assignment, or an `lru_cache`/`base_dir` mismatch
+  between the aggregator's and a component's trace loading. Fix + regression test.
+- [ ] Remove the `[EVICT_DEBUG]` temporary logging once Open A is root-caused (it's marked "TEMP DIAGNOSTIC"
+  in the code, `client_availability.py`, `_sim_evict_unavail_inflight`).
+- [ ] Once A + B are fixed: one clean felix real+sim run (n=100, syn_20, `--runtime-s 900`, matching the
+  original Phase 5 shape) to confirm (i) felix real self-stops cleanly (`"stopping run"` in the log, no
+  external kill needed), (ii) each trainer's observed transitions match its own assigned trace, not the
+  shared fallback.
+- [ ] Re-run `scripts.parity.cli --batch` on that clean run and confirm fixes 2/3 (A6, K6, A7-commit) actually
+  hold on real telemetry — every real run so far has hit Open A before getting far enough to check this.
+- [ ] Only then: Open Items #1 (legacy `trackTrainerAvail` cleanup) and #2 (mobiperf live exercise) — both
+  pre-date this session, listed in full under "Open items — pick up in order" near the end of this doc — are
+  still separate prerequisites for Open item #3 (PR write-up itself).
+
 1. **Fix 1 — felix real-mode TIMEOUT (D.1 proactive eviction, sim-only by accident). ⚠️ Necessary but NOT
    sufficient — see Open A above; live re-confirmation found felix real still hangs.**
    `_sim_evict_unavail_inflight` (D.1, the trace-read boundary eviction felix alone uses) was called only
