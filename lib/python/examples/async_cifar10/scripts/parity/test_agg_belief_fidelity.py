@@ -134,6 +134,32 @@ def test_a7_commit_checkpoint_ignores_selection_events():
     assert res["commit"].get("status") == "SKIP"
 
 
+def test_a7_commit_checkpoint_does_not_extrapolate_past_last_commit():
+    # Batch 4 finding (UNAVAILABILITY_DESIGN.md): the trainer's last commit
+    # lands at 550 while still AVL_TRAIN (correctly so -- ground truth is
+    # AVL_TRAIN up to 600), then it goes UN_AVL at 600 and never commits
+    # again for the rest of the 900s span. Extrapolating "still AVL_TRAIN"
+    # across [550, 900) would blame ~300/900 of the span on a belief that
+    # was simply never re-sampled, not wrong -- the window must truncate to
+    # [t_start, last observed t] instead.
+    gt = {"t1_0001": SortedDict({600.0: "UN_AVL"})}
+    agg = {
+        "selection_train": [_sel(1, 0.0, {}), _sel(2, 900.0, {})],
+        "agg_belief_changes": [
+            _belief(1, "0001", "AVL_TRAIN", 100.0, checkpoint="commit"),
+            _belief(2, "0001", "AVL_TRAIN", 550.0, checkpoint="commit"),
+        ],
+    }
+    res = agg_belief_fidelity_parity(agg, "sim", gt)
+    assert res["commit"]["ok"], res["commit"]
+    assert res["commit"]["mean_err"] == 0.0
+    # The untruncated window would have counted the 600s ground-truth
+    # transition as "missed" too (it falls after the last observation) --
+    # truncation excludes it from the diagnostic count as well.
+    assert res["commit"]["n_missed_transitions"] == 0
+
+
+
 def test_a7_real_and_sim_scored_independently():
     gt = {"t1_0001": SortedDict({600.0: "UN_AVL"})}
     real_agg = {

@@ -925,11 +925,18 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         # E.1: re-clock the 90s abandon to the vclock and free stalled slots so a
         # replacement is selectable this round (no-op when the gate is off).
+        # Sim-only: real mode already has a native wall-clock abandon in the
+        # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
         if self.simulated:
             self._sim_abandon_stalled(channel)
-            # D.1: for availability_aware baselines, proactively free any
-            # in-flight slot the trace now shows as UN_AVL — no 90s wait.
-            self._sim_evict_unavail_inflight(channel)
+        # D.1: for availability_aware baselines, proactively free any in-flight
+        # slot the trace now shows as UN_AVL — no 90s wait. Both modes: trace-read
+        # eviction has no real-mode equivalent (unlike the abandon above), so
+        # gating it sim-only left real-mode felix runs with no way to drop a
+        # stalled UN_AVL trainer from recv_ends (see Batch 4 finding 1,
+        # UNAVAILABILITY_DESIGN.md). No-op here (refl/feddance's
+        # proactive_inflight_evict is False), kept for symmetry with asyncfl.
+        self._sim_evict_unavail_inflight(channel)
 
         # E.1: oracular gate — build the unavailability list for this selection.
         if self.trainer_event_dict is not None:
@@ -1085,7 +1092,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug(f"channel not found for tag {self.dist_tag}")
             return
 
-        channel.broadcast({MessageType.EOT: self._work_done})
+        payload = {MessageType.EOT: self._work_done}
+        # Batch 4 finding 2 (UNAVAILABILITY_DESIGN.md): sim-mode trainers only
+        # advance their own _sim_now() on dispatch, so one that goes quiet
+        # (correctly withheld/evicted as UN_AVL) never gets another chance to
+        # catch its avl_state/telemetry up to later trace transitions. This
+        # broadcast already reaches every connected end regardless of dispatch
+        # state, so piggyback the final vclock on it -- a last wake-up letting
+        # _refresh_avl_state() flush any queued transitions before exit. Gated
+        # on the availability feature (byte-identical broadcast payload when
+        # off); real mode's clock never freezes, so it doesn't need this.
+        if self.simulated and getattr(self, "trainer_event_dict", None) is not None:
+            payload[MessageType.SIM_SEND_TS] = self._avail_now()
+        channel.broadcast(payload)
         logger.debug("done broadcasting end-of-training")
 
     def run_analysis(self):

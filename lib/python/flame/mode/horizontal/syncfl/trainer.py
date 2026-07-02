@@ -280,6 +280,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
+            # Batch 4 finding 2 (UNAVAILABILITY_DESIGN.md): give a sim-mode
+            # trainer that hasn't been dispatched in a while one last chance
+            # to catch its avl_state/telemetry up to the trace, using the
+            # SIM_SEND_TS this same EOT broadcast may carry (captured above,
+            # this message field is processed first). hasattr-guarded: this
+            # hook is example-specific (e.g. examples/async_cifar10), not
+            # every Trainer subclass defines it.
+            if hasattr(self, "_refresh_avl_state"):
+                self._refresh_avl_state()
 
         if MessageType.DATASAMPLER_METADATA in msg:
             self.datasampler.handle_metadata_from_aggregator(

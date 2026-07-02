@@ -681,11 +681,18 @@ class TopAggregator(BaseTopAggregator):
 
         # C.3: re-clock the 90s abandon to the vclock and free stalled slots so a
         # replacement is selectable this round (no-op when the gate is off).
+        # Sim-only: real mode already has a native wall-clock abandon in the
+        # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
         if self.simulated:
             self._sim_abandon_stalled(channel)
-            # D.1: for availability_aware baselines, proactively free any
-            # in-flight slot the trace now shows as UN_AVL — no 90s wait.
-            self._sim_evict_unavail_inflight(channel)
+        # D.1: for availability_aware baselines, proactively free any in-flight
+        # slot the trace now shows as UN_AVL — no 90s wait. Both modes: trace-read
+        # eviction has no real-mode equivalent (unlike the abandon above), so
+        # gating it sim-only left real-mode felix runs with no way to drop a
+        # stalled UN_AVL trainer from recv_ends (see Batch 4 finding 1,
+        # UNAVAILABILITY_DESIGN.md). No-op here (oort's proactive_inflight_evict
+        # is False), kept for symmetry with the other two stacks.
+        self._sim_evict_unavail_inflight(channel)
 
         # Per-baseline online oracle: overwrite candidate stat-utility with true
         # current values before the selector ranks. No-op unless enabled.

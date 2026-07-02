@@ -2897,7 +2897,8 @@ def _pad_tail(obs: list, span: float) -> list:
 
 
 def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
-                    seed_state: Optional[str] = None) -> Optional[tuple]:
+                    seed_state: Optional[str] = None,
+                    extrapolate_tail: bool = True) -> Optional[tuple]:
     """Shared A6/A7 core: one trainer's duration-weighted TVD vs ground truth,
     plus event-level diagnostics (missed/spurious transitions, lags) from a
     greedy in-order match against the raw trace's own transition points.
@@ -2912,6 +2913,20 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     only starts at the first commit, always > 0, so scoring against [0, span)
     would otherwise blame a fixed, unavoidable "missing prefix" as if it were
     genuine drift.
+
+    `extrapolate_tail`: when True (A6, A7-selection — continuously/densely
+    refreshed observation streams), `_pad_tail` carries the last observation
+    forward to `span`, matching the historical behavior. When False (A7
+    commit-checkpoint — Batch 4 finding, UNAVAILABILITY_DESIGN.md), the
+    window is instead truncated to `[t_start, last observed t]`: "commit" is
+    an inherently event-triggered sample, not a continuous one, and a
+    trainer that legitimately stops committing (typically because it went
+    UN_AVL — exactly the state this check cares about) has no way to record
+    a belief for the un-observed tail. Extrapolating "still believed X"
+    across that silence blamed the *absence of a later commit* as if it were
+    a stale belief, systematically worst for the trainers this check most
+    wants to catch. Symmetric with the existing start-side truncation above.
+
     Returns None if there's nothing to score (empty input, or ground-truth /
     observed fraction computation comes up empty).
     """
@@ -2923,13 +2938,14 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
         obs = [(0.0, seed_state)] + raw_obs
     elif seed_state is None and raw_obs[0][0] > 0.0:
         t_start = raw_obs[0][0]
-    obs = _pad_tail(obs, span)
-    obs_frac = state_fractions({"_": obs}, t_end=span).get("_")
-    gt_frac = state_fractions_over_range(gt, t_start, span)
+    t_end = span if extrapolate_tail else min(span, obs[-1][0])
+    obs = _pad_tail(obs, t_end)
+    obs_frac = state_fractions({"_": obs}, t_end=t_end).get("_")
+    gt_frac = state_fractions_over_range(gt, t_start, t_end)
     if obs_frac is None or not gt_frac:
         return None
     tvd = total_variation_distance(obs_frac, gt_frac)
-    gt_transitions = transitions_in_range(gt, t_start, span)
+    gt_transitions = transitions_in_range(gt, t_start, t_end)
     lags, missed, spurious = _match_transitions(gt_transitions, raw_obs, lag_tol_s)
     return tvd, lags, missed, spurious
 
@@ -3101,7 +3117,11 @@ def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict
         if gt is None:
             continue
         raw_obs = build_observed_timeline_from_agg_belief(evs)
-        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state=None)
+        # extrapolate_tail=False: "commit" is event-triggered, not continuous
+        # (Batch 4 finding, UNAVAILABILITY_DESIGN.md) -- don't score the
+        # silence after a trainer's last commit as if it were stale belief.
+        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state=None,
+                                 extrapolate_tail=False)
         if scored is None:
             continue
         tvd, lags, missed, spurious = scored

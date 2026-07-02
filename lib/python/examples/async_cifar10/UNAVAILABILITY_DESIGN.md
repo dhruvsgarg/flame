@@ -1,37 +1,70 @@
 # Sim Unavailability — Design & Staged Plan
 
-## ▶ NEXT STEP (Jul 1 — T3.0–T3.5 ✅ ALL Batch 3 tasks landed; Phase 5 — one real run — is next)
+## ▶ NEXT STEP (Jul 1 — Batch 4: all 3 findings FIXED + unit-tested; live re-confirmation run is next)
 
-**Batch 3 T3.5 (aggregator commit-promptness invariant, K11, "Pillar 3" aggregator half) is done** — full
-mechanism/files/exit in the T3.5 section. **This closes Batch 3**: all of T3.2–T3.5 (telemetry + checker +
-plot + tests, unit-tested against synthetic data) are now code-complete. Unlike T3.2/T3.3/T3.4, T3.5 did NOT
-turn up a missing-telemetry finding — `delivery_ts` (already computed by the pre-existing
-`compute_delivery_ts`) turned out to already BE `earliest_legally_committable_time` (the doc's planned new
-field), so the only genuinely new piece was an `actual_commit_ts` stamp on the existing `withheld_delivery`
-event. It DID turn up a subtler thing worth flagging, of the opposite shape from the recurring lesson (an
-overclaim caught before shipping rather than an omission found by shipping): the first draft reordered
-`_advance_sim_clock`/`_emit_withheld_delivery` in syncfl's and oort's withheld-drain loops under the belief
-that emit-before-advance was a live bug (asyncfl already emits after advancing). Working the math through
-before writing it up found `_advance_sim_clock(delivery_ts)` is PROVABLY a no-op in those two stacks'
-dedicated drain loops specifically — `_sim_reinject_ready_withheld` only ever re-injects entries whose
-`delivery_ts` is already `<=` the current vclock, so the advance can never move it, and emit-before vs.
-emit-after read the identical value there today. The reorder was kept anyway (uniform rule across all three
-stacks, doesn't rely on that invariant holding forever as the drain loops evolve) but the docstrings say so
-honestly rather than claiming a fix that would not have been observable in any test. Full writeup in T3.5's
-section — the pattern is worth naming for future sessions: before writing "found X inconsistency" into this
-doc, work through whether X is actually observable, not just structurally present.
+**Phase 5/6 (Jul 1) found 3 issues (see "Phase 5/6 results" below for the original diagnosis); all 3 are now
+fixed and unit-tested** (code + 12 new/updated tests, `tests/` 586 pass / 7 skip, `scripts/parity/` +
+`trainer/pytorch/` 125 pass — both suites green). **Not yet re-confirmed on a live run** — that's the
+remaining gate before Open item #3 (PR write-up).
 
-**Batch 3 is done. Next: Phase 5 — the one real run** covering T3.0/T3.1's live confirmation plus fresh
-telemetry for all four new checks (A6/A7/A8/K11) at once — felix syn_20 real+sim as the minimum bar, refl +
-oort in the same batch if cheap (see "▶ Implementation phases" below for the full Phase 5/6 spec, unchanged
-since it was written). This is a real run — user-run outside this conversation, per this project's standing
-pattern (see T5-smoke history below). Do **not** re-run the bare B2.0.3/K6 n=300 confirmation as a substitute
-for Phase 5 — Phase 5 covers it as a side effect, more cheaply than a second dedicated run. Do **not**
-proceed with branch cleanup / PR write-up (Open items #3 below) until Phase 6 (analyze the Phase 5 run) is
-done.
+1. **Fix 1 — felix real-mode TIMEOUT (D.1 proactive eviction, sim-only by accident).**
+   `_sim_evict_unavail_inflight` (D.1, the trace-read boundary eviction felix alone uses) was called only
+   inside `if self.simulated:`, alongside `_sim_abandon_stalled` (which genuinely *is* sim-only — real mode
+   already has a native wall-clock abandon in the selector itself, `SEND_TIMEOUT_WAIT_S=90` in
+   `async_oort.py`/`fedbuff.py`). But D.1 has no sim dependency at all — it reads `_avail_now()` (already
+   mode-dispatching) and the selector's own `selected_ends`, both equally valid in real mode. Root cause of
+   the hang: `async_oort`'s selector derives `channel.ends(VAL_CH_STATE_RECV)` (what `recv_ends` the
+   aggregator's `recv_fifo` waits on) **directly from `selected_ends`** (its own docstring: "In 'recv' state,
+   it chooses all ends from `self.selected_ends`") — so a trainer stuck in `selected_ends` forever (never
+   evicted, since D.1 never ran in real mode) never left `recv_ends` either, hanging the 30s `recv_fifo` loop
+   indefinitely with no way to reach the existing `max_experiment_runtime_s` check (which only runs once
+   `recv_ends` goes empty). **Fix:** un-nested D.1 from the `if self.simulated:` block in all three
+   `top_aggregator.py` stacks (asyncfl/oort/syncfl) — it's a no-op everywhere except felix (the only baseline
+   with `proactive_inflight_evict=True`), so this is a zero-behavior-change for oort/refl/feddance/fedbuff.
+   **Tests:** `tests/mode/test_proactive_evict_call_site.py` (6 tests) — D.1 fires in real mode for all three
+   stacks, the sim-only abandon doesn't.
+2. **Fix 2 — A6/A4dur/K6, sim-mode trainer clock frozen between dispatches.** Two-part fix, both zero-new-comms
+   (`v1` stays "trace-read, pull, no extra messages" — see dead-end #9):
+   (a) `check_and_update_state_avl()` (`trainer/pytorch/main.py`) now stamps `avail_change.sim_now` with the
+   transition's own scheduled trace-timestamp (`state_avl_event_ts[0][0]`, popped just before use) instead of
+   `self._sim_now()` at processing time. The trainer already has the *entire* trace loaded locally from
+   init — it doesn't need "what time is it now" to know *when* a transition occurred, the trace already says
+   so exactly. This makes every recorded transition correct regardless of how late the catch-up runs.
+   (b) That alone doesn't help a trainer that's never dispatched again before the run ends — its internal
+   `avl_state`/queue never gets a chance to advance at all (`_refresh_avl_state`'s catch-up loop is gated on
+   `_sim_now() >= due`, and `_sim_now()` itself is what's frozen). `inform_end_of_training`
+   (`syncfl/top_aggregator.py`, inherited by asyncfl/oort) already `channel.broadcast()`s an EOT message to
+   *every* connected end regardless of dispatch state — piggybacked the aggregator's final `_avail_now()`
+   onto it (sim mode + gate-on only; byte-identical broadcast payload otherwise), and `_fetch_weights`
+   (`syncfl/trainer.py`, shared by all three stacks) now calls `_refresh_avl_state()` (hasattr-guarded —
+   example-specific hook) right after processing `EOT`. One last wake-up flushes every queued transition with
+   its own correct due-timestamp (per fix (a)) before the trainer exits. **Resolves Challenges §5 item 19
+   (K6)** the same way: `...0376`/`...0391`'s `sim_send_ts==0` was this exact mechanism (frozen at their one
+   early dispatch), not selector-starvation or a checker false-positive. **Tests:**
+   `trainer/pytorch/test_avail_change_due_ts.py` (3 tests, due-ts stamping, both modes) +
+   `tests/mode/test_eot_avail_catchup.py` (6 tests, EOT broadcast payload gating + trainer-side wake-up hook).
+3. **Fix 3 — A7 commit-checkpoint, event-sparse observation scored as if continuous.** NOT the same root
+   cause as fix 2 (commit-checkpoint beliefs are individually correct at their own timestamp — the aggregator
+   reads live `_avail_now()`, never a frozen value). The bug was in the **checker**: `_fidelity_score`
+   (`scripts/parity/checks.py`) always extrapolated ("`_pad_tail`") the last observation forward to the run's
+   full `span`, which is right for A6/A7-selection (continuously/densely refreshed every dispatch/round) but
+   wrong for A7-commit — "commit" only samples a belief when an actual commit happens, and a trainer that
+   legitimately stops committing (typically *because* it went UN_AVL — precisely the state this check exists
+   to catch) leaves a silent tail that isn't drift, just absence of a later observation. **Fix:** new
+   `extrapolate_tail` parameter on `_fidelity_score`, `False` for the commit-checkpoint call site only —
+   truncates the scoring window to `[t_start, last observed t]`, symmetric with the pre-existing
+   start-side truncation (`t_start = first observed t`, added when A7-commit's "no seed belief before the
+   first commit" case was designed in T3.3). Still catches genuine drift *within* the observed window (see
+   the kept `test_a7_commit_checkpoint_fails_on_injected_lag_drift` regression). **Tests:**
+   `scripts/parity/test_agg_belief_fidelity.py::test_a7_commit_checkpoint_does_not_extrapolate_past_last_commit`.
+
+**Next: one live re-confirmation run** (felix syn_20 real+sim, n=100, same shape as the Phase 5 run that
+found these — a fresh run is in flight as of this edit) — check felix real self-stops cleanly (no TIMEOUT),
+then re-run `scripts.parity.cli --batch` and confirm A6/K6 clear and A7-commit's error drops substantially.
+Do **not** proceed with branch cleanup / PR write-up (Open item #3) until that confirmation lands.
 
 <details>
-<summary>Batch 3 history predating T3.5 (B2.0.3 root-cause, T3.0/T3.1a/T3.1b, T3.2, T3.3, T3.4) — collapsed, superseded</summary>
+<summary>Batch 3 history (B2.0.3 root-cause, T3.0–T3.5 build-out) — collapsed, superseded</summary>
 
 B2.0.3's confirmation failure was root-caused to a confirmed structural bug, independent of the B2.0.3
 join-barrier fix: every trainer in every `debug_run.sh`-launched run — real **and** sim, all 6 baselines —
@@ -39,16 +72,14 @@ was silently running its own local availability state machine against the trivia
 trace regardless of the run's actual `--trace`, because `debug_run.sh`'s trace substitution only ever
 patched the *aggregator's* trace config, never the *trainer's* `client_notify.trace`. Fixed (T3.1a) and
 regression-tested. T3.0 (shared `AGG_START_TS` origin broadcast) and T3.1b (`_refresh_avl_state()`
-mode-dispatch cleanup) landed alongside it. T3.2 (trainer trace-fidelity, A6) added the first *absolute*
-(vs. raw ground-truth trace, not real-vs-sim) availability check, plus the shared `ground_truth.py` module
-T3.3 reuses. Full detail in each task's own section below.
+mode-dispatch cleanup) landed alongside it. T3.2–T3.5 built the four new absolute (vs. ground-truth)
+fidelity checks (A6/A7/A8/K11), each unit-tested against synthetic data only — Phase 5/6 above is the first
+time they saw real telemetry, and found the two Batch 4 gaps. Full detail in each task's own section below.
 
 **This whole investigation is symptomatic of a broader gap, not a one-off bug**: every availability parity
 check that existed before this session (A1/A3/A4/A5) compares real against sim *to each other* — none
-compared either mode against the raw ground-truth trace file directly. That's exactly how a real-mode
-mechanism could be completely inert for this long without any check catching it. Batch 3's tasks (T3.2–T3.5,
-all ✅ done) fix that blind spot — trainer, aggregator, and delay-enforcement fidelity, each checked against
-ground truth independently per mode, not just against each other.
+compared either mode against the raw ground-truth trace file directly. That's exactly how both a real-mode
+dead-code gap (item 20) and a sim-mode frozen-clock gap (Batch 4 finding 2) could go uncaught for this long.
 </details>
 
 ---
@@ -176,7 +207,7 @@ an in-flight trainer** when it goes UN_AVL; the four aware-at-selection-only bas
 
 ---
 
-## Status (Jul 1 — T3.0–T3.5 ✅ ALL Batch 3 tasks landed; Phase 5 real run is next)
+## Status (Jul 1 — Batch 3 landed + Phase 5/6 run+analyzed; Batch 4's 3 fixes landed+unit-tested, live re-confirmation next, PR still blocked)
 
 B2.0.3's join-barrier fix was masking a SECOND, bigger bug — `debug_run.sh` never wired the trainer's own
 trace, universal across all 6 baselines — ✅ ROOT-CAUSED + FIXED (T3.0/T3.1a/T3.1b). **T3.2** (trainer
@@ -195,9 +226,9 @@ on the existing `withheld_delivery` event (T3.5) — real findings of missing in
 wrong host event) found while building each check, see ▶ NEXT STEP for detail including T3.5's — and
 per-trainer ground-truth-vs-observed timeline + fidelity-error CDF plots (A6/A7), a wait-duration CDF +
 observed-vs-expected scatter (A8), and a commit-slack histogram with a marked zero-line (K11) in
-`analyze_run.py`. K6 (oort/oort_star) still open — A6 is exactly the check that resolves it; answer that
-first thing once a real run exists (Phase 6). **Batch 3 is done — the B2.0.3/K6 confirmation now proceeds
-via Phase 5 (one real run covering T3.2–T3.5 all at once), not a bare re-run.**
+`analyze_run.py`. **Phase 5/6 (Jul 1) done** — K6 resolved via A6 exactly as planned (Challenges §5 item 19),
+but A6 itself (and A4dur/K6) turned up a genuine sim-mode trainer-clock-freeze gap, and felix real hit a new
+TIMEOUT from an unrelated asyncfl budget-check bug — both are Batch 4, see ▶ NEXT STEP for the full writeup.
 
 **A/B/C/C.6/D/E ✅ CONFIRMED syn_20. F.2 ✅ FIXED (B2.0.2 starvation self-termination).
 syn_0 ✅. oort n=25 syn_50 ✅ (starvation fires, K1/K3a PASS). B2.0.1 real recv-barrier ✅ FIXED + confirmed.
@@ -430,7 +461,7 @@ effect logic (select-filter / in-flight-evict) is unchanged by either — only h
 
 ---
 
-## ▶ Batch 3 — Trace-Fidelity & Delay-Enforcement Overhaul (ACTIVE — Jul 1)
+## ▶ Batch 3 — Trace-Fidelity & Delay-Enforcement Overhaul (✅ DONE incl. Phase 5/6 — Jul 1; Batch 4 fixes landed, live re-confirmation next)
 
 ### Why this batch exists
 
@@ -557,19 +588,102 @@ histograms, `send_gate_wait_s` vs. ground-truth-expected scatter (A8), commit-sl
 each task section for detail. Extend existing plot infra (C.6's availability plots, the T_ phase plots)
 rather than building new plotting machinery.
 
-**Phase 5 — One real run.** Once Phases 1–4 are done and unit-tested: a single smoke run, felix syn_20
-real+sim (reference baseline, per the working agreement) as the minimum bar. If cheap enough to extend
-without meaningfully lengthening the run, also include refl and oort in the same batch — that covers all
-three structurally distinct belief-checkpoint cases (felix: aware, both checkpoints; oort: unaware,
-commit-only; refl: aware-at-selection-only) in one shot, which is what T3.3's own exit criteria needs
-anyway, rather than a second run later just to cover them. This run is also the **first live confirmation**
-that T3.0/T3.1a/T3.1b actually work end to end (real `[SEND_GATE]` firing, staleness > 0, etc.) — genuinely
-multi-purpose, not a wasted "just confirm the fix" run.
+**Phase 5 — One real run. ✅ DONE (Jul 1).** felix + refl + oort, syn_20, n=100, sim+real
+(`experiments/phase5_20260701_1616/`, smoke-suite step 4). **Phase 6 — Analyze. ✅ DONE (Jul 1).**
+`python -m scripts.parity.cli --batch --baselines felix refl oort --agg-goal 10`. Both phases found real,
+useful things — see "Phase 5/6 results — Jul 1" immediately below for the full writeup; summary: 5/6 runs
+PASS (1 TIMEOUT, felix real — new bug, Batch 4 finding 1), K6 resolved (Batch 4 finding 2, not the
+starvation/false-positive ambiguity item 19 originally posed), A7-commit-checkpoint still open.
 
-**Phase 6 — Analyze.** Run the new checkers (A6/A7/A8/K11) against the fresh telemetry. Read off K6's
-resolution directly from A6 on the oort pair (Challenges §5 item 19). Per the working agreement, debug
-locally (more synthetic tests) before a second run if something's off — don't chase a bug with more runs
-first.
+---
+
+## Phase 5/6 results — Jul 1 (Batch 4 gating findings)
+
+**Run.** `experiments/phase5_20260701_1616/` — smoke_suite step 4 (syn_20, sim+real, `--num-trainers 100`,
+`--timeout-buffer-s 300`), baselines felix/refl/oort. `report.txt`: 5 PASS, 1 TIMEOUT
+(`s4_felix_syn_20_real`), 0 FAIL/ERROR. Parity: `python -m scripts.parity.cli --batch --experiments-dir
+experiments --baselines felix refl oort --agg-goal 10` against all 6 run dirs.
+
+**Finding 1 — felix real TIMEOUT. ✅ FIXED (Jul 1, Batch 4 fix 1 — see ▶ NEXT STEP).**
+`asyncfl/top_aggregator.py`'s
+`_aggregate_weights` only checks `max_experiment_runtime_s` inside the `if not recv_ends:` branch
+(lines 634/660-671) — i.e. only when the channel's connected pool is *completely* empty. In this run,
+felix's trainers stayed connected (not fully disconnected) while some went UN_AVL and stopped responding,
+so `recv_ends` was never empty and the aggregator looped forever on 30s `recv_fifo` timeouts
+(`channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)`, `RECV_TIMEOUT_WAIT_S=30` at line 66),
+never reaching the budget check. Confirmed on the aggregator log: `Runtime of aggregate is 30.00Xs` repeats
+every ~30s from minute 12 to minute 20 (7.5 min past the run's own 900s budget), zero `"stopping run"`
+lines anywhere in the log — smoke_suite's external SIGTERM/SIGKILL (at `runtime_s + timeout_buffer_s` =
+1200s wall) is what actually ended it, not a clean self-stop. syncfl's equivalent check
+(`increment_round()`, `syncfl/top_aggregator.py:1133`, called unconditionally every round regardless of
+`recv_ends`) doesn't share this gap, which is why refl and oort self-stopped cleanly in the same batch.
+Affects both asyncfl-based baselines (felix, fedbuff) in real mode; sim mode is unaffected (F.2's starvation
+branch already has its own budget check, a separate code path). **Fix:** not a budget-check restructure —
+`async_oort`'s selector derives `recv_ends` directly from its own `selected_ends` (its docstring: "In 'recv'
+state, it chooses all ends from `self.selected_ends`"), and D.1's proactive eviction (`_sim_evict_unavail_
+inflight`, the mechanism that's supposed to free a stalled UN_AVL trainer's slot without waiting 90s) turned
+out to be called only inside `if self.simulated:` — a real-mode felix run had no way to ever drop a stalled
+trainer from `selected_ends`, so it never left `recv_ends` either. Un-nesting D.1 from that sim-only gate
+(it has no sim dependency itself — reads `_avail_now()`, already mode-dispatching) fixes the actual gap:
+stalled trainers get evicted every round regardless of mode, `recv_ends` legitimately empties out once
+nothing is truly outstanding, and the existing budget check (unchanged) fires normally from there. See Batch
+4 fix 1 in ▶ NEXT STEP for the full writeup.
+
+**Finding 2 — A6/A4dur/K6. ✅ FIXED (Jul 1, Batch 4 fix 2 — see ▶ NEXT STEP), resolves Challenges §5 item 19.**
+`Trainer._sim_now()`
+(`trainer/pytorch/main.py:329-330`) returns `self._sim_send_ts` in sim mode — a value stamped only by the
+aggregator on dispatch. A trainer correctly withheld as UN_AVL stops being dispatched, so its own clock
+freezes, so `check_and_update_state_avl()` (main.py:360) can never observe a trace transition that happens
+while it's idle — its `avail_change` telemetry (what A6 reads) freezes at the last-observed state
+permanently, even though the trainer really did transition in the ground-truth trace. **Verified by hand,
+not just inferred:** computed trainer `...0370`'s TVD by hand against the raw `syn_20` trace
+(`trainer_001`'s pattern: `AVL_TRAIN[0,600) → UN_AVL[600,1200) → AVL_TRAIN[1200,...)`) — matches felix-sim's
+reported A6 error (0.3344) to 4 decimals, and the fraction lines up with "missed the entire UN_AVL→AVL_TRAIN
+transition, reported AVL_TRAIN for the whole span." Exactly 12/100 sim trainers per run have only 1
+`avail_change` event (frozen after the seed) vs. 88+ with 2 — explains the identical `n_missed_transitions=
+12` recurring on nearly every A6/A7-selection/A4dur row across all three baselines (same mechanism, not
+coincidence; A4dur's marginal-FAIL frac_within_tol≈0.88 for refl/oort ≈ 1 − 12/100, consistent). This is
+**not a checker bug** — the checker is doing its job; A6 correctly measures what the trainer's own telemetry
+says, and the trainer's own telemetry really is wrong in sim mode. Real mode is unaffected: its clock
+(`_sim_now()`'s real branch, T3.0's shared-origin wall-elapsed value) always ticks forward regardless of
+dispatch state, which is why real-mode A6 is comparatively much closer (though not perfect — see A7-commit
+below) than sim-mode A6.
+
+**Resolves Challenges §5 item 19 (K6, `...0376`/`...0391` `sim_send_ts==0`).** Same frozen-clock mechanism,
+different-looking symptom depending on *when* in the run a trainer goes quiet: a trainer whose only-ever
+dispatch happens before the aggregator's vclock has advanced past 0 freezes at `sim_send_ts=0` (K6's
+symptom); a trainer dispatched later but withheld mid-run freezes at whatever mid-run value it last saw and
+silently misses subsequent transitions (A6's symptom). Neither is a selector-starvation bug nor a checker
+false-positive (item 19's hypotheses a/b) — it's a single instrumentation gap, generalized. **Fix:** two
+parts, both zero-new-comms (no new message type, no periodic broadcast) — (a) `check_and_update_state_avl()`
+now stamps `avail_change.sim_now` with the transition's own scheduled trace-time (`state_avl_event_ts[0][0]`,
+which the trainer already has loaded locally from the trace at init) instead of `self._sim_now()` at
+processing time, so a late catch-up still records the *true* transition time, not the late instant it
+happened to be noticed; (b) `inform_end_of_training`'s existing `channel.broadcast()` (reaches every
+connected end regardless of dispatch state) now piggybacks the aggregator's final `_avail_now()` in sim
+mode, and the trainer's shared `_fetch_weights` calls `_refresh_avl_state()` on `EOT` receipt — one last
+wake-up so a trainer that was never dispatched again still flushes its queued transitions (each stamped
+correctly per (a)) before exiting. See Batch 4 fix 2 in ▶ NEXT STEP for the full writeup.
+
+**A7 commit-checkpoint. ✅ FIXED (Jul 1, Batch 4 fix 3 — see ▶ NEXT STEP), NOT explained by finding 2.**
+`agg_belief_fidelity_{real,sim}.com` failed broadly (all 3 baselines, both modes, mean_err 0.02–0.05,
+frac_within_tol 0.88–0.94) despite reading from the aggregator's own `_avail_now()`
+(`client_availability.py:154-165`), which explicitly uses the live `_vclock.now`/wall-elapsed value, not a
+frozen per-trainer one (its docstring cites this exact class of bug as a past lesson — "REFL HIGH-1
+frozen-clock root cause" — and says it deliberately avoids it). A7's *selection*-checkpoint (reading
+`PROP_AVL_STATE` via the pre-existing `emit_selection` trail) mostly passes, which made the
+commit-checkpoint-only failure surprising at first — but the belief values themselves were never wrong; the
+gap was in the **checker**, not the FL system: `_fidelity_score` unconditionally extrapolated
+("`_pad_tail`") the last observation forward to the run's full span, correct for A6/A7-selection's
+continuously-refreshed streams but wrong for "commit," which only samples when an actual commit happens —
+a trainer that legitimately stops committing (typically *because* it went UN_AVL, exactly the state this
+check exists to catch) leaves a silent tail that the checker scored as stale drift rather than absence of a
+later observation. Fixed with a new `extrapolate_tail=False` path for the commit-checkpoint call, truncating
+the window to `[t_start, last observed t]` — symmetric with the pre-existing start-side truncation.
+
+**A5/K9/K5/C1/C2/U3/U4 all still PASS** in this run (state-timeline agreement ≥0.95, self-stop-by-budget
+sane for the 5 runs that didn't time out, accuracy/loss parity tight) — the three findings above are narrow,
+not a wholesale parity regression; nothing here contradicts A/B/C/C.6/D/E's existing ✅ CONFIRMED status.
 
 ---
 
@@ -718,11 +832,10 @@ span, no matching trainers, no `sim_now` signal anywhere = syn_0-style regressio
 case, and an injected-300s-lag-drift fail case (same class of bug as B2.0.3, trainer-side). All green;
 `tests/` 559 pass / 7 skip, `scripts/parity/` 86 pass, `trainer/pytorch/` 8 pass.
 
-**Exit.** ✅ Met (code + tests; A6 ≥ 0.95 numeric confirmation on a real felix syn_20 pair is Phase 6, after
-T3.3–T3.5 also land — see ▶ Implementation phases). This is also the check that will resolve K6
-(Challenges §5 item 19) once that real run exists — run it on the oort syn_20 sim pair and read off
-whether end IDs `...0376`/`...0409` genuinely track UN_AVL-and-stay per the trace (confirms hypothesis b)
-or diverge from it (points to hypothesis a).
+**Exit.** ✅ Met for code + tests. ⚠️ The ≥0.95 numeric confirmation itself (Phase 6, Jul 1) **did not pass**
+— A6 found a genuine sim-mode gap (trainer clock frozen between dispatches, Batch 4 finding 2), not a check
+failure. It did resolve K6 (Challenges §5 item 19) as planned, just not via the hypothesis (b) this section
+originally expected — see "Phase 5/6 results — Jul 1" (▶ NEXT STEP) for the full finding and fix status.
 
 ---
 
@@ -776,8 +889,10 @@ timeline overlay + fidelity-error CDF, reusing `plot_helpers.state_band_timeline
 scored independently (one can fail while the other SKIPs or passes), injected-lag-drift regression. All
 green: `tests/` 568 pass / 7 skip, `scripts/parity/` + `trainer/pytorch/` 102 pass.
 
-**Exit.** ✅ Met (code + tests; A7 ≥ 0.95 numeric confirmation on a real run is Phase 6, after T3.4/T3.5
-also land).
+**Exit.** ✅ Met for code + tests. ⚠️ The ≥0.95 numeric confirmation (Phase 6, Jul 1) **did not pass** for
+the commit checkpoint (selection mostly passed) — and unlike A6, the commit failure is NOT explained by the
+sim-mode frozen-trainer-clock gap (Batch 4 finding 2), since this checkpoint reads the aggregator's own
+live-clock `_avail_now()`. Root cause still open — see "Phase 5/6 results — Jul 1" (▶ NEXT STEP).
 
 ---
 
@@ -831,7 +946,9 @@ test_send_gate_wait.py` (4 tests): deterministic fake-clock wait-loop timing, ze
 available, `hasattr`-guarded fallback when `_sim_now` is absent, sim mode never stamps either field. All
 green: `tests/` 572 pass / 7 skip (+4), `scripts/parity/` + `trainer/pytorch/` 114 pass (+12).
 
-**Exit.** ✅ Met (code + tests; A8 ≥ 0.95 numeric confirmation on a real run is Phase 6, after T3.5 lands).
+**Exit.** ✅ Fully met, including the numeric confirmation: Phase 6 (Jul 1) A8 PASSes clean on all three
+felix/refl/oort real-mode runs (`mean_err_s≈0.0–0.27`, `frac_within_tol=1.0`, `n_uncomparable=0`) — the one
+new-check exit criterion that cleared on the first real run, no follow-up needed.
 
 ---
 
@@ -898,8 +1015,11 @@ early+late scored independently in the same population. `tests/availability/test
 telemetry is disabled. All green: `tests/` 574 pass / 7 skip (+2), `scripts/parity/` + `trainer/pytorch/`
 121 pass (+7).
 
-**Exit.** ✅ Met (code + tests; K11 numeric confirmation — near-zero slack, zero violations, on felix +
-feddance syn_20 — is Phase 6, now that all of T3.2–T3.5 are code-complete and Phase 5 can run).
+**Exit.** ✅ Met for code + tests. K11's numeric confirmation itself SKIPped in Phase 6 (Jul 1) — this
+felix/refl/oort n=100 batch produced zero `withheld_delivery` events with `actual_commit_ts` (no withholds
+triggered at this scale/duration), so K11 has no population to score yet. Not a failure, just not yet
+exercised — needs a run (feddance's known-withhold scenario, or a longer syn_20/syn_50 window) where the
+gate actually engages.
 
 ---
 
@@ -980,16 +1100,13 @@ feddance syn_20 — is Phase 6, now that all of T3.2–T3.5 are code-complete an
     n=300. Fix landed (`_mark_join_barrier_done()` re-anchor) and is correct, but was masking a SECOND,
     bigger bug (item 20) that alone explains why the n=100 confirmation run didn't clear. See B2.0.3
     section above.
-19. ⚠️ **oort/oort_star `K6 sim_send_ts` CONTROL-tier flag, 2/100 sim trainers** (`smoke_confirm_20260630_2257`,
-    Jul 1). `...0376`/`...0409` in the oort syn_20 sim run show `all sim_send_ts==0`. Log trace
-    (`VCLOCK_PROGRESS` in the agg log) shows the *global* vclock genuinely stays at `0.0s` through round 8
-    (first advance at round 9) — both flagged trainers' only dispatch landed inside that legitimately-0
-    window, then neither was ever reselected in ~230 remaining rounds. Two hypotheses, neither confirmed:
-    (a) genuine oort selection-starvation bug (permanent exclusion after one participation); (b) expected
-    trace behavior (trainer goes UN_AVL and never returns before the horizon) plus a checker false-positive
-    for trainers whose entire participation falls pre-advance. **Batch 3 T3.2 (trainer-fidelity-vs-trace
-    check) directly answers this** — it will show whether those 2 end IDs' trace-driven state genuinely
-    goes UN_AVL-and-stays there (confirms b) or not (points to a). Defer further manual digging to T3.2.
+19. ✅ **RESOLVED + FIXED (Jul 1, Batch 4 fix 2) — oort `K6 sim_send_ts`, 2/100 sim trainers.** Neither of
+    the two original hypotheses (selector-starvation bug / checker false-positive) — the real cause was
+    sim-mode `Trainer._sim_now()` returning the frozen `_sim_send_ts` from its last dispatch, so a trainer
+    whose only dispatch lands before the vclock's first advance freezes at `0` forever, identical in
+    mechanism to A6's mid-run missed-transition failures, just triggered at the earliest possible point in
+    the run instead of partway through. Fixed alongside A6 (due-timestamp stamping + EOT final wake-up); live
+    re-confirmation pending. See "Phase 5/6 results — Jul 1" (▶ NEXT STEP) for the full writeup.
 20. ✅ **ROOT-CAUSED + FIXED (Jul 1) — `debug_run.sh` never wired the trainer's own trace, universal across
     all 6 baselines, both modes.** Every trainer in every `debug_run.sh`-launched run logged
     `Set avl_events_syn_0` at init regardless of the run's actual `--trace` (`syn_20`/`syn_50`/etc).
@@ -1035,7 +1152,10 @@ feddance syn_20 — is Phase 6, now that all of T3.2–T3.5 are code-complete an
 | A4dur `duty_cycle_duration` | all 6 (library-level) | ✅ ROOT-CAUSED + FIXED + CONFIRMED (Jun 30) | Real selection events never carried `vclock_now`; A4dur's real-mode time-base fell back to a join-ramp-skewed origin. Fixed: stamp `vclock_now` for real too via `_avail_now()`. Confirmed on a fresh felix syn_20 pair: `mean_err=0.0`. Closed. |
 | A3 `avail_timebase` | feddance | n=300: syn_20 PASS (0.108), syn_50 FAIL (0.227) — root-caused as **B2.0.3**, fix landed. n=100 confirm (Jul 1): **still FAILs both**, worse — syn_20 0.667, syn_50 0.275 — ✅ true root-cause found + fixed (Challenges §5 item 20, Batch 3 T3.1a) | The join-barrier fix (B2.0.3) is real and correct but wasn't the only bug. True cause: `debug_run.sh` never substituted the trainer's own `client_notify.trace`, so real trainers ran their send-gate against a trivial always-available trace while sim (aggregator-driven) correctly used the real one — the two modes ran different dynamics whenever a trainer goes UN_AVL mid-flight. Fixed + regression-tested. Re-confirmation still gated on T3.0/T3.2 landing (clock-origin + fidelity verification). See B2.0.3 section + Batch 3. |
 | K3b `overhead_residual` | feddance | syn_20 residual=10.96s rel=0.369; syn_50 residual=2.93s rel=0.1 (tol 0.1) | ✅ Explained, not a clock-advance bug or scale artifact: sim's withheld/stale-bonus commits (absent in real, per above) carry their own training duration into a round's telemetry without correspondingly advancing the vclock. Resolves once Batch 3 T3.0/T3.1b/T3.2 land and both modes run the same dynamics on a verified-consistent clock. |
-| K6 `sim_send_ts` | oort, oort_star | 2/100 sim trainers flagged `all sim_send_ts==0` | Selection-starvation bug vs. expected-trace-dropout vs. checker false-positive — not yet distinguished. Batch 3 T3.2 (trainer-fidelity-vs-trace check) will answer this directly. See Challenges §5 item 19. |
+| K6 `sim_send_ts` | oort | ✅ RESOLVED + FIXED (Jul 1, Batch 4 fix 2) | Sim-mode trainer clock freezes on last dispatch — same mechanism as A6's missed transitions, not selector-starvation or a checker false-positive. Fixed: due-ts stamping + EOT final wake-up. Live re-confirmation pending. See Challenges §5 item 19. |
+| A6 `trainer_trace_fidelity` (sim) | felix, refl, oort | ✅ ROOT-CAUSED + FIXED (Jul 1, Batch 4 fix 2) | Sim-mode trainer clock frozen between dispatches — 12/100 trainers per run missed a trace transition entirely. Not a checker bug (hand-verified). Fixed, unit-tested; live re-confirmation pending — see "Phase 5/6 results." |
+| A7 `agg_belief_fidelity` (commit checkpoint) | felix, refl, oort | ✅ ROOT-CAUSED + FIXED (Jul 1, Batch 4 fix 3) | Checker bug, not a system bug: `_fidelity_score` extrapolated the last commit belief across the run's full span, wrongly scoring a trainer's post-last-commit silence (typically because it went UN_AVL) as stale drift. Fixed with a truncated `extrapolate_tail=False` window for the commit checkpoint. Live re-confirmation pending — see "Phase 5/6 results." |
+| TIMEOUT — asyncfl real self-stop | felix (+ fedbuff) | ✅ ROOT-CAUSED + FIXED (Jul 1, Batch 4 fix 1) | D.1 proactive eviction was sim-only by accident, so a real-mode stalled trainer never left `selected_ends`/`recv_ends`, hanging the aggregator past its own budget. Fixed by un-nesting D.1 from the sim-only gate. Live re-confirmation pending — see "Phase 5/6 results." |
 | A2 `eligibility` KS | oort | 0.437→0.338 (1.5h→3h); FAIL again @ syn_20 n=300 smoke | Bimodal-vs-smooth shape artifact; means match; improving with run length but not yet resolved at n=300/short-run. Investigate alongside A4dur. |
 | A2 `eligibility` KS | feddance | FAIL @ syn_20 n=300 smoke | Earlier "clears at n=300" (n=25 data) not confirmed by smoke run — re-opened, investigate alongside A4dur. |
 | K3b `overhead_residual` | oort | rel≈0.116 | Run-length sensitive; P3 gates at n=300. Investigate T5. |
@@ -1064,11 +1184,15 @@ feddance syn_20 — is Phase 6, now that all of T3.2–T3.5 are code-complete an
    Not yet run: the entire mobiperf (3-state, AVL_EVAL) path is untested live in this whole project so
    far (only syn_0/20/50, which are 2-state and collapse AVL_EVAL away). Challenge 13's fix (§5 item 13)
    explicitly still says "needs live exercise at mobiperf_3st."
-3. **PR workflow — BLOCKED, not ready.** Gated on: (a) items 1–2 above, and (b) **Batch 3 landing**
-   (T3.0–T3.5, see ▶ NEXT STEP / Batch 3 section above) — the real-mode send-gate is confirmed dead code
-   (Challenges §5 item 20) and needs the fix plus the new absolute fidelity checks before this branch's
-   core claim ("sim/real parity for availability") is actually true, not just "the checks that existed
-   happened not to catch the gap." Once Batch 3 is green: clean-diff PR for this branch → write up the
+3. **PR workflow — BLOCKED, not ready.** Gated on: (a) items 1–2 above, and (b) **Batch 4 live
+   re-confirmation** (see ▶ NEXT STEP above) — Phase 5/6 (the real run Batch 3 was itself gating on) found
+   three real gaps, all now fixed and unit-tested (code + 12 tests, both suites green) but not yet confirmed
+   on a live run: (i) felix/fedbuff real-mode never self-stopped when only some trainers stalled (D.1
+   proactive eviction was sim-only by accident), (ii) sim-mode trainers' own clock froze while idle, so
+   trainer-side fidelity telemetry silently missed transitions (A6/K6/A4dur symptom — fixed via due-timestamp
+   stamping + an EOT final wake-up), and (iii) the A7 commit-checkpoint checker wrongly extrapolated belief
+   across a trainer's post-last-commit silence (fixed with a truncated scoring window). Once a fresh
+   felix/refl/oort real+sim run confirms all three (no TIMEOUT, A6/K6 clear, A7-commit's error drops): clean-diff PR for this branch → write up the
    design decisions that were kept (durable, what's in the doc now) → write up decisions rejected / not
    pursued (currently scattered across §6 Dead-ends + inline "why not X" notes — worth a final sweep to
    make sure nothing rejected got lost) → fold both into this doc (already mostly done by §5/§6/§7) → then

@@ -364,7 +364,7 @@ class PyTorchCifar10Trainer(Trainer):
                 # the current sim-time (no speedup_factor in either mode).
                 sim_elapsed = self._sim_now()
                 if sim_elapsed >= self.state_avl_event_ts[0][0]:
-                    state_to_set = self.state_avl_event_ts.pop(0)[1]
+                    due_ts, state_to_set = self.state_avl_event_ts.pop(0)
                     old_status = self.avl_state.value
                     try:
                         self.avl_state = TrainerAvailState(state_to_set)
@@ -378,11 +378,20 @@ class PyTorchCifar10Trainer(Trainer):
                         f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
                     )
                     if telemetry.is_enabled():
+                        # sim_now = the transition's own scheduled trace-time
+                        # (due_ts), not self._sim_now() at processing time.
+                        # The trainer already knows exactly when each
+                        # transition occurs (it's the trace's own ts) -- using
+                        # that instead of "whenever we got around to noticing"
+                        # is correct regardless of catch-up delay, and fixes
+                        # sim mode's frozen-clock-during-idle gap (Batch 4
+                        # finding 2, UNAVAILABILITY_DESIGN.md) at the source,
+                        # not just when catch-up happens to be prompt.
                         ev, fields = build_avail_change(
                             round_num=int(getattr(self, "_round", 0)),
                             old_state=str(old_status),
                             new_state=str(new_status),
-                            sim_now=self._sim_now(),
+                            sim_now=due_ts,
                         )
                         telemetry.emit(ev, **fields)
                     if self.client_notify["enabled"] == "True":
