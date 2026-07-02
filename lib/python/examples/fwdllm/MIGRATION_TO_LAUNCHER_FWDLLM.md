@@ -1281,3 +1281,39 @@ working tree only — see "Files touched this session" for the full list.
 - `lib/python/examples/fwdllm/telemetry_manifest.yaml` — updated
   `event_categories` comments to reflect Part 6's fixes (what's now
   populated, and the explicit budget/overrun scope decision).
+
+---
+
+## Part 7 — `max_runtime_s` starvation: found, fixed, committed (`9c28f230`)
+
+While generating plots for a real `fluxtune` 10-min smoke test
+(`run_20260701_225428_fluxtune_n10_smoke`, `--max-runtime-s 600`), the run
+didn't self-terminate — it had to be manually killed at ~20.5 minutes.
+
+**Root cause**: `_aggregate_grads_async` (fluxtune/async) and
+`sync_collect_and_accumulate_grads` (fwdllm/fwdllm_plus/sync) both called
+`channel.recv_fifo()` with no `timeout`, which defaults to **block
+forever** (per its own docstring — exists specifically to avoid this). The
+log showed a clean run until `23:01:08`, then total silence until
+`23:12:30` (11+ min), then a `KeyboardInterrupt` traceback pinpointing the
+aggregator blocked inside `recv_fifo` waiting on one trainer that had gone
+quiet under `mobiperf_3st_50`. `_check_early_stop_conditions()` (which
+enforces `max_runtime_s`/`max_data_id_progress`) only runs from
+`_distribute_weights`, on the *other* side of the composer's `put >>
+aggregate` loop — while blocked inside `aggregate`, the loop never cycles
+back to give it a chance to fire. This is the same *class* of bug as Part
+2's deadlock (an unbounded wait with no escape hatch), a different call
+site.
+
+**Fix**: both call sites now pass `timeout=RECV_TIMEOUT_WAIT_S` (30s, a
+constant already defined in and imported from
+`asyncfl/top_aggregator.py`, whose own `_aggregate_weights` already uses
+this exact pattern for the identical reason — fwdllm's override just never
+adopted it). A timed-out recv already degrades gracefully in both methods
+(treated as "no data this tick, try again next composer cycle") — no other
+behavior change. 2 new tests
+(`lib/python/tests/mode/test_fwdllm_recv_timeout.py`) confirm both call
+sites pass the timeout. Full suite: **472 passed, 7 skipped, 0 failed**.
+
+**Not yet re-validated on GPU** — the user is about to re-run the same
+10-min fluxtune smoke test to confirm it now self-terminates within budget.
