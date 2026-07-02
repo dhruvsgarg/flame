@@ -1,10 +1,11 @@
 # fwdllm legacy-code deletion candidates (separate PR, after `launcher-script-fwdllm` merges)
 
 This is the durable tracking doc for what to delete once the launcher
-migration PR merges. `PR_CLEANUP_PLAN.md` (the working notes for that PR) will
-be deleted after merge — this file is the one thing from that cleanup that
-should survive, so keep it up to date and refer back to it when opening the
-deletion PR.
+migration PR merges. `PR_CLEANUP_PLAN.md` (the working notes for that PR)
+has already been removed from the branch — its still-relevant content is
+folded into `MIGRATION_TO_LAUNCHER_FWDLLM.md`'s "Merge readiness" section.
+This file is the one thing from that cleanup that survives, so keep it up
+to date and refer back to it when opening the deletion PR.
 
 Do NOT delete anything below in the `launcher-script-fwdllm` PR itself — do
 it as a follow-up PR once that one is merged and the launcher path has had a
@@ -42,9 +43,6 @@ experiments in `expt_scripts/`. Nothing in the new path imports any of these.
   (`d29a2f7f`, 2025-01-31), last touched together in `8449fac5`
   (2026-05-06) — kept in lockstep by copy/paste until the launcher
   migration updated only `main_fedfwd_agg.py`/`main.py`'s `__main__` block.
-- `PR_CLEANUP_PLAN.md` itself — once the `launcher-script-fwdllm` PR merges
-  and nothing else from it is outstanding, delete the working-notes file;
-  this `DELETION_CANDIDATES.md` file is what should survive it.
 
 ## Do NOT delete — confirmed still-live dependencies of the new path
 

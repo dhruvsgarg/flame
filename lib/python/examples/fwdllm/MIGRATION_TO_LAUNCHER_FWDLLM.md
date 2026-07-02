@@ -24,17 +24,19 @@ real async_cifar10 run) found the plot *coverage* itself was still much
 thinner than async_cifar10's, for reasons distinct from Part 5's gaps — see
 Part 6. A real 10-min `fluxtune` smoke test then surfaced a third
 correctness bug — the aggregator could hang indefinitely past
-`--max-runtime-s` waiting on a quiet trainer — found and fixed in Part 7
-(`9c28f230`), currently being re-validated on GPU
-(`run_20260701_234833_fluxtune_n10_smoke`, started 23:48 EDT).
+`--max-runtime-s` waiting on a quiet trainer — found, fixed, and
+**GPU-confirmed** in Part 7 (`9c28f230`). Part 8 then explains (not fixes —
+a distinct, non-blocking follow-up) why fwdllm's own n=100 run reached only
+~46% accuracy/30 rounds while `fwdllm_plus`/`fluxtune` reached ~80%+ in the
+same 1.5h: a real scale-dependent gap in fwdllm's round-cached reselection
+design, not one of the fixed bugs.
 
-**All work through Part 7 is committed and pushed** (see each Part's own
-commit hashes; `git log --oneline` on this branch has the full list). Full
-suite: 472 passed, 7 skipped, 0 failed. This doc is a running investigation
-log (bugs found, root causes, fixes, verification) — for the PR-readiness
-checklist (what's left before `launcher-script-fwdllm` can merge), see
-[`PR_CLEANUP_PLAN.md`](PR_CLEANUP_PLAN.md). Living doc — update as findings
-land.
+**All work is committed and pushed; nothing is blocking merge** — see
+"Merge readiness" near the end of this doc for the full checklist and the
+scope/soak-run/diff-review decisions. Full suite: 472 passed, 7 skipped, 0
+failed. `PR_CLEANUP_PLAN.md` (the earlier separate PR-readiness doc) has
+been retired — its still-relevant content is folded into "Merge readiness"
+below. Living doc — update as findings land.
 
 ## ✅ RESUMED (2026-07-01 ~21:25 EDT) — Part 5 complete, GPU experiment finished
 
@@ -1334,9 +1336,156 @@ not the trace. `--avail-trace syn_0` remains the right choice whenever a
 run needs to isolate selection/aggregation-logic questions from trace-driven
 churn (per Part 4).
 
-**Re-validation status: IN PROGRESS.** `run_20260701_234833_fluxtune_n10_smoke`
+**Re-validation status: CONFIRMED FIXED.** `run_20260701_234833_fluxtune_n10_smoke`
 (`--only fluxtune --max-runtime-s 600 --max-data-id 200`, same
-`mobiperf_3st_50` trace as the run that exposed the bug) started 23:48:33
-EDT and was running as of this doc update. Outcome not yet known — update
-this section once it finishes (expect self-termination at or shortly after
-600s elapsed, not 20+ minutes).
+`mobiperf_3st_50` trace as the run that exposed the bug) self-terminated on
+its own within budget — no manual kill needed this time. Part 7 is closed.
+
+---
+
+## Part 8 — why fwdllm's n=100 run lagged so far behind its siblings
+
+In lieu of the separate convergence soak run originally planned (see "Merge
+readiness" below), the existing n=100/1.5h 3-baseline experiment (Part 4) was
+treated as the convergence evidence. Pulling the real numbers: `fluxtune` and
+`fwdllm_plus` both did reach strong accuracy (~82%/~80% respectively, both
+well past 150 `data_id`s — `fwdllm_plus` into round 2). **`fwdllm` did not**
+— it stalled at `data_id` 29/150, round 1, and only ~46% accuracy. This
+needed a real explanation, not an assumption that it was "just slow."
+
+### Root cause (confirmed via direct log evidence, not guessed)
+
+`run_20260701_182242_fwdllm_n100_smoke`'s aggregator log shows `Total ends:
+30, required: 10` on **every single** `sync_collect_and_accumulate_grads`
+call from 18:27 to 19:23 — i.e. `channel.ends()`'s effective candidate pool
+never grew past 30 of the 100 spawned trainers, for the entire run. The
+`"...hasn't received weights for model_version N (has -1)..."` line (the
+aggregator discovering a trainer never got its initial weights and
+re-sending them) appears **9,680 times**. Progress fully stalled (zero
+`data_id` advancement) for the last ~47 minutes of the 90-minute budget
+(last progress at 19:07:09; process stayed alive and correctly
+self-terminated at 19:54:51 per `max_runtime_s` — this is not a Part 7
+recurrence, the aggregator was alive and ticking, just unproductive).
+
+This traces to two things compounding:
+1. **`--min-initial-trainers 95`** (set deliberately for this run, Part 4)
+   gates `random.py`'s `select()` via `enforce_min_start` until 95+ of 100
+   trainers have joined — a real startup bottleneck at this trainer count
+   that fwdllm_plus and fluxtune don't share the same way (different
+   selection cadence, see below).
+2. **fwdllm's round-level reselection cache has no mechanism to replace a
+   trainer that's unresponsive but not formally departed.** Part 3 already
+   fixed stale-cache pruning for *explicit* departure (`channel.has()==False`
+   or `UN_AVL`) — but a trainer that's still technically connected, just
+   stuck/never finished initializing (`model_version=-1`), doesn't trigger
+   that path at all. Once `_round_selected_ends` fills to `aggGoal` members,
+   it's reused for all 150 `data_id`s in the round (Part 3's mechanics); a
+   stuck member just sits there being repeatedly re-pinged, since
+   `sync_collect_and_accumulate_grads` needs real responses from that exact
+   cached set to hit `agg_goal`. `fwdllm_plus` (`reselect_each_iteration=True`)
+   calls `select()` fresh every iteration, so a stuck trainer is simply not
+   picked next time — the entire 100-trainer pool stays live. `fluxtune`'s
+   async design is inherently continuous-reselection for the same reason.
+   This is why the *design* difference between the two sync baselines
+   (round-cached vs. per-iteration reselect) is exactly what separates "fine
+   at n=10/n=30" from "can effectively stall at n=100" — not a new bug in
+   the sense of Parts 2/3/7, but a real scale-dependent gap in fwdllm's own
+   (not fwdllm_plus's) selection design that those fixes don't cover.
+
+**Not fixed, not blocking merge** (per user direction — see "Merge
+readiness"): this is a genuine, distinct gap from bugs #4-7, but the
+existing evidence (fwdllm_plus/fluxtune both converge fine; fwdllm's own
+gap is explained, not mysterious) is accepted as sufficient without
+requiring an immediate fix or a fresh soak run. Worth a follow-up: either
+teach the round-cache to replace a member that's gone N minutes without a
+real response (not just formally-departed members), or default
+`--min-initial-trainers` more conservatively at high trainer counts.
+
+---
+
+## Merge readiness
+
+`PR_CLEANUP_PLAN.md` (the earlier PR-readiness working doc) is **not kept
+in the PR** — it predated this doc's Parts 2-8 and had drifted out of sync
+with reality. Its still-relevant content is consolidated here; most of the
+actual migration mechanics it referenced already live in the durable
+[`../MIGRATING_TO_LAUNCHER.md`](../MIGRATING_TO_LAUNCHER.md) (§9 has the
+fwdllm-specific patterns) and aren't repeated.
+
+### Bugs fixed across the branch (full list)
+
+Pre-migration-investigation (smoke-test-driven, commit messages have full
+detail — not repeated here): stale `flame` checkout via uncontrolled
+`PYTHONPATH` (`e086cc52`), sync-mode aggregator never broadcasting EOT
+(`4c588843`), `wait_all()` polling trainers sequentially instead of
+concurrently (`5968b0f2`).
+
+Post-migration investigation (Parts 2/3/7 above have full detail): fluxtune
+full deadlock at scale (`ba622a38`), generic asyncfl aggregator
+duplicate-contribution gap (`e76d54f1`), fwdllm's stale reselection-cache
+gap (`4d8d3281`), `max_runtime_s`/`max_data_id_progress` starvation under a
+real availability trace (`9c28f230`, Part 7, **GPU-confirmed fixed**).
+
+All covered by regression tests; full suite: 472 passed, 7 skipped, 0
+failed.
+
+### Known limitation (not fixed, not blocking — tracked here)
+
+`channel.await_join()`'s race (only catches peers already joined at
+broadcast time, no timeout of its own) is only mitigated (by `wait_all()`'s
+concurrent-polling fix above), not fixed — trainers still rely on the
+launcher's force-kill rather than exiting cleanly on their own. A timeout on
+`await_join()` itself (e.g. in `fwdllm_trainer.py`'s
+`_fetch_weights`/`_send_grads`) would fix it properly, but that's shared
+`flame` channel/trainer code used beyond this example — a separate PR, not
+blocking this one. Same category as Part 8's round-cache gap above: a real,
+scoped follow-up, not a merge blocker.
+
+### Scope: telemetry/analysis tooling (Parts 5/6) — **included in this PR**
+
+Decided: Parts 5/6 (fwdllm telemetry emission + the `analyze_run.py`/
+`flame/telemetry/events.py` generalization) ship in this PR, not split out.
+
+**Follow-up work still needed** (not blocking, tracked for later):
+- fwdllm's own `selection`/`selection/why` signal is inherently thin
+  (`RandomSelector` carries no `believed_I`/`system_util`/`temporal`
+  factors — there's no "why" beyond uniform chance) and its real selector
+  only fires ~once per round under the cache-reuse design (Part 6/8) — so
+  several selection-derived plots stay sparse for fwdllm specifically
+  (richer for fwdllm_plus). Worth a fwdllm-specific plot/metric that's
+  actually informative for this selection pattern, rather than reusing
+  oort-family-shaped plots that don't fit it.
+- Part 8's investigation was done entirely by hand-grepping raw aggregator
+  logs (`Total ends: N`, `hasn't received weights`, staleness rejections).
+  None of that is currently first-class telemetry — a metric/plot for
+  "live channel-end pool size vs. configured `--num-trainers` over time"
+  and "trainers stuck at `model_version=-1` past N minutes" would have
+  made this a 30-second `analyze_run.py` check instead of an hour of log
+  archaeology, and would generalize to catching the same class of issue in
+  future examples.
+- `training_budget_s`/`overran`/`remaining_time_s` stay `not_populated` for
+  fwdllm by design (Part 6 — no faithful concept given its flat-delay
+  model) — revisit only if fwdllm's trainer ever grows a real budget model.
+
+### Diff review
+
+Handled directly by the user via GitHub's compare view, not via a CLI diff
+base picked here. (For context if useful: `dg-fork-main` is not a clean
+base — it predates an unrelated ~20-commit async_cifar10 launcher
+initiative this branch was built on top of; `35f8d654`, the commit right
+before fwdllm's own migration starts, gives a much more focused diff.)
+
+### Deletion PR
+
+Stays separate, as a follow-up once this PR merges — tracked in
+[`DELETION_CANDIDATES.md`](DELETION_CANDIDATES.md), which is retained (not
+deleted) for that purpose.
+
+### What's actually left
+
+Nothing blocking. Part 7 is GPU-confirmed. The soak run is bypassed in favor
+of the existing n=100 evidence (Part 8) — good enough for `fwdllm_plus`/
+`fluxtune`, and fwdllm's own shortfall is explained (not a mystery, not one
+of the fixed bugs, tracked as a follow-up above). Telemetry/analysis scope
+is decided (in). Diff review is the user's own pass on GitHub. Deletion PR
+is deliberately out of scope for this one.
