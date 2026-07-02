@@ -145,3 +145,32 @@ class TestTrainerTraceSubstitution:
         for exp in exps:
             h = exp["aggregator"]["config_overrides"]["hyperparameters"]
             assert h["trackTrainerAvail"]["trace"] == "syn_50"
+
+
+class TestMultiTraceSubstitution:
+    """--trace accepts a space-separated list: one full experiment set per
+    trace, queued in a single generated YAML/run."""
+
+    def test_two_traces_double_the_experiment_count(self, generator_source, tmp_path):
+        single = _run_generator(generator_source, tmp_path, "felix", trace="syn_20")
+        both = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        assert len(both) == 2 * len(single)
+
+    def test_each_trace_propagates_to_its_own_experiments(
+        self, generator_source, tmp_path
+    ):
+        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        by_trace = {
+            trace: [
+                e for e in exps
+                if e["trainer"]["config_overrides"]["hyperparameters"]
+                ["client_notify"]["trace"] == trace
+            ]
+            for trace in ("syn_20", "syn_50")
+        }
+        assert len(by_trace["syn_20"]) == len(by_trace["syn_50"]) == len(exps) // 2
+
+    def test_experiment_names_disambiguate_by_trace(self, generator_source, tmp_path):
+        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        names = [e["name"] for e in exps]
+        assert len(names) == len(set(names)), f"duplicate names: {names}"

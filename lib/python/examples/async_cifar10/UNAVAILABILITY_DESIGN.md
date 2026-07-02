@@ -1,6 +1,97 @@
 # Sim Unavailability — Design & Staged Plan
 
-## ▶ NEXT STEP (Jul 1 — Batch 4's live re-confirmation found fix 1 is INCOMPLETE + a new bug; PR still blocked)
+## ▶ NEXT STEP (Jul 1/2 — Open A + Open B both ROOT-CAUSED AND FIXED (code + tests); live re-confirmation run is next; PR still blocked)
+
+**`run_20260701_233518_..._syn_20_stream_real` (n=100, `--runtime-s 700`, the exact re-confirmation run this
+doc was waiting on) reproduced the hang and pinned both Open A and Open B down to concrete bugs, not just
+hypotheses. Both are now fixed in code with regression tests (not yet re-validated on a live run).**
+
+### Open A — real-mode 90s abandon never freed `selected_ends` — FIXED
+
+Timeline: distribute progress froze at round 199 (23:48:07); the aggregator then looped 30s `recv_fifo`
+timeouts on the same ~30 in-flight ends for another 5 minutes with zero progress; it never self-stopped —
+it was ended by an external `KeyboardInterrupt` at 23:53:00 (`Uncaught exception: ... KeyboardInterrupt` in
+the agg log), ~340s past its 700s budget. **Root cause:** `_sim_evict_unavail_inflight` (D.1) is working
+exactly as coded — `EVICT_DEBUG` shows `skip_still_avl` for 100% of ~4511 checks across the whole run,
+because these stuck ends genuinely aren't UN_AVL per the trace (D.1 only evicts UN_AVL ends, correctly).
+The real bug is one layer up: real mode's *only* other stall-recovery path — the native 90s
+`SEND_TIMEOUT_WAIT_S` abandon inside `async_oort.py`/`fedbuff.py`'s `select()` (`_handle_send_state`) — fired
+34 times in this run (`"Removing end ... from self.all_selected since havent got its update in 90"`,
+23:49:07–23:50:37) but **only ever did `del self.all_selected[end]`** (`async_oort.py:1546-1547`,
+`fedbuff.py:554-555`). It never called `_avail_free_slot_ledger`/`free_stalled_slot`/
+`remove_from_selected_ends` — the thing that actually clears `selected_ends`. Since `channel.ends
+(VAL_CH_STATE_RECV)` (`recv_ends`) is derived from `selected_ends`, not `all_selected` (Fix 1's own finding),
+the stuck end never left `recv_ends` even after its 90s "abandon" — the `recv_fifo` loop kept re-timing-out
+on the identical end_id forever. `recv_ends` therefore never emptied, and `_aggregate_weights`'s
+`max_experiment_runtime_s` self-stop check (`asyncfl/top_aggregator.py:634-671`) is nested inside
+`if not recv_ends:` — unreachable — so there was no code path left that could end the run on its own. This
+predates Batch 3/4 entirely (the 90s block is old code, copy-pasted identically in both selector files) — it
+was masked until now because this is the first real n=100 run where a trainer both (a) genuinely stalls past
+90s and (b) isn't UN_AVL, so D.1 correctly declines to touch it and the old 90s path was the only thing left
+that was supposed to, but didn't.
+
+**Fix (landed):** `async_oort.py`'s and `fedbuff.py`'s 90s abandon block now also calls
+`selected_ends.discard(end)` (the same local `selected_ends` var the block already had in scope, matching the
+"invalid prior selection" cleanup a few lines above it) right after `del self.all_selected[end]`, so the end
+actually leaves `selected_ends`/`recv_ends`, not just `all_selected`. **Tests:**
+`tests/selector/test_send_timeout_frees_selected_ends.py` (3 tests, both selectors, verified to fail without
+the fix and pass with it, including a race-safety fix: `extra` is computed *before* the abandon loop runs in
+both selectors, so freeing a slot can let the reservoir-sampling step immediately re-select the very same end
+in the same call if `extra > 0` — the fedbuff test pins `concurrency` so `extra == 0` to isolate the abandon
+behavior deterministically from that separate, correct, RNG-dependent redispatch behavior).
+
+### Open B — trainer process never read its own `per_trainer` trace — FIXED
+
+**Root cause (not timing-related — confirmed by direct code inspection, not a race):**
+`MetadataLoader.get_synthetic_trace(trace_name)` (`flame/launch/spawner.py`), which
+`ConfigGenerator.generate_trainer_config` calls to bake `avl_events_syn_20` etc. into every trainer's spawn
+config, **never took a `trainer_id` parameter at all** — it unconditionally returned
+`synthetic_traces.yaml`'s shared `pattern` entry for every trainer, regardless of registry identity. This is
+a different code path from the aggregator's own trace loading (`flame.availability.trace.load_trace`, used by
+`ClientAvailability.read_trainer_unavailability`), which *does* correctly resolve
+`per_trainer.get(trainer_key) or pattern` — so the aggregator's belief about each trainer's timeline was
+always individualized while the trainer's own local `avl_state` machine (`trainer/pytorch/main.py`) never
+was. Confirmed directly against `synthetic_traces.yaml`: `trainer_054`'s assigned `per_trainer` entry starts
+its first transition at t=13800s, but the live run showed it transition UN_AVL at t≈600s — exactly
+`syn_20`'s shared `pattern`, not its own trace. No timing/cohort-join dependency is involved — trace baking
+happens synchronously in `generate_trainer_config`, fully before any process spawns or joins.
+
+**Fix (landed):** `get_synthetic_trace` now takes an optional `trainer_id`; when given, it delegates to
+`flame.availability.trace.load_trace` (the same canonical per-trainer resolver the aggregator already uses)
+instead of reading `pattern` directly, and both call sites in `generate_trainer_config` now pass their
+already-available `trainer_id` through. **Tests:**
+`tests/launch/test_config_generator.py::TestSyntheticTracePerTrainer` (5 tests against the real shared
+metadata bundle — trainer_054 gets its own trace not the shared pattern, different trainers get different
+traces, `generate_trainer_config`'s baked-in hyperparameter reflects it end-to-end; verified to fail without
+the fix).
+
+**Also added (per user request, defense-in-depth for this bug class going forward):** trainer startup now
+logs `[AVAIL_TRACE] trainer_id=... trace=... n_events=... first_events=... trace_hash=...`
+(`trainer/pytorch/main.py`, right after `state_avl_event_ts` is set) — an md5 of the resolved event list, so
+a live run where many trainers share an identical `trace_hash` is visible directly in the aggregator/trainer
+logs without needing to cross-reference `synthetic_traces.yaml` by hand the way this session did.
+
+### What's left
+
+Neither fix has been re-validated on a live run yet (this session had no reachable MQTT broker). `debug_run.sh`
+now accepts a space-separated `--trace` list (one experiment set per trace, same generated batch/run) so a
+single invocation can cover both syn_20 and syn_50. **Waiting on user**: a 7h cross-baseline run —
+felix + fedbuff (the two baselines Open A's fix touches; Open B applies to all baselines equally), n=300 (the
+parity config default), both modes, both traces = 8 experiments × 3150s (52.5min) each:
+
+```
+cd lib/python/examples/async_cifar10
+bash scripts/debug_run.sh --baselines 'felix fedbuff' --mode both --trace 'syn_20 syn_50' --runtime-s 3150
+```
+
+Then `python -m scripts.parity.cli --batch --experiments-dir experiments --baselines felix fedbuff --agg-goal 10`
+on the resulting run dirs. Expect: (i) felix real self-stops cleanly (`"stopping run"` in the log, no external
+kill needed), (ii) each trainer's `[AVAIL_TRACE]` log line shows a distinct `trace_hash` from its neighbors,
+not a shared one, (iii) Batch 4's fixes 2/3 (A6, K6, A7-commit) hold now that a run can actually reach a clean
+end state.
+
+<details>
+<summary>Original Open A/B write-up (Jul 1, before the above root-cause) — kept for history</summary>
 
 **Phase 5/6 (Jul 1) found 3 issues (see "Phase 5/6 results" below); fixes 2 and 3 held up on unit tests, but
 the live re-confirmation run for fix 1 (felix real TIMEOUT) found the fix is necessary but not sufficient —
@@ -72,6 +163,8 @@ re-confirmation once A/B are resolved and a clean felix-real run exists to check
 - [ ] Only then: Open Items #1 (legacy `trackTrainerAvail` cleanup) and #2 (mobiperf live exercise) — both
   pre-date this session, listed in full under "Open items — pick up in order" near the end of this doc — are
   still separate prerequisites for Open item #3 (PR write-up itself).
+
+</details>
 
 1. **Fix 1 — felix real-mode TIMEOUT (D.1 proactive eviction, sim-only by accident). ⚠️ Necessary but NOT
    sufficient — see Open A above; live re-confirmation found felix real still hangs.**

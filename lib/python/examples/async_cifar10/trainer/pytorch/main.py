@@ -249,6 +249,17 @@ class PyTorchCifar10Trainer(Trainer):
                 f"No avl_events set for trainer id {self.trainer_id} since state not specified."
             )
 
+        # Startup signature: a shared trace_hash across many trainer_ids in the
+        # same run's logs means trace assignment isn't individualized.
+        if hasattr(self, "state_avl_event_ts"):
+            events = self.state_avl_event_ts
+            trace_hash = hashlib.md5(repr(events).encode()).hexdigest()[:8]
+            logger.info(
+                f"[AVAIL_TRACE] trainer_id={self.trainer_id} "
+                f"trace={self.client_notify['trace']!r} n_events={len(events)} "
+                f"first_events={events[:2]} trace_hash={trace_hash}"
+            )
+
         self.avl_state = TrainerAvailState.AVL_TRAIN
 
         # flag to decide whether the trainer upon unavailability will wait or exit

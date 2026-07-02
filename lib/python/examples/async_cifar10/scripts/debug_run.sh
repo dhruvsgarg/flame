@@ -72,8 +72,8 @@ usage() {
   echo "  --sim-wall-ceiling-s  wall-clock ceiling for sim mode (default: = runtime_s)."
   echo "                        A well-behaved sim finishes in <= real-mode wall time."
   echo "                        Fires [SIM_WALL_CEILING] warning + stops when exceeded."
-  echo "  --trace               availability trace name to substitute (e.g. syn_20, syn_50)."
-  echo "                        Replaces trainer availability.mode and aggregator trackTrainerAvail.trace."
+  echo "  --trace               availability trace name(s) to substitute, space-separated for"
+  echo "                        multiple (e.g. 'syn_20 syn_50' queues both, one experiment set each)."
   echo "                        Default: use whatever is in the parity config (syn_0)."
   echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
   echo "                        scaling min_trainers_to_start down with it (gap of 8, same ratio as"
@@ -129,7 +129,8 @@ scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[6] if len(sys.argv) > 6 else ""
 )
 mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
-trace_override = sys.argv[8].strip() if len(sys.argv) > 8 else ""
+# Space-separated list of trace names (e.g. "syn_20 syn_50"); "" -> [""] (no substitution).
+trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[8].strip() else [""]
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 requested = set(baselines_str.lower().split())
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
@@ -167,96 +168,99 @@ except FileNotFoundError:
     sys.exit(1)
 
 kept = []
-for e in cfg.get("experiments", []):
-    bl = e.get("baseline", "").lower()
+for e_src in cfg.get("experiments", []):
+    bl = e_src.get("baseline", "").lower()
     if bl not in requested:
         continue
-    if mode != "both" and exp_mode(e) != mode:
+    if mode != "both" and exp_mode(e_src) != mode:
         continue
-    e = copy.deepcopy(e)
-    h = e["aggregator"]["config_overrides"]["hyperparameters"]
-    h["max_experiment_runtime_s"] = runtime_s
-    # Deterministic seed: the SAME value for every experiment so the real and sim
-    # variants of each baseline make identical selection draws (dedicated per-
-    # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are
-    # two independent stochastic paths and participation/utility can never match.
-    # Override per-invocation with SEED=<n>; SEED=none disables (legacy unseeded).
-    if seed_val is not None:
-        h["seed"] = seed_val
-    # sim_wall_ceiling_s: tight wall guard — sim must finish in <= this many
-    # wall-seconds (default = max_experiment_runtime_s = 1×; a healthy sim is faster).
-    h["sim_wall_ceiling_s"] = int(ceil_arg) if ceil_arg else runtime_s
-    if smoke:
-        e["trainer"]["num_trainers"] = 48
-        h["rounds"] = 4
-        h["min_trainers_to_start"] = 40
-        h["min_trainers_join_timeout_s"] = 120
-        e["name"] = "dbg_smoke_" + e["name"]
-    else:
-        # High round cap so the wall/vclock budget (max_experiment_runtime_s) is the
-        # binding stop condition, not an early round-count termination.
-        h["rounds"] = 20000
-        if num_trainers_override:
-            # Shrink the cohort but keep runtime_s as the real budget (unlike
-            # smoke, which hardcodes rounds=4/runtime=240 — too short for a
-            # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
-            # Same join-barrier slack ratio as smoke (gap of 8 below the count).
-            e["trainer"]["num_trainers"] = num_trainers_override
-            h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
-        e["name"] = f"dbg_{e['name']}"
-    # --trace override: substitute availability trace in trainer + aggregator config.
-    if trace_override:
-        # trainer.availability.mode is NOT read by anything (main.py/config.py never
-        # touch config.availability) -- vestigial from an earlier design, kept
-        # write-only here so as not to silently drop a field some other consumer may
-        # still expect. The trainer's ACTUAL trace selection comes from
-        # hyperparameters.client_notify.trace (see main.py's state_avl_event_ts
-        # assignment), which lives under trainer.config_overrides.hyperparameters,
-        # not trainer.hyperparameters (that block is base-model HP only: batchSize/
-        # learningRate/etc, merged from configs/trainer_base.yaml's own client_notify
-        # default of trace=syn_0). Before this fix, ONLY the aggregator's own trace
-        # read (via `h` below) was ever overridden -- every debug_run.sh-launched
-        # trainer, real and sim, ran with client_notify.trace stuck at the
-        # trainer_base.yaml default (syn_0, always-available) regardless of the
-        # requested --trace, silently no-op'ing the trainer-side avl_state machinery
-        # (and hence the real-mode send-gate and all avail_change telemetry) for
-        # every trace-driven run this project has ever launched. Root-caused Jul 1
-        # via UNAVAILABILITY_DESIGN.md Batch 3 T3.1.
-        avail = e["trainer"].setdefault("availability", {})
-        old_trace = avail.get("mode", "syn_0")
-        avail["mode"] = trace_override
-        t_co_hp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
-        t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
-        if "trackTrainerAvail" in h:
-            h["trackTrainerAvail"]["trace"] = trace_override
-            # For baselines NOT on the ORACULAR legacy path (felix, feddance,
-            # oracle, fedbuff): activate the new sim_unavailability gate so
-            # _init_availability picks up the trace (§7 felix master-gate).
-            # ORACULAR baselines (oort, refl) already activate via the legacy path.
-            if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
+    # One experiment per requested trace (trace_overrides has 1 entry, "", when
+    # --trace wasn't given, so this loop is a no-op pass-through by default).
+    for trace_override in trace_overrides:
+        e = copy.deepcopy(e_src)
+        h = e["aggregator"]["config_overrides"]["hyperparameters"]
+        h["max_experiment_runtime_s"] = runtime_s
+        # Deterministic seed: the SAME value for every experiment so the real and sim
+        # variants of each baseline make identical selection draws (dedicated per-
+        # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are
+        # two independent stochastic paths and participation/utility can never match.
+        # Override per-invocation with SEED=<n>; SEED=none disables (legacy unseeded).
+        if seed_val is not None:
+            h["seed"] = seed_val
+        # sim_wall_ceiling_s: tight wall guard — sim must finish in <= this many
+        # wall-seconds (default = max_experiment_runtime_s = 1×; a healthy sim is faster).
+        h["sim_wall_ceiling_s"] = int(ceil_arg) if ceil_arg else runtime_s
+        if smoke:
+            e["trainer"]["num_trainers"] = 48
+            h["rounds"] = 4
+            h["min_trainers_to_start"] = 40
+            h["min_trainers_join_timeout_s"] = 120
+            e["name"] = "dbg_smoke_" + e["name"]
+        else:
+            # High round cap so the wall/vclock budget (max_experiment_runtime_s) is the
+            # binding stop condition, not an early round-count termination.
+            h["rounds"] = 20000
+            if num_trainers_override:
+                # Shrink the cohort but keep runtime_s as the real budget (unlike
+                # smoke, which hardcodes rounds=4/runtime=240 — too short for a
+                # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
+                # Same join-barrier slack ratio as smoke (gap of 8 below the count).
+                e["trainer"]["num_trainers"] = num_trainers_override
+                h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
+            e["name"] = f"dbg_{e['name']}"
+        # --trace override: substitute availability trace in trainer + aggregator config.
+        if trace_override:
+            # trainer.availability.mode is NOT read by anything (main.py/config.py never
+            # touch config.availability) -- vestigial from an earlier design, kept
+            # write-only here so as not to silently drop a field some other consumer may
+            # still expect. The trainer's ACTUAL trace selection comes from
+            # hyperparameters.client_notify.trace (see main.py's state_avl_event_ts
+            # assignment), which lives under trainer.config_overrides.hyperparameters,
+            # not trainer.hyperparameters (that block is base-model HP only: batchSize/
+            # learningRate/etc, merged from configs/trainer_base.yaml's own client_notify
+            # default of trace=syn_0). Before this fix, ONLY the aggregator's own trace
+            # read (via `h` below) was ever overridden -- every debug_run.sh-launched
+            # trainer, real and sim, ran with client_notify.trace stuck at the
+            # trainer_base.yaml default (syn_0, always-available) regardless of the
+            # requested --trace, silently no-op'ing the trainer-side avl_state machinery
+            # (and hence the real-mode send-gate and all avail_change telemetry) for
+            # every trace-driven run this project has ever launched. Root-caused Jul 1
+            # via UNAVAILABILITY_DESIGN.md Batch 3 T3.1.
+            avail = e["trainer"].setdefault("availability", {})
+            old_trace = avail.get("mode", "syn_0")
+            avail["mode"] = trace_override
+            t_co_hp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+            t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
+            if "trackTrainerAvail" in h:
+                h["trackTrainerAvail"]["trace"] = trace_override
+                # For baselines NOT on the ORACULAR legacy path (felix, feddance,
+                # oracle, fedbuff): activate the new sim_unavailability gate so
+                # _init_availability picks up the trace (§7 felix master-gate).
+                # ORACULAR baselines (oort, refl) already activate via the legacy path.
+                if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
+                    h["simUnavailability"] = True
+                    # proactive_inflight_evict is set directly in each experiment's
+                    # config_overrides HP (T1 two-axis split); no auto-detection needed
+                    # here. The client_notify.enabled check below is always False
+                    # (Stage H is future), so proactiveInflightEvict is never set by
+                    # this branch — the explicit YAML value is authoritative.
+                    t_hp = e.get("trainer", {}).get("hyperparameters", {})
+                    if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
+                        h["proactiveInflightEvict"] = True
+            elif "client_notify" in h and isinstance(h["client_notify"], dict):
+                h["client_notify"]["trace"] = trace_override
                 h["simUnavailability"] = True
-                # proactive_inflight_evict is set directly in each experiment's
-                # config_overrides HP (T1 two-axis split); no auto-detection needed
-                # here. The client_notify.enabled check below is always False
-                # (Stage H is future), so proactiveInflightEvict is never set by
-                # this branch — the explicit YAML value is authoritative.
-                t_hp = e.get("trainer", {}).get("hyperparameters", {})
-                if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
-                    h["proactiveInflightEvict"] = True
-        elif "client_notify" in h and isinstance(h["client_notify"], dict):
-            h["client_notify"]["trace"] = trace_override
-            h["simUnavailability"] = True
-        elif e["aggregator"].get("tracking_mode", "oracular").lower() != "oracular":
-            # Non-oracular baseline with no HP-level tracking block (e.g. feddance
-            # in v1, which has no client_notify in HP and no trackTrainerAvail).
-            # Inject trace via availability_trace so _init_availability finds it.
-            h["availability_trace"] = trace_override
-            h["simUnavailability"] = True
-        # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
-        import re
-        e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
-    e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
-    kept.append(e)
+            elif e["aggregator"].get("tracking_mode", "oracular").lower() != "oracular":
+                # Non-oracular baseline with no HP-level tracking block (e.g. feddance
+                # in v1, which has no client_notify in HP and no trackTrainerAvail).
+                # Inject trace via availability_trace so _init_availability finds it.
+                h["availability_trace"] = trace_override
+                h["simUnavailability"] = True
+            # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
+            import re
+            e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
+        e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
+        kept.append(e)
 
 if not kept:
     print(f"WARNING: no experiments matched baselines={baselines_str} mode={mode}",

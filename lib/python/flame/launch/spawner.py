@@ -59,9 +59,24 @@ class MetadataLoader:
         trainer_key = f"trainer_{trainer_id:03d}"
         return self.dataset_splits[split_key]["trainer_data_splits"][trainer_key]
 
-    def get_synthetic_trace(self, trace_name: str) -> List:
-        """Get synthetic availability trace."""
-        return self.synthetic_traces["traces"][trace_name]["pattern"]
+    def get_synthetic_trace(
+        self, trace_name: str, trainer_id: Optional[int] = None
+    ) -> List:
+        """Get synthetic availability trace.
+
+        trainer_id=None returns the shared `pattern` entry. Pass trainer_id to
+        resolve that trainer's own `per_trainer` entry via the same resolver
+        (flame.availability.trace.load_trace) the aggregator already uses.
+        """
+        if trainer_id is None:
+            return self.synthetic_traces["traces"][trace_name]["pattern"]
+        from flame.availability.trace import load_trace
+
+        trainer_key = f"trainer_{trainer_id:03d}"
+        trace_dict = load_trace(
+            trace_name, trainer_key, base_dir=str(self.metadata_dir / "availability_traces")
+        )
+        return [[ts, state] for ts, state in trace_dict.items()]
 
     def get_mobiperf_trace(self, trainer_id: int, variant: str = "2st") -> List:
         """Get mobiperf trace for a trainer."""
@@ -150,13 +165,13 @@ class ConfigGenerator:
         elif availability_mode.startswith("syn_"):
             trace_name = availability_mode
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
-                self.metadata.get_synthetic_trace(trace_name)
+                self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
 
         # Add all synthetic traces (for flexibility)
         for trace_name in ["syn_0", "syn_20", "syn_50"]:
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
-                self.metadata.get_synthetic_trace(trace_name)
+                self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
 
         # Add all mobiperf traces
