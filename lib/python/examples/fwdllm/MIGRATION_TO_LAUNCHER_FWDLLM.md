@@ -21,10 +21,15 @@ experiment (`n=100`, `c=30`, `aggGoal=10`, `syn_0`) **ran to completion**
 against these fixes (launched by the user outside this session) — no
 deadlock recurred. A *second*, orthogonal gap was found and fixed while that
 ran: fwdllm's telemetry/analysis tooling was not example-agnostic and had
-real, confirmed holes — see Part 5, now complete (P5.1–P5.7), verified
-against real GPU telemetry from this same experiment. **Remaining open
-item**: Part 5's changes are implemented and tested but not yet committed
-(see "Files touched this session"). Living doc — update as findings land.
+real, confirmed holes — see Part 5 (P5.1–P5.7, **committed**:
+`ebc1b6b1`/`55abfae7`/`ff89695e`/`3a3c2bbd`/`f69b2539`). A follow-on audit of
+the resulting plots (real n=100 fwdllm telemetry vs. a real async_cifar10
+run) found the plot *coverage* itself was still much thinner than
+async_cifar10's, for reasons distinct from Part 5's gaps — see Part 6, now
+implemented, tested (470 passed, 7 skipped, 0 failed), and verified
+end-to-end against real + synthetic telemetry. **Remaining open item**: Part
+6's changes are implemented and tested but not yet committed (see "Files
+touched this session"). Living doc — update as findings land.
 
 ## ✅ RESUMED (2026-07-01 ~21:25 EDT) — Part 5 complete, GPU experiment finished
 
@@ -966,6 +971,186 @@ found so far; a further generalization is not currently blocking anything.
 
 ---
 
+## Part 6 — plot-coverage gap: found, root-caused, fixed (NEW)
+
+### Why this is a distinct workstream from Part 5
+
+Part 5 made fwdllm's telemetry *exist* and made the analyzer *example-
+agnostic*. It didn't audit whether the resulting plot set was actually as
+rich as async_cifar10's. User comparison of the real n=100 `fwdllm` run's
+`plots/` dir against a real (non-simulated) async_cifar10 run
+(`run_20260630_105152_dbg_felix_n300_alpha0.1_syn_20_stream_real`) found 51
+plots async_cifar10 produces that fwdllm didn't — this section traces each
+gap to a specific, distinct root cause (not a single bug) and fixes the
+addressable ones.
+
+### Root causes found (ranked by impact)
+
+1. **fwdllm's real selector fires once per round, not continuously.**
+   fwdllm's per-round reselection cache (`reselect_each_iteration=False`,
+   Part 3) means `random.py`'s `select()` only runs once to build a round's
+   batch, then reuses it for every data_id/iteration in that round. Checked
+   directly against real telemetry: the n=100 run's aggregator-side
+   `selection` events number exactly **1** for the entire 1.5h run, at
+   `round=0` (before any trainer has returned data — so it also carries no
+   speed/utility info yet). Most selection-derived plots either exclude
+   `round 0` (a convention built for oort-family/async selectors' genuine
+   high-volume warmup noise, collateral damage here) or need post-hoc
+   speed/utility that doesn't exist yet at that single decision point. Not a
+   bug — fwdllm's cache-reuse behavior is correct and intentional; it's a
+   structural mismatch with plots built assuming continuous reselection.
+2. **fwdllm's trainer (`FedSgdTrainer.py`) reports far fewer `trainer_round`
+   fields than async_cifar10's.** Missing (pre-fix): `sim_round_duration_s`,
+   `wait_time_s`, `final_loss`, `delta_weight_l2`, and via `extra`:
+   `training_budget_s`, `pre_train_s`, `post_train_s`, `overran`,
+   `remaining_time_s`. Some are genuinely N/A (streaming-only, already
+   documented). Several missing plots silently rendered as literal "NO
+   DATA" placeholder PDFs (`plot_helpers.no_data_plot`) rather than being
+   skipped — indistinguishable from a populated plot at a glance, which is
+   what made this look like "not enough data" rather than "structurally
+   absent."
+3. **`accuracy_by_round`/`loss_by_round` still keyed by plain `round`** — a
+   known, deliberately-scoped-out P5.2 gap, worse in practice than
+   documented: since fwdllm's round never advances past 1 within a run, ALL
+   evals collapsed onto ONE bucket, silently killing `accuracy_gain_per_eval`
+   (needs ≥2 points) and `accuracy_over_simtime` (needs a `sim_map` entry at
+   the same key) entirely, not just "fewer points."
+4. **fwdllm's aggregator never emitted `utility_belief`** (only
+   `asyncfl/top_aggregator.py` did) — killed
+   `selected_utility_believed_vs_actual*`/`belief_gap*` structurally,
+   regardless of selector.
+
+**Not gaps** (ruled out, no fix needed): `global_weight_change_norm` is N/A
+— fwdllm's `TopAggregator` extends `AsyncTopAgg`, not `syncfl/
+top_aggregator.py`, which is the only class that saves checkpoints.
+`resource_*` plots were missing because this run's launcher config had
+`execution.monitoring.enabled: false` — a per-run config knob unrelated to
+fwdllm's code (the async_cifar10 comparison run simply had it on).
+Availability churn/duty-cycle plots are correctly empty under `syn_0`
+(static trace) — true for `fluxtune`/`fwdllm_plus` in this same experiment
+too, not fwdllm-specific.
+
+### Design decision: iteration-level granularity, confirmed empirically
+
+User's direction: evaluate data_id-level vs. iteration-level granularity for
+the "plotting collapses" gaps (findings #1/#3), pick one. Checked against
+real n=100 telemetry: `iteration_per_data_id` genuinely varies (0..3
+observed), giving **73** distinct `(data_id, iteration)` buckets vs. **31**
+at data_id-only resolution — ~11 events/bucket on average, not too sparse to
+be useful. This confirmed the user's hunch; went with iteration-level
+(`data_id`-major, `iteration_per_data_id`-minor), matching what
+`telemetry_manifest.yaml`'s `progress_hierarchy` already declared (P5.4).
+Every plot switched to this axis uses a shared `PROGRESS_AXIS_LABEL` string
+in `analyze_run.py` so it's visually unambiguous that the x-axis is *not*
+plain round, even where the label previously just said "round" (including 3
+call sites from P5.2 that were already progress_key-keyed but never had
+their label updated).
+
+### Fixes applied
+
+- **`flame/selector/random.py`**: `select()`'s SEND branch now reads
+  `kwargs["agg_version_state"]` (already threaded through by
+  `fwdllm_aggregator.py` as `(model_version, data_id, iteration_id)` via
+  `channel.ends(agg_version_state=...)` — this plumbing already existed,
+  just wasn't connected to telemetry) and attaches `data_id`/
+  `iteration_per_data_id` to the emitted `selection` event's `extra` when
+  present. No-op (absent from extra) for callers that don't pass
+  `agg_version_state` (e.g. async_cifar10's `fedavg` baseline also uses this
+  selector) — confirmed via a dedicated test.
+- **`scripts/analysis/analyze_run.py`**:
+  - `accuracy_by_round`/`loss_by_round` now key by `progress_key()` instead
+    of plain `round`.
+  - `cumulative_comm_by_round` now keys by `progress_key()` too (the
+    round-0-warmup exclusion still checks the raw `round` field, not
+    progress_key — that's about identifying the warmup phase, not
+    granularity). This also resolves `progress_key()`'s own docstring
+    caveat about `comm_vs_accuracy_series`'s join breaking if only one side
+    were folded — both sides are now consistently keyed, so the `<=`
+    cumulative join in `comm_vs_accuracy_series` needed no code change,
+    just consistent inputs.
+  - `selection_funnel_over_rounds`, `selection_count_consistency`,
+    `eval_vs_train_selections`, `selected_speed_utility_over_rounds`/`_cdf`,
+    `selected_utility_belief_gap_over_rounds` all re-keyed to
+    `progress_key()` (exclusion/gating logic, where present, kept on the raw
+    `round` field — only the bucketing key changed).
+  - New `PROGRESS_AXIS_LABEL` constant, used on every plot switched to this
+    axis (old and newly-wired call sites).
+- **`flame/telemetry/events.py`**: `build_utility_belief` gained an
+  `extra: Optional[dict] = None` param (mirroring `build_trainer_round`'s
+  existing pattern) so fwdllm can attach `data_id`/`iteration_per_data_id`.
+- **`flame/mode/horizontal/syncfl/fwdllm_aggregator.py`**:
+  - `_process_single_trainer_message`'s `STAT_UTILITY` branch now emits
+    `utility_belief` before overwriting `PROP_STAT_UTILITY` (believed = the
+    prior value, actual = this message's fresh value — same pattern
+    `asyncfl/top_aggregator.py` already uses). Staleness computed against
+    `self._model_version` (not `self._round`, which can sit at 1 for an
+    entire run) — matching `agg_round`'s own staleness convention from P5.2.
+  - `_process_aggregation_goal_met` now also builds `agg_observed_s` (an
+    `{end_id: seconds}` dict) from the same `PROP_ROUND_DURATION` values
+    already read in the existing per-contributor loop (previously only
+    collected into the `trainer_speed_s` list) and passes it to
+    `build_agg_round`. Unlocks `runtime_agg_vs_trainer`/
+    `runtime_overhead_hist`/`runtime_overhead_cdf` — a genuine wall-clock
+    measurement already computed, not an invented one.
+- **`examples/fwdllm/trainer/forward_training/FedSgdTrainer.py`**:
+  `_emulate_training_delay()` now returns the seconds actually slept (0.0 if
+  disabled); `train_with_data_id` adds this to `real_gpu_time_s` and reports
+  it as `sim_round_duration_s`. **Deliberately NOT added**
+  (`training_budget_s`/`overran`/`remaining_time_s`, per explicit user
+  direction after being asked): fwdllm's delay is a flat additive sleep, not
+  cifar10's budget-minus-actual sleep-to-fill model — there's no faithful
+  "overrun" concept to report, and fabricating one would be misleading
+  rather than merely incomplete. `budget_slack_cdf`/
+  `trainer_late_fraction_hist`/`trainer_response_lateness_cdf`/
+  `trainer_runtime_expected_vs_actual` stay `not_populated`, documented as
+  such in the manifest.
+
+### Verification
+
+- **Real data**: re-ran `analyze_run.py` against the (pre-existing, not
+  re-run) n=100 `fwdllm` telemetry — `performance/accuracy_gain_per_eval.pdf`
+  now populates (uses only `agg_eval`'s own `progress_key()`, no new fields
+  needed); `accuracy_over_simtime.pdf` correctly still absent (needs
+  `sim_round_duration_s`, which doesn't exist in telemetry captured before
+  this fix). Confirmed via direct data probe, not just file presence:
+  `accuracy_by_round` now returns 30 distinct keys against this run's real
+  telemetry (was empty/collapsed before).
+- **Synthetic, end-to-end**: generated telemetry matching fwdllm_plus's
+  shape (reselects every iteration, 10 data_ids × 2 iterations, all the new
+  fields present) and ran `analyze_run.py` against it end-to-end. Confirmed
+  **all** targeted plots now populate with no errors:
+  `accuracy_over_simtime`, `accuracy_gain_per_eval`,
+  `selection_funnel_over_rounds`, `selection_count_consistency`,
+  `runtime_agg_vs_trainer`, `runtime_overhead_hist`/`_cdf`,
+  `selected_utility_belief_gap_cdf`/`_over_rounds`,
+  `selected_utility_believed_vs_actual`/`_cdf`, `selected_speed_cdf`,
+  `selected_speed_utility_cdf`/`_over_rounds`, `selected_utility_cdf`,
+  `picked_utility_bands_over_rounds`. Confirmed still correctly absent:
+  budget/overrun-family plots, streaming-only plots, `resource_*`
+  (monitoring config, not code), `global_weight_change_norm` (no
+  checkpoints).
+- **Regression**: re-ran against a real async_cifar10 run
+  (`run_20260630_105152_dbg_felix_n300_alpha0.1_syn_20_stream_real`) — clean,
+  86 artifacts, no behavior change (progress_key() still a no-op there).
+- **Unit tests**: 19 new tests across
+  `lib/python/tests/selector/test_random_selection_telemetry.py` (+2,
+  `agg_version_state` passthrough incl. the no-op case),
+  `lib/python/tests/mode/test_fwdllm_agg_telemetry.py` (+6, `agg_observed_s`
+  + a new `TestUtilityBeliefTelemetry` class),
+  `lib/python/tests/mode/test_fwdllm_trainer_sim_duration.py` (new file, +3,
+  `_emulate_training_delay`'s return value incl. the speedup-factor scaling
+  case), `lib/python/tests/analysis/test_progress_key_wiring.py` (new file,
+  +8, the re-keyed `analyze_run.py` functions incl. the mixed-folded-and-
+  plain-events no-collision case). Full suite: **470 passed, 7 skipped, 0
+  failed** (451 + 19).
+
+### Not yet committed
+
+All of Part 6's changes are implemented, tested, and verified but sit in the
+working tree only — see "Files touched this session" for the full list.
+
+---
+
 ## Immediate next steps (in priority order)
 
 1. ~~Fix fwdllm's `_round_selected_ends` stale-cache gap~~ — **DONE** (Part 3).
@@ -987,13 +1172,20 @@ found so far; a further generalization is not currently blocking anything.
    `analyze_run.py` confirmed against fwdllm's real n=100 telemetry
    (`plots/performance/` populates, manifest check clean). See the
    2026-07-01 ~21:25 EDT update for the numbers.
-7. **Not done, and the only concrete open item**: commit + push Part 5's
-   changes (`fwdllm_aggregator.py`'s telemetry emission, `random.py`'s
-   selection-emission fix, `analyze_run.py`'s manifest/progress-key changes,
-   the new manifest/README/test files — see "Files touched this session").
-   Also open: reading fwdllm's actual accuracy/loss curves for a
-   learning-progress verdict (separate from the deadlock/throttle
-   verdict this session focused on).
+7. ~~Commit + push Part 5's changes~~ — **DONE**, 5 commits (`ebc1b6b1`,
+   `55abfae7`, `ff89695e`, `3a3c2bbd`, `f69b2539`).
+8. ~~Part 6: audit + fix the plot-coverage gap~~ — **DONE.** Root-caused all
+   4 findings, applied fixes, verified against real + synthetic telemetry
+   plus an async_cifar10 regression check. See Part 6 for the full account.
+9. **Not done, and the only concrete open item**: commit + push Part 6's
+   changes (see "Files touched this session"). Also open: reading fwdllm's
+   actual accuracy/loss curves for a learning-progress verdict (separate
+   from the deadlock/throttle/plot-coverage verdicts this session focused
+   on) — `plots/performance/accuracy_over_rounds.pdf`/`accuracy_gain_per_eval.pdf`
+   are the artifacts to open for that follow-up, ideally against a *fresh*
+   run so `accuracy_over_simtime.pdf`/utility-belief plots/`sim_round_duration_s`-
+   dependent plots populate too (Part 6's fixes weren't live for the
+   already-completed n=100 experiment).
 
 ## Files touched this session (for a clean diff review)
 
@@ -1055,3 +1247,37 @@ found so far; a further generalization is not currently blocking anything.
 - `scripts/analysis/README.md` — new file, P5.7's onboarding contract:
   plot-category table, manifest schema, wiring checklist, gotchas.
 - This doc.
+
+### Part 6 files (new, not yet committed)
+
+- `lib/python/flame/selector/random.py` — `select()`'s SEND branch attaches
+  `data_id`/`iteration_per_data_id` (from `kwargs["agg_version_state"]`) to
+  the emitted `selection` event when present; no-op otherwise.
+- `lib/python/tests/selector/test_random_selection_telemetry.py` — +2 tests
+  (`TestRandomSelectorAggVersionStatePassthrough`).
+- `lib/python/flame/telemetry/events.py` — `build_utility_belief` gained an
+  `extra: Optional[dict] = None` param.
+- `lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py` —
+  `_process_single_trainer_message`'s `STAT_UTILITY` branch now emits
+  `utility_belief`; `_process_aggregation_goal_met` now builds
+  `agg_observed_s` (reusing already-read `PROP_ROUND_DURATION` values) and
+  passes it to `build_agg_round`.
+- `lib/python/tests/mode/test_fwdllm_agg_telemetry.py` — +1 test
+  (`agg_observed_s`) + new `TestUtilityBeliefTelemetry` class (5 tests).
+- `lib/python/examples/fwdllm/trainer/forward_training/FedSgdTrainer.py` —
+  `_emulate_training_delay()` returns the seconds slept;
+  `train_with_data_id` reports `sim_round_duration_s`.
+- `lib/python/tests/mode/test_fwdllm_trainer_sim_duration.py` — new file, 3 tests.
+- `scripts/analysis/analyze_run.py` — `accuracy_by_round`/`loss_by_round`/
+  `cumulative_comm_by_round` re-keyed to `progress_key()`;
+  `selection_funnel_over_rounds`/`selection_count_consistency`/
+  `eval_vs_train_selections`/`selected_speed_utility_over_rounds`/`_cdf`/
+  `selected_utility_belief_gap_over_rounds` re-keyed too; new
+  `PROGRESS_AXIS_LABEL` constant applied everywhere a plot switched to this
+  axis (including 3 pre-existing P5.2 call sites whose label was never
+  updated). `progress_key()`'s docstring updated (the `comm_vs_accuracy_series`
+  join caveat no longer applies).
+- `lib/python/tests/analysis/test_progress_key_wiring.py` — new file, 8 tests.
+- `lib/python/examples/fwdllm/telemetry_manifest.yaml` — updated
+  `event_categories` comments to reflect Part 6's fixes (what's now
+  populated, and the explicit budget/overrun scope decision).
