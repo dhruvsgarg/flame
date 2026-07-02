@@ -2896,9 +2896,56 @@ def _pad_tail(obs: list, span: float) -> list:
     return obs
 
 
+def _covered_intervals(obs: list, t_start: float, t_end: float,
+                       max_gap_s: float) -> list:
+    """[(a, b, state), ...] -- the union of windows each observation
+    vouches for: itself forward to the next observation, or `max_gap_s` past
+    itself, whichever is sooner (capped at `t_end`). A gap longer than
+    `max_gap_s` on both sides of a given instant has NO covering
+    observation and is excluded from the returned intervals entirely.
+
+    This is the interior-gap generalization of the tail truncation below: a
+    sparse, event-triggered observation stream (A7 commit-checkpoint) can't
+    be blamed for silence beyond its own validity window, whether that
+    silence is at the end of the run or between two observations. The
+    caller uses these same intervals to restrict BOTH the duration-weighted
+    TVD score and the missed/spurious-transition diagnostic, so a
+    transition with no nearby observation on either side is consistently
+    excluded from both (not scored as an error, not flagged as missed) --
+    it is simply not fair to score what nothing was there to observe.
+    """
+    pts = [p for p in obs if t_start <= p[0] <= t_end]
+    intervals: list = []
+    for i, (t_a, s_a) in enumerate(pts):
+        nxt = pts[i + 1][0] if i + 1 < len(pts) else t_end
+        seg_end = min(nxt, t_a + max_gap_s, t_end)
+        if seg_end > t_a:
+            intervals.append((t_a, seg_end, s_a))
+    return intervals
+
+
+def _covered_fractions(intervals: list, gt) -> tuple:
+    """Duration-weighted {state: fraction} for obs and gt, integrated only
+    over `intervals` (see `_covered_intervals`)."""
+    obs_durations: dict = {}
+    gt_durations: dict = {}
+    for t_a, seg_end, s_a in intervals:
+        obs_durations[s_a] = obs_durations.get(s_a, 0.0) + (seg_end - t_a)
+        for s, frac in state_fractions_over_range(gt, t_a, seg_end).items():
+            gt_durations[s] = gt_durations.get(s, 0.0) + frac * (seg_end - t_a)
+    obs_total = sum(obs_durations.values())
+    gt_total = sum(gt_durations.values())
+    if obs_total <= 0 or gt_total <= 0:
+        return None, {}
+    obs_frac = {s: d / obs_total for s, d in obs_durations.items()}
+    gt_frac = {s: d / gt_total for s, d in gt_durations.items()}
+    return obs_frac, gt_frac
+
+
 def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
                     seed_state: Optional[str] = None,
-                    extrapolate_tail: bool = True) -> Optional[tuple]:
+                    extrapolate_tail: bool = True,
+                    max_gap_s: Optional[float] = None) -> Optional[tuple]:
     """Shared A6/A7 core: one trainer's duration-weighted TVD vs ground truth,
     plus event-level diagnostics (missed/spurious transitions, lags) from a
     greedy in-order match against the raw trace's own transition points.
@@ -2927,6 +2974,26 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     a stale belief, systematically worst for the trainers this check most
     wants to catch. Symmetric with the existing start-side truncation above.
 
+    `max_gap_s`: when set (A7 commit-checkpoint -- Batch 4 live-run finding,
+    UNAVAILABILITY_DESIGN.md), extends the same "don't extrapolate a sparse
+    observation" reasoning to INTERIOR gaps, not just the tail: each
+    observation only vouches for its own state up to `max_gap_s` past
+    itself, not all the way to the next commit (subsuming and superseding
+    `extrapolate_tail`'s truncation -- the last observation's own
+    `max_gap_s` window already bounds the tail the same way). Without this,
+    a trainer that commits correctly at t=100 (AVL_TRAIN) and again
+    correctly at t=590 (AVL_TRAIN) but flips through UN_AVL and back in
+    between (e.g. [200,400)) was scored as if it believed AVL_TRAIN for the
+    whole [100,590) gap -- penalizing the *absence of a mid-gap commit*, the
+    same class of error the tail fix already exempts. The missed/spurious
+    transition diagnostic is filtered the same way: a ground-truth
+    transition with no covering observation window on either side is
+    excluded from both the score AND the diagnostic, not scored as 0 error
+    while simultaneously flagged "missed" (self-contradictory). `None`
+    (default) preserves the historical hold-until-next-observation behavior
+    for A6 and A7-selection, both dense enough that this rarely matters and
+    byte-identical scoring is wanted.
+
     Returns None if there's nothing to score (empty input, or ground-truth /
     observed fraction computation comes up empty).
     """
@@ -2938,14 +3005,23 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
         obs = [(0.0, seed_state)] + raw_obs
     elif seed_state is None and raw_obs[0][0] > 0.0:
         t_start = raw_obs[0][0]
-    t_end = span if extrapolate_tail else min(span, obs[-1][0])
-    obs = _pad_tail(obs, t_end)
-    obs_frac = state_fractions({"_": obs}, t_end=t_end).get("_")
-    gt_frac = state_fractions_over_range(gt, t_start, t_end)
+    if max_gap_s is None:
+        t_end = span if extrapolate_tail else min(span, obs[-1][0])
+        obs = _pad_tail(obs, t_end)
+        obs_frac = state_fractions({"_": obs}, t_end=t_end).get("_")
+        gt_frac = state_fractions_over_range(gt, t_start, t_end)
+        gt_transitions = transitions_in_range(gt, t_start, t_end)
+    else:
+        t_end = span
+        intervals = _covered_intervals(obs, t_start, t_end, max_gap_s)
+        obs_frac, gt_frac = _covered_fractions(intervals, gt)
+        gt_transitions = [
+            (ts, s) for ts, s in transitions_in_range(gt, t_start, t_end)
+            if any(a <= ts <= b for a, b, _ in intervals)
+        ]
     if obs_frac is None or not gt_frac:
         return None
     tvd = total_variation_distance(obs_frac, gt_frac)
-    gt_transitions = transitions_in_range(gt, t_start, t_end)
     lags, missed, spurious = _match_transitions(gt_transitions, raw_obs, lag_tol_s)
     return tvd, lags, missed, spurious
 
@@ -3117,11 +3193,14 @@ def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict
         if gt is None:
             continue
         raw_obs = build_observed_timeline_from_agg_belief(evs)
-        # extrapolate_tail=False: "commit" is event-triggered, not continuous
-        # (Batch 4 finding, UNAVAILABILITY_DESIGN.md) -- don't score the
-        # silence after a trainer's last commit as if it were stale belief.
+        # extrapolate_tail=False + max_gap_s=lag_tol_s: "commit" is
+        # event-triggered, not continuous (Batch 4 finding,
+        # UNAVAILABILITY_DESIGN.md) -- don't score the silence after a
+        # trainer's last commit (tail) OR between two commits (interior gap)
+        # as if it were stale belief; each commit only vouches for its own
+        # state within lag_tol_s of itself.
         scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state=None,
-                                 extrapolate_tail=False)
+                                 extrapolate_tail=False, max_gap_s=lag_tol_s)
         if scored is None:
             continue
         tvd, lags, missed, spurious = scored

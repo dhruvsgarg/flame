@@ -102,22 +102,25 @@ def test_a7_commit_checkpoint_passes_when_matched():
     assert res["selection"].get("status") == "SKIP"
 
 
-def test_a7_commit_checkpoint_fails_on_injected_lag_drift():
-    # Ground truth transitions at 600s; the aggregator's commit-time belief
-    # reads UN_AVL 300s late (e.g. a belief-recording bug) -- same class of
-    # drift as A6's B2.0.3-style lag test.
+def test_a7_commit_checkpoint_fails_on_belief_wrong_at_its_own_instant():
+    # Ground truth transitions at 600s; the aggregator's LAST commit lands at
+    # 900 but still claims AVL_TRAIN -- i.e. a belief-recording bug where the
+    # recorded state doesn't even match ground truth AT its own claimed
+    # instant (unlike the interior-gap case below, where both endpoints are
+    # individually correct and only the un-observed middle differs). This
+    # must still fail post-interior-gap-fix: `max_gap_s` only excuses
+    # UN-observed periods, not a wrong reading at an observed one.
     gt = {"t1_0001": SortedDict({600.0: "UN_AVL"})}
     agg = {
-        "selection_train": [_sel(1, 0.0, {}), _sel(2, 900.0, {})],
+        "selection_train": [_sel(1, 0.0, {}), _sel(2, 1000.0, {})],
         "agg_belief_changes": [
             _belief(1, "0001", "AVL_TRAIN", 100.0, checkpoint="commit"),
-            _belief(2, "0001", "UN_AVL", 900.0, checkpoint="commit"),  # 300s late
+            _belief(2, "0001", "AVL_TRAIN", 900.0, checkpoint="commit"),  # still wrong
         ],
     }
     res = agg_belief_fidelity_parity(agg, "sim", gt, lag_tol_s=30.0)
     assert not res["commit"]["ok"], res["commit"]
     assert res["commit"]["mean_err"] > 0.05
-    assert res["commit"]["n_missed_transitions"] == 1
 
 
 def test_a7_commit_checkpoint_ignores_selection_events():
@@ -158,6 +161,30 @@ def test_a7_commit_checkpoint_does_not_extrapolate_past_last_commit():
     # truncation excludes it from the diagnostic count as well.
     assert res["commit"]["n_missed_transitions"] == 0
 
+
+
+def test_a7_commit_checkpoint_does_not_extrapolate_across_interior_gap():
+    # Batch 4 live-run finding (UNAVAILABILITY_DESIGN.md, felix n=300 syn_50):
+    # both commits are individually CORRECT -- t=100 reads AVL_TRAIN (true,
+    # ground truth is AVL_TRAIN on [0,200)), t=590 reads AVL_TRAIN (true,
+    # ground truth is AVL_TRAIN on [400,600)) -- but the trace dips to UN_AVL
+    # on [200,400) in between, with no commit to observe it. Holding the
+    # first commit's belief all the way to the second (old behavior) would
+    # blame ~200/490s of that gap on "wrong belief", when neither commit was
+    # ever wrong at its own instant -- same class of over-penalization the
+    # tail fix (extrapolate_tail=False) already exempts, just mid-run instead
+    # of at the end.
+    gt = {"t1_0001": SortedDict({200.0: "UN_AVL", 400.0: "AVL_TRAIN"})}
+    agg = {
+        "selection_train": [_sel(1, 0.0, {}), _sel(2, 600.0, {})],
+        "agg_belief_changes": [
+            _belief(1, "0001", "AVL_TRAIN", 100.0, checkpoint="commit"),
+            _belief(2, "0001", "AVL_TRAIN", 590.0, checkpoint="commit"),
+        ],
+    }
+    res = agg_belief_fidelity_parity(agg, "sim", gt, lag_tol_s=30.0)
+    assert res["commit"]["ok"], res["commit"]
+    assert res["commit"]["mean_err"] == 0.0
 
 
 def test_a7_real_and_sim_scored_independently():
