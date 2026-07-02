@@ -1,10 +1,23 @@
 # High-Fidelity Simulator for FwdLLM -- Design & Staged Build Plan
 
-**Design-only.** This document is the plan for building a high-fidelity **simulated-clock** runner
-for the `fwdllm` example (FedFwd / forward-gradient FL) that reaches **real<->sim parity** across the
-**fluxtune / fwdllm / fwdllm++** baselines, at **100% availability (syn_0)** and under
-**unavailability (syn_20, syn_50, mobiperf)**. The implementation is a **future branch/PR**; nothing
-here is built yet.
+**Active build (branch `dg/fwdllm_sim_unavail`).** This document is the plan for building a
+high-fidelity **simulated-clock** runner for the `fwdllm` example (FedFwd / forward-gradient FL) that
+reaches **real<->sim parity** across the **fluxtune / fwdllm / fwdllm++** baselines, at
+**100% availability (syn_0)** first, then under **unavailability (syn_20, syn_50, mobiperf)**, then
+**beyond syn_0 traces**.
+
+**Current state (landed on this branch, PRs #63-#69) -- the doc's original "nothing built yet" is stale.**
+Stage-0 scaffolding is largely done and is now a *validation gate*, not a build: trainer telemetry
+(`build_trainer_round`: `real_gpu_time_s`, `sim_round_duration_s`, `avail_state`, `stat_utility`,
+`FedSgdTrainer.py:533`), aggregator telemetry (14 tests), the shared parity-check engine + fwdllm checks
+(`test_parity_checks.py`, 40 tests), the oracular availability *read* (`read_trainer_unavailability`,
+`fwdllm_aggregator.py:524`), per-iteration reselection, and the opt-in e2e parity harness
+(`test_real_sim_e2e_parity.py`). **Still to build (the real work):** (1) the trainer sim path
+(`_emulate_training_delay:481` still `time.sleep`; no `time_mode`/`simulated`, no `_sim_completion_ts`);
+(2) the aggregator grad loop on the vclock (`_aggregate_grads_async:693` still raw `recv_fifo`; no
+`_sim_recv_min`/`_vclock`/`_sim_hold_busy_slots` anywhere); (3) the variance-cadence rung layer; (4) the
+availability *effect* path + `EVENT_AVAIL_CHANGE` emission. The build is organized as **4 pytest-gated
+batches across 3 phases** (§E).
 
 **Prerequisites (read first):**
 - [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) -- the parity methodology (the ladder §1, roles/
@@ -138,86 +151,136 @@ forward-grad rungs §F.4). This section states only which rungs apply and how th
 
 ---
 
-## §E  Staged implementation + validation
+## §E  Implementation plan -- 4 pytest-gated batches across 3 phases
 
-Each stage: config-gated (flag-off => byte-identical), test-guarded, exit criteria + min run length
-(PARITY.md budget table). Land one mechanism per run round. **Smoke (5 min) before any multi-hour run.**
+**Batching principle (why this shape).** Each batch is a *large dev push* that lands a complete
+mechanism cluster **plus its pytest coverage together**, ending in ONE "pause to test" that is
+**pytest-only** -- no experiment run in the inner loop. Experiment runs (smoke -> convergence) happen
+**once per phase, gated behind green pytests**, never as the dev loop. This is affordable because the
+parity **rungs are pure functions over telemetry** (`parity_checks.run_all_parity`): we test them by
+constructing synthetic real/sim telemetry pairs with known-correct and known-broken deltas and asserting
+PASS/FAIL; and the mechanisms (sct reorder buffer, one-in-flight hold, delivery buffering, sync barrier)
+are driven with synthetic message sequences. Every batch is **config-gated: flag-off => byte-identical**
+to today; the flag-off regression is itself a pytest assertion.
 
-### Stage 0 -- Telemetry coverage + real admissibility (gate)
-Confirm fwdllm emits every field the ladder reads: `vclock_now`, `sim_completion_ts`/`sct`,
-`model_version`, `data_id`, `iteration_per_data_id`, `var`, `var_threshold`, `_agg_goal`(K),
-`dynamic_c`(C), `agg_goal_count`, per-commit `train_duration`, `WALL_SEND_TS`/`WALL_RECV_TS`, grad/JVP
-norm, **and `avail_change`/`agg_belief_change`/`send_gate_wait`** (§A.3 item 4). Implement **TC1** for
-fwdllm; **partition eval vs train commits** on the variance-pass eval (async_cifar10 dead-end: eval commits
-polluting `agg_rounds` broke monotone/staleness). Run `validate_real` admissibility. **Min:** 5-10 min
-smoke. **Exit:** TC1 all-present both modes; real admissible; report JSON no SKIPs.
+**Phase order (locked at kickoff):** Phase 1 = **100% availability (syn_0) parity for all three
+baselines**; Phase 2 = **unavailability (syn_20/50/mobiperf)**; Phase 3 = **beyond syn_0**. Do not start a
+phase until the prior phase's sign-off run is banked in §H.
 
-### Stage 1 -- Trainer sim path (modeled completion, no wall sleep)
-Add a `simulated` mode to `FedSgdTrainer`: replace `_emulate_training_delay` (real `time.sleep`) with
-stamping `_sim_completion_ts = sim_send_ts + max(real_gpu_s, modeled_budget_D) + sim_completion_leg_s`;
-send `SIM_COMPLETION_TS` + `SIM_CLIENT_TASK_TRAIN_DURATION_S` + `WALL_SEND_TS`/`WALL_RECV_TS`. Stamp a
-**per-eval** `sct` (dead-end: reusing the last train `sct` past-dates every eval); eval delay ~= train
-(forward pass), **not** async_cifar10's 20x speedup -- **decision D4**. **Min:** 10 min. **Exit:** P3 matches;
-K6 advancing; T2 matched; no real `time.sleep` on the sim path.
+**Two staging changes from the original stage list (below):** (1) the **sync-path port**
+(`_aggregate_grads_sync`, old "Stage 5") moves **into Phase 1 Batch 1** -- fwdllm/fwdllm_plus are *sync*,
+so their primary commit path is the barrier; they cannot reach syn_0 parity without it. (2) old "Stage 0"
+is a *validation gate*, not a batch -- its telemetry is already landed (see Current-state callout).
 
-### Stage 2 -- Drive the virtual clock from the grad loop (THE structural port)
-Replace the raw `channel.recv_fifo(...,1)` in `_aggregate_grads_async` (`:693`) with the inherited
-**`_sim_recv_min`** path (sct-ordered reorder buffer + §3.drain) so a fast trainer's grad buffers as a
-future and grads are consumed in completion order; wire **`_sim_hold_busy_slots`** (§3.resid) for
-one-in-flight-per-trainer. **fwdllm processes one message per `_aggregate_grads_async` call**, so key the
-slot release on the **agg-goal boundary** (where `_per_agg_trainer_list` clears), NOT per-message -- the
-hold/release points differ from asyncfl's batch `_aggregate_weights`. Keep `simCommitOverheadSeconds=0`
-(overhead on the vclock is a hard dead-end). **Risk:** a data_id can span **many** agg-goal cycles
-(rollback path) -- slot-hold + sct-buffer must survive rollbacks without leaking or double-committing a
-grad; over-instrument `inflight_residence` + per-cycle buffer occupancy. **Min:** 45 min. **Exit:** K1
-monotone; K3a/K3b (per variance-pass) ~= 0 residual; U5 inter-arrival; one-in-flight overlap ~= real;
-no past-dating (commit_gap ~= 0).
+---
 
-### Stage Avail -- Wire unavailability into the grad loop (syn_20/50/mobiperf)
-Wire the inherited `ClientAvailability` effect path into fwdllm: send-time gate (real) /
-`delivery_ts = max(sct, next_avail)` buffering (sim); the two ledgers; per-baseline in-flight timing
-(reactive-90s for all three fwdllm baselines; no proactive-evict baseline here); starvation vclock-advance
-under scarcity; and per-baseline `avail_select_filter` (fwdllm off, fwdllm_plus/fluxtune on). Emit the
-availability telemetry (Stage 0) so A6/A7/A8/K11 run. **Interaction risk (decision D3):** a withheld/late
-grad meets the variance gate -- does it roll into `cached_v` on a rollback, and does a late grad against an
-old `model_version` inflate the variance signal? This is genuinely new vs async_cifar10 (which commits
-weights, not a variance-gated pool). **Min:** 45-90 min. **Exit:** A1-A5 + A6/A7/A8 PASS; withheld-then-
-delivered (not dropped); self-stops (`"stopping run"`, no `SIM_WALL_CEILING`); syn_0 byte-identical gate
-ON vs OFF.
+### PHASE 1 -- 100% availability (syn_0), all three baselines
 
-### Stage 3 -- Variance-cadence parity (the fwdllm prize)
-Implement V1-V5, G1-G2, DK1-DK3 (PARITY.md §F.4). Likely roots (confirm via the lowest broken rung):
-contributing-set/order divergence (U5/S2 upstream) -> V1 -> K2; grad-pool accumulation order
-(`cached_v` carry-over, `grad_pool.append` order) -> V2 with matched inputs = a true sim bug; force-commit
-rate (V4) = chronic variance divergence, not a separate bug. **DynamicKC coupling:** validate **DK3**
-(policy *input*) before DK1/DK2 (fluxtune leaves dynamic_kc off, so DK is inert there; relevant only if a
-baseline enables it). **Min:** 90 min - 2 h (variance-feedback-compounding). **Exit:** V1/V2/V5 PASS; K2
-(committed-data_ids/vsec) PASS; DK tracks if enabled.
+#### Batch 1 (large dev) -- both structural ports: trainer sim path + async grad loop + sync barrier
+The single biggest structural batch. Lands three tightly-coupled ports (the trainer's stamped completion
+is exactly what the aggregator's sct buffer consumes, so they are tested together). Reference port for the
+trainer: async_cifar10 `trainer/pytorch/main.py` already has the full `time_mode`/`simulated`/
+`_sim_completion_ts`/`sim_completion_leg_s` plumbing (lines 106/173-174/840-841/1086-1093/1151-1155) --
+this is a port of a known-good shape, not a design problem.
 
-### Stage 4 -- Selection fidelity (fluxtune only, `async_oort`)
-Validate A2c/Sx/Sd/S2 + the §S.pacer/§S.temporal/§S.dur stack (all landed in `flame/selector/oort.py`).
-For the two `random`-selector baselines this stage is inert (S-rungs WARN/skip). **Min:** 45 min - 3 h (a
-selection-mix residual can surface late). **Exit:** A2c PASS, Sd binding real~=sim, no pacer ratchet.
+- **Trainer** (`FedSgdTrainer.py`): add `time_mode`/`simulated`; replace `_emulate_training_delay`'s real
+  `time.sleep` (`:481`) with stamping `_sim_completion_ts = sim_send_ts + max(real_gpu_s, modeled_budget_D)
+  + sim_completion_leg_s`; send `SIM_COMPLETION_TS` + `SIM_CLIENT_TASK_TRAIN_DURATION_S` +
+  `WALL_SEND_TS`/`WALL_RECV_TS`. Stamp a **per-eval** `sct` (dead-end: reusing the last train `sct`
+  past-dates every eval); eval delay ~= train (forward pass), **not** async_cifar10's 20x speedup -- D4.
+- **Async grad loop** (`_aggregate_grads_async:693`, fluxtune): replace raw `channel.recv_fifo(...,1)` with
+  the inherited **`_sim_recv_min`** (sct-ordered reorder buffer + §3.drain) + **`_sim_hold_busy_slots`**
+  (§3.resid, one-in-flight) + `_advance_sim_clock`. **fwdllm processes one message per call**, so key the
+  slot release on the **agg-goal boundary** (where `_per_agg_trainer_list` clears), NOT per-message. Keep
+  `simCommitOverheadSeconds=0` (overhead on the vclock is a hard dead-end). **Rollback risk:** a data_id
+  spans **many** agg-goal cycles -- slot-hold + sct-buffer must survive rollbacks without leaking or
+  double-committing a grad; over-instrument `inflight_residence` + per-cycle buffer occupancy.
+- **Sync barrier** (`_aggregate_grads_sync:1354`, fwdllm/fwdllm_plus): barrier-anchored visibility-lag
+  treatment (PARITY.md §6.u6); vclock advance at the barrier. *(Pulled forward from old Stage 5.)*
+- **Launchers:** add `time_mode: simulated` variants of the three `expt_scripts/*_n10_smoke.yaml`.
 
-### Stage 5 -- Sync-path parity (fwdllm / fwdllm_plus, `_aggregate_grads_sync`)
-Give the sync grad barrier the barrier-anchored visibility-lag treatment (§6.u6). fluxtune streams (async),
-commits each grad at its own sct -> leave per-message correct. **Min:** 45 min. **Exit:** U6 barrier-
-anchored lag real~=sim; no per-message past-dating.
+**Pause to test (pytest-only):** unit tests for (a) trainer stamping formula + per-eval `sct` + a
+"no `time.sleep` on the sim path" assertion; (b) the sct reorder buffer & one-in-flight hold over a
+synthetic out-of-order message sequence **including a rollback** (no leaked/double-committed grad); (c)
+sync-barrier vclock advance + no per-message past-dating. Then one tiny in-process 2-3-trainer **seeded**
+run per path -> feed telemetry to `parity_checks`. Full existing `test_fwdllm_*` suite green (flag-off
+byte-identical regression). **Exit rungs:** P3 matches; K6 advancing; T2 matched; K1 monotone; K3a/K3b
+(per variance-pass) ~= 0; U5 inter-arrival; one-in-flight overlap ~= real; U6 barrier lag real~=sim;
+commit_gap ~= 0.
 
-### Stage 6 -- Convergence sign-off
-C1 accuracy, C2 loss, K8/U2 terminal-state @ matched **data_id**. **Min:** full (3-4 h+). **Exit:** curves
-within tolerance at matched data_id; K8/U2 rel within bar.
+#### Batch 2 (large dev) -- variance-cadence layer + fluxtune selection fidelity
+- **Variance-cadence rungs** (PARITY.md §F.4): implement V1-V5 / DK1-DK3 / G1-G2 in the shared engine.
+  Most dev is checker + the telemetry to feed it: per-cycle `var` trajectory (at each agg-goal),
+  iterations-per-`data_id` (realized dynamic-K), force-commit (`max_iterations_per_data_id`) bypass rate,
+  and a `cached_v` carry-over diagnostic (V3). Likely roots, confirm via the *lowest broken rung*:
+  contributing-set/order divergence (U5/S2 upstream) -> V1 -> K2; grad-pool accumulation order
+  (`cached_v` carry-over, `grad_pool.append` order) -> V2 with matched inputs = a true sim bug;
+  force-commit rate (V4) = chronic variance divergence, not a separate bug. **DynamicKC: DK3 (policy
+  *input*) before DK1/DK2** (inert unless a baseline enables dynamic_kc; fluxtune leaves it off).
+- **Selection fidelity (fluxtune only, `async_oort`):** validate A2c/Sx/Sd/S2 + the §S.pacer/§S.temporal/
+  §S.dur stack (already landed in `flame/selector/oort.py`) -- validation + any fwdllm-specific wiring, not
+  a rebuild. Inert for the two `random`-selector baselines (S-rungs WARN/skip).
+
+**Pause to test (pytest-only):** unit-test each new rung function against **constructed real/sim telemetry
+pairs** with known cadence deltas (known-PASS fixtures + known-broken force-commit-rate / var-trajectory
+fixtures). Then a seeded mini-run per baseline -> `parity_checks` -> assert applicable rungs PASS. **Exit
+rungs:** V1/V2/V5 PASS; K2 (committed-data_ids/vsec) PASS; A2c PASS + Sd binding real~=sim + no pacer
+ratchet (fluxtune); DK tracks if enabled.
+
+#### Phase-1 sign-off run (the one time-consuming step of the phase)
+Only after Batches 1-2 are green in pytest: one smoke (5 min) then one convergence run **per baseline** at
+syn_0 -> `parity_checks` full battery + **C1/C2 at matched `data_id`**. Record in §H. Gate to Phase 2.
+
+---
+
+### PHASE 2 -- unavailability (syn_20/50/mobiperf)
+
+#### Batch 3 (large dev) -- wire the ClientAvailability effect path into the grad loop
+- **Effect path:** send-time gate (real) / `delivery_ts = max(sct, next_avail)` buffering (sim); the two
+  ledgers; reactive-90s in-flight for all three baselines (no proactive-evict baseline here); starvation
+  vclock-advance under scarcity; per-baseline `avail_select_filter` (fwdllm off; fwdllm_plus via the landed
+  oracular read; **fluxtune via `trace_read` for v1 -- D1 resolved (b), `client_notify` deferred to
+  Stage H**).
+- **Availability telemetry (D2):** emit `EVENT_AVAIL_CHANGE` (trainer state machine) +
+  `agg_belief_change`/`send_gate_wait` (aggregator belief hooks). All three builders exist in
+  `flame/telemetry/events.py`; this unlocks A6/A7/A8/K11.
+- **D3 interaction (over-instrument BEFORE trusting cadence):** a withheld/late grad meets the variance
+  gate -- does it roll into `cached_v` on a rollback? Does a late grad against a stale `model_version`
+  inflate the `var` signal (and thus dynamic-K)? Genuinely new vs async_cifar10 (which commits weights,
+  not a variance-gated pool).
+
+**Pause to test (pytest-only):** adapt async_cifar10's availability test patterns
+(`scripts/parity/test_availability_rungs.py`, `test_delivery_ledger.py`, `test_starvation_termination.py`)
+for fwdllm; unit-test delivery buffering, withheld-then-delivered (not dropped), starvation self-stop
+(`"stopping run"`, no `SIM_WALL_CEILING`), and the **syn_0 gate-ON-vs-OFF byte-identical** invariant.
+`test_eot_avail_catchup.py` already covers part of this. **Exit rungs:** A1-A5 + A6/A7/A8 PASS.
+
+#### Phase-2 sign-off run: one run per (baseline x trace) -> A1-A5 + A6/A7/A8 PASS; self-stops; withheld
+grads delivered not dropped. Record in §H. Gate to Phase 3.
+
+---
+
+### PHASE 3 -- beyond syn_0 (the added-complexity layer, last)
+
+#### Batch 4 -- full ladder under syn_20/50/mobiperf + convergence sign-off
+Mostly runs + checker, minimal new dev. V/DK rungs under scarcity (force-commit rate shifts), K8/U2
+terminal-state @ matched `data_id`, C1/C2. **Bin V1/V2 by run-fraction** to separate a *constant* mix bias
+from a *compounding* variance-feedback loop (the headline fwdllm risk, §G). **Min:** full (3-4 h+).
+**Exit:** curves within tolerance at matched data_id; K8/U2 rel within bar; V1/V2 binned residual flat.
 
 ---
 
 ## §F  Key design decisions (open -- resolved at implementation)
 
-- **D1 -- tracking-mode strategy.** fluxtune's landed config uses `tracking_mode: client_notify`, which
-  UNAVAILABILITY_DESIGN.md treats as the **deferred Stage-H** message-transport model (async_cifar10 v1 is
-  all `trace_read`). Options: (a) implement `client_notify` first-class for fwdllm now (larger scope, but
-  it's baked into fluxtune's config and can't just be ignored), or (b) map fluxtune onto `trace_read` for a
-  v1 parity pass and treat `client_notify` as Stage H. **Lean (a)** -- fluxtune cannot run its intended
-  taxonomy without it. fwdllm_plus's `oracular` and fwdllm's unaware paths are already `trace_read`-shaped.
+- **D1 -- tracking-mode strategy. RESOLVED: option (b) -- map fluxtune onto `trace_read` for the v1 parity
+  pass; `client_notify` is deferred to Stage H.** fluxtune's landed config uses `tracking_mode:
+  client_notify`, which UNAVAILABILITY_DESIGN.md treats as the **deferred Stage-H** message-transport model
+  (async_cifar10 v1 is all `trace_read`). We take the smaller Phase-2 scope: fluxtune runs an approximated
+  `trace_read`-shaped availability model in v1 (aware-at-selection via trace read, reactive-90s in-flight),
+  and first-class `client_notify` becomes a later stage once syn_0->unavailability parity is banked.
+  fwdllm_plus's `oracular` and fwdllm's unaware paths are already `trace_read`-shaped, so this makes all
+  three baselines share one substrate for v1. *(Original doc leaned (a); reversed at kickoff to keep
+  Phase 2 tractable.)*
 - **D2 -- availability telemetry port.** The fwdllm trainer emits no `EVENT_AVAIL_CHANGE`; the aggregator
   emits no `agg_belief_change`/`send_gate_wait`. All three builders exist in `flame/telemetry/events.py`
   -- port emission (trainer state machine + aggregator belief hooks) so A6/A7/A8/K11 light up. Prereq for
