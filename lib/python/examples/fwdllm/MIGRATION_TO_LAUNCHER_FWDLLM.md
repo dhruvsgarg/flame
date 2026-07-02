@@ -1,90 +1,26 @@
-# fwdllm: pending follow-ups (post-migration)
+# fwdllm: migration status
 
-The launcher migration itself, and every durable lesson (positive and
-negative) from doing it and hardening it since, are folded into
-[`../MIGRATING_TO_LAUNCHER.md`](../MIGRATING_TO_LAUNCHER.md) — the common
+All of fwdllm's migration content — how it works, what was fixed, and every
+durable lesson (positive and negative) from doing the migration and
+hardening it since — lives in
+[`../MIGRATING_TO_LAUNCHER.md`](../MIGRATING_TO_LAUNCHER.md): the common
 patterns are in its core sections (§2 aggregator gotchas, §5 telemetry, §8
 launcher/spawner gotchas), and fwdllm's own specifics are in §9. That doc is
-the one to read for context on how fwdllm works and what was already fixed.
+the one to read.
+
+**No fwdllm-specific blockers remain as of 2026-07-02.** The previously
+open item — fwdllm's round-cached reselection stalling when a trainer got
+stuck but not formally departed — is fixed and GPU-validated (§9's "fwdllm's
+own reselection-cache design"). A second bug found in the same validation
+pass — trainers crashing with an uncaught `KeyError` on the aggregator's
+end-of-training broadcast — is also fixed (§9's "Lessons from
+smoke-testing fwdllm"). Validation evidence: three fresh 2h n=100 runs, one
+per baseline family (`fwdllm`, `fwdllm_plus`, `fluxtune`), run 2026-07-02.
+
 For the full investigation history (evidence trails, exact log lines,
-commit-by-commit narrative) behind everything below, see
-`git log -- lib/python/examples/fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md` —
-this file itself only used to carry that narrative and has been trimmed to
-just what's still open.
+commit-by-commit narrative) behind everything that used to be tracked here,
+see `git log -- lib/python/examples/fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md`.
 
-**Nothing below is blocking the `launcher-script-fwdllm` PR.** All are
-either genuine follow-up work or verification steps worth doing at some
-point, not merge blockers.
-
----
-
-## Pending correctness/design follow-ups
-
-1. ~~fwdllm's round-cached reselection has no mechanism to replace a
-   trainer that's stuck but not formally departed.~~ **FIXED.** Confirmed
-   via a real n=100 run (`run_20260701_182242_fwdllm_n100_smoke`): the
-   aggregator's live candidate pool stayed at exactly 30 of 100 trainers
-   for the entire 1.5h run, "hasn't received weights" fired ~9,700 times,
-   and the run stalled completely for the last 47 of 90 minutes — ending
-   at only ~46% accuracy / `data_id` 29 of 150, vs. `fwdllm_plus`/`fluxtune`
-   reaching 80%+ accuracy in the same window. Cause: once fwdllm's per-round
-   selection cache fills, only *explicit* departure (disconnect/`UN_AVL`)
-   triggered a replacement — a trainer that's merely stuck (e.g. never
-   finished receiving its initial weights) occupied a cache slot
-   indefinitely. `fwdllm_plus`/`fluxtune` never had this because they
-   reselect continuously rather than caching per round.
-   **Fix**: `_prune_departed_from_round_cache` (`fwdllm_aggregator.py`) now
-   also evicts a cached member that's gone `ROUND_CACHE_STUCK_TIMEOUT_S`
-   (5 min) without a real accepted contribution, tracked via a new
-   `_round_cache_activity_ts` dict (stamped when an end first enters the
-   cache, reset on every accepted contribution in
-   `_process_single_trainer_message`, mirroring the `SEND_TIMEOUT_WAIT_S`/
-   `RECV_TIMEOUT_WAIT_S` timeout pattern already used elsewhere in this
-   codebase). 4 new regression tests
-   (`test_fwdllm_reselection.py::TestStuckCachePruning`,
-   `test_fwdllm_agg_telemetry.py::TestRoundCacheActivityResetOnContribution`).
-   **Not yet GPU-validated** — landed just before an overnight n=100 run
-   meant to exercise exactly this path; update this entry once that run
-   confirms `fwdllm` no longer stalls the same way.
-2. **`channel.await_join()` race** (shared `flame` channel/trainer code,
-   not fwdllm-specific): only catches peers already joined at broadcast
-   time, no timeout of its own. Currently mitigated (launcher's
-   concurrent-polling force-kill bounds the cost) but not fixed. Proper fix
-   is a timeout on `await_join()` itself, or in the trainer's
-   `_fetch_weights`/`_send_grads` — separate PR, touches shared code beyond
-   this example.
-
-## Pending telemetry/analysis improvements
-
-3. **No first-class metric for the class of issue in #1.** Root-causing it
-   took an hour of hand-grepping raw aggregator logs (`Total ends: N`,
-   `hasn't received weights`, staleness rejections). A plot/metric for
-   "live channel-end pool size vs. configured `--num-trainers` over time"
-   and "trainers stuck at `model_version=-1` past N minutes" would turn
-   that into a 30-second `analyze_run.py` check, and would generalize to
-   catching the same class of issue in future examples.
-4. **fwdllm's own `selection`/`selection/why` telemetry stays structurally
-   thin.** `RandomSelector` carries no `believed_I`/`system_util`/`temporal`
-   factors (no "why" beyond uniform chance), and its real selector only
-   fires ~once per round under the cache-reuse design (`fwdllm_plus` is
-   richer, since it reselects every iteration). Worth a plot/metric that's
-   actually informative for this selection pattern instead of reusing
-   oort-family-shaped plots that don't fit it.
-5. `training_budget_s`/`overran`/`remaining_time_s` stay unpopulated for
-   fwdllm by design (no faithful budget concept given its flat-delay
-   model) — revisit only if fwdllm's trainer ever grows a real budget model.
-
-## Next sanity checks
-
-- **Re-run a fresh experiment (any scale) with the current code live
-  end-to-end** and confirm `sim_round_duration_s`/`utility_belief`/
-  `agg_observed_s`-dependent plots populate against *real* GPU telemetry —
-  they were verified against synthetic + partial real data, but the last
-  completed n=100 run predates all of it, so no single real run has
-  exercised the full telemetry surface at once yet.
-- **Read the resulting accuracy/loss curves for an actual learning-progress
-  verdict** (as opposed to the deadlock/throttle/plot-coverage verdicts
-  this investigation focused on) — `plots/performance/accuracy_over_rounds.pdf`
-  is the artifact to open.
-- Once merged: the deletion PR per
-  [`DELETION_CANDIDATES.md`](DELETION_CANDIDATES.md).
+The one remaining fwdllm follow-up is **not** a migration item: once
+`launcher-script-fwdllm` merges, open the legacy-code deletion PR per
+[`DELETION_CANDIDATES.md`](DELETION_CANDIDATES.md).

@@ -836,6 +836,29 @@ contract; the env var `FLAME_TELEMETRY_DIR` is set by the launcher.
   `expts/run_tc_expts/json_scripts/`, trainers 151–300 wrap trainers 1–150).
   Spawner auto-injection for these three keys isn't wired up yet — that's
   future work, not part of this data port.
+- **A debug log line indexing a message dict unconditionally, a few lines
+  above the code's own existence guard for the same keys, crashed every
+  idle trainer at end-of-run.** `Trainer._fetch_weights`
+  (`flame/mode/horizontal/syncfl/fwdllm_trainer.py`) logged
+  `msg[MessageType.DATA_ID]`/`msg[MessageType.ITERATION_PER_DATA_ID]`
+  directly, but the aggregator's end-of-training broadcast
+  (`inform_end_of_training` in `syncfl/top_aggregator.py`) sends only
+  `{MessageType.EOT: ...}` — no `DATA_ID`/`ITERATION_PER_DATA_ID` — so any
+  trainer still waiting in `_fetch_weights` when the aggregator wrapped up
+  hit an uncaught `KeyError` and crashed instead of reaching the `EOT`
+  handling a few lines further down that sets `self._work_done` and exits
+  its loop cleanly. Confirmed across all three of 2026-07-02's n=100
+  overnight runs: every idle/unselected trainer (82–90 per run, i.e.
+  whichever of the ~90 joined trainers the round cache or concurrency
+  window never selected) crashed with this exact `KeyError` at the run's
+  stop timestamp. Harmless to run correctness (those trainers were about to
+  be swept by the launcher's `_sweep_stragglers` regardless — see §8), but
+  it meant every single run ended with dozens of uncaught-exception
+  tracebacks instead of clean shutdowns. **Fixed**: switched the log line
+  to `msg.get(...)`, matching the guarded-access pattern already used a few
+  lines below (the analogous `MessageType.WEIGHTS` log line already used
+  `.get(...)`). Regression test:
+  `tests/mode/test_fwdllm_trainer_eot_keyerror.py`.
 
 ### `run_sequential.sh` controlled-comparison flags
 
@@ -912,7 +935,16 @@ at 30 of 100 trainers for a full 90-minute run). **Fixed**:
 tracked via `_round_cache_activity_ts` (stamped on cache entry, reset on
 every accepted contribution) — same timeout-based reclaim pattern as
 `SEND_TIMEOUT_WAIT_S`/`RECV_TIMEOUT_WAIT_S` elsewhere in this file's
-gotchas. See `MIGRATION_TO_LAUNCHER_FWDLLM.md` for GPU-validation status.
+gotchas. **GPU-validated** via a real 2h n=100 `fwdllm` run
+(`run_20260702_050957_fwdllm_n100_syn_0_smoke`, `syn_0` availability): 0
+"hasn't received weights" messages (vs ~9,700 before the fix) and steady
+progress to `data_id` 135/150 with accuracy climbing 30%→67%, using the
+full `max_runtime_s` budget instead of stalling in the back half like the
+pre-fix run did. Note this run's own working set never actually got stuck
+(no evictions fired), so it confirms *no regression to the old stall
+pathology*, not that the eviction code path itself fired correctly under
+real contention — that remains to be seen on a run where a trainer
+genuinely wedges.
 
 ### `channel.recv_fifo()` timeout — concrete fwdllm instance of the §2 gotcha
 
@@ -949,6 +981,25 @@ sit at 1 for an entire run). Its trainer reports `sim_round_duration_s`
 additive sleep, not a budget-minus-actual sleep-to-fill model like
 async_cifar10's, so there's no faithful "overrun" concept to report;
 fabricating one would be misleading rather than merely incomplete.
+
+**Future telemetry improvements (optional, non-blocking):**
+
+- **No first-class metric for the round-cache-stuck class of issue** (the
+  bug fixed above in "fwdllm's own reselection-cache design"). Root-causing
+  the original occurrence took an hour of hand-grepping raw aggregator logs
+  (`Total ends: N`, `hasn't received weights`, staleness rejections). A
+  plot/metric for "live channel-end pool size vs. configured
+  `--num-trainers` over time" and "trainers stuck at `model_version=-1`
+  past N minutes" would turn that into a 30-second `analyze_run.py` check,
+  and would generalize to catching the same class of issue in future
+  examples.
+- **fwdllm's own `selection`/`selection/why` telemetry stays structurally
+  thin.** `RandomSelector` carries no `believed_I`/`system_util`/`temporal`
+  factors (no "why" beyond uniform chance), and its real selector only
+  fires ~once per round under the cache-reuse design (`fwdllm_plus` is
+  richer, since it reselects every iteration). Worth a plot/metric that's
+  actually informative for this selection pattern instead of reusing
+  oort-family-shaped plots that don't fit it.
 
 ---
 
@@ -1021,4 +1072,4 @@ Keep (still current):
 | `async_cifar10` | Migrated (reference). 5 baselines: felix, fedbuff, fedavg, oort, refl. Includes telemetry, streaming, time_mode, memory profiler. |
 | `feddance_cifar10` | Has launcher YAMLs; FedDance baseline blockers tracked in `async_cifar10/FEDDANCE_TODO.md`. |
 | `async_google_speech` | **TODO** — migrate per this guide (needs google-speech dataset splits + per-stack aggregator entrypoints). |
-| `fwdllm` | Migrated and hardened post-migration (real deadlock, duplicate-contribution, and `max_runtime_s`-starvation bugs found via longer/larger real runs and fixed — see §2/§8/§9's gotchas above, all sourced from this). 4 baselines: `fwdllm` (syncfl/unaware), `fwdllm_plus` (syncfl/ORACULAR), `fluxtune` (asyncfl/async_oort+fedbuff), `fluxtune_dynkc`. H5 path-style dataset via `config_overrides`; `client_idx_modulo` injection; single aggregator entrypoint with marker import + `is_async`-kwarg-driven stack detection; full telemetry (`trainer_round`/`agg_eval`/`agg_round`/`utility_belief`/`selection`) + a per-example manifest for non-round-granular progress; `max_data_id_progress` auto-stop. See §9 for fwdllm-specific patterns; `fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md` for still-open follow-ups. |
+| `fwdllm` | Migrated and hardened post-migration (real deadlock, duplicate-contribution, `max_runtime_s`-starvation, round-cache-stuck, and end-of-training `KeyError` bugs found via longer/larger real runs and fixed — see §2/§8/§9's gotchas above, all sourced from this). Re-validated 2026-07-02 with three fresh 2h n=100 runs (one per baseline family: `fwdllm`, `fwdllm_plus`, `fluxtune`) — no stalls, no unhandled exceptions, telemetry manifests clean, accuracy climbing on all three. 4 baselines: `fwdllm` (syncfl/unaware), `fwdllm_plus` (syncfl/ORACULAR), `fluxtune` (asyncfl/async_oort+fedbuff), `fluxtune_dynkc`. H5 path-style dataset via `config_overrides`; `client_idx_modulo` injection; single aggregator entrypoint with marker import + `is_async`-kwarg-driven stack detection; full telemetry (`trainer_round`/`agg_eval`/`agg_round`/`utility_belief`/`selection`) + a per-example manifest for non-round-granular progress; `max_data_id_progress` auto-stop. See §9 for fwdllm-specific patterns; `fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md` is now just a pointer here (no fwdllm-specific blockers remain) plus a link to `DELETION_CANDIDATES.md` for the post-merge legacy-code cleanup PR. |

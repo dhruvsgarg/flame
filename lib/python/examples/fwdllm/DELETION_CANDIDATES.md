@@ -3,9 +3,10 @@
 This is the durable tracking doc for what to delete once the launcher
 migration PR merges. `PR_CLEANUP_PLAN.md` (the working notes for that PR)
 has already been removed from the branch — its still-relevant content is
-folded into `MIGRATION_TO_LAUNCHER_FWDLLM.md`'s "Merge readiness" section.
-This file is the one thing from that cleanup that survives, so keep it up
-to date and refer back to it when opening the deletion PR.
+folded into `../MIGRATING_TO_LAUNCHER.md` (see `MIGRATION_TO_LAUNCHER_FWDLLM.md`
+for the current status pointer). This file is the one thing from that
+cleanup that survives, so keep it up to date and refer back to it when
+opening the deletion PR.
 
 Do NOT delete anything below in the `launcher-script-fwdllm` PR itself — do
 it as a follow-up PR once that one is merged and the launcher path has had a
