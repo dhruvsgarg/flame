@@ -58,6 +58,7 @@ BASELINES="felix refl"
 SIM_WALL_CEILING_S=""  # empty = max_experiment_runtime_s (1×, tight guard; sim should be faster than real)
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
+ALPHA=""               # empty = use the parity config's dirichlet_alpha (0.1); e.g. 100 for homogeneous
 
 usage() {
   echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
@@ -80,6 +81,9 @@ usage() {
   echo "                        smoke). Use this instead of 'smoke' when you need a real --runtime-s"
   echo "                        budget (e.g. a vclock floor for an availability trace) that smoke's"
   echo "                        hardcoded rounds=4/runtime=240 would cut short."
+  echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
+  echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
+  echo "                        When set, the split lookup uses the n300 partition for that alpha."
   exit 2
 }
 
@@ -93,6 +97,7 @@ if [ "${1:-}" = "smoke" ]; then
       --baselines) BASELINES="$2"; shift 2 ;;
       --mode)      MODE="$2"; shift 2 ;;
       --trace)     TRACE="$2"; shift 2 ;;
+      --alpha)     ALPHA="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -107,6 +112,7 @@ else
       --wall-runtime-s)      SIM_WALL_CEILING_S="$2"; shift 2 ;;  # backward compat alias
       --trace)               TRACE="$2"; shift 2 ;;
       --num-trainers)        NUM_TRAINERS="$2"; shift 2 ;;
+      --alpha)               ALPHA="$2"; shift 2 ;;
       # --node is DEPRECATED (node1/node2 split removed): baselines are filtered
       # from a single node-agnostic parity config, so the node is irrelevant.
       # Accept+ignore so existing wrappers don't hard-error.
@@ -120,9 +126,10 @@ case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (
 # Generate a single filtered+patched YAML from the parity source config.
 # $1 = baselines (space-separated), $2 = runtime_s, $3 = output path,
 # [$4 = smoke: 1|0], [$5 = sim_wall_ceiling_s: int or ""], [$6 = mode: sim|real|both],
-# [$7 = trace: trace name or ""], [$8 = num_trainers override: int or "", non-smoke only]
+# [$7 = trace: trace name or ""], [$8 = num_trainers override: int or "", non-smoke only],
+# [$9 = alpha override: float or ""]
 make_debug_yaml() {
-  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" "${7:-}" "${8:-}" <<'PY'
+  python - "$SCR" "$1" "$2" "$3" "${4:-0}" "${5:-}" "${6:-both}" "${7:-}" "${8:-}" "${9:-}" <<'PY'
 import yaml, sys, copy, os
 scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5] == "1",
@@ -132,6 +139,7 @@ mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
 # Space-separated list of trace names (e.g. "syn_20 syn_50"); "" -> [""] (no substitution).
 trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[8].strip() else [""]
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
+alpha_override = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10].strip() else None
 requested = set(baselines_str.lower().split())
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
 _seed_env = os.environ.get("SEED", "1234").strip()
@@ -205,9 +213,27 @@ for e_src in cfg.get("experiments", []):
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
                 # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
+                # Preserve the config's native partition size as split_num_trainers
+                # so the shrunk cohort reads the existing n<orig> split (e.g. n300)
+                # instead of demanding a dedicated n<override> split file that may
+                # not exist (there is no cifar10_alpha0.1_n10 split, only n48/50/300).
+                # spawn_all spawns num_trainers trainers but keys the split lookup on
+                # split_num_trainers -- the two are independent by design.
+                orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
+                e["trainer"]["split_num_trainers"] = orig_n
                 h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
             e["name"] = f"dbg_{e['name']}"
+        # --alpha override: repoint dirichlet_alpha and the split lookup. Only n300
+        # splits exist for every alpha (0.1/1.0/10.0/100.0=homogeneous); n48/n50
+        # exist for alpha0.1 only. So read the n300 partition for the chosen alpha
+        # (the cohort stays num_trainers, spawned as the first num_trainers of the
+        # 300-way split via the split_num_trainers decoupling). Name gets an
+        # alpha<..> tag so run dirs are distinguishable across alphas.
+        if alpha_override is not None:
+            e["trainer"].setdefault("dataset", {})["dirichlet_alpha"] = alpha_override
+            e["trainer"]["split_num_trainers"] = 300
+            e["name"] = f"{e['name']}_alpha{str(alpha_override).replace('.', 'p')}"
         # --trace override: substitute availability trace in trainer + aggregator config.
         if trace_override:
             # trainer.availability.mode is NOT read by anything (main.py/config.py never
@@ -332,7 +358,7 @@ if [ "$SMOKE" = "1" ]; then
   # Clear any stale config from a previous invocation so a no-match run is
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
-  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE"
+  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
   if [ -f "$cfg" ]; then
     _n=$(_count_exps "$cfg")
     run_node "dbg_smoke" "$cfg" $(( _n * 240 )) "$_n"
@@ -348,12 +374,12 @@ if [ "$SMOKE" = "1" ]; then
 fi
 
 # ---- normal run mode ----
-echo "=== DEBUG RUN: baselines='$BASELINES' mode=$MODE runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} num_trainers=${NUM_TRAINERS:-300(default)} ==="
+echo "=== DEBUG RUN: baselines='$BASELINES' mode=$MODE runtime_s=$RUNTIME_S sim_wall_ceiling_s=${SIM_WALL_CEILING_S:-auto(=runtime_s)} num_trainers=${NUM_TRAINERS:-300(default)} alpha=${ALPHA:-0.1(default)} ==="
 cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS"
+make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."

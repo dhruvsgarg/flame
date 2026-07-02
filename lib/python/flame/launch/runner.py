@@ -287,7 +287,11 @@ class ExperimentRunner:
                 trainer_main_path=paths["trainer_main"],
                 skip_index_splits=exp.trainer.dataset.path_style,
                 dataset_name=exp.trainer.dataset.name,
-                num_trainers=exp.trainer.num_trainers,
+                # Split-file selector is independent of the spawn cohort size:
+                # split_num_trainers (the N the partition was built for) falls
+                # back to num_trainers when unset. trainer_ids above still
+                # spawns exactly num_trainers trainers.
+                num_trainers=exp.trainer.split_num_trainers or exp.trainer.num_trainers,
                 per_trainer_overrides=per_trainer_overrides,
                 **config_overrides,
             )
