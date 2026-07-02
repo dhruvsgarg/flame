@@ -18,7 +18,12 @@ from datetime import timedelta
 import torch
 
 from flame import telemetry
-from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+    PROP_ROUND_START_TIME,
+    PROP_STAT_UTILITY,
+    TopAggregator,
+)
+from flame.mode.message import MessageType
 
 
 class _FakeChannel:
@@ -243,5 +248,192 @@ class TestAggRoundTelemetry:
         channel = _FakeChannel()
 
         agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+        assert not (tmp_path / "aggregator.jsonl").exists()
+
+    def test_agg_observed_s_keyed_by_end_id(self, tmp_path):
+        """agg_observed_s reuses the same PROP_ROUND_DURATION values already
+        read for trainer_speed_s, but as an {end_id: seconds} dict -- lets
+        analyze_run.py's runtime_agg_vs_trainer/runtime_overhead_* plots work
+        for fwdllm too (Part 6 follow-on to P5.2)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=5), "t2": timedelta(seconds=7)},
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            lines = (tmp_path / "aggregator.jsonl").read_text().splitlines()
+            events = [json.loads(l) for l in lines]
+            rounds = [e for e in events if e["event"] == "agg_round"]
+            assert rounds[0]["agg_observed_s"] == {"t1": 5.0, "t2": 7.0}
+        finally:
+            telemetry.shutdown()
+
+
+class _UtilityFakeChannel:
+    """Generic fake for _process_single_trainer_message's channel calls --
+    stores per-end properties in a dict, doesn't care about specific PROP_*
+    identities beyond PROP_STAT_UTILITY/PROP_ROUND_START_TIME (both read by
+    the code path under test)."""
+
+    class _Selector:
+        def __init__(self):
+            self.ordered_updates_recv_ends = []
+
+    def __init__(self, stat_utility=None):
+        self._stat_utility = dict(stat_utility or {})
+        self._selector = self._Selector()
+
+    def get_end_property(self, end, key):
+        if key == PROP_STAT_UTILITY:
+            return self._stat_utility.get(end)
+        if key == PROP_ROUND_START_TIME:
+            return None  # skip PROP_ROUND_DURATION computation, irrelevant here
+        return None
+
+    def set_end_property(self, end, key, value):
+        if key == PROP_STAT_UTILITY:
+            self._stat_utility[end] = value
+
+    def set_property(self, key, value):
+        pass
+
+    def cleanup_recvd_end(self, end):
+        pass
+
+    def cleanup_provided_ends(self, end):
+        pass
+
+
+class _UtilityFakeAggregator:
+    """Minimal stand-in exposing only the state
+    _process_single_trainer_message's STAT_UTILITY/utility_belief branch
+    touches -- the GRADIENTS branch is stubbed out (aggregate_grads_from_
+    trainers is a no-op) since it's irrelevant to the telemetry under test."""
+
+    process = TopAggregator._process_single_trainer_message
+
+    def __init__(self, model_version=5, data_id=3, iteration_per_data_id=0,
+                 is_async=False):
+        self._per_agg_trainer_list = []
+        self._trainer_last_model_version = {}
+        self._updates_received = {}
+        self._updates_in_queue = 0
+        self._agg_goal_cnt = 0
+        self._model_version = model_version
+        self.data_id = data_id
+        self.iteration_per_data_id = iteration_per_data_id
+        self.is_async = is_async
+        self._round = 1
+        self.grad_pool = []
+
+    def aggregate_grads_from_trainers(self, *args, **kwargs):
+        pass
+
+
+def _msg(model_version=5, stat_utility=0.7):
+    # GRADIENTS/GRADIENTS_FOR_VAR_CHECK go through _calculate_hash() (log-only,
+    # unrelated to the telemetry under test) which calls .detach() on them --
+    # must be real tensors, not plain lists.
+    return {
+        MessageType.MODEL_VERSION: model_version,
+        MessageType.GRADIENTS: torch.zeros(1),
+        MessageType.GRADIENTS_FOR_VAR_CHECK: torch.zeros(1),
+        MessageType.STAT_UTILITY: stat_utility,
+    }
+
+
+class TestUtilityBeliefTelemetry:
+    """fwdllm_aggregator.py never emitted utility_belief -- only
+    asyncfl/top_aggregator.py did -- so selected_utility_believed_vs_actual*/
+    selected_utility_belief_gap* were structurally impossible for fwdllm-
+    family baselines regardless of selector (see
+    MIGRATION_TO_LAUNCHER_FWDLLM.md Part 6). Covers the fix in
+    _process_single_trainer_message's STAT_UTILITY branch."""
+
+    def test_emits_believed_and_actual(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _UtilityFakeAggregator()
+            channel = _UtilityFakeChannel(stat_utility={"t1": 0.3})  # prior belief
+
+            agg.process(channel, _msg(stat_utility=0.9), "t1", timestamp=0)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            ub = [e for e in events if e["event"] == "utility_belief"]
+            assert len(ub) == 1
+            assert ub[0]["believed"] == 0.3
+            assert ub[0]["actual"] == 0.9
+            assert ub[0]["end_id"] == "t1"
+        finally:
+            telemetry.shutdown()
+
+    def test_believed_none_on_first_ever_return(self, tmp_path):
+        """No prior PROP_STAT_UTILITY for this end -- believed must be None,
+        not a crash or a fabricated 0."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _UtilityFakeAggregator()
+            channel = _UtilityFakeChannel()
+
+            agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            ub = [e for e in events if e["event"] == "utility_belief"]
+            assert ub[0]["believed"] is None
+            assert ub[0]["actual"] == 0.5
+        finally:
+            telemetry.shutdown()
+
+    def test_staleness_uses_model_version_not_round(self, tmp_path):
+        """fwdllm's round can sit at 1 for an entire run -- staleness must be
+        computed against self._model_version (the cycle-advancing quantity,
+        matching agg_round's own staleness convention from P5.2), not round."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _UtilityFakeAggregator(model_version=8)
+            channel = _UtilityFakeChannel()
+
+            agg.process(channel, _msg(model_version=5, stat_utility=0.5), "t1", timestamp=0)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            ub = [e for e in events if e["event"] == "utility_belief"]
+            assert ub[0]["staleness"] == 3  # 8 - 5
+        finally:
+            telemetry.shutdown()
+
+    def test_carries_data_id_and_iteration_for_progress_key(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _UtilityFakeAggregator(data_id=42, iteration_per_data_id=2)
+            channel = _UtilityFakeChannel()
+
+            agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            ub = [e for e in events if e["event"] == "utility_belief"]
+            assert ub[0]["data_id"] == 42
+            assert ub[0]["iteration_per_data_id"] == 2
+        finally:
+            telemetry.shutdown()
+
+    def test_noop_when_telemetry_disabled(self, tmp_path):
+        assert not telemetry.is_enabled()
+        agg = _UtilityFakeAggregator()
+        channel = _UtilityFakeChannel()
+
+        agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
 
         assert not (tmp_path / "aggregator.jsonl").exists()

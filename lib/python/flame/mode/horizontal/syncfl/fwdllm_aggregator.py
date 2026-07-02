@@ -66,7 +66,7 @@ from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import math
 
 from flame import telemetry
-from flame.telemetry.events import build_agg_eval, build_agg_round
+from flame.telemetry.events import build_agg_eval, build_agg_round, build_utility_belief
 
 
 logger = logging.getLogger(__name__)
@@ -867,6 +867,38 @@ class TopAggregator(AsyncTopAgg):
             channel.set_end_property(end, PROP_DATASET_SIZE, count)
 
         if MessageType.STAT_UTILITY in msg:
+            # Believed (PROP_STAT_UTILITY before this overwrite, i.e. the
+            # value from this end's PREVIOUS contribution) vs actual (this
+            # message's fresh value) -- the staleness of whatever the
+            # selector/aggregator last knew about this end's utility.
+            # fwdllm_aggregator.py previously never emitted this (only
+            # asyncfl/top_aggregator.py did), so selected_utility_believed_
+            # vs_actual*/selected_utility_belief_gap* were structurally
+            # impossible for fwdllm-family baselines regardless of selector.
+            if telemetry.is_enabled():
+                try:
+                    _believed = channel.get_end_property(end, PROP_STAT_UTILITY)
+                    _mv = msg.get(MessageType.MODEL_VERSION)
+                    ev, f = build_utility_belief(
+                        round_num=self._round,
+                        end_id=end,
+                        believed=float(_believed) if _believed is not None else None,
+                        actual=float(msg[MessageType.STAT_UTILITY]),
+                        # fwdllm's round stays coarse (can sit at 1 for an
+                        # entire run); self._model_version advances every
+                        # completed aggregation cycle (same quantity
+                        # agg_round's own staleness list uses), so it's the
+                        # meaningful staleness axis here, not round-based.
+                        staleness=(self._model_version - _mv)
+                        if isinstance(_mv, int) else None,
+                        extra={
+                            "data_id": self.data_id,
+                            "iteration_per_data_id": self.iteration_per_data_id,
+                        },
+                    )
+                    telemetry.emit(ev, **f)
+                except Exception as e:  # telemetry must never break training
+                    logger.debug(f"utility_belief telemetry emit failed: {e}")
             logger.info(
                 f"received stat_utility from {end} "
                 f"msg[MessageType.STAT_UTILITY] {msg[MessageType.STAT_UTILITY]}"
@@ -1017,6 +1049,13 @@ class TopAggregator(AsyncTopAgg):
         _cycle_speed_s = []
         _cycle_stat_utility = []
         _cycle_staleness = []
+        # end_id -> wall seconds between send (PROP_ROUND_START_TIME) and
+        # this contribution being received/processed (set alongside
+        # PROP_ROUND_DURATION in _process_single_trainer_message) -- the
+        # same quantity asyncfl/top_aggregator.py reports as agg_observed_s,
+        # letting analyze_run.py's aggregator-overhead sanity plots
+        # (runtime_agg_vs_trainer/runtime_overhead_*) work for fwdllm too.
+        _cycle_agg_observed_s = {}
 
         # Accumulate model-version-window stats; reset only when variance threshold is breached.
         for trainer_update in self._per_agg_trainer_list:
@@ -1029,6 +1068,7 @@ class TopAggregator(AsyncTopAgg):
                     train_duration.total_seconds()
                 )
                 _cycle_speed_s.append(train_duration.total_seconds())
+                _cycle_agg_observed_s[trainer_update] = train_duration.total_seconds()
             partial_stat_utility = channel.get_end_property(
                 trainer_update, PROP_STAT_UTILITY
             )
@@ -1170,6 +1210,7 @@ class TopAggregator(AsyncTopAgg):
                     stat_utility=_cycle_stat_utility,
                     trainer_speed_s=_cycle_speed_s,
                     contributing_trainers=_cycle_contributors,
+                    agg_observed_s=_cycle_agg_observed_s,
                     extra={
                         "data_id": self.data_id,
                         "iteration_per_data_id": self.iteration_per_data_id,
