@@ -261,9 +261,27 @@ class RandomSelector(AbstractSelector):
             self.all_selected.update({key: None for key in self.selected_ends})
             for candidate in selected_candidates:
                 self.time_sent[candidate] = time.time()
-            
+
             if round > self.round:
                 self.round = round
+
+            # RandomSelector never called this before -- the only "selection"
+            # telemetry that existed for fwdllm/fwdllm_plus (both use this
+            # selector) came from the trainer's own trivial 1-candidate
+            # channel selector (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5
+            # finding #3 / P5.5), not the real aggregator-side FL-selection
+            # decision made here. This is that decision.
+            self.emit_selection(
+                round,
+                task_to_perform,
+                ends,
+                avl_candidates,
+                selected_candidates,
+                extra={
+                    "concurrency": self.c,
+                    "requester": channel_props.get(KEY_CH_SELECT_REQUESTER),
+                },
+            )
 
             logger.info("select in send state")
             return {key: None for key in selected_candidates}
