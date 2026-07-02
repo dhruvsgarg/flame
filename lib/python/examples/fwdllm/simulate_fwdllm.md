@@ -336,6 +336,171 @@ those are baseline-defining knobs; a cadence gap is an upstream set/order/clock 
 
 ## §H  Status
 
-*(empty -- first entry after Stage 0 smoke on the implementation branch. Record per-baseline run dirs,
-lowest broken rung, root hypothesis, score X/N, JSON path; keep the run-length budget keyed. One section,
-updated in place.)*
+*(Run-log: record per-baseline run dirs, lowest broken rung, root hypothesis, score X/N, JSON path; keep
+the run-length budget keyed. One section, updated in place. No parity run yet -- first entry lands after
+Batch 1's pytest gate.)*
+
+---
+
+## §I  Batch 1 implementation map (code-level -- captured during study, before edits)
+
+**Purpose:** durable engineering map so Batch 1 can resume cold. All line numbers are as-of branch
+`dg/fwdllm_sim_unavail` at capture time; re-grep before editing. Batch 1 = trainer sim path + async grad
+loop vclock drive + sync barrier, all config-gated (flag-off => byte-identical), syn_0 only.
+
+### I.1  Class chain + where the sim substrate already lives (INHERITED, reuse -- don't reimplement)
+- Trainer: `examples/fwdllm/trainer/forward_training/FedSgdTrainer.py::FedSGDTrainer(Trainer)` ->
+  `flame/mode/horizontal/syncfl/fwdllm_trainer.py::Trainer(Role)`. **The messaging (recv/send) lives in
+  the base `fwdllm_trainer.Trainer`, not FedSgdTrainer.**
+- Aggregator: `FedSgdAggregator` -> `syncfl/fwdllm_aggregator.py::TopAggregator(AsyncTopAgg)` ->
+  `asyncfl/top_aggregator.py::TopAggregator` -> `syncfl/top_aggregator.py::TopAggregator`.
+- **`self.simulated` / `self.time_mode` / `self._vclock` (VirtualClock) / `_advance_sim_clock(sct)` are
+  defined in `syncfl/top_aggregator.py:199-203, 331`** (`vclock=max(vclock,sct)`; overhead default 0 --
+  keep 0). Read `time_mode` from `config.hyperparameters.time_mode` (default "simulated").
+- **`SimReorderBuffer` `self._sim_buffer` + `self._sim_committed`** inited in `syncfl/top_aggregator.py:228`
+  AND `asyncfl/top_aggregator.py:112`. Async `__init__` also inits `_sim_inflight_expected`,
+  `_sim_pending_commit`, `_sim_trainer_budget`, budget running-mean/min, withheld ledgers, cooldown, and
+  the flag knobs `sim_sct_ordered_drain` / `sim_inflight_residence` / `sim_clock_jump_clamp` /
+  `sim_staggered_redispatch` / `sim_redispatch_gap_s` (`asyncfl:112-195`). **TODO verify fwdllm agg's
+  `__init__`/`internal_init` actually chains through the async base so these exist** (else lazy-init guard
+  at `asyncfl:323` covers `_sim_inflight_expected` et al. but NOT `_sim_buffer`).
+- **Sync-barrier machinery ALREADY EXISTS in the syncfl base and just needs calling:**
+  `_sync_sim_recv_first_k(channel, ends, first_k)` (`syncfl/top_aggregator.py:360`) -- drains the selected
+  set, commits the `first_k` smallest-sct, advances vclock to each, stamps
+  `PROP_CLIENT_TASK_TRAIN_DURATION` from `SIM_CLIENT_TASK_TRAIN_DURATION_S`; and
+  `_barrier_anchored_lags(durs)` (`:472`, the U6 helper: `lag_i = max_completion - completion_i`).
+- **Async single-message commit machinery:** `_sim_recv_min(channel, recv_ends)` (`asyncfl:314`) returns
+  ONE sct-ordered committed `(msg, md)` -- maps onto fwdllm's one-message-per-call loop -- but is coupled
+  to WEIGHTS semantics (staggered-redispatch keys on WEIGHTS/WEIGHTS_BYTES; budget from
+  TRAINING_BUDGET_S; withheld/eval paths). With gate OFF + defaults OFF these are inert. `_sim_hold_busy_
+  slots(channel)` (`asyncfl:1453`) holds busy trainers' concurrency slots until commit (one-in-flight).
+- **Reference port for the trainer half:** async_cifar10 `trainer/pytorch/main.py` has the full
+  `time_mode`/`simulated`/`_sim_completion_ts`/`sim_completion_leg_s`/per-eval-sct plumbing
+  (`:106,173-174,818-845 (train sct),1086-1096 (eval sct),1151-1158`). Use it for the *plumbing shape*,
+  **NOT the timing formula** -- see the critical correction below.
+- **!!! CRITICAL CORRECTION -- fwdllm uses an ADDITIVE delay model, NOT cifar10's `max(gpu, D)` !!!**
+  cifar10's real mode "sleeps to fill a budget": wall = `max(gpu, D)`. **fwdllm's real mode sleeps D ON TOP
+  of GPU time** (a flat additive emulated delay -- see `FedSgdTrainer._emulate_training_delay:481` docstring
+  "flat additive sleep on top of GPU time, not a budget-minus-actual model" and the EXISTING telemetry
+  `sim_round_duration_s = _real_gpu_time_s + _delay_s` at `FedSgdTrainer.py:545`). So for real<->sim parity
+  the sim sct MUST be additive too:
+  - `D = _emulate_training_delay()`'s modeled value = `training_delay_s / training_delay_factor`
+    (÷`speedup_factor`, which is 1.0). NOTE the method is named "training" but models the **eval/forward
+    cost** (`training_delay_factor` is the eval speedup); fwdllm's forward-grad "train" IS a forward pass.
+  - `sim_round_duration = _real_gpu_time_s + D`  (ADDITIVE -- matches real's sleep-on-top)
+  - `_sim_completion_ts = (_sim_send_ts) + sim_round_duration + (leg if simulated)`
+  - **Port is minimal because the additive delay is already computed:** existing `train_with_data_id`
+    already does `_delay_s = self._emulate_training_delay()` (`:523`) and `sim_round_duration_s =
+    _real_gpu_time_s + _delay_s` (`:545`). The port just (a) makes `_emulate_training_delay` NOT sleep in
+    sim mode but still RETURN D, and (b) stamps `_sim_completion_ts` from that same `sim_round_duration_s`.
+  - **Latent bug to fix while here:** `_emulate_training_delay` gates on `training_delay_enabled == "True"`
+    (STRING compare, `:488`) but the config schema types it as `bool` (`config.py:197`, default False). So
+    with a real bool the delay NEVER fires. Normalize the check (`str(...)=="True" or ... is True`) or the
+    modeled D is silently 0 and real==sim only trivially. Verify what the launcher actually passes.
+
+### I.2  Trainer sim-path port -- exact edit sites
+1. **`fwdllm_trainer.Trainer._fetch_weights` (`:168`, msg parse ~`:208-320`)** -- currently reads ROUND/
+   WEIGHTS/DATA_ID but NOT sim stamps. ADD: `self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)` and
+   `self._wall_recv_ts = time.time()` on model receipt. (Base syncfl trainer already does the analogous
+   `_sim_send_ts = msg[SIM_SEND_TS]` at `syncfl/trainer.py:257` -- fwdllm's trainer doesn't extend it, so
+   port the read.)
+2. **`FedSgdTrainer.__init__` (`:115`)** -- config knobs at `:176-182` (`training_delay_enabled`,
+   `training_delay_s`, `training_delay_factor`, `speedup_factor=1.0`). ADD:
+   `self.time_mode = config.hyperparameters.time_mode` (default "simulated"),
+   `self.simulated = self.time_mode == "simulated"`, `self.sim_completion_leg_s` (default 0.0),
+   init `self._sim_send_ts=None`, `self._sim_completion_ts=None`, `self._sim_round_duration_s=None`,
+   `self._wall_recv_ts=None`.
+3. **`FedSgdTrainer._emulate_training_delay` (`:481`, called `:523`)** -- currently `time.sleep(_sleep_s)`.
+   GATE: when `self.simulated`, DO NOT sleep; still RETURN the modeled delay D (so `_delay_s` stays correct
+   for the additive `sim_round_duration_s`). Fix the `== "True"` string-gate bug (see CRITICAL CORRECTION).
+4. **`FedSgdTrainer.train_with_data_id` (`:502`)** -- already computes `_delay_s` (`:523`) and
+   `sim_round_duration_s = _real_gpu_time_s + _delay_s` (`:545`, ADDITIVE). ADD: store
+   `self._sim_round_duration_s = _real_gpu_time_s + _delay_s` and
+   `self._sim_completion_ts = (self._sim_send_ts or _fallback) + self._sim_round_duration_s + (leg if
+   simulated)` for `_send_grads` to read. **Per-eval sct (D4):** fwdllm eval is a forward pass ~= train
+   cost (NOT cifar's /20; `training_delay_factor` already encodes the modest eval speedup). If the trainer
+   performs a distinct eval task, stamp eval's OWN sct = `_sim_send_ts + (real_eval_gpu + D_eval)` -- do NOT
+   reuse the last train sct (past-dates every eval, poisons the reorder-buffer key, cifar `:1086-1096`).
+   **VERIFY:** in fwdllm the *aggregator* runs `eval_model()` (`fwdllm_aggregator.py:1391`) on the global
+   model after a variance pass; the trainer's `task_to_perform=="eval"` only sends MODEL_VERSION+STAT_UTILITY
+   (`_send_grads:522-526`). So confirm whether a trainer-side eval sct is even needed for fwdllm, or whether
+   D4 collapses to "train sct only" (likely the latter -- eval lives on the aggregator, off the grad clock).
+5. **`fwdllm_trainer.Trainer._send_grads` (`:438`, msg built `:506-521`)** -- ADD to the train msg:
+   `SIM_COMPLETION_TS=self._sim_completion_ts`, `SIM_CLIENT_TASK_TRAIN_DURATION_S=self._sim_round_duration_s`,
+   `TRAINING_BUDGET_S=<modeled D>`, `WALL_SEND_TS=time.time()`, `WALL_RECV_TS=self._wall_recv_ts`. The eval
+   msg (`:522-526`) also needs `SIM_COMPLETION_TS`/`WALL_*` for the per-eval sct.
+
+### I.3  Aggregator dispatch stamping (both distribute paths) -- exact edit sites
+- **`_distribute_weights_sync` (`:1777`, per-end send loop `:1849-1900`, `channel.send` `:1899`)** and
+  **`_distribute_weights_async` (`:1904`, `channel.send` `:2008`)**. In each per-end loop, when
+  `self.simulated`: set `_sst = self._vclock.now`; inject `payload[MessageType.SIM_SEND_TS] = _sst` (or a
+  per-end copy -- payload is shared across ends, so stamp per-end or set the channel prop);
+  `channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)`. **Async only:** populate the gate
+  `self._sim_inflight_expected[end] = _sst + <budget>` (budget = running-mean/min floor, see
+  `asyncfl:1671` for the weights-path analog). `PROP_ROUND_START_TIME` already set at `:1866`.
+  `PROP_SIM_SEND_TS`/`PROP_SIM_COMPLETION_TS` imported from `flame.selector.properties`.
+
+### I.4  Aggregator grad-loop vclock drive -- exact edit sites + the fwdllm-specific wiring
+- **Async: `_aggregate_grads_async` (`:693`)** -- currently `next(channel.recv_fifo(ends,1,timeout=...))`
+  at `:719`. REPLACE (sim branch only) with an sct-ordered buffered pop. Design decision (see §G risk
+  "one-message-per-call vs batch"): reuse the shared primitives (`SimReorderBuffer`, `_advance_sim_clock`,
+  `_sim_inflight_expected` gate) but wire them for the grad loop rather than calling weights-coupled
+  `_sim_recv_min` verbatim -- ingest all ready grad msgs into `_sim_buffer` keyed by
+  `msg[SIM_COMPLETION_TS]`, pop min-sct committable, `_advance_sim_clock(sct)`, return one `(msg, md)`.
+  Real branch unchanged.
+- **Slot hold/release (one-in-flight):** call `_sim_hold_busy_slots(channel)` on dispatch; **release keys
+  on the AGG-GOAL BOUNDARY**, i.e. where `_process_aggregation_goal_met` clears
+  `self._per_agg_trainer_list = []` (`:1271`) and resets `_agg_goal_cnt=0` (`:1279`) -- NOT per message.
+  (The doc's §3.resid release-point warning: do not copy asyncfl's per-batch release.)
+- **Sync: `_aggregate_grads_sync` (`:1354`) -> `sync_collect_and_accumulate_grads` (`:1313`)** -- the drain
+  loop `channel.recv_fifo(channel.ends(), num_min_req, timeout=...)` at `:1336`. REPLACE (sim branch) with
+  `committed = self._sync_sim_recv_first_k(channel, channel.ends(), num_min_req)` then feed each committed
+  `(msg, md)` through `_process_single_trainer_message`. Apply `_barrier_anchored_lags` for U6 telemetry.
+- **Commit path already computes intrinsic duration:** `_process_single_trainer_message` (`:745`) at
+  `:837` calls `real_client_task_train_duration(msg, sent_ts, timestamp)` (WALL_SEND-WALL_RECV) and sets
+  `PROP_CLIENT_TASK_TRAIN_DURATION` -- keep; this is the selector/telemetry duration (server-overhead-free).
+
+### I.5  ROLLBACK-SAFETY (the fwdllm-specific §3.resid risk -- D-note)
+`_process_aggregation_goal_met` (`:1081`): `self.aggregate(self._round)` (`:1153`) runs the variance gate.
+**PASS** (`var_good_enough`, `:1170`) -> advance `data_id`, `iteration_per_data_id=0`. **FAIL** (`:1237`) ->
+retry SAME `data_id`, `iteration_per_data_id += 1` (the ROLLBACK path). Both branches clear
+`_per_agg_trainer_list` (`:1271`) and reset `_agg_goal_cnt=0` (`:1279`). So a `data_id` can span MANY
+agg-goal cycles. **Invariant to preserve:** the sct reorder buffer + slot-hold must not strand or
+double-commit a grad across a rollback -- release slots and drain/clear the buffer's committed set at the
+agg-goal boundary each cycle. `_sim_committed` is cleared by the async base `_reset_agg_goal_variables`
+(`asyncfl:231-232`) but fwdllm's own reset (`:453`) does NOT -- **verify/port this clear into the fwdllm
+agg-goal boundary** or the second cycle on a rolled-back data_id sees stale committed marks. Over-instrument
+`inflight_residence` + per-cycle buffer occupancy.
+
+### I.6  MessageType / API facts -- VERIFIED (capture time)
+- **CONFIRMED** MessageType keys exist (`flame/mode/message.py:82-87`): `SIM_SEND_TS=34`,
+  `SIM_COMPLETION_TS=35`, `SIM_CLIENT_TASK_TRAIN_DURATION_S=36`, `TRAINING_BUDGET_S=37`, `WALL_SEND_TS=38`,
+  `WALL_RECV_TS=39`.
+- **CONFIRMED** `SimReorderBuffer` (`flame/sim/virtual_clock.py:52`): `.add(end, sim_completion_ts,
+  payload)`, `.has(end)`, `.pending_ends()->set`, `__len__`, `.peek_min_ts()->Optional[float]`,
+  `.pending_after(ts)->set`, `.pop_min()->Optional[(end, ts, payload)]`, `.discard(end)`, `.clear()`.
+  `VirtualClock`: `.now` (property), `.advance(ts)`, `.reset()`.
+- **CONFIRMED** fwdllm agg chains the sim substrate: `fwdllm_aggregator.internal_init` (`:239`) calls
+  `super().internal_init()` (`:241`) -> asyncfl `internal_init` (`asyncfl:83`, inits `_sim_buffer` at
+  `:112`) -> syncfl base. So `_sim_buffer`/`_sim_inflight_expected`/`_vclock`/`simulated` all exist. (Role
+  pattern uses `internal_init`, NOT `__init__`.)
+- **ROLLBACK HOLE CONFIRMED (act on I.5):** fwdllm's `_reset_agg_goal_variables` (`:450`) does NOT clear
+  `_sim_committed` (the async base's does, `asyncfl:231-232`). fwdllm's real agg-goal boundary is
+  `_process_aggregation_goal_met` (clears `_per_agg_trainer_list`/`_agg_goal_cnt` directly at `:1271,1279`).
+  **=> Port must explicitly `_sim_committed.clear()` + drain/clear any stranded `_sim_buffer` entries at that
+  boundary each cycle**, so a rolled-back data_id's next cycle starts clean.
+
+### I.7  Launcher configs
+Add `time_mode: simulated` variants of `expt_scripts/{fluxtune,fwdllm,fwdllm_plus}_n10_smoke.yaml`
+(current default is `time_mode: real`). Keep the real ones for the reference runs.
+
+### I.8  Batch 1 pytest gate (pytest-only, no experiment run)
+1. **Trainer stamping** (extend `tests/mode/test_fwdllm_trainer_sim_duration.py`): `_sim_completion_ts ==
+   _sim_send_ts + max(gpu,D) + leg`; per-eval sct distinct from last train sct; NO `time.sleep` on the sim
+   path (monkeypatch/assert). 2. **sct reorder buffer + one-in-flight** (new test): drive the grad loop
+   with a synthetic out-of-order message sequence incl. a variance-FAIL rollback cycle -> assert commit
+   order = sct order, vclock monotone, no leaked/double-committed grad across the rollback, slots released
+   at agg-goal boundary. 3. **Sync barrier** (new test): `_sync_sim_recv_first_k` commits the k smallest
+   sct; `_barrier_anchored_lags` correct; vclock advances to k-th; no per-message past-dating.
+   4. **Flag-off byte-identical:** `time_mode: real` path unchanged. 5. Full existing `test_fwdllm_*` green.
+**Exit rungs:** P3, K6, T2, K1 monotone, K3a/K3b~=0, U5, one-in-flight overlap~=real, U6 barrier lag, commit_gap~=0.
