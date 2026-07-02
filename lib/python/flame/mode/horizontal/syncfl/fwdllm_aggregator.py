@@ -44,7 +44,10 @@ from sklearn.metrics import (
     confusion_matrix,
     matthews_corrcoef,
 )
-from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator as AsyncTopAgg
+from flame.mode.horizontal.asyncfl.top_aggregator import (
+    RECV_TIMEOUT_WAIT_S,
+    TopAggregator as AsyncTopAgg,
+)
 from flame.mode.message import MessageType
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
@@ -689,7 +692,19 @@ class TopAggregator(AsyncTopAgg):
             return
         # time.sleep(0.1)  # Slight delay to allow messages to arrive
 
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1))
+        # timeout=RECV_TIMEOUT_WAIT_S bounds the block on a quiet in-flight
+        # trainer (default is block forever -- see channel.recv_fifo's
+        # docstring). Without this, if a selected trainer never responds,
+        # this call never returns, the composer loop never cycles back to
+        # _distribute_weights, and _check_early_stop_conditions() (which
+        # enforces max_runtime_s/max_data_id_progress) never gets a chance
+        # to run -- the run hangs past its configured budget until manually
+        # killed. Matches the same pattern asyncfl/top_aggregator.py's
+        # _aggregate_weights already uses for this exact reason.
+        msg, metadata = next(
+            channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1,
+                              timeout=RECV_TIMEOUT_WAIT_S)
+        )
         end, timestamp = metadata
         if not msg:
             logger.debug(f"No data from {end}; skipping it")
@@ -1284,7 +1299,15 @@ class TopAggregator(AsyncTopAgg):
             logger.info(f"We are waiting to clear up queue")
             num_min_req = min(num_min_req, 1)
 
-        for msg, metadata in channel.recv_fifo(channel.ends(), num_min_req):
+        # timeout=RECV_TIMEOUT_WAIT_S bounds the block on quiet in-flight
+        # trainers (default is block forever -- see channel.recv_fifo's
+        # docstring). Without this, if a selected trainer never responds,
+        # this call never returns, the composer loop never gets to
+        # re-check _check_early_stop_conditions() (max_runtime_s/
+        # max_data_id_progress), and the run hangs past its configured
+        # budget until manually killed. Same fix as _aggregate_grads_async.
+        for msg, metadata in channel.recv_fifo(channel.ends(), num_min_req,
+                                               timeout=RECV_TIMEOUT_WAIT_S):
             end, timestamp = metadata
             if not msg:
                 logger.info(f"No data from {end}; skipping it")
