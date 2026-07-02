@@ -207,6 +207,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"New message received for trainer_id {self.trainer_id}")
 
+        # Sim-clock stamps (Batch 1): the aggregator stamps SIM_SEND_TS (its
+        # virtual-clock "now" at dispatch) so the trainer can base its modeled
+        # completion sct on it; _wall_recv_ts is the real receipt wall time, sent
+        # back so the aggregator can derive the intrinsic (server-overhead-free)
+        # task duration (WALL_SEND - WALL_RECV). Both are inert in real mode:
+        # SIM_SEND_TS is absent (stays None) and the aggregator ignores WALL_*.
+        self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)
+        self._wall_recv_ts = time.time()
+
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
 
@@ -518,11 +527,31 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
+                # Sim-clock stamps (Batch 1): the modeled completion sct the
+                # aggregator's reorder buffer keys on, the additive modeled round
+                # duration (= completion budget, used for the async in-flight
+                # gate), and the real wall send/recv pair the aggregator derives
+                # the intrinsic (server-overhead-free) task duration from. All
+                # None in real mode -> aggregator ignores them (arrival order).
+                MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
+                MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
+                MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
+                MessageType.WALL_SEND_TS: time.time(),
+                MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
         else:
+            # D4: fwdllm eval lives on the AGGREGATOR (eval_model on the global
+            # model after a variance pass); this eval message is only a utility
+            # report, not a separately-clocked commit. train_with_data_id runs
+            # immediately before this in the same loop iteration, so its fresh
+            # _sim_completion_ts is a valid (not past-dated) sct to echo, and the
+            # WALL_* pair still lets the aggregator derive the intrinsic duration.
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
+                MessageType.WALL_SEND_TS: time.time(),
+                MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
 
         channel.send(end, msg)

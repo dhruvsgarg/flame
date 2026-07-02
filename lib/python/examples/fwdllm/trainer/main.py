@@ -53,12 +53,13 @@ if __name__ == "__main__":
     config = load_config_from_argv()
 
     # --time_mode is a launcher CLI-only arg (not in config JSON), unconditionally
-    # appended by TrainerSpawner.spawn_trainer() to every trainer's argv. FedFwd has
-    # no simulated-clock concept (FedSgdTrainer's _emulate_training_delay() always
-    # sleeps real wall-clock time) -- parsed here only so the launcher's argv
-    # injection doesn't crash with "unrecognized argument"; "simulated" is a
-    # documented no-op for now, deferred future work, not retrofitted in this
-    # migration. log_level is similarly launcher/manual-run CLI-only.
+    # appended by TrainerSpawner.spawn_trainer() to every trainer's argv. It is
+    # threaded into config.hyperparameters (extra-allowed) so FedSGDTrainer reads
+    # it uniformly with the aggregator (which the launcher injects into its own
+    # hyperparameters). "simulated": skip the real emulated-delay sleep and stamp
+    # a modeled completion timestamp the aggregator orders updates by; "real"
+    # (default): unchanged wall-clock behavior. log_level/battery_threshold are
+    # similarly launcher/manual-run CLI-only.
     _cli_parser = argparse.ArgumentParser(add_help=False)
     _cli_parser.add_argument("--time_mode", default="real")
     _cli_parser.add_argument("--log_level", default="INFO")
@@ -72,11 +73,7 @@ if __name__ == "__main__":
     )
     logging.debug(config)
     telemetry.configure(role="trainer", end_id=str(config.task_id))
-    if _cli_args.time_mode != "real":
-        logging.warning(
-            f"--time_mode={_cli_args.time_mode!r} requested, but FedFwd has no "
-            "simulated-clock support yet; running in real wall-clock mode."
-        )
+    config.hyperparameters.time_mode = _cli_args.time_mode
     set_seed(config.hyperparameters.manual_seed)
 
     # dataset attributes

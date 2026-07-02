@@ -181,6 +181,25 @@ class FedSGDTrainer(Trainer):
         )
         self.speedup_factor = 1.0
 
+        # --- Simulated-clock support (Batch 1, config-gated) ------------------
+        # time_mode is threaded into hyperparameters from the launcher's
+        # --time_mode CLI arg (see trainer/main.py). "simulated": _emulate_
+        # training_delay() computes the modeled delay but does NOT sleep, and
+        # train_with_data_id() stamps a modeled completion timestamp
+        # (_sim_completion_ts) the aggregator orders updates by. "real"
+        # (default): unchanged wall-clock behavior (flag-off => byte-identical).
+        self.time_mode = getattr(self.config.hyperparameters, "time_mode", "real")
+        self.simulated = self.time_mode == "simulated"
+        _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
+        self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
+        # SIM_SEND_TS is stamped by the aggregator on each dispatch and read in
+        # the base trainer's _fetch_weights; the rest are stamped after training
+        # for _send_grads / telemetry / the intrinsic-duration selector signal.
+        self._sim_send_ts = None
+        self._sim_completion_ts = None
+        self._sim_round_duration_s = None
+        self._wall_recv_ts = None
+
         self.trainer_start_ts = time.time()
         # TODO (ARM): Fix this to read traces better!
         # Storing synthetic avail traces
@@ -479,23 +498,39 @@ class FedSGDTrainer(Trainer):
 
     @timer_decorator
     def _emulate_training_delay(self):
-        """Returns the seconds actually slept (0.0 if delay emulation is
-        disabled) -- unlike cifar10's trainer, this is a flat additive sleep
-        on top of GPU time, not a budget-minus-actual "sleep to fill" model,
-        so there is no meaningful overrun/remaining_time_s/training_budget_s
-        concept here (see ../../../MIGRATING_TO_LAUNCHER.md §9). The
-        caller adds this to real_gpu_time_s to report sim_round_duration_s."""
-        if self.training_delay_enabled == "True":
+        """Returns the modeled emulated-delay seconds D (0.0 if delay emulation
+        is disabled) -- unlike cifar10's trainer, this is a flat additive delay
+        on top of GPU time, not a budget-minus-actual "sleep to fill" model, so
+        there is no meaningful overrun/remaining_time_s/training_budget_s concept
+        here (see ../../../MIGRATING_TO_LAUNCHER.md §9). The caller adds this to
+        real_gpu_time_s to report sim_round_duration_s.
+
+        In real mode the delay is realized by an actual time.sleep(D); in
+        simulated mode the sleep is SKIPPED (the aggregator advances a virtual
+        clock instead) but the same D is still RETURNED so the additive
+        sim_round_duration_s = real_gpu_time_s + D stays identical across modes.
+        """
+        # config schema types training_delay_enabled as bool (default False)
+        # but historical launcher yamls pass the string "True"; accept both so
+        # the modeled delay is not silently dropped to 0.
+        _enabled = self.training_delay_enabled in (True, "True", "true")
+        if _enabled:
             # Eval is 3X faster than training on CPU
             # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
             eval_delay = self.training_delay_s / self.training_delay_factor
-            _sleep_s = eval_delay / self.speedup_factor
-            time.sleep(_sleep_s)
-            logger.info(
-                f"Delayed eval time for trainer "
-                f"{self.trainer_id} by {eval_delay}s. Sleeping for {_sleep_s}s."
-            )
-            return _sleep_s
+            _delay_s = eval_delay / self.speedup_factor
+            if self.simulated:
+                logger.info(
+                    f"time_mode=simulated: modeled eval delay for trainer "
+                    f"{self.trainer_id} = {_delay_s}s (not slept; charged to vclock)."
+                )
+            else:
+                time.sleep(_delay_s)
+                logger.info(
+                    f"Delayed eval time for trainer "
+                    f"{self.trainer_id} by {eval_delay}s. Sleeping for {_delay_s}s."
+                )
+            return _delay_s
         return 0.0
 
     @timer_decorator
@@ -521,6 +556,20 @@ class FedSGDTrainer(Trainer):
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
         _delay_s = self._emulate_training_delay()
+
+        # Sim-mode stamps (Batch 1): the modeled round duration is ADDITIVE
+        # (real_gpu + D), matching real mode's sleep-D-on-top-of-GPU semantics
+        # -- NOT cifar10's max(gpu, D) "sleep to fill a budget" model. The sct
+        # (when this update COMMITS on the virtual clock) is the aggregator's
+        # dispatch stamp (SIM_SEND_TS, read in _fetch_weights) + that duration +
+        # the optional pre-commit holding leg. _send_grads sends these so the
+        # aggregator can order updates by _sim_completion_ts. In real mode these
+        # stay None and the aggregator falls back to arrival order (unchanged).
+        self._sim_round_duration_s = _real_gpu_time_s + _delay_s
+        if self.simulated:
+            _leg = self.sim_completion_leg_s
+            _base = self._sim_send_ts if self._sim_send_ts is not None else time.time()
+            self._sim_completion_ts = _base + self._sim_round_duration_s + _leg
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
