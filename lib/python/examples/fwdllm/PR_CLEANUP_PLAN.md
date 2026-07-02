@@ -7,7 +7,16 @@ copy of the legacy-code deletion list for the follow-up PR.
 
 ---
 
-## Status: smoke-tested green on shepherd. One thing left before merge.
+## Status: smoke-tested green on shepherd; more since — see "What's left"
+
+**3 more real bugs found and fixed** since the smoke test below, via a
+post-migration baseline-behavior investigation (see
+[`MIGRATION_TO_LAUNCHER_FWDLLM.md`](MIGRATION_TO_LAUNCHER_FWDLLM.md) Parts
+2/3/7). Convergence soak run still not done. One scope question needs a
+decision (telemetry/analysis tooling work). See "What's left before this PR
+can merge" below for the current, up-to-date checklist — the smoke-test
+results directly below are historical (still accurate, just no longer the
+full picture).
 
 All three baselines ran end-to-end on `shepherd.cc.gatech.edu`
 (`test_fwdllm` conda env) via
@@ -54,6 +63,73 @@ resolved (see below), and the only remaining item is the longer soak run.
    between runs. Fixed by polling all trainer processes concurrently
    against one shared deadline, capping the worst case at ~30s regardless
    of trainer count. (`5968b0f2`)
+
+### Bugs found and fixed since (post-migration baseline-behavior
+investigation — full detail, evidence, and verification in
+[`MIGRATION_TO_LAUNCHER_FWDLLM.md`](MIGRATION_TO_LAUNCHER_FWDLLM.md), not
+duplicated here)
+
+Running the three baselines at longer duration/higher trainer count (past
+what the `--max-data-id 2` plumbing smoke test above exercises) surfaced
+**three more real correctness bugs**, all committed + pushed:
+
+4. **`fluxtune` full deadlock at scale** (Part 2, `ba622a38`): a stuck
+   trainer's `SEND_TIMEOUT_WAIT_S` reclaim in `async_oort.py` was gated
+   behind the very concurrency lock it was supposed to free (ordering bug)
+   and, even when reached, only freed half the accounting it needed to
+   (completeness bug). Reproduced at n=30/~90min, not at n=10/10min — a
+   scale/time-triggered condition the original smoke test was too short to
+   catch. Same two-part bug found and fixed identically in
+   `async_random.py`/`fedbuff.py` (selectors used by other baselines sharing
+   the pattern, not just fluxtune).
+5. **Generic asyncfl aggregator duplicate-contribution gap** (Part 3,
+   `e76d54f1`): found while verifying bug #4's fix didn't let a trainer
+   double-contribute in one cycle — `asyncfl/top_aggregator.py` had no
+   per-cycle dedup guard (fwdllm's own aggregator already did). Newly
+   reachable only after fixing #4 (a stuck trainer's slot never used to
+   reopen at all).
+6. **fwdllm's own stale reselection-cache gap** (Part 3, `4d8d3281`): a
+   departed trainer was correctly forgotten by the selector but never
+   pruned from the aggregator's own per-round `_round_selected_ends` cache,
+   so a round could stall forever waiting for a contribution that could
+   never arrive. Only manifests under real mid-round departure (a churny
+   availability trace), not `syn_0` — matches a TODO already flagged (but
+   unverified) in `../MIGRATING_TO_LAUNCHER.md` §9.
+7. **`max_runtime_s`/`max_data_id_progress` starvation under a real
+   availability trace** (Part 7, `9c28f230`): `_aggregate_grads_async`
+   (fluxtune) and `sync_collect_and_accumulate_grads` (fwdllm/fwdllm_plus)
+   both called `channel.recv_fifo()` with no timeout (default = block
+   forever). A real 10-min `fluxtune` smoke test under `mobiperf_3st_50`
+   hung 20+ minutes and had to be manually killed — the early-stop check
+   only runs from the *other* side of the composer's put/aggregate loop, so
+   it never got a chance to fire while blocked. Fixed by bounding both
+   calls to `RECV_TIMEOUT_WAIT_S` (30s), matching the pattern
+   `asyncfl/top_aggregator.py` already uses for the same reason.
+   **Re-validation on GPU in progress** — see MIGRATION_TO_LAUNCHER_FWDLLM.md
+   Part 7 for live status.
+
+All 4 of these (plus the original 3) are covered by regression tests; full
+suite currently: **472 passed, 7 skipped, 0 failed**.
+
+### Scope question: is the telemetry/analysis tooling work part of this PR?
+
+The same investigation also did substantial work on
+`scripts/analysis/analyze_run.py` and `flame/telemetry/events.py` (both
+shared, example-agnostic files, not fwdllm-specific) plus fwdllm's own
+telemetry emission (`fwdllm_aggregator.py`, `FedSgdTrainer.py`,
+`selector/random.py`) — see MIGRATION_TO_LAUNCHER_FWDLLM.md Parts 5/6.
+None of it is a correctness fix; it's what makes fwdllm's runs analyzable
+at all (`plots/performance/` etc. were structurally empty before Part 5) and
+brings its plot coverage roughly to parity with async_cifar10's. **Not
+determined**: should this land in the same PR as the launcher port + bug
+fixes above, or split into a follow-up PR? Arguments either way:
+- **Same PR**: it's still fwdllm-onboarding work, discovered via the same
+  investigation, and reviewers will want the plots to sanity-check the bug
+  fixes anyway.
+- **Separate PR**: it touches shared, non-fwdllm files
+  (`analyze_run.py`/`events.py`), which is a different blast radius/review
+  audience than an example-specific port, and is logically a distinct
+  concern (analysis tooling vs. training-loop correctness).
 
 ### Verification checklist confirmed on the run above
 
@@ -123,42 +199,69 @@ not blocking this one.
 
 ## What's left before this PR can merge
 
-1. **Overnight soak run** (in progress) — the `--max-data-id 2` smoke test
-   above only proves the plumbing works end-to-end (processes spawn,
-   aggregate, exit cleanly, no crashes), not that training converges.
-   Launch command (30 trainers, most-heterogeneous available `agnews`
-   partition, 2h wall-clock cap, data_id cap set high enough it won't be the
-   thing that stops the run):
+1. **GPU re-validation of the Part 7 fix** (in progress right now —
+   `run_20260701_234833_fluxtune_n10_smoke`, started 23:48 EDT,
+   `--only fluxtune --max-runtime-s 600 --max-data-id 200` under the same
+   `mobiperf_3st_50` trace that exposed the bug). Confirms the aggregator
+   now self-terminates at/near its budget instead of hanging 20+ minutes.
+   Check `MIGRATION_TO_LAUNCHER_FWDLLM.md` Part 7 for the outcome once it
+   finishes — this is a quick prerequisite check before investing in item 2.
+2. **Convergence soak run — still not done.** No run in
+   `experiments/` uses `partition_method=niid_label_clients...` (checked;
+   every run so far is the smoke-test default `uniform`/IID). The
+   `--max-data-id 2` plumbing smoke test only proves processes spawn,
+   aggregate, and exit cleanly — not that training converges, and it
+   predates bugs #4-7 above, so it never exercised the code paths those
+   fixes touch under real duration. Same command as before, now doubling as
+   the long-duration validation for the deadlock (#4) and starvation (#7)
+   fixes:
    ```bash
    cd lib/python/examples/fwdllm/expt_scripts
    ./run_sequential.sh --num-trainers 30 --max-runtime-s 7200 \
        --max-data-id 100000 \
        --partition-method "niid_label_clients=100_alpha=0.1"
    ```
-   `niid_label_clients=100_alpha=0.1` is confirmed the most heterogeneous
-   split available for `agnews` in the 100-client group (smaller Dirichlet
-   alpha = more skewed; the H5 file's 100-client group only goes down to
-   0.1 — `1000`-client group also exists with its own alpha ladder down to
-   0.5, not used here since trainer count is 30). This replaces the
-   smoke-test default of `partition_method: uniform` (IID), which was
-   deliberately chosen for smoke tests to isolate launcher-mechanics
-   validation from data-skew effects — not appropriate for a convergence
-   check. `--partition-method` is a new `run_sequential.sh` flag added this
-   session; it overrides `hyperparameters.partition_method` on both the
-   trainer and aggregator sides (must match). `--num-gpus` doesn't need
-   overriding — each YAML already defaults to all 8 available GPUs.
-   Note: `selector.kwargs.c`/`k`/`minInitialTrainers` stay at each YAML's
-   own default (10) even at 30 trainers unless `--c`/`--k` are also passed —
-   that's fine for this soak run (a random 10-of-30 subset per round), not
-   a bug.
-   After it finishes: confirm loss/accuracy trends look sane over the run,
-   not just that it exits 0.
-2. **Final diff review**: `git diff dg-fork-main...HEAD --stat` (not
-   `origin/main` — that's ~890 commits ahead/~415 behind from unrelated
-   upstream sync drift on this fork and pulls in the whole repo). Confirm no
-   leftover noise before opening the PR.
-3. **Deletion PR** — tracked in `DELETION_CANDIDATES.md`, do as a follow-up
+   (`niid_label_clients=100_alpha=0.1`: most heterogeneous split available
+   for `agnews` at 30 trainers — see prior reasoning below if resuming
+   cold.) After it finishes: confirm (a) it self-terminates at/near 7200s
+   without manual intervention (validates #7 at real duration/trainer
+   count, not just the 10-min/10-trainer check in item 1), (b) no deadlock
+   recurrence (validates #4), and (c) loss/accuracy trends look sane, not
+   just that it exits 0 — `python3 scripts/analysis/analyze_run.py
+   <run_dir>/telemetry` now produces `plots/performance/accuracy_over_rounds.pdf`
+   for this (Part 5/6 telemetry work), previously impossible.
+3. **Decide the Part 5/6 scope question** (same PR vs. follow-up) — see
+   above. Affects what "the diff" in item 4 actually contains.
+4. **Final diff review — diff base needs correcting first.**
+   `git diff dg-fork-main...HEAD --stat` (the previously-planned command)
+   shows **6753 files changed, 253894 insertions(+), 2688502 deletions(-)**
+   — not a clean "this PR" diff. Traced why: `dg-fork-main` predates not
+   just fwdllm's port but an *earlier, separate* ~20-commit initiative
+   (async_cifar10's own launcher/streaming/telemetry port, e.g. `c885ae0b`
+   "YAML launcher + shared metadata...", `5ffed033` "Streaming data, more
+   telemetry...") that this branch was built on top of but that isn't part
+   of *this* PR's actual content. The commit right before fwdllm's own
+   migration starts is `35f8d654` ("update launcher script with latest
+   changes of async cifar") — `15ac3fab` ("fwdllm migration to launcher
+   plan") is the first commit after it. `git diff 35f8d654...HEAD --stat`
+   gives a far more plausible **72 files changed, 95233 insertions(+), 1006
+   deletions(-)**. Recommend using `35f8d654` (or the identical
+   `15ac3fab~1`) as the diff base — but this is a call about what the
+   intended PR boundary actually is (does the async_cifar10 launcher work
+   already exist independently on the real merge target, or does it need
+   to ride along?), not something to assume. Confirm before opening the PR.
+   Also confirm no leftover noise (`expt_scripts/smoke_logs/`,
+   `PR_CLEANUP_PLAN.md` itself once merged, etc.).
+5. **Deletion PR** — tracked in `DELETION_CANDIDATES.md`, do as a follow-up
    once this PR merges, not bundled into it.
+
+**Unrelated, but noticed while checking git state for item 4**: `git remote
+-v` shows the `origin` remote URL has a GitHub personal access token
+embedded in plaintext (`https://ghp_...@github.com/...`). That's readable by
+anything that can read `.git/config` and tends to leak into tool
+output/logs (as it just did here). Worth rotating that token and switching
+to SSH or a credential helper instead — unrelated to this PR's mergeability,
+flagging since it came up.
 
 `expt_scripts/smoke_logs/` and the async_cifar10 experiment/parity artifacts
 currently sitting untracked in `git status` are local run output, not part
@@ -203,11 +306,21 @@ Committed (`152b7cd5`).
 `--partition-method` flag added, `DELETION_CANDIDATES.md` created.** See top
 of this file.
 
+**Post-migration baseline-behavior investigation (7 parts, all committed +
+pushed) — bugs #4-7 above, plus telemetry/analysis tooling work (Parts
+5/6, scope TBD — see above).** Full detail lives in
+`MIGRATION_TO_LAUNCHER_FWDLLM.md`, not duplicated here; see that file's own
+Parts 1-7 and its top-of-file summary for the complete account.
+
 User-approved decisions (from earlier in this branch's work):
 - Trainers 151-300 (no source data) get the 150 source trainers' traces
   doubled/wrapped, preserving the named distribution rather than a
   placeholder.
 - Migration/verification scripts are temporary: write, run, confirm pass,
   delete.
-- `MIGRATION_TO_LAUNCHER_FWDLLM.md`'s durable content folds into §9 without
-  duplication; the file itself becomes a pointer stub, not a silent delete.
+- ~~`MIGRATION_TO_LAUNCHER_FWDLLM.md`'s durable content folds into §9
+  without duplication; the file itself becomes a pointer stub, not a silent
+  delete.~~ **Superseded**: that file is now an active living doc again (the
+  post-migration investigation above, Parts 1-7) — it's a real, current
+  bug-hunting log, not a stub. Don't fold/delete it without re-checking
+  this decision first.

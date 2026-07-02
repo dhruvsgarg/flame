@@ -13,23 +13,28 @@ This doc tracks a *new* phase: two rounds of runs across the three baselines
 (`fwdllm`, `fwdllm_plus`, `fluxtune`) surfaced very different progress rates.
 That investigation found and fixed a real deadlock bug (and two related
 correctness gaps), plus a second, fwdllm-specific gap in the per-round
-reselection cache. **All four fixes are implemented, covered by regression
-tests, committed, and pushed** (`ba622a38`, `e76d54f1`, `4d8d3281`,
-`dc2a166b`, `644a4b86`); the full suite passes (426 passed, 7 skipped, 0
-failed). A 3-baseline (`fluxtune`, `fwdllm_plus`, `fwdllm`) 1.5h GPU
-experiment (`n=100`, `c=30`, `aggGoal=10`, `syn_0`) **ran to completion**
-against these fixes (launched by the user outside this session) — no
-deadlock recurred. A *second*, orthogonal gap was found and fixed while that
-ran: fwdllm's telemetry/analysis tooling was not example-agnostic and had
-real, confirmed holes — see Part 5 (P5.1–P5.7, **committed**:
-`ebc1b6b1`/`55abfae7`/`ff89695e`/`3a3c2bbd`/`f69b2539`). A follow-on audit of
-the resulting plots (real n=100 fwdllm telemetry vs. a real async_cifar10
-run) found the plot *coverage* itself was still much thinner than
-async_cifar10's, for reasons distinct from Part 5's gaps — see Part 6, now
-implemented, tested (470 passed, 7 skipped, 0 failed), and verified
-end-to-end against real + synthetic telemetry. **Remaining open item**: Part
-6's changes are implemented and tested but not yet committed (see "Files
-touched this session"). Living doc — update as findings land.
+reselection cache (Parts 2–3, `ba622a38`/`e76d54f1`/`4d8d3281`). A
+3-baseline (`fluxtune`, `fwdllm_plus`, `fwdllm`) 1.5h GPU experiment
+(`n=100`, `c=30`, `aggGoal=10`, `syn_0`) **ran to completion** against these
+fixes — no deadlock recurred (Part 4). A *second*, orthogonal gap was found
+and fixed while that ran: fwdllm's telemetry/analysis tooling was not
+example-agnostic and had real, confirmed holes (Part 5, P5.1–P5.7). A
+follow-on audit of the resulting plots (real n=100 fwdllm telemetry vs. a
+real async_cifar10 run) found the plot *coverage* itself was still much
+thinner than async_cifar10's, for reasons distinct from Part 5's gaps — see
+Part 6. A real 10-min `fluxtune` smoke test then surfaced a third
+correctness bug — the aggregator could hang indefinitely past
+`--max-runtime-s` waiting on a quiet trainer — found and fixed in Part 7
+(`9c28f230`), currently being re-validated on GPU
+(`run_20260701_234833_fluxtune_n10_smoke`, started 23:48 EDT).
+
+**All work through Part 7 is committed and pushed** (see each Part's own
+commit hashes; `git log --oneline` on this branch has the full list). Full
+suite: 472 passed, 7 skipped, 0 failed. This doc is a running investigation
+log (bugs found, root causes, fixes, verification) — for the PR-readiness
+checklist (what's left before `launcher-script-fwdllm` can merge), see
+[`PR_CLEANUP_PLAN.md`](PR_CLEANUP_PLAN.md). Living doc — update as findings
+land.
 
 ## ✅ RESUMED (2026-07-01 ~21:25 EDT) — Part 5 complete, GPU experiment finished
 
@@ -1315,5 +1320,23 @@ behavior change. 2 new tests
 (`lib/python/tests/mode/test_fwdllm_recv_timeout.py`) confirm both call
 sites pass the timeout. Full suite: **472 passed, 7 skipped, 0 failed**.
 
-**Not yet re-validated on GPU** — the user is about to re-run the same
-10-min fluxtune smoke test to confirm it now self-terminates within budget.
+**Side note while diagnosing this**: the stall was initially suspected to be
+suspicious given "100% availability" traces — checked and corrected: the
+run used `mobiperf_3st_50` (a real, churny per-device trace derived from
+mobile-network measurement data — confirmed via
+`examples/_metadata/availability_traces/mobiperf_traces.yaml`, e.g. device
+001 goes `UN_AVL` at t=250s into its trace), not `syn_0` (the only
+always-available option). The aggregator's own log showed
+`count_avl_train` fluctuating 3-5 of 10 trainers during the stall window.
+So a trainer going quiet was expected behavior for this trace, not an
+anomaly — the bug was the aggregator's unbounded wait in response to it,
+not the trace. `--avail-trace syn_0` remains the right choice whenever a
+run needs to isolate selection/aggregation-logic questions from trace-driven
+churn (per Part 4).
+
+**Re-validation status: IN PROGRESS.** `run_20260701_234833_fluxtune_n10_smoke`
+(`--only fluxtune --max-runtime-s 600 --max-data-id 200`, same
+`mobiperf_3st_50` trace as the run that exposed the bug) started 23:48:33
+EDT and was running as of this doc update. Outcome not yet known — update
+this section once it finishes (expect self-termination at or shortly after
+600s elapsed, not 20+ minutes).
