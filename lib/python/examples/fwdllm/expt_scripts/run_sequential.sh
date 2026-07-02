@@ -42,6 +42,14 @@
 #                     real ORACULAR signal). Use e.g. "syn_0" (always
 #                     available) to isolate selection/aggregation bugs from
 #                     trace-driven scarcity/churn.
+#   --avail-traces   comma-separated list of traces, e.g. "syn_0,syn_20" --
+#                     runs the ENTIRE --only baseline sequence once per trace,
+#                     back to back, in this one invocation/process (for an
+#                     unattended overnight multi-trace comparison; no need to
+#                     babysit and launch the next trace by hand). Takes
+#                     precedence over --avail-trace if both are given. Each
+#                     (baseline, trace) run's name/log/results are
+#                     disambiguated by trace -- see the run-name note below.
 #   --k              override selector.kwargs.k
 #   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
 #                    (default: run all three regardless, report at the end)
@@ -114,6 +122,7 @@ SEL_K=""
 AGG_GOAL=""
 MIN_INIT_TRAINERS=""
 AVAIL_TRACE=""
+AVAIL_TRACES=""
 PARTITION_METHOD=""   # empty = leave each YAML's own value ("uniform")
 ONLY=""           # empty = run all three
 
@@ -129,12 +138,23 @@ while [[ $# -gt 0 ]]; do
     --agg-goal)          AGG_GOAL="$2"; shift 2 ;;
     --min-initial-trainers) MIN_INIT_TRAINERS="$2"; shift 2 ;;
     --avail-trace)       AVAIL_TRACE="$2"; shift 2 ;;
+    --avail-traces)      AVAIL_TRACES="$2"; shift 2 ;;
     --stop-on-fail)      STOP_ON_FAIL=1; shift ;;
     --partition-method)  PARTITION_METHOD="$2"; shift 2 ;;
     --only)              ONLY="$2"; shift 2 ;;
-    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N] [--avail-trace NAME] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N] [--avail-trace NAME | --avail-traces NAME1,NAME2,...] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
   esac
 done
+
+# --avail-traces takes precedence; otherwise fall back to the single
+# --avail-trace (may be empty, meaning "leave each YAML's own trace").
+if [ -n "$AVAIL_TRACES" ]; then
+  IFS=',' read -ra TRACE_LIST <<< "$AVAIL_TRACES"
+else
+  TRACE_LIST=("$AVAIL_TRACE")
+fi
+MULTI_TRACE=0
+[ "${#TRACE_LIST[@]}" -gt 1 ] && MULTI_TRACE=1
 
 LOGDIR="$SCRIPT_DIR/smoke_logs/$(date '+%Y%m%d_%H%M%S')"
 mkdir -p "$LOGDIR"
@@ -168,8 +188,13 @@ for exp in cfg.get("experiments", []):
         # source YAML's own checked-in name, which only reflects that file's
         # default count. job.id must track exp["name"] (every checked-in
         # YAML keeps them equal; it's the MQTT job/task id shared with
-        # trainers via runner.py).
-        new_name = f"{run_key}_n{num_trainers}_smoke"
+        # trainers via runner.py). Include avail_trace when set so runs
+        # launched back-to-back under different traces (--avail-traces)
+        # don't produce identically-named run dirs/job ids.
+        new_name = (
+            f"{run_key}_n{num_trainers}_{avail_trace}_smoke"
+            if avail_trace else f"{run_key}_n{num_trainers}_smoke"
+        )
         exp["name"] = new_name
         exp["aggregator"]["config_overrides"]["job"]["id"] = new_name
     if num_gpus:
@@ -238,6 +263,7 @@ fi
 
 declare -A RESULT
 declare -A DURATION_S
+ORDERED_KEYS=()   # (name or name@trace) in the order actually run, for the summary
 
 CHILD_PID=""
 cleanup() {
@@ -249,44 +275,59 @@ cleanup() {
 trap cleanup INT TERM
 
 cd "$REPO_ROOT" || exit 1
-echo "=== fwdllm sequential run: ${#RUNS[@]} runs (${RUNS[*]%%:*}), max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} num_gpus=${NUM_GPUS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>} partition_method=${PARTITION_METHOD:-<yaml default>}, logs in $LOGDIR ==="
+echo "=== fwdllm sequential run: ${#RUNS[@]} runs (${RUNS[*]%%:*}) x ${#TRACE_LIST[@]} trace(s) (${TRACE_LIST[*]:-<yaml default>}), max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} num_gpus=${NUM_GPUS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>} partition_method=${PARTITION_METHOD:-<yaml default>}, logs in $LOGDIR ==="
 
-for entry in "${RUNS[@]}"; do
-  name="${entry%%:*}"
-  src_cfg="${entry#*:}"
-  cfg="$LOGDIR/${name}.yaml"
-  log="$LOGDIR/${name}.out"
-  patch_yaml "$src_cfg" "$cfg" "$name"
+STOP_ALL=0
+for trace in "${TRACE_LIST[@]}"; do
+  AVAIL_TRACE="$trace"   # read by patch_yaml() via the outer AVAIL_TRACE var
+  [ "$MULTI_TRACE" = "1" ] && echo "--- trace: ${trace:-<yaml default>} ---"
 
-  start_ts=$(date +%s)
-  python -m flame.launch.run_experiment "$cfg" --example-dir "$EXAMPLE_DIR" \
-      < /dev/null > "$log" 2>&1 &
-  CHILD_PID=$!
-  echo "[$(date '+%F %T')] START $name (PID=$CHILD_PID) -> $cfg (log: $log)"
-  echo "  (to kill: kill -9 $CHILD_PID   or Ctrl+C)"
-  wait "$CHILD_PID"
-  rc=$?
-  CHILD_PID=""
-  end_ts=$(date +%s)
-  DURATION_S[$name]=$((end_ts - start_ts))
-  if [ $rc -eq 0 ]; then
-    RESULT[$name]="PASS"
-  else
-    RESULT[$name]="FAIL(exit=$rc)"
-  fi
-  echo "[$(date '+%F %T')] DONE  $name -> ${RESULT[$name]} (${DURATION_S[$name]}s)"
+  for entry in "${RUNS[@]}"; do
+    name="${entry%%:*}"
+    src_cfg="${entry#*:}"
+    # Disambiguate by trace only when actually looping multiple traces, so a
+    # single-trace (or no-trace) invocation keeps today's exact file/key names.
+    if [ "$MULTI_TRACE" = "1" ]; then
+      key="${name}@${trace:-default}"
+    else
+      key="$name"
+    fi
+    cfg="$LOGDIR/${key}.yaml"
+    log="$LOGDIR/${key}.out"
+    patch_yaml "$src_cfg" "$cfg" "$name"
 
-  if [ $rc -ne 0 ] && [ "$STOP_ON_FAIL" = "1" ]; then
-    echo "--stop-on-fail set; aborting remaining runs."
-    break
-  fi
+    start_ts=$(date +%s)
+    python -m flame.launch.run_experiment "$cfg" --example-dir "$EXAMPLE_DIR" \
+        < /dev/null > "$log" 2>&1 &
+    CHILD_PID=$!
+    echo "[$(date '+%F %T')] START $key (PID=$CHILD_PID) -> $cfg (log: $log)"
+    echo "  (to kill: kill -9 $CHILD_PID   or Ctrl+C)"
+    wait "$CHILD_PID"
+    rc=$?
+    CHILD_PID=""
+    end_ts=$(date +%s)
+    DURATION_S[$key]=$((end_ts - start_ts))
+    ORDERED_KEYS+=("$key")
+    if [ $rc -eq 0 ]; then
+      RESULT[$key]="PASS"
+    else
+      RESULT[$key]="FAIL(exit=$rc)"
+    fi
+    echo "[$(date '+%F %T')] DONE  $key -> ${RESULT[$key]} (${DURATION_S[$key]}s)"
+
+    if [ $rc -ne 0 ] && [ "$STOP_ON_FAIL" = "1" ]; then
+      echo "--stop-on-fail set; aborting remaining runs (including remaining traces)."
+      STOP_ALL=1
+      break
+    fi
+  done
+  [ "$STOP_ALL" = "1" ] && break
 done
 
 echo ""
 echo "=== Summary ==="
-for entry in "${RUNS[@]}"; do
-  name="${entry%%:*}"
-  printf "  %-25s %-15s %ss\n" "$name" "${RESULT[$name]:-SKIPPED}" "${DURATION_S[$name]:-0}"
+for key in "${ORDERED_KEYS[@]}"; do
+  printf "  %-35s %-15s %ss\n" "$key" "${RESULT[$key]:-SKIPPED}" "${DURATION_S[$key]:-0}"
 done
 echo "Logs: $LOGDIR"
 echo "Run dirs: $EXAMPLE_DIR/experiments/run_*"
