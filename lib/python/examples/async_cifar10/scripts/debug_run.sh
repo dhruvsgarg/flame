@@ -187,8 +187,8 @@ for e_src in cfg.get("experiments", []):
         # Override per-invocation with SEED=<n>; SEED=none disables (legacy unseeded).
         if seed_val is not None:
             h["seed"] = seed_val
-        # sim_wall_ceiling_s: tight wall guard — sim must finish in <= this many
-        # wall-seconds (default = max_experiment_runtime_s = 1×; a healthy sim is faster).
+        # sim_wall_ceiling_s: tight wall guard -- sim must finish in <= this many
+        # wall-seconds (default = max_experiment_runtime_s = 1x; a healthy sim is faster).
         h["sim_wall_ceiling_s"] = int(ceil_arg) if ceil_arg else runtime_s
         if smoke:
             e["trainer"]["num_trainers"] = 48
@@ -202,7 +202,7 @@ for e_src in cfg.get("experiments", []):
             h["rounds"] = 20000
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
-                # smoke, which hardcodes rounds=4/runtime=240 — too short for a
+                # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
                 # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
                 e["trainer"]["num_trainers"] = num_trainers_override
@@ -235,7 +235,7 @@ for e_src in cfg.get("experiments", []):
                 h["trackTrainerAvail"]["trace"] = trace_override
                 # For baselines NOT on the ORACULAR legacy path (felix, feddance,
                 # oracle, fedbuff): activate the new sim_unavailability gate so
-                # _init_availability picks up the trace (§7 felix master-gate).
+                # _init_availability picks up the trace (Sec 7 felix master-gate).
                 # ORACULAR baselines (oort, refl) already activate via the legacy path.
                 if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
                     h["simUnavailability"] = True
@@ -243,7 +243,7 @@ for e_src in cfg.get("experiments", []):
                     # config_overrides HP (T1 two-axis split); no auto-detection needed
                     # here. The client_notify.enabled check below is always False
                     # (Stage H is future), so proactiveInflightEvict is never set by
-                    # this branch — the explicit YAML value is authoritative.
+                    # this branch -- the explicit YAML value is authoritative.
                     t_hp = e.get("trainer", {}).get("hyperparameters", {})
                     if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
                         h["proactiveInflightEvict"] = True
