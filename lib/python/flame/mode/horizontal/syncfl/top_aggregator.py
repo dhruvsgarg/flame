@@ -834,20 +834,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         """Latch the one-shot join barrier and re-anchor the real-mode trace-read
         origin to "now" (round-0 start), not aggregator __init__.
 
-        `agg_start_time_ts` is stamped at __init__ (internal_init), before
-        `channel.await_join()` / `_await_min_trainers()` run. In sim mode that's
-        fine — `_avail_now()` reads `_vclock.now`, which only starts advancing
-        once round-0 selection begins, so the join wait (real OS process
-        spawn/connect, which happens in wall-clock time in BOTH modes) never
-        touches it. In real mode `_avail_now()` reads
-        `time.time() - agg_start_time_ts`, so without this re-anchor the join
-        wait (~300s wall at n=300) is silently baked into every subsequent
-        trace read — real ends up reading the availability trace ~300s ahead
-        of where sim/ground-truth says it should be (confirmed via feddance
-        syn_50: real's num_eligible drops at wall~300s, sim/trace ground-truth
-        agree the drop is at t~600s — see UNAVAILABILITY_DESIGN.md A3 section).
-        Re-anchoring here makes real's origin self-correcting to however long
-        the join actually takes, not tied to today's ~300s figure."""
+        `agg_start_time_ts` is stamped at __init__, before the join wait runs.
+        Sim is unaffected (`_avail_now()` reads `_vclock.now`, which only
+        starts advancing at round-0 selection). Real reads `time.time() -
+        agg_start_time_ts`, so without this re-anchor the join wait (~300s
+        wall at n=300, real OS process spawn/connect) is silently baked into
+        every trace read -- real ends up ~300s ahead of sim/ground-truth (see
+        UNAVAILABILITY_DESIGN.md's B2.0.3). Self-correcting to however long
+        the join actually takes.
+        """
         self._join_barrier_done = True
         if not self.simulated:
             self.agg_start_time_ts = time.time()
@@ -1093,13 +1088,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return
 
         payload = {MessageType.EOT: self._work_done}
-        # Batch 4 finding 2 (UNAVAILABILITY_DESIGN.md): sim-mode trainers only
-        # advance their own _sim_now() on dispatch, so one that goes quiet
-        # (correctly withheld/evicted as UN_AVL) never gets another chance to
-        # catch its avl_state/telemetry up to later trace transitions. This
-        # broadcast already reaches every connected end regardless of dispatch
-        # state, so piggyback the final vclock on it -- a last wake-up letting
-        # _refresh_avl_state() flush any queued transitions before exit. Gated
+        # Sim trainers only advance _sim_now() on dispatch, so one that goes
+        # quiet (withheld/evicted UN_AVL) never catches its avl_state up to
+        # later trace transitions (UNAVAILABILITY_DESIGN.md's Batch 4 finding
+        # 2). Piggyback the final vclock on this broadcast (reaches every
+        # connected end regardless of dispatch state) as a last wake-up for
+        # _refresh_avl_state() to flush queued transitions before exit. Gated
         # on the availability feature (byte-identical broadcast payload when
         # off); real mode's clock never freezes, so it doesn't need this.
         if self.simulated and getattr(self, "trainer_event_dict", None) is not None:

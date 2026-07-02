@@ -89,11 +89,9 @@ class ClientAvailability:
         )
         # proactive_inflight_evict: whether in-flight slots are freed at the next
         # selection boundary when the trace shows UN_AVL (felix only).
-        # NOTE: the `_legacy_aware` fallback below is dead in practice — the
-        # pydantic field always exists (default=None), so getattr returns None
-        # rather than falling back to _legacy_aware. bool(None)=False, which is
-        # the correct safe default. All YAMLs set proactive_inflight_evict
-        # explicitly after T1, so this path is never reached.
+        # NOTE: `_legacy_aware` fallback is dead in practice -- the pydantic
+        # field always exists (default=None), so getattr never falls back to
+        # it; kept as the correct safe default if that ever changes.
         _legacy_aware = bool(getattr(hp, "availability_aware", False))
         self.proactive_inflight_evict: bool = bool(
             getattr(hp, "proactive_inflight_evict", _legacy_aware)
@@ -175,10 +173,9 @@ class ClientAvailability:
     ) -> Optional[dict]:
         """Build task_id → SortedDict[ts_s → state_str] from the canonical store.
 
-        Thin wrapper (Batch 3 T3.2 Phase 2): the actual implementation lives in
-        flame.availability.trace.read_trainer_unavailability, a free function
-        so scripts/parity/ground_truth.py can call it without instantiating
-        this mixin. Kept here for backward compatibility with existing callers
+        Thin wrapper -- the implementation is a free function in
+        flame.availability.trace so scripts/parity/ground_truth.py can call
+        it without instantiating this mixin. Kept here for existing callers
         (self.read_trainer_unavailability(...) in _init_availability).
         """
         return _read_trainer_unavailability(trace, base_dir=base_dir)
@@ -218,26 +215,15 @@ class ClientAvailability:
     def get_curr_task_ineligible_trainers(self, task: str) -> list:
         """D.2: UN_AVL + task-type-ineligible trainers per the trace-read.
 
-        Extends get_curr_unavail_trainers with the F3 task-type partition:
-        AVL_TRAIN-only trainers are excluded from "eval" dispatch; AVL_EVAL-only
-        trainers are excluded from "train" dispatch ("AVL_TRAIN->AVL_EVAL:
-        train-pool removal, eval-eligible only"). UN_AVL is excluded from both.
-        Returns [] when trainer_event_dict is None (gate off) or
-        avail_select_filter is False (unaware baselines: oort/fedbuff).
-
-        Inert (== get_curr_unavail_trainers()) for any task other than "train"/
-        "eval", for baselines that never dispatch "eval" (oort: Challenge 8)
-        since no trainer is ever drawn from a pool excluding AVL_EVAL there, AND
-        for a 2-state trace (syn_0/syn_20/syn_50 today — never produces AVL_EVAL,
-        checked via _trace_has_avl_eval). That last guard is load-bearing, not
-        cosmetic: without it, "eval" dispatch's eligible pool is permanently
-        EMPTY on a 2-state trace (nobody is ever AVL_EVAL), and an empty eligible
-        pool fed into the selector's send-state "invalid prior selection"
-        cleanup (async_oort.py/fedbuff.py _handle_send_state, shared
-        selected_ends across train+eval) wipes out train's in-flight tracking
-        too — the aggregator forgets it's waiting on trainers and never reads
-        their completed responses (discovered via a real felix syn_0 hang,
-        zero AGG_RECV_WEIGHTS over a full run despite all trainers sending).
+        Extends get_curr_unavail_trainers with the task-type partition:
+        AVL_TRAIN-only trainers are excluded from "eval" dispatch and vice
+        versa; UN_AVL is excluded from both. Returns [] when the gate is off
+        or avail_select_filter is False. The `_trace_has_avl_eval` guard is
+        load-bearing: without it, a 2-state trace (nobody ever AVL_EVAL)
+        makes "eval"'s eligible pool permanently empty, and an empty pool fed
+        into the selector's shared-`selected_ends` cleanup (Challenge 13)
+        wipes out train's in-flight tracking too — found via a real felix
+        syn_0 hang (zero AGG_RECV_WEIGHTS despite all trainers sending).
         """
         if self.trainer_event_dict is None:
             return []
@@ -286,19 +272,10 @@ class ClientAvailability:
             trace = self.trainer_event_dict.get(end_id)
             state = state_at(trace, now) if trace else TrainerAvailState.AVL_TRAIN
             channel.set_end_property(end_id, PROP_AVL_STATE, state)
-        # T3.3 selection-checkpoint belief is NOT re-emitted here as a separate
-        # agg_belief_change stream — investigated while building T3.3 (Jul 1):
-        # PROP_AVL_STATE, stamped just above, is already read by
-        # flame/selector/__init__.py's emit_selection into
-        # per_trainer[end]["avl_state"] on every selection event, so it's
-        # already fully persisted (avail_state_series.build_trainer_state_series
-        # is exactly this data, already used by A4dur/A5). Re-emitting it here
-        # too would double telemetry volume (up to 300 events/round) for data
-        # that already has a telemetry trail — the doc's original "no telemetry
-        # trail" premise for this checkpoint was wrong (same class of
-        # design-vs-actual-code gap as T3.2's avail_change/sim_now finding).
-        # A7's "selection" checkpoint score reads per_trainer.avl_state
-        # directly; only the "commit" checkpoint below is genuinely new.
+        # No separate agg_belief_change emission for the "selection" checkpoint:
+        # PROP_AVL_STATE (stamped above) is already read by emit_selection into
+        # per_trainer[end]["avl_state"] on every selection event, so A7's
+        # selection score reads that directly. Only "commit" (below) is new.
 
     # ------------------------------------------------------------------
     # Aggregator belief tracking (Batch 3 T3.3) — mechanism-agnostic hook
@@ -535,18 +512,15 @@ class ClientAvailability:
     def _sim_reinject_ready_withheld(self) -> None:
         """C.2: re-inject withheld updates whose delivery_ts has arrived.
 
-        Call before each pop. For every ledger entry due at the current vclock
-        (ordered by (delivery_ts, end_id)), re-add the held payload to the reorder
-        buffer keyed at delivery_ts so it commits stale through the normal path,
-        then pop the ledger. A slot-only entry (registered at eviction time, before
-        the trainer's update physically completed) carries no payload yet — it
-        STAYS registered past its (estimate) delivery_ts rather than being dropped;
-        once the payload genuinely arrives, _sim_withhold_if_unavail recognizes the
-        end is still in pending_withheld, stashes it, and bumps delivery_ts to the
-        real completion time, so the NEXT call here delivers it (Next actions §2:
-        dropping eagerly here is what made an evicted-but-still-computing end's
-        late commit go through the normal path with no withheld_delivery tag).
-        No-op when the ledger is empty.
+        Call before each pop. For every ledger entry due at the current vclock,
+        re-add the held payload to the reorder buffer at delivery_ts so it
+        commits stale through the normal path, then pop the ledger. A
+        slot-only entry (registered at eviction time, before the update
+        physically completed) carries no payload yet — it STAYS registered
+        rather than being dropped; once the payload arrives, `_sim_withhold_
+        if_unavail` recognizes it's still in `pending_withheld`, stashes it,
+        and bumps `delivery_ts` to the real completion time so the next call
+        here delivers it. No-op when the ledger is empty.
         """
         if not getattr(self, "pending_withheld", None):
             return
@@ -594,15 +568,10 @@ class ClientAvailability:
         if end in self.pending_withheld:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
             self._avail_drop_inflight(end)
-            # The ledger's delivery_ts was an ESTIMATE made at eviction time
-            # (sct=now then, before this update had even finished computing).
-            # Now that the real completion time is known, bump delivery_ts up
-            # to whichever is later — never earlier, so a still-down trainer
-            # is never released before the registered window (invariant 2) —
-            # so a late-completing eviction doesn't register a delivery_ts the
-            # vclock has already passed by the time the payload shows up
-            # (the under-emission bug: _sim_reinject_ready_withheld would have
-            # nothing to deliver yet and only gets one shot at the stale dts).
+            # delivery_ts was an ESTIMATE made at eviction time (before this
+            # update finished computing); bump to the real completion-based
+            # value if later -- never earlier (invariant 2: never release a
+            # still-down trainer before its registered window).
             self.pending_withheld[end] = max(
                 self.pending_withheld[end], self.compute_delivery_ts(end, float(sct))
             )
@@ -662,20 +631,11 @@ class ClientAvailability:
     def _emit_withheld_delivery(self, end, msg, orig_sct, delivery_ts) -> None:
         """Emit the withheld_delivery rung for a late stale commit (best-effort).
 
-        Batch 3 T3.5 (K11): stamps ``actual_commit_ts`` via ``_avail_now()`` —
-        the caller should invoke this AFTER advancing its own clock
-        (``_advance_sim_clock`` or equivalent) for this specific update, as
-        asyncfl's commit loop already did. syncfl/oort's dedicated
-        withheld-drain loops were reordered to match for the same defensive
-        reason, though NOT because it was observably broken: a withheld
-        item's ``_advance_sim_clock(delivery_ts)`` there is providably always
-        a no-op (``_sim_reinject_ready_withheld`` only ever re-injects entries
-        whose ``delivery_ts`` is already <= the CURRENT vclock, so the advance
-        can never move it), meaning emit-before-advance and emit-after-advance
-        read the identical value in that specific code path today. Kept
-        emit-after-advance everywhere anyway for one uniform rule across all
-        three stacks rather than relying on that no-op invariant holding
-        forever as the drain loops evolve.
+        Stamps ``actual_commit_ts`` via ``_avail_now()`` — call this AFTER
+        advancing the clock (``_advance_sim_clock``) for this update, kept
+        as one uniform rule across all three stacks (see UNAVAILABILITY_
+        DESIGN.md's T3.5 for why syncfl/oort's drain loops were reordered to
+        match asyncfl, despite it being a provable no-op there today).
         """
         if not telemetry.is_enabled():
             return
@@ -760,26 +720,16 @@ class ClientAvailability:
         now = self._avail_now()
         buf = getattr(self, "_sim_buffer", None)
         committed = getattr(self, "_sim_committed", set())
-        # TEMP DIAGNOSTIC (Batch 4 follow-up, remove once the eviction-miss
-        # mystery is root-caused): summarize why UN_AVL inflight ends are or
-        # aren't evicted each call, so a live run's log can show which guard
-        # is actually firing instead of inferring it from AWARE_EVICT alone.
-        _skip_buf = _skip_committed = _skip_no_trace = _skip_still_avl = _n_evicted = 0
         for end in list(inflight):
             if buf is not None and buf.has(end):
-                _skip_buf += 1
                 continue  # update already arrived in buffer — not stalled
             if end in committed or end in self.pending_withheld:
-                _skip_committed += 1
                 continue  # invariant 1: already committed / registered
             trace = self.trainer_event_dict.get(end)
             if not trace:
-                _skip_no_trace += 1
                 continue
             if state_at(trace, now) != TrainerAvailState.UN_AVL:
-                _skip_still_avl += 1
                 continue  # still available — leave the slot
-            _n_evicted += 1
             self.free_stalled_slot(
                 channel, end, reason="aware_boundary_eviction", sct=now
             )
@@ -796,11 +746,6 @@ class ClientAvailability:
                     reason="aware_boundary_eviction",
                 )
                 telemetry.emit(ev, **f)
-        logger.info(
-            f"[EVICT_DEBUG] now={now:.1f} inflight={len(inflight)} evicted={_n_evicted} "
-            f"skip_still_avl={_skip_still_avl} skip_buf={_skip_buf} "
-            f"skip_committed_or_withheld={_skip_committed} skip_no_trace={_skip_no_trace}"
-        )
 
     def _next_avail_vclock(self) -> Optional[float]:
         """Stage F: earliest vclock at which any trainer next becomes selectable.
