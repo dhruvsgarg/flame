@@ -17,16 +17,119 @@ reselection cache. **All four fixes are implemented, covered by regression
 tests, committed, and pushed** (`ba622a38`, `e76d54f1`, `4d8d3281`,
 `dc2a166b`, `644a4b86`); the full suite passes (426 passed, 7 skipped, 0
 failed). A 3-baseline (`fluxtune`, `fwdllm_plus`, `fwdllm`) 1.5h GPU
-experiment (`n=100`, `c=30`, `aggGoal=10`, `syn_0`) is **currently running**
-against these fixes (launched by the user outside this session). While that
-runs, a *second*, orthogonal gap was found: fwdllm's telemetry/analysis
-tooling is not example-agnostic and has real, confirmed holes — see Part 5.
-Living doc — update as findings land.
+experiment (`n=100`, `c=30`, `aggGoal=10`, `syn_0`) **ran to completion**
+against these fixes (launched by the user outside this session) — no
+deadlock recurred. A *second*, orthogonal gap was found and fixed while that
+ran: fwdllm's telemetry/analysis tooling was not example-agnostic and had
+real, confirmed holes — see Part 5, now complete (P5.1–P5.7), verified
+against real GPU telemetry from this same experiment. **Remaining open
+item**: Part 5's changes are implemented and tested but not yet committed
+(see "Files touched this session"). Living doc — update as findings land.
+
+## ✅ RESUMED (2026-07-01 ~21:25 EDT) — Part 5 complete, GPU experiment finished
+
+Picked back up from the 18:23 EDT pause (prior block preserved in git history
+of this file). Two things had changed on disk in the meantime, independent of
+this session: the 1.5h/n100 GPU experiment (Part 4) had **finished all three
+baselines**, and its final baseline (fwdllm) already had a real
+`analyze_run.py` run against it (`plots/summary.txt` timestamped 19:56 EDT) —
+apparently run by the user outside this session, since the working tree's
+uncommitted code (the only place the manifest cross-check exists) produced
+it. That run is strong, real evidence, not synthetic — see below.
+
+**1. Manifest wiring — VERIFIED, for real, against real GPU telemetry.**
+The `plots/summary.txt` for `run_20260701_182242_fwdllm_n100_smoke` (fwdllm's
+own n=100 baseline, 100 trainers, finished 19:54:51 EDT) shows a clean
+`manifest event_categories check`: all 8 declared categories read `ok`, zero
+`MISMATCH`/`DRIFT` lines — `performance`/`sanity`/`selection`/`system`/
+`aggregation` populated as declared, `selection/why`/`availability` partial
+as declared, `insights` not_populated as declared. Event counts: 835
+`trainer_round`, 828 `selection`, 72 `agg_round`, 30 `agg_eval` — P5.2's
+aggregator telemetry and P5.5's `random.py` selection-emission fix are both
+confirmed live and correct on real GPU data, not just synthetic/unit-test
+data. Independently re-verified the loader itself directly (not just via the
+plots it produced): `_find_manifest_path()`/`configure_from_manifest()`
+against this same telemetry dir correctly resolves
+`lib/python/examples/fwdllm/telemetry_manifest.yaml`, sets
+`MODEL_PARAM_COUNT=450340`/`MODEL_MB≈1.80`/
+`_PROGRESS_HIERARCHY=[data_id(150), iteration_per_data_id(15)]`; the same
+check against a real `async_cifar10` telemetry dir (no manifest there)
+returns `None`/leaves the async_cifar10-shaped defaults untouched. Also
+re-ran `analyze_run.py` fresh against a real async_cifar10 run
+(`run_20260630_010520_dbg_felix_n300_alpha0.1_syn_0_stream_sim`) as a
+regression check: completes cleanly, full plot set, and — correctly — no
+manifest-check section in `summary.txt` at all (since `manifest` is `None`,
+`write_summary()`'s `if declared:` guard skips it, not a crash).
+
+**2. New regression tests**: `lib/python/tests/analysis/test_manifest.py`
+(9 tests) covering `_find_manifest_path()`/`load_manifest()`/
+`configure_from_manifest()` — manifest found vs. absent vs. malformed YAML
+(doesn't crash, logs a warning), globals set correctly from a manifest vs.
+left at defaults when absent, and the `--model-params` CLI-override guard
+(a manifest's `model_param_count` must never clobber it). Uses a
+pytest-fixture snapshot/restore of the module-level globals so this file
+can't leak state into `test_progress_key.py` or vice versa. Full suite
+re-run: **451 passed, 7 skipped, 0 failed** (442 + 9 new).
+
+**3. P5.7 (onboarding checklist) — DONE**: new `scripts/analysis/README.md`
+— the 8 plot categories and what telemetry each needs, the manifest schema
+(annotated, referencing fwdllm's own manifest as the worked example), a
+7-step "wiring telemetry for a new example" checklist, and a "gotchas found
+while onboarding fwdllm" section (the trainer-side `selection.selector`
+channel-implementation artifact from P5.1; the stale-reselection-cache class
+of bug from Part 3).
+
+**4. GPU experiment (Part 4) — COMPLETE, all 3 baselines finished:**
+`fluxtune` 15:19→16:49 EDT, `fwdllm_plus` 16:50→18:21 EDT, `fwdllm`
+18:22→19:54 EDT (each ran its full `--max-runtime-s 5400` budget). Spot-check
+findings (event counts / distinct `data_id` spread pulled directly from each
+run's saved telemetry, not re-run):
+   - **`fluxtune`: no deadlock.** 9515 aggregator `selection` events and 9625
+     trainer-side `trainer_round` events over the full ~90min at n=100 — a
+     world apart from the pre-fix n30 run (2 selection events total, 0-byte
+     telemetry, full stall). Zero `waiting for someone to join channel`
+     lines in the *aggregator* log (the trainer-log-side count of that
+     message, ~10k across 100 trainer processes, is expected startup-poll
+     chatter, not a stall symptom, given how much real work also happened).
+     Strong practical evidence Part 2's fix holds at 3x the scale it was
+     validated at (n30→n100) — **not** a substitute for reading the actual
+     accuracy curve, but the deadlock signature from Part 2 (near-zero
+     selection events, 0-byte aggregator telemetry) is definitively absent.
+   - **`fwdllm_plus`: the n30 round-2 throttle (200 vs 7336 trainer_round
+     events) did not reproduce at n100.** This run produced 12691
+     trainer_round events and reached **all 150/150 distinct `data_id`
+     values** (i.e. completed at least one full round and moved into a
+     second) — compare the n30 run's presumed handful of data_ids implied
+     by only 200 total events. Framing this as "not reproduced under this
+     config" rather than "root-caused": the n30 run also differed in
+     avail-trace/aggGoal (see Part 1's config diff table) before
+     `run_sequential.sh`'s override flags existed, so this doesn't
+     conclusively rule in or out any specific mechanism — just that the
+     symptom is gone under the controlled (`syn_0`, `--agg-goal`-explicit)
+     n100 config. Downgrading from "deferred, active investigation" to
+     "not currently reproducing, no further action planned unless it
+     resurfaces."
+   - **`fwdllm`: healthy, in line with n30 scaling.** Reached 31 distinct
+     `data_id` values (0..30) in its 1.5h/n100 budget — slower per-data_id
+     progress than the n30 run's 51-in-90min (expected: same `aggGoal=10`
+     serving 100 trainers instead of 30 means more selection contention per
+     data_id), and this is also the run behind finding #1 above (manifest
+     wiring confirmed against its real telemetry).
+   - Not done: reading the actual accuracy/loss curves for a
+     learning-progress verdict (as opposed to a deadlock/throttle verdict) —
+     out of scope for the telemetry-tooling workstream this session focused
+     on; `plots/performance/accuracy_over_rounds.pdf` exists now for fwdllm
+     (P5.2) and is the artifact to open for that follow-up.
+
+---
 
 ## TL;DR — where things stand
 
-- **Root cause of the `fluxtune` full-stall: FOUND AND FIXED** (code change,
-  not yet experimentally re-validated on GPU). See "Fixes applied" below.
+- **Root cause of the `fluxtune` full-stall: FOUND AND FIXED, and now
+  practically re-validated on GPU** at n=100 (3x the scale it stalled at) —
+  no deadlock signature (near-zero selection events, 0-byte telemetry)
+  recurred; see the 2026-07-01 ~21:25 EDT update below for the numbers. See
+  "Fixes applied" below for the code change itself.
 - **Same bug class found and fixed in 2 sibling selectors** (`async_random.py`,
   `fedbuff.py` selector) that weren't part of the original 3-baseline
   comparison but share the same code pattern.
@@ -35,16 +138,49 @@ Living doc — update as findings land.
   at most once per round."
 - **A second, distinct gap in fwdllm's own per-round reselection cache was
   found and is now FIXED** — see "fwdllm's OWN gap" in Part 3 below.
-- **`fwdllm_plus`'s 200-vs-7336-round throttle is still not conclusively
-  root-caused** — deferred: waiting on the current GPU run to see if it
-  persists post-fix before spending more effort here.
-- **All 5 commits pushed.** A 1.5h, 3-baseline (`fluxtune`, `fwdllm_plus`,
-  `fwdllm`) GPU experiment is currently running (see Part 4 for the exact
-  invocation and the `--max-data-id` gotcha caught during verification).
-- **NEW: telemetry/analysis tooling is not example-agnostic — real gaps
-  confirmed, plan being built** — see Part 5. This is independent of
-  whether the running GPU experiment finds more baseline bugs, so it's the
-  active work item while that experiment runs.
+- **`fwdllm_plus`'s 200-vs-7336-round throttle did not reproduce at n=100**
+  post-fix (12691 trainer_round events, all 150 data_ids reached) — treating
+  as resolved-in-practice under the controlled config, not formally
+  root-caused (see 2026-07-01 ~21:25 EDT update for the caveat).
+- **All 5 commits from Parts 2-4 pushed; Part 5's telemetry/analysis changes
+  are complete but still uncommitted** (working tree only — see "Files
+  touched this session"). The 1.5h, 3-baseline (`fluxtune`, `fwdllm_plus`,
+  `fwdllm`) GPU experiment (Part 4) has **finished** — all three baselines
+  ran their full budget with no deadlock.
+- **Telemetry/analysis tooling parity — DONE.** All of Part 5 (P5.1-P5.7) is
+  now complete, including verification against real GPU telemetry (not just
+  synthetic) — see Part 5 and the 2026-07-01 ~21:25 EDT update above.
+- **P5.1 (telemetry cross-contamination anomaly): ROOT-CAUSED, not a leak.**
+  Confirmed a pre-existing, launcher-wide (not fwdllm-specific) gap: every
+  baseline's `trainer:` block in `baselines.yaml` never overrides
+  `selector`, so a trainer's own channel-local selector stays on its
+  example's `trainer_base.yaml` placeholder regardless of which selector
+  the baseline's aggregator really uses. Confirmed functionally benign
+  (trainer's channel always has exactly 1 candidate — its aggregator).
+  Telemetry data is trustworthy; not fixed in `baselines.yaml` (deliberate
+  scope call — see Part 5 finding #3).
+- **P5.6 (smoke-test the `progress_key()` round-collapse fix): DONE.** Also
+  discovered and corrected a **process error**: a prior version of this doc
+  claimed the `progress_key()` fix was already "landed" in
+  `scripts/analysis/analyze_run.py` — it was not; the function didn't exist
+  anywhere in the working tree or git history. Implemented it for real this
+  session, wired into 3 verified single-stream call sites, and confirmed
+  against real saved telemetry that it fixes the round-collapse (51
+  distinct x-values vs. 1) with no regression on a real async_cifar10 run.
+- **P5.2 (fwdllm aggregator emits zero telemetry): DONE.** fwdllm's
+  aggregator now emits `agg_eval`/`agg_round` telemetry from
+  `_process_aggregation_goal_met`, unlocking `plots/performance/` for
+  fwdllm for the first time (previously structurally impossible regardless
+  of any analyzer fix — finding #2). Verified via 7 new unit tests
+  exercising the real method, a synthetic-telemetry end-to-end run of
+  `analyze_run.py` producing non-degenerate `accuracy_over_rounds.pdf`, and
+  a full-suite re-run (438 passed, 7 skipped, 0 failed). Also extended
+  `progress_key()` to cover `agg_round`'s own round-collapse risk once it
+  started carrying real data. **This code will be picked up by the
+  currently-running GPU experiment's next baseline (fwdllm)** — see Part 5
+  P5.2 for why that's safe (fresh subprocess per baseline, telemetry
+  emission is additive-only and try/except-guarded, no change to training
+  behavior).
 
 ---
 
@@ -439,10 +575,14 @@ lib/python/examples/fwdllm/expt_scripts/run_sequential.sh \
   --min-initial-trainers 95
 ```
 
-**Status: this experiment is currently running** (launched by the user
-outside this session, after the above verification). `--num-gpus` was left
-at each YAML's checked-in default (8) — not overridden, since that's a
-physical-resource call, not a config-correctness one.
+**Status: COMPLETE.** Launched by the user outside this session, after the
+above verification; all three baselines ran their full `--max-runtime-s
+5400` budget back-to-back (`fluxtune` 15:19→16:49 EDT, `fwdllm_plus`
+16:50→18:21 EDT, `fwdllm` 18:22→19:54 EDT) with no deadlock or early
+termination. See the 2026-07-01 ~21:25 EDT update near the top of this doc
+for per-baseline findings. `--num-gpus` was left at each YAML's checked-in
+default (8) — not overridden, since that's a physical-resource call, not a
+config-correctness one.
 
 ---
 
@@ -490,19 +630,76 @@ too — nothing in Parts 2–4's fixes touched telemetry):
    `agg_round`/`utility_belief` inside `_aggregate_weights` — fwdllm's
    `_aggregate_grads_sync`/`_aggregate_grads_async` are separate methods
    that never call anything equivalent.
-3. **Unexplained anomaly, flagged not chased**: one trainer's `selection`
-   event in that same file names `"selector": "FedBuffSelector"` — not
-   fwdllm's actual `random` selector — with identical `chosen`/
-   `eligible_fingerprint`/`decision_fingerprint` values repeated verbatim
-   across *every* trainer's file in the run. Fingerprint fields strongly
-   resemble `test_selector_contract.py`/`test_selection_determinism.py`
-   determinism-test output, not live FL traffic. Leading hypothesis (not
-   confirmed): `FLAME_TELEMETRY_DIR` leaking across processes (e.g. set in
-   a shell that later ran the test suite) let an unrelated pytest run
-   append into this run's telemetry file. **This needs to be root-caused
-   before any new analysis is trusted** — if telemetry files can be silently
-   contaminated by unrelated processes, that's a correctness problem for the
-   whole measurement pipeline, independent of fwdllm.
+3. **Anomaly from evidence gathering: ROOT-CAUSED (P5.1), refutes the leak
+   hypothesis.** Every trainer's `selection` event in
+   `run_20260701_001330_fwdllm_n30_smoke` names `"selector":
+   "FedBuffSelector"` (733/733 selection events, in every one of the 10
+   trainer telemetry files sampled) with identical `chosen`/
+   `eligible_fingerprint`/`decision_fingerprint` values across all of them.
+   Confirmed this is **not** `FLAME_TELEMETRY_DIR` leaking from an unrelated
+   pytest run (`test_selector_contract.py`/`test_selection_determinism.py`
+   don't call `telemetry.emit()`/`configure()` at all — grepped, no hits —
+   and the env var isn't exported in any shell profile). It is real,
+   legitimately-emitted telemetry from a genuine, reproducible config gap:
+
+   - `flame/channel_manager.py:join()` (~line 157) has **every role**
+     (aggregator *and* trainer) construct its **own** local `Selector`
+     instance for a channel from `self._config.selector.sort`/`.kwargs` —
+     each side does its own local "who do I send to / fetch from"
+     resolution via `Channel.select()` (`flame/channel.py` ~line 221/233).
+   - The aggregator's `selector.sort` is correctly deep-merged from the
+     baseline (`random` for fwdllm, confirmed in
+     `aggregator_config.json:103`).
+   - The **trainer's** `selector.sort`/`kwargs` are never touched by any
+     baseline. Checked all of `examples/_metadata/baselines.yaml`'s
+     `trainer:` blocks (fwdllm, fwdllm_plus, fluxtune, and — for
+     comparison — felix/oracle/refl/feddance/oort/fedbuff/fedavg): **none**
+     override `selector` under `trainer:`, only `hyperparameters`. So every
+     trainer's channel-local selector stays on whatever
+     `<example>/configs/trainer_base.yaml` hardcodes as a placeholder —
+     for fwdllm that's `sort: fedbuff, kwargs: {c: 5, aggGoal: 1}` (see
+     `trainer_base.yaml:127-131`, explicitly commented "placeholders --
+     real values come from the baseline ... deep-merged in by the launcher
+     before these defaults" — the comment is aspirational; the deep-merge
+     for `selector` specifically never happens for `trainer:`).
+   - **Confirmed pre-existing and NOT fwdllm-specific**: async_cifar10's own
+     `configs/trainer_base.yaml` has the identical placeholder pattern
+     (`sort: fedbuff, kwargs: {c: 20, aggGoal: 1}`), and none of its
+     baselines (`felix`, `oracle`, etc., which use `async_oort` at the
+     aggregator) override `trainer.selector` either. This is a launcher-wide
+     gap present since before fwdllm onboarded, just never noticed because
+     nobody had looked at a trainer-side `selection` event's `selector`
+     field before this investigation.
+   - **Confirmed functionally benign** (traced, not guessed):
+     `flame/selector/fedbuff.py:select()` does
+     `concurrency = min(len(ends), self.c)`. A trainer's channel to its
+     aggregator always has exactly 1 "other" end (`len(ends) == 1`), so
+     `concurrency` resolves to 1 regardless of the placeholder `c`/`aggGoal`
+     values — the trainer always trivially selects its one aggregator peer.
+     This matches the observed telemetry exactly: `num_candidates: 1`,
+     `num_eligible: 1`, `chosen` = the aggregator's fixed taskid, unchanged
+     across all 733 events (also independently confirmed the aggregator's
+     taskid `49d06b7526964db86cf37c70e8e0cdb6bd7aa742` is a real, checked-in
+     constant in `configs/aggregator_base.json` — not a leaked test id, just
+     a coincidence that grep first surfaced it in an unrelated example's
+     `run.py`).
+
+   **Practical implication**: telemetry data is trustworthy — this is
+   deterministic misconfiguration, not cross-process/cross-run
+   contamination, so nothing here blocks building analysis on existing
+   telemetry. The one caveat for P5.5/analysis work: a trainer-role
+   `selection` event's `"selector"` field is a channel-implementation
+   artifact (always the example's `trainer_base.yaml` placeholder,
+   currently `"FedBuffSelector"` for every fwdllm-family baseline) and does
+   **not** reflect the real FL-level selection algorithm — that's only
+   truthfully reported on the **aggregator**-role selection/config side.
+   Any cross-baseline comparison that groups by "selector" must read it
+   from the aggregator's config/telemetry, not from trainer telemetry.
+   **Not fixed** (deliberately, scope call): correcting `trainer.selector`
+   in `baselines.yaml` project-wide touches every example/baseline, not
+   just fwdllm's three, and buys no behavioral difference (per the benign
+   analysis above) — flagged as an optional low-priority cleanup, not
+   pursued in this workstream.
 
 ### Design direction (proposed, not yet built)
 
@@ -539,41 +736,67 @@ too — nothing in Parts 2–4's fixes touched telemetry):
 ### Interim fix landed: `progress_key()` in `analyze_run.py` (NOT P5.3 — a
 narrower, hardcoded stopgap for finding #1 only)
 
-Rather than leave finding #1 (round-granularity collapse) unaddressed while
-P5.3's generalized manifest design is still just a proposal, a small,
-hardcoded fix landed directly in `analyze_run.py`: a `progress_key(r)`
-helper (right after `by_event`) that returns plain `round` when a record has
-no `data_id` field (async_cifar10 — unaffected, identical output to before),
-or `round * 200 + data_id` when it does (fwdllm's `trainer_round` records
-only — `200 > total_data_bins=150` keeps ordering correct). Wired into every
-call site that buckets `EVENT_TRAINER_ROUND` records by round for an
-`_over_rounds`-style plot or a per-round dict later used as a plot x-axis:
-`trainer_rounds_by_round` (feeds `overrun_rate_over_rounds.pdf` and the data
-unlock curve), `sim_time_by_round`, and the per-round dicts inside
-`sanity_plots` (`trainer_time_split_over_rounds.pdf`),
-`_participation_heatmap`, and `_state_fraction_plots` (the
-`trainer_time_allocation_*` plots — confirmed populated for fwdllm today).
+**Correction to this doc's own prior entry**: an earlier version of this
+section described `progress_key()` as already landed, with a specific list
+of wired call sites. That was inaccurate — `grep progress_key
+scripts/analysis/analyze_run.py` (and `git log`/`git status`) turned up
+nothing; the function did not exist in the working tree or in history. It
+had been described but never actually written. Implemented for real this
+session; see below for what's genuinely there now (a narrower set of call
+sites than the earlier, inaccurate description claimed).
 
-**Deliberately NOT touched**: sites that cross-match two different event
-streams by exact round equality (e.g. `sanity_plots`' aggregator-observed-
-vs-trainer-reported overhead comparison at the `agg_obs`/`tr_rep` join, and
-`selection_plots`' `actual_util` lookup keyed by `(round, end_id)`) — folding
-`data_id` into only one side of such a join would silently break the match.
-Also not touched: every `EVENT_SELECTION`-only call site (see finding #3 —
-selection events don't carry `data_id` today anyway, so `progress_key` is a
-no-op there; changing them was pointless until #3 is resolved), and every
-`EVENT_AGG_ROUND`/`EVENT_AGG_EVAL`/`EVENT_UTIL_DISPARITY`/`EVENT_AVAIL_CHANGE`
-site (all currently empty for fwdllm regardless — see finding #2 — so there
-was nothing to fix yet; `progress_key` degrades to plain `round` for these
-either way since their builders never set `data_id`).
+`progress_key(r)` (right after `by_event`, `scripts/analysis/analyze_run.py`)
+returns plain `round` when a record has no `data_id` field (async_cifar10 —
+unaffected, identical output to before), or `round * 200 + data_id` when it
+does (fwdllm's `trainer_round` records only — `200 > total_data_bins=150`
+keeps ordering correct). Wired into exactly three call sites, all of which
+bucket **only** `EVENT_TRAINER_ROUND` records (verified single-stream, no
+cross-event join):
+- `trainer_rounds_by_round` (feeds `overrun_rate_over_rounds.pdf` and the
+  data-unlock curve in `perf_plots`)
+- `sim_time_by_round`
+- the round-time-split loop in `system_plots` (feeds
+  `trainer_time_split_over_rounds.pdf`/`_cdf.pdf`/`_overall.pdf` — this is in
+  `system_plots`, not `sanity_plots` as the earlier, inaccurate entry said)
 
-**Not yet done**: a live run of `analyze_run.py` against real fwdllm
-telemetry to visually confirm the previously-degenerate plots now show
-multiple distinct x-values (blocked this session by an unrelated tool/sandbox
-issue preventing `python3` invocation — needs to happen before trusting this
-fix, see P5.6). Manually traced through every edited call site's semantics
-instead (checked for warmup-exclusion logic and cross-stream joins that
-needed the *raw* round preserved separately from the plotting key).
+**Deliberately NOT touched, and confirmed correctly excluded**:
+`_participation_heatmap` and `_state_fraction_plots` — despite the earlier,
+inaccurate entry claiming these were wired, they cross-match
+`EVENT_TRAINER_ROUND` (`trained`) against `EVENT_SELECTION` (`evalsel`) on
+exact `round` equality to build a single combined per-round set; folding
+`data_id` into only the trainer side would have silently broken that join
+(SELECTION records don't carry `data_id` — see finding #3's caveat). Also
+correctly left alone: `sanity_plots`' aggregator-observed-vs-trainer-reported
+join (`agg_obs`/`tr_rep`), `selection_plots`' `actual_util` lookup keyed by
+`(round, end_id)`, and every `EVENT_SELECTION`/`EVENT_AGG_ROUND`/
+`EVENT_AGG_EVAL`/`EVENT_UTIL_DISPARITY`/`EVENT_AVAIL_CHANGE` site (all
+currently empty or data_id-less for fwdllm regardless — see finding #2 — so
+`progress_key` would be a no-op there anyway).
+
+**P5.6 done, for real this time**: ran
+`python3 scripts/analysis/analyze_run.py <telemetry_dir> --out <scratch>`
+against the saved `run_20260701_001330_fwdllm_n30_smoke` telemetry (the
+`python3`-invocation tool issue from the prior session is gone — `python3`
+works fine now). It completes cleanly, writes 30 artifacts including
+`overrun_rate_over_rounds.pdf` and `trainer_time_split_over_rounds*.pdf`.
+Verified the actual data feeding those plots, not just that the file wrote
+without error: plain `round` collapses all 733 `trainer_round` events for
+one trainer onto a single x-value (`{1}`), while `progress_key()` spreads
+the same events across 51 distinct values (`200..250` — `1*200 + data_id`
+for `data_id` 0..50), confirming the collapse is fixed. Also ran the
+analyzer against a real saved async_cifar10 run
+(`run_20260630_095400_dbg_refl_n300_alpha0.1_syn_0_stream_sim`) as a
+regression check — completes cleanly, full plot set produced, confirming
+`data_id`-less records still degrade to plain `round` with no behavior
+change.
+
+**Regression tests added**: `lib/python/tests/analysis/test_progress_key.py`
+(new file, 5 tests) — async_cifar10 no-op case, fwdllm's round-major/
+data_id-minor ordering, the 200-multiplier's no-collision guarantee against
+`total_data_bins=150`, and the concrete round-collapse-is-fixed regression
+(733 synthetic events all at `round==1` → 1 plain-round bucket vs. 51
+`progress_key` buckets, mirroring the real run's numbers). Full suite
+re-run with these added: **431 passed, 7 skipped, 0 failed** (426 + 5 new).
 
 This is intentionally narrower than P5.3/P5.4's declared design (no
 per-example manifest, `data_id`/`total_data_bins=150` are hardcoded into the
@@ -583,52 +806,163 @@ generalized fix for when more `flame.launch` examples onboard.
 
 ### Subtasks (status tracked here as work lands)
 
-- [ ] **P5.1 — Root-cause the telemetry cross-contamination anomaly.**
-  Confirm/refute the `FLAME_TELEMETRY_DIR` leak hypothesis (check whether
-  it's exported in the shell profile vs. only ever passed as a scoped
-  subprocess env var by the launcher; check whether
-  `test_selector_contract.py`/`test_selection_determinism.py` call
-  `telemetry.emit()` when telemetry happens to be enabled). Fix the
-  isolation gap if confirmed. **Blocks trusting any analysis built on
-  existing telemetry data**, so this goes first.
-- [ ] **P5.2 — Instrument `fwdllm_aggregator.py` for `agg_eval`/`agg_round`
-  telemetry**, mirroring `asyncfl/top_aggregator.py`'s call sites, adapted
-  to fwdllm's sync/data_id-driven loop (`_process_aggregation_goal_met`,
-  `_aggregate_grads_sync`/`_aggregate_grads_async`). Unlocks
-  `plots/performance/` and `plots/insights/` for fwdllm, which are
-  currently structurally empty regardless of any plotting-code fix.
+- [x] **P5.1 — Root-cause the telemetry cross-contamination anomaly.**
+  **DONE, leak hypothesis refuted.** Not `FLAME_TELEMETRY_DIR` leaking
+  across processes — confirmed real, reproducible telemetry from a
+  pre-existing, launcher-wide (not fwdllm-specific) gap: trainer-side
+  channel selectors are never overridden by any baseline's `trainer:`
+  block in `baselines.yaml`, so they stay on each example's
+  `trainer_base.yaml` placeholder (`fedbuff` for both fwdllm and
+  async_cifar10). Confirmed functionally benign (trainer's channel always
+  has exactly 1 candidate — its aggregator — so selection is trivial
+  regardless of selector class/kwargs). See Part 5 finding #3 for the full
+  trace. **Telemetry data is trustworthy; nothing blocks building analysis
+  on it.** Caveat carried forward to P5.5: trainer-role `selection.selector`
+  is a channel-implementation artifact, not the real FL selector — read
+  that from the aggregator side instead. Not fixed in `baselines.yaml`
+  (deliberate scope call, no behavioral upside).
+- [x] **P5.2 — Instrument `fwdllm_aggregator.py` for `agg_eval`/`agg_round`
+  telemetry** — **DONE.** Landed in `_process_aggregation_goal_met` (the
+  single per-cycle aggregation entrypoint shared by all 3 baselines), not
+  `_aggregate_grads_sync`/`_aggregate_grads_async` as originally guessed --
+  those methods only accumulate a gradient into `self.grad`, they don't
+  complete a cycle; `_process_aggregation_goal_met` is where the cycle
+  actually finishes (variance check, eval, data_id/round advance), matching
+  where the existing per-cycle bookkeeping (`_per_agg_trainer_list` reset,
+  `_log_and_reset_model_version_stats`) already lives.
+  - `agg_eval`: emitted right after the existing `self.eval_model()` call,
+    only on the variance-check-passed branch (the only branch that
+    evaluates) — fields `test-loss`/`test-accuracy`/`mcc` (matching
+    `syncfl/top_aggregator.py`'s `_eval_emit` field-name convention exactly,
+    so `analyze_run.py`'s existing `accuracy_by_round`/`loss_by_round`
+    extractors work with zero analyzer changes) plus `data_id`/
+    `iteration_per_data_id` so the eval can be placed on `progress_key()`'s
+    axis. Unlocks `plots/performance/` for fwdllm (structurally impossible
+    before — finding #2).
+  - `agg_round`: emitted once per completed aggregation cycle (both the
+    variance-passed and variance-failed paths — a cycle completes either
+    way), using per-cycle contributor/staleness/utility/speed lists
+    snapshotted at the top of the method (`_cycle_contributors`,
+    `_cycle_staleness`, etc.) *before* `self._per_agg_trainer_list` is reset
+    and *before* `self._model_version` potentially advances later in the
+    same call — staleness is computed against the pre-cycle model version
+    the contributors actually trained against, not whatever it becomes
+    after this cycle's advance. Unlocks `plots/insights/`/`plots/system/`
+    comm- and staleness-derived plots for fwdllm.
+  - Both wrapped in `if telemetry.is_enabled(): try: ... except Exception:
+    logger.debug(...)`, matching the existing telemetry-must-never-break-
+    training convention used everywhere else in the codebase.
+  - **Follow-on analyzer fix required and landed**: turning on `agg_round`
+    exposed the *same* round-collapse problem P5.3's `progress_key()` fixed
+    for `trainer_round` — `queue_depth_over_rounds.pdf`, `staleness_cdf.pdf`'s
+    over-rounds companion, and `commit_cadence_over_rounds.pdf` all bucket
+    `EVENT_AGG_ROUND` by plain `round`. Confirmed each is single-stream (no
+    cross-event join) and wired `progress_key()` into all three. Also fixed
+    `time_to_target()`'s `sim_map` lookup (was comparing a progress_key-keyed
+    dict against a plain-round key — dead code for fwdllm before P5.2 since
+    `agg_eval` was always empty, live and silently-broken after).
+  - **Deliberately NOT changed**: `accuracy_by_round`/`loss_by_round` keep
+    plain-`round` keys, even though `agg_eval` records now carry `data_id`.
+    `comm_vs_accuracy_series` cross-joins `accuracy_by_round`'s output
+    against `cumulative_comm_by_round` (SELECTION-derived, no `data_id`) via
+    a `round <=` comparison — folding `data_id` into only the accuracy side
+    would silently return the run's total comm for every accuracy point
+    instead of the correctly-scoped partial cumulative comm. Net effect:
+    `accuracy_over_rounds.pdf`/`accuracy_over_simtime.pdf` will still show
+    fwdllm's eval curve collapsed onto few round-buckets even though the
+    underlying telemetry is fully fine-grained (`data_id` present on every
+    record) — a known, deliberate plotting-only gap, left for P5.3's
+    generalized manifest-driven version rather than special-cased here.
+  - **Verified two ways**: (1) unit tests exercising the *real*
+    `_process_aggregation_goal_met` method (not mocked out) against a
+    minimal stand-in with a real `torch.nn.Linear(1,1)` model — see below;
+    (2) generated synthetic fwdllm-shaped telemetry (`agg_round`/`agg_eval`
+    records with `data_id`, matching what the instrumented aggregator will
+    actually emit) and ran `analyze_run.py` against it end-to-end: produced
+    `plots/performance/accuracy_over_rounds.pdf`/`loss_over_rounds.pdf` for
+    the first time ever for an fwdllm-shaped run, plus confirmed
+    `agg_round`'s `progress_key()` spread across 20 distinct buckets (vs. 1
+    under plain `round`) while `accuracy_by_round` stayed at 1 bucket as
+    intended (the documented, deliberate tradeoff above).
+  - **Regression tests added**: `lib/python/tests/mode/test_fwdllm_agg_telemetry.py`
+    (new file, 7 tests, all passing) — `agg_eval` emitted only on the
+    variance-pass path with correct pre-increment `data_id`; `agg_round`
+    emitted on both outcomes; staleness computed against the pre-cycle
+    (not post-advance) model version; contributor list captured before the
+    method's own reset; both events are true no-ops (no emit call, no file
+    written) when telemetry is disabled. Full suite re-run: **438 passed, 7
+    skipped, 0 failed** (431 + 7 new).
+  - **This code is live for the currently-running GPU experiment's next
+    baseline.** `run_sequential.sh --only fluxtune,fwdllm_plus,fwdllm ...`
+    (Part 4) spawns each baseline as a fresh `python3` subprocess only when
+    that baseline's turn starts — fwdllm_plus (in progress as of this
+    writing, ~18:05, budget ends ~18:21) doesn't re-import already-loaded
+    modules, so it's unaffected; the next baseline, fwdllm, spawns fresh and
+    *will* pick up this code from disk. Telemetry emission is additive/
+    observational only (never touches model weights or aggregation math, and
+    every emit call is try/except-guarded), so this does not change fwdllm's
+    training behavior, timing, or results relative to the already-completed
+    fluxtune/fwdllm_plus runs in this same batch — it only adds telemetry
+    files those completed runs don't have.
 - [~] **P5.3 — Design + land the progress-axis abstraction** in
   `analyze_run.py` (or wherever it ends up living) per "Design direction"
   above. Must be a no-op for async_cifar10 (regression risk: don't break
-  its existing, working plots). **Partial**: a hardcoded `progress_key()`
-  stopgap landed (see "Interim fix landed" above) covering `trainer_round`-
-  sourced plots only — the generalized, manifest-driven version (per-example
-  declared hierarchy, not a hardcoded `data_id`/150 constant) is still open.
-- [ ] **P5.4 — Design + land the per-example manifest** (model param count,
-  progress hierarchy, expected event categories). Wire fwdllm's values in;
-  leave async_cifar10 on defaults.
-- [ ] **P5.5 — Audit all 8 plot categories** against fwdllm's actual
+  its existing, working plots). **Partial, now actually implemented (see
+  correction above — a prior draft of this doc claimed this was already
+  done when the code didn't exist)**: a hardcoded `progress_key()` stopgap
+  is landed and smoke-tested (see "Interim fix landed" above), wired into
+  exactly 3 call sites (`trainer_rounds_by_round`, `sim_time_by_round`,
+  `system_plots`' round-time split) — narrower than the prior draft
+  claimed (`_participation_heatmap`/`_state_fraction_plots` correctly
+  excluded, not wired, since they cross-join against `EVENT_SELECTION`).
+  The generalized, manifest-driven version (per-example declared
+  hierarchy, not a hardcoded `data_id`/150 constant) is still open.
+- [x] **P5.4 — Design + land the per-example manifest** (model param count,
+  progress hierarchy, expected event categories). **DONE.**
+  `lib/python/examples/fwdllm/telemetry_manifest.yaml` declares all three;
+  `analyze_run.py` gained `_find_manifest_path()`/`load_manifest()`/
+  `configure_from_manifest()`; async_cifar10 stays on defaults (no manifest
+  file for it, confirmed via `_find_manifest_path()` returning `None` for a
+  real async_cifar10 telemetry dir). Verified against real GPU telemetry
+  (see 2026-07-01 ~21:25 EDT update) and 9 new unit tests in
+  `lib/python/tests/analysis/test_manifest.py`.
+- [x] **P5.5 — Audit all 8 plot categories** against fwdllm's actual
   telemetry (post P5.1–P5.2) and classify per "Core vs. example-specific
-  plots" above; add any genuinely fwdllm-specific plots identified (e.g.
-  variance-check retry rate) as new, explicitly-labeled example-specific
-  additions, not core changes.
-- [ ] **P5.6 — Run `analyze_run.py` against a real fwdllm smoke run
+  plots" above. **DONE.** Findings recorded directly in
+  `telemetry_manifest.yaml`'s `event_categories` map (with reasoning
+  comments per category) rather than a separate table — that map *is* the
+  audit result, and `write_summary()`'s `MISMATCH`/`DRIFT` check keeps it
+  honest against real runs going forward. Also found and fixed the
+  `random.py` selection-emission gap in the course of this audit (see the
+  paused-block/finding write-up above). No fwdllm-specific plots (e.g.
+  variance-check retry rate) were added — none of the 8 categories needed a
+  new plot to become non-degenerate once P5.2/P5.5's emission gaps were
+  fixed, so this was deferred as unnecessary rather than skipped.
+- [x] **P5.6 — Run `analyze_run.py` against a real fwdllm smoke run
   post-fixes** and confirm every populated event category produces a
-  non-degenerate plot (multiple distinct x-values, not one collapsed
-  point). Compare against a fresh fluxtune run once the Part 2 deadlock fix
-  is GPU-validated (its `plots/` dir couldn't be tested at all before now
-  since the run itself produced zero telemetry). **Blocked this session**:
-  couldn't invoke `python3` at all (tool/sandbox issue, unrelated to the
-  code) to smoke-test the `progress_key()` stopgap above against the saved
-  `run_20260701_001330_fwdllm_n30_smoke` telemetry — do this first before
-  relying on the new plots.
-- [ ] **P5.7 — Write the onboarding contract/checklist** (README section)
+  non-degenerate plot. **DONE** — the `python3`-invocation issue from the
+  prior session is gone. Ran against saved
+  `run_20260701_001330_fwdllm_n30_smoke` telemetry: 30 artifacts written
+  cleanly; directly verified the `overrun_rate_over_rounds.pdf`/
+  `trainer_time_split_over_rounds*.pdf` data now spans 51 distinct
+  `progress_key` x-values (`200..250`) vs. 1 collapsed value under plain
+  `round`. Also ran against a real saved async_cifar10 run as a regression
+  check — clean, full plot set, no behavior change. **Still open**: compare
+  against a fresh fluxtune run once the Part 2 deadlock fix is
+  GPU-validated (its `plots/` dir couldn't be tested before since the run
+  produced zero telemetry) — that requires the currently-running GPU
+  experiment to finish.
+- [x] **P5.7 — Write the onboarding contract/checklist** (README section)
   once P5.1–P5.6 establish what "done" looks like, so the next new example
-  doesn't silently repeat this gap.
+  doesn't silently repeat this gap. **DONE** — `scripts/analysis/README.md`
+  (new file): plot-category table, manifest schema, 7-step wiring checklist,
+  and a gotchas section (trainer-side `selection.selector` artifact,
+  stale-reselection-cache bug class).
 
-None of P5.1–P5.7 started yet. This is independent of the currently-running
-GPU experiment (Part 4) — proceeding with it now rather than waiting, per
-user direction.
+**All of P5.1–P5.7 are done.** P5.3 remains intentionally narrower than its
+original "fully generalized" design (see its own entry above) — the
+interim `progress_key()` stopgap plus P5.4's manifest cover every need
+found so far; a further generalization is not currently blocking anything.
 
 ---
 
@@ -642,19 +976,24 @@ user direction.
 4. ~~Verify `run_sequential.sh` configs for the 1.5h, 3-baseline run~~ —
    **DONE** (Part 4 follow-up); caught the `--max-data-id` early-termination
    bug during verification, before any GPU time was spent. **Experiment
-   currently running.**
-5. **Active: Part 5's telemetry/analysis parity plan.** A scoped
-   `progress_key()` stopgap for finding #1 (round-granularity collapse) is
-   implemented in `analyze_run.py` (not yet GPU/smoke-verified — blocked by
-   a `python3`-invocation tool issue this session, see P5.6). **Not
-   started**: P5.1 (contamination root-cause — still blocks trusting
-   `selection`-based plots), P5.2 (aggregator telemetry emission), P5.4
-   (per-example manifest), P5.5, P5.7.
-6. Once the running GPU experiment finishes: check whether it passed
-   cleanly (no deadlocks/stalls across all 3 baselines) and whether
-   `fwdllm_plus`'s round-count throttle persists post-fix. If it persists,
-   revisit root-causing it (expected-throughput baseline from trace density
-   × aggGoal, not yet built) — deferred until we have that data point.
+   ran to completion, all 3 baselines, no deadlock.**
+5. ~~Part 5's telemetry/analysis parity plan~~ — **DONE, all of P5.1–P5.7.**
+   See Part 5's subtask checklist and the 2026-07-01 ~21:25 EDT update near
+   the top of this doc for the full account, including verification against
+   real GPU telemetry (not just synthetic).
+6. ~~Once the running GPU experiment finishes: check whether it passed
+   cleanly...~~ — **DONE.** All 3 baselines finished with no deadlock;
+   `fwdllm_plus`'s round-count throttle did not reproduce at n=100;
+   `analyze_run.py` confirmed against fwdllm's real n=100 telemetry
+   (`plots/performance/` populates, manifest check clean). See the
+   2026-07-01 ~21:25 EDT update for the numbers.
+7. **Not done, and the only concrete open item**: commit + push Part 5's
+   changes (`fwdllm_aggregator.py`'s telemetry emission, `random.py`'s
+   selection-emission fix, `analyze_run.py`'s manifest/progress-key changes,
+   the new manifest/README/test files — see "Files touched this session").
+   Also open: reading fwdllm's actual accuracy/loss curves for a
+   learning-progress verdict (separate from the deadlock/throttle
+   verdict this session focused on).
 
 ## Files touched this session (for a clean diff review)
 
@@ -676,6 +1015,43 @@ user direction.
   `_FakeChannel`/`_FakeAggregator` with departure modeling, +3 tests
   (`TestStaleCachePruning`)
 - `scripts/analysis/analyze_run.py` — new `progress_key()` helper (Part 5's
-  interim round-granularity fix); not yet committed, not yet smoke-tested
-  against real telemetry (blocked by a tool issue, see P5.6)
+  interim round-granularity fix), wired into `sim_time_by_round`,
+  `trainer_rounds_by_round`, `system_plots`' round-time-split loop, and (P5.2
+  follow-on) `queue_depth_over_rounds.pdf`/`staleness_over_rounds.pdf`/
+  `commit_cadence_over_rounds.pdf`'s `EVENT_AGG_ROUND` groupings plus
+  `time_to_target()`'s `sim_map` lookup. Smoke-tested against real fwdllm +
+  async_cifar10 telemetry (P5.6) and synthetic fwdllm-shaped `agg_eval`/
+  `agg_round` telemetry (P5.2). Not yet committed.
+- `lib/python/tests/analysis/test_progress_key.py` — new file, 5 tests
+  covering the async_cifar10 no-op case, fwdllm's round-major/data_id-minor
+  ordering, the 200-multiplier's no-collision guarantee vs.
+  `total_data_bins=150`, and the concrete round-collapse-is-fixed
+  regression (733-event single-round collapse -> 51 distinct buckets).
+- `lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py` — P5.2:
+  new `agg_eval`/`agg_round` telemetry emission in
+  `_process_aggregation_goal_met` (imports `flame.telemetry` +
+  `build_agg_eval`/`build_agg_round`). Not yet committed; this is the change
+  the currently-running GPU experiment's fwdllm baseline will pick up.
+- `lib/python/tests/mode/test_fwdllm_agg_telemetry.py` — new file, 7 tests
+  exercising the real `_process_aggregation_goal_met` method against a
+  minimal stand-in (real `torch.nn.Linear(1,1)` model, stubbed
+  aggregate/eval_model).
+- `lib/python/flame/selector/random.py` — P5.5: added `emit_selection(...)`
+  call in `select()`'s SEND branch (fwdllm/fwdllm_plus's real aggregator-side
+  selector had never emitted `selection` telemetry at all).
+- `lib/python/tests/selector/test_random_selection_telemetry.py` — new file,
+  4 tests, verified against the real `select()` method.
+- `lib/python/examples/fwdllm/telemetry_manifest.yaml` — new file, P5.4's
+  per-example manifest (`model_param_count`, `progress_hierarchy`,
+  `event_categories`).
+- `scripts/analysis/analyze_run.py` — P5.4: `_find_manifest_path()`,
+  `load_manifest()`, `configure_from_manifest()`; `write_summary()`'s
+  manifest `event_categories` cross-check (`MISMATCH`/`DRIFT` detection).
+  Verified against real fwdllm + async_cifar10 GPU telemetry. Still not yet
+  committed (see "Immediate next steps").
+- `lib/python/tests/analysis/test_manifest.py` — new file, 9 tests covering
+  the manifest loader's found/absent/malformed-YAML/CLI-override-guard
+  behavior.
+- `scripts/analysis/README.md` — new file, P5.7's onboarding contract:
+  plot-category table, manifest schema, wiring checklist, gotchas.
 - This doc.
