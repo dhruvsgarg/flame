@@ -65,6 +65,9 @@ import flame.monitor.runtime
 from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import math
 
+from flame import telemetry
+from flame.telemetry.events import build_agg_eval, build_agg_round
+
 
 logger = logging.getLogger(__name__)
 
@@ -1006,6 +1009,15 @@ class TopAggregator(AsyncTopAgg):
             f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation."
         )
 
+        # Snapshot for this cycle's agg_round telemetry (emitted further down,
+        # after self._per_agg_trainer_list is cleared and self._model_version
+        # may have advanced -- see build_agg_round call below).
+        _cycle_contributors = list(self._per_agg_trainer_list)
+        _cycle_target_version = self._model_version
+        _cycle_speed_s = []
+        _cycle_stat_utility = []
+        _cycle_staleness = []
+
         # Accumulate model-version-window stats; reset only when variance threshold is breached.
         for trainer_update in self._per_agg_trainer_list:
             self._model_version_unique_trainers.add(trainer_update)
@@ -1016,6 +1028,7 @@ class TopAggregator(AsyncTopAgg):
                 self._model_version_trainer_stats["train_duration"].append(
                     train_duration.total_seconds()
                 )
+                _cycle_speed_s.append(train_duration.total_seconds())
             partial_stat_utility = channel.get_end_property(
                 trainer_update, PROP_STAT_UTILITY
             )
@@ -1023,6 +1036,10 @@ class TopAggregator(AsyncTopAgg):
                 self._model_version_trainer_stats["partial_stat_utility"].append(
                     partial_stat_utility
                 )
+                _cycle_stat_utility.append(partial_stat_utility)
+            _trainer_version = self._trainer_last_model_version.get(trainer_update)
+            if _trainer_version is not None:
+                _cycle_staleness.append(_cycle_target_version - _trainer_version)
 
         self.grad_pool.append(self.grad)
         format_hash = lambda d: [_calculate_hash(v) for v in d]
@@ -1082,6 +1099,27 @@ class TopAggregator(AsyncTopAgg):
             logger.info(
                 f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}"
             )
+            if telemetry.is_enabled():
+                try:
+                    ev, fields = build_agg_eval(
+                        round_num=self._round,
+                        metrics={
+                            "test-loss": result.get("eval_loss"),
+                            "test-accuracy": result.get("acc"),
+                            "mcc": result.get("mcc"),
+                            # fwdllm's round is coarse (advances only once all
+                            # total_data_bins data_ids finish) -- data_id/
+                            # iteration_per_data_id let the analyzer's
+                            # progress_key() (scripts/analysis/analyze_run.py)
+                            # place this eval on a meaningful x-axis instead of
+                            # collapsing every eval in a round onto one point.
+                            "data_id": self.data_id,
+                            "iteration_per_data_id": self.iteration_per_data_id,
+                        },
+                    )
+                    telemetry.emit(ev, **fields)
+                except Exception as e:  # telemetry must never break training
+                    logger.debug(f"agg_eval telemetry emit failed: {e}")
             self.data_id += 1
             self.iteration_per_data_id = 0
             self._is_model_updated = True
@@ -1120,6 +1158,31 @@ class TopAggregator(AsyncTopAgg):
             )
             self.iteration_per_data_id += 1
             self._is_model_updated = False
+
+        if telemetry.is_enabled():
+            try:
+                ev, fields = build_agg_round(
+                    round_num=self._round,
+                    agg_goal=self._agg_goal,
+                    agg_goal_count=self._agg_goal_cnt,
+                    updates_in_queue=self._updates_in_queue,
+                    staleness=_cycle_staleness,
+                    stat_utility=_cycle_stat_utility,
+                    trainer_speed_s=_cycle_speed_s,
+                    contributing_trainers=_cycle_contributors,
+                    extra={
+                        "data_id": self.data_id,
+                        "iteration_per_data_id": self.iteration_per_data_id,
+                        "var": self.var,
+                        "var_threshold": getattr(self, "var_threshold", None),
+                        "var_good_enough": self.var_good_enough,
+                        "force_commit_planned": _force_commit_planned,
+                        "is_async": is_async,
+                    },
+                )
+                telemetry.emit(ev, **fields)
+            except Exception as e:  # telemetry must never break training
+                logger.debug(f"agg_round telemetry emit failed: {e}")
 
         self._updates_in_queue -= self._agg_goal
         self._per_agg_trainer_list = []
