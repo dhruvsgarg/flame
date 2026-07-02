@@ -211,7 +211,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._round = msg[MessageType.ROUND]
 
         logger.info(
-            f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg[MessageType.DATA_ID]}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg[MessageType.ITERATION_PER_DATA_ID]}"
+            f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg.get(MessageType.DATA_ID)}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg.get(MessageType.ITERATION_PER_DATA_ID)}"
         )
         logger.info(f"isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
 
