@@ -182,13 +182,16 @@ def progress_key(r: dict) -> int:
     data_id-resolution key, not a crash or a silently-wrong one).
 
     Only safe for single-stream groupings, or for joining two streams that
-    BOTH carry the same hierarchy fields (currently: EVENT_TRAINER_ROUND,
-    EVENT_AGG_ROUND, EVENT_AGG_EVAL). Do NOT use this to key a join against
-    SELECTION/AVAIL_CHANGE records -- those event types don't carry
-    `data_id`, so folding it into only one side of such a join would
-    silently break the match (see call sites deliberately left on plain
-    `round` in analyze_run.py, e.g. comm_vs_accuracy_series's
-    cross-reference of accuracy_by_round against cumulative_comm_by_round).
+    BOTH carry the same hierarchy fields. EVENT_TRAINER_ROUND/EVENT_AGG_ROUND/
+    EVENT_AGG_EVAL always do (P5.2). EVENT_SELECTION carries data_id/
+    iteration_per_data_id only from the real aggregator-side selector when
+    the aggregator threads agg_version_state through channel.ends()
+    (fwdllm-family, selector/random.py -- P5.6); trainer-side placeholder-
+    selector events don't, and gracefully degrade to a plain-round key
+    instead (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 finding #3) --
+    still safe to fold since those keys can't collide with the far-larger
+    folded ones. EVENT_AVAIL_CHANGE never carries these fields; do not key a
+    join against it with progress_key() on only one side.
     """
     key = int(r.get("round", 0))
     for level in _PROGRESS_HIERARCHY:
@@ -197,6 +200,14 @@ def progress_key(r: dict) -> int:
             break
         key = key * int(level["bound"]) + int(val)
     return key
+
+
+# x-axis label for any plot bucketed by progress_key() rather than plain
+# `round` -- makes it visually unambiguous (per MIGRATION_TO_LAUNCHER_FWDLLM.md
+# Part 6) that fwdllm-family plots are NOT on a round-granularity axis, even
+# though the label still reads "round" for async_cifar10 (progress_key is a
+# no-op there).
+PROGRESS_AXIS_LABEL = "progress (round, or round×data_id×iteration -- see progress_key())"
 
 
 def _sub(out_root, *cls):
@@ -216,20 +227,26 @@ def _visible_fraction(r):
 
 
 def accuracy_by_round(records):
+    """Keyed by progress_key(), not plain round -- fwdllm-family agg_eval
+    records carry data_id/iteration_per_data_id (P5.2), and round alone can
+    sit at 1 for an entire run (round only advances once total_data_bins
+    data_ids finish). async_cifar10 agg_eval has no data_id, so this is an
+    unchanged plain-round key there (progress_key no-ops)."""
     out = {}
     for r in by_event(records, EVENT_AGG_EVAL):
         a = r.get("test-accuracy")
         if a is not None:
-            out[int(r.get("round", 0))] = a
+            out[progress_key(r)] = a
     return out
 
 
 def loss_by_round(records):
+    """See accuracy_by_round -- same progress_key() rationale."""
     out = {}
     for r in by_event(records, EVENT_AGG_EVAL):
         a = r.get("test-loss")
         if a is not None:
-            out[int(r.get("round", 0))] = a
+            out[progress_key(r)] = a
     return out
 
 
@@ -257,7 +274,18 @@ def cumulative_comm_by_round(records):
     Round 0 is the pre-training selection warmup (the selector retries while
     trainers join — tens of thousands of selection events that are not real
     model dispatches), so it is excluded to avoid a spurious comm spike that
-    dwarfs every real round.
+    dwarfs every real round. The exclusion check uses the raw `round` field
+    (not progress_key) since it's about identifying the warmup phase, not
+    granularity.
+
+    Keyed by progress_key(), not plain round: fwdllm-family selection events
+    from the real aggregator-side selector (selector/random.py, P5.6) carry
+    data_id/iteration_per_data_id when the aggregator threads
+    agg_version_state through channel.ends(); trainer-side placeholder-
+    selector events (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 finding #3)
+    don't, and progress_key() gracefully degrades to plain round for those --
+    both can coexist in the same dict without key collisions (the folded
+    keys are far larger than any plain round number in practice).
     """
     per_round = defaultdict(float)
     for r in by_event(records, EVENT_SELECTION):
@@ -266,7 +294,7 @@ def cumulative_comm_by_round(records):
             continue
         n = len(r.get("chosen") or [])
         eq = 2.0 * n if r.get("task", "train") == "train" else 1.0 * n
-        per_round[rd] += eq * MODEL_MB
+        per_round[progress_key(r)] += eq * MODEL_MB
     rounds = sorted(per_round)
     cum, run = [], 0.0
     for rd in rounds:
@@ -574,7 +602,7 @@ def perf_plots(records, out, stamp, tdir):
     if acc:
         rs = sorted(acc)
         p = ph.line_plot({"test accuracy": (rs, [acc[r] for r in rs])},
-                         "round", "test accuracy", "Test accuracy over rounds",
+                         PROGRESS_AXIS_LABEL, "test accuracy", "Test accuracy over rounds",
                          d, "accuracy_over_rounds.pdf", stamp=stamp, target=0.6)
         if p: saved.append(p)
         # vs sim-time (fair axis for async vs sync)
@@ -591,14 +619,14 @@ def perf_plots(records, out, stamp, tdir):
         gains = [acc[rs[i]] - acc[rs[i - 1]] for i in range(1, len(rs))]
         if gains:
             p = ph.signed_bar_line(rs[1:], gains, [acc[r] for r in rs[1:]],
-                                   "round", "Δ accuracy / eval", "test accuracy",
+                                   PROGRESS_AXIS_LABEL, "Δ accuracy / eval", "test accuracy",
                                    "Accuracy gain per eval (bars) + overall accuracy (line)",
                                    d, "accuracy_gain_per_eval.pdf", stamp=stamp)
             if p: saved.append(p)
     if loss:
         rs = sorted(loss)
         p = ph.line_plot({"test loss": (rs, [loss[r] for r in rs])},
-                         "round", "test loss", "Test loss over rounds",
+                         PROGRESS_AXIS_LABEL, "test loss", "Test loss over rounds",
                          d, "loss_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
     # accuracy vs cumulative data unlocked
@@ -882,7 +910,7 @@ def sanity_plots(records, out, stamp, tdir):
         except (TypeError, ValueError):
             continue
         lb.append(b); la.append(a); lgap.append(abs(b - a))
-        lrounds.append((int(r.get("round", 0)), abs(b - a)))
+        lrounds.append((progress_key(r), abs(b - a)))
     if lb:
         p = ph.cdf_multi({"believed (at selection)": lb, "actual (at return)": la},
                          "client statistical utility",
@@ -904,7 +932,7 @@ def sanity_plots(records, out, stamp, tdir):
             gap_by_round.setdefault(rd, []).append(g)
         gx = sorted(gap_by_round)
         gy = [sum(gap_by_round[r]) / len(gap_by_round[r]) for r in gx]
-        p = ph.line_plot({"mean |believed - actual|": (gx, gy)}, "round",
+        p = ph.line_plot({"mean |believed - actual|": (gx, gy)}, PROGRESS_AXIS_LABEL,
                          "belief staleness error (utility)",
                          "Belief staleness over the run (live)", d,
                          "selected_utility_belief_gap_over_rounds.pdf", stamp=stamp)
@@ -939,21 +967,26 @@ def sanity_plots(records, out, stamp, tdir):
                            "data_unlock_curve.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # selection-count consistency
+    # selection-count consistency. Keyed by progress_key() on BOTH sides so
+    # the union stays meaningful -- EVENT_AGG_ROUND always carries data_id/
+    # iteration_per_data_id (P5.2); EVENT_SELECTION does only from the real
+    # aggregator-side selector (P5.6), gracefully degrading to plain round
+    # otherwise (see progress_key()'s docstring).
     sel = by_event(records, EVENT_SELECTION)
     sel_by_round = defaultdict(int)
     for s in sel:
         # Drop round 0 (pre-training selection warmup: tens of thousands of
-        # retry events that otherwise dominate the y-axis).
+        # retry events that otherwise dominate the y-axis). Checked on the
+        # raw round field, not progress_key -- this is about identifying the
+        # warmup phase, not granularity.
         if s.get("task", "train") == "train" and int(s.get("round", 0)) >= 1:
-            sel_by_round[int(s.get("round", 0))] += len(s.get("chosen") or [])
+            sel_by_round[progress_key(s)] += len(s.get("chosen") or [])
     # Sum across agg_round events per round: async emits one event per commit,
     # so a dict-comprehension would overwrite and show 1 instead of agg_goal.
     contrib = defaultdict(int)
     for r in ar:
-        rd = int(r.get("round", 0))
-        if rd >= 1:
-            contrib[rd] += len(r.get("contributing_trainers") or [])
+        if int(r.get("round", 0)) >= 1:
+            contrib[progress_key(r)] += len(r.get("contributing_trainers") or [])
     if sel_by_round:
         rr = sorted(set(sel_by_round) | set(contrib))
         # Binned (mean/bin) so the chosen-vs-contributing relationship is smooth
@@ -961,7 +994,7 @@ def sanity_plots(records, out, stamp, tdir):
         series = {"chosen (train)": (rr, [sel_by_round.get(r, 0) for r in rr])}
         if contrib:
             series["contributing"] = (rr, [contrib.get(r, 0) for r in rr])
-        p = ph.binned_line(series, "round", "trainer count",
+        p = ph.binned_line(series, PROGRESS_AXIS_LABEL, "trainer count",
                            "Selection/aggregation count consistency (round-0 warmup excluded)",
                            d, "selection_count_consistency.pdf", stamp=stamp,
                            nbins=200, reducer="mean")
@@ -1120,13 +1153,15 @@ def selection_plots(records, out, stamp, tdir):
     # selector is visibly active; train is on a second binned line for context.
     et = defaultdict(lambda: {"train": 0, "eval": 0})
     for s in sel:
-        et[int(s.get("round", 0))][s.get("task", "train")] += len(s.get("chosen") or [])
+        if int(s.get("round", 0)) < 1:  # exclude pre-training warmup (raw round)
+            continue
+        et[progress_key(s)][s.get("task", "train")] += len(s.get("chosen") or [])
     if any(v["eval"] for v in et.values()):
-        rr = sorted(r for r in et if r >= 1)
+        rr = sorted(et)
         p = ph.binned_line(
             {"eval selections/round": (rr, [et[r]["eval"] for r in rr]),
              "train selections/round": (rr, [et[r]["train"] for r in rr])},
-            "round", "selections", "Eval vs train selection rate (mean/bin)",
+            PROGRESS_AXIS_LABEL, "selections", "Eval vs train selection rate (mean/bin)",
             d, "eval_vs_train_selections.pdf", stamp=stamp, nbins=150, reducer="mean")
         if p: saved.append(p)
 
@@ -1141,7 +1176,7 @@ def selection_plots(records, out, stamp, tdir):
         sp = [pt[c].get("speed_s") for c in chosen if c in pt and pt[c].get("speed_s") is not None]
         uu = [pt[c].get("believed_I", pt[c].get("utility")) for c in chosen
               if c in pt and pt[c].get("believed_I", pt[c].get("utility")) is not None]
-        rd = int(s.get("round", 0))
+        rd = progress_key(s)
         if sp:
             spd[rd] = sum(sp) / len(sp)
         if uu:
@@ -1161,7 +1196,7 @@ def selection_plots(records, out, stamp, tdir):
     if both:
         p = ph.dual_axis_line(both, _smooth([spd[r] for r in both]),
                               _smooth([utl[r] for r in both]),
-                              "round", "avg speed of picked (s, smoothed)",
+                              PROGRESS_AXIS_LABEL, "avg speed of picked (s, smoothed)",
                               "avg believed utility of picked (smoothed)",
                               "Picked clients: avg speed & utility per round "
                               "(rolling mean, w=15)", d,
@@ -1178,7 +1213,7 @@ def selection_plots(records, out, stamp, tdir):
     elif utl:  # e.g. FedDance has no speed factor
         rr = sorted(utl)
         p = ph.line_plot({"avg believed utility of picked": (rr, _smooth([utl[r] for r in rr]))},
-                         "round", "avg believed utility of picked (smoothed)",
+                         PROGRESS_AXIS_LABEL, "avg believed utility of picked (smoothed)",
                          "Picked clients: avg utility per round (rolling mean, w=15)", d,
                          "selected_speed_utility_over_rounds.pdf", stamp=stamp)
         if p: saved.append(p)
@@ -1892,7 +1927,7 @@ def system_plots(records, out, stamp, tdir):
         _comp_keys = ("pre (setup)", "gpu compute", "post (cleanup)", "sleep (budget)")
         _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
         series = {k: [_m(split_rd[r][k]) for r in rr] for k in _comp_keys}
-        p = ph.stacked_area(rr, series, "round",
+        p = ph.stacked_area(rr, series, PROGRESS_AXIS_LABEL,
                             "mean seconds / round (across trainers)",
                             "Trainer round-time split (mean across trainers)", d,
                             "trainer_time_split_over_rounds.pdf", stamp=stamp)
@@ -1952,7 +1987,7 @@ def system_plots(records, out, stamp, tdir):
     if inflight:
         inflight.sort()
         qx = [r for r, _ in inflight]; qy = [v for _, v in inflight]
-        p = ph.binned_line({"updates in queue": (qx, qy)}, "round",
+        p = ph.binned_line({"updates in queue": (qx, qy)}, PROGRESS_AXIS_LABEL,
                            "updates in queue", "Async queue depth over rounds (P50/bin + band)",
                            d, "queue_depth_over_rounds.pdf", stamp=stamp,
                            nbins=200, reducer="p50", band=True)
@@ -1978,7 +2013,7 @@ def system_plots(records, out, stamp, tdir):
         _m = lambda xs: sum(xs) / len(xs) if xs else 0.0
         p = ph.line_plot(
             {"mean staleness": (rr, [_m(stale_by_round[r]) for r in rr])},
-            "round", "staleness (rounds behind)", "Update staleness over rounds",
+            PROGRESS_AXIS_LABEL, "staleness (rounds behind)", "Update staleness over rounds",
             d, "staleness_over_rounds.pdf", stamp=stamp, clip_outliers=True)
         if p: saved.append(p)
 
@@ -2067,25 +2102,26 @@ def availability_plots(records, out, stamp, tdir):
     sel = by_event(records, EVENT_SELECTION)
     ac = by_event(records, EVENT_AVAIL_CHANGE)
 
-    # 1) candidates → eligible → chosen funnel (binned over rounds). Always
+    # 1) candidates → eligible → chosen funnel (binned over progress_key —
+    # data_id/iteration-level for fwdllm-family selection events that carry
+    # them, plain round otherwise; see progress_key()'s docstring). Always
     # meaningful: shows where the population is lost between availability and pick.
     fx, cand, elig, chos = [], [], [], []
     for s in sel:
         if s.get("task", "train") != "train":
             continue
-        rd = int(s.get("round", 0))
-        if rd < 1:
+        if int(s.get("round", 0)) < 1:  # exclude pre-training warmup (raw round)
             continue
         nc, ne, nch = s.get("num_candidates"), s.get("num_eligible"), s.get("num_chosen")
         if nc is None:
             continue
-        fx.append(rd); cand.append(nc)
+        fx.append(progress_key(s)); cand.append(nc)
         elig.append(ne if ne is not None else 0)
         chos.append(nch if nch is not None else 0)
     if fx:
         p = ph.binned_line(
             {"candidates": (fx, cand), "eligible": (fx, elig), "chosen": (fx, chos)},
-            "round", "trainer count",
+            PROGRESS_AXIS_LABEL, "trainer count",
             "Availability→selection funnel (candidates→eligible→chosen, mean/bin)",
             d, "selection_funnel_over_rounds.pdf", stamp=stamp, nbins=150, reducer="mean")
         if p: saved.append(p)
@@ -2249,7 +2285,7 @@ def aggregation_plots(records, out, stamp, tdir):
     cr = sorted(commits_by_round)
     if cr:
         p = ph.binned_line({"commits/round": (cr, [commits_by_round[r] for r in cr])},
-                           "round", "commits", "Commit cadence (commits/round, mean/bin)",
+                           PROGRESS_AXIS_LABEL, "commits", "Commit cadence (commits/round, mean/bin)",
                            d, "commit_cadence_over_rounds.pdf", stamp=stamp,
                            nbins=150, reducer="mean")
         if p: saved.append(p)
