@@ -250,22 +250,12 @@ class TopAggregator(BaseTopAggregator):
 
         received_end_count = 0
 
-        # Real mode only: bound recv_fifo with a wall-clock timeout so unavailable
-        # trainers can't stall the aggregator indefinitely.
-        #
-        # trainer_recv_wall_timeout_s (YAML HP, default 90s) — wall-clock seconds
-        #   the aggregator waits for a single trainer message before giving up on
-        #   that trainer for this round.  Set comfortably above the slowest
-        #   legitimate per-round compute time so live stragglers always make it;
-        #   the default 90s is >> the 18s max trainer speed in async_cifar10.
-        #   WALL-CLOCK only — has no relation to the virtual clock.
-        #
-        # max_experiment_runtime_s (YAML HP) — total experiment budget; wall-clock
-        #   in real mode, virtual-clock in sim mode (see inc_round()).  The recv
-        #   timeout is also capped at the remaining wall budget so the process
-        #   never overshoots it.
-        #
-        # Sim mode: _recv_timeout stays None — the vclock drives termination.
+        # Real mode only: bound recv_fifo with a wall-clock timeout (default
+        # trainer_recv_wall_timeout_s=90s, >> the 18s max trainer speed in
+        # async_cifar10) so unavailable trainers can't stall the aggregator
+        # indefinitely; capped at the remaining max_experiment_runtime_s
+        # budget so the process never overshoots it. Sim mode leaves
+        # _recv_timeout=None — the vclock drives termination there instead.
         _recv_timeout = None
         if not self.simulated:
             _stall = float(getattr(
@@ -744,7 +734,7 @@ class TopAggregator(BaseTopAggregator):
         )
         # Stamp PROP_AVL_STATE on every known end (incl. in-flight ones D.1/C.3
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
-        # the oracular read instead of staying all-UNKNOWN (Next actions §2).
+        # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
 
         # Expose current availability-timeline time to selector so it can attach
@@ -766,14 +756,11 @@ class TopAggregator(BaseTopAggregator):
         _connected = set(channel._ends.keys())
         num_eligible = len(_connected - set(curr_unavail_trainer_list) - _in_flight)
 
-        # Cohort-floor guardrail: the starvation gate must never demand more
-        # trainers than are physically connected. If desired_selection exceeds
-        # the cohort size (e.g. an oort run at n=12 with desired_selection=13),
-        # the gate fires EVERY round — the run advances the vclock on scarcity
-        # indefinitely and exhausts max_experiment_runtime_s with zero training
-        # (observed Jun 29, accidental n=12 oort). Clamp the threshold to the
-        # connected cohort and warn once so the misconfiguration is visible
-        # instead of silently degenerating into an all-starvation run.
+        # Cohort-floor guardrail: if desired_selection > connected cohort size
+        # (e.g. n=12 with desired_selection=13), the starvation gate fires
+        # every round and exhausts the budget with zero training (observed
+        # Jun 29, accidental n=12 oort). Clamp + warn once instead of
+        # silently degenerating into an all-starvation run.
         _starv_threshold = min(desired_selection, len(_connected))
         if desired_selection > len(_connected) and not getattr(
             self, "_oort_cohort_floor_warned", False

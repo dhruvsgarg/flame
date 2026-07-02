@@ -1579,7 +1579,7 @@ class TopAggregator(SyncTopAgg):
         )
         # Stamp PROP_AVL_STATE on every known end (incl. in-flight ones D.1/C.3
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
-        # the oracular read instead of staying all-UNKNOWN (Next actions §2).
+        # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
 
         # Expose current availability-timeline time to selector so it can attach

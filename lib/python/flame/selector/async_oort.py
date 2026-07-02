@@ -1483,17 +1483,12 @@ class AsyncOortSelector(AbstractSelector):
                         del self.all_selected[end]
                     selected_ends.discard(end)
 
-        # Challenge 13: the "invalid prior selection" cleanup must check
-        # CONNECTED membership, not availability-eligibility. `ends` here is the
-        # availability-filtered eligible pool — an in-flight trainer that merely
-        # went UN_AVL (or is currently the wrong task-type, e.g. AVL_EVAL on a
-        # train dispatch) is absent from `ends` yet is still connected and
-        # computing. Removing it from selected_ends would make the aggregator
-        # forget it is waiting on that update. When the per-task eligible pool is
-        # EMPTY (all trainers AVL_EVAL on a 3-state trace, or the 2-state eval
-        # path) this wipes ALL in-flight tracking across train+eval (shared
-        # selected_ends) → run hangs. Use the full connected pool when provided;
-        # fall back to `ends` for backward compat / direct callers.
+        # Challenge 13: cleanup must check CONNECTED membership, not availability-
+        # eligibility — an in-flight trainer that merely went UN_AVL (or is the
+        # wrong task-type) is absent from the filtered `ends` but still connected;
+        # removing it makes the aggregator forget it is waiting. An empty eligible
+        # pool would otherwise wipe ALL shared selected_ends → hang. Use the full
+        # connected pool when provided; fall back to `ends` for backward compat.
         _connected = connected_ends if connected_ends is not None else ends
         # Check for invalid selections and remove them
         for end_id in list(selected_ends):

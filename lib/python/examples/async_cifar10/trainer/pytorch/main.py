@@ -328,14 +328,12 @@ class PyTorchCifar10Trainer(Trainer):
         """Wall-elapsed since the aggregator's trace-read origin (real) or
         last-task sim_send_ts (simulated).
 
-        Real mode anchors to `_agg_start_origin` (broadcast by the aggregator,
-        Batch 3 T3.0) rather than this trainer's own `trainer_start_ts`, so
-        every trainer's trace lookups share the exact origin the aggregator
-        uses -- computing elapsed time against a local, per-trainer origin
-        instead would reintroduce a join-ramp-style skew (the same class of
-        bug as B2.0.3, moved to the trainer side). Falls back to
-        `trainer_start_ts` only until the first dispatch arrives (no origin
-        received yet), so early calls don't explode/return negative.
+        Real mode anchors to `_agg_start_origin` (broadcast by the aggregator)
+        rather than this trainer's own `trainer_start_ts`, so every trainer's
+        trace lookups share the aggregator's exact origin -- a local
+        per-trainer origin would reintroduce a join-ramp-style skew (same
+        class of bug as B2.0.3). Falls back to `trainer_start_ts` only until
+        the first dispatch arrives.
         """
         if self.simulated:
             return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
@@ -344,20 +342,11 @@ class PyTorchCifar10Trainer(Trainer):
 
     def _refresh_avl_state(self) -> None:
         """Advance availability state to the current point in the trace, both
-        modes -- pop every due transition, not just the next one, so a trainer
-        that's been busy computing catches up on any transitions it missed
-        rather than only ever seeing the first.
-
-        One code path for both modes (Batch 3 T3.1b): `_sim_now()` already
-        dispatches on `self.simulated` internally (sim: `_sim_send_ts`; real:
-        wall-elapsed since the aggregator's broadcast origin, T3.0), so this
-        function doesn't need its own mode gate -- it used to (`_refresh_avl_
-        for_sim`, sim-only), which made it silently inert in real mode. That
-        was never the actual reason real trainers didn't track the trace (see
-        Challenges §5 item 20 -- `notify_trainer_avail`'s background thread
-        called `check_and_update_state_avl()` directly, bypassing the gate,
-        the whole time), but it was still real dead code, worth collapsing to
-        avoid exactly this kind of two-divergent-paths confusion recurring.
+        modes -- pop every due transition, not just the next one, so a
+        trainer that's been busy computing catches up on all of them, not
+        just the first. One code path for both modes: `_sim_now()` already
+        dispatches on `self.simulated` internally, so this needs no mode gate
+        of its own.
         """
         guard = 0
         while (
@@ -390,14 +379,9 @@ class PyTorchCifar10Trainer(Trainer):
                     )
                     if telemetry.is_enabled():
                         # sim_now = the transition's own scheduled trace-time
-                        # (due_ts), not self._sim_now() at processing time.
-                        # The trainer already knows exactly when each
-                        # transition occurs (it's the trace's own ts) -- using
-                        # that instead of "whenever we got around to noticing"
-                        # is correct regardless of catch-up delay, and fixes
-                        # sim mode's frozen-clock-during-idle gap (Batch 4
-                        # finding 2, UNAVAILABILITY_DESIGN.md) at the source,
-                        # not just when catch-up happens to be prompt.
+                        # (due_ts), not self._sim_now() at processing time --
+                        # correct regardless of catch-up delay, fixing sim
+                        # mode's frozen-clock-during-idle gap at the source.
                         ev, fields = build_avail_change(
                             round_num=int(getattr(self, "_round", 0)),
                             old_state=str(old_status),

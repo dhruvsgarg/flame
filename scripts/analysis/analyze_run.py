@@ -2369,15 +2369,13 @@ def _obs_segments(pts, t_end) -> list:
 
 
 def trace_fidelity_plots(records, out, stamp, tdir):
-    """A6 trainer_trace_fidelity deep-dive (Batch 3 T3.2): each trainer's own
-    OBSERVED availability timeline (from its avail_change telemetry, Batch 3
-    T3.0/T3.1a/T3.1b/T3.2's sim_now field) plotted directly against the raw
-    ground-truth trace file — absolute, single-mode, no real-vs-sim compare
-    (that's the existing availability_plots()/A5 deep-dive above). This is the
-    plot that would have made Challenges §5 item 20 (real trainers running
-    their send-gate against a trivial always-available trace) visually
-    obvious: every real trainer's bottom band would have been a flat
-    AVL_TRAIN bar under a ground-truth top band that clearly transitions.
+    """A6 trainer_trace_fidelity deep-dive: each trainer's own OBSERVED
+    availability timeline (from its avail_change telemetry) plotted directly
+    against the raw ground-truth trace file -- absolute, single-mode, no
+    real-vs-sim compare (that's availability_plots()/A5 above). Would have
+    made the real-mode-trainers-never-saw-the-trace bug (T3.1a) visually
+    obvious: every real trainer's band would be a flat AVL_TRAIN bar under a
+    ground-truth band that clearly transitions.
     """
     d = _sub(out, "availability")
     if not _HAVE_GROUND_TRUTH:

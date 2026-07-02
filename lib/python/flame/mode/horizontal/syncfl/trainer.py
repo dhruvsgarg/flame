@@ -256,12 +256,11 @@ class Trainer(Role, metaclass=ABCMeta):
         if MessageType.SIM_SEND_TS in msg:
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
 
-        # T3.0: cache the aggregator's trace-read origin (real mode only) so this
-        # trainer's own wall-clock availability lookups (_sim_now()'s real-mode
-        # branch) share the exact origin the aggregator uses, instead of each
-        # trainer deriving its own from its own process-start time -- see
-        # UNAVAILABILITY_DESIGN.md Batch 3 T3.0. Re-cached on every dispatch
-        # (cheap, idempotent, self-healing if an early message was missed).
+        # Cache the aggregator's trace-read origin (real mode only) so this
+        # trainer's own wall-clock availability lookups share the exact
+        # origin the aggregator uses, instead of deriving one from its own
+        # process-start time. Re-cached every dispatch (cheap, idempotent,
+        # self-healing if an early message was missed).
         if MessageType.AGG_START_TS in msg:
             self._agg_start_origin = msg[MessageType.AGG_START_TS]
 
@@ -280,12 +279,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if MessageType.EOT in msg:
             self._work_done = msg[MessageType.EOT]
-            # Batch 4 finding 2 (UNAVAILABILITY_DESIGN.md): give a sim-mode
-            # trainer that hasn't been dispatched in a while one last chance
-            # to catch its avl_state/telemetry up to the trace, using the
-            # SIM_SEND_TS this same EOT broadcast may carry (captured above,
-            # this message field is processed first). hasattr-guarded: this
-            # hook is example-specific (e.g. examples/async_cifar10), not
+            # Give a sim-mode trainer that hasn't been dispatched in a while
+            # one last chance to catch its avl_state/telemetry up to the
+            # trace, using the SIM_SEND_TS this EOT broadcast may carry
+            # (captured above). hasattr-guarded: example-specific hook, not
             # every Trainer subclass defines it.
             if hasattr(self, "_refresh_avl_state"):
                 self._refresh_avl_state()
@@ -362,23 +359,18 @@ class Trainer(Role, metaclass=ABCMeta):
             f"### SEND WEIGHTS for tag: {tag} "
             f"and trainer_id: {self.trainer_id}, model_version: {self._round}, and avl_state = {self.avl_state}"
         )
-        # [SEND_GATE] (UNAVAILABILITY_DESIGN §8.3) real-mode send-time gate: hold
-        # the upload (already-completed result) until the trainer is AVL_* again.
-        # Decoupled from client_notify["enabled"] (which v1 keeps OFF — the
-        # aggregator learns oracularly, not via this push) so the gate fires
-        # whenever avl_state tracking is active. Sim-only: this code path is a
-        # no-op there because sim time can't advance while blocked on
-        # time.sleep — sim availability is instead enforced agg-side by
-        # ClientAvailability's send-time withhold (Stage C), keyed on the
-        # trainer-reported completion time, not a trainer-side wall block.
+        # [SEND_GATE] real-mode send-time gate: hold the upload (already-
+        # completed result) until the trainer is AVL_* again. Decoupled from
+        # client_notify["enabled"] (v1 keeps it OFF -- the aggregator learns
+        # oracularly, not via this push). Sim-only is a no-op here since sim
+        # time can't advance while blocked on time.sleep -- sim availability
+        # is instead enforced agg-side by ClientAvailability's send-time
+        # withhold, keyed on the trainer-reported completion time.
         #
-        # Batch 3 T3.4 "Pillar 3" (trainer half): sample send_gate_sct — the
-        # trainer's own trace-time-basis clock (_sim_now(), same clock T3.2's
-        # avail_change.sim_now uses) right before the gate check — regardless
-        # of whether the gate actually engages, so A8 can also confirm the
-        # NO-wait case is correctly not waiting, not just score the wait cases.
-        # Real mode only; hasattr-guarded since _sim_now() is example-specific
-        # (main.py), not defined on this generic base class.
+        # Sample send_gate_sct (trainer's own trace-time clock) right before
+        # the gate check regardless of whether it engages, so A8 can confirm
+        # the no-wait case too. Real mode only; hasattr-guarded since
+        # _sim_now() is example-specific, not on this generic base class.
         _send_gate_sct = (
             self._sim_now()
             if not getattr(self, "simulated", False) and hasattr(self, "_sim_now")
