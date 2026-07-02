@@ -479,15 +479,24 @@ class FedSGDTrainer(Trainer):
 
     @timer_decorator
     def _emulate_training_delay(self):
+        """Returns the seconds actually slept (0.0 if delay emulation is
+        disabled) -- unlike cifar10's trainer, this is a flat additive sleep
+        on top of GPU time, not a budget-minus-actual "sleep to fill" model,
+        so there is no meaningful overrun/remaining_time_s/training_budget_s
+        concept here (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5/6). The
+        caller adds this to real_gpu_time_s to report sim_round_duration_s."""
         if self.training_delay_enabled == "True":
             # Eval is 3X faster than training on CPU
             # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
             eval_delay = self.training_delay_s / self.training_delay_factor
-            time.sleep(eval_delay / self.speedup_factor)
+            _sleep_s = eval_delay / self.speedup_factor
+            time.sleep(_sleep_s)
             logger.info(
                 f"Delayed eval time for trainer "
-                f"{self.trainer_id} by {eval_delay}s. Sleeping for {eval_delay / self.speedup_factor}s."
+                f"{self.trainer_id} by {eval_delay}s. Sleeping for {_sleep_s}s."
             )
+            return _sleep_s
+        return 0.0
 
     @timer_decorator
     def train_with_data_id(self):
@@ -511,7 +520,7 @@ class FedSGDTrainer(Trainer):
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
-        self._emulate_training_delay()
+        _delay_s = self._emulate_training_delay()
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
@@ -529,6 +538,11 @@ class FedSGDTrainer(Trainer):
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
+                # real GPU compute + the emulated delay (0 if disabled) --
+                # NOT a budget-vs-actual quantity (fwdllm has no sleep-to-
+                # fill-budget model, unlike async_cifar10's trainer); this is
+                # simply the total wall time this round actually took.
+                sim_round_duration_s=_real_gpu_time_s + _delay_s,
                 avail_state=self.avl_state.value,
                 dataset_size=self.dataset_size,
                 stat_utility=_stat_utility,
