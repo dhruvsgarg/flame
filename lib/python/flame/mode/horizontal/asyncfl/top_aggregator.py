@@ -93,7 +93,8 @@ class TopAggregator(SyncTopAgg):
         # response was still in flight -- mirrors
         # fwdllm_aggregator._process_single_trainer_message's
         # _per_agg_trainer_list guard, which the generic asyncfl path
-        # otherwise lacks. See MIGRATION_TO_LAUNCHER_FWDLLM.md.
+        # otherwise lacks. See examples/MIGRATING_TO_LAUNCHER.md's
+        # aggregator gotchas (§2).
         self._agg_cycle_contributed_ends: set = set()
 
         self._updates_in_queue = 0

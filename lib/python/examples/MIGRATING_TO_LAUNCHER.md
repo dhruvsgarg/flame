@@ -167,6 +167,61 @@ before adding a new field anywhere in the trainer or aggregator config path.
    `parent.parent.name == "examples"`, and metadata defaults to
    `<example_dir>/metadata`.
 
+### Gotchas found the hard way (custom `TopAggregator` subclasses especially)
+
+These surfaced migrating fwdllm (a custom `TopAggregator` subclass, not the
+generic swappable `asyncfl`/`syncfl` hierarchy — see §9) at real
+duration/scale, not in a quick smoke test. If your aggregator overrides
+methods rather than just configuring the generic stack, don't assume you
+inherit these protections — check the equivalent code path in your own
+override.
+
+- **`channel.recv_fifo()` defaults to `timeout=None` — blocks forever.**
+  Any aggregator method that waits for a trainer response should pass an
+  explicit `timeout` (`asyncfl/top_aggregator.py`'s `_aggregate_weights`
+  uses `RECV_TIMEOUT_WAIT_S=30`; reuse that constant). Without it, one
+  quiet trainer can block the whole composer loop indefinitely — and since
+  early-stop checks (`max_runtime_s`/`max_data_id_progress`, see §9)
+  typically run from the *other* side of the put/aggregate loop, a blocked
+  aggregate call means the run can silently exceed its configured
+  wall-clock budget with no self-recovery, needing a manual kill. A
+  subclass with its own aggregate method doesn't get this for free just by
+  extending a base class that has it right elsewhere.
+- **A selector's timeout-based reclaim (e.g. "a selected trainer that never
+  responds in N seconds becomes selectable again") is easy to get wrong two
+  ways**: (a) *ordering* — if the reclaim block runs after an early-return
+  short-circuit, the reclaim code can never execute once the resource it
+  frees is fully exhausted (the unlock is gated behind the very lock it's
+  meant to release); (b) *completeness* — freeing a stale entry must clear
+  every related accounting structure together (e.g. both a `selected_ends`
+  set and an `all_selected` dict), not just one, or the slot stays
+  "occupied" from the other structure's point of view. This class of bug is
+  invisible at a 10-trainer/10-minute smoke test and only manifests once
+  concurrency saturates and enough wall-clock passes for the timeout window
+  to matter — **validate a new selector at longer duration and higher
+  trainer count than the default smoke test**, not just "it ran without
+  crashing."
+- **A per-cycle "has this trainer already contributed" dedup guard should
+  be independent of the selector's own slot accounting** (defense in
+  depth), especially in an async aggregator. Fixing a selector-level
+  reclaim bug (above) can newly expose a duplicate-contribution race that
+  was previously unreachable only because the broken reclaim never let a
+  slot reopen.
+- **If an aggregator caches its selected set across multiple aggregation
+  sub-cycles** (e.g. picks once per outer round and reuses that set for
+  every inner cycle, instead of reselecting fresh each time), **pruning
+  that cache for departed trainers is a separate concern from the
+  selector's own departure handling** — the aggregator's cache and the
+  selector's internal bookkeeping are different state that can drift out of
+  sync. A trainer the selector has correctly forgotten can still be stuck
+  in the aggregator's own cache, and the round stalls waiting for a
+  contribution that will never arrive. Also: caching does not, by itself,
+  create a way to replace a trainer that's still connected but stuck (never
+  finished initializing, etc.) — only explicit departure (disconnect/
+  `UN_AVL`) triggers most departure-handling paths, so a merely-slow trainer
+  in a small cached set can single-handedly throttle progress at scale
+  (open in fwdllm's own case — see §9's pending list).
+
 ---
 
 ## 3. Trainer-side changes
@@ -396,22 +451,107 @@ line is a JSON object with at least `{"event": "<name>", "ts": <iso8601>, ...}`.
 | `selection` | `round`, `selected_ids`, `scores` | Which trainers were chosen |
 | `aggregation` | `round`, `agg_time_s`, `staleness_stats` | Aggregation timing |
 
-### Post-run analysis scripts
+### Post-run analysis: `scripts/analysis/analyze_run.py`
 
-The runner calls analysis best-effort after experiment completion. Two scripts are
-available in `async_cifar10/scripts/`:
+The main analyzer (`scripts/analysis/analyze_run.py`, not run automatically
+by the launcher — invoke it yourself) reads a run's `telemetry/` directory
+and produces plots under `<run_dir>/plots/` across 8 categories
+(performance, sanity, selection, selection/why, insights, system,
+availability, aggregation) plus a `summary.txt` event-count/sanity report:
 
-- **`analyze_send_recv_lag.py`**: parses `[SEND_RECV_LAG]` log entries from the
-  aggregator log; reports per-trainer median/p95/max lag. Run manually:
-  ```bash
-  python scripts/analyze_send_recv_lag.py <exp_dir>/*_aggregator.log [--warn-threshold-s 5.0]
-  ```
-- **`compare_parity.py`**: compares two experiment runs (e.g., real vs simulated
-  time_mode) for trajectory parity.
+```bash
+python3 scripts/analysis/analyze_run.py <run_dir>/telemetry
+```
 
-For full telemetry plot generation, point a post-processing script at the
-`telemetry/` directory. The JSONL files are append-only and line-buffered, so
-`tail -f` works during a live run.
+It was originally written for async_cifar10 and generalized since (see
+below) — `scripts/analysis/README.md` has the full plot-category reference,
+the manifest schema, a step-by-step "wiring telemetry for a new example"
+checklist, and known gotchas; **read it before onboarding a new example's
+telemetry**, this section only summarizes.
+
+Two smaller, standalone scripts also exist in `async_cifar10/scripts/`:
+`analyze_send_recv_lag.py` (parses `[SEND_RECV_LAG]` aggregator-log entries
+for per-trainer median/p95/max lag) and `compare_parity.py` (compares two
+runs, e.g. real vs. simulated `time_mode`, for trajectory parity).
+
+The JSONL files are append-only and line-buffered, so `tail -f` works
+during a live run.
+
+### Per-example telemetry manifest (`telemetry_manifest.yaml`) — for
+non-round-granular progress or a non-default model size
+
+`analyze_run.py` originally assumed two things true of async_cifar10 but
+not necessarily of every example: that `round` is the only progress unit
+and that it's fine-grained (advances every aggregation), and that there's
+one fixed, full-model comm size. An example that violates either should
+declare `<example>/telemetry_manifest.yaml` (optional — absent means
+async_cifar10-shaped defaults, unchanged behavior):
+
+```yaml
+model_param_count: <int>   # params actually put on the wire per exchange --
+                            # not necessarily the full model (e.g. a
+                            # gradient/perturbation-based scheme that only
+                            # ever transmits a trainable subset)
+
+progress_hierarchy:        # sub-round fields, ordered major->minor, each
+  - field: data_id          # with a `bound` used as that level's mixed-
+    bound: 150               # radix multiplier (must exceed the field's
+  - field: iteration_per_data_id  # real max value or ordering breaks
+    bound: 15                     # across round boundaries)
+
+event_categories:          # which of the 8 plot categories this example's
+  performance: populated   # telemetry actually populates, and why --
+  ...                      # values: populated | partial | not_populated.
+                            # analyze_run.py cross-checks this against what
+                            # actually got written and flags MISMATCH/DRIFT.
+```
+
+The consuming mechanism is `progress_key(record)` in `analyze_run.py`: an
+ordinal that folds the declared sub-round fields into a single composite
+value (mixed-radix), used as the x-axis/grouping key everywhere a plot
+would otherwise collapse onto one point (e.g. a run that sits at `round==1`
+for hundreds of events because round only advances once every sub-unit
+finishes). Every plot bucketed this way uses the shared `PROGRESS_AXIS_LABEL`
+constant so the axis reads as "progress," not misleadingly as plain round.
+`progress_key()` is only safe for single-stream groupings, or for joining
+two streams that both carry the declared hierarchy's fields — see its
+docstring before reusing it for a new join.
+
+### Telemetry gotchas
+
+- **A trainer-role `selection` event's `"selector"` field can be a
+  channel-implementation artifact, not the real FL selector.** Every role
+  (aggregator *and* trainer) constructs its own local `Selector` for its
+  channel from `self._config.selector.sort`/`.kwargs`. If a baseline's
+  `trainer:` block in `baselines.yaml` never overrides `selector` (checked:
+  none currently do, across every example), the trainer's channel-local
+  selector silently stays on whatever placeholder
+  `<example>/configs/trainer_base.yaml` hardcodes — confirmed launcher-wide,
+  not specific to any one example. Usually functionally benign (a trainer's
+  channel to its aggregator has exactly 1 candidate, so selection is
+  trivial regardless of selector class), but it means a trainer-side
+  `selection` event's `selector` field does **not** reflect the real
+  FL-level selection algorithm. Read which selector a run really used from
+  the **aggregator**'s config/telemetry, never the trainer's.
+- **An aggregator subclass that overrides its own aggregation method(s)
+  must wire its own `telemetry.emit()` calls** — it is not inherited for
+  free just because a shared base class (e.g. `asyncfl/top_aggregator.py`)
+  already emits `agg_eval`/`agg_round`/`utility_belief`. A subclass with
+  its own complete aggregation cycle method needs the equivalent calls
+  added explicitly, wrapped in
+  `if telemetry.is_enabled(): try: ... except Exception: logger.debug(...)`
+  (telemetry must never be able to break training). Without this,
+  `plots/performance/` (and anything else needing `agg_eval`/`agg_round`)
+  is structurally empty regardless of any analyzer fix — not a plotting
+  bug, a missing-emission bug.
+- **`analyze_run.py`'s empty-data plots render a literal "NO DATA"
+  placeholder PDF, not nothing.** (`plot_helpers.no_data_plot` — deliberate,
+  so a missing plot reads as "confirmed absent" rather than "did the code
+  crash?".) This means an incomplete telemetry field set produces a
+  `plots/` directory that *looks* fully populated at a glance but isn't —
+  always spot-check a few real plots' underlying data (or read
+  `summary.txt`'s event counts / manifest cross-check), not just that the
+  files exist.
 
 ### Output directory structure
 
@@ -520,6 +660,38 @@ one process**, via `ExperimentRunner.run_experiment_batch()`
   env var `FLAME_BATCH_CONTINUE_ON_ERROR` is set to anything other than
   `""`, `"0"`, or `"false"` — in that case the runner logs the failure and
   moves on to the next experiment instead of blocking on input.
+
+### Gotchas in a per-example run script (e.g. `run_sequential.sh`-style)
+
+- **Control `PYTHONPATH` explicitly.** If the active environment's
+  `pip install -e` editable install could point at a different clone (e.g.
+  a scratch/experiment checkout), export
+  `PYTHONPATH="<this repo>/lib/python:$PYTHONPATH"` at the top of the
+  script so this checkout always wins regardless of what else is
+  installed — otherwise the script silently runs whatever code the
+  editable install resolves to, which may be missing recent changes
+  entirely (including `flame.launch` itself).
+- **Poll spawned trainer processes concurrently against one shared
+  deadline when waiting for them to finish, not sequentially per-trainer.**
+  A sequential "wait up to N seconds, then force-kill" loop multiplies N by
+  trainer count in the worst case (every trainer independently timing out);
+  polling all of them together against one shared deadline caps the total
+  wait at N regardless of trainer count.
+- **`channel.await_join()` only catches peers already joined at broadcast
+  time and has no timeout of its own** — a trainer whose fetch/upload call
+  lands a moment after the aggregator has broadcast end-of-training and
+  left can hang forever waiting for a peer that's already gone. Known,
+  currently-unfixed limitation of the shared channel/trainer shutdown
+  protocol; the concurrent-polling force-kill above bounds the cost but
+  doesn't eliminate the race. A proper fix needs a timeout inside
+  `await_join()` itself (or the trainer's own fetch/send methods) — shared
+  code, a separate change from any one example's migration.
+- **If a stack has separate sync/async `compose()` branches** (or any other
+  copy-pasted tasklet-chain variants), diff them against each other when
+  you touch one — it's easy for a rewrite of one branch to silently drop a
+  step the other still has (e.g. forgetting `inform_end_of_training` in a
+  sync-mode rebuild that an async-mode rebuild still broadcasts), leaving
+  trainers with no way to learn the aggregator is done.
 
 ## 9. fwdllm-specific migration notes
 
@@ -665,6 +837,114 @@ contract; the env var `FLAME_TELEMETRY_DIR` is set by the launcher.
   Spawner auto-injection for these three keys isn't wired up yet — that's
   future work, not part of this data port.
 
+### `run_sequential.sh` controlled-comparison flags
+
+Beyond the base launcher, `expt_scripts/run_sequential.sh` gained flags for
+running all baselines with a genuinely controlled comparison:
+
+- `--max-data-id N` — **not a per-round safety valve, a hard permanent
+  stop.** `total_data_bins=150` is hardcoded in `fwdllm_aggregator.py`
+  (shared by all baselines), and `data_id` counts 0..149 *within* a single
+  round, not across completed rounds. The script's own default (10) fires
+  within minutes regardless of `--max-runtime-s` — **always pass something
+  > 150** (e.g. 200) for any run meant to last more than a few minutes.
+- `--agg-goal N` — sets `aggregator.agg_goal` directly, fanning into
+  `hyperparameters.aggGoal` + `selector.kwargs.aggGoal`/`aggr_num`,
+  independent of `--c`. Without it, legacy behavior (`agg_goal == c`)
+  applies.
+- `--c-async N` — overrides `selector.kwargs.c` only for the async baseline
+  (`fluxtune`), letting sync baselines use `--c` (concurrency == agg_goal)
+  while fluxtune overcommits concurrency independently.
+- `--min-initial-trainers N` — overrides `selector.kwargs.minInitialTrainers`
+  directly. Leaving it unset makes the `--c`-derived default equal
+  `--num-trainers`, i.e. the aggregator refuses to do *any* work until
+  every single trainer has joined — no tolerance for one that fails to
+  join, and no work starts until the slowest joiner does. At high trainer
+  counts, set this explicitly and a bit below `--num-trainers` (e.g. 5%).
+- `--avail-trace NAME` — overrides the availability trace for all three
+  baselines' real signal fields at once (`trainer.availability.mode` is
+  cosmetic; the real per-baseline fields are
+  `trainer.config_overrides.hyperparameters.client_notify.trace` for
+  fluxtune and `aggregator.config_overrides.hyperparameters.trackTrainerAvail.trace`
+  for fwdllm_plus's ORACULAR tracking). Use `syn_0` (always-available) to
+  isolate selection/aggregation-logic questions from trace-driven
+  scarcity/churn; leaving it unset means each baseline keeps its own
+  checked-in trace (they differ by default — see the baseline taxonomy
+  table above), which is *not* a controlled comparison.
+- `--partition-method NAME` — overrides `hyperparameters.partition_method`
+  on both trainer and aggregator (must match). The smoke-test default
+  (`uniform`, i.e. IID) is deliberately chosen to isolate launcher-mechanics
+  validation from data-skew effects — not representative for a convergence
+  check; use a `niid_label_clients=...` variant for that.
+- `--num-gpus` does **not** need to scale with `--num-trainers` — each
+  checked-in YAML already defaults to all 8 available GPUs; only the
+  smoke-test's *default* `--num-trainers` (10) assumes a small pool, so
+  raising trainer count without also considering GPU contention at that
+  scale is a physical-resource judgment call, not a config-correctness one.
+
+### fwdllm's own reselection-cache design: round-cached vs. per-iteration
+
+`_select_ends_respecting_reselect_gate` (`fwdllm_aggregator.py`) branches on
+`reselect_each_iteration` (a baseline-level setting):
+
+- `fwdllm` (`False`): accumulates picks into a per-round cache
+  (`_round_selected_ends`) until it hits `agg_goal`, then **reuses that
+  exact cached list for the rest of the round** (all remaining `data_id`s
+  and their variance-check-retry iterations) — only reset when the round
+  itself advances. Coarsest granularity; cheapest per-cycle selector cost.
+- `fwdllm_plus` (`True`): calls the selector fresh every iteration — finest
+  granularity, but the real selector (and its telemetry) fires far more
+  often.
+- `fluxtune` (async): no round/batch concept at all — concurrency is a
+  rolling window; the instant any slot frees (successful contribution,
+  explicit departure, or a selector-level reclaim timeout), the very next
+  `select()` call backfills it immediately.
+
+The round-cached design (`fwdllm`) trades elasticity for cost: a departed
+trainer *is* pruned from the cache (see the generic §2 gotcha above), but a
+trainer that's merely stuck — still connected, never finished
+initializing — is not, and can throttle an entire round's progress at
+scale since there's no reselection to route around it. See
+`MIGRATION_TO_LAUNCHER_FWDLLM.md` for the current, real evidence of this
+(a real n=100 run) and the open fix direction — not resolved as of this
+writing.
+
+### `channel.recv_fifo()` timeout — concrete fwdllm instance of the §2 gotcha
+
+fwdllm's two aggregation-cycle methods
+(`_aggregate_grads_async`/`sync_collect_and_accumulate_grads`, one per
+stack) both used to call `channel.recv_fifo()` with no `timeout`, matching
+the generic gotcha in §2 exactly — fixed by passing
+`timeout=RECV_TIMEOUT_WAIT_S` (imported from `asyncfl/top_aggregator.py`)
+at both call sites. Confirmed via a real run: a 10-min `fluxtune` smoke
+test hung 20+ minutes past its `--max-runtime-s` budget under a churny
+availability trace before the fix; the identical re-run self-terminated on
+schedule after.
+
+### fwdllm's telemetry: manifest values and what's deliberately not populated
+
+fwdllm declares `telemetry_manifest.yaml` (see §5's general mechanism):
+`model_param_count: 450340` — the *trainable* subset only (measured from a
+live run's `print_trainable_params_stats()` log line), not the full
+66.8M-param model, since FedFwd's forward-mode/JVP scheme only ever puts
+the trainable subset on the wire; a `progress_hierarchy` of
+`data_id(150)`/`iteration_per_data_id(15)` (iteration-level chosen
+deliberately after checking real telemetry — data_id-only resolution
+undercounted real granularity: 31 vs. 73 distinct buckets in one real
+n=100 run); and an `event_categories` map with per-category reasoning.
+
+fwdllm's aggregator also emits `agg_eval`/`agg_round` (in
+`_process_aggregation_goal_met`, the actual per-cycle-completion method —
+not the gradient-accumulation methods, which never complete a cycle) and
+`utility_belief` (in `_process_single_trainer_message`'s `STAT_UTILITY`
+branch, staleness computed against `self._model_version` since `round` can
+sit at 1 for an entire run). Its trainer reports `sim_round_duration_s`
+(real GPU time + emulated delay). **Deliberately not populated**:
+`training_budget_s`/`overran`/`remaining_time_s` — fwdllm's delay is a flat
+additive sleep, not a budget-minus-actual sleep-to-fill model like
+async_cifar10's, so there's no faithful "overrun" concept to report;
+fabricating one would be misleading rather than merely incomplete.
+
 ---
 
 ## 10. Migration checklist for a new example
@@ -736,4 +1016,4 @@ Keep (still current):
 | `async_cifar10` | Migrated (reference). 5 baselines: felix, fedbuff, fedavg, oort, refl. Includes telemetry, streaming, time_mode, memory profiler. |
 | `feddance_cifar10` | Has launcher YAMLs; FedDance baseline blockers tracked in `async_cifar10/FEDDANCE_TODO.md`. |
 | `async_google_speech` | **TODO** — migrate per this guide (needs google-speech dataset splits + per-stack aggregator entrypoints). |
-| `fwdllm` | Migrated. 4 baselines: `fwdllm` (syncfl/unaware), `fwdllm_plus` (syncfl/ORACULAR), `fluxtune` (asyncfl/async_oort+fedbuff), `fluxtune_dynkc`. H5 path-style dataset via `config_overrides`; `client_idx_modulo` injection; single aggregator entrypoint with marker import + `is_async`-kwarg-driven stack detection; `trainer_round` JSONL telemetry; `max_data_id_progress` auto-stop. See §9 for fwdllm-specific patterns. |
+| `fwdllm` | Migrated and hardened post-migration (real deadlock, duplicate-contribution, and `max_runtime_s`-starvation bugs found via longer/larger real runs and fixed — see §2/§8/§9's gotchas above, all sourced from this). 4 baselines: `fwdllm` (syncfl/unaware), `fwdllm_plus` (syncfl/ORACULAR), `fluxtune` (asyncfl/async_oort+fedbuff), `fluxtune_dynkc`. H5 path-style dataset via `config_overrides`; `client_idx_modulo` injection; single aggregator entrypoint with marker import + `is_async`-kwarg-driven stack detection; full telemetry (`trainer_round`/`agg_eval`/`agg_round`/`utility_belief`/`selection`) + a per-example manifest for non-round-granular progress; `max_data_id_progress` auto-stop. See §9 for fwdllm-specific patterns; `fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md` for still-open follow-ups. |

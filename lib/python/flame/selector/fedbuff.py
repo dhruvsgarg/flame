@@ -544,8 +544,9 @@ class FedBuffSelector(AbstractSelector):
                     # from len(selected_ends), so a reclaim that only
                     # touches all_selected leaves the concurrency slot
                     # stuck occupied (see async_oort.py's identical fix
-                    # and MIGRATION_TO_LAUNCHER_FWDLLM.md for the fwdllm
-                    # deadlock this class of bug caused).
+                    # and examples/MIGRATING_TO_LAUNCHER.md's aggregator
+                    # gotchas for the fwdllm deadlock this class of bug
+                    # caused).
                     if end in self.all_selected.keys():
                         del self.all_selected[end]
                     selected_ends.discard(end)

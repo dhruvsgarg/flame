@@ -477,7 +477,8 @@ class AsyncRandomSelector(AbstractSelector):
         # all_selected: extra is computed from len(selected_ends), so a
         # reclaim that only touches all_selected leaves the concurrency
         # slot stuck occupied forever (see async_oort.py's identical fix
-        # and MIGRATION_TO_LAUNCHER_FWDLLM.md for the deadlock this caused).
+        # and examples/MIGRATING_TO_LAUNCHER.md's aggregator gotchas for
+        # the deadlock this caused).
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
             current_time_s = time.time()

@@ -1,11 +1,11 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 """RandomSelector (fwdllm's/fwdllm_plus's real aggregator-side FL selector)
-never called emit_selection at all -- confirmed via
-MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5's P5.5 audit: every "selection" event
-that existed for those baselines came exclusively from the trainer's own
-trivial 1-candidate channel selector (see finding #3 / P5.1), never from the
-real selection decision made here. This covers the fix: select()'s SEND
+never called emit_selection at all -- confirmed via audit: every "selection"
+event that existed for those baselines came exclusively from the trainer's
+own trivial 1-candidate channel selector (a channel-implementation artifact,
+see ../../examples/MIGRATING_TO_LAUNCHER.md's telemetry gotchas), never from
+the real selection decision made here. This covers the fix: select()'s SEND
 branch now emits a real selection event once it actually picks candidates.
 """
 
@@ -136,7 +136,7 @@ class TestRandomSelectorEmitsSelectionTelemetry:
 class TestRandomSelectorAggVersionStatePassthrough:
     """fwdllm_aggregator.py threads (model_version, data_id, iteration_id)
     through channel.ends(agg_version_state=...) -> select()'s **kwargs (see
-    MIGRATION_TO_LAUNCHER_FWDLLM.md Part 6). Attaching data_id/
+    ../../examples/MIGRATING_TO_LAUNCHER.md §9). Attaching data_id/
     iteration_per_data_id to the emitted selection event lets analyze_run.py's
     progress_key() place it on the same fine-grained axis as trainer_round/
     agg_round/agg_eval, instead of collapsing onto fwdllm's coarse `round`.

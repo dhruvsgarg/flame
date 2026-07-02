@@ -483,7 +483,7 @@ class FedSGDTrainer(Trainer):
         disabled) -- unlike cifar10's trainer, this is a flat additive sleep
         on top of GPU time, not a budget-minus-actual "sleep to fill" model,
         so there is no meaningful overrun/remaining_time_s/training_budget_s
-        concept here (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5/6). The
+        concept here (see ../../../MIGRATING_TO_LAUNCHER.md §9). The
         caller adds this to real_gpu_time_s to report sim_round_duration_s."""
         if self.training_delay_enabled == "True":
             # Eval is 3X faster than training on CPU

@@ -355,8 +355,9 @@ class TestSendTimeoutReclaimsConcurrencySlot:
     only cleared all_selected (never selected_ends, which is what `extra`'s
     concurrency accounting counts) -- so one non-responding trainer
     permanently pinned `extra` at 0 and no further selection ever happened
-    again for the rest of the run. See MIGRATION_TO_LAUNCHER_FWDLLM.md
-    (fwdllm example) for the full-stall this caused in fluxtune at n30 scale.
+    again for the rest of the run. See
+    examples/MIGRATING_TO_LAUNCHER.md's aggregator gotchas (fwdllm example)
+    for the full-stall this caused in fluxtune at n30 scale.
     """
 
     STALE_END = "t_stuck"

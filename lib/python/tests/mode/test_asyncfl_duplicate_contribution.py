@@ -7,7 +7,7 @@ Unlike fwdllm_aggregator.TopAggregator (which has a dedicated
 _per_agg_trainer_list guard, see test_fwdllm_duplicate_contribution.py), the
 generic asyncfl aggregator had no equivalent check. That was safe only as
 long as the selector's SEND_TIMEOUT_WAIT_S reclaim was itself broken (see
-MIGRATION_TO_LAUNCHER_FWDLLM.md): a stuck trainer's slot never actually
+../../examples/MIGRATING_TO_LAUNCHER.md's aggregator gotchas): a stuck trainer's slot never actually
 reopened, so it could never be reselected while its original response was
 still in flight. Fixing that reclaim (async_oort.py/async_random.py/
 fedbuff.py) makes a genuine duplicate-contribution newly reachable, so this

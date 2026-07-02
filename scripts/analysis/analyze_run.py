@@ -92,8 +92,8 @@ def _find_manifest_path(telemetry_dir: str) -> Optional[str]:
     .../examples/<name>/experiments/<run>/telemetry -- walk up looking for
     the `examples/<name>/` root and check for telemetry_manifest.yaml there.
     Returns None (not an error) if no examples/<name>/ ancestor is found or
-    it has no manifest -- manifests are optional (see P5.4 in
-    MIGRATION_TO_LAUNCHER_FWDLLM.md)."""
+    it has no manifest -- manifests are optional (see
+    examples/MIGRATING_TO_LAUNCHER.md §5)."""
     cur = os.path.abspath(telemetry_dir)
     for _ in range(6):  # bounded walk-up; a real path resolves in 2-3 hops
         parent = os.path.dirname(cur)
@@ -188,7 +188,8 @@ def progress_key(r: dict) -> int:
     the aggregator threads agg_version_state through channel.ends()
     (fwdllm-family, selector/random.py -- P5.6); trainer-side placeholder-
     selector events don't, and gracefully degrade to a plain-round key
-    instead (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 finding #3) --
+    instead (a channel-implementation artifact -- see
+    examples/MIGRATING_TO_LAUNCHER.md's telemetry gotchas) --
     still safe to fold since those keys can't collide with the far-larger
     folded ones. EVENT_AVAIL_CHANGE never carries these fields; do not key a
     join against it with progress_key() on only one side.
@@ -203,8 +204,9 @@ def progress_key(r: dict) -> int:
 
 
 # x-axis label for any plot bucketed by progress_key() rather than plain
-# `round` -- makes it visually unambiguous (per MIGRATION_TO_LAUNCHER_FWDLLM.md
-# Part 6) that fwdllm-family plots are NOT on a round-granularity axis, even
+# `round` -- makes it visually unambiguous (see
+# examples/MIGRATING_TO_LAUNCHER.md §5) that fwdllm-family plots are NOT on
+# a round-granularity axis, even
 # though the label still reads "round" for async_cifar10 (progress_key is a
 # no-op there).
 PROGRESS_AXIS_LABEL = "progress (round, or round×data_id×iteration -- see progress_key())"
@@ -282,7 +284,8 @@ def cumulative_comm_by_round(records):
     from the real aggregator-side selector (selector/random.py, P5.6) carry
     data_id/iteration_per_data_id when the aggregator threads
     agg_version_state through channel.ends(); trainer-side placeholder-
-    selector events (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 finding #3)
+    selector events (a channel-implementation artifact -- see
+    examples/MIGRATING_TO_LAUNCHER.md's telemetry gotchas)
     don't, and progress_key() gracefully degrades to plain round for those --
     both can coexist in the same dict without key collisions (the folded
     keys are far larger than any plain round number in practice).

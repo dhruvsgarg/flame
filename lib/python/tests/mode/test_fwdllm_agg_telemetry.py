@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""fwdllm's aggregator emitted zero telemetry (P5.2, see
-MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 finding #2) -- unlike
+"""fwdllm's aggregator emitted zero telemetry (see
+../../examples/MIGRATING_TO_LAUNCHER.md's telemetry gotchas) -- unlike
 asyncfl/top_aggregator.py, it never called telemetry.emit() for agg_eval/
 agg_round, so plots/performance/ and plots/insights/ were structurally empty
 for every fwdllm-family baseline regardless of what the analyzer did.
@@ -352,7 +352,7 @@ class TestUtilityBeliefTelemetry:
     asyncfl/top_aggregator.py did -- so selected_utility_believed_vs_actual*/
     selected_utility_belief_gap* were structurally impossible for fwdllm-
     family baselines regardless of selector (see
-    MIGRATION_TO_LAUNCHER_FWDLLM.md Part 6). Covers the fix in
+    ../../examples/MIGRATING_TO_LAUNCHER.md §9). Covers the fix in
     _process_single_trainer_message's STAT_UTILITY branch."""
 
     def test_emits_believed_and_actual(self, tmp_path):

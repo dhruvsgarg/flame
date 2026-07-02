@@ -6,7 +6,7 @@ round wall time (gpu + modeled delay). fwdllm has no budget-vs-actual
 contention model (its delay is a flat additive sleep, not a sleep-to-fill-
 budget pattern), so only sim_round_duration_s is added here -- NOT
 training_budget_s/overran/remaining_time_s, which would need a budget
-concept fwdllm doesn't have (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 6).
+concept fwdllm doesn't have (see ../../examples/MIGRATING_TO_LAUNCHER.md §9).
 
 This covers _emulate_training_delay()'s return-value change: it now returns
 the seconds actually slept (0.0 if delay emulation is disabled), which the

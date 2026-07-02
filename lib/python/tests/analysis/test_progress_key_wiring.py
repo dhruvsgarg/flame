@@ -1,12 +1,12 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 """Regression coverage for wiring progress_key() into accuracy_by_round/
-loss_by_round/cumulative_comm_by_round (MIGRATION_TO_LAUNCHER_FWDLLM.md
-Part 6). fwdllm's `round` can sit at 1 for an entire run (round only
+loss_by_round/cumulative_comm_by_round (see
+../../examples/MIGRATING_TO_LAUNCHER.md §5's manifest/progress_key
+mechanism). fwdllm's `round` can sit at 1 for an entire run (round only
 advances once all data bins finish), which previously collapsed every
 agg_eval/selection event onto one x-value for these three functions
-specifically (P5.2 left them on plain round deliberately, pending this
-generalization). async_cifar10 records carry no data_id, so progress_key()
+specifically. async_cifar10 records carry no data_id, so progress_key()
 is a no-op there -- these tests must not change its behavior.
 """
 

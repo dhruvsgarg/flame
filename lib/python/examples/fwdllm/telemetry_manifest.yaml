@@ -1,8 +1,9 @@
 # Per-example telemetry/analysis manifest, read by scripts/analysis/analyze_run.py.
-# See lib/python/examples/fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5 (P5.4)
-# for the design rationale. This is optional: an example with no manifest gets
-# analyze_run.py's async_cifar10-shaped defaults (plain `round`, the hardcoded
-# CNN param count) unchanged.
+# See lib/python/examples/MIGRATING_TO_LAUNCHER.md §5 and
+# scripts/analysis/README.md for the design rationale and schema. This is
+# optional: an example with no manifest gets analyze_run.py's
+# async_cifar10-shaped defaults (plain `round`, the hardcoded CNN param
+# count) unchanged.
 
 # Wire size for the comm-cost (MB) axes in comm_breakdown_by_round/
 # cumulative_comm_by_round. fwdllm's FedFwd is gradient/perturbation-based, not

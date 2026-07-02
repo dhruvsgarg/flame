@@ -268,9 +268,10 @@ class RandomSelector(AbstractSelector):
             # RandomSelector never called this before -- the only "selection"
             # telemetry that existed for fwdllm/fwdllm_plus (both use this
             # selector) came from the trainer's own trivial 1-candidate
-            # channel selector (see MIGRATION_TO_LAUNCHER_FWDLLM.md Part 5
-            # finding #3 / P5.5), not the real aggregator-side FL-selection
-            # decision made here. This is that decision.
+            # channel selector (a channel-implementation artifact -- see
+            # examples/MIGRATING_TO_LAUNCHER.md's telemetry gotchas), not
+            # the real aggregator-side FL-selection decision made here.
+            # This is that decision.
             _extra = {
                 "concurrency": self.c,
                 "requester": channel_props.get(KEY_CH_SELECT_REQUESTER),
