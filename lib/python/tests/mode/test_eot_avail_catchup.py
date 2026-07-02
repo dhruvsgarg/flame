@@ -24,7 +24,7 @@ import pytest
 from flame.mode.message import MessageType
 
 
-# ── Aggregator side ──────────────────────────────────────────────────────────
+# ---- Aggregator side -------------------------------------------------------
 
 class _BroadcastChannel:
     """Records the last broadcast payload, no real transport."""
@@ -92,7 +92,7 @@ class TestInformEndOfTrainingCarriesFinalClock:
         assert ch.broadcasts[0] == {MessageType.EOT: True}
 
 
-# ── Trainer side ──────────────────────────────────────────────────────────────
+# ---- Trainer side -----------------------------------------------------------
 
 class TestTrainerFlushesCatchupOnEot:
     def _make_trainer(self, *, with_refresh_hook):

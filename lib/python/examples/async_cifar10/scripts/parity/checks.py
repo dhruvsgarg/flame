@@ -2914,14 +2914,14 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     would otherwise blame a fixed, unavoidable "missing prefix" as if it were
     genuine drift.
 
-    `extrapolate_tail`: when True (A6, A7-selection — continuously/densely
+    `extrapolate_tail`: when True (A6, A7-selection -- continuously/densely
     refreshed observation streams), `_pad_tail` carries the last observation
     forward to `span`, matching the historical behavior. When False (A7
-    commit-checkpoint — Batch 4 finding, UNAVAILABILITY_DESIGN.md), the
+    commit-checkpoint -- Batch 4 finding, UNAVAILABILITY_DESIGN.md), the
     window is instead truncated to `[t_start, last observed t]`: "commit" is
     an inherently event-triggered sample, not a continuous one, and a
     trainer that legitimately stops committing (typically because it went
-    UN_AVL — exactly the state this check cares about) has no way to record
+    UN_AVL -- exactly the state this check cares about) has no way to record
     a belief for the un-observed tail. Extrapolating "still believed X"
     across that silence blamed the *absence of a later commit* as if it were
     a stale belief, systematically worst for the trainers this check most

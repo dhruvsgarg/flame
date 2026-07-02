@@ -1522,7 +1522,7 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             self._sim_abandon_stalled(channel)
         # D.1: for proactive_inflight_evict baselines (felix only), free any
-        # in-flight slot the trace now shows as UN_AVL — no 90s wait. Both modes:
+        # in-flight slot the trace now shows as UN_AVL -- no 90s wait. Both modes:
         # trace-read eviction has no real-mode equivalent (unlike the abandon
         # above), so gating it sim-only left real-mode felix runs with no way to
         # drop a stalled UN_AVL trainer from recv_ends, hanging forever once
