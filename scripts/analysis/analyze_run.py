@@ -33,6 +33,8 @@ import sys
 from collections import Counter, defaultdict
 from typing import Optional
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plot_helpers as ph  # noqa: E402
 
@@ -72,6 +74,72 @@ MODEL_PARAM_COUNT = 537610
 BYTES_PER_PARAM = 4
 MODEL_MB = MODEL_PARAM_COUNT * BYTES_PER_PARAM / 1e6
 
+# Default progress hierarchy (used when no per-example manifest is found, or
+# for records/tests with no telemetry_dir context at all) -- preserves the
+# exact fwdllm-shaped behavior progress_key() had before manifests existed
+# (round-major, data_id-minor; iteration_per_data_id not folded in).
+_DEFAULT_PROGRESS_HIERARCHY = [{"field": "data_id", "bound": 200}]
+
+# Mutated by _load_manifest_for()/main()'s --model-params; read by
+# progress_key(). --model-params on the CLI always wins over a manifest (see
+# main()).
+_PROGRESS_HIERARCHY = list(_DEFAULT_PROGRESS_HIERARCHY)
+_MODEL_PARAMS_CLI_OVERRIDDEN = False
+
+
+def _find_manifest_path(telemetry_dir: str) -> Optional[str]:
+    """A run's telemetry_dir is normally
+    .../examples/<name>/experiments/<run>/telemetry -- walk up looking for
+    the `examples/<name>/` root and check for telemetry_manifest.yaml there.
+    Returns None (not an error) if no examples/<name>/ ancestor is found or
+    it has no manifest -- manifests are optional (see P5.4 in
+    MIGRATION_TO_LAUNCHER_FWDLLM.md)."""
+    cur = os.path.abspath(telemetry_dir)
+    for _ in range(6):  # bounded walk-up; a real path resolves in 2-3 hops
+        parent = os.path.dirname(cur)
+        name = os.path.basename(cur)
+        if os.path.basename(parent) == "examples" and name:
+            candidate = os.path.join(cur, "telemetry_manifest.yaml")
+            return candidate if os.path.isfile(candidate) else None
+        if parent == cur:  # filesystem root
+            return None
+        cur = parent
+    return None
+
+
+def load_manifest(telemetry_dir: str) -> Optional[dict]:
+    """Load the calling example's telemetry_manifest.yaml, if any. Returns
+    None (not an error) when absent -- callers must treat that as "use
+    async_cifar10-shaped defaults", not a failure."""
+    path = _find_manifest_path(telemetry_dir)
+    if path is None:
+        return None
+    try:
+        with open(path) as f:
+            manifest = yaml.safe_load(f) or {}
+        return manifest
+    except Exception as e:  # a malformed manifest must not crash analysis
+        print(f"  (warning: failed to load manifest {path}: {e})")
+        return None
+
+
+def configure_from_manifest(telemetry_dir: str) -> Optional[dict]:
+    """Apply a run's manifest (if any) to the module-level MODEL_MB /
+    progress-hierarchy globals. Returns the loaded manifest (or None) so
+    callers can also use its `event_categories` declaration (see
+    write_summary). --model-params on the CLI is never overridden here."""
+    global MODEL_PARAM_COUNT, MODEL_MB, _PROGRESS_HIERARCHY
+    manifest = load_manifest(telemetry_dir)
+    if manifest is None:
+        _PROGRESS_HIERARCHY = list(_DEFAULT_PROGRESS_HIERARCHY)
+        return None
+    if not _MODEL_PARAMS_CLI_OVERRIDDEN and manifest.get("model_param_count"):
+        MODEL_PARAM_COUNT = int(manifest["model_param_count"])
+        MODEL_MB = MODEL_PARAM_COUNT * BYTES_PER_PARAM / 1e6
+    hierarchy = manifest.get("progress_hierarchy")
+    _PROGRESS_HIERARCHY = hierarchy if hierarchy else list(_DEFAULT_PROGRESS_HIERARCHY)
+    return manifest
+
 
 def load_events(telemetry_dir: str) -> list[dict]:
     """Load all JSONL records from a telemetry directory."""
@@ -91,6 +159,44 @@ def load_events(telemetry_dir: str) -> list[dict]:
 
 def by_event(records, event):
     return [r for r in records if r.get("event") == event]
+
+
+def progress_key(r: dict) -> int:
+    """Ordinal progress axis for any record, generalized over the calling
+    example's declared `progress_hierarchy` (see the module-level
+    _PROGRESS_HIERARCHY global, set by configure_from_manifest() from a run's
+    telemetry_manifest.yaml -- P5.4). Defaults to fwdllm's original
+    round/data_id-only shape when no manifest was loaded (e.g. direct calls
+    with no telemetry_dir context, as in the unit tests).
+
+    fwdllm-family runs can sit at `round == 1` for hundreds of trainer_round/
+    agg_round/agg_eval events (a round only advances once all data bins
+    finish), which collapses any plot bucketing by plain `round` onto one
+    x-value. Folding in the declared sub-round fields (mixed-radix: each
+    level's `bound` is that level's multiplier) restores a meaningful
+    ordering without changing async_cifar10, which declares no hierarchy and
+    never sets any of these fields.
+
+    Stops folding at the first hierarchy level missing from the record (a
+    record with `data_id` but no `iteration_per_data_id` still gets a
+    data_id-resolution key, not a crash or a silently-wrong one).
+
+    Only safe for single-stream groupings, or for joining two streams that
+    BOTH carry the same hierarchy fields (currently: EVENT_TRAINER_ROUND,
+    EVENT_AGG_ROUND, EVENT_AGG_EVAL). Do NOT use this to key a join against
+    SELECTION/AVAIL_CHANGE records -- those event types don't carry
+    `data_id`, so folding it into only one side of such a join would
+    silently break the match (see call sites deliberately left on plain
+    `round` in analyze_run.py, e.g. comm_vs_accuracy_series's
+    cross-reference of accuracy_by_round against cumulative_comm_by_round).
+    """
+    key = int(r.get("round", 0))
+    for level in _PROGRESS_HIERARCHY:
+        val = r.get(level["field"])
+        if val is None:
+            break
+        key = key * int(level["bound"]) + int(val)
+    return key
 
 
 def _sub(out_root, *cls):
@@ -128,10 +234,10 @@ def loss_by_round(records):
 
 
 def sim_time_by_round(records):
-    """round -> cumulative max sim_completion_ts (sim wall time)."""
+    """progress_key -> cumulative max sim_completion_ts (sim wall time)."""
     best = {}
     for r in by_event(records, EVENT_TRAINER_ROUND):
-        rd = int(r.get("round", 0))
+        rd = progress_key(r)
         sc = r.get("sim_completion_ts")
         if sc is None:
             sc = r.get("sim_round_duration_s")
@@ -228,8 +334,12 @@ def time_to_target(records, target):
         a = r.get("test-accuracy")
         if a is not None and a >= target:
             rd = int(r.get("round", 0))
+            # sim_map (sim_time_by_round) is keyed by progress_key, not plain
+            # round -- for fwdllm-family records (agg_eval now carries
+            # data_id) these differ, so look it up on the same axis. "round"
+            # in the returned dict stays the plain, human-readable value.
             wall = (r.get("ts") - start_ts) if (r.get("ts") and start_ts) else None
-            return {"round": rd, "wall_s": wall, "sim_s": sim_map.get(rd),
+            return {"round": rd, "wall_s": wall, "sim_s": sim_map.get(progress_key(r)),
                     "accuracy": a, "reached": True}
     return {"round": None, "wall_s": None, "sim_s": None,
             "accuracy": None, "reached": False}
@@ -447,7 +557,7 @@ def _floats(rows, key):
 def trainer_rounds_by_round(records):
     out = defaultdict(list)
     for r in by_event(records, EVENT_TRAINER_ROUND):
-        out[int(r.get("round", 0))].append(r)
+        out[progress_key(r)].append(r)
     return out
 
 
@@ -1772,7 +1882,7 @@ def system_plots(records, out, stamp, tdir):
     # default to 0 so older runs degrade gracefully.
     split_rd = defaultdict(lambda: defaultdict(list))
     for r in by_event(records, EVENT_TRAINER_ROUND):
-        rd = int(r.get("round", 0))
+        rd = progress_key(r)
         split_rd[rd]["pre (setup)"].append(r.get("pre_train_s") or 0.0)
         split_rd[rd]["gpu compute"].append(r.get("real_gpu_time_s") or 0.0)
         split_rd[rd]["post (cleanup)"].append(r.get("post_train_s") or 0.0)
@@ -1837,7 +1947,7 @@ def system_plots(records, out, stamp, tdir):
 
     # queue depth: binned mean+P99 band over rounds (was a jagged per-round line)
     # plus a CDF (what fraction of rounds had queue >= k — reads the spike tail).
-    inflight = [(int(r.get("round", 0)), r.get("updates_in_queue")) for r in
+    inflight = [(progress_key(r), r.get("updates_in_queue")) for r in
                 by_event(records, EVENT_AGG_ROUND) if r.get("updates_in_queue") is not None]
     if inflight:
         inflight.sort()
@@ -1857,7 +1967,7 @@ def system_plots(records, out, stamp, tdir):
     for r in by_event(records, EVENT_AGG_ROUND):
         for s in (r.get("staleness") or []):
             if s is not None:
-                stale_by_round[int(r.get("round", 0))].append(float(s))
+                stale_by_round[progress_key(r)].append(float(s))
                 all_stale.append(float(s))
     if all_stale:
         p = ph.cdf_plot(all_stale, "staleness (rounds behind)",
@@ -2133,7 +2243,7 @@ def aggregation_plots(records, out, stamp, tdir):
     # commit). Shows how fast updates are landing over the run.
     commits_by_round = defaultdict(int)
     for r in ar:
-        rd = int(r.get("round", 0))
+        rd = progress_key(r)
         if rd >= 1:
             commits_by_round[rd] += 1
     cr = sorted(commits_by_round)
@@ -2200,13 +2310,37 @@ def aggregation_plots(records, out, stamp, tdir):
 # ==========================================================================
 
 
-def write_summary(records, out, tdir):
+def write_summary(records, out, tdir, manifest=None, saved_paths=None):
     counts = Counter(r.get("event") for r in records)
     n_tr = len({r.get("end_id") for r in records if r.get("role") == "trainer"})
     lines = [f"Telemetry summary: {tdir}", f"config: {ph.config_stamp(os.path.dirname(os.path.abspath(tdir)))}",
              f"total events: {len(records)}", f"trainers seen: {n_tr}", "event counts:"]
     for ev, c in counts.most_common():
         lines.append(f"  {ev:16} {c}")
+
+    # P5.7 onboarding-contract check: cross-reference the manifest's declared
+    # event_categories against which plots/<category>/ dirs this run actually
+    # populated, so drift (a category that's supposed to be populated but
+    # isn't, or vice versa) is surfaced automatically instead of requiring
+    # someone to notice an empty directory.
+    declared = (manifest or {}).get("event_categories")
+    if declared:
+        saved_paths = saved_paths or []
+        lines.append("")
+        lines.append("manifest event_categories check:")
+        for category, expected in declared.items():
+            cat_dir = os.path.abspath(os.path.join(out, *category.split("/")))
+            populated = any(
+                os.path.commonpath([os.path.abspath(p), cat_dir]) == cat_dir
+                for p in saved_paths
+            )
+            if expected == "populated" and not populated:
+                lines.append(f"  MISMATCH: {category} declared 'populated' but no plots were written")
+            elif expected == "not_populated" and populated:
+                lines.append(f"  DRIFT: {category} declared 'not_populated' but plots WERE written -- manifest is stale")
+            else:
+                lines.append(f"  ok: {category} ({expected}, populated={populated})")
+
     os.makedirs(out, exist_ok=True)
     path = os.path.join(out, "summary.txt")
     with open(path, "w", encoding="utf-8") as fh:
@@ -2215,6 +2349,7 @@ def write_summary(records, out, tdir):
 
 
 def analyze(telemetry_dir, out_dir=None):
+    manifest = configure_from_manifest(telemetry_dir)
     records = load_events(telemetry_dir)
     run_dir = os.path.dirname(os.path.abspath(telemetry_dir))
     if out_dir is None:
@@ -2235,7 +2370,7 @@ def analyze(telemetry_dir, out_dir=None):
         saved.extend(resource_plots(out_dir, stamp, run_dir))
     except Exception as e:
         print("  (resource_plots failed: %s)" % e)
-    saved.append(write_summary(records, out_dir, telemetry_dir))
+    saved.append(write_summary(records, out_dir, telemetry_dir, manifest=manifest, saved_paths=saved))
     print("wrote %d artifact(s) under %s" % (len(saved), out_dir))
     for p in saved:
         print("  %s" % p)
@@ -2333,9 +2468,10 @@ def main():
                         help="param count for MB comm conversion (default: async_cifar10 Net)")
     args = parser.parse_args()
     if args.model_params:
-        global MODEL_PARAM_COUNT, MODEL_MB
+        global MODEL_PARAM_COUNT, MODEL_MB, _MODEL_PARAMS_CLI_OVERRIDDEN
         MODEL_PARAM_COUNT = args.model_params
         MODEL_MB = MODEL_PARAM_COUNT * BYTES_PER_PARAM / 1e6
+        _MODEL_PARAMS_CLI_OVERRIDDEN = True  # a manifest's model_param_count must not clobber this
     if args.compare_streaming:
         compare_streaming(args.compare_streaming, args.labels, args.out or "compare_plots", args.target)
         return
