@@ -901,13 +901,18 @@ running all baselines with a genuinely controlled comparison:
   `select()` call backfills it immediately.
 
 The round-cached design (`fwdllm`) trades elasticity for cost: a departed
-trainer *is* pruned from the cache (see the generic §2 gotcha above), but a
+trainer *is* pruned from the cache (see the generic §2 gotcha above). A
 trainer that's merely stuck — still connected, never finished
-initializing — is not, and can throttle an entire round's progress at
-scale since there's no reselection to route around it. See
-`MIGRATION_TO_LAUNCHER_FWDLLM.md` for the current, real evidence of this
-(a real n=100 run) and the open fix direction — not resolved as of this
-writing.
+initializing — used to not be, and could throttle an entire round's
+progress at scale since there was no reselection to route around it
+(confirmed on a real n=100 run: the aggregator's working set stayed capped
+at 30 of 100 trainers for a full 90-minute run). **Fixed**:
+`_prune_departed_from_round_cache` also evicts a cached member that's gone
+`ROUND_CACHE_STUCK_TIMEOUT_S` (5 min) without a real accepted contribution,
+tracked via `_round_cache_activity_ts` (stamped on cache entry, reset on
+every accepted contribution) — same timeout-based reclaim pattern as
+`SEND_TIMEOUT_WAIT_S`/`RECV_TIMEOUT_WAIT_S` elsewhere in this file's
+gotchas. See `MIGRATION_TO_LAUNCHER_FWDLLM.md` for GPU-validation status.
 
 ### `channel.recv_fifo()` timeout — concrete fwdllm instance of the §2 gotcha
 

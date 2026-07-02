@@ -20,24 +20,32 @@ point, not merge blockers.
 
 ## Pending correctness/design follow-ups
 
-1. **fwdllm's round-cached reselection has no mechanism to replace a
-   trainer that's stuck but not formally departed.** Confirmed via a real
-   n=100 run (`run_20260701_182242_fwdllm_n100_smoke`): the aggregator's
-   live candidate pool stayed at exactly 30 of 100 trainers for the entire
-   1.5h run, "hasn't received weights" fired ~9,700 times, and the run
-   stalled completely for the last 47 of 90 minutes — ending at only ~46%
-   accuracy / `data_id` 29 of 150, vs. `fwdllm_plus`/`fluxtune` reaching
-   80%+ accuracy in the same window. Cause: `--min-initial-trainers 95`
-   gates startup at high trainer counts, and once fwdllm's per-round
+1. ~~fwdllm's round-cached reselection has no mechanism to replace a
+   trainer that's stuck but not formally departed.~~ **FIXED.** Confirmed
+   via a real n=100 run (`run_20260701_182242_fwdllm_n100_smoke`): the
+   aggregator's live candidate pool stayed at exactly 30 of 100 trainers
+   for the entire 1.5h run, "hasn't received weights" fired ~9,700 times,
+   and the run stalled completely for the last 47 of 90 minutes — ending
+   at only ~46% accuracy / `data_id` 29 of 150, vs. `fwdllm_plus`/`fluxtune`
+   reaching 80%+ accuracy in the same window. Cause: once fwdllm's per-round
    selection cache fills, only *explicit* departure (disconnect/`UN_AVL`)
-   triggers a replacement — a trainer that's merely stuck (e.g. never
-   finished receiving its initial weights) occupies a cache slot
-   indefinitely. `fwdllm_plus`/`fluxtune` don't share this because they
+   triggered a replacement — a trainer that's merely stuck (e.g. never
+   finished receiving its initial weights) occupied a cache slot
+   indefinitely. `fwdllm_plus`/`fluxtune` never had this because they
    reselect continuously rather than caching per round.
-   **Fix direction** (not started): either teach the round-cache to also
-   replace a member that's gone N minutes without a real response (not just
-   formally-departed members), or default `--min-initial-trainers` more
-   conservatively at high trainer counts.
+   **Fix**: `_prune_departed_from_round_cache` (`fwdllm_aggregator.py`) now
+   also evicts a cached member that's gone `ROUND_CACHE_STUCK_TIMEOUT_S`
+   (5 min) without a real accepted contribution, tracked via a new
+   `_round_cache_activity_ts` dict (stamped when an end first enters the
+   cache, reset on every accepted contribution in
+   `_process_single_trainer_message`, mirroring the `SEND_TIMEOUT_WAIT_S`/
+   `RECV_TIMEOUT_WAIT_S` timeout pattern already used elsewhere in this
+   codebase). 4 new regression tests
+   (`test_fwdllm_reselection.py::TestStuckCachePruning`,
+   `test_fwdllm_agg_telemetry.py::TestRoundCacheActivityResetOnContribution`).
+   **Not yet GPU-validated** — landed just before an overnight n=100 run
+   meant to exercise exactly this path; update this entry once that run
+   confirms `fwdllm` no longer stalls the same way.
 2. **`channel.await_join()` race** (shared `flame` channel/trainer code,
    not fwdllm-specific): only catches peers already joined at broadcast
    time, no timeout of its own. Currently mitigated (launcher's

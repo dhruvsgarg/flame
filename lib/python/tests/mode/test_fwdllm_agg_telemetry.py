@@ -324,6 +324,7 @@ class _UtilityFakeAggregator:
         self._updates_received = {}
         self._updates_in_queue = 0
         self._agg_goal_cnt = 0
+        self._round_cache_activity_ts = {}
         self._model_version = model_version
         self.data_id = data_id
         self.iteration_per_data_id = iteration_per_data_id
@@ -437,3 +438,20 @@ class TestUtilityBeliefTelemetry:
         agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
 
         assert not (tmp_path / "aggregator.jsonl").exists()
+
+
+class TestRoundCacheActivityResetOnContribution:
+    """A real accepted contribution must restart the round-cache
+    stuck-timeout clock (see TestStuckCachePruning in
+    test_fwdllm_reselection.py) -- otherwise a trainer that eventually does
+    respond, just slowly, would still get evicted next time the cache is
+    checked."""
+
+    def test_accepted_contribution_updates_activity_ts(self):
+        agg = _UtilityFakeAggregator()
+        channel = _UtilityFakeChannel()
+        agg._round_cache_activity_ts["t1"] = 0.0  # ancient/never-set
+
+        agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
+
+        assert agg._round_cache_activity_ts["t1"] > 0.0

@@ -5,8 +5,13 @@ per-round (False) selects once and reuses the same trainer set for the
 whole round; per-iteration (True, default) re-invokes the selector every
 call."""
 
+import time
+
 from flame.config import TrainerAvailState
-from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+    ROUND_CACHE_STUCK_TIMEOUT_S,
+    TopAggregator,
+)
 
 
 class _FakeSelector:
@@ -54,6 +59,7 @@ class _FakeAggregator:
         self._reselect_each_iteration = reselect_each_iteration
         self._round_selected_ends = None
         self._round_selected_ends_round = None
+        self._round_cache_activity_ts = {}
         self._round = 0
         if agg_goal is not None:
             self._agg_goal = agg_goal
@@ -212,5 +218,61 @@ class TestStaleCachePruning:
         channel = _FakeChannel(selections=[["t1", "t2"]])
 
         assert agg.select(channel, "train") == ["t1", "t2"]
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
+
+
+class TestStuckCachePruning:
+    """Regression tests for the round-cache scale gap found on a real n=100
+    run (see examples/MIGRATING_TO_LAUNCHER.md §9): a cached end that's
+    still formally connected (not disconnected, not UN_AVL) but has gone
+    ROUND_CACHE_STUCK_TIMEOUT_S without a real accepted contribution --
+    e.g. one that never finished receiving its initial weights -- must
+    also be pruned/backfilled, not just an explicitly departed one
+    (TestStaleCachePruning above)."""
+
+    def test_stuck_end_pruned_and_backfilled(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
+
+        # t1 is still connected and AVL_TRAIN (neither departure check in
+        # TestStaleCachePruning would catch it), but has gone well past the
+        # stuck-timeout without a real accepted contribution.
+        agg._round_cache_activity_ts["t1"] = time.time() - (ROUND_CACHE_STUCK_TIMEOUT_S + 10)
+
+        ends = agg.select(channel, "train")
+        assert ends == ["t2", "t3"]
+        assert channel.calls == 2  # re-queried the selector to backfill
+        assert "t1" not in agg._round_cache_activity_ts  # cleaned up on prune
+
+        assert agg.select(channel, "train") == ["t2", "t3"]
+        assert channel.calls == 2
+
+    def test_recently_active_end_not_pruned(self):
+        """An end within the timeout window (even if not the most recent to
+        contribute) must not be pruned -- only genuinely stuck members
+        should churn the cache."""
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        agg._round_cache_activity_ts["t1"] = time.time() - (ROUND_CACHE_STUCK_TIMEOUT_S - 30)
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1  # no re-query -- nothing pruned
+
+    def test_freshly_cached_end_not_immediately_pruned(self):
+        """Control: an end that just entered the cache (activity_ts == now,
+        set by the accumulate path itself) must not be immediately treated
+        as stuck on the very next call."""
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert set(agg._round_cache_activity_ts.keys()) == {"t1", "t2"}
+
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1

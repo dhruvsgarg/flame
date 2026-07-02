@@ -78,6 +78,15 @@ PROP_ROUND_END_TIME = "round_end_time"
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
 
+# How long a trainer can sit in the per-round reselection cache
+# (_round_selected_ends, reselect_each_iteration=False) without a real
+# accepted contribution before it's treated as stuck and pruned/backfilled,
+# same as an explicit departure (see _prune_departed_from_round_cache).
+# Deliberately much longer than SEND_TIMEOUT_WAIT_S/RECV_TIMEOUT_WAIT_S
+# (per-message waits) since this measures a full contribution cycle
+# (dispatch -> real training -> accepted response), not one recv call.
+ROUND_CACHE_STUCK_TIMEOUT_S = 300  # 5 minutes
+
 # Default location of the shared examples/_metadata bundle, resolved relative
 # to this library file (lib/python/flame/mode/horizontal/syncfl/ -> lib/python
 # /examples/_metadata) rather than to any specific example's legacy directory
@@ -289,6 +298,11 @@ class TopAggregator(AsyncTopAgg):
         )
         self._round_selected_ends = None
         self._round_selected_ends_round = None
+        # end_id -> time.time() of its last real accepted contribution (or
+        # of first entering the cache, if it hasn't contributed yet) -- lets
+        # _prune_departed_from_round_cache also evict a member that's stuck
+        # but not formally departed (see ROUND_CACHE_STUCK_TIMEOUT_S).
+        self._round_cache_activity_ts: dict = {}
 
         self._optimizer_sort_value = self.config.optimizer.sort
         OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION = (OptimizerType.FEDBUFF,)
@@ -828,6 +842,12 @@ class TopAggregator(AsyncTopAgg):
 
         logger.debug(f"received data from {end}")
         channel.set_end_property(end, PROP_ROUND_END_TIME, (self._round, timestamp))
+        # This end has just made real progress -- restart its round-cache
+        # stuck-timeout clock (see ROUND_CACHE_STUCK_TIMEOUT_S /
+        # _prune_departed_from_round_cache). No-op if reselect_each_iteration
+        # is True (that path never populates this dict) or end isn't
+        # currently cached (dict grows a harmless extra key either way).
+        self._round_cache_activity_ts[end] = time.time()
 
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
@@ -1643,7 +1663,12 @@ class TopAggregator(AsyncTopAgg):
 
     def _prune_departed_from_round_cache(self, channel):
         """Drop ends from `self._round_selected_ends` that have since
-        departed (disconnected, or explicitly reported `UN_AVL`).
+        departed (disconnected, or explicitly reported `UN_AVL`) -- or that
+        have gone `ROUND_CACHE_STUCK_TIMEOUT_S` without a real accepted
+        contribution despite still being formally connected (e.g. a trainer
+        that never finished receiving its initial weights: still shows up
+        as connected/AVL_TRAIN, so neither check below catches it, yet it
+        never actually responds).
 
         The selector-level reclaim (`_cleanup_removed_ends`, invoked by
         `channel.remove`/`channel.update_state`) forgets a departed end at
@@ -1651,10 +1676,18 @@ class TopAggregator(AsyncTopAgg):
         from this aggregator's own per-round cache. Left unpruned, the
         cache-size check below keeps reporting "full" forever with a
         member that can never respond, and the round stalls waiting on a
-        contribution that can never arrive.
+        contribution that can never arrive. Confirmed exactly this
+        happening on a real n=100 run (see
+        examples/MIGRATING_TO_LAUNCHER.md §9): the aggregator's working set
+        stayed capped at ~30 of 100 trainers for 90 minutes, one cached
+        member sat at `model_version=-1` (never initialized) the entire
+        time, and progress fully stalled for the run's last 47 minutes --
+        none of it caught by the departure checks below, since that
+        trainer never disconnected or reported UN_AVL.
         """
         if not self._round_selected_ends:
             return
+        now = time.time()
         still_present = []
         for end in self._round_selected_ends:
             if not channel.has(end):
@@ -1662,12 +1695,23 @@ class TopAggregator(AsyncTopAgg):
                     f"[ReselectGate] pruning departed (removed) end {end} "
                     f"from per-round cache for round={self._round}"
                 )
+                self._round_cache_activity_ts.pop(end, None)
                 continue
             if channel.get_end_property(end, PROP_END_AVL_STATE) == TrainerAvailState.UN_AVL:
                 logger.info(
                     f"[ReselectGate] pruning departed (UN_AVL) end {end} "
                     f"from per-round cache for round={self._round}"
                 )
+                self._round_cache_activity_ts.pop(end, None)
+                continue
+            last_active = self._round_cache_activity_ts.get(end, now)
+            if now - last_active > ROUND_CACHE_STUCK_TIMEOUT_S:
+                logger.info(
+                    f"[ReselectGate] pruning stuck (no accepted contribution "
+                    f"in {now - last_active:.0f}s > {ROUND_CACHE_STUCK_TIMEOUT_S}s) "
+                    f"end {end} from per-round cache for round={self._round}"
+                )
+                self._round_cache_activity_ts.pop(end, None)
                 continue
             still_present.append(end)
         if len(still_present) != len(self._round_selected_ends):
@@ -1686,6 +1730,7 @@ class TopAggregator(AsyncTopAgg):
         if self._round_selected_ends_round != self._round:
             self._round_selected_ends = None
             self._round_selected_ends_round = self._round
+            self._round_cache_activity_ts = {}
 
         if not self._reselect_each_iteration:
             self._prune_departed_from_round_cache(channel)
@@ -1707,6 +1752,10 @@ class TopAggregator(AsyncTopAgg):
             for end in new_ends:
                 if end not in merged:
                     merged.append(end)
+                    # First time this end enters the cache -- starts its
+                    # stuck-timeout clock (reset again on each real accepted
+                    # contribution, see _process_single_trainer_message).
+                    self._round_cache_activity_ts[end] = time.time()
             self._round_selected_ends = merged
             logger.info(
                 f"[ReselectGate] reselect_each_iteration=False; accumulated "
