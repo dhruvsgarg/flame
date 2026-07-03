@@ -119,12 +119,46 @@ class AggregatorSpawner:
             return False
         return self.process.poll() is None
 
+    # A startup crash (e.g. a config/init TypeError) writes a Python traceback to
+    # the log just before the process exits. Detecting it lets wait_until_ready
+    # fail FAST instead of the old 5s "alive ⇒ ready" heuristic waving through a
+    # crash that lands at ~5s -- which then wasted ~86s spawning + waiting on
+    # trainers that never get an EOT (simulate_fwdllm.md §L.5 defect D-d).
+    _CRASH_MARKER = "Traceback (most recent call last)"
+
+    def _read_log_tail(self, max_bytes: int = 65536) -> str:
+        if not self.log_file:
+            return ""
+        p = Path(self.log_file)
+        if not p.exists():
+            return ""
+        try:
+            with open(p, "r", errors="replace") as f:
+                data = f.read()
+            return data[-max_bytes:]
+        except OSError:
+            return ""
+
+    def _print_crash_tail(self, n_lines: int = 25) -> None:
+        """Surface the aggregator log tail so the operator sees the cause without
+        opening the log (§L.5)."""
+        tail = self._read_log_tail()
+        if not tail:
+            return
+        lines = tail.rstrip().splitlines()[-n_lines:]
+        print("  ── aggregator log tail ──")
+        for ln in lines:
+            print(f"    {ln}")
+        print("  ─────────────────────────")
+
     def wait_until_ready(self, timeout: int = 30) -> bool:
         """
-        Wait for aggregator to be ready.
+        Wait for aggregator to be ready, failing fast on a startup crash.
 
-        Simple implementation: just wait fixed time and check process is alive.
-        Could be enhanced with log monitoring for "ready" message.
+        Positive signal: process alive for >=5s with no traceback in the log.
+        Negative signals (return False immediately): the process exits during the
+        window, or a traceback appears in the log -- either way the run has
+        failed, so the caller must NOT spawn trainers.
 
         Args:
             timeout: Maximum time to wait in seconds
@@ -139,14 +173,23 @@ class AggregatorSpawner:
 
         while time.time() - start_time < timeout:
             if not self.is_running():
-                print(f"  ✗ Aggregator process died")
+                print(f"  ✗ Aggregator process died during startup")
+                self._print_crash_tail()
+                return False
+            if self._CRASH_MARKER in self._read_log_tail():
+                print(f"  ✗ Aggregator logged a traceback during startup")
+                self._print_crash_tail()
                 return False
 
             time.sleep(check_interval)
             elapsed = time.time() - start_time
 
-            # Simple heuristic: if process is alive for 5 seconds, assume ready
+            # Alive for 5s AND no startup traceback => assume ready.
             if elapsed >= 5:
+                if self._CRASH_MARKER in self._read_log_tail():
+                    print(f"  ✗ Aggregator logged a traceback during startup")
+                    self._print_crash_tail()
+                    return False
                 print(f"  ✓ Aggregator ready (process alive for {elapsed:.1f}s)")
                 return True
 

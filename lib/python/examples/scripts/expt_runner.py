@@ -71,13 +71,16 @@ class _Style:
     def bold(self, s):   return self._w("1", s)
 
 
-# level -> (icon, colouriser name). "ok" rows stay quiet; warn/error shout.
-_ICON = {"ok": " ", "warn": "\U0001f7e1", "error": "\U0001f534"}   # · 🟡 🔴
+# level -> (icon, colouriser name). "ok" rows stay quiet; set/warn/error shout.
+#   set   = value explicitly overridden by a command-line flag (overrides yaml) -> green
+#   warn  = review / attention                                                  -> yellow
+#   error = infeasible                                                          -> red
+_ICON = {"ok": " ", "set": "\U0001f7e2", "warn": "\U0001f7e1", "error": "\U0001f534"}  #   🟢 🟡 🔴
 _CHECK_ICON = {"ok": "✓", "warn": "⚠", "error": "✗"}  # ✓ ⚠ ✗
 
 
 def _colour_for(st: _Style, level: str):
-    return {"ok": st.dim, "warn": st.yellow, "error": st.red}.get(level, st.dim)
+    return {"ok": st.dim, "set": st.green, "warn": st.yellow, "error": st.red}.get(level, st.dim)
 
 
 # ---- renderer --------------------------------------------------------------
@@ -121,15 +124,18 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
                 n_err_rows += 1
             icon = _ICON.get(level, " ")
             col = _colour_for(st, level)
-            label = f"{r.get('label', ''):<13}"
+            # Pad short labels to a column; always keep >=1 space before the value
+            # so a label at/over the column width doesn't run into it.
+            raw = r.get("label", "")
+            label = raw.ljust(13) if len(raw) < 13 else raw + " "
             value = r.get("value", "")
             note = r.get("note", "")
             note_s = f"  {st.dim('· ' + note)}" if note else ""
             # ok rows: label dim, value plain. warn/error: value coloured.
             if level == "ok":
-                out(f"  {icon} {st.dim(label)}{value}{note_s}")
+                out(f"  {icon} {st.dim(label)} {value}{note_s}")
             else:
-                out(f"  {icon} {st.bold(label)}{col(value)}{note_s}")
+                out(f"  {icon} {st.bold(label)} {col(value)}{note_s}")
 
     out(" " + _RULE)
 

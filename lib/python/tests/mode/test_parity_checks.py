@@ -706,3 +706,102 @@ class TestAggRoundCadenceEmission:
         assert ev == EVENT_AGG_ROUND
         assert f["cycle_data_id"] == 7 and f["cycle_iteration"] == 2
         assert f["grad_pool_size"] == 9 and f["cached_v_size"] == 2
+
+
+# ── FwdLLM async residence rungs R1 / W1 (simulate_fwdllm.md §L.3) ──
+
+def _cyc(cycle_data_id, intervals, contributing=None):
+    """A committed cadence cycle carrying per-contributor [dispatch, commit]
+    intervals. `intervals` = list of (end, dispatch_ts, commit_ts)."""
+    ci = [{"end": e, "dispatch_ts": d, "commit_ts": c} for (e, d, c) in intervals]
+    return {"event": "agg_round", "round": 1, "ts": 0.0,
+            "cycle_data_id": cycle_data_id, "var_good_enough": True,
+            "agg_goal_count": len(ci),
+            "contributing_trainers": contributing or [e for (e, _, _) in intervals],
+            "contributor_intervals": ci}
+
+
+def _trainers_with_rounds(counts):
+    """{short_id: {"trainer_round": [ ...n events ]}} for W1 forward-pass counts."""
+    return {sid: {"trainer_round": [{"event": "trainer_round"} for _ in range(n)]}
+            for sid, n in counts.items()}
+
+
+class TestR1InflightOverlap:
+    """R1 [INV]: per-trainer dispatch->commit intervals must not overlap
+    (one-in-flight residence). The fluxtune 2x-recompute bug violated this."""
+
+    def test_non_overlapping_intervals_pass(self):
+        # Each trainer's two contributions are strictly sequential (commit before
+        # the next dispatch) in BOTH modes.
+        agg = _agg(agg_rounds=[
+            _cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)]),
+            _cyc(1, [("A", 6.0, 11.0), ("B", 6.0, 11.0)]),
+        ])
+        r = pc.inflight_overlap_parity(agg, agg)
+        assert r["ok"]
+        assert r["real_overlap_frac"] == 0.0 and r["sim_overlap_frac"] == 0.0
+
+    def test_sim_overlap_fails_with_clean_real(self):
+        # Real: A's 2nd dispatch (6.0) is after its 1st commit (5.0) -> clean.
+        real = _agg(agg_rounds=[
+            _cyc(0, [("A", 0.0, 5.0)]),
+            _cyc(1, [("A", 6.0, 11.0)]),
+        ])
+        # Sim: A re-dispatched at 2.0 while its 1st contribution (commit 5.0) was
+        # still in flight -> overlap = the residence violation.
+        sim = _agg(agg_rounds=[
+            _cyc(0, [("A", 0.0, 5.0)]),
+            _cyc(1, [("A", 2.0, 7.0)]),
+        ])
+        r = pc.inflight_overlap_parity(real, sim)
+        assert not r["ok"]
+        assert r["real_overlap_frac"] == 0.0
+        assert r["sim_overlap_frac"] > 0.0
+
+    def test_skips_without_contributor_intervals(self):
+        # Sync baselines / non-fwdllm runs don't emit contributor_intervals.
+        agg = _agg(agg_rounds=[_round(1, ["a"], [0])])
+        r = pc.inflight_overlap_parity(agg, agg)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+
+class TestW1ComputeConservation:
+    """W1 [DIAG]: forward passes per committed grad; a large sim excess over
+    real = wasted recompute (the residence violation), localizes to R1."""
+
+    def test_matched_ratio_passes(self):
+        real_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        sim_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        # 2 committed each; ~1.5 forward passes per commit in both modes.
+        real_tr = _trainers_with_rounds({"A": 2, "B": 1})
+        sim_tr = _trainers_with_rounds({"A": 2, "B": 1})
+        r = pc.compute_conservation_parity(real_agg, sim_agg, real_tr, sim_tr)
+        assert r["ok"]
+        assert r["real_fwd_per_commit"] == r["sim_fwd_per_commit"]
+
+    def test_sim_recompute_excess_fails(self):
+        real_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        sim_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        # Same 2 commits both modes, but sim ran ~2x the forward passes.
+        real_tr = _trainers_with_rounds({"A": 1, "B": 1})   # 2 fwd / 2 commit = 1.0
+        sim_tr = _trainers_with_rounds({"A": 3, "B": 3})    # 6 fwd / 2 commit = 3.0
+        r = pc.compute_conservation_parity(real_agg, sim_agg, real_tr, sim_tr)
+        assert not r["ok"]
+        assert r["sim_fwd_per_commit"] > r["real_fwd_per_commit"]
+
+    def test_skips_without_data(self):
+        empty = _agg(agg_rounds=[])
+        r = pc.compute_conservation_parity(empty, empty, {}, {})
+        assert r.get("status") == "SKIP" and r["ok"]
+
+
+class TestR1W1Registered:
+    """Both rungs run in run_all_parity and are wired into the causal registry
+    (R1 upstream of V1 -- the dep chain proving cadence is downstream)."""
+
+    def test_present_in_run_all_and_meta(self):
+        assert "r1_inflight_overlap" in pc.CHECK_META
+        assert "w1_compute_conservation" in pc.CHECK_META
+        assert "r1_inflight_overlap" in pc.CHECK_META["v1_iter_per_data_id"]["deps"]
+        assert pc.CHECK_META["w1_compute_conservation"]["deps"] == ("r1_inflight_overlap",)

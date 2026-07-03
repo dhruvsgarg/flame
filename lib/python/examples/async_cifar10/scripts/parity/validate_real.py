@@ -45,7 +45,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE.parent) not in sys.path:
     sys.path.insert(0, str(_HERE.parent))
 
-from parity.checks import load_run_dir, agg_goal_cycles_ok  # noqa: E402
+from parity.checks import (  # noqa: E402
+    load_run_dir,
+    agg_goal_cycles_ok,
+    _fwd_cadence_cycles,
+    _overlap_fraction,
+    _forward_passes,
+    _committed_grads,
+)
 
 
 # Allow a tiny fraction of telemetry edge cases (interleaving/late events) before
@@ -250,6 +257,45 @@ def check_aggregation(agg: dict) -> dict:
     }
 
 
+def check_grad_residence(agg: dict, trainer: dict) -> dict:
+    """FwdLLM async grad-path residence (R1) + compute-conservation (W1) on the
+    REAL side — the hard gate that blocks the §L.4-step-4 sim mechanism change.
+
+    R1: real per-trainer dispatch->commit intervals (contributor_intervals) must
+    not overlap (~0%). If real itself overlaps, real is inadmissible and D-b is a
+    two-sided fix — fix real FIRST, never tune sim toward a broken real
+    (simulate_fwdllm.md §L.3 sanity gate / PARITY.md principle #6).
+    W1: report forward_passes vs committed grads so the operator can confirm the
+    real fwd-commit gap is explained by end-of-run in-flight + stale-rejects, not
+    by real ALSO dropping carried grads. Informational (loose bound) since real
+    stale-reject / in-flight-at-stop counts aren't separately emitted.
+
+    SKIPs cleanly (ok=True) when the real run carries no contributor_intervals
+    (a non-fwdllm real run) so async_cifar10 validate_real is unaffected.
+    """
+    cycles = _fwd_cadence_cycles(agg)
+    have_intervals = any(e.get("contributor_intervals") for e in cycles)
+    if not have_intervals:
+        return {"ok": True, "status": "SKIP",
+                "note": "no contributor_intervals (non-fwdllm real run)"}
+    frac, n_pairs, n_intervals = _overlap_fraction(cycles)
+    fwd = _forward_passes(trainer)
+    com = _committed_grads(agg)
+    ratio = (fwd / com) if com else None
+    # R1 is the hard invariant; W1 ratio is reported (a huge real ratio would
+    # itself be suspicious, so bound it generously — real overcommit is small).
+    ok = frac <= _VIOLATION_FRAC_TOL
+    return {
+        "ok": ok,
+        "r1_overlap_frac": round(frac, 4),
+        "r1_overlap_pairs": n_pairs,
+        "n_intervals": n_intervals,
+        "w1_forward_passes": fwd,
+        "w1_committed": com,
+        "w1_fwd_per_commit": round(ratio, 3) if ratio is not None else None,
+    }
+
+
 def validate_real(run_dir: str) -> bool:
     agg, trainer = load_run_dir(run_dir)
     tiv = _train_intervals(trainer)
@@ -264,9 +310,11 @@ def validate_real(run_dir: str) -> bool:
         "concurrency": check_concurrency(agg, tiv),
         "selection": check_selection(agg),
         "aggregation": check_aggregation(agg),
+        "grad_residence": check_grad_residence(agg, trainer),
     }
     all_ok = True
     for name, r in results.items():
+        r.pop("status", None)  # SKIP marker — informational, not printed as a field
         ok = r.pop("ok")
         all_ok = all_ok and ok
         tag = "[OK]  " if ok else "[FAIL]"

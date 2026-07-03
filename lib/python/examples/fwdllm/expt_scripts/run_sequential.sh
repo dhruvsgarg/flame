@@ -36,6 +36,11 @@
 #   --c / --c-async / --k / --agg-goal / --min-initial-trainers
 #                    selector/aggregator knobs (see the per-flag notes below).
 #   --partition-method  override hyperparameters.partition_method both sides.
+#   --var-threshold  set the variance-pass gate threshold (hyperparameters.var_threshold)
+#                    on both sides. It VARIES with data heterogeneity, so it's a
+#                    review-every-run knob (shown in tier ①), not a fixed default.
+#   --max-iter-per-data-id  set the force-commit cap (max_iterations_per_data_id)
+#                    on both sides (review-every-run, tier ①).
 #   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
 #   --only           comma-separated baseline subset (default all three).
 #   --after          comma-separated post-launch hooks to run once all launches
@@ -76,6 +81,12 @@ MODE="both"
 DELAYS="off"
 MAX_RUNTIME_S=600
 MAX_DATA_ID=10
+# Companion "was this passed on the command line?" flags. Needed because MODE/
+# DELAYS/MAX_RUNTIME_S/MAX_DATA_ID have non-empty defaults, so their value alone
+# can't tell "operator passed it (override -> green)" from "defaulted". (The
+# empty-default knobs like SEL_C/AGG_GOAL/VAR_THRESHOLD don't need this: non-empty
+# already means "passed".)
+MODE_SET=0; DELAYS_SET=0; MAX_RUNTIME_S_SET=0; MAX_DATA_ID_SET=0
 STOP_ON_FAIL=0
 NUM_TRAINERS=""
 NUM_GPUS=""
@@ -87,6 +98,8 @@ MIN_INIT_TRAINERS=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
 PARTITION_METHOD=""
+VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
+MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 ONLY=""
 AFTER=""          # comma list of post-launch hooks: parity,sanity,plot (see after_* below)
 DRY_RUN=0
@@ -98,6 +111,7 @@ usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
+  echo "          [--var-threshold F] [--max-iter-per-data-id N]" >&2
   echo "          [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
   exit 2
@@ -105,10 +119,10 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mode)                 MODE="$2"; shift 2 ;;
-    --delays)               DELAYS="$2"; shift 2 ;;
-    --max-runtime-s)        MAX_RUNTIME_S="$2"; shift 2 ;;
-    --max-data-id)          MAX_DATA_ID="$2"; shift 2 ;;
+    --mode)                 MODE="$2"; MODE_SET=1; shift 2 ;;
+    --delays)               DELAYS="$2"; DELAYS_SET=1; shift 2 ;;
+    --max-runtime-s)        MAX_RUNTIME_S="$2"; MAX_RUNTIME_S_SET=1; shift 2 ;;
+    --max-data-id)          MAX_DATA_ID="$2"; MAX_DATA_ID_SET=1; shift 2 ;;
     --num-trainers)         NUM_TRAINERS="$2"; shift 2 ;;
     --num-gpus)             NUM_GPUS="$2"; shift 2 ;;
     --c)                    SEL_C="$2"; shift 2 ;;
@@ -119,6 +133,8 @@ while [[ $# -gt 0 ]]; do
     --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
+    --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
+    --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
     --after)                AFTER="$2"; shift 2 ;;
     --stop-on-fail)         STOP_ON_FAIL=1; shift ;;
@@ -181,6 +197,8 @@ MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_D
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" \
+MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
@@ -196,6 +214,10 @@ NUM_GPUS = env("NUM_GPUS") or ""
 SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env("SEL_K") or ""
 AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 PART = env("PARTITION_METHOD") or ""
+VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
+# "was it passed on the command line?" (override -> green) for the defaulted flags
+MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
+MAX_RUNTIME_S_SET = env("MAX_RUNTIME_S_SET") == "1"; MAX_DATA_ID_SET = env("MAX_DATA_ID_SET") == "1"
 GPUS_VISIBLE = int(env("GPUS_VISIBLE") or "0")
 LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
 DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
@@ -227,6 +249,12 @@ def patch(exp, run_key, variant, trace):
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
+    # Variance-cadence knobs (review-every-run). Only patched when explicitly set,
+    # so an unset run keeps the code/trainer default (surfaced as "(D)" below).
+    if VAR_THRESHOLD:
+        h["var_threshold"] = float(VAR_THRESHOLD)
+    if MAX_ITER:
+        h["max_iterations_per_data_id"] = int(MAX_ITER)
     if NUM_TRAINERS:
         exp["trainer"]["num_trainers"] = int(NUM_TRAINERS)
     if NUM_GPUS:
@@ -301,17 +329,55 @@ with open(MANIFEST, "w") as fh:
         fh.write(f"{name}\t{out}\t{variant}\t{budget}\n")
 
 # ---------------- build the tiered spec ----------------
+# Row colour convention (legend in the subtitle):
+#   🟢 set  = value came from a command-line flag -> OVERRIDES the yaml (even if
+#             the yaml happens to agree). Shown WITHOUT "(D)".
+#   🟡 warn = review/attention (a review-every-run knob still on its default).
+#      (D) + dim = plain yaml/code default, not overridden this run.
+def dflt(val, overridden):
+    # inline "(D)" marker for the bundled per-baseline knob strings (tier ②)
+    return f"{val}" if overridden else f"{val} (D)"
+
+def scalar_row(label, val, overridden, note=None, review=False):
+    if overridden:                       # operator passed the flag -> override
+        d = {"label": label, "value": f"{val}", "level": "set"}
+    elif review:                         # defaulted but must be eyeballed each run
+        d = {"label": label, "value": f"{val} (D)", "level": "warn"}
+    else:                                # plain default
+        d = {"label": label, "value": f"{val} (D)", "level": "ok"}
+    if note:
+        d["note"] = note
+    return d
+
 tiers = []
 # ① review every run
-trace_disp = " ".join(traces) if any(traces) else "<yaml default: syn_0>"
+trace_overridden = any(traces)
+trace_val = " ".join(traces) if trace_overridden else "syn_0"
+# mode: single-sided always warns (parity needs both), regardless of override.
+if MODE != "both":
+    mode_row = {"label": "mode", "value": MODE, "level": "warn", "note": "single-sided: parity needs both"}
+else:
+    mode_row = scalar_row("mode", MODE, MODE_SET, note="real+sim pair (--mode)")
 tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
-    {"label": "mode", "value": MODE, **({"level": "warn", "note": "single-sided: parity needs both"} if MODE != "both" else {})},
+    mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
-    {"label": "stop", "value": f"max_runtime_s={MAX_RUNTIME_S}  max_data_id_progress={MAX_DATA_ID}"},
-    {"label": "trace", "value": trace_disp,
-     **({"level": "warn", "note": "Phase 1 is syn_0 (100% avail)"} if any(t and t != "syn_0" for t in traces) else {"note": "100% availability"})},
-    {"label": "delays", "value": f"enable_training_delays={str(delays_on).lower()} (D={'>0' if delays_on else '0'})",
-     "level": "warn", "note": "matched on BOTH sides ✓ — K-D8" if MODE == "both" else "K-D8"},
+    # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
+    scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET, note="wall/vclock cap (--max-runtime-s)"),
+    scalar_row("max_data_id_progress", MAX_DATA_ID, MAX_DATA_ID_SET,
+               note="STOP condition: stop when data_id reaches this (--max-data-id)"),
+    scalar_row("trace", trace_val, trace_overridden,
+               note=("Phase 1 is syn_0 (100% avail)" if any(t and t != "syn_0" for t in traces) else "100% availability")),
+    scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
+               note=f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; matched on BOTH sides — K-D8"),
+    # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
+    # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
+    # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
+    scalar_row("var_threshold", VAR_THRESHOLD if VAR_THRESHOLD else "unset (trainer/code default)",
+               bool(VAR_THRESHOLD), review=True,
+               note="variance-pass gate; varies w/ data heterogeneity (--var-threshold)"),
+    scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset (code default)",
+               bool(MAX_ITER), review=True,
+               note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above"),
 ]}
 tiers.append(tier1)
 
@@ -319,18 +385,18 @@ tiers.append(tier1)
 rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
-    val = (f"c={b.get('c')}  agg_goal={b.get('agg_goal')}  k={b.get('k')}  "
-           f"minInit={b.get('min_init')}  n_trainers={b.get('n_trainers')}  "
-           f"n_gpus={b.get('n_gpus')}  part={b.get('partition')}")
+    # each knob shows "(D)" unless its dedicated flag overrode it this run
+    val = (f"c={dflt(b.get('c'), bool(SEL_C) or (rk=='fluxtune' and bool(SEL_C_ASYNC)))}  "
+           f"agg_goal={dflt(b.get('agg_goal'), bool(AGG_GOAL) or bool(SEL_C))}  "
+           f"k={dflt(b.get('k'), bool(SEL_K))}  "
+           f"minInit={dflt(b.get('min_init'), bool(MIN_INIT))}  "
+           f"n_trainers={dflt(b.get('n_trainers'), bool(NUM_TRAINERS))}  "
+           f"n_gpus={dflt(b.get('n_gpus'), bool(NUM_GPUS))}  "
+           f"part={dflt(b.get('partition'), bool(PART))}")
     lvl = {}
     if PART and PART != "uniform":
         lvl = {"level": "warn", "note": "non-default partition"}
     rows2.append({"label": rk, "value": val, **lvl})
-# fwdllm-defining knobs reminder (var_threshold / max_iterations_per_data_id are
-# NOT exposed as flags here on purpose -- they are baseline-defining, not parity
-# levers, §K). Flag loudly if someone ever wires them in.
-rows2.append({"label": "var knobs", "value": "var_threshold / max_iterations_per_data_id = YAML default",
-              "note": "baseline-defining, NOT parity levers (§K)"})
 tiers.append({"name": "② PER-BASELINE (moderate)", "rows": rows2})
 
 # ③ config-baked
@@ -355,6 +421,11 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+# (No k-vs-agg_goal check: in the random selector, send-side selection/concurrency
+# is driven by `c` (required_trainers = min(len(ends), c - in_use)); `k` is the
+# RECV-side batch size (num_ends_to_remove = min(..., self.k)), NOT a selection
+# cap -- so k < agg_goal is fine, the barrier still collects agg_goal grads across
+# RECV passes. c <= num_trainers and agg_goal <= c are the binding invariants.)
 # num_gpus <= visible.
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
@@ -388,7 +459,7 @@ next_cmd = (f"(cd {env('AC10_DIR')} && python -m scripts.parity.cli --batch "
 
 spec = {
     "title": "FWDLLM RUN",
-    "subtitle": f"mode={MODE}  {len(manifest)} run(s)",
+    "subtitle": f"mode={MODE}  {len(manifest)} run(s)   ·   🟢 set=flag override · (D)=yaml/code default",
     "dry_run": DRY_RUN,
     "tiers": tiers,
     "checks": checks,
@@ -401,6 +472,13 @@ PY
 GATE_RC=$?
 
 # ---- gate decision ----
+# render_and_gate returns 0 (ok) or 2 (blocking check). Anything else means the
+# pre-flight step itself failed (e.g. a bad YAML or a spec-builder bug) -- abort
+# rather than silently launch on an unvalidated config.
+if [ "$GATE_RC" -ne 0 ] && [ "$GATE_RC" -ne 2 ]; then
+  echo "ERROR: pre-flight step failed (exit $GATE_RC) -- see traceback above. Nothing launched." >&2
+  exit "$GATE_RC"
+fi
 if [ "$GATE_RC" -eq 2 ] && [ "$FORCE" != "1" ]; then
   echo "Pre-flight BLOCKED (exit 2). Fix the config or pass --force to override. Nothing launched." >&2
   exit 2
@@ -461,8 +539,22 @@ while IFS=$'\t' read -r name cfg variant budget; do
   rc=$?
   DURATION_S[$name]=$(( $(date +%s) - start_ts ))
   ORDERED_KEYS+=("$name")
-  [ "$rc" -eq 0 ] && RESULT[$name]="PASS" || RESULT[$name]="FAIL(exit=$rc)"
+  # Health verdict (COMPLETED / CRASH / NO_AGG_ROUNDS / WALL_CEILING) is the
+  # source of truth for the summary -- NOT the launcher exit code, which is 0
+  # even when the aggregator subprocess crashed (run_experiment swallows the
+  # child's non-zero exit). This keeps the per-run line and the summary in
+  # agreement, and never calls a mere completion "PASS" (PASS is for checks).
   expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
+  if [ "$rc" -ne 0 ]; then
+    # Launcher itself failed: surface that, but keep the health word if the
+    # scan caught a more specific cause (e.g. CRASH) than a bare exit code.
+    case "${EXPT_LAST_HEALTH:-}" in
+      COMPLETED|NO_MARKER|"") RESULT[$name]="LAUNCH_EXIT=$rc" ;;
+      *)                      RESULT[$name]="${EXPT_LAST_HEALTH}(exit=$rc)" ;;
+    esac
+  else
+    RESULT[$name]="${EXPT_LAST_HEALTH:-COMPLETED}"
+  fi
   if [ "$rc" -ne 0 ] && [ "$STOP_ON_FAIL" = "1" ]; then
     echo "--stop-on-fail set; aborting remaining runs."; STOP_ALL=1; break
   fi

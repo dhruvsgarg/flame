@@ -322,6 +322,58 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
 
+class TestContributorIntervalsEmission:
+    """R1/W1 residence rungs (§L.3) read a per-contributor [dispatch, commit]
+    interval list off each agg_round event. It must land once per contributor,
+    carrying the ts captured in _process_single_trainer_message."""
+
+    def test_intervals_emitted_per_contributor(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            # Simulate the per-contribution capture done in the message handler.
+            agg._sim_contrib_intervals = {
+                "t1": {"dispatch_ts": 1.0, "commit_ts": 6.0},
+                "t2": {"dispatch_ts": 2.0, "commit_ts": 9.0},
+            }
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=5), "t2": timedelta(seconds=7)},
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            ci = {d["end"]: d for d in r["contributor_intervals"]}
+            assert set(ci) == {"t1", "t2"}
+            assert ci["t1"]["dispatch_ts"] == 1.0 and ci["t1"]["commit_ts"] == 6.0
+            assert ci["t2"]["dispatch_ts"] == 2.0 and ci["t2"]["commit_ts"] == 9.0
+        finally:
+            telemetry.shutdown()
+
+    def test_intervals_present_even_without_captured_ts(self, tmp_path):
+        """When no interval was captured (e.g. a test double / real run with the
+        dict unpopulated) the field is still emitted with null ts, so the rung
+        SKIPs cleanly rather than the field being absent."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=5)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["contributor_intervals"] == [
+                {"end": "t1", "dispatch_ts": None, "commit_ts": None}]
+        finally:
+            telemetry.shutdown()
+
+
 class _UtilityFakeChannel:
     """Generic fake for _process_single_trainer_message's channel calls --
     stores per-end properties in a dict, doesn't care about specific PROP_*
@@ -486,6 +538,42 @@ class TestUtilityBeliefTelemetry:
         agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
 
         assert not (tmp_path / "aggregator.jsonl").exists()
+
+
+class TestStalenessPolicy:
+    """staleness_policy gate in _process_single_trainer_message (§L D-c/K-D13).
+
+    REJECT policies (round_data_id/exact) drop a stale grad; ACCEPT policies
+    (none/fedbuff) consume it -- fedbuff is the async baseline default so its
+    carried surplus grads (commit-then-carry) are accepted + down-weighted by
+    (V'-V) in aggregate_grads_from_trainers, never silently dropped."""
+
+    def _run(self, policy, msg_version, agg_version=5):
+        agg = _UtilityFakeAggregator(model_version=agg_version, is_async=True)
+        agg.staleness_policy = policy
+        channel = _UtilityFakeChannel()
+        agg.process(channel, _msg(model_version=msg_version, stat_utility=0.5),
+                    "t1", timestamp=0)
+        return agg
+
+    def test_fedbuff_accepts_stale_grad(self):
+        # msg trained on v3, agg now at v5 -> stale by 2, but fedbuff ACCEPTS it.
+        agg = self._run("fedbuff", msg_version=3)
+        assert agg._agg_goal_cnt == 1          # grad consumed
+        assert agg._per_agg_trainer_list == ["t1"]
+
+    def test_none_accepts_stale_grad(self):
+        agg = self._run("none", msg_version=3)
+        assert agg._agg_goal_cnt == 1
+
+    def test_round_data_id_rejects_stale_grad(self):
+        agg = self._run("round_data_id", msg_version=3)
+        assert agg._agg_goal_cnt == 0          # dropped
+        assert agg._per_agg_trainer_list == []
+
+    def test_fedbuff_accepts_fresh_grad(self):
+        agg = self._run("fedbuff", msg_version=5)  # not stale
+        assert agg._agg_goal_cnt == 1
 
 
 class TestRoundCacheActivityResetOnContribution:

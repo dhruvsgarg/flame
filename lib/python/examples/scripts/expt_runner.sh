@@ -125,12 +125,19 @@ expt_launch() {
 # SIM_WALL_CEILING / SIM_STARVATION / tracebacks live in the dedicated
 # experiments/run_*/*_aggregator.log. Only files newer than `marker` (touched by
 # expt_launch pre-launch) are scanned, so it attributes signals to THIS run.
-# Prints a one-line verdict; returns 0 only if there were agg_rounds, no
+# Prints a one-line verdict and exports EXPT_LAST_HEALTH with the verdict word
+# (COMPLETED / CRASH / NO_AGG_ROUNDS / WALL_CEILING / NO_MARKER) so a driver can
+# fold it into its own summary; returns 0 only if there were agg_rounds, no
 # [SIM_WALL_CEILING], and no crash marker.
+#
+# Vocabulary note: a healthy run is "COMPLETED", NOT "PASS". Completing is a
+# process outcome, not a check result -- PASS/FAIL is reserved for actual
+# checks (e.g. the real<->sim parity battery in scripts.parity.cli).
 expt_assert_run() {
   local example_dir="$1" marker="$2" label="${3:-run}"
   local expdir="$example_dir/experiments"
   if [ ! -e "$marker" ]; then
+    EXPT_LAST_HEALTH="NO_MARKER"; export EXPT_LAST_HEALTH
     echo "  [$label] NO_MARKER (cannot scope health check)"; return 1
   fi
   local agg=0 stop=0 wall=0 starv=0 crash=0 nlogs=0 f n
@@ -144,10 +151,12 @@ expt_assert_run() {
     n=$(grep -c  "\[SIM_STARVATION\]" "$f" 2>/dev/null);     starv=$(( starv + ${n:-0} ))
     n=$(grep -cE "Traceback \(most recent call last\)|CUDA error|Segmentation fault" "$f" 2>/dev/null); crash=$(( crash + ${n:-0} ))
   done < <(find "$expdir" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
-  local status="PASS"
+  # A healthy, fully-run experiment is COMPLETED (a process outcome), not PASS.
+  local status="COMPLETED"
   [ "$agg" -eq 0 ]   && status="NO_AGG_ROUNDS"
   [ "$wall" -gt 0 ]  && status="WALL_CEILING"
   [ "$crash" -gt 0 ] && status="CRASH"
+  EXPT_LAST_HEALTH="$status"; export EXPT_LAST_HEALTH
   printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s (%s agg log(s))\n" \
     "$label" "$status" "$agg" "$stop" "$wall" "$starv" "$crash" "$nlogs"
   [ "$agg" -gt 0 ] && [ "$wall" -eq 0 ] && [ "$crash" -eq 0 ]

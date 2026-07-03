@@ -93,6 +93,12 @@ from parity.checks import (  # noqa: F401, E402
     eligible_ends_metric_parity,
     grad_norm_parity,
     grad_pool_size_parity,
+    # fwdllm async residence (R1/W1, simulate_fwdllm.md §L.3)
+    _overlap_fraction,
+    _forward_passes,
+    _committed_grads,
+    inflight_overlap_parity,
+    compute_conservation_parity,
     # overall
     run_all_parity,
     overall_verdict,

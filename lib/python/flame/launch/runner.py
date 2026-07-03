@@ -323,8 +323,18 @@ class ExperimentRunner:
                 self.aggregator_spawner.terminate()
             agg_rc = getattr(self.aggregator_spawner.process, "returncode", None)
             rc_msg = f"exit={agg_rc}" if agg_rc == 0 else f"exit={agg_rc} ⚠"
-            print(f"  aggregator done ({rc_msg}), waiting for trainers to exit...")
-            self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
+            if agg_rc not in (0, None):
+                # The aggregator failed (non-zero exit). The 30s-per-trainer EOT
+                # grace below is only meaningful on a CLEAN finish -- on a crash
+                # the trainers will never get an EOT, so terminate them now
+                # instead of burning ~30s each waiting (simulate_fwdllm.md §L.5
+                # defect D-d).
+                print(f"  aggregator FAILED ({rc_msg}); terminating trainers now "
+                      f"(skipping EOT grace).")
+                self.trainer_spawner.terminate_all()
+            else:
+                print(f"  aggregator done ({rc_msg}), waiting for trainers to exit...")
+                self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
             print("\nexperiment completed.")
 
             # Auto post-run analysis: parse the telemetry JSONL and emit plots.

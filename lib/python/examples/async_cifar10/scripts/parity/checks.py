@@ -3757,6 +3757,142 @@ def grad_pool_size_parity(real: dict, sim: dict, ks_tol: float = 0.2,
 
 
 # ═══════════════════════════════════════════════════════════════════
+# §3.5  FwdLLM async residence rungs (R1 / W1) — simulate_fwdllm.md §L.3
+# ═══════════════════════════════════════════════════════════════════
+#
+# The 2026-07-03 fluxtune smoke showed sim running 2x the forward passes of
+# real: a residence violation on the async grad path (surplus grads dropped +
+# re-dispatched every agg-goal cycle). These two rungs would have localized it
+# instantly. R1 is the finest check (per-trainer interval overlap); W1 is the
+# coarse compute-conservation tell that first flags the wasted recompute.
+
+_R1_EPS = 1e-6
+
+
+def _overlap_fraction(cycles: list) -> tuple:
+    """(overlap_frac, n_pairs, n_intervals) over per-trainer dispatch->commit
+    intervals reconstructed from the agg_round `contributor_intervals` field.
+
+    A trainer's contribution i "overlaps" if its dispatch_ts precedes the
+    latest commit_ts among that trainer's earlier contributions -- i.e. it was
+    re-dispatched while a prior update was still outstanding, the one-in-flight
+    residence violation (PARITY.md §3.resid, "measure overlap from intervals
+    not counters"). 0.0 = strict residence; both modes must be ~0.
+    """
+    by_end: dict = {}
+    for e in cycles:
+        for iv in (e.get("contributor_intervals") or []):
+            d, c = iv.get("dispatch_ts"), iv.get("commit_ts")
+            if d is None or c is None:
+                continue
+            by_end.setdefault(iv.get("end"), []).append((float(d), float(c)))
+    n_pairs = 0
+    n_overlap = 0
+    n_intervals = 0
+    for ivs in by_end.values():
+        ivs.sort()
+        n_intervals += len(ivs)
+        running_max_commit = float("-inf")
+        for i, (d, c) in enumerate(ivs):
+            if i > 0:
+                n_pairs += 1
+                if d < running_max_commit - _R1_EPS:
+                    n_overlap += 1
+            running_max_commit = max(running_max_commit, c)
+    frac = (n_overlap / n_pairs) if n_pairs else 0.0
+    return frac, n_pairs, n_intervals
+
+
+def inflight_overlap_parity(real: dict, sim: dict, tol_frac: float = 0.02) -> dict:
+    """R1 [INV]: one-in-flight-per-trainer residence on the grad path.
+
+    Per-trainer dispatch->commit intervals must NOT overlap (a trainer is
+    re-pickable only after its update commits). Real satisfies this by channel
+    construction (~0%); sim must model it (commit-then-carry + slot hold, §L.4
+    step 4). A non-zero sim fraction with real ~0 is the residence bug (2x
+    forward passes). Checked per mode -- both must sit under tol_frac.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_frac, r_pairs, r_n = _overlap_fraction(rc)
+    s_frac, s_pairs, s_n = _overlap_fraction(sc)
+    if r_pairs == 0 and s_pairs == 0:
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no contributor_intervals with >=2 contributions per "
+                        "trainer (field absent, non-fwdllm run, or no re-selection)"}
+    ok = r_frac <= tol_frac and s_frac <= tol_frac
+    return {
+        "ok": ok,
+        "tier": "INV",
+        "real_overlap_frac": round(r_frac, 4),
+        "sim_overlap_frac": round(s_frac, 4),
+        "tol_frac": tol_frac,
+        "n_real_pairs": r_pairs,
+        "n_sim_pairs": s_pairs,
+        "n_real_intervals": r_n,
+        "n_sim_intervals": s_n,
+        "interpretation": (
+            f"real {r_frac:.1%} / sim {s_frac:.1%} of same-trainer intervals "
+            f"overlap a prior one; >0 = re-dispatched while still in flight "
+            f"(residence violation)."
+        ),
+    }
+
+
+def _forward_passes(trainers: dict) -> int:
+    """Total forward passes = trainer_round events across all trainers."""
+    return sum(len(t.get("trainer_round", []) or []) for t in trainers.values())
+
+
+def _committed_grads(agg: dict) -> int:
+    """Total committed grads = contributors summed over committed cycles."""
+    total = 0
+    for e in _fwd_cadence_cycles(agg):
+        ivs = e.get("contributor_intervals")
+        if ivs is not None:
+            total += len(ivs)
+        else:
+            total += len(e.get("contributing_trainers") or [])
+    return total
+
+
+def compute_conservation_parity(real: dict, sim: dict,
+                                real_trainers: dict, sim_trainers: dict,
+                                ratio_tol: float = 0.25) -> dict:
+    """W1 [DIAG]: compute-conservation — forward passes vs committed grads.
+
+    forward_passes ~= committed + in_flight_at_stop + stale_rejected, so the
+    forward/commit ratio is ~1 plus a small tail. The tell is the real<->sim
+    RATIO of that ratio: sim doing far more forward passes per commit than real
+    = wasted recompute (the residence violation, §L.1). Localizes to R1.
+    """
+    r_fwd, s_fwd = _forward_passes(real_trainers), _forward_passes(sim_trainers)
+    r_com, s_com = _committed_grads(real), _committed_grads(sim)
+    if r_com == 0 or s_com == 0 or r_fwd == 0 or s_fwd == 0:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no forward passes or committed grads (non-fwdllm run "
+                        "or telemetry absent)"}
+    r_ratio = r_fwd / r_com
+    s_ratio = s_fwd / s_com
+    rel = abs(s_ratio - r_ratio) / max(r_ratio, s_ratio)
+    return {
+        "ok": rel <= ratio_tol,
+        "tier": "DIAG",
+        "real_forward_passes": r_fwd,
+        "sim_forward_passes": s_fwd,
+        "real_committed": r_com,
+        "sim_committed": s_com,
+        "real_fwd_per_commit": round(r_ratio, 3),
+        "sim_fwd_per_commit": round(s_ratio, 3),
+        "ratio_rel_diff": round(rel, 3),
+        "ratio_tol": ratio_tol,
+        "interpretation": (
+            f"real {r_ratio:.2f} vs sim {s_ratio:.2f} forward passes per commit; "
+            f"a large sim excess = recompute wasted on dropped/re-dispatched grads."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # §4  Consolidated run_all_parity (extended)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -3872,6 +4008,14 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["g1_grad_norm"] = grad_norm_parity(real_agg, sim_agg)
     results["g2_grad_pool_size"] = grad_pool_size_parity(real_agg, sim_agg)
 
+    # ── Stage 3' FwdLLM async residence (R1/W1, §L.3) ──
+    # R1 is the finest residence check (per-trainer interval overlap); W1 is the
+    # coarse compute-conservation tell that feeds V1/K2. Both SKIP cleanly when
+    # contributor_intervals is absent (sync baselines / non-fwdllm runs).
+    results["r1_inflight_overlap"] = inflight_overlap_parity(real_agg, sim_agg)
+    results["w1_compute_conservation"] = compute_conservation_parity(
+        real_agg, sim_agg, real_trainers, sim_trainers)
+
     # ── Stage 7 Statistical utility ──
     results["utility"] = utility_parity(real_agg, sim_agg)
 
@@ -3965,8 +4109,15 @@ CHECK_META: dict = {
     "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
+    # ── Stage 3' FwdLLM async residence (R1/W1, simulate_fwdllm.md §L.3) ──
+    # R1 is the residence INV the fluxtune 2x-recompute bug violated; W1 is the
+    # compute-conservation DIAG that first flags it and localizes to R1. V1's
+    # cadence divergence is DOWNSTREAM of R1 (a residence violation changes the
+    # contributing set/order), so V1 deps on it -- the dep chain proves it.
+    "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation",)},
+    "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
-    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order",)},
+    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
     "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
     "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},

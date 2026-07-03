@@ -54,7 +54,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: random
       tracking_mode: oracular
-      agg_goal: 2
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
