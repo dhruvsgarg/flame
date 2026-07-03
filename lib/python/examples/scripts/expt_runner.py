@@ -21,11 +21,18 @@ Spec schema
         "tiers": [
             {"name": "① REVIEW EVERY RUN",
              "collapsed": False,          # tier ③ sets True -> hidden unless EXPT_SHOW_ALL=1
-             "rows": [
+             "bar": "44",                 # optional header-bar bg colour code (default cycles)
+             "rows": [                     # label/value rows …
                  {"label": "stop", "value": "max_runtime_s=600  max_data_id=10"},
                  {"label": "delays", "value": "D=0", "level": "warn",
                   "note": "both sides matched"},
              ]},
+            {"name": "② PER-BASELINE",     # … OR an aligned table (mutually exclusive with rows)
+             "table": {
+                 "columns": ["c", "agg_goal", ("min_init", "minInit")],  # key or (key, header)
+                 "rows": [{"name": "fluxtune", "cells": {"c": 10, "agg_goal": 3}}],
+                 "overridden": ["c"],      # optional: columns set by a CLI flag (green •)
+             }},
         ],
         "checks": [
             {"name": "D matched across real/sim pair", "level": "ok",
@@ -67,15 +74,24 @@ class _Style:
     def red(self, s):    return self._w("1;31", s)
     def yellow(self, s): return self._w("1;33", s)
     def green(self, s):  return self._w("32", s)
+    def cyan(self, s):   return self._w("1;36", s)
     def dim(self, s):    return self._w("2", s)
     def bold(self, s):   return self._w("1", s)
+
+    def bar(self, s: str, width: int, code: str = "44") -> str:
+        """A solid-background full-width header bar (bold bright-white on `code`),
+        so the ①②③ section markers read as distinct blocks, not plain text."""
+        txt = (" " + s).ljust(width)
+        return self._w(f"1;97;{code}", txt)
 
 
 # level -> (icon, colouriser name). "ok" rows stay quiet; set/warn/error shout.
 #   set   = value explicitly overridden by a command-line flag (overrides yaml) -> green
 #   warn  = review / attention                                                  -> yellow
 #   error = infeasible                                                          -> red
-_ICON = {"ok": " ", "set": "\U0001f7e2", "warn": "\U0001f7e1", "error": "\U0001f534"}  #   🟢 🟡 🔴
+# NB: the emoji markers render 2 cells wide, so "ok" uses TWO spaces to keep the
+# label column aligned with the set/warn/error rows.
+_ICON = {"ok": "  ", "set": "\U0001f7e2", "warn": "\U0001f7e1", "error": "\U0001f534"}  #   🟢 🟡 🔴
 _CHECK_ICON = {"ok": "✓", "warn": "⚠", "error": "✗"}  # ✓ ⚠ ✗
 
 
@@ -86,6 +102,69 @@ def _colour_for(st: _Style, level: str):
 # ---- renderer --------------------------------------------------------------
 
 _RULE = "─" * 79  # ─────
+_BAR_W = 79       # header-bar width (matches the rule)
+
+# Per-tier header-bar background colours so ①②③ are visually distinct blocks.
+_TIER_BAR = ["44", "45", "100"]  # blue, magenta, bright-black(grey)
+
+
+def _cell(v) -> str:
+    """Table cell text: None -> '–', everything else str()."""
+    return "–" if v is None else str(v)
+
+
+def _render_table(out, st, table: dict) -> None:
+    """Render an aligned per-entity table (tier ②'s per-baseline knobs).
+
+    table = {
+      "columns": [key | (key, header), ...],   # column order
+      "rows":    [{"name": str, "cells": {key: value}}, ...],
+      "overridden": [key, ...],                 # optional: flag-overridden cols
+    }
+
+    Columns whose value is NOT identical across every row are HIGHLIGHTED (bold
+    yellow header + cells) -- those are the knobs that differ between baselines
+    and must be eyeballed. Columns identical across all rows stay dim (expected).
+    Row (baseline) names are cyan. A flag-overridden column gets a green '•'.
+    """
+    cols = [(c, c) if isinstance(c, str) else (c[0], c[1]) for c in table["columns"]]
+    rows = table["rows"]
+    overridden = set(table.get("overridden", []))
+
+    # Which columns differ across baselines?
+    differs = {}
+    for key, _h in cols:
+        vals = {_cell(r["cells"].get(key)) for r in rows}
+        differs[key] = len(vals) > 1
+
+    name_w = max([len("baseline")] + [len(_cell(r["name"])) for r in rows])
+    col_w = {}
+    for key, hdr in cols:
+        col_w[key] = max(len(hdr), max((len(_cell(r["cells"].get(key))) for r in rows),
+                                       default=0))
+
+    # header row
+    hcells = [st.dim("baseline".ljust(name_w))]
+    for key, hdr in cols:
+        mark = st.green("•") if key in overridden else " "
+        htxt = hdr.ljust(col_w[key])
+        hcells.append((st.yellow(htxt) if differs[key] else st.dim(htxt)) + mark)
+    out("   " + "  ".join(hcells))
+
+    # data rows
+    for r in rows:
+        line = [st.cyan(_cell(r["name"]).ljust(name_w))]
+        for key, hdr in cols:
+            v = _cell(r["cells"].get(key)).ljust(col_w[key])
+            line.append((st.yellow(v) if differs[key] else st.dim(v)) + " ")
+        out("   " + "  ".join(line))
+    # legend for the highlighting
+    diff_names = [h for k, h in cols if differs[k]]
+    legend = st.yellow("yellow") + st.dim(" = differs across baselines (review)")
+    if overridden:
+        legend += st.dim("   ") + st.green("•") + st.dim(" = flag override")
+    out("   " + st.dim("· ") + legend
+        + (st.dim(f"   [{', '.join(diff_names)}]") if diff_names else ""))
 
 
 def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> int:
@@ -110,24 +189,35 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
     out(" " + _RULE)
 
     n_err_rows = 0
-    for tier in spec.get("tiers", []):
+    for ti, tier in enumerate(spec.get("tiers", [])):
         name = tier.get("name", "")
         rows = tier.get("rows", [])
+        table = tier.get("table")
         collapsed = tier.get("collapsed", False)
-        out(" " + st.bold(name))
+        bar_code = tier.get("bar", _TIER_BAR[ti % len(_TIER_BAR)])
+        out(" " + st.bar(name, _BAR_W, bar_code))
+        n_hidden = len(table["rows"]) if table else len(rows)
         if collapsed and not show_all:
-            out(st.dim(f"      [{len(rows)} row(s) hidden — set EXPT_SHOW_ALL=1]"))
+            out(st.dim(f"      [{n_hidden} row(s) hidden — set EXPT_SHOW_ALL=1]"))
             continue
+        if table:
+            _render_table(out, st, table)
+            continue
+        # Align every value in this tier to one column: pad labels to the widest
+        # label present (so a long `max_data_id_progress` doesn't stagger the
+        # shorter rows' values). Cap so a pathological label doesn't push values
+        # off-screen.
+        label_w = min(max((len(r.get("label", "")) for r in rows), default=13), 24)
         for r in rows:
             level = r.get("level", "ok")
             if level == "error":
                 n_err_rows += 1
             icon = _ICON.get(level, " ")
             col = _colour_for(st, level)
-            # Pad short labels to a column; always keep >=1 space before the value
-            # so a label at/over the column width doesn't run into it.
+            # Pad every label to the same width + one trailing space, so all
+            # values in the tier start at the same column (no stagger).
             raw = r.get("label", "")
-            label = raw.ljust(13) if len(raw) < 13 else raw + " "
+            label = raw.ljust(label_w) + " "
             value = r.get("value", "")
             note = r.get("note", "")
             note_s = f"  {st.dim('· ' + note)}" if note else ""

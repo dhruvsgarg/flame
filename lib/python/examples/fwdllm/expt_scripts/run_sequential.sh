@@ -381,23 +381,33 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
 ]}
 tiers.append(tier1)
 
-# ② per-baseline
+# ② per-baseline -- an ALIGNED TABLE (baselines = rows, knobs = columns). The
+# renderer highlights any column whose value differs across the baselines (those
+# are the ones to eyeball); columns identical across all 3 stay dim (expected).
+tier2_cols = [
+    ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
+    ("min_init", "minInit"), ("n_trainers", "n_trainers"),
+    ("n_gpus", "n_gpus"), ("partition", "part"),
+]
+overridden2 = []
+if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
+if bool(AGG_GOAL) or bool(SEL_C):    overridden2.append("agg_goal")
+if bool(SEL_K):        overridden2.append("k")
+if bool(MIN_INIT):     overridden2.append("min_init")
+if bool(NUM_TRAINERS): overridden2.append("n_trainers")
+if bool(NUM_GPUS):     overridden2.append("n_gpus")
+if bool(PART):         overridden2.append("partition")
 rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
-    # each knob shows "(D)" unless its dedicated flag overrode it this run
-    val = (f"c={dflt(b.get('c'), bool(SEL_C) or (rk=='fluxtune' and bool(SEL_C_ASYNC)))}  "
-           f"agg_goal={dflt(b.get('agg_goal'), bool(AGG_GOAL) or bool(SEL_C))}  "
-           f"k={dflt(b.get('k'), bool(SEL_K))}  "
-           f"minInit={dflt(b.get('min_init'), bool(MIN_INIT))}  "
-           f"n_trainers={dflt(b.get('n_trainers'), bool(NUM_TRAINERS))}  "
-           f"n_gpus={dflt(b.get('n_gpus'), bool(NUM_GPUS))}  "
-           f"part={dflt(b.get('partition'), bool(PART))}")
-    lvl = {}
-    if PART and PART != "uniform":
-        lvl = {"level": "warn", "note": "non-default partition"}
-    rows2.append({"label": rk, "value": val, **lvl})
-tiers.append({"name": "② PER-BASELINE (moderate)", "rows": rows2})
+    rows2.append({"name": rk, "cells": {
+        "c": b.get("c"), "agg_goal": b.get("agg_goal"), "k": b.get("k"),
+        "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
+        "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
+    }})
+tiers.append({"name": "② PER-BASELINE (moderate)",
+              "table": {"columns": tier2_cols, "rows": rows2,
+                        "overridden": overridden2}})
 
 # ③ config-baked
 tiers.append({"name": "③ RARELY CHANGED", "collapsed": True, "rows": [
