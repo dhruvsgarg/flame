@@ -19,17 +19,22 @@ reaches **real<->sim parity** across the **fluxtune / fwdllm / fwdllm++** baseli
 > and trace any real<->sim gap back to the choice that caused it. Deviation log lives in **§K** (running,
 > newest-last); locked cross-cutting ones also surface in §F "Locked principles" / §J.4.
 
-**Current state -- Phase 1 Batch 1 COMPLETE; Batch 2 is NEXT.** The two structural clock ports are landed
-and pytest-gated (75 green). **Done:** the trainer sim path (`time_mode`/`simulated`, additive
-`_sim_completion_ts`, no-sleep on the sim path), the async grad loop on the vclock
-(`_sim_recv_min_grad` sct reorder buffer + in-flight gate + agg-goal-boundary rollback cleanup), the
-sync barrier (`_sync_sim_recv_first_k` first-k-smallest-sct + U6 lags), the sim launchers, and the
-Batch-1 pytest gate incl. the flag-off byte-identical regression. Batch-1 build detail is now history
-(landed in `ef4cb70e` + follow-ups; deviation rationale in **§K**); the code is the source of truth.
-**Still to build:** **(Batch 2)** the variance-cadence rung layer (V/DK/G in the shared parity engine)
-+ fluxtune oort selection-fidelity validation -> then the Phase-1 syn_0 sign-off run; **(Batch 3)** the
-availability *effect* path + `EVENT_AVAIL_CHANGE` emission (Phase 2); **(Batch 4)** full ladder under
-unavailability (Phase 3). See **§E** for the batch list and **§I** for the Batch-2 cold-start map.
+**Current state -- Phase 1 Batches 1-2 COMPLETE (checker + telemetry); Phase-1 syn_0 sign-off run is NEXT.**
+Batch 1 landed the two structural clock ports; Batch 2 landed the variance-cadence rung layer + its
+telemetry, pytest-gated. **Batch 1 done:** trainer sim path (`time_mode`/`simulated`, additive
+`_sim_completion_ts`, no-sleep on the sim path), the async grad loop on the vclock (`_sim_recv_min_grad`
+sct reorder buffer + in-flight gate + agg-goal-boundary rollback cleanup), the sync barrier
+(`_sync_sim_recv_first_k` first-k-smallest-sct + U6 lags), the sim launchers, and the flag-off
+byte-identical regression. **Batch 2 done:** the V1-V5 / DK1-DK3 / G1-G2 rungs in the shared parity engine
+(`parity/checks.py` + `run_all_parity` + `CHECK_META`), the cycle-relative cadence telemetry they read
+(`cycle_data_id`/`cycle_iteration`/`grad_pool_size`/`cached_v_size` added to the agg_round `extra`,
+**§K-D9**), and their pytest gate (known-PASS + known-broken cadence fixtures + a driven emission test);
+DK3/G1 emit deferred with a logged SKIP (**§K-D10**). fluxtune oort selection-fidelity is a **validation**
+concern (the selection rungs already exist in the STAGE map, §I.4) folded into the sign-off run. Build
+detail is history (code is the source of truth; deviation rationale in **§K**). **Still to build:** the
+**Phase-1 syn_0 sign-off run** (smoke -> convergence per baseline -> `parity_checks` full battery, §I.6);
+**(Batch 3)** the availability *effect* path + `EVENT_AVAIL_CHANGE` emission (Phase 2); **(Batch 4)** full
+ladder under unavailability (Phase 3). See **§E** for the batch list and **§I** for the Batch-2 map.
 
 **Prerequisites (read first):**
 - [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) -- the parity methodology (the ladder §1, roles/
@@ -188,7 +193,14 @@ the code (`ef4cb70e` +) and the deviation rationale **§K-D1..D8**. Cold-start m
 **§I** (now repurposed as the Batch-2 map). U6 telemetry *emission* deferred (K-D7); the seeded mini-run
 feeding `parity_checks` is folded into the Phase-1 sign-off run.
 
-#### Batch 2 (large dev, NEXT) -- variance-cadence layer + fluxtune selection fidelity
+#### Batch 2 -- variance-cadence layer + fluxtune selection fidelity -- ✅ DONE (checker + telemetry, pytest-gated)
+Landed: V1-V5 / DK1-DK3 / G1-G2 in `parity/checks.py` (registered in `run_all_parity` + `CHECK_META`),
+the cycle-relative cadence telemetry they read (**§K-D9**), DK3/G1 emit deferred with a logged SKIP
+(**§K-D10**). Pytest: `test_parity_checks.py` (per-rung known-PASS/known-broken + `run_all_parity`
+fwdllm smoke + non-fwdllm-SKIP) and `test_fwdllm_agg_telemetry.py` (driven pre-mutation snapshot). The
+fluxtune selection-fidelity rungs already exist in the STAGE map (§I.4) -> they fire in the sign-off run;
+no new checker code. Original Batch-2 plan below kept for the rung-by-rung rationale.
+
 - **Variance-cadence rungs** (PARITY.md §F.4): implement V1-V5 / DK1-DK3 / G1-G2 in the shared engine.
   Most dev is checker + the telemetry to feed it: per-cycle `var` trajectory (at each agg-goal),
   iterations-per-`data_id` (realized dynamic-K), force-commit (`max_iterations_per_data_id`) bypass rate,
@@ -326,6 +338,13 @@ truth; the as-built decisions are logged in **§K-D1..D8**. Batch-1 pytest files
 `tests/mode/test_fwdllm_sim_grad_loop.py` (async sct buffer / in-flight gate / rollback),
 `tests/mode/test_fwdllm_sim_sync_barrier.py` (first-k-smallest + U6 lags), plus the flag-off
 `simulated=False` fixes across the four pre-existing fwdllm agg/trainer tests.
+
+**Batch 2 landed (done):** variance-cadence rung layer + telemetry, pytest-gated. `test_fwdllm_*` = 81
+green; `test_parity_checks.py` = 63 green (adds the V/DK/G suites); the parity sub-package = 115 green.
+As-built decisions in **§K-D9/D10**. Files: `parity/checks.py` (V1-V5/DK1-DK3/G1-G2 + `run_all_parity` +
+`CHECK_META`), `parity_checks.py` (re-export shim), `fwdllm_aggregator.py` (cadence `extra` snapshot),
+`tests/mode/test_parity_checks.py` + `tests/mode/test_fwdllm_agg_telemetry.py`. **Next §H entry lands
+after the Phase-1 syn_0 sign-off run** (§I.6).
 
 ---
 
@@ -487,3 +506,41 @@ decision. Keep appending; do not rewrite history (supersede with a new dated ent
   the later convergence/parity runs and MUST be enabled in BOTH the real reference and the sim run together
   (else real sleeps D while sim charges D to the clock -> that's the point; mismatched enable would be a
   false divergence). **Where:** the three `*_n10_smoke_sim.yaml` headers.
+- **K-D9  Cycle-relative cadence telemetry (`cycle_data_id`/`cycle_iteration`/`grad_pool_size`/
+  `cached_v_size`) added to the agg_round `extra`, NOT reconstructed from the post-mutation series
+  (Batch 2).** §I.3 assumed V1 needs "no new emit" -- derive iterations-per-data_id from the emitted
+  `(data_id, iteration_per_data_id)`. But those fields are emitted **post-mutation**: on a variance PASS the
+  branch advances `data_id += 1` and zeroes `iteration_per_data_id` BEFORE `build_agg_round`, so a commit
+  event carries the **next** data_id (and iter 0). Binning cycles by the emitted `data_id` therefore
+  attributes each commit to the following bin (off-by-one), and a first-try pass emits nothing under its own
+  data_id. **Options:** (a) keep "no new emit" and reconstruct with off-by-one accounting (commit-maps-to-
+  previous-data_id, force-commit vs natural-pass both counted) -- fragile, and fwdllm's headline risk (§G) is
+  exactly this cadence being feedback-compounding and hard to debug; (b) snapshot the cycle identity BEFORE
+  the pass/fail branch and emit it unambiguously. **Chose (b):** `cycle_data_id`/`cycle_iteration` name the
+  data_id this cycle worked on + its 0-based attempt index, so **V1 = count(cycles) grouped by
+  `cycle_data_id`** is exact for both natural-pass and force-commit paths. The existing post-mutation
+  `data_id`/`iteration_per_data_id` are LEFT UNCHANGED (the analyzer's `progress_key` depends on them --
+  adding fields, not changing them, keeps real-mode behavior byte-identical). `grad_pool_size` (G2) and
+  `cached_v_size` (V3) are snapshotted at the same point (before `_update_state_after_payload_prepared`
+  clears `grad_pool` on a commit). All four are `getattr`-guarded like `var_threshold` so test doubles
+  without the pools still emit. **Where:** `fwdllm_aggregator.py::_process_aggregation_goal_met` (snapshot
+  block before the `if self.var_good_enough:` branch + the `build_agg_round` `extra`);
+  `parity/checks.py::_iters_per_data_id` / the V/G rung functions; `tests/mode/test_fwdllm_agg_telemetry.py`
+  (`test_cadence_fields_snapshot_pre_mutation`, `test_cycle_data_id_is_pre_advance_on_commit`).
+- **K-D10  DK3 (`n_eligible_train`/`n_eligible_eval`) and G1 (per-update grad/JVP norm) emit DEFERRED --
+  checker reads-if-present, logged SKIP otherwise (Batch 2).** §I.3 flagged both as candidate NEW emits.
+  DK3's eligible-ends metric feeds the DynamicKC policy, which is **disabled for all three current
+  baselines** (fluxtune fixed K/C; fwdllm/fwdllm_plus have no controller), so the metric is never consumed;
+  G1's per-update grad norm should be ~mode-invariant (grad values depend only on input+perturbation seed)
+  and needs a **trainer-side per-update** emit, a larger surface than this checker+agg-telemetry batch.
+  **Options:** (a) wire both emits now (add the eligible-count loop to every agg_round; add a per-update
+  trainer emit) despite no active consumer; (b) implement the **checker** rungs to read the fields when
+  present and **SKIP with a §K-D10-referencing note** when absent, deferring the emit. **Chose (b)** --
+  matches the §G "no silent caps" discipline (a SKIP with a logged reason, not a dropped rung) and avoids
+  adding inert per-cycle overhead / a trainer-telemetry port to a checker batch. The DK3/G1 check functions
+  are still fully unit-tested (synthetic fixtures supply the fields for the PASS/FAIL paths + the absent-
+  field SKIP path). DK1 (K trajectory) similarly SKIPs when K is constant across both modes (fixed-K
+  baselines) rather than trivially passing. **Wire the emits when a DynamicKC baseline (DK3) or a G1
+  exercise is added.** **Where:** `parity/checks.py::eligible_ends_metric_parity` / `grad_norm_parity` /
+  `agg_goal_trajectory_parity`; `tests/mode/test_parity_checks.py` (`TestDK3EligibleEndsMetric`,
+  `TestG1GradNorm`, `TestDK1AggGoalTrajectory`).

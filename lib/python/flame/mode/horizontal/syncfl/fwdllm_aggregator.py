@@ -1293,6 +1293,27 @@ class TopAggregator(AsyncTopAgg):
             f"force_commit_planned={_force_commit_planned}"
         )
 
+        # Snapshot the cycle identity BEFORE the pass/fail branch mutates
+        # data_id/iteration_per_data_id below. The emitted `data_id`/
+        # `iteration_per_data_id` fields are post-mutation (a commit advances
+        # data_id and zeroes iteration, so a commit event carries the NEXT
+        # data_id) -- fine for the analyzer's progress axis but ambiguous for
+        # the variance-cadence rungs (V1). `cycle_data_id`/`cycle_iteration`
+        # unambiguously identify the data_id this cycle worked on and its
+        # 0-based attempt index, so V1 = count(cycles) grouped by cycle_data_id
+        # is exact for both natural-pass and force-commit paths (§K-D9).
+        _cycle_data_id = self.data_id
+        _cycle_iteration = self.iteration_per_data_id
+        # Pool sizes at the variance gate (before _update_state_after_payload_
+        # prepared clears grad_pool on a commit): grad_pool = realized
+        # contributions this data_id (G2); cached_v = carried aggregated pool
+        # across variance-FAIL rollbacks (V3). See §K-D9. getattr-guarded like
+        # var_threshold so test doubles without the pools still emit.
+        _grad_pool = getattr(self, "grad_pool", None)
+        _grad_pool_size = len(_grad_pool) if _grad_pool is not None else None
+        _cached_v = getattr(self, "cached_shared_grad_pool_trainable", None)
+        _cached_v_size = len(_cached_v) if _cached_v is not None else 0
+
         if self.var_good_enough:
             _pass_kind = (
                 "FORCE-COMMITTED (max_iter bypass)"
@@ -1387,6 +1408,12 @@ class TopAggregator(AsyncTopAgg):
                         "var_good_enough": self.var_good_enough,
                         "force_commit_planned": _force_commit_planned,
                         "is_async": is_async,
+                        # Variance-cadence rung inputs (Batch 2, §K-D9):
+                        # cycle-relative identity for V1, pool sizes for V3/G2.
+                        "cycle_data_id": _cycle_data_id,
+                        "cycle_iteration": _cycle_iteration,
+                        "grad_pool_size": _grad_pool_size,
+                        "cached_v_size": _cached_v_size,
                     },
                 )
                 telemetry.emit(ev, **fields)

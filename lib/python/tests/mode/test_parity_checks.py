@@ -467,3 +467,242 @@ class TestInflightResidenceEvent:
             round_num=1, time_mode="sim", in_flight_before=13, in_flight_after=13,
             residence_rounds=[1])
         assert "residence_staleness" not in f2
+
+
+# ── §F FwdLLM variance-cadence layer (V/DK/G rungs, PARITY.md §F.4) ──────────
+
+def _cadence(cycle_data_id, cycle_iteration, var, var_threshold,
+             var_good_enough, force_commit_planned=False, grad_pool_size=None,
+             cached_v_size=None, agg_goal=None, round_=1, ts=0.0, **extra):
+    """One fwdllm agg-goal-boundary (variance gate) agg_round event."""
+    e = {"event": "agg_round", "round": round_, "ts": ts,
+         "cycle_data_id": cycle_data_id, "cycle_iteration": cycle_iteration,
+         "var": var, "var_threshold": var_threshold,
+         "var_good_enough": var_good_enough,
+         "force_commit_planned": force_commit_planned}
+    for k, v in (("grad_pool_size", grad_pool_size),
+                 ("cached_v_size", cached_v_size), ("agg_goal", agg_goal)):
+        if v is not None:
+            e[k] = v
+    e.update(extra)
+    return e
+
+
+def _cadence_run(iters_per_data, var_threshold=1.0, pass_var=0.5, fail_var=2.0,
+                 agg_goal=3):
+    """Series where data_id d takes iters_per_data[d] cycles: (n-1) variance
+    FAILs (var>thr) then one PASS (var<=thr). grad_pool grows each retry and is
+    at its max on the committing cycle; cached_v grows across the FAIL rollbacks.
+    """
+    events = []
+    for d, n in enumerate(iters_per_data):
+        for it in range(n):
+            committed = (it == n - 1)
+            events.append(_cadence(
+                cycle_data_id=d, cycle_iteration=it,
+                var=(pass_var if committed else fail_var),
+                var_threshold=var_threshold, var_good_enough=committed,
+                grad_pool_size=(it + 1) * agg_goal, cached_v_size=it,
+                agg_goal=agg_goal))
+    return events
+
+
+class TestV1IterPerDataId:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([1, 2, 1, 3, 1]))
+        sim = _agg(agg_rounds=_cadence_run([1, 2, 1, 3, 1]))
+        r = pc.iters_per_data_id_parity(real, sim)
+        assert r["ok"] and r["real_mean_iters"] == r["sim_mean_iters"], r
+
+    def test_diverged_fails(self):
+        # sim compounds: every data_id needs 3 cycles vs real's 1 (a
+        # contributing-set/order divergence surfacing as more retries).
+        real = _agg(agg_rounds=_cadence_run([1, 1, 1, 1, 1]))
+        sim = _agg(agg_rounds=_cadence_run([3, 3, 3, 3, 3]))
+        r = pc.iters_per_data_id_parity(real, sim)
+        assert not r["ok"] and r["sim_mean_iters"] > r["real_mean_iters"], r
+
+    def test_iters_binning_exact_for_force_commit(self):
+        # A data_id that force-commits after 2 fails still counts 3 cycles: the
+        # commit event carries cycle_data_id of the SAME data_id (pre-advance).
+        cycles = [
+            _cadence(0, 0, 2.0, 1.0, False),
+            _cadence(0, 1, 2.0, 1.0, False),
+            _cadence(0, 2, 2.0, 1.0, True, force_commit_planned=True),  # forced
+        ]
+        assert pc._iters_per_data_id(cycles) == {0: 3}
+
+    def test_non_fwdllm_skips(self):
+        a = _agg(agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])  # no cadence fields
+        r = pc.iters_per_data_id_parity(a, a)
+        assert r["ok"] and r.get("status") == "SKIP", r
+
+
+class TestV2VarTrajectory:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([2, 2, 2]))
+        sim = _agg(agg_rounds=_cadence_run([2, 2, 2]))
+        assert pc.var_trajectory_parity(real, sim)["ok"]
+
+    def test_diverged_fails(self):
+        # Same iteration counts but the variance *signal* differs (grad-pool
+        # accumulation-order bug): sim's var values sit far from real's.
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.4, 1.0, True) for d in range(8)])
+        sim = _agg(agg_rounds=[_cadence(d, 0, 5.0, 1.0, True) for d in range(8)])
+        assert not pc.var_trajectory_parity(real, sim)["ok"]
+
+
+class TestV4ForceCommitRate:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([1, 1, 1, 1]))
+        sim = _agg(agg_rounds=_cadence_run([1, 1, 1, 1]))
+        r = pc.force_commit_rate_parity(real, sim)
+        assert r["ok"] and r["sim_force_commit_rate"] == 0.0, r
+
+    def test_diverged_fails(self):
+        # sim hits the iteration cap far more often (chronic variance divergence).
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True) for d in range(10)])
+        sim = _agg(agg_rounds=[
+            _cadence(d, 0, 2.0, 1.0, True, force_commit_planned=True)
+            for d in range(10)])
+        r = pc.force_commit_rate_parity(sim, real)  # order-agnostic
+        assert not r["ok"], r
+
+
+class TestV5VariancePassRatio:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([1, 2, 1, 2]))
+        sim = _agg(agg_rounds=_cadence_run([1, 2, 1, 2]))
+        assert pc.variance_pass_ratio_parity(real, sim)["ok"]
+
+    def test_force_commit_excluded_from_pass(self):
+        # A force-commit (var>thr, committed only because the cap fired) is NOT a
+        # genuine variance pass -> real (genuine) and sim (forced) diverge on V5
+        # even though both "committed" every cycle.
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True) for d in range(10)])
+        sim = _agg(agg_rounds=[
+            _cadence(d, 0, 2.0, 1.0, True, force_commit_planned=True)
+            for d in range(10)])
+        r = pc.variance_pass_ratio_parity(real, sim)
+        assert not r["ok"]
+        assert r["real_pass_ratio"] == 1.0 and r["sim_pass_ratio"] == 0.0, r
+
+
+class TestV3CachedVPool:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([2, 3, 2]))
+        sim = _agg(agg_rounds=_cadence_run([2, 3, 2]))
+        assert pc.cached_v_pool_parity(real, sim)["ok"]
+
+    def test_absent_skips(self):
+        real = _agg(agg_rounds=[_cadence(0, 0, 0.5, 1.0, True)])
+        sim = _agg(agg_rounds=[_cadence(0, 0, 0.5, 1.0, True)])
+        r = pc.cached_v_pool_parity(real, sim)
+        assert r["ok"] and r.get("status") == "SKIP", r
+
+
+class TestDK1AggGoalTrajectory:
+    def test_constant_k_skips(self):
+        real = _agg(agg_rounds=_cadence_run([1, 1, 1], agg_goal=3))
+        sim = _agg(agg_rounds=_cadence_run([1, 1, 1], agg_goal=3))
+        r = pc.agg_goal_trajectory_parity(real, sim)
+        assert r["ok"] and r.get("status") == "SKIP" and "disabled" in r["note"], r
+
+    def test_varying_k_matched_passes(self):
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, agg_goal=k)
+                                for d, k in enumerate([3, 3, 4, 5, 4])])
+        sim = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, agg_goal=k)
+                               for d, k in enumerate([3, 3, 4, 5, 4])])
+        assert pc.agg_goal_trajectory_parity(real, sim)["ok"]
+
+
+class TestDK3EligibleEndsMetric:
+    def test_absent_skips_with_note(self):
+        real = _agg(agg_rounds=_cadence_run([1, 1]))
+        sim = _agg(agg_rounds=_cadence_run([1, 1]))
+        r = pc.eligible_ends_metric_parity(real, sim)
+        assert r["ok"] and r.get("status") == "SKIP" and "deferred" in r["note"], r
+
+    def test_present_diverged_fails(self):
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, n_eligible_train=10)
+                                for d in range(6)])
+        sim = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, n_eligible_train=2)
+                               for d in range(6)])
+        assert not pc.eligible_ends_metric_parity(real, sim)["ok"]
+
+
+class TestG1GradNorm:
+    def test_absent_skips_with_note(self):
+        real = _agg(agg_rounds=_cadence_run([1, 1]))
+        sim = _agg(agg_rounds=_cadence_run([1, 1]))
+        r = pc.grad_norm_parity(real, sim)
+        assert r["ok"] and r.get("status") == "SKIP" and "deferred" in r["note"], r
+
+
+class TestG2GradPoolSize:
+    def test_matched_passes(self):
+        real = _agg(agg_rounds=_cadence_run([1, 2, 1, 2]))
+        sim = _agg(agg_rounds=_cadence_run([1, 2, 1, 2]))
+        assert pc.grad_pool_size_parity(real, sim)["ok"]
+
+    def test_diverged_fails(self):
+        # sim accumulates far larger pools before committing (K x V1 rollup).
+        real = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, grad_pool_size=3)
+                                for d in range(8)])
+        sim = _agg(agg_rounds=[_cadence(d, 0, 0.5, 1.0, True, grad_pool_size=30)
+                               for d in range(8)])
+        assert not pc.grad_pool_size_parity(real, sim)["ok"]
+
+
+class TestRunAllParityFwdllm:
+    _CADENCE_KEYS = [
+        "v1_iter_per_data_id", "v2_var_trajectory", "v3_cached_v_pool",
+        "v4_force_commit_rate", "v5_variance_pass_ratio",
+        "dk1_agg_goal_trajectory", "dk2_dynamic_c", "dk3_eligible_ends_metric",
+        "g1_grad_norm", "g2_grad_pool_size",
+    ]
+
+    def test_keys_present_and_identical_passes(self):
+        a = _agg(selection=[_sel(1, ["a", "b"])],
+                 agg_rounds=_cadence_run([1, 2, 1, 3, 1]))
+        tr = {"aa": {"task_recv": [], "trainer_round": []}}
+        res = pc.run_all_parity(a, a, tr, tr, agg_goal=3)
+        for key in self._CADENCE_KEYS:
+            assert key in res, f"missing cadence key: {key}"
+            v = res[key]
+            # identical real==sim ⇒ every cadence rung PASSes or SKIPs cleanly
+            assert v["ok"], f"{key}: {v}"
+
+    def test_non_fwdllm_run_skips_all_cadence(self):
+        a = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r))
+                             for r in range(1, 4)])
+        tr: dict = {}
+        res = pc.run_all_parity(a, a, tr, tr)
+        for key in self._CADENCE_KEYS:
+            assert res[key].get("status") == "SKIP", f"{key} should SKIP: {res[key]}"
+
+    def test_cadence_divergence_fails_verdict(self):
+        real = _agg(agg_rounds=_cadence_run([1, 1, 1, 1, 1, 1]))
+        sim = _agg(agg_rounds=_cadence_run([3, 3, 3, 3, 3, 3]))
+        tr: dict = {}
+        res = pc.run_all_parity(real, sim, tr, tr, agg_goal=3)
+        passed, roots, downstream, _w = pc.overall_verdict(res)
+        assert not passed
+        assert "v1_iter_per_data_id" in (set(roots) | set(downstream))
+
+
+class TestAggRoundCadenceEmission:
+    """The agg_round builder carries the Batch-2 cadence fields through `extra`
+    (the aggregator snapshots them pre-mutation, §K-D9)."""
+
+    def test_cadence_fields_land_in_event(self):
+        from flame.telemetry.events import build_agg_round, EVENT_AGG_ROUND
+        ev, f = build_agg_round(
+            round_num=4, agg_goal=3, agg_goal_count=3,
+            extra={"cycle_data_id": 7, "cycle_iteration": 2, "var": 0.8,
+                   "var_threshold": 1.0, "var_good_enough": True,
+                   "force_commit_planned": False, "grad_pool_size": 9,
+                   "cached_v_size": 2})
+        assert ev == EVENT_AGG_ROUND
+        assert f["cycle_data_id"] == 7 and f["cycle_iteration"] == 2
+        assert f["grad_pool_size"] == 9 and f["cached_v_size"] == 2

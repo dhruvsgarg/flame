@@ -81,6 +81,18 @@ from parity.checks import (  # noqa: F401, E402
     total_commits_parity,
     terminal_state_parity,
     budget_not_cap,
+    # §F fwdllm variance-cadence layer (V/DK/G rungs)
+    _iters_per_data_id,
+    iters_per_data_id_parity,
+    var_trajectory_parity,
+    cached_v_pool_parity,
+    force_commit_rate_parity,
+    variance_pass_ratio_parity,
+    agg_goal_trajectory_parity,
+    dynamic_c_trajectory_parity,
+    eligible_ends_metric_parity,
+    grad_norm_parity,
+    grad_pool_size_parity,
     # overall
     run_all_parity,
     overall_verdict,

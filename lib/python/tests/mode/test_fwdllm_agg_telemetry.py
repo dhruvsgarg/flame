@@ -226,6 +226,50 @@ class TestAggRoundTelemetry:
         finally:
             telemetry.shutdown()
 
+    def test_cadence_fields_snapshot_pre_mutation(self, tmp_path):
+        """Batch-2 variance-cadence inputs (§K-D9): cycle_data_id/cycle_iteration
+        identify the data_id this cycle WORKED on (pre-advance), and the pool
+        sizes are captured at the variance gate. On a variance FAIL data_id does
+        not advance, so cycle_data_id == the emitted (post) data_id == 3."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_data_id"] == 3 and r["cycle_iteration"] == 0
+            # grad_pool got this cycle's grad appended before the snapshot; the
+            # fake sets no cached_v, so cached_v_size defaults to 0.
+            assert r["grad_pool_size"] == 1 and r["cached_v_size"] == 0
+        finally:
+            telemetry.shutdown()
+
+    def test_cycle_data_id_is_pre_advance_on_commit(self, tmp_path):
+        """On a variance PASS the emitted (post) data_id advances to 4, but
+        cycle_data_id stays 3 -- the data_id this cycle committed. This is the
+        off-by-one V1 relies on: bin cadence cycles by cycle_data_id, not the
+        post-mutation data_id (which would attribute a commit to the next bin)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_data_id"] == 3      # worked-on data_id
+            assert r["data_id"] == 4            # post-commit advance
+        finally:
+            telemetry.shutdown()
+
     def test_contributor_list_captured_before_reset(self, tmp_path):
         """_per_agg_trainer_list is cleared at the end of this method --
         agg_round's contributing_trainers must reflect this cycle's

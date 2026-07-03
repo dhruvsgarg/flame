@@ -3425,6 +3425,338 @@ def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
 
 
 # ═══════════════════════════════════════════════════════════════════
+# §F  FwdLLM variance-cadence layer (PARITY.md §F.4)  — V/DK/G rungs
+# ═══════════════════════════════════════════════════════════════════
+#
+# fwdllm's commit cadence is ENDOGENOUS: at each agg-goal boundary aggregate()
+# computes a gradient-pool `var`; var<=var_threshold commits (advance data_id,
+# eval, clear cached_v) else rolls back and retries the same data_id. So
+# updates-per-data_id is a random variable of the variance trajectory. These
+# rungs verify that trajectory is mode-invariant given matched inputs — the
+# fwdllm-specific layer the async_cifar10 ladder does not model. Never fix an
+# EMERGENT rung directly: walk to the lowest rung whose *inputs* are matched.
+# All read the per-cycle agg_round series (fwdllm_aggregator emits one event
+# per agg-goal boundary carrying cycle_data_id / cycle_iteration / var /
+# var_threshold / var_good_enough / force_commit_planned / grad_pool_size /
+# cached_v_size). Inputs source: fwdllm_aggregator.py _process_aggregation_goal_met.
+
+
+def _fwd_cadence_cycles(agg: dict) -> list:
+    """Ordered per-cycle agg_round events carrying fwdllm cadence fields.
+
+    A cycle is one agg-goal boundary (a variance gate). Non-fwdllm runs (no
+    `var_good_enough`/`cycle_data_id`) yield [] -> the V/DK/G rungs SKIP.
+    """
+    return [e for e in agg.get("agg_rounds", [])
+            if "cycle_data_id" in e or "var_good_enough" in e]
+
+
+def _iters_per_data_id(cycles: list) -> dict:
+    """{cycle_data_id -> #cycles spent on it} = realized dynamic-K per data_id.
+
+    Exact for both natural-pass and force-commit paths because each agg-goal
+    boundary emits exactly one cadence event tagged with the data_id it worked
+    on (cycle_data_id), pre-advance (§K-D9)."""
+    out: dict = {}
+    for e in cycles:
+        d = e.get("cycle_data_id")
+        if d is None:
+            continue
+        out[d] = out.get(d, 0) + 1
+    return out
+
+
+def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
+                             mean_tol_rel: float = 0.15) -> dict:
+    """V1 [DIST]: iterations-per-data_id distribution (realized dynamic K).
+
+    The number of accumulation cycles a data_id needs to pass the variance gate.
+    A divergence means the contributing set/order (U5/U4 upstream) differs, so
+    the accumulated grad-pool composition — and thus the variance trajectory —
+    differs. KS on the per-data_id iteration counts + a mean guard.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    if not rc or not sc:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
+    r_iters = list(_iters_per_data_id(rc).values())
+    s_iters = list(_iters_per_data_id(sc).values())
+    if not r_iters or not s_iters:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no cycle_data_id in cadence events — cannot bin by data_id"}
+    ks = ks_stat(s_iters, r_iters)
+    r_mean, _ = mean_std(r_iters)
+    s_mean, _ = mean_std(s_iters)
+    mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
+                if max(r_mean, s_mean) > 0 else 0.0)
+    return {
+        "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
+        "tier": "DIST",
+        "real_mean_iters": round(r_mean, 3),
+        "sim_mean_iters": round(s_mean, 3),
+        "mean_rel_diff": round(mean_rel, 3),
+        "ks_stat": round(ks, 3),
+        "ks_tol": ks_tol,
+        "mean_tol_rel": mean_tol_rel,
+        "n_real_data_ids": len(r_iters),
+        "n_sim_data_ids": len(s_iters),
+    }
+
+
+def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """V2 [DIST]: per-cycle `var` trajectory distribution.
+
+    With V1's inputs matched, the variance *signal* itself must match; a
+    divergence with matched iterations points at a grad-pool accumulation-order
+    bug (a true sim bug, not an input divergence). KS over the per-cycle var
+    values (None dropped — a cycle before the first gate has no var).
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_var = [e["var"] for e in rc if e.get("var") is not None]
+    s_var = [e["var"] for e in sc if e.get("var") is not None]
+    if not r_var or not s_var:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no non-null `var` in cadence events"}
+    ks = ks_stat(s_var, r_var)
+    r_mean, _ = mean_std(r_var)
+    s_mean, _ = mean_std(s_var)
+    return {
+        "ok": ks <= ks_tol,
+        "tier": "DIST",
+        "real_mean_var": round(r_mean, 6),
+        "sim_mean_var": round(s_mean, 6),
+        "ks_stat": round(ks, 3),
+        "ks_tol": ks_tol,
+        "n_real_cycles": len(r_var),
+        "n_sim_cycles": len(s_var),
+    }
+
+
+def cached_v_pool_parity(real: dict, sim: dict, ks_tol: float = 0.25) -> dict:
+    """V3 [DIAG]: `cached_v` (carried aggregated grad-pool) size over time.
+
+    A rollback/cache bookkeeping divergence looks like a variance bug but is
+    stateful accounting — this DIAG localizes it. cached_v carries across
+    variance-FAIL rollbacks and clears on a commit; its size trajectory should
+    match once V1 matches. SKIP if the field was not emitted.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_sz = [e["cached_v_size"] for e in rc if e.get("cached_v_size") is not None]
+    s_sz = [e["cached_v_size"] for e in sc if e.get("cached_v_size") is not None]
+    if not r_sz or not s_sz:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no cached_v_size in cadence events (field not emitted)"}
+    ks = ks_stat(s_sz, r_sz)
+    return {
+        "ok": ks <= ks_tol,
+        "tier": "DIAG",
+        "real_mean_cached_v": round(sum(r_sz) / len(r_sz), 3),
+        "sim_mean_cached_v": round(sum(s_sz) / len(s_sz), 3),
+        "ks_stat": round(ks, 3),
+        "ks_tol": ks_tol,
+    }
+
+
+def force_commit_rate_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
+    """V4 [DIST]: force-commit frequency (max_iterations_per_data_id bypass rate).
+
+    The fraction of cycles that hit the iteration cap and force-commit despite a
+    failed variance gate. A rate divergence = chronic variance divergence (the
+    cap fires at a different frequency), not a separate bug — walk to V1.
+    var_threshold / max_iterations_per_data_id are baseline-defining config
+    knobs, NOT parity levers.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    if not rc or not sc:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no fwdllm cadence events"}
+    r_rate = sum(1 for e in rc if e.get("force_commit_planned")) / len(rc)
+    s_rate = sum(1 for e in sc if e.get("force_commit_planned")) / len(sc)
+    return {
+        "ok": abs(r_rate - s_rate) <= tol,
+        "tier": "DIST",
+        "real_force_commit_rate": round(r_rate, 4),
+        "sim_force_commit_rate": round(s_rate, 4),
+        "abs_diff": round(abs(r_rate - s_rate), 4),
+        "tol": tol,
+        "n_real_cycles": len(rc),
+        "n_sim_cycles": len(sc),
+    }
+
+
+def variance_pass_ratio_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
+    """V5 [DIST]: genuine variance-pass ratio (the rollup feeding DynamicKC).
+
+    A *genuine* pass is var<=var_threshold — a force-commit (var>threshold,
+    committed only because the iteration cap fired) is NOT a variance pass and is
+    excluded, so V5 tracks the true gate-pass rate the DynamicKC policy consumes.
+    EMERGENT rollup of V1/V2; localize down, do not tune it.
+    """
+    def _ratio(cycles: list):
+        n, passes = 0, 0
+        for e in cycles:
+            var, thr = e.get("var"), e.get("var_threshold")
+            if var is None or thr is None:
+                continue
+            n += 1
+            if var <= thr:
+                passes += 1
+        return (passes / n if n else None), n
+
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_ratio, r_n = _ratio(rc)
+    s_ratio, s_n = _ratio(sc)
+    if r_ratio is None or s_ratio is None:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no var/var_threshold pairs in cadence events"}
+    return {
+        "ok": abs(r_ratio - s_ratio) <= tol,
+        "tier": "DIST",
+        "real_pass_ratio": round(r_ratio, 4),
+        "sim_pass_ratio": round(s_ratio, 4),
+        "abs_diff": round(abs(r_ratio - s_ratio), 4),
+        "tol": tol,
+        "n_real_gated": r_n,
+        "n_sim_gated": s_n,
+    }
+
+
+def agg_goal_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """DK1 [DIST]: K (`_agg_goal`) trajectory.
+
+    When DynamicKC is enabled it moves K from observed metrics; a divergence
+    feeds back into cadence. INERT for the fixed-K baselines: if K is constant
+    and equal across modes there is no dynamic behavior to check -> SKIP so a
+    fixed-K run does not spuriously PASS/FAIL a mechanism it never exercises.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_k = [e["agg_goal"] for e in rc if e.get("agg_goal") is not None]
+    s_k = [e["agg_goal"] for e in sc if e.get("agg_goal") is not None]
+    if not r_k or not s_k:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no agg_goal in cadence events"}
+    if len(set(r_k)) <= 1 and len(set(s_k)) <= 1:
+        ok = set(r_k) == set(s_k)
+        return {"ok": ok, "tier": "DIST", "status": "SKIP",
+                "note": f"DynamicKC disabled — constant K (real={r_k[0]}, sim={s_k[0]})",
+                "real_k": r_k[0], "sim_k": s_k[0]}
+    ks = ks_stat(s_k, r_k)
+    return {
+        "ok": ks <= ks_tol, "tier": "DIST",
+        "real_mean_k": round(sum(r_k) / len(r_k), 3),
+        "sim_mean_k": round(sum(s_k) / len(s_k), 3),
+        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+    }
+
+
+def dynamic_c_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """DK2 [DIST]: C (`dynamic_c`) concurrency-target trajectory.
+
+    SKIP unless a `dynamic_c` field is emitted (DynamicKC enabled). Do not fork
+    the shared controller per baseline (PARITY.md §F.4 locked principle 5).
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_c = [e["dynamic_c"] for e in rc if e.get("dynamic_c") is not None]
+    s_c = [e["dynamic_c"] for e in sc if e.get("dynamic_c") is not None]
+    if not r_c or not s_c:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no dynamic_c in cadence events (DynamicKC disabled)"}
+    ks = ks_stat(s_c, r_c)
+    return {
+        "ok": ks <= ks_tol, "tier": "DIST",
+        "real_mean_c": round(sum(r_c) / len(r_c), 3),
+        "sim_mean_c": round(sum(s_c) / len(s_c), 3),
+        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+    }
+
+
+def eligible_ends_metric_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """DK3 [DIST/CONTROL]: eligible-ends-count metric fed to the DynamicKC policy.
+
+    Validate the policy *input* before the policy (CONTROL before MECHANISM): a
+    diverging input means fix the metric, not the policy. SKIP unless the
+    n_eligible_train/n_eligible_eval counts are emitted — deferred while no
+    baseline enables DynamicKC (§K-D10), not silently dropped.
+    """
+    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    r_e = [e["n_eligible_train"] for e in rc if e.get("n_eligible_train") is not None]
+    s_e = [e["n_eligible_train"] for e in sc if e.get("n_eligible_train") is not None]
+    if not r_e or not s_e:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no n_eligible_train in cadence events (DK3 emit deferred, §K-D10)"}
+    ks = ks_stat(s_e, r_e)
+    return {
+        "ok": ks <= ks_tol, "tier": "DIST",
+        "real_mean_eligible": round(sum(r_e) / len(r_e), 3),
+        "sim_mean_eligible": round(sum(s_e) / len(s_e), 3),
+        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+    }
+
+
+def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+    """G1 [DIST]: per-update grad/JVP norm distribution.
+
+    Gradient values are mode-invariant given identical input + perturbation seed,
+    so G1 should be ~0; a FAIL means a perturbation seed/order leaked across
+    modes. SKIP unless a per-update `grad_norm` field is emitted — trainer-side
+    per-update emit deferred (§K-D10), logged not silently dropped.
+    """
+    def _norms(agg):
+        out = []
+        for e in _fwd_cadence_cycles(agg):
+            gn = e.get("grad_norm")
+            if isinstance(gn, list):
+                out.extend(x for x in gn if x is not None)
+            elif gn is not None:
+                out.append(gn)
+        return out
+
+    r_n, s_n = _norms(real), _norms(sim)
+    if not r_n or not s_n:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no grad_norm in cadence events (G1 emit deferred, §K-D10)"}
+    ks = ks_stat(s_n, r_n)
+    return {
+        "ok": ks <= ks_tol, "tier": "DIST",
+        "real_mean_grad_norm": round(sum(r_n) / len(r_n), 6),
+        "sim_mean_grad_norm": round(sum(s_n) / len(s_n), 6),
+        "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+    }
+
+
+def grad_pool_size_parity(real: dict, sim: dict, ks_tol: float = 0.2,
+                          mean_tol_rel: float = 0.15) -> dict:
+    """G2 [DIST]: grad_pool size at commit (realized contributions per data_id).
+
+    The number of gradients accumulated into the pool when a data_id commits —
+    an emergent rollup of V1 x K. Measured only on committed cycles
+    (var_good_enough True). SKIP if grad_pool_size was not emitted.
+    """
+    def _sizes(agg):
+        return [e["grad_pool_size"] for e in _fwd_cadence_cycles(agg)
+                if e.get("var_good_enough") and e.get("grad_pool_size") is not None]
+
+    r_sz, s_sz = _sizes(real), _sizes(sim)
+    if not r_sz or not s_sz:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no grad_pool_size on committed cycles"}
+    ks = ks_stat(s_sz, r_sz)
+    r_mean, _ = mean_std(r_sz)
+    s_mean, _ = mean_std(s_sz)
+    mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
+                if max(r_mean, s_mean) > 0 else 0.0)
+    return {
+        "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
+        "tier": "DIST",
+        "real_mean_pool": round(r_mean, 3),
+        "sim_mean_pool": round(s_mean, 3),
+        "mean_rel_diff": round(mean_rel, 3),
+        "ks_stat": round(ks, 3), "ks_tol": ks_tol, "mean_tol_rel": mean_tol_rel,
+        "n_real_commits": len(r_sz), "n_sim_commits": len(s_sz),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # §4  Consolidated run_all_parity (extended)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -3525,6 +3857,21 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
 
+    # ── Stage 6'/3'/7' FwdLLM variance-cadence layer (PARITY.md §F.4) ──
+    # Pure functions over the per-cycle agg_round series; SKIP cleanly on
+    # non-fwdllm runs (no cadence fields emitted). V/G rungs feed off Stage-5
+    # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
+    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg)
+    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg)
+    results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg)
+    results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg)
+    results["v5_variance_pass_ratio"] = variance_pass_ratio_parity(real_agg, sim_agg)
+    results["dk1_agg_goal_trajectory"] = agg_goal_trajectory_parity(real_agg, sim_agg)
+    results["dk2_dynamic_c"] = dynamic_c_trajectory_parity(real_agg, sim_agg)
+    results["dk3_eligible_ends_metric"] = eligible_ends_metric_parity(real_agg, sim_agg)
+    results["g1_grad_norm"] = grad_norm_parity(real_agg, sim_agg)
+    results["g2_grad_pool_size"] = grad_pool_size_parity(real_agg, sim_agg)
+
     # ── Stage 7 Statistical utility ──
     results["utility"] = utility_parity(real_agg, sim_agg)
 
@@ -3618,6 +3965,19 @@ CHECK_META: dict = {
     "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
+    # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
+    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order",)},
+    "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
+    "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
+    "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
+    "v5_variance_pass_ratio":  {"stage": 6, "role": "EMERGENT", "deps": ("v1_iter_per_data_id", "v2_var_trajectory")},
+    # ── Stage 3' Dynamic K/C trajectory (inert unless DynamicKC enabled) ──
+    "dk1_agg_goal_trajectory": {"stage": 3, "role": "MECHANISM", "deps": ("v5_variance_pass_ratio",)},
+    "dk2_dynamic_c":           {"stage": 3, "role": "MECHANISM", "deps": ("v5_variance_pass_ratio",)},
+    "dk3_eligible_ends_metric": {"stage": 3, "role": "CONTROL",  "deps": ("avail_composition",)},
+    # ── Stage 7' Forward-gradient quality ──
+    "g1_grad_norm":            {"stage": 7, "role": "EMERGENT", "deps": ("selection_detail",)},
+    "g2_grad_pool_size":       {"stage": 7, "role": "EMERGENT", "deps": ("v1_iter_per_data_id", "dk1_agg_goal_trajectory")},
     # ── Stage 7 Statistical utility ──
     "utility":                 {"stage": 7, "role": "EMERGENT", "deps": ("participation", "phase_gpu_compute", "staleness")},
     # ── Stage 8 Emergent outcomes ──
