@@ -71,6 +71,9 @@ class _FakeAggregator:
 
     def __init__(self, contributors, var_good_enough, staleness_map=None,
                  total_data_bins=150):
+        # Batch 1 flag-off regression: real path skips the sim boundary hook
+        # (_release_sim_slots_at_agg_goal), so telemetry is byte-identical.
+        self.simulated = False
         self._per_agg_trainer_list = list(contributors)
         self._agg_goal_cnt = len(contributors)
         self._agg_goal = len(contributors) or 1

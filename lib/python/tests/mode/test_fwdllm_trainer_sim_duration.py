@@ -24,6 +24,7 @@ sys.path.insert(
     ),
 )
 
+import FedSgdTrainer as _fst_module  # noqa: E402
 from FedSgdTrainer import FedSGDTrainer  # noqa: E402
 
 
@@ -34,11 +35,14 @@ class _FakeTrainer:
     _emulate_training_delay = FedSGDTrainer._emulate_training_delay
 
     def __init__(self, training_delay_enabled, training_delay_s=0.0,
-                 training_delay_factor=1.0, speedup_factor=1.0):
+                 training_delay_factor=1.0, speedup_factor=1.0, simulated=False):
         self.training_delay_enabled = training_delay_enabled
         self.training_delay_s = training_delay_s
         self.training_delay_factor = training_delay_factor
         self.speedup_factor = speedup_factor
+        # Batch 1: real mode (simulated=False) sleeps D; sim mode skips the
+        # sleep but still returns the same modeled D.
+        self.simulated = simulated
         self.trainer_id = "t1"
 
 
@@ -65,3 +69,117 @@ class TestEmulateTrainingDelayReturnsSleptSeconds:
         )
         # eval_delay = 10.0 / 2.0 = 5.0; slept = 5.0 / 5.0 = 1.0
         assert t._emulate_training_delay() == 1.0
+
+
+class TestNoSleepOnSimPath:
+    """Batch 1 core invariant: in simulated mode the trainer must NOT
+    time.sleep to emulate the delay -- the aggregator advances a virtual clock
+    instead -- yet must STILL return the same modeled D so the additive
+    sim_round_duration_s = real_gpu + D is identical across modes."""
+
+    def test_real_mode_sleeps_the_modeled_delay(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(
+            training_delay_enabled="True", training_delay_s=4.0,
+            training_delay_factor=2.0, speedup_factor=1.0, simulated=False,
+        )
+        d = t._emulate_training_delay()
+        # eval_delay = 4.0/2.0 = 2.0; slept = 2.0/1.0 = 2.0
+        assert d == 2.0
+        assert slept == [2.0]
+
+    def test_sim_mode_does_not_sleep_but_still_returns_delay(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(
+            training_delay_enabled="True", training_delay_s=4.0,
+            training_delay_factor=2.0, speedup_factor=1.0, simulated=True,
+        )
+        d = t._emulate_training_delay()
+        assert d == 2.0          # same modeled D as real mode
+        assert slept == []       # but NOTHING was slept on the sim path
+
+    def test_sim_mode_disabled_returns_zero_no_sleep(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="False", training_delay_s=9.0,
+                         simulated=True)
+        assert t._emulate_training_delay() == 0.0
+        assert slept == []
+
+
+class _FakeTime:
+    """Scripted time source so the additive-stamp arithmetic is deterministic.
+    Rebound only onto the FedSgdTrainer module's `time` name (not the shared
+    time module), so timer_decorator's own runtime.time is untouched."""
+
+    def __init__(self, ticks):
+        self._ticks = list(ticks)
+        self._i = 0
+
+    def time(self):
+        v = self._ticks[self._i]
+        self._i = min(self._i + 1, len(self._ticks) - 1)
+        return v
+
+    def sleep(self, _s):  # must never be called on the sim path
+        raise AssertionError("time.sleep called on the simulated path")
+
+
+class _StampTrainer:
+    """Binds the real train_with_data_id onto a minimal stand-in, stubbing the
+    heavy compute so only the sim-stamp arithmetic is exercised."""
+
+    train_with_data_id = FedSGDTrainer.train_with_data_id
+
+    def __init__(self, sim_send_ts, delay_d, leg_s=0.0):
+        self.simulated = True
+        self.abort_training = False
+        self.trainer_id = "t1"
+        self._round = 7
+        self.data_id = 3
+        self.iteration_per_data_id = 0
+        self._sim_send_ts = sim_send_ts
+        self.sim_completion_leg_s = leg_s
+        self._sim_completion_ts = None
+        self._sim_round_duration_s = None
+        self._delay_d = delay_d
+
+    def _check_availability(self):
+        return True
+
+    def _perform_training(self):
+        pass  # no GPU work; wall time is scripted via _FakeTime
+
+    def _emulate_training_delay(self):
+        return self._delay_d  # modeled D (no sleep in sim mode)
+
+
+class TestSimCompletionStampIsAdditive:
+    """The sct the aggregator orders by must be ADDITIVE
+    (sim_round_duration = real_gpu + D), matching fwdllm real mode's
+    sleep-D-on-top-of-GPU semantics -- NOT cifar10's max(gpu, D). And
+    _sim_completion_ts = _sim_send_ts + sim_round_duration + leg (K-D2)."""
+
+    def test_additive_round_duration_and_completion_ts(self, monkeypatch):
+        monkeypatch.setattr(_fst_module.telemetry, "is_enabled", lambda: False)
+        # round_start=100.0, gpu-end=100.5 -> real_gpu = 0.5s.
+        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.5]))
+        t = _StampTrainer(sim_send_ts=10.0, delay_d=2.0, leg_s=0.0)
+
+        t.train_with_data_id()
+
+        # ADDITIVE: 0.5 (gpu) + 2.0 (D) = 2.5  (max(gpu,D) would be 2.0)
+        assert t._sim_round_duration_s == 2.5
+        # completion = send(10.0) + duration(2.5) + leg(0.0)
+        assert t._sim_completion_ts == 12.5
+
+    def test_completion_ts_includes_leg(self, monkeypatch):
+        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.5]))
+        t = _StampTrainer(sim_send_ts=10.0, delay_d=2.0, leg_s=1.5)
+
+        t.train_with_data_id()
+
+        assert t._sim_round_duration_s == 2.5
+        assert t._sim_completion_ts == 14.0  # 10.0 + 2.5 + 1.5
