@@ -65,8 +65,11 @@ experiments:
           # Async fedbuff baseline: accept a stale grad (trained on model_version
           # V that lands at V'>V) and down-weight by (V'-V) rather than reject it
           # (K-D13/§L D5). Baseline DEFINITION -- set identically real+sim, never
-          # tuned to close a gap. Feeds the U3 staleness rung.
-          staleness_policy: fedbuff
+          # tuned to close a gap. Feeds the U3 staleness rung. MUST be camelCase
+          # `stalenessPolicy` to OVERRIDE the base config's key (the snake_case
+          # form is a distinct dead key that loses at pydantic resolution — the
+          # fluxtune run ran on `none`, §H re-run finding #2 / K-D15).
+          stalenessPolicy: fedbuff
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

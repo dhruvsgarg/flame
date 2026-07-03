@@ -77,8 +77,11 @@ experiments:
           # Async fedbuff baseline: carried grads (residence above) are stale by
           # construction, so accept + down-weight by (V'-V) rather than
           # reject/ignore (K-D13/§L D5). Baseline DEFINITION, set identically in
-          # the real sibling -- never a parity lever.
-          staleness_policy: fedbuff
+          # the real sibling -- never a parity lever. MUST be camelCase
+          # `stalenessPolicy` to OVERRIDE the base config's key; the snake_case
+          # form is a distinct dead key that loses at pydantic resolution and
+          # left the fluxtune run on `none` (§H re-run finding #2 / K-D15).
+          stalenessPolicy: fedbuff
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

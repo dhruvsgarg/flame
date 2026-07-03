@@ -428,6 +428,65 @@ sub-package 115. **Next: the 3-baseline syn_0 re-run** — expect fluxtune sim f
 ratio→1), R1==0% both modes, fwdllm_plus no longer crashing. Fluxtune / fwdllm_plus first-time results
 above.
 
+**§L re-run RESULTS (2026-07-03, `--mode both --delays off --max-runtime-s 300 --max-data-id 3`; parity
+`scripts.parity.cli` per pair, agg_goal fwdllm/plus=10, fluxtune=3).** All 6 runs completed (fwdllm_plus no
+longer crashes — D-d/param-rename confirmed). The runs carry the Batch-2.5 telemetry (`contributor_intervals`
+present) and `simInflightResidence=True` is active on the sim side.
+
+**HEADLINE — the residence fix (D-a/D-b) is VALIDATED:**
+| metric (fluxtune async) | pre-fix (first smoke) | post-fix (this run) |
+|---|---|---|
+| sim forward passes | **228** (vs real 109) | **82** (vs real 120) |
+| sim wall vs real | 356s (**1.7×**) | comparable |
+| R1 in-flight overlap (sim) | — (violated) | **0.0%** (real 1.7%, within tol) → **PASS** |
+| V1 iters-per-data_id | **80 vs 8** (data_id 2) | mean **real 7.67 / sim 8.0** (near-converged) |
+
+The 2× recompute is gone: sim went from over-computing (228) to slightly UNDER-computing (82 < real 120).
+R1 residence is exact (sim 0.0% overlap). V1 cadence collapsed from an 80-vs-8 blowup to ~8-vs-8.
+
+**Per-baseline enforced score:** fwdllm **33/35**, fwdllm_plus **27/34**, fluxtune **28/36** (many of the
+misses are ONE shared pre-existing telemetry gap, below — not regressions):
+
+| rung | fwdllm | fwdllm_plus | fluxtune | note |
+|---|---|---|---|---|
+| **R1** in-flight overlap | PASS (0/0%) | PASS (0/0%) | **PASS** (real 1.7% / sim 0.0%) | residence exact |
+| **W1** compute-conservation | PASS (1.13/1.17) | PASS (1.14/1.17) | **WARN** (real 1.74 / sim 1.14, +35%) | see #1 below |
+| **V1** iters-per-data_id | PASS (2.0/2.0) | FAIL (1.67/2.0) | FAIL (7.67/8.0, KS .33) | means close; KS just over tol |
+| V2 var-trajectory | PASS | PASS | PASS | grad values mode-invariant ✓ |
+| **U3** staleness | PASS | PASS | **FAIL** (KS .27) | D-c NOT active — see #2 |
+| participation / S2 | PASS | PASS | PASS | |
+
+**Three residual issues (ranked; the syn_0 pass is NOT yet clean):**
+1. **W1 flipped direction for fluxtune (WARN, not the old 2× blowup).** Sim now does 1.14 forward passes
+   per commit vs real 1.74 (+35% gap) — the fix removed the wasteful recompute but sim now UNDER-models
+   real's legitimate async in-flight overlap tail (real leaves more arrived-but-uncommitted grads in flight
+   at the matched window; sim's commit-then-carry commits more of them, 72 vs real 69). This is the next
+   thing to localize — a *residual* overlap-modeling gap, opposite sign to the original bug, and far
+   smaller. It reads as a DIAG WARN, not a hard fail.
+2. **D-c staleness did NOT take effect — config key collision (found + FIXED this session).** fluxtune
+   logged `staleness_policy = none` (my K-D15 log line), so U3 failed. Root (verified from the generated
+   config, which carried BOTH keys `{stalenessPolicy: none, staleness_policy: fedbuff}`): the yaml override
+   used snake_case `staleness_policy: fedbuff` but the fluxtune BASE config already carries camelCase
+   `stalenessPolicy: none`; the raw dict-merge keeps both as distinct keys and the camelCase base key wins
+   at pydantic resolution. (Residence escaped this because the base has no `simInflightResidence` key, so
+   the snake override was unopposed.) **FIXED:** the fluxtune real+sim yamls now set `stalenessPolicy`
+   (camelCase) so it overwrites the base key. **Not yet re-run** — the banked run above still shows U3 FAIL;
+   confirm on the next launch that the aggregator logs `staleness_policy = fedbuff` and U3 recovers.
+3. **Pre-existing `vclock_now` telemetry gap blocks the whole clock/throughput family (ALL 3 baselines).**
+   The fwdllm aggregator never stamps `vclock_now` on the agg_round event, so K10/`vclock_telemetry`,
+   K2/`throughput`, `total_commits`, `terminal_state`, `field_coverage` all FAIL/SKIP for every baseline —
+   which is why the raw scores look lower than the mechanics warrant. This is NOT a §L regression; it is a
+   separate telemetry port (mirror asyncfl's `vclock_now` emit) and is a **prerequisite for the convergence
+   sign-off** (§I.6 C1/C2 at matched data_id need a virtual budget V). Also: fwdllm_plus/fluxtune miss
+   several availability/selection rungs (`eligibility`, `selection_detail`, `avail_composition`,
+   `selector_score`, `preferred_duration`) — oracular/oort telemetry-coverage gaps, Batch-2 validation
+   territory, not residence.
+
+**Net:** the residence remediation did exactly what §L predicted (recompute + cadence fixed, R1 exact);
+what remains before a clean syn_0 sign-off is (2) the one-line staleness-config fix, then (3) the
+`vclock_now` emit to unblock the clock/throughput/convergence family, then re-score — plus a look at the
+smaller residual W1 overlap gap (#1). JSON: `parity_{fwdllm,fwdllm_plus,fluxtune}.json`.
+
 ---
 
 ## §I  Batch 2 implementation map (code-level -- cold-start; NEXT to build)
