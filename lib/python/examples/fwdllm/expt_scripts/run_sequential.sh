@@ -1,121 +1,84 @@
 #!/bin/bash
-# Run multiple fwdllm YAMLs (fwdllm, fwdllm_plus, fluxtune) one after
-# another, in a single conda env, logging each run separately.
+# Drive the fwdllm real<->sim launcher pairs (fwdllm, fwdllm_plus, fluxtune)
+# for the parity sign-off runs. Thin driver over the shared harness
+# examples/scripts/expt_runner.sh -- the conda activation, launch+progress loop,
+# and log-health assertions live there; this file owns only what's
+# fwdllm-specific: the baseline->(real yaml, sim yaml) map, the knob patching,
+# and the tier/check spec fed to the pre-flight gate.
 #
-# Each YAML auto-terminates once data_id reaches a threshold or after a
-# wall-time cap, whichever comes first. This script overrides those caps
-# per invocation via --max-runtime-s/--max-data-id, generating a patched
-# copy of each YAML rather than editing the originals.
+# What changed vs the old real-only sequential runner:
+#   * --mode {sim|real|both} now drives the _sim sibling yamls too and pairs
+#     each baseline's real+sim runs (default: both -- that's the parity run).
+#   * run names carry a _real / _sim tag so scripts.parity.cli can glob the pair
+#     (*baseline*real* / *baseline*sim*).
+#   * --delays {on|off} sets enable_training_delays IDENTICALLY on both sides of
+#     a pair (K-D8: smokes keep D=0; the convergence/parity run needs D>0 in
+#     BOTH real and sim together -- mismatched D would be a false divergence).
+#   * A pre-flight gate prints the hyperparameters in three volatility tiers and
+#     refuses infeasible configs (see examples/scripts/expt_runner.py). --dry-run
+#     shows the table + checks and exits without launching; --yes skips the
+#     confirm for a real (GPU) run; --force overrides a blocking check.
 #
 # Usage (from anywhere):
-#   run_sequential.sh [--max-runtime-s 600] [--max-data-id 10]
-#       [--num-trainers N] [--num-gpus N] [--c C] [--k K] [--stop-on-fail]
-#       [--partition-method NAME] [--only name1,name2]
+#   run_sequential.sh [--mode sim|real|both] [--delays on|off]
+#       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N]
+#       [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N]
+#       [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
+#       [--only name1,name2] [--stop-on-fail] [--dry-run] [--yes] [--force]
+#       [--show-all]
 #
-#   --max-runtime-s  wall-clock cap in seconds for each run (default: 600 = 10 min)
-#   --max-data-id    stop a run once data_id reaches this value (default: 10)
-#   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10)
-#   --num-gpus       override execution.num_gpus (default: each YAML's own, 1).
-#                     Scale this with --num-trainers -- each YAML's default of
-#                     1 GPU is sized for its own default 10-trainer count.
-#   --c              override selector.kwargs.c + minInitialTrainers + agg_goal
-#                     (agg_goal matches c so no selected trainer goes stranded)
-#                     -- superseded per-field by --agg-goal/--min-initial-trainers
-#                     when those are also passed (see below).
-#   --c-async        override selector.kwargs.c only for the async baseline
-#                     (fluxtune) -- lets sync baselines run concurrency==agg_goal
-#                     via --c/--agg-goal while fluxtune overcommits concurrency
-#                     independent of agg_goal (matches async_oort's design: c
-#                     ends in flight, agg_goal of them counted per round).
-#   --agg-goal       override aggregator.agg_goal directly (fans into
-#                     hyperparameters.aggGoal + selector.kwargs.aggGoal/aggr_num
-#                     per runner.py) independent of --c/--c-async. When --c is
-#                     also given without this, legacy behavior (agg_goal==c)
-#                     still applies.
-#   --min-initial-trainers  override selector.kwargs.minInitialTrainers
-#                     directly, independent of --num-trainers/--c.
-#   --avail-trace    override the availability trace used by ALL baselines:
-#                     trainer.availability.mode (cosmetic/consistency),
-#                     trainer hyperparameters.client_notify.trace (fluxtune's
-#                     real signal), and aggregator
-#                     hyperparameters.trackTrainerAvail.trace (fwdllm_plus's
-#                     real ORACULAR signal). Use e.g. "syn_0" (always
-#                     available) to isolate selection/aggregation bugs from
-#                     trace-driven scarcity/churn.
-#   --avail-traces   comma-separated list of traces, e.g. "syn_0,syn_20" --
-#                     runs the ENTIRE --only baseline sequence once per trace,
-#                     back to back, in this one invocation/process (for an
-#                     unattended overnight multi-trace comparison; no need to
-#                     babysit and launch the next trace by hand). Takes
-#                     precedence over --avail-trace if both are given. Each
-#                     (baseline, trace) run's name/log/results are
-#                     disambiguated by trace -- see the run-name note below.
-#   --k              override selector.kwargs.k
-#   --stop-on-fail   abort the remaining runs as soon as one exits non-zero
-#                    (default: run all three regardless, report at the end)
-#   --partition-method  override hyperparameters.partition_method on both the
-#                     trainer and aggregator sides (default: each YAML's own,
-#                     "uniform" -- IID, chosen for smoke tests to isolate
-#                     launcher-mechanics validation from data-skew effects).
-#                     Must be one of agnews_partition.h5's own group names,
-#                     e.g. "niid_label_clients=100_alpha=0.1" for the most
-#                     heterogeneous split available in the 100-client group
-#                     (smaller alpha = more skewed/non-IID).
-#   --only           comma-separated subset of baselines to execute, e.g.
-#                     --only fwdllm_plus,fluxtune
-#                     (default: all three -- fwdllm, fwdllm_plus, fluxtune)
-#                     These are plain baseline names, independent of
-#                     --num-trainers -- the "n10" in each source YAML's
-#                     filename is just that file's own default trainer
-#                     count, not part of the run's identity.
+#   --mode           which time_mode variant(s) to run per baseline (default both).
+#   --delays         enable_training_delays for BOTH sides of a pair (default off=D=0).
+#   --max-runtime-s  wall/vclock cap per run (default 600 = 10 min).
+#   --max-data-id    stop a run once data_id reaches this (default 10).
+#   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10).
+#   --num-gpus       override execution.num_gpus (default: each YAML's own).
+#   --c / --c-async / --k / --agg-goal / --min-initial-trainers
+#                    selector/aggregator knobs (see the per-flag notes below).
+#   --partition-method  override hyperparameters.partition_method both sides.
+#   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
+#   --only           comma-separated baseline subset (default all three).
+#   --after          comma-separated post-launch hooks to run once all launches
+#                    finish: parity (scripts.parity.cli --batch on the real/sim
+#                    pairs), sanity (extract_sanity_checks.py per run dir), plot
+#                    (analyze_run.py over the produced telemetry). e.g. --after parity,sanity
+#   --stop-on-fail   abort remaining runs on first non-zero exit.
+#   --dry-run        show the pre-flight table + checks, generate cfgs, DON'T launch.
+#   --yes            don't prompt to confirm a real (GPU) run.
+#   --force          launch even if a pre-flight check is BLOCKING (error).
+#   --show-all       expand tier ③ (config-baked) + list passing checks.
+#
+# Per-flag knob notes (unchanged semantics):
+#   --c        sets selector.kwargs.c (+ minInitialTrainers + agg_goal unless
+#              --agg-goal/--min-initial-trainers override those per-field).
+#   --c-async  sets selector.kwargs.c only for the async baseline (fluxtune).
+#   --agg-goal sets aggregator.agg_goal directly (fans into hyperparameters.aggGoal
+#              + selector aggGoal/aggr_num per runner.py) independent of --c.
+#   --partition-method  must be a group name in agnews_partition.h5
+#              (e.g. niid_label_clients=100_alpha=0.1); default "uniform" (IID).
 set -u
-
-# --- robust conda activation (same pattern as scripts/debug_run.sh) ---
-# Env choice: FLAME_CONDA_ENV overrides; otherwise use whatever conda env is
-# already active in the launching shell (CONDA_DEFAULT_ENV). No hardcoded
-# fallback -- activate an env before calling this script, or set
-# FLAME_CONDA_ENV explicitly.
-ENVNAME="${FLAME_CONDA_ENV:-${CONDA_DEFAULT_ENV:-}}"
-if [ -z "$ENVNAME" ]; then
-  echo "ERROR: no conda env active in this shell and FLAME_CONDA_ENV not set." >&2
-  echo "       Activate an env first (conda activate <name>) or pass FLAME_CONDA_ENV=<name>." >&2
-  exit 1
-fi
-CB=""
-if command -v conda >/dev/null 2>&1; then
-  CB="$(conda info --base 2>/dev/null)"
-elif [ -n "${CONDA_EXE:-}" ]; then
-  CB="$(dirname "$(dirname "$CONDA_EXE")")"
-fi
-if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
-  for c in "$HOME/miniconda3" "/coc/scratch/${USER%??}/miniconda3" \
-           "/coc/scratch/$USER/miniconda3" "$HOME/anaconda3" /opt/conda; do
-    [ -f "$c/etc/profile.d/conda.sh" ] && CB="$c" && break
-  done
-fi
-if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
-  echo "ERROR: conda not found. Activate '$ENVNAME' yourself or set CONDA_EXE." >&2; exit 1
-fi
-source "$CB/etc/profile.d/conda.sh"
-conda activate "$ENVNAME" || { echo "ERROR: 'conda activate $ENVNAME' failed" >&2; exit 1; }
-echo "conda: base=$CB env=$ENVNAME python=$(which python)"
 
 # repo paths (portable across nodes/checkouts)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXAMPLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"               # .../examples/fwdllm
 REPO_ROOT="$(cd "$EXAMPLE_DIR/../../../.." && pwd)"       # flame/
+AC10_DIR="$REPO_ROOT/lib/python/examples/async_cifar10"  # hosts scripts.parity.cli
 
-# Force this checkout's flame package ahead of anything already on
-# sys.path (e.g. a stale `pip install -e` editable pointing at a
-# different clone) so the code that actually runs matches this repo.
-export PYTHONPATH="$REPO_ROOT/lib/python${PYTHONPATH:+:$PYTHONPATH}"
+# shared harness: conda activation, launch+ticker, log asserts, preflight bridge
+# shellcheck source=../../scripts/expt_runner.sh
+source "$REPO_ROOT/lib/python/examples/scripts/expt_runner.sh"
+
+expt_activate_conda            # no default env: require an active env / FLAME_CONDA_ENV
+expt_pin_pythonpath "$REPO_ROOT"
 
 # defaults
-MAX_RUNTIME_S=600   # 10 minutes
+MODE="both"
+DELAYS="off"
+MAX_RUNTIME_S=600
 MAX_DATA_ID=10
 STOP_ON_FAIL=0
-NUM_TRAINERS=""   # empty = leave each YAML's own value
-NUM_GPUS=""       # empty = leave each YAML's own value
+NUM_TRAINERS=""
+NUM_GPUS=""
 SEL_C=""
 SEL_C_ASYNC=""
 SEL_K=""
@@ -123,121 +86,58 @@ AGG_GOAL=""
 MIN_INIT_TRAINERS=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
-PARTITION_METHOD=""   # empty = leave each YAML's own value ("uniform")
-ONLY=""           # empty = run all three
+PARTITION_METHOD=""
+ONLY=""
+AFTER=""          # comma list of post-launch hooks: parity,sanity,plot (see after_* below)
+DRY_RUN=0
+ASSUME_YES=0
+FORCE=0
+SHOW_ALL=0
+
+usage() {
+  echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
+  echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
+  echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
+  echo "          [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
+  echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
+  exit 2
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-runtime-s)     MAX_RUNTIME_S="$2"; shift 2 ;;
-    --max-data-id)       MAX_DATA_ID="$2"; shift 2 ;;
-    --num-trainers)      NUM_TRAINERS="$2"; shift 2 ;;
-    --num-gpus)          NUM_GPUS="$2"; shift 2 ;;
-    --c)                 SEL_C="$2"; shift 2 ;;
-    --c-async)           SEL_C_ASYNC="$2"; shift 2 ;;
-    --k)                 SEL_K="$2"; shift 2 ;;
-    --agg-goal)          AGG_GOAL="$2"; shift 2 ;;
+    --mode)                 MODE="$2"; shift 2 ;;
+    --delays)               DELAYS="$2"; shift 2 ;;
+    --max-runtime-s)        MAX_RUNTIME_S="$2"; shift 2 ;;
+    --max-data-id)          MAX_DATA_ID="$2"; shift 2 ;;
+    --num-trainers)         NUM_TRAINERS="$2"; shift 2 ;;
+    --num-gpus)             NUM_GPUS="$2"; shift 2 ;;
+    --c)                    SEL_C="$2"; shift 2 ;;
+    --c-async)              SEL_C_ASYNC="$2"; shift 2 ;;
+    --k)                    SEL_K="$2"; shift 2 ;;
+    --agg-goal)             AGG_GOAL="$2"; shift 2 ;;
     --min-initial-trainers) MIN_INIT_TRAINERS="$2"; shift 2 ;;
-    --avail-trace)       AVAIL_TRACE="$2"; shift 2 ;;
-    --avail-traces)      AVAIL_TRACES="$2"; shift 2 ;;
-    --stop-on-fail)      STOP_ON_FAIL=1; shift ;;
-    --partition-method)  PARTITION_METHOD="$2"; shift 2 ;;
-    --only)              ONLY="$2"; shift 2 ;;
-    *) echo "usage: $0 [--max-runtime-s SECONDS] [--max-data-id N] [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N] [--avail-trace NAME | --avail-traces NAME1,NAME2,...] [--stop-on-fail] [--partition-method NAME] [--only name1,name2]" >&2; exit 2 ;;
+    --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
+    --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
+    --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
+    --only)                 ONLY="$2"; shift 2 ;;
+    --after)                AFTER="$2"; shift 2 ;;
+    --stop-on-fail)         STOP_ON_FAIL=1; shift ;;
+    --dry-run)              DRY_RUN=1; shift ;;
+    --yes)                  ASSUME_YES=1; shift ;;
+    --force)                FORCE=1; shift ;;
+    --show-all)             SHOW_ALL=1; shift ;;
+    *) echo "ERROR: unknown arg '$1'" >&2; usage ;;
   esac
 done
+case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (got '$MODE')" >&2; exit 2 ;; esac
+case "$DELAYS" in on|off) ;; *) echo "ERROR: --delays must be on|off (got '$DELAYS')" >&2; exit 2 ;; esac
 
-# --avail-traces takes precedence; otherwise fall back to the single
-# --avail-trace (may be empty, meaning "leave each YAML's own trace").
-if [ -n "$AVAIL_TRACES" ]; then
-  IFS=',' read -ra TRACE_LIST <<< "$AVAIL_TRACES"
-else
-  TRACE_LIST=("$AVAIL_TRACE")
-fi
-MULTI_TRACE=0
-[ "${#TRACE_LIST[@]}" -gt 1 ] && MULTI_TRACE=1
-
-LOGDIR="$SCRIPT_DIR/smoke_logs/$(date '+%Y%m%d_%H%M%S')"
-mkdir -p "$LOGDIR"
-
-# Patch hyperparameters.max_runtime_s / max_data_id_progress, and optionally
-# num_trainers / selector c+k+minInitialTrainers+agg_goal, in a copy of the
-# YAML rather than the original -- keeps the checked-in smoke configs stable
-# while letting this script's caller pick the scale per invocation.
-patch_yaml() {
-  python - "$1" "$2" "$3" "$MAX_RUNTIME_S" "$MAX_DATA_ID" "$NUM_TRAINERS" "$NUM_GPUS" "$SEL_C" "$SEL_K" "$PARTITION_METHOD" "$SEL_C_ASYNC" "$AGG_GOAL" "$MIN_INIT_TRAINERS" "$AVAIL_TRACE" <<'PY'
-import sys, yaml
-(src, dst, run_key, max_runtime_s, max_data_id, num_trainers, num_gpus, sel_c,
- sel_k, partition_method, sel_c_async, agg_goal, min_init_trainers,
- avail_trace) = sys.argv[1:15]
-# Only baseline in ALL_RUNS below that's async; --c-async targets it
-# specifically so one invocation can decouple sync concurrency (==agg_goal)
-# from async concurrency (overcommitted vs agg_goal) -- see async_oort.py.
-IS_ASYNC_BASELINE = run_key == "fluxtune"
-cfg = yaml.safe_load(open(src))
-for exp in cfg.get("experiments", []):
-    h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-    h["max_runtime_s"] = int(max_runtime_s)
-    h["max_data_id_progress"] = int(max_data_id)
-    if partition_method:
-        h["partition_method"] = partition_method
-        exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = partition_method
-    if num_trainers:
-        exp["trainer"]["num_trainers"] = int(num_trainers)
-        # exp["name"] feeds the run directory name (run_<ts>_<name>); derive
-        # it from run_key + the actual trainer count rather than copying the
-        # source YAML's own checked-in name, which only reflects that file's
-        # default count. job.id must track exp["name"] (every checked-in
-        # YAML keeps them equal; it's the MQTT job/task id shared with
-        # trainers via runner.py). Include avail_trace when set so runs
-        # launched back-to-back under different traces (--avail-traces)
-        # don't produce identically-named run dirs/job ids.
-        new_name = (
-            f"{run_key}_n{num_trainers}_{avail_trace}_smoke"
-            if avail_trace else f"{run_key}_n{num_trainers}_smoke"
-        )
-        exp["name"] = new_name
-        exp["aggregator"]["config_overrides"]["job"]["id"] = new_name
-    if num_gpus:
-        exp["execution"]["num_gpus"] = int(num_gpus)
-    kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
-    if sel_c:
-        kwargs["c"] = int(sel_c)
-        if not min_init_trainers:
-            kwargs["minInitialTrainers"] = int(num_trainers) if num_trainers else int(sel_c)
-        if not agg_goal:
-            # legacy behavior: agg_goal matches c so no selected trainer goes
-            # uncounted/stranded. Superseded by --agg-goal below when given.
-            exp["aggregator"]["agg_goal"] = int(sel_c)
-    if sel_c_async and IS_ASYNC_BASELINE:
-        kwargs["c"] = int(sel_c_async)
-    if sel_k:
-        kwargs["k"] = int(sel_k)
-    if agg_goal:
-        exp["aggregator"]["agg_goal"] = int(agg_goal)
-    if min_init_trainers:
-        kwargs["minInitialTrainers"] = int(min_init_trainers)
-    if avail_trace:
-        # Cosmetic/consistency: trainer-side self-reported mode.
-        exp["trainer"].setdefault("availability", {})["mode"] = avail_trace
-        # Real signal for fluxtune (client_notify) and fwdllm/fwdllm_plus
-        # (dormant unless trackTrainerAvail below is ORACULAR).
-        t_hp = exp["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
-        t_hp.setdefault("client_notify", {})["trace"] = avail_trace
-        # Real signal for fwdllm_plus (ORACULAR tracking reads this trace
-        # directly rather than waiting on trainer self-reports).
-        a_hp = exp["aggregator"]["config_overrides"]["hyperparameters"]
-        a_hp.setdefault("trackTrainerAvail", {})["trace"] = avail_trace
-yaml.safe_dump(cfg, open(dst, "w"), sort_keys=False)
-PY
-}
-
-# Keys are plain baseline names -- independent of --num-trainers and of
-# whatever scale is baked into each source YAML's own filename/checked-in
-# default. The mapping to the actual YAML file lives only here.
+# baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
+# "n10" baked into each source filename.
 ALL_RUNS=(
-  "fwdllm:$SCRIPT_DIR/fwdllm_n10_smoke.yaml"
-  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n10_smoke.yaml"
-  "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml"
+  "fwdllm:$SCRIPT_DIR/fwdllm_n10_smoke.yaml:$SCRIPT_DIR/fwdllm_n10_smoke_sim.yaml"
+  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n10_smoke.yaml:$SCRIPT_DIR/fwdllm_plus_n10_smoke_sim.yaml"
+  "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
 )
 
 if [ -n "$ONLY" ]; then
@@ -246,88 +146,336 @@ if [ -n "$ONLY" ]; then
   for want in "${ONLY_NAMES[@]}"; do
     found=0
     for entry in "${ALL_RUNS[@]}"; do
-      if [ "${entry%%:*}" = "$want" ]; then
-        RUNS+=("$entry")
-        found=1
-        break
-      fi
+      if [ "${entry%%:*}" = "$want" ]; then RUNS+=("$entry"); found=1; break; fi
     done
     if [ "$found" = "0" ]; then
-      echo "ERROR: --only name '$want' not recognized. Valid names: ${ALL_RUNS[*]%%:*}" >&2
-      exit 2
+      echo "ERROR: --only name '$want' not recognized. Valid: ${ALL_RUNS[*]%%:*}" >&2; exit 2
     fi
   done
 else
   RUNS=("${ALL_RUNS[@]}")
 fi
 
-declare -A RESULT
-declare -A DURATION_S
-ORDERED_KEYS=()   # (name or name@trace) in the order actually run, for the summary
+# trace list: --avail-traces wins; else single --avail-trace (may be empty).
+if [ -n "$AVAIL_TRACES" ]; then TRACE_CSV="$AVAIL_TRACES"; else TRACE_CSV="$AVAIL_TRACE"; fi
 
-CHILD_PID=""
-cleanup() {
-  echo ""
-  echo "Interrupted. Killing child (PID=${CHILD_PID:-none})..."
-  [ -n "$CHILD_PID" ] && kill -- -"$CHILD_PID" 2>/dev/null
-  exit 130
-}
-trap cleanup INT TERM
+LOGDIR="$SCRIPT_DIR/smoke_logs/$(date '+%Y%m%d_%H%M%S')"
+mkdir -p "$LOGDIR"
+GPUS_VISIBLE="$( (command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l) || echo 0)"
+MANIFEST="$LOGDIR/manifest.tsv"
+SPEC_JSON="$LOGDIR/spec.json"
 
-cd "$REPO_ROOT" || exit 1
-echo "=== fwdllm sequential run: ${#RUNS[@]} runs (${RUNS[*]%%:*}) x ${#TRACE_LIST[@]} trace(s) (${TRACE_LIST[*]:-<yaml default>}), max_runtime_s=$MAX_RUNTIME_S max_data_id=$MAX_DATA_ID num_trainers=${NUM_TRAINERS:-<yaml default>} num_gpus=${NUM_GPUS:-<yaml default>} c=${SEL_C:-<yaml default>} k=${SEL_K:-<yaml default>} partition_method=${PARTITION_METHOD:-<yaml default>}, logs in $LOGDIR ==="
-
-STOP_ALL=0
-for trace in "${TRACE_LIST[@]}"; do
-  AVAIL_TRACE="$trace"   # read by patch_yaml() via the outer AVAIL_TRACE var
-  [ "$MULTI_TRACE" = "1" ] && echo "--- trace: ${trace:-<yaml default>} ---"
-
-  for entry in "${RUNS[@]}"; do
-    name="${entry%%:*}"
-    src_cfg="${entry#*:}"
-    # Disambiguate by trace only when actually looping multiple traces, so a
-    # single-trace (or no-trace) invocation keeps today's exact file/key names.
-    if [ "$MULTI_TRACE" = "1" ]; then
-      key="${name}@${trace:-default}"
-    else
-      key="$name"
-    fi
-    cfg="$LOGDIR/${key}.yaml"
-    log="$LOGDIR/${key}.out"
-    patch_yaml "$src_cfg" "$cfg" "$name"
-
-    start_ts=$(date +%s)
-    python -m flame.launch.run_experiment "$cfg" --example-dir "$EXAMPLE_DIR" \
-        < /dev/null > "$log" 2>&1 &
-    CHILD_PID=$!
-    echo "[$(date '+%F %T')] START $key (PID=$CHILD_PID) -> $cfg (log: $log)"
-    echo "  (to kill: kill -9 $CHILD_PID   or Ctrl+C)"
-    wait "$CHILD_PID"
-    rc=$?
-    CHILD_PID=""
-    end_ts=$(date +%s)
-    DURATION_S[$key]=$((end_ts - start_ts))
-    ORDERED_KEYS+=("$key")
-    if [ $rc -eq 0 ]; then
-      RESULT[$key]="PASS"
-    else
-      RESULT[$key]="FAIL(exit=$rc)"
-    fi
-    echo "[$(date '+%F %T')] DONE  $key -> ${RESULT[$key]} (${DURATION_S[$key]}s)"
-
-    if [ $rc -ne 0 ] && [ "$STOP_ON_FAIL" = "1" ]; then
-      echo "--stop-on-fail set; aborting remaining runs (including remaining traces)."
-      STOP_ALL=1
-      break
-    fi
-  done
-  [ "$STOP_ALL" = "1" ] && break
+# ---- PHASE A: generate all patched cfgs, build the tier/check spec, gate ----
+# One python step so the operator sees the WHOLE matrix (all baselines x traces x
+# variants) once, then confirms once. Writes per-run cfgs + a launch manifest,
+# renders the tiered table via the shared expt_runner.render_and_gate, and exits
+# 2 if any check is blocking.
+RUN_TSV="$LOGDIR/_runs.tsv"; : > "$RUN_TSV"
+for entry in "${RUNS[@]}"; do
+  bl="${entry%%:*}"; rest="${entry#*:}"; real_y="${rest%%:*}"; sim_y="${rest#*:}"
+  printf '%s\t%s\t%s\n' "$bl" "$real_y" "$sim_y" >> "$RUN_TSV"
 done
+
+EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
+MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
+NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
+SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
+PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
+EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
+python - <<'PY'
+import os, sys, copy, yaml, json
+sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
+import expt_runner
+
+env = os.environ.get
+MODE = env("MODE"); DELAYS = env("DELAYS")
+MAX_RUNTIME_S = int(env("MAX_RUNTIME_S")); MAX_DATA_ID = int(env("MAX_DATA_ID"))
+NUM_TRAINERS = env("NUM_TRAINERS") or ""
+NUM_GPUS = env("NUM_GPUS") or ""
+SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env("SEL_K") or ""
+AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
+PART = env("PARTITION_METHOD") or ""
+GPUS_VISIBLE = int(env("GPUS_VISIBLE") or "0")
+LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
+DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
+delays_on = (DELAYS == "on")
+
+traces = [t for t in (env("TRACE_CSV") or "").replace(",", " ").split()] or [""]
+multi_trace = len(traces) > 1
+
+variants = {"real": 0, "sim": 1} if MODE == "both" else {MODE: (0 if MODE == "real" else 1)}
+
+runs = []  # (baseline, real_yaml, sim_yaml)
+with open(env("RUN_TSV")) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if line:
+            runs.append(line.split("\t"))
+
+manifest = []            # (name, cfg_path, variant, budget_s)
+per_baseline = {}        # baseline -> resolved knobs (for the tier ② rows)
+checks = []
+
+
+def patch(exp, run_key, variant, trace):
+    h = exp["aggregator"]["config_overrides"]["hyperparameters"]
+    h["max_runtime_s"] = MAX_RUNTIME_S
+    h["max_data_id_progress"] = MAX_DATA_ID
+    # enable_training_delays: SAME on both sides of a pair (K-D8).
+    exp["trainer"]["enable_training_delays"] = delays_on
+    if PART:
+        h["partition_method"] = PART
+        exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
+    if NUM_TRAINERS:
+        exp["trainer"]["num_trainers"] = int(NUM_TRAINERS)
+    if NUM_GPUS:
+        exp["execution"]["num_gpus"] = int(NUM_GPUS)
+    kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
+    is_async = (run_key == "fluxtune")
+    if SEL_C:
+        kwargs["c"] = int(SEL_C)
+        if not MIN_INIT:
+            kwargs["minInitialTrainers"] = int(NUM_TRAINERS) if NUM_TRAINERS else int(SEL_C)
+        if not AGG_GOAL:
+            exp["aggregator"]["agg_goal"] = int(SEL_C)  # legacy: agg_goal matches c
+    if SEL_C_ASYNC and is_async:
+        kwargs["c"] = int(SEL_C_ASYNC)
+    if SEL_K:
+        kwargs["k"] = int(SEL_K)
+    if AGG_GOAL:
+        exp["aggregator"]["agg_goal"] = int(AGG_GOAL)
+    if MIN_INIT:
+        kwargs["minInitialTrainers"] = int(MIN_INIT)
+    if trace:
+        exp["trainer"].setdefault("availability", {})["mode"] = trace
+        t_hp = exp["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+        t_hp.setdefault("client_notify", {})["trace"] = trace
+        h.setdefault("trackTrainerAvail", {})["trace"] = trace
+    # name / job id: carry a _real|_sim tag so scripts.parity.cli can glob the pair.
+    n = int(NUM_TRAINERS) if NUM_TRAINERS else exp["trainer"].get("num_trainers", 10)
+    parts = [run_key, f"n{n}", "smoke"]
+    if trace:
+        parts.append(trace)
+    parts.append(variant)
+    name = "_".join(parts)
+    exp["name"] = name
+    exp["aggregator"]["config_overrides"]["job"]["id"] = name
+    return name
+
+
+for trace in traces:
+    for run_key, real_y, sim_y in runs:
+        for variant, _idx in variants.items():
+            src = real_y if variant == "real" else sim_y
+            if not os.path.exists(src):
+                checks.append({"name": f"source yaml exists ({run_key} {variant})",
+                               "level": "error", "detail": f"missing: {src}"})
+                continue
+            cfg = yaml.safe_load(open(src, encoding="utf-8"))
+            exps = cfg.get("experiments", [])
+            for exp in exps:
+                name = patch(exp, run_key, variant, trace)
+            cfg["experiments"] = exps
+            out = os.path.join(LOGDIR, f"{name}.yaml")
+            yaml.safe_dump(cfg, open(out, "w", encoding="utf-8"), sort_keys=False)
+            manifest.append((name, out, variant, MAX_RUNTIME_S))
+
+            # record resolved knobs from the (first) patched experiment for display
+            e0 = exps[0]
+            h0 = e0["aggregator"]["config_overrides"]["hyperparameters"]
+            kw0 = e0["aggregator"]["config_overrides"]["selector"]["kwargs"]
+            per_baseline.setdefault(run_key, {
+                "c": kw0.get("c"), "k": kw0.get("k"),
+                "agg_goal": e0["aggregator"].get("agg_goal"),
+                "min_init": kw0.get("minInitialTrainers"),
+                "n_trainers": e0["trainer"].get("num_trainers"),
+                "n_gpus": e0.get("execution", {}).get("num_gpus"),
+                "partition": h0.get("partition_method"),
+                "delays": e0["trainer"].get("enable_training_delays"),
+                "async": (run_key == "fluxtune"),
+            })
+
+with open(MANIFEST, "w") as fh:
+    for name, out, variant, budget in manifest:
+        fh.write(f"{name}\t{out}\t{variant}\t{budget}\n")
+
+# ---------------- build the tiered spec ----------------
+tiers = []
+# ① review every run
+trace_disp = " ".join(traces) if any(traces) else "<yaml default: syn_0>"
+tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
+    {"label": "mode", "value": MODE, **({"level": "warn", "note": "single-sided: parity needs both"} if MODE != "both" else {})},
+    {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
+    {"label": "stop", "value": f"max_runtime_s={MAX_RUNTIME_S}  max_data_id_progress={MAX_DATA_ID}"},
+    {"label": "trace", "value": trace_disp,
+     **({"level": "warn", "note": "Phase 1 is syn_0 (100% avail)"} if any(t and t != "syn_0" for t in traces) else {"note": "100% availability"})},
+    {"label": "delays", "value": f"enable_training_delays={str(delays_on).lower()} (D={'>0' if delays_on else '0'})",
+     "level": "warn", "note": "matched on BOTH sides ✓ — K-D8" if MODE == "both" else "K-D8"},
+]}
+tiers.append(tier1)
+
+# ② per-baseline
+rows2 = []
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    val = (f"c={b.get('c')}  agg_goal={b.get('agg_goal')}  k={b.get('k')}  "
+           f"minInit={b.get('min_init')}  n_trainers={b.get('n_trainers')}  "
+           f"n_gpus={b.get('n_gpus')}  part={b.get('partition')}")
+    lvl = {}
+    if PART and PART != "uniform":
+        lvl = {"level": "warn", "note": "non-default partition"}
+    rows2.append({"label": rk, "value": val, **lvl})
+# fwdllm-defining knobs reminder (var_threshold / max_iterations_per_data_id are
+# NOT exposed as flags here on purpose -- they are baseline-defining, not parity
+# levers, §K). Flag loudly if someone ever wires them in.
+rows2.append({"label": "var knobs", "value": "var_threshold / max_iterations_per_data_id = YAML default",
+              "note": "baseline-defining, NOT parity levers (§K)"})
+tiers.append({"name": "② PER-BASELINE (moderate)", "rows": rows2})
+
+# ③ config-baked
+tiers.append({"name": "③ RARELY CHANGED", "collapsed": True, "rows": [
+    {"label": "env", "value": os.environ.get("CONDA_DEFAULT_ENV", "?")},
+    {"label": "gpus_visible", "value": str(GPUS_VISIBLE)},
+    {"label": "example_dir", "value": env("EXAMPLE_DIR")},
+    {"label": "logdir", "value": LOGDIR},
+]})
+
+# ---------------- feasibility checks ----------------
+# D matched across each pair (by construction, but assert it visibly).
+if MODE == "both":
+    checks.append({"name": "enable_training_delays matched across every real/sim pair",
+                   "level": "ok", "detail": f"D={'>0' if delays_on else '0'} both sides"})
+# agg_goal <= c (more required than concurrently selected -> stall).
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    c, g = b.get("c"), b.get("agg_goal")
+    if isinstance(c, int) and isinstance(g, int) and g > c:
+        checks.append({"name": f"agg_goal <= c ({rk})", "level": "error",
+                       "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
+    else:
+        checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+# num_gpus <= visible.
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    g = b.get("n_gpus")
+    if isinstance(g, int) and GPUS_VISIBLE and g > GPUS_VISIBLE:
+        checks.append({"name": f"num_gpus <= gpus_visible ({rk})", "level": "error",
+                       "detail": f"num_gpus={g} > visible={GPUS_VISIBLE}"})
+# num_trainers >= minInitialTrainers.
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    n, mi = b.get("n_trainers"), b.get("min_init")
+    if isinstance(n, int) and isinstance(mi, int) and n < mi:
+        checks.append({"name": f"num_trainers >= minInitialTrainers ({rk})", "level": "error",
+                       "detail": f"num_trainers={n} < minInitialTrainers={mi} — join barrier never clears"})
+# non-uniform partition: can't verify the H5 group from here.
+if PART and PART != "uniform":
+    checks.append({"name": "partition group exists in agnews_partition.h5", "level": "warn",
+                   "detail": f"verify group '{PART}' exists"})
+# parity pairing naming (only meaningful for a both-mode matrix).
+if MODE == "both":
+    ok_pair = all(any(n.endswith("_real") for n, *_ in manifest) and
+                  any(n.endswith("_sim") for n, *_ in manifest) for _ in [0])
+    checks.append({"name": "run names carry _real/_sim tags for parity glob",
+                   "level": "ok" if ok_pair else "error",
+                   "detail": "scripts.parity.cli globs *baseline*real* / *baseline*sim*"})
+
+goal_for_parity = AGG_GOAL or (SEL_C or "10")
+next_cmd = (f"(cd {env('AC10_DIR')} && python -m scripts.parity.cli --batch "
+            f"--experiments-dir {env('EXAMPLE_DIR')}/experiments "
+            f"--baselines {' '.join(rk for rk, *_ in runs)} --agg-goal {goal_for_parity})")
+
+spec = {
+    "title": "FWDLLM RUN",
+    "subtitle": f"mode={MODE}  {len(manifest)} run(s)",
+    "dry_run": DRY_RUN,
+    "tiers": tiers,
+    "checks": checks,
+    "next": next_cmd,
+}
+json.dump(spec, open(env("MANIFEST") + ".spec.json", "w"), indent=2)
+rc = expt_runner.render_and_gate(spec, show_all=SHOW_ALL)
+sys.exit(rc)
+PY
+GATE_RC=$?
+
+# ---- gate decision ----
+if [ "$GATE_RC" -eq 2 ] && [ "$FORCE" != "1" ]; then
+  echo "Pre-flight BLOCKED (exit 2). Fix the config or pass --force to override. Nothing launched." >&2
+  exit 2
+fi
+if [ "$DRY_RUN" = "1" ]; then
+  echo "--dry-run: generated cfgs in $LOGDIR (manifest: $MANIFEST). Nothing launched."
+  exit 0
+fi
+# Real (GPU) run confirmation unless --yes.
+if [ "$ASSUME_YES" != "1" ]; then
+  read -r -p "Launch the runs above? [y/N] " _ans < /dev/tty || _ans=""
+  case "$_ans" in y|Y|yes|YES) ;; *) echo "Aborted (no --yes / declined). Nothing launched."; exit 0 ;; esac
+fi
+
+# baseline names (for parity --batch and the summary), derived from RUNS.
+RUNS_BASELINES=""
+for _e in "${RUNS[@]}"; do RUNS_BASELINES="$RUNS_BASELINES ${_e%%:*}"; done
+RUNS_BASELINES="${RUNS_BASELINES# }"
+
+# ---- post-launch hooks (--after ...), dispatched by expt_dispatch_after ----
+# Each is a shell function the shared harness calls by name; they own the
+# fwdllm-specific command (parity CLI path / sanity extractor / plotter).
+after_parity() {
+  # Real<->sim parity battery on the pairs just produced. The parity engine
+  # lives under async_cifar10/scripts (shared, fwdllm rungs registered in it).
+  ( cd "$AC10_DIR" && python -m scripts.parity.cli --batch \
+      --experiments-dir "$EXAMPLE_DIR/experiments" \
+      --baselines $RUNS_BASELINES --agg-goal "${AGG_GOAL:-${SEL_C:-10}}" \
+      --json-out "$LOGDIR/parity_<baseline>.json" )
+}
+after_sanity() {
+  # Per-run sanity signals (selection / data_id / eval-per-data_id / partition).
+  local d
+  while IFS= read -r d; do
+    [ -d "$d" ] || continue
+    python "$SCRIPT_DIR/extract_sanity_checks.py" "$d" || true
+  done < <(find "$EXAMPLE_DIR/experiments" -maxdepth 1 -type d -name "run_*" -newer "$MANIFEST" 2>/dev/null)
+}
+after_plot() {
+  # Best-effort: analyze_run over the telemetry produced this session.
+  local ar="$REPO_ROOT/scripts/analysis/analyze_run.py" d
+  [ -f "$ar" ] || { echo "  [after:plot] $ar not found — skipping" >&2; return 0; }
+  while IFS= read -r d; do
+    [ -d "$d/telemetry" ] || continue
+    python "$ar" "$d/telemetry" --out "$LOGDIR/plots_$(basename "$d")" || true
+  done < <(find "$EXAMPLE_DIR/experiments" -maxdepth 1 -type d -name "run_*" -newer "$MANIFEST" 2>/dev/null)
+}
+
+# ---- PHASE B: launch each generated cfg sequentially ----
+declare -A RESULT DURATION_S
+ORDERED_KEYS=()
+STOP_ALL=0
+cd "$REPO_ROOT" || exit 1
+while IFS=$'\t' read -r name cfg variant budget; do
+  [ -n "$name" ] || continue
+  start_ts=$(date +%s)
+  expt_launch "$name" "$cfg" "$EXAMPLE_DIR" "$budget" 1 "$LOGDIR"
+  rc=$?
+  DURATION_S[$name]=$(( $(date +%s) - start_ts ))
+  ORDERED_KEYS+=("$name")
+  [ "$rc" -eq 0 ] && RESULT[$name]="PASS" || RESULT[$name]="FAIL(exit=$rc)"
+  expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
+  if [ "$rc" -ne 0 ] && [ "$STOP_ON_FAIL" = "1" ]; then
+    echo "--stop-on-fail set; aborting remaining runs."; STOP_ALL=1; break
+  fi
+done < "$MANIFEST"
+
+# ---- post-launch hooks ----
+[ -n "$AFTER" ] && [ "$STOP_ALL" != "1" ] && expt_dispatch_after "$AFTER"
 
 echo ""
 echo "=== Summary ==="
 for key in "${ORDERED_KEYS[@]}"; do
-  printf "  %-35s %-15s %ss\n" "$key" "${RESULT[$key]:-SKIPPED}" "${DURATION_S[$key]:-0}"
+  printf "  %-40s %-15s %ss\n" "$key" "${RESULT[$key]:-SKIPPED}" "${DURATION_S[$key]:-0}"
 done
-echo "Logs: $LOGDIR"
+echo "Logs:     $LOGDIR"
 echo "Run dirs: $EXAMPLE_DIR/experiments/run_*"
+echo "Parity:   $(cd "$AC10_DIR" && echo "(cd $AC10_DIR && python -m scripts.parity.cli --batch --experiments-dir $EXAMPLE_DIR/experiments --baselines ${RUNS[*]%%:*} --agg-goal ${AGG_GOAL:-${SEL_C:-10}})")"

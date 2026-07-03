@@ -14,26 +14,14 @@
 # See docs/EXPERIMENT_felix_streaming.md (Distributed execution & pooling).
 set -u
 
-# --- robust conda activation (mirrors debug_run.sh) ---
-ENVNAME="${FLAME_CONDA_ENV:-dg_flame}"
-CB=""
-if command -v conda >/dev/null 2>&1; then
-  CB="$(conda info --base 2>/dev/null)"
-elif [ -n "${CONDA_EXE:-}" ]; then
-  CB="$(dirname "$(dirname "$CONDA_EXE")")"
-fi
-if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
-  for c in "$HOME/miniconda3" "$HOME/anaconda3" /opt/conda; do
-    [ -f "$c/etc/profile.d/conda.sh" ] && CB="$c" && break
-  done
-fi
-[ -f "$CB/etc/profile.d/conda.sh" ] || { echo "ERROR: conda not found; activate '$ENVNAME' yourself." >&2; exit 1; }
-source "$CB/etc/profile.d/conda.sh"
-conda activate "$ENVNAME" || { echo "ERROR: conda activate $ENVNAME failed" >&2; exit 1; }
-echo "conda: base=$CB env=$ENVNAME python=$(which python)"
-
 EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # async_cifar10 example dir
 REPO="$(cd "$EX/../../../.." && pwd)"                    # repo root
+
+# shared harness: robust conda activation (same block debug_run.sh uses).
+# shellcheck source=../../scripts/expt_runner.sh
+source "$REPO/lib/python/examples/scripts/expt_runner.sh"
+expt_activate_conda dg_flame
+
 cd "$EX" || exit 1
 SCR=expt_scripts_2026
 CFG="$SCR/n50_alpha0.1_syn0_stream_unif_sim.yaml"

@@ -17,7 +17,8 @@ reaches **real<->sim parity** across the **fluxtune / fwdllm / fwdllm++** baseli
 > silently invent something new either), **and (b) APPEND that decision + its rationale to this document**
 > -- so a later reader can tell an intentional fwdllm-specific divergence from an accidental discrepancy,
 > and trace any real<->sim gap back to the choice that caused it. Deviation log lives in **§K** (running,
-> newest-last); locked cross-cutting ones also surface in §F "Locked principles" / §J.4.
+> newest-last); the **curated at-a-glance delta table is §B.1** (kept current, unlike §K's append-only log);
+> locked cross-cutting ones also surface in §F "Locked principles" / §J.4.
 
 **Current state -- Phase 1 Batches 1-2 COMPLETE (checker + telemetry); Phase-1 syn_0 sign-off run is NEXT.**
 Batch 1 landed the two structural clock ports; Batch 2 landed the variance-cadence rung layer + its
@@ -113,6 +114,30 @@ Concrete anchors (`flame/mode/horizontal/syncfl/fwdllm_aggregator.py`): `aggrega
 rollback/`cached_v` at each `_agg_goal` boundary; `total_data_bins=150` (`:271`); force-commit cap
 `_max_iter_per_data_id` (`:276`, config key `max_iterations_per_data_id`); `_reselect_each_iteration`
 (`:295`, per-iteration reselection for fwdllm++); sync path `_aggregate_grads_sync` (`:1354`).
+
+### §B.1  Curated real<->sim design deltas vs async_cifar10 -- **KEEP CURRENT**
+
+Every place fwdllm's real+sim design intentionally diverges from async_cifar10, in one at-a-glance table
+so a reviewer can separate an **intentional fwdllm-specific choice** from an accidental discrepancy without
+reading the whole §K log. **This table is CURATED (rewritten in place to reflect the current design);
+§K is the append-only rationale log.** *Maintenance rule (per the DESIGN PRINCIPLE at the top): when a
+deviation lands or changes, append its rationale to §K **and** update the matching row here so this stays
+the true current picture.* The `§K` column points at the full rationale.
+
+| # | Axis | async_cifar10 | fwdllm | Why fwdllm differs | §K |
+|---|---|---|---|---|---|
+| 1 | Aggregated object | model **weights** | **gradients** (forward-grad JVPs) | grad values are mode-invariant given identical input+perturbation seed, so parity reduces to clock+order+selection parity **plus** the variance-cadence layer | §F.1 |
+| 2 | Progress axis | update / round count | committed **`data_id`** (variance passes) | cadence (updates-per-data_id) is an **output to match**, not an input to assume | principle #2 |
+| 3 | Commit cadence | fixed `agg_goal` | endogenous **variance-gated dynamic-K** | the emergent layer the cifar ladder doesn't model; V/DK/G rungs verify it | §F.1 |
+| 4 | sct delay model | `sct = send + max(gpu, D)` (sleep-to-fill-budget) | `sct = send + gpu + D` (**additive**) | fwdllm's real mode sleeps D *on top of* GPU time; copying cifar's `max()` would desync real<->sim | **K-D2** |
+| 5 | Per-eval sct | distinct eval sct, ~20x eval speedup | **collapses to the train sct** | eval lives on the aggregator; forward-grad "train" IS a forward pass (no 20x factor); trainer eval msg is a utility report, not a clocked commit | **K-D3** |
+| 6 | Slot release | per-commit (inside `_sim_recv_min`) | at the **agg-goal boundary** (`_release_sim_slots_at_agg_goal`) | one grad per call and a `data_id` spans many agg-goal cycles with variance-FAIL rollbacks; per-commit release would strand a re-contributing trainer across a rollback | **K-D5**, principle #4 |
+| 7 | Buffered-but-uncommitted grad on rollback | carried across the barrier | **dropped** (`_sim_buffer.clear()` at boundary) | a stranded grad was trained on a pre-rollback `model_version` -> stale next cycle anyway; benign at syn_0. **OPEN watch-point** -- switch to commit-then-carry if a rung shows lost updates | **K-D6** |
+| 8 | Async drain primitive | `_sim_recv_min` verbatim | purpose-built `_sim_recv_min_grad` / sync `_sync_sim_recv_first_k` (reuse the primitives, fork the orchestration) | `_sim_recv_min`'s per-commit slot release + withheld/staggered paths key on WEIGHTS semantics -- wrong for a grad pool released on the agg-goal boundary | **K-D4** |
+| 9 | `time_mode` default | `"simulated"` | `"real"` (getattr fallback) | fwdllm's entire config corpus is `time_mode: real` and shipped with no sim path; a "simulated" default risks silently half-activating an unbuilt path | **K-D1** |
+| 10 | Cadence telemetry | n/a | **pre-mutation** cycle snapshot (`cycle_data_id`/`cycle_iteration`/`grad_pool_size`/`cached_v_size`) | the post-mutation `data_id`/`iteration_per_data_id` advance BEFORE the event emits, so binning by them is off-by-one; snapshot before the pass/fail branch makes V1 exact | **K-D9** |
+| 11 | Availability tracking (v1) | all `trace_read` | **mixed**: fwdllm unaware, fwdllm_plus `oracular`, fluxtune `client_notify` mapped onto approx `trace_read` | baselines carry different tracking models; first-class `client_notify` deferred to Stage H to keep Phase 2 tractable | **D1** |
+| 12 | Launch tooling | single parity template (sim+real pairs, `baseline:` field) driven by `debug_run.sh` | per-baseline yamls + **separate `_sim` files** driven by `run_sequential.sh` | different config models; **both drivers now source the shared harness `examples/scripts/expt_runner.{sh,py}`** (conda activation, launch+ticker, log asserts, pre-flight + tiered hyperparam display) so only the config-discovery/patch adapter differs per example | this work |
 
 ---
 
@@ -440,6 +465,16 @@ syn_0 (the `*_n10_smoke_sim.yaml` launchers + their real siblings) -> `parity_ch
 **C1/C2 at matched `data_id`**. **Enable modeled delays (D>0) in BOTH real and sim together** for the
 convergence run (K-D8: the sim smokes keep D=0 for mechanics-only comparability; the parity run needs
 D>0). Record in §H; gate to Phase 2 (Batch 3, availability).
+
+**How to launch (tooling landed post-Batch-2).** `expt_scripts/run_sequential.sh` drives the real<->sim
+pairs via the shared harness `examples/scripts/expt_runner.{sh,py}` (§B.1 row 12): `--mode {sim|real|both}`
+pairs each baseline and tags run dirs `_real`/`_sim` so `scripts.parity.cli` globs the pair; `--delays
+{on|off}` sets `enable_training_delays` identically on both sides (K-D8); a pre-flight gate prints the
+hyperparameters in three volatility tiers (① review-every-run, ② per-baseline, ③ config-baked) and blocks
+infeasible configs (`agg_goal>c`, `num_gpus>visible`, `num_trainers<minInitialTrainers`). Always `--dry-run`
+first (shows the table + checks, launches nothing). Smoke: `--mode both --delays off` (D=0, mechanics).
+Convergence: `--mode both --delays on --max-runtime-s <budget> --max-data-id <cap>` (D>0 both sides).
+Parity: the `NEXT:` line the runner prints (`scripts.parity.cli --batch` pointed at `fwdllm/experiments`).
 
 ---
 

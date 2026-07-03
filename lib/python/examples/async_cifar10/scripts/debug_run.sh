@@ -24,29 +24,18 @@
 #               time for sync baselines like Refl).
 set -u
 
-# --- robust conda activation ---
-ENVNAME="${FLAME_CONDA_ENV:-dg_flame}"
-CB=""
-if command -v conda >/dev/null 2>&1; then
-  CB="$(conda info --base 2>/dev/null)"
-elif [ -n "${CONDA_EXE:-}" ]; then
-  CB="$(dirname "$(dirname "$CONDA_EXE")")"
-fi
-if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
-  for c in "$HOME/miniconda3" "/coc/scratch/${USER%??}/miniconda3" \
-           "/coc/scratch/$USER/miniconda3" "$HOME/anaconda3" /opt/conda; do
-    [ -f "$c/etc/profile.d/conda.sh" ] && CB="$c" && break
-  done
-fi
-if [ -z "$CB" ] || [ ! -f "$CB/etc/profile.d/conda.sh" ]; then
-  echo "ERROR: conda not found. Activate '$ENVNAME' yourself or set CONDA_EXE." >&2; exit 1
-fi
-source "$CB/etc/profile.d/conda.sh"
-conda activate "$ENVNAME" || { echo "ERROR: 'conda activate $ENVNAME' failed" >&2; exit 1; }
-echo "conda: base=$CB env=$ENVNAME python=$(which python)"
-
 # repo example dir (portable across nodes)
-EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"       # .../examples/async_cifar10
+REPO_ROOT="$(cd "$EX/../../../.." && pwd)"                  # flame/
+
+# shared harness: conda activation, launch+ticker, log asserts, preflight bridge.
+# The conda activation, PYTHONPATH pin, and launch/progress loop that used to be
+# inlined here now live in examples/scripts/expt_runner.sh (shared with fwdllm).
+# shellcheck source=../../scripts/expt_runner.sh
+source "$REPO_ROOT/lib/python/examples/scripts/expt_runner.sh"
+
+expt_activate_conda dg_flame           # default env dg_flame (FLAME_CONDA_ENV overrides)
+expt_pin_pythonpath "$REPO_ROOT"
 cd "$EX" || exit 1
 SCR=expt_scripts_2026
 LOGDIR="${FLAME_LOGDIR:-/tmp/debug_run_logs}"; mkdir -p "$LOGDIR"
@@ -59,6 +48,11 @@ SIM_WALL_CEILING_S=""  # empty = max_experiment_runtime_s (1×, tight guard; sim
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
 ALPHA=""               # empty = use the parity config's dirichlet_alpha (0.1); e.g. 100 for homogeneous
+DRY_RUN=0              # --dry-run: show the pre-flight table + checks, generate cfg, DON'T launch
+SHOW_ALL=0             # --show-all: expand tier ③ + list passing checks
+STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: warn + continue, so
+                       # smoke_suite.sh's non-interactive timeout-wrapped runs never hang/abort)
+AFTER=""               # --after: comma list of post-launch hooks (parity,plot) -- see after_* below
 
 usage() {
   echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
@@ -84,6 +78,14 @@ usage() {
   echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
   echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
   echo "                        When set, the split lookup uses the n300 partition for that alpha."
+  echo "  --dry-run             show the pre-flight hyperparameter table + feasibility checks and the"
+  echo "                        generated cfg, then exit WITHOUT launching."
+  echo "  --show-all            expand tier ③ (config-baked rows) + list the passing checks too."
+  echo "  --strict              abort if a pre-flight check is BLOCKING (default: warn + continue, so"
+  echo "                        smoke_suite.sh's non-interactive runs never hang/abort)."
+  echo "  --after HOOKS          comma-separated post-launch hooks: parity (scripts.parity.cli --batch"
+  echo "                        sim-vs-real per baseline) and/or plot (analyze_run cross-baseline"
+  echo "                        streaming figs). Absorbs the old compare_overnight.sh. e.g. --after parity,plot"
   exit 2
 }
 
@@ -98,6 +100,10 @@ if [ "${1:-}" = "smoke" ]; then
       --mode)      MODE="$2"; shift 2 ;;
       --trace)     TRACE="$2"; shift 2 ;;
       --alpha)     ALPHA="$2"; shift 2 ;;
+      --dry-run)   DRY_RUN=1; shift ;;
+      --show-all)  SHOW_ALL=1; shift ;;
+      --strict)    STRICT=1; shift ;;
+      --after)     AFTER="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -113,6 +119,10 @@ else
       --trace)               TRACE="$2"; shift 2 ;;
       --num-trainers)        NUM_TRAINERS="$2"; shift 2 ;;
       --alpha)               ALPHA="$2"; shift 2 ;;
+      --dry-run)             DRY_RUN=1; shift ;;
+      --show-all)            SHOW_ALL=1; shift ;;
+      --strict)              STRICT=1; shift ;;
+      --after)               AFTER="$2"; shift 2 ;;
       # --node is DEPRECATED (node1/node2 split removed): baselines are filtered
       # from a single node-agnostic parity config, so the node is irrelevant.
       # Accept+ignore so existing wrappers don't hard-error.
@@ -309,46 +319,117 @@ print(len(d.get('experiments', [])))
 PY
 }
 
+# Thin wrapper over the shared harness's expt_launch (identical mechanics:
+# 30s progress ticker + run_* dir counting + the START/DONE log lines). Kept as
+# a named function so the two call sites below are unchanged.
 run_node() {
   local label="$1" cfg="$2" budget_s="${3:-0}" n_exps="${4:-1}"
-  local start_ts; start_ts=$(date +%s)
-  # Baseline run-dir count — new dirs that appear are newly-started experiments.
-  local initial_runs; initial_runs=$(find experiments -maxdepth 1 -name "run_*" -type d 2>/dev/null | wc -l)
+  expt_launch "$label" "$cfg" "$EX" "$budget_s" "$n_exps" "$LOGDIR"
+}
 
-  echo "[$(date '+%F %T')] START $label ($n_exps exp(s), ~${budget_s}s budget)" | tee -a "$LOGDIR/debug_run.log"
+# cifar_preflight <cfg> -- render the tiered hyperparameter table + feasibility
+# checks (shared examples/scripts/expt_runner.py) for the just-generated combined
+# cfg. Returns 2 if a check is BLOCKING. Callers decide what to do with that:
+# by default a block only WARNs and continues (so smoke_suite.sh's non-interactive
+# timeout-wrapped invocations never hang or abort); --strict makes it fatal.
+GPUS_VISIBLE="$( (command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l) || echo 0)"
+cifar_preflight() {
+  local cfg="$1"
+  EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" CFG="$cfg" \
+  BASELINES="$BASELINES" MODE="$MODE" RUNTIME_S="$RUNTIME_S" TRACE="$TRACE" \
+  ALPHA="$ALPHA" NUM_TRAINERS="$NUM_TRAINERS" SIM_WALL_CEILING_S="$SIM_WALL_CEILING_S" \
+  GPUS_VISIBLE="$GPUS_VISIBLE" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
+  EX="$EX" LOGDIR="$LOGDIR" \
+  python - <<'PY'
+import os, sys, yaml
+sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
+import expt_runner
+env = os.environ.get
+cfg = yaml.safe_load(open(env("CFG"), encoding="utf-8"))
+exps = cfg.get("experiments", [])
+gpus_vis = int(env("GPUS_VISIBLE") or "0")
 
-  # Background progress ticker: fires every 30s, prints elapsed/remaining/percent
-  # and how many experiments have started (each start creates a new run_* dir).
-  (
-    while true; do
-      sleep 30
-      local now; now=$(date +%s)
-      local elapsed=$(( now - start_ts ))
-      local pct=0 remaining=0
-      if [ "$budget_s" -gt 0 ]; then
-        pct=$(( elapsed * 100 / budget_s ))
-        remaining=$(( budget_s - elapsed ))
-        [ "$pct" -gt 100 ] && pct=100
-        [ "$remaining" -lt 0 ] && remaining=0
-      fi
-      local curr; curr=$(find experiments -maxdepth 1 -name "run_*" -type d 2>/dev/null | wc -l)
-      local started=$(( curr - initial_runs ))
-      [ "$started" -lt 0 ] && started=0
-      printf "  [%s] %s | %ds elapsed / ~%ds (%d%%) | exp started: %d/%d\n" \
-        "$(date '+%T')" "$label" "$elapsed" "$budget_s" "$pct" "$started" "$n_exps"
+rows2, checks = [], []
+for e in exps:
+    h = e["aggregator"]["config_overrides"]["hyperparameters"]
+    n = e.get("trainer", {}).get("num_trainers")
+    ng = e.get("execution", {}).get("num_gpus")
+    mts = h.get("min_trainers_to_start")
+    a = (e.get("trainer", {}).get("dataset", {}) or {}).get("dirichlet_alpha")
+    rows2.append({"label": e.get("name", "?")[:26],
+                  "value": f"n_trainers={n}  n_gpus={ng}  min_start={mts}  rounds={h.get('rounds')}  alpha={a}"})
+    if isinstance(n, int) and isinstance(mts, int) and n < mts:
+        checks.append({"name": f"num_trainers >= min_trainers_to_start ({e.get('name')})",
+                       "level": "error", "detail": f"{n} < {mts} — join barrier never clears"})
+    if isinstance(ng, int) and gpus_vis and ng > gpus_vis:
+        checks.append({"name": f"num_gpus <= gpus_visible ({e.get('name')})",
+                       "level": "error", "detail": f"num_gpus={ng} > visible={gpus_vis}"})
+
+tiers = [
+    {"name": "① REVIEW EVERY RUN", "rows": [
+        {"label": "baselines", "value": env("BASELINES")},
+        {"label": "mode", "value": env("MODE"),
+         **({"level": "warn", "note": "single-sided: parity needs both"} if env("MODE") != "both" else {})},
+        {"label": "runtime_s", "value": env("RUNTIME_S")},
+        {"label": "trace", "value": env("TRACE") or "<parity config default: syn_0>",
+         **({"level": "warn", "note": "not syn_0"} if (env("TRACE") and env("TRACE") != "syn_0") else {})},
+        {"label": "sim_wall_ceiling", "value": env("SIM_WALL_CEILING_S") or "= runtime_s (auto)"},
+        {"label": "alpha", "value": env("ALPHA") or "<parity config default: 0.1>"},
+    ]},
+    {"name": "② PER-EXPERIMENT (moderate)", "rows": rows2},
+    {"name": "③ RARELY CHANGED", "collapsed": True, "rows": [
+        {"label": "env", "value": os.environ.get("CONDA_DEFAULT_ENV", "?")},
+        {"label": "gpus_visible", "value": str(gpus_vis)},
+        {"label": "example_dir", "value": env("EX")},
+        {"label": "logdir", "value": env("LOGDIR")},
+    ]},
+]
+checks.append({"name": "run names carry _real/_sim tags for parity glob", "level": "ok",
+               "detail": "make_debug_yaml keeps the parity config's _sim/_real suffixes"})
+spec = {"title": "CIFAR DEBUG RUN", "subtitle": f"{len(exps)} experiment(s)",
+        "dry_run": env("DRY_RUN") == "1", "tiers": tiers, "checks": checks}
+sys.exit(expt_runner.render_and_gate(spec, show_all=(env("SHOW_ALL") == "1")))
+PY
+}
+
+# gate_or_continue <preflight_rc> -- shared post-preflight decision for both paths.
+gate_or_continue() {
+  local rc="$1"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "--dry-run: generated cfg in $LOGDIR. Nothing launched."; exit 0
+  fi
+  if [ "$rc" -eq 2 ]; then
+    if [ "$STRICT" = "1" ]; then
+      echo "Pre-flight BLOCKED (exit 2) and --strict set. Nothing launched." >&2; exit 2
+    fi
+    echo "WARNING: pre-flight flagged a BLOCKING check (continuing; pass --strict to abort)." >&2
+  fi
+}
+
+# ---- post-launch hooks (--after ...), dispatched by expt_dispatch_after ----
+# after_parity / after_plot absorb what compare_overnight.sh used to do (its
+# per-baseline sim-vs-real parity + cross-baseline streaming plots), but off the
+# maintained scripts.parity.cli engine (compare_overnight used the legacy
+# scripts/parity_check.py).
+after_parity() {
+  python -m scripts.parity.cli --batch --experiments-dir experiments \
+    --baselines $BASELINES --json-out "$LOGDIR/parity_<baseline>.json"
+}
+after_plot() {
+  local ar="$REPO_ROOT/scripts/analysis/analyze_run.py" mode b d
+  [ -f "$ar" ] || { echo "  [after:plot] $ar not found — skipping" >&2; return 0; }
+  for mode in sim real; do
+    local dirs=() labels=()
+    for b in $BASELINES; do
+      d=$(ls -dt experiments/run_*dbg_*"${b}"*_"${mode}"* 2>/dev/null | head -1)
+      [ -n "$d" ] && [ -d "$d/telemetry" ] && { dirs+=("$d/telemetry"); labels+=("$b"); }
     done
-  ) &
-  local ticker_pid=$!
-
-  python -m flame.launch.run_experiment "$cfg" --example-dir "$EX" \
-      < /dev/null >> "$LOGDIR/${label}.out" 2>&1
-  local rc=$?
-
-  kill "$ticker_pid" 2>/dev/null
-  wait "$ticker_pid" 2>/dev/null
-
-  local elapsed=$(( $(date +%s) - start_ts ))
-  echo "[$(date '+%F %T')] DONE  $label exit=$rc (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$LOGDIR/debug_run.log"
+    if [ "${#dirs[@]}" -ge 2 ]; then
+      echo "  [after:plot] $mode cross-baseline: ${labels[*]}"
+      python "$ar" --compare-streaming "${dirs[@]}" --labels "${labels[@]}" \
+        --out "$LOGDIR/${mode}_cross" || true
+    fi
+  done
 }
 
 # ---- smoke mode ----
@@ -361,7 +442,12 @@ if [ "$SMOKE" = "1" ]; then
   make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
   if [ -f "$cfg" ]; then
     _n=$(_count_exps "$cfg")
+    cifar_preflight "$cfg"; gate_or_continue $?
     run_node "dbg_smoke" "$cfg" $(( _n * 240 )) "$_n"
+    expt_assert_run "$EX" "$EXPT_LAST_MARKER" "dbg_smoke"
+    [ -n "$AFTER" ] && expt_dispatch_after "$AFTER"
+  elif [ "$DRY_RUN" = "1" ]; then
+    echo "--dry-run: no experiments matched baselines='$BASELINES' mode=$MODE. Nothing to show."; exit 0
   fi
   echo "=== SMOKE RESULTS ==="
   for dd in experiments/run_*dbg_smoke_*; do
@@ -389,6 +475,9 @@ fi
 _n_exps=$(_count_exps "$cfg")
 _budget=$(( _n_exps * RUNTIME_S ))
 echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
+cifar_preflight "$cfg"; gate_or_continue $?
 run_node "debug_run" "$cfg" "$_budget" "$_n_exps"
+expt_assert_run "$EX" "$EXPT_LAST_MARKER" "debug_run"
+[ -n "$AFTER" ] && expt_dispatch_after "$AFTER"
 echo "Logs: $LOGDIR/debug_run.out"
 echo "Run dirs: experiments/run_*dbg_*"
