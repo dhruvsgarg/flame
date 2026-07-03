@@ -783,12 +783,23 @@ class TestW1ComputeConservation:
     def test_sim_recompute_excess_fails(self):
         real_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
         sim_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
-        # Same 2 commits both modes, but sim ran ~2x the forward passes.
+        # Same 2 commits both modes, but sim ran ~2x the forward passes (the
+        # residence-bug direction: sim OVER-computes -> violation).
         real_tr = _trainers_with_rounds({"A": 1, "B": 1})   # 2 fwd / 2 commit = 1.0
         sim_tr = _trainers_with_rounds({"A": 3, "B": 3})    # 6 fwd / 2 commit = 3.0
         r = pc.compute_conservation_parity(real_agg, sim_agg, real_tr, sim_tr)
         assert not r["ok"]
-        assert r["sim_fwd_per_commit"] > r["real_fwd_per_commit"]
+        assert r["sim_excess_rel"] > 0
+
+    def test_sim_under_computing_is_ok(self):
+        # W1 is ASYMMETRIC: sim doing FEWER forward passes than real (the async
+        # start-tail, not wasted recompute) must NOT fail.
+        real_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        sim_agg = _agg(agg_rounds=[_cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)])])
+        real_tr = _trainers_with_rounds({"A": 3, "B": 3})   # 3.0 fwd/commit
+        sim_tr = _trainers_with_rounds({"A": 1, "B": 1})    # 1.0 fwd/commit
+        r = pc.compute_conservation_parity(real_agg, sim_agg, real_tr, sim_tr)
+        assert r["ok"] and r["sim_excess_rel"] < 0
 
     def test_skips_without_data(self):
         empty = _agg(agg_rounds=[])

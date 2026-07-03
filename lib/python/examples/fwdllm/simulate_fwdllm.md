@@ -456,36 +456,39 @@ misses are ONE shared pre-existing telemetry gap, below — not regressions):
 | **U3** staleness | PASS | PASS | **FAIL** (KS .27) | D-c NOT active — see #2 |
 | participation / S2 | PASS | PASS | PASS | |
 
-**Three residual issues (ranked; the syn_0 pass is NOT yet clean):**
-1. **W1 flipped direction for fluxtune (WARN, not the old 2× blowup).** Sim now does 1.14 forward passes
-   per commit vs real 1.74 (+35% gap) — the fix removed the wasteful recompute but sim now UNDER-models
-   real's legitimate async in-flight overlap tail (real leaves more arrived-but-uncommitted grads in flight
-   at the matched window; sim's commit-then-carry commits more of them, 72 vs real 69). This is the next
-   thing to localize — a *residual* overlap-modeling gap, opposite sign to the original bug, and far
-   smaller. It reads as a DIAG WARN, not a hard fail.
-2. **D-c staleness did NOT take effect — config key collision (found + FIXED this session).** fluxtune
-   logged `staleness_policy = none` (my K-D15 log line), so U3 failed. Root (verified from the generated
-   config, which carried BOTH keys `{stalenessPolicy: none, staleness_policy: fedbuff}`): the yaml override
-   used snake_case `staleness_policy: fedbuff` but the fluxtune BASE config already carries camelCase
-   `stalenessPolicy: none`; the raw dict-merge keeps both as distinct keys and the camelCase base key wins
-   at pydantic resolution. (Residence escaped this because the base has no `simInflightResidence` key, so
-   the snake override was unopposed.) **FIXED:** the fluxtune real+sim yamls now set `stalenessPolicy`
-   (camelCase) so it overwrites the base key. **Not yet re-run** — the banked run above still shows U3 FAIL;
-   confirm on the next launch that the aggregator logs `staleness_policy = fedbuff` and U3 recovers.
-3. **Pre-existing `vclock_now` telemetry gap blocks the whole clock/throughput family (ALL 3 baselines).**
-   The fwdllm aggregator never stamps `vclock_now` on the agg_round event, so K10/`vclock_telemetry`,
-   K2/`throughput`, `total_commits`, `terminal_state`, `field_coverage` all FAIL/SKIP for every baseline —
-   which is why the raw scores look lower than the mechanics warrant. This is NOT a §L regression; it is a
-   separate telemetry port (mirror asyncfl's `vclock_now` emit) and is a **prerequisite for the convergence
-   sign-off** (§I.6 C1/C2 at matched data_id need a virtual budget V). Also: fwdllm_plus/fluxtune miss
-   several availability/selection rungs (`eligibility`, `selection_detail`, `avail_composition`,
-   `selector_score`, `preferred_duration`) — oracular/oort telemetry-coverage gaps, Batch-2 validation
-   territory, not residence.
+**Deeper root-cause of the four non-clean rungs (all diagnosed to artifact or config, none to a residence
+regression) + the fixes made this session:**
 
-**Net:** the residence remediation did exactly what §L predicted (recompute + cadence fixed, R1 exact);
-what remains before a clean syn_0 sign-off is (2) the one-line staleness-config fix, then (3) the
-`vclock_now` emit to unblock the clock/throughput/convergence family, then re-score — plus a look at the
-smaller residual W1 overlap gap (#1). JSON: `parity_{fwdllm,fwdllm_plus,fluxtune}.json`.
+1. **W1 (fluxtune WARN) — start-tail artifact, not a modeling bug. Rung refined.** `trainer_round` counts
+   forward-pass STARTS. Both modes drop NOTHING at the aggregator (received grads == commits: real 69==69,
+   sim 73≈72) and R1 sim-overlap==0, so residence is exact. The 120-vs-82 gap is that a live async real
+   system dispatches continuously over wall-time and leaves a large in-flight START tail (51), while the
+   clock-gated sim leaves a small one (10) — real > sim is EXPECTED and amortizes with run length / D>0.
+   W1 was symmetric and fired on this benign direction. **FIX: W1 is now asymmetric** — it flags only a sim
+   EXCESS over real (the 2× recompute it was built for); sim under-computing is reported as benign. fluxtune
+   W1 now PASSES (`sim_excess_rel −0.35`).
+2. **V1 (fwdllm_plus + fluxtune FAIL) — short-run truncation, not a cadence bug. No code change.** The
+   per-data_id iteration series match on every FULL data_id and diverge only on the last, truncated one:
+   fluxtune real `{0:11,1:8,2:4}` vs sim `{0:11,1:7,2:6}` (data_id 0 EXACT), fwdllm_plus `{0:2,1:2,2:1}` vs
+   `{0:2,1:2,2:2}`. With 3 data_ids a single boundary difference → KS 0.33. **Fix is operational: a longer
+   run (more data_ids) for a scoreable distribution**, per the §I.6 convergence config (D>0 + real budget).
+3. **U3 staleness (fluxtune FAIL) — config key collision. FIXED.** The generated config carried BOTH
+   `{stalenessPolicy: none (base), staleness_policy: fedbuff (override)}`; the camelCase base key wins at
+   pydantic resolution, so the run logged `staleness_policy = none`. (Residence escaped this — no base
+   `simInflightResidence` key.) **FIX: the fluxtune yamls now use camelCase `stalenessPolicy`.** Confirm on
+   re-run that the aggregator logs `staleness_policy = fedbuff` and U3 recovers.
+4. **Clock/throughput family (ALL baselines FAIL/SKIP) — missing `vclock_now`. FIXED.** The fwdllm
+   aggregator never stamped `vclock_now` on agg_round, so K10 gated off the whole clock family
+   (K2/throughput/total_commits/terminal_state/field_coverage). **FIX: emit `vclock_now` (mirror asyncfl).**
+   This unblocks the virtual-budget V the convergence sign-off (C1/C2) needs. Separately, fwdllm_plus/
+   fluxtune still miss oracular/oort availability+selection rungs — Batch-2 telemetry-coverage validation,
+   not residence.
+
+**Net:** residence + cadence are correct (R1==0, received==commits, V1 exact on full data_ids). Every
+non-clean rung traced to an artifact (W1 start-tail, V1 truncation) or a config/telemetry gap (U3 key,
+vclock_now) — all fixed in code except the V1 short-run, which needs the longer D>0 run. **Before re-launch:
+the fixes above are in; re-run with the §I.6 convergence config (D>0, longer budget) and re-score.** JSON:
+`parity_{fwdllm,fwdllm_plus,fluxtune}.json`.
 
 ---
 

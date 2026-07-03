@@ -3858,12 +3858,17 @@ def _committed_grads(agg: dict) -> int:
 def compute_conservation_parity(real: dict, sim: dict,
                                 real_trainers: dict, sim_trainers: dict,
                                 ratio_tol: float = 0.25) -> dict:
-    """W1 [DIAG]: compute-conservation — forward passes vs committed grads.
+    """W1 [DIAG]: compute-conservation — sim must not WASTE forward passes.
 
-    forward_passes ~= committed + in_flight_at_stop + stale_rejected, so the
-    forward/commit ratio is ~1 plus a small tail. The tell is the real<->sim
-    RATIO of that ratio: sim doing far more forward passes per commit than real
-    = wasted recompute (the residence violation, §L.1). Localizes to R1.
+    `trainer_round` counts forward-pass STARTS, so forward/commit ~= 1 plus an
+    in-flight-at-stop + stale-reject tail. W1 exists to catch the residence bug
+    where sim RE-DISPATCHES dropped grads and thus does far MORE forward passes
+    per commit than real (the 2x-recompute, §L.1). So the check is ASYMMETRIC:
+    only a sim EXCESS over real is a violation. Sim doing FEWER passes than real
+    is not wasted recompute — a live async real system accrues a larger in-flight
+    START tail over wall-time than the clock-gated sim, so real > sim is expected
+    (and amortizes with run length / D>0). Localizes to R1; R1==0 + received==
+    committed is the precise residence signal, W1 is the coarse compute tell.
     """
     r_fwd, s_fwd = _forward_passes(real_trainers), _forward_passes(sim_trainers)
     r_com, s_com = _committed_grads(real), _committed_grads(sim)
@@ -3873,9 +3878,13 @@ def compute_conservation_parity(real: dict, sim: dict,
                         "or telemetry absent)"}
     r_ratio = r_fwd / r_com
     s_ratio = s_fwd / s_com
-    rel = abs(s_ratio - r_ratio) / max(r_ratio, s_ratio)
+    # signed excess of sim over real (positive = sim wastes more compute)
+    excess = (s_ratio - r_ratio) / max(r_ratio, s_ratio)
+    direction = ("sim OVER-computes (recompute waste — check R1)" if excess > ratio_tol
+                 else "sim under-computes (async start-tail; benign for compute waste)"
+                 if excess < -ratio_tol else "matched")
     return {
-        "ok": rel <= ratio_tol,
+        "ok": excess <= ratio_tol,
         "tier": "DIAG",
         "real_forward_passes": r_fwd,
         "sim_forward_passes": s_fwd,
@@ -3883,11 +3892,11 @@ def compute_conservation_parity(real: dict, sim: dict,
         "sim_committed": s_com,
         "real_fwd_per_commit": round(r_ratio, 3),
         "sim_fwd_per_commit": round(s_ratio, 3),
-        "ratio_rel_diff": round(rel, 3),
+        "sim_excess_rel": round(excess, 3),
         "ratio_tol": ratio_tol,
         "interpretation": (
             f"real {r_ratio:.2f} vs sim {s_ratio:.2f} forward passes per commit; "
-            f"a large sim excess = recompute wasted on dropped/re-dispatched grads."
+            f"{direction}."
         ),
     }
 

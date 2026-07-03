@@ -1503,6 +1503,13 @@ class TopAggregator(AsyncTopAgg):
                     contributing_trainers=_cycle_contributors,
                     agg_observed_s=_cycle_agg_observed_s,
                     extra={
+                        # Virtual clock at commit (sim only) -- the parity engine
+                        # gates its whole clock/throughput/convergence family on
+                        # this (K10). asyncfl emits the same; fwdllm never did, so
+                        # K2/throughput/total_commits/terminal_state/convergence
+                        # were unscoreable for every fwdllm baseline.
+                        "vclock_now": (self._vclock.now if self.simulated
+                                       and getattr(self, "_vclock", None) else None),
                         "data_id": self.data_id,
                         "iteration_per_data_id": self.iteration_per_data_id,
                         "var": self.var,
