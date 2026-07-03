@@ -51,6 +51,7 @@ any check (or any *row*) is level "error", else 0 -- the driver treats 2 as
 from __future__ import annotations
 
 import json
+import textwrap
 import os
 import sys
 
@@ -203,29 +204,40 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
         if table:
             _render_table(out, st, table)
             continue
-        # Align every value in this tier to one column: pad labels to the widest
-        # label present (so a long `max_data_id_progress` doesn't stagger the
-        # shorter rows' values). Cap so a pathological label doesn't push values
-        # off-screen.
+        # Three aligned columns: label | value | note. Labels pad to the widest
+        # label; the note lives in its OWN column and WRAPS to indented
+        # continuation lines (bounded), instead of trailing unbounded on one
+        # line. Value width is sized to the note-bearing rows so their notes all
+        # start at the same column (a long note-less value, e.g. the baselines
+        # list, may overflow harmlessly since nothing follows it).
         label_w = min(max((len(r.get("label", "")) for r in rows), default=13), 24)
+        _noted = [r for r in rows if r.get("note")]
+        value_w = min(max((len(str(r.get("value", ""))) for r in _noted), default=0), 20)
+        # cell column at which the note starts: 2 lead + 2 icon + 1 + label + 1 + value + 1
+        note_col = 2 + 2 + 1 + label_w + 1 + value_w + 1
+        note_w = max(24, _BAR_W - note_col)
+        cont_pad = " " * (note_col + 2)  # continuation lines align under the note text
         for r in rows:
             level = r.get("level", "ok")
             if level == "error":
                 n_err_rows += 1
             icon = _ICON.get(level, " ")
             col = _colour_for(st, level)
-            # Pad every label to the same width + one trailing space, so all
-            # values in the tier start at the same column (no stagger).
             raw = r.get("label", "")
-            label = raw.ljust(label_w) + " "
-            value = r.get("value", "")
+            label = raw.ljust(label_w)
+            value = str(r.get("value", ""))
+            valpad = value.ljust(value_w)
+            # ok rows: label dim, value plain. warn/error: label bold, value coloured.
+            lbl_s = st.dim(label) if level == "ok" else st.bold(label)
+            val_s = valpad if level == "ok" else col(valpad)
             note = r.get("note", "")
-            note_s = f"  {st.dim('· ' + note)}" if note else ""
-            # ok rows: label dim, value plain. warn/error: value coloured.
-            if level == "ok":
-                out(f"  {icon} {st.dim(label)} {value}{note_s}")
-            else:
-                out(f"  {icon} {st.bold(label)} {col(value)}{note_s}")
+            if not note:
+                out(f"  {icon} {lbl_s} {val_s}".rstrip())
+                continue
+            wrapped = textwrap.wrap(note, note_w) or [""]
+            out(f"  {icon} {lbl_s} {val_s} {st.dim('· ' + wrapped[0])}")
+            for cont in wrapped[1:]:
+                out(cont_pad + st.dim(cont))
 
     out(" " + _RULE)
 

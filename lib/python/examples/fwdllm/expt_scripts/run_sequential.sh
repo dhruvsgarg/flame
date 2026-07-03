@@ -372,12 +372,12 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
     # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
     # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
-    scalar_row("var_threshold", VAR_THRESHOLD if VAR_THRESHOLD else "unset (trainer/code default)",
+    scalar_row("var_threshold", VAR_THRESHOLD if VAR_THRESHOLD else "unset",
                bool(VAR_THRESHOLD), review=True,
-               note="variance-pass gate; varies w/ data heterogeneity (--var-threshold)"),
-    scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset (code default)",
+               note="variance-pass gate; varies w/ data heterogeneity (--var-threshold). unset ⇒ trainer/code default"),
+    scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset",
                bool(MAX_ITER), review=True,
-               note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above"),
+               note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above. unset ⇒ code default"),
 ]}
 tiers.append(tier1)
 
