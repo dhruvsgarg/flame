@@ -357,6 +357,14 @@ from a *compounding* variance-feedback loop (the headline fwdllm risk, §G). **M
    could affect other aggregators/trainers/examples** (this Batch 2.5 is exactly that: it touched
    `flame/launch/*` + the shared `parity` engine), and bank that green before launching. A cluster run is
    far more expensive than the full unit suite (minutes, no GPU/MQTT), so the insurance is cheap.
+10. **Comment discipline -- comment the WHY, crisply; skip the trivial.** Write a comment when it carries
+    knowledge a later reader (or a later you) would otherwise have to re-derive or re-learn the hard way:
+    a conceptual/algorithmic choice, a baseline/architectural decision, a real<->sim divergence and its
+    rationale, or a failure mode + why the fix takes the shape it does (so the mistake isn't repeated).
+    Do **not** comment trivial mechanical edits (snake_case→camelCase, a rename, an obvious guard). When you
+    do comment, be **crisp** -- one or two tight sentences, not a paragraph restating the code. The deeper
+    rationale belongs in §K (append-only) with a one-line pointer from the code; the code comment states the
+    decision, not its whole history.
 
 ---
 

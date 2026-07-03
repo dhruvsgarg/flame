@@ -119,11 +119,9 @@ class AggregatorSpawner:
             return False
         return self.process.poll() is None
 
-    # A startup crash (e.g. a config/init TypeError) writes a Python traceback to
-    # the log just before the process exits. Detecting it lets wait_until_ready
-    # fail FAST instead of the old 5s "alive ⇒ ready" heuristic waving through a
-    # crash that lands at ~5s -- which then wasted ~86s spawning + waiting on
-    # trainers that never get an EOT (simulate_fwdllm.md §L.5 defect D-d).
+    # Detect a startup crash from its traceback so wait_until_ready fails FAST,
+    # instead of the old 5s "alive ⇒ ready" heuristic waving through a crash that
+    # lands at ~5s and then wasting ~86s on trainers that never get an EOT (§L.5).
     _CRASH_MARKER = "Traceback (most recent call last)"
 
     def _read_log_tail(self, max_bytes: int = 65536) -> str:

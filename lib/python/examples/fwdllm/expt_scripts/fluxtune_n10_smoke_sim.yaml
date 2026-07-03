@@ -67,20 +67,15 @@ experiments:
           id: fluxtune_n10_smoke_sim
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
-          # Async residence (SIM-only, §L step 4): with c=10 >> agg_goal=3 the
-          # sim path must COMMIT-THEN-CARRY the surplus arrived grads and hold
-          # still-busy trainers in their slots across the agg-goal boundary,
-          # instead of dropping ~7 grads/cycle and re-dispatching them (the 2x
-          # forward-pass residence violation, K-D12). Real satisfies this by
-          # channel construction, so this knob is inert in the real sibling.
+          # SIM-only: with c=10 >> agg_goal=3, commit-then-carry the surplus
+          # grads + hold busy trainers across the boundary, instead of dropping
+          # + re-dispatching them (the 2x-forward-pass residence bug, K-D12).
+          # Real satisfies this by channel construction, so it's inert there.
           sim_inflight_residence: true
-          # Async fedbuff baseline: carried grads (residence above) are stale by
-          # construction, so accept + down-weight by (V'-V) rather than
-          # reject/ignore (K-D13/§L D5). Baseline DEFINITION, set identically in
-          # the real sibling -- never a parity lever. MUST be camelCase
-          # `stalenessPolicy` to OVERRIDE the base config's key; the snake_case
-          # form is a distinct dead key that loses at pydantic resolution and
-          # left the fluxtune run on `none` (§H re-run finding #2 / K-D15).
+          # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
+          # not reject (K-D13). Set identically in the real sibling; never a
+          # parity lever. camelCase MUST match the base key to override it —
+          # snake_case is a dead key that loses at pydantic resolution (K-D15).
           stalenessPolicy: fedbuff
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150

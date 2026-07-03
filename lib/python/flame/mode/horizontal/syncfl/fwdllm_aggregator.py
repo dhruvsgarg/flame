@@ -289,13 +289,8 @@ class TopAggregator(AsyncTopAgg):
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
 
-        # end_id -> {"dispatch_ts", "commit_ts"} for the most recent accepted
-        # contribution of that end, captured in _process_single_trainer_message
-        # and emitted per-cycle as `contributor_intervals` on the agg_round
-        # event. Feeds the R1 in-flight-overlap + W1 compute-conservation rungs
-        # (simulate_fwdllm.md §L.3). Sim uses the modeled [SIM_SEND_TS,
-        # SIM_COMPLETION_TS] vclock interval; real falls back to the wall
-        # interval (PROP_ROUND_START_TIME .. receipt).
+        # end_id -> {dispatch_ts, commit_ts} of its last accepted contribution,
+        # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
 
         # Selection granularity for the sync path (fwdllm/fwdllm_plus):
@@ -317,13 +312,8 @@ class TopAggregator(AsyncTopAgg):
         # but not formally departed (see ROUND_CACHE_STUCK_TIMEOUT_S).
         self._round_cache_activity_ts: dict = {}
 
-        # Staleness handling (flame/config.py Hyperparameters.staleness_policy).
-        # Read from config into an instance attr so the message handler's
-        # getattr(self, "staleness_policy", "none") resolves the configured
-        # value -- without this it silently stayed "none" for every run. Values:
-        # none (accept, no gate) / round_data_id / exact (reject stale) /
-        # fedbuff (accept + down-weight by V'-V, the async baseline default,
-        # K-D13). See _process_single_trainer_message.
+        # Wire staleness_policy from config into an instance attr; without this
+        # the message handler's getattr fell back to "none" for every run (K-D15).
         self.staleness_policy = getattr(
             self.config.hyperparameters, "staleness_policy", None
         ) or "none"
@@ -335,12 +325,11 @@ class TopAggregator(AsyncTopAgg):
             self._optimizer_sort_value in OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION
         )
         if self.staleness_policy == "fedbuff" and not self._weighted_aggregation_enabled:
+            # fedbuff accepts stale grads expecting the optimizer to down-weight
+            # them by (V'-V); without a weighting optimizer the rate stays 1.0.
             logger.warning(
-                "staleness_policy=fedbuff accepts stale grads but optimizer.sort="
-                f"{self._optimizer_sort_value} does not support staleness "
-                "down-weighting (rate stays 1.0); staleness will be recorded but "
-                "not weighted. Set optimizer.sort=fedbuff for the intended "
-                "down-weight-by-(V'-V) treatment (K-D13)."
+                f"staleness_policy=fedbuff but optimizer.sort={self._optimizer_sort_value} "
+                "does not down-weight staleness (rate stays 1.0)."
             )
         if not self._weighted_aggregation_enabled:
             logger.info(
@@ -825,47 +814,26 @@ class TopAggregator(AsyncTopAgg):
         return m, md
 
     def _release_sim_slots_at_agg_goal(self, channel, is_async):
-        """Sim residence + rollback-safety at the agg-goal boundary.
+        """Sim slot release at the agg-goal boundary. Two policies (§L / K-D12):
 
-        A data_id spans MANY agg-goal cycles (a variance-FAIL retries the same
-        data_id with iteration_per_data_id += 1). The per-cycle committed marks
-        (_sim_committed) MUST clear each cycle so the gate does not skip a
-        trainer re-contributing on the rolled-back data_id.
+        - async + sim_inflight_residence (fluxtune, c >> agg_goal): COMMIT-THEN-
+          CARRY. Hold still-busy trainers (surplus buffer ∪ in-flight) in their
+          slots BEFORE clearing, release only the committed, and CARRY the surplus
+          buffer to the next fedbuff step (never dropped; version gap handled by
+          staleness_policy). fwdllm analog of felix/oort residence+carryover.
+        - else (sync barriers c ≈ agg_goal, or residence off): LEGACY DROP
+          (K-D5/K-D6) -- no surplus, so clearing is correct and flag-off is
+          byte-identical to Batch 1.
 
-        Two boundary policies, keyed on the async grad path + the residence flag
-        (simulate_fwdllm.md §L / K-D12):
-
-        * async + sim_inflight_residence (fluxtune, c >> agg_goal) --
-          COMMIT-THEN-CARRY. Hold the still-busy trainers (surplus buffered
-          arrivals ∪ not-yet-arrived in-flight) in their concurrency slots
-          BEFORE clearing anything, so residence survives the boundary
-          (_sim_hold_busy_slots reads _sim_buffer/_sim_inflight_expected -- both
-          must still be populated). Only the committed subset (already popped
-          from the buffer in _sim_recv_min_grad) is released for re-selection.
-          The surplus arrived-but-uncommitted grads are RETAINED in the buffer
-          and applied at a later fedbuff step (never dropped); their version gap
-          is handled by staleness_policy (K-D13), not by discarding work. This is
-          the fwdllm analog of felix simInflightResidence + oort
-          simInflightCarryover.
-
-        * everything else (the two sync baselines c ≈ agg_goal, or async with the
-          flag off) -- LEGACY DROP (K-D5/K-D6). A single-pass barrier has no
-          surplus, so clearing the buffer + in-flight gate is correct and keeps
-          the flag-off path byte-identical to Batch 1.
+        `_sim_committed` always clears so a variance-FAIL re-contributor on the
+        rolled-back data_id isn't skipped.
         """
         if not self.simulated:
             return
-        _residence = getattr(self, "_sim_inflight_residence", False)
-        if is_async and _residence:
-            # Hold BEFORE clear: the held set = pending_in_buffer ∪
-            # _sim_inflight_expected (residence on), released set = committed.
-            self._sim_hold_busy_slots(channel)
+        if is_async and getattr(self, "_sim_inflight_residence", False):
+            self._sim_hold_busy_slots(channel)   # reads buffer/in-flight -> hold before clear
             self._sim_committed.clear()
-            # Deliberately DO NOT clear _sim_buffer / _sim_inflight_expected:
-            # the surplus carries to the next agg-goal cycle (buffered fedbuff
-            # accumulation) and the not-yet-arrived trainers stay in flight.
-            return
-        # Legacy drop path (sync barrier, or async without residence).
+            return  # keep _sim_buffer / _sim_inflight_expected -> carry surplus
         self._sim_committed.clear()
         self._sim_buffer.clear()
         self._sim_inflight_expected.clear()
@@ -960,17 +928,13 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"Received grad with staleness={self._model_version-version}."
                 )
-            # Mode semantics: Hyperparameters.staleness_policy (flame/config.py).
-            # Implementation note: model_version alone already identifies
-            # (round, data_id) when inc_model_version_per_data_id is set (it
-            # only advances on a data_id transition), so "round_data_id" needs
-            # no extra fields; "exact" additionally checks iteration_per_data_id.
-            #   REJECT policies: round_data_id, exact -- drop a stale grad.
-            #   ACCEPT policies: none (no gate), fedbuff (accept + down-weight by
-            #     V'-V in aggregate_grads_from_trainers, K-D13/§L D5). fedbuff is
-            #     the async baseline default: its carried surplus grads (§L
-            #     commit-then-carry) are stale by construction, so they must be
-            #     consumed and weighted, never dropped.
+            # staleness_policy (flame/config.py). REJECT: round_data_id, exact.
+            # ACCEPT: none (no gate); fedbuff (consume + down-weight by V'-V in
+            # aggregate_grads_from_trainers) -- the async default, since its
+            # carried surplus grads (§L) are stale by construction (K-D13).
+            # model_version alone identifies (round, data_id) when
+            # inc_model_version_per_data_id is set, so round_data_id needs no
+            # extra field; exact also checks iteration_per_data_id.
             policy = getattr(self, "staleness_policy", "none")
             stale, stale_reason = False, None
             if policy == "round_data_id":
@@ -1041,12 +1005,9 @@ class TopAggregator(AsyncTopAgg):
                     f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"
                 )
 
-            # Record this contribution's [dispatch, commit] interval for the R1
-            # in-flight-overlap + W1 compute-conservation rungs (§L.3). Sim: the
-            # modeled vclock interval the trainer echoes back (exact per
-            # contribution, so a re-dispatch overwrite can't corrupt a prior
-            # interval). Real: the wall interval (dispatch prop .. receipt). The
-            # per-cycle list is assembled + emitted in _process_aggregation_goal_met.
+            # Record this contribution's [dispatch, commit] interval for R1/W1
+            # (§L.3): sim uses the vclock interval the trainer echoes back (exact
+            # per contribution); real uses the wall interval (dispatch .. receipt).
             if getattr(self, "_sim_contrib_intervals", None) is not None:
                 if self.simulated:
                     _disp = msg.get(MessageType.SIM_SEND_TS)
@@ -1503,11 +1464,9 @@ class TopAggregator(AsyncTopAgg):
                     contributing_trainers=_cycle_contributors,
                     agg_observed_s=_cycle_agg_observed_s,
                     extra={
-                        # Virtual clock at commit (sim only) -- the parity engine
+                        # Virtual clock at commit (sim only). The parity engine
                         # gates its whole clock/throughput/convergence family on
-                        # this (K10). asyncfl emits the same; fwdllm never did, so
-                        # K2/throughput/total_commits/terminal_state/convergence
-                        # were unscoreable for every fwdllm baseline.
+                        # this (K10); fwdllm never emitted it (§H finding #4).
                         "vclock_now": (self._vclock.now if self.simulated
                                        and getattr(self, "_vclock", None) else None),
                         "data_id": self.data_id,

@@ -258,20 +258,10 @@ def check_aggregation(agg: dict) -> dict:
 
 
 def check_grad_residence(agg: dict, trainer: dict) -> dict:
-    """FwdLLM async grad-path residence (R1) + compute-conservation (W1) on the
-    REAL side — the hard gate that blocks the §L.4-step-4 sim mechanism change.
-
-    R1: real per-trainer dispatch->commit intervals (contributor_intervals) must
-    not overlap (~0%). If real itself overlaps, real is inadmissible and D-b is a
-    two-sided fix — fix real FIRST, never tune sim toward a broken real
-    (simulate_fwdllm.md §L.3 sanity gate / PARITY.md principle #6).
-    W1: report forward_passes vs committed grads so the operator can confirm the
-    real fwd-commit gap is explained by end-of-run in-flight + stale-rejects, not
-    by real ALSO dropping carried grads. Informational (loose bound) since real
-    stale-reject / in-flight-at-stop counts aren't separately emitted.
-
-    SKIPs cleanly (ok=True) when the real run carries no contributor_intervals
-    (a non-fwdllm real run) so async_cifar10 validate_real is unaffected.
+    """FwdLLM async residence (R1) + compute-conservation (W1) on the REAL side —
+    the gate blocking the sim mechanism change (§L.3 / PARITY.md principle #6):
+    if real itself overlaps (R1 > ~0), fix real FIRST, never tune sim to it.
+    W1 is reported for context. SKIPs on a non-fwdllm real run (no intervals).
     """
     cycles = _fwd_cadence_cycles(agg)
     have_intervals = any(e.get("contributor_intervals") for e in cycles)

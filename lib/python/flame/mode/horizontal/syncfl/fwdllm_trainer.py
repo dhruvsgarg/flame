@@ -534,10 +534,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 # the intrinsic (server-overhead-free) task duration from. All
                 # None in real mode -> aggregator ignores them (arrival order).
                 MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
-                # Echo the dispatch stamp back so the aggregator can reconstruct
-                # this contribution's exact [dispatch, completion] interval for
-                # the R1 in-flight-overlap rung (simulate_fwdllm.md §L.3). None
-                # in real mode -> aggregator falls back to the wall interval.
+                # Echo the dispatch stamp so the aggregator can reconstruct this
+                # contribution's [dispatch, completion] interval for R1 (§L.3).
                 MessageType.SIM_SEND_TS: self._sim_send_ts,
                 MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
                 MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
