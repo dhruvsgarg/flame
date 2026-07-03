@@ -601,7 +601,11 @@ hyperparameters in three volatility tiers (① review-every-run, ② per-baselin
 infeasible configs (`agg_goal>c`, `num_gpus>visible`, `num_trainers<minInitialTrainers`). Always `--dry-run`
 first (shows the table + checks, launches nothing). Smoke: `--mode both --delays off` (D=0, mechanics).
 Convergence: `--mode both --delays on --max-runtime-s <budget> --max-data-id <cap>` (D>0 both sides).
-Parity: the `NEXT:` line the runner prints (`scripts.parity.cli --batch` pointed at `fwdllm/experiments`).
+Parity: `python expt_scripts/run_parity.py` (the repeatable post-fix checker) — it picks the LATEST
+real/sim pair per baseline (parsing the baseline as an exact dir-name token, so `fwdllm` never captures
+`fwdllm_plus`; the raw `scripts.parity.cli --batch` glob does), reads agg_goal from each run's config,
+prints the pairs to confirm, then a compact cross-baseline rung summary. `--yes` skips the prompt;
+`--validate` also reports live `staleness_policy` + `vclock_now` presence.
 
 ---
 
