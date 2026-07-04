@@ -114,6 +114,47 @@ class TestCommitThenCarryResidenceOn:
         assert ch._selector.selected_ends["agg"] == {"B", "C"}
 
 
+class TestReturnPathGuardHeldToCommit:
+    """K-D19 (the R1 regression K-D17b left open): the guard release on grad
+    RETURN. The prior residence tests poked `_release_sim_slots_at_agg_goal` /
+    `_sim_hold_busy_slots` directly and NEVER exercised the per-message return
+    path (`_release_end_on_return`, called from `_process_single_trainer_message`)
+    -- which is exactly why R1=44.7% shipped with `tests/mode` green. The bug:
+    the async accept path called `channel.cleanup_provided_ends(end)` on physical
+    return, tearing the trainer out of `all_selected` while its carried grad had
+    not committed in virtual time -> re-selectable -> re-dispatch-while-in-flight.
+    """
+
+    def test_guard_held_on_return_in_sim_residence(self):
+        """async + sim + residence: return must NOT release the re-pick guard
+        (held to COMMIT by _sim_hold_busy_slots). This is the regression guard."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])   # all dispatched + in flight
+        agg._release_end_on_return(ch, "A")     # A's grad returns (carried)
+        # A stays in the guard -> cannot be re-picked while still outstanding.
+        assert "A" in ch._selector.all_selected
+        assert "A" in ch._selector.selected_ends["agg"]
+
+    def test_guard_released_on_return_when_residence_off(self):
+        """async WITHOUT residence: legacy behavior -- release immediately
+        (return ~= commit), so the fix is byte-identical off the residence path."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" not in ch._selector.all_selected
+
+    def test_sync_return_uses_recvd_cleanup(self):
+        """sync (random selector, is_async=False): unchanged cleanup_recvd_end
+        path -- releases on return (barrier re-selects the whole cohort)."""
+        agg = _residence_agg(residence=True)   # residence flag is inert when sync
+        agg.is_async = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" not in ch._selector.all_selected
+
+
 class TestVirtualInflightSlotHold:
     """K-D17b (felix-aligned, supersedes K-D16 Option-A): a returned-but-
     uncommitted trainer is still in flight in VIRTUAL time (its grad commits

@@ -19,6 +19,7 @@ import inspect
 import logging
 import math
 import time
+from contextlib import contextmanager
 
 import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -39,6 +40,8 @@ from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.role import Role
+from flame import telemetry
+from flame.telemetry.events import build_task_recv
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
@@ -159,6 +162,23 @@ class Trainer(Role, metaclass=ABCMeta):
         self.abort_training = False
         self._stat_utility = 0
 
+        # Per-round phase-timing accumulator (Stage A1) -- the fwdllm-side of the
+        # #6 wall decomposition. Reset each fetch; drained into the trainer_round
+        # telemetry `extra` so the 8 phase rungs become measurable instead of
+        # SKIP. Mirrors the base syncfl trainer's _phase/_phase_times.
+        self._phase_times: dict = {}
+
+    @contextmanager
+    def _phase(self, name: str):
+        """Time a named phase and accumulate into self._phase_times."""
+        t0 = time.time()
+        try:
+            yield
+        finally:
+            self._phase_times[name] = self._phase_times.get(name, 0.0) + (
+                time.time() - t0
+            )
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -172,6 +192,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         self.fetch_success = False
+        # Reset per-round phase accumulator at the round boundary (Stage A1).
+        self._phase_times = {}
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info(
@@ -192,7 +214,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
+        # agg→trainer delivery + payload transfer (leg i); the first phase term.
+        self._phase_times["mqtt_fetch_s"] = time.time() - _recv_start
 
         if not msg:
             logger.info(f"NO msg received for trainer_id {self.trainer_id}")
@@ -218,6 +243,25 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
+
+        # D1 (§H #8): emit task_recv carrying sim_send_ts so field_coverage's INV
+        # rung + K6 (sim_send_ts correctness) have the field they expect. fwdllm
+        # overrode _fetch_weights and dropped the base trainer's emission; restore
+        # it here. None in real mode (SIM_SEND_TS absent) -> real~=sim comparable.
+        if telemetry.is_enabled():
+            try:
+                _avl = getattr(getattr(self, "avl_state", None), "value", None)
+                ev, fields = build_task_recv(
+                    round_num=int(self._round),
+                    trainer_id=str(getattr(self, "trainer_id", "")),
+                    time_mode=getattr(self, "time_mode", "real"),
+                    sim_send_ts=(float(self._sim_send_ts)
+                                 if self._sim_send_ts is not None else None),
+                    avl_state=_avl,
+                )
+                telemetry.emit(ev, **fields)
+            except Exception as e:  # telemetry must never break training
+                logger.debug(f"task_recv telemetry emit failed: {e}")
 
         logger.info(
             f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg.get(MessageType.DATA_ID)}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg.get(MessageType.ITERATION_PER_DATA_ID)}"
@@ -299,13 +343,15 @@ class Trainer(Role, metaclass=ABCMeta):
             # Update the model logger.info(f"Weights received:
             # {msg[MessageType.WEIGHTS]}") self.weights =
             # weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            trainable_weights = weights_to_model_device(
-                msg[MessageType.WEIGHTS], self.model
-            )
-            full_state_dict = self.model.state_dict()
-            full_state_dict.update(trainable_weights)
-            self.weights = full_state_dict
-            self._update_model()
+            with self._phase("weights_to_ram_s"):
+                trainable_weights = weights_to_model_device(
+                    msg[MessageType.WEIGHTS], self.model
+                )
+                full_state_dict = self.model.state_dict()
+                full_state_dict.update(trainable_weights)
+                self.weights = full_state_dict
+            with self._phase("weights_to_gpu_s"):
+                self._update_model()
 
             if MessageType.MODEL_VERSION in msg:
                 self._model_version = msg[MessageType.MODEL_VERSION]

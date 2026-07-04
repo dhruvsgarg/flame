@@ -30,10 +30,15 @@ class _FakeAggregator:
         max_runtime_s=None,
         agg_start_time_ts=None,
         is_async=False,
+        simulated=False,
+        vclock_now=0.0,
+        sim_wall_ceiling_s=None,
     ):
         self._work_done = False
         self.data_id = data_id
         self.is_async = is_async
+        self.simulated = simulated
+        self._vclock = SimpleNamespace(now=vclock_now)
         self.agg_start_time_ts = (
             agg_start_time_ts if agg_start_time_ts is not None else time.time()
         )
@@ -41,6 +46,7 @@ class _FakeAggregator:
             hyperparameters=SimpleNamespace(
                 max_data_id_progress=max_data_id_progress,
                 max_runtime_s=max_runtime_s,
+                sim_wall_ceiling_s=sim_wall_ceiling_s,
             )
         )
 
@@ -100,6 +106,45 @@ class TestEarlyStopConditions:
             data_id=1,
             max_data_id_progress=10,
             max_runtime_s=1.0,
+            agg_start_time_ts=time.time() - 2.0,
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_sim_max_runtime_uses_vclock_not_wall(self):
+        """SIM mode (root #6 methodology): max_runtime_s is a VIRTUAL-clock
+        budget, not wall. vclock below budget => keep running even though wall
+        has long passed it (the sim runs faster than real)."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=100.0,
+            agg_start_time_ts=time.time(),      # ~0 wall elapsed
+        )
+        agg.check()
+        assert agg._work_done is False          # vclock 100 < budget 3600
+
+    def test_sim_max_runtime_stops_when_vclock_reaches_budget(self):
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=3600.0,
+            agg_start_time_ts=time.time(),
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_sim_wall_ceiling_stops_runaway_undermodeled_vclock(self):
+        """The root-#6 failsafe: even with vclock below budget, a sim whose WALL
+        exceeds the ceiling (default = budget) stops -- an under-modeled vclock
+        must not run the sim forever."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,   # under budget
+            agg_start_time_ts=time.time() - 3601.0,                  # wall > ceiling
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_real_max_runtime_still_uses_wall(self):
+        """Real mode unchanged: wall-clock elapsed drives the cap."""
+        agg = _FakeAggregator(
+            max_runtime_s=1.0, simulated=False,
             agg_start_time_ts=time.time() - 2.0,
         )
         agg.check()

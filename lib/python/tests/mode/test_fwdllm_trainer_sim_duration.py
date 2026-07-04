@@ -33,6 +33,7 @@ class _FakeTrainer:
     touches; binds the real method under test."""
 
     _emulate_training_delay = FedSGDTrainer._emulate_training_delay
+    _sim_straggler_offset_s = FedSGDTrainer._sim_straggler_offset_s
 
     def __init__(self, training_delay_enabled, training_delay_s=0.0,
                  training_delay_factor=1.0, speedup_factor=1.0, simulated=False):
@@ -164,8 +165,9 @@ class TestSimCompletionStampIsAdditive:
 
     def test_additive_round_duration_and_completion_ts(self, monkeypatch):
         monkeypatch.setattr(_fst_module.telemetry, "is_enabled", lambda: False)
-        # round_start=100.0, gpu-end=100.5 -> real_gpu = 0.5s.
-        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.5]))
+        # ticks: phase_entry=100.0, round_start=100.0, gpu-end=100.5 (+clamp)
+        # -> real_gpu = 0.5s. (Stage A1 added the phase_entry tick.)
+        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.0, 100.5]))
         t = _StampTrainer(sim_send_ts=10.0, delay_d=2.0, leg_s=0.0)
 
         t.train_with_data_id()
@@ -176,7 +178,7 @@ class TestSimCompletionStampIsAdditive:
         assert t._sim_completion_ts == 12.5
 
     def test_completion_ts_includes_leg(self, monkeypatch):
-        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.5]))
+        monkeypatch.setattr(_fst_module, "time", _FakeTime([100.0, 100.0, 100.5]))
         t = _StampTrainer(sim_send_ts=10.0, delay_d=2.0, leg_s=1.5)
 
         t.train_with_data_id()

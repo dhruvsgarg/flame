@@ -407,6 +407,29 @@ from a *compounding* variance-feedback loop (the headline fwdllm risk, §G). **M
     do comment, be **crisp** -- one or two tight sentences, not a paragraph restating the code. The deeper
     rationale belongs in §K (append-only) with a one-line pointer from the code; the code comment states the
     decision, not its whole history.
+11. **Telemetry-FIRST, then instrument, then (rarely) run — do not launch runs to guess-and-check a
+    hypothesis.** A cluster run is the single most expensive and slowest step in this loop; treat it as the
+    LAST resort, never the debugger. (Codifies async_cifar10/PARITY.md "Workflow policy" #1–#2 for fwdllm.)
+    - **(a) Validate/refute a hypothesis from the telemetry ALREADY ON DISK before considering a run.** Every
+      banked run dir carries per-commit/per-round/per-phase telemetry + the aggregator log; most roots
+      (the R1 overlap in `[SIM_GRAD_RECV]`, the #6 rate gap in the per-phase timings, the #7 real-speed surplus
+      in the `runtime.py` decorator lines) are already visible there. If you catch yourself saying "let's run it
+      and see," stop — first name the exact stored field/line that would confirm or kill the hypothesis, and go
+      read it. A run that only re-confirms what the logs already show is wasted.
+    - **(b) When you implement anything new, ship its telemetry + plot + pytest IN THE SAME CHANGE.** Over-
+      instrument pre-emptively (cheap to log, expensive to re-run for): add the per-event field that makes the
+      new mechanism's correctness DIRECTLY observable in the checker (not inferred), a plot if it has a
+      trajectory, and a pytest that drives it on synthetic telemetry and asserts the invariant. This is what
+      lets (a) work next time: the R1 regression was catchable only because the diagnostic line existed. A fix
+      with no new instrument/test is not done.
+    - **(c) A run is justified only to observe an EMERGENT quantity that no stored telemetry can yield** (fresh
+      convergence, a concurrency/wall number after a mechanism change, a cadence trajectory over more
+      `data_id`s than any banked run reached) — and then run the SHORTEST length that exhibits it
+      (PARITY.md run-length budget), smoke first, one mechanism per round.
+    - **(d) Cross-pollinate fluxtune ↔ fwdllm/fwdllm_plus.** fluxtune is furthest from parity, so it surfaces
+      roots first; when a fluxtune fix or learning could apply to the sync baselines (e.g. the #6/#1 shared
+      time-base question, a selector-ignores-hold-set bug, a duration-input anchor), note it in §B.1/§K and
+      check the others from THEIR banked telemetry before assuming it's async-only.
 
 ---
 
@@ -443,31 +466,52 @@ so what we keep is (1) the current per-baseline state table, (2) the **open root
 ledger (what we tried or believed that was wrong, so we don't retry it). Per-run detail lives in the JSON +
 git history; the as-built rationale lives in §K.*
 
-**Status (2026-07-04 EOD → K-D17 + K-D17b landed. in_flight measurement FIXED (sim 9.49 vs real 9.75) but
-K-D17b introduced an R1 residence regression (0%→44.7%). STOPPED before the overnight run; resume from the
-"NEXT SESSION" block below.)**
+**Status (2026-07-05 → overnight 10-`data_id` grounding runs BANKED; parity read below (K-D18). The fluxtune
+R1 residence regression (K-D17b) is STILL the top blocker — do it first (fluxtune ran real-only overnight, so
+its sim is unchanged from run `020254`, R1=44.7%).** New findings from the 10-`data_id` runs (bigger than the
+prior 3-`data_id` runs — the operator intended 1 h but the `--max-data-id` default was 10, now raised to 9999,
+K-D18):
+> - **(a) fwdllm sync cadence is HEALTHY at 10 `data_id`s.** V1/V2/g2/R1/W1/U3/S2/conv/conv_loss all PASS —
+>   the #4 short-run truncation cleared exactly as predicted (37 pass / 5 fail).
+> - **(b) fwdllm's surviving fails are the clock-RATE family** (throughput/total_commits/terminal_state), NOT
+>   the #2 axis re-key: at a matched virtual budget sim charges **~7.8 vclock-s/round** while real spends
+>   **~34.9 wall-s/round** (both completed all 10 `data_id`s). New **open root #6** — must classify real's
+>   ~27 s/round surplus as real-transport overhead (correct to exclude, principle #1/#8) vs a sim D under-charge,
+>   FROM the existing per-phase timing telemetry, before touching the clock. **Shared-shaped with the fluxtune
+>   2.4× wall gap** — the cross-baseline learning to watch.
+> - **(c) fwdllm_plus real is pathologically slow.** It ran the FULL 1 h (`max_runtime_s=3600` cap) and reached
+>   only **`data_id`≈3** (86 wall-s/round; sim did all 10 in 81 vclock-s / 274 wall-s). So its V1/V2/g2/
+>   eligibility/selection fails are REAL-side **truncation** (comparing sim's 10 full `data_id`s to real's 3),
+>   plus a genuine **real-speed root #7** (why is fwdllm_plus real ~2.5× slower/round than fwdllm real? — the
+>   per-iteration reselection is the suspect; localize from telemetry, not a re-run).
+> - **(d) field_coverage now fails on a real telemetry GAP** — `task_recv.sim_send_ts` is absent in both modes
+>   (this is NOT the #3 gpu/budget alias, which passes). New **open root #8** (INV). `failsafe`/K5 also fires
+>   falsely for fwdllm (sim WALL ≫ vclock because forward-grad compute is REAL) — a checker exemption, root #9.
+>
+> _Original 2026-07-04 EOD state: K-D17 + K-D17b landed; in_flight measurement FIXED (sim 9.49 vs real 9.75)
+> but K-D17b introduced the R1 residence regression (0%→44.7%). Resume from the "NEXT SESSION" block below._
 > **NEXT SESSION (2026-07-05) pickup — start here.**
-> **Where we are:** fluxtune sim is healthy (no deadlock, K-D17). K-D17b made `in_flight` correct (virtual
-> in-flight ~9.5, matches real ~9.75) and fixed V2 — BUT it broke R1 residence (44.7% same-trainer in-flight
-> overlap; run `020254`, report `parity_fluxtune_20260704_020254.json`). Sync baselines (fwdllm/fwdllm_plus)
-> are untouched by all this and are safe to ground-run anytime.
-> **The R1 bug (prime hypothesis, ~1 fix + 1 smoke to confirm):** `_sim_hold_busy_slots`
-> (`fwdllm_aggregator.py`) resets buffered-but-uncommitted ends to `KEY_END_STATE=NONE` to preserve their
-> `selected_ends` slot. But async_oort selects by avail/end-state and does NOT exclude `all_selected`, so a
-> NONE-state buffered trainer is re-selectable → re-dispatched while in flight → R1 overlap.
-> **Fix options to try (in order):** (1) **Drop the `KEY_END_STATE=NONE` reset** for buffered ends and rely
-> only on the explicit `selected_ends[requester].add(eid)` to hold the slot — then re-run a fluxtune sim
-> smoke and check BOTH `sel_ends`≈8 (measurement still good) AND R1≈0% (`grep SIM_GRAD_RECV`; run
-> `run_parity.py --baselines fluxtune`). If the channel re-strips the slot without the reset (sel_ends drops
-> back to ~3), then (2) make async_oort's selection **exclude `all_selected` members** (or keep buffered ends
-> in RECV state, not NONE) so the guard actually blocks re-pick while the slot stays counted. (3) Failing
-> that, keep buffered ends un-selectable via the K-D17 triplet (verify the triplet covers them — it may have
-> advanced). **Validate:** R1 back to 0%, in_flight still ~9.5, `tests/mode` green, add a pytest that a
-> buffered-uncommitted trainer is NOT re-selected.
-> **Then:** re-check `selection_detail.chosen` (sim 0.83 vs real 1.76 — likely follows R1) and the
-> throughput/commits/terminal fails; run the **longer run** (`--max-data-id` dropped → 10) to clear the #4
-> short-run truncation before judging V1/g2/throughput. Only after R1 is clean, launch the overnight
-> grounding run: `bash run_sequential.sh --mode both --delays on --max-runtime-s 3600 --yes`.
+> **UPDATE: #1c (R1) is now FIXED in code — K-D19.** The prime hypothesis below was **wrong on the mechanism**
+> (async_oort *does* exclude `all_selected`; the NONE reset is a red herring). The real root was the guard
+> being released on physical grad RETURN before the carried grad committed; fixed fwdllm-only via
+> `_release_end_on_return` (defer release to COMMIT), + a `[SIM_R1_DISPATCH]` tripwire + a RETURN-path pytest,
+> `tests/mode -k fwdllm` 110 green. **The only step left on #1c is the emergent smoke** (`bash
+> run_sequential.sh --mode both --delays on --max-runtime-s 3600 --only fluxtune --yes`, or a shorter
+> `--max-data-id 3` smoke first) → `run_parity.py --baselines fluxtune`, confirm R1≤2% + `in_flight`~9.5.
+> _The original hypothesis + fix-options are kept below only as the record of what was refuted (K-D19)._
+> **[REFUTED] R1 prime hypothesis:** `_sim_hold_busy_slots` resets buffered ends to `KEY_END_STATE=NONE`… but
+> async_oort selects by avail/end-state and does NOT exclude `all_selected`, so a NONE-state buffered trainer
+> is re-selectable → R1 overlap. **Refuted:** async_oort excludes `all_selected` (`async_oort.py:1586-87`) and
+> the channel passes the full pool regardless of `KEY_END_STATE`; exclusion is by `all_selected` membership
+> alone, and the trainer left the guard on RETURN. See K-D19.
+> **Then:** re-check `selection_detail.chosen` (sim 0.83 vs real 1.76 — likely follows R1). The **longer run
+> is already banked** (the overnight 10-`data_id` runs, K-D18) and cleared #4 for fwdllm; for fluxtune the
+> fresh sim re-run is still owed (overnight was real-only). When re-running, the `--max-data-id` default is now
+> **9999** (K-D18) so `--max-runtime-s` governs; pass `--max-data-id 10` only for a deliberately short run.
+> Launch (after R1 is clean): `bash run_sequential.sh --mode both --delays on --max-runtime-s 3600 --only
+> fluxtune --yes`. **First-principle before any launch: exhaust the existing telemetry** (principle #11) — the
+> R1 root is already visible in run `020254`'s `[SIM_GRAD_RECV]` log; validate the fix there + by pytest, not
+> by a launch.
 > **Do NOT redo:** the in_flight measurement fix (K-D17b) is correct and validated — keep the hold-to-commit;
 > only the state-reset that re-opens selection is at fault. The temporary `[SIM_GRAD_RECV] ... inflight_exp=/
 > sel_ends=` diagnostic in `_sim_recv_min_grad` is useful — keep it until R1 is closed, then optionally trim.
@@ -487,24 +531,135 @@ mode-invariant. **Remaining action: a fresh fluxtune re-run** to bank concurrenc
 / V1 / selection, then the **longer run (`max_data_id_progress=10`)** to clear #4. The table below is the
 PRE-K-D16 baseline the re-run is measured against (the K-D16 run is void — it deadlocked).
 
-**Per-baseline ground state (PRE-fix; re-run pending):**
-| baseline | wall real→sim | R1 resid | U3 staleness | V1/V2 cadence | status |
-|---|---|---|---|---|---|
-| **fwdllm** (sync) | 107→**96s** ✓ | PASS (0%) | PASS | PASS / PASS | clock-family axis re-keyed (#2 fixed); re-run to confirm |
-| **fwdllm_plus** (sync) | 335→**184s** ✓ | PASS (0%) | PASS | FAIL(trunc) / FAIL | #2 fixed; V1 trunc needs the longer run (#4); selection_detail after re-run |
-| **fluxtune** (async) | 125→304s (pre) | **K-D17b REGRESSED: 44.7%** (was 0%) | PASS | V2 now PASS / — | K-D17→K-D17b: **in_flight FIXED (sim 9.49 vs real 9.75)** + V2 PASS, but **R1 residence broke (0%→44.7%)**; STOPPED, see NEXT SESSION block |
+**Per-baseline ground state (2026-07-05, overnight 10-`data_id` runs; K-D18):**
+| baseline | run (real→sim) | R1 | V1/V2/g2 cadence | S2/U3/conv | surviving fails | status |
+|---|---|---|---|---|---|---|
+| **fwdllm** (sync) | 10 `data_id`s both; wall 349→184s | PASS (0%) | **PASS / PASS / PASS** | PASS / PASS / PASS | throughput·commits·terminal (#6 clock-RATE), field_coverage (#8), failsafe (#9 false-pos) | **37 pass / 5 fail.** Cadence CLEAN at 10 `data_id`s (#4 cleared). Remaining fails all trace to the RATE gap #6 + two checker/telemetry gaps — no cadence bug |
+| **fwdllm_plus** (sync) | sim 10 `data_id`s (274s wall); **real hit the 1 h cap at `data_id`≈3** | PASS (0%) | FAIL / FAIL / FAIL | PASS / PASS / PASS | +eligibility, selection_detail (real_chosen 4.88 vs sim 4.39) | **31 pass / 10 fail.** Cadence fails are **REAL-side truncation** (3 vs 10 `data_id`s) driven by real being ~2.5× slower/round (#7); NOT confirmed a sim bug until real completes 10 |
+| **fluxtune** (async) | overnight **real-only** (10 `data_id`s); sim unchanged from `020254` | **FIXED in code (K-D19)**; was 44.7% | V2 PASS / — | — | (re-run owed) | **#1c FIXED + pytest-green.** Root = guard released on grad RETURN, not the doc's `all_selected` hypothesis; deferred to COMMIT via `_release_end_on_return`. in_flight measurement (9.49 vs 9.75) preserved. **Emergent-only step left:** one sim smoke to bank R1≤2% |
+
+### Parity scoreboard — LATEST vs PENULTIMATE only (rewrite in place each run; do NOT append history)
+
+*Discipline: keep exactly two columns per baseline — the latest parity JSON and the one before it — so drift is
+visible without a growing log. `run_parity.py` regenerates both from the banked dirs.*
+
+| baseline | penultimate (run · pass/fail/skip) | LATEST (run · pass/fail/skip) | Δ | failing rungs (latest) |
+|---|---|---|---|---|
+| **fwdllm** | `0703_224641` (3 `data_id`) · 37/5/32 | `0704_022610` (10 `data_id`) · **37/5/32** | =0 | field_coverage, throughput, total_commits, terminal_state, failsafe |
+| **fwdllm_plus** | `0703_225614` (3 `data_id`) · 30/11/32 | `0704_033206` (10 `data_id`, real stalled) · **31/10/32** | +1 | above + eligibility, selection_detail, v1, v2, g2_grad_pool_size |
+| **fluxtune** | `0704_020254` (sim, R1=44.7%) · — | overnight **real-only → no sim pair** · — | — | (R1 fixed in code K-D19; re-run owed) |
+
+### SKIP audit — 32 skips, only ~16 are legitimate (rest are rigor gaps to close)
+
+The user rule: skips are OK only for a true **example/config disparity** (the mechanism genuinely isn't in this
+baseline); otherwise add the equivalent fwdllm test. Breakdown of the 32:
+- **~16 LEGIT (Phase-1 syn_0 + `random` selector; correct to skip):** 7 availability ground-truth rungs
+  (`*_trace_fidelity`, `agg_belief_fidelity_*`, `send_gate_wait_*`) + 4 delivery/withheld
+  (`duty_cycle*`, `abandon_timeout`, `withheld_delivery`, `commit_promptness`, `state_timeline_agreement`) —
+  the **availability effect path is Phase 2 (Batch 3)**, not built; + 3 DynamicKC (`dk1/dk2/dk3`) disabled by
+  design; + 2 oort-only (`selector_score`, `preferred_duration`) — fwdllm uses `random`; + `residence` (async
+  telemetry). No equivalent test exists because the mechanism isn't present. *(These un-skip as Phase 2 lands.)*
+- **4 clock-advance rungs skip on the WRONG AXIS → RIGOR GAP (root #10):** `modeled_compute_advance` (K3a),
+  `overhead_residual` (K3b), `per_round_advance` (K3), `overlap_factor` (K4) report "fewer than 2 sim rounds"
+  even though the sim did 26 — they're still keyed on `round` (fwdllm stays at round=1, advancing `data_id`),
+  the exact bug #2 fixed for throughput but never applied to these. **Re-key to the `data_id` axis** (extend the
+  `_progress_axis` helper) → they run and directly validate root #6. *(shared parity engine → full-suite gate.)*
+- **8 per-phase timing rungs skip on MISSING telemetry → RIGOR GAP = the root-#6 instrument (step 2):**
+  `training_budget_s`, `gpu_compute_s`, `mqtt_fetch_s`, `weights_to_gpu_s`, `weights_to_ram_s`, `pre_train_s`,
+  `post_train_s`, `trainer_phase`. Adding the per-phase wall telemetry un-skips them AND enables the #6
+  decomposition. *(root #10 / step 2.)*
+
+### Open issues — cross-baseline master index (OPEN top, RESOLVED moved down; 1-sentence issue + fix)
+
+*Rewrite in place: when an issue resolves, move its row into the RESOLVED block with a crisp principled-fix
+summary. Detailed rationale lives in the "Open roots" prose below + §K.*
+
+| # | issue (1 sentence) | baseline(s) | principled fix / next step |
+|---|---|---|---|
+| **#6** ⭐ | sim vclock under-models real wall — 3.0 vclock-s vs 13.4 wall-s/round. **Decomp (K-D20): only 8.7 s/round is GENUINE** (gap ~2.9×, not 4.5×); 4.7 s/round is harness artifact | fwdllm, fwdllm_plus (+ fluxtune 2.4× wall) | **PRIORITY.** Fold the two genuine unmodeled terms into `sct`: **`eval_s`** (+3.34 s/round, server eval) + **widen the barrier straggler spread** to real `trainer_speed_s` (+2.3 s/round). Do NOT add drain-tail/sleeps/localhost-MQTT (artifact, principle #1). Recurring sanity = `\|real_wall − sim_vclock\|/data_id`→~0. Piece A (vclock-budget stop) **landed**. |
+| **#7** | fwdllm_plus real STALLED — 5 agg-rounds then dead-spun to the 1 h cap (log ballooned to 292 MB) | fwdllm_plus | **ROOT-CAUSED (K-D20):** oracular `mobiperf_2st` drops avail to 1/10 < `agg_goal=10`; real sync barrier can't assemble the cohort and spins (`wait_until_next_avl=False`). Genuine unavailability exposing a **real-mode liveness bug** (sim jumps its vclock past it → completes). Fix real-mode: relax goal to available-count OR honor `wait_until_next_avl`. Not a sim bug. |
+| **#8** | `field_coverage` INV fail: `task_recv.sim_send_ts` absent both modes | fwdllm, fwdllm_plus | Emit `task_recv.sim_send_ts` (over-instrument) or add it to the coverage alias tuple; unblocks K6. |
+| **#9** | `failsafe`/K5 false-positive: sim WALL ≫ vclock (real forward-grad compute) | fwdllm, fwdllm_plus | K5 should compare sim wall vs the RUN wall budget, not the vclock, for a real-compute sim (checker fix). Partly reframed by piece A's `sim_wall_ceiling_s`. |
+| **#10** | 12 rungs SKIP as rigor gaps (4 advance rungs wrong-axis, 8 phase rungs missing telemetry) | fwdllm, fwdllm_plus | Re-key K3a/K3b/K3/K4 to `data_id` (shared engine → full suite); add per-phase timing telemetry (= step 2, feeds #6). |
+| **#11** | real-mode critical-path waste surfaced by profiling: fixed `time.sleep(0.1)` pads (≥28.7 s/run, `fwdllm_aggregator.py:2209/2338`) + one-grad-per-poll-tick drain tail (2.48 s/round) | fwdllm, fwdllm_plus (real) | Correctness-preserving optimization (profile-driven): verify each sleep's purpose, gate/remove off the critical path; drain-tail is the real 1-per-pass clamp (leave the sim all-k barrier). Watch GPU-shared trainer compute. Do NOT change grad values / cadence. |
+| — RESOLVED ↓ — | | | |
+| ~~#1c~~ | R1 in-flight overlap 0%→44.7% (fluxtune) | fluxtune | **FIXED K-D19** — root was guard released on grad RETURN, not `all_selected`; deferred release to COMMIT (`_release_end_on_return`), fwdllm-only. Emergent smoke owed. |
+| ~~#1~~ | async concurrency starved to ~1.5 vs real ~5.8 (D-e) | fluxtune | **FIXED K-D16** — Option-A two-lifetime split (free slot on return, hold guard to commit). |
+| ~~#1b~~ | fluxtune K-D16 re-run deadlocked | fluxtune | **FIXED K-D17** — drain keys on `_sim_buffer` not RECV; triplet stamped at RETURN not dispatch. |
+| ~~#2~~ | clock family collapsed to `sim_rounds=1` | all | **FIXED** — re-key throughput/commits/terminal to the `data_id` axis (`_progress_axis`). Exposed #6. |
+| ~~#3~~ | field_coverage false-fail on gpu/budget field names | all | **FIXED** — coverage spec accepts fwdllm aliases (tuple of names). |
+| ~~#4~~ | V1/V2/g2 short-run truncation | fwdllm (cleared), fwdllm_plus | **CLEARED for fwdllm** at 10 `data_id`s; for fwdllm_plus it's real-side truncation → folds into #7. |
+| ~~#5~~ | fluxtune `selection_detail` in_flight (2.7 vs 9.75) | fluxtune | **MOSTLY FIXED K-D17b** — hold the compute slot to COMMIT so `len(selected_ends)` = virtual in-flight. |
+
+### Pre-next-run implementation plan (staged — the "definition of done" before spending another run)
+
+*Goal: land ALL dev that lets the NEXT parity run extract maximum information — un-skip the 12 rigor-gap rungs,
+make #6/#7 first-class in telemetry, and close the sct model — so the run measures a nearly-complete ladder,
+not a half-instrumented one. Rung math: 74 total; today **42 active / 32 skip**; after Stage A → **~54 active /
+20 skip** (the remaining 20 skips are the legit Phase-2/config ones). Each task ships telemetry + pytest
+(principle #11). Anchors in **K-D20**.*
+
+**PROGRESS (update markers in place as stages land):**
+`✅ piece A` vclock-budget stop (landed, 17 tests) · `✅ K-D20` decomposition + anchors ·
+`✅ A1` trainer phase timing · `✅ A2` agg wall-decomp · `✅ A3` re-key advance rungs · `✅ A4` wall_disparity rung ·
+`✅ B1/B2` sct model (eval_s + straggler spread, config-gated) · `✅ B3` WAN knob (doc-only) · `✅ C` fwdllm_plus liveness ·
+`✅ D1/D2` task_recv.sim_send_ts + K5 real-compute exemption · `✅ E` sleep(0.1)-pad gating (#11).
+**ALL landed & pytest-green (K-D21). NEXT: the Phase-1 sign-off RUN** — smoke → convergence per baseline;
+it (a) exercises the 12 un-skipped rungs, (b) drives `wall_disparity`→~0 and calibrates B1/B2's `simModelEvalTime`/
+`simStragglerSpreadS`, (c) confirms fwdllm_plus completes 10 `data_id`s, (d) banks the fluxtune R1 emergent smoke.
+
+- **Stage A — instrumentation (un-skip 12 rungs; make #6/#7 measurable).** Depends on nothing.
+  - **A1** Trainer per-phase timing → un-skips the 8 phase rungs. Populate `_phase_times` in fwdllm's
+    `_fetch_weights` override (`fwdllm_trainer.py:168`) + emit `mqtt_fetch_s`/`weights_to_ram_s`/
+    `weights_to_gpu_s`/`pre_train_s`/`gpu_compute_s`/`post_train_s`/`training_budget_s`/`trainer_phase` in
+    `FedSgdTrainer.train_with_data_id` extra (`:598-602`). Mirror `async_cifar10 main.py:784-908`. + manifest + pytest.
+  - **A2** Aggregator per-round wall decomposition → `barrier_wait_s` (dispatch→last grad), `drain_tail_s`
+    (last grad→commit, the artifact), `aggregate_fedavg_s`, `eval_s` (from the `eval_model` decorator) in
+    `agg_round`. Makes phases (b)–(e) telemetry, not log-grep. + pytest.
+  - **A3** Re-key the 4 advance rungs (K3a/K3b/K3/K4) to the `data_id` axis (extend `_progress_axis`) so they
+    stop reporting "&lt;2 sim rounds." **Shared parity engine → FULL `tests/` + `examples/async_cifar10/scripts/
+    parity` gate** (principle #9); assert async_cifar10 byte-identical (auto-detects `round`).
+  - **A4** New DIAG rung `wall_disparity` = `|real_wall − sim_vclock|` per matched `data_id` — the recurring
+    sanity metric to drive → ~0 (surfaced every run). + pytest.
+- **Stage B — #6 `sct` model (piece B), reads A2's telemetry.** Fold the two GENUINE unmodeled terms into the
+  vclock; leave artifacts off (principle #1).
+  - **B1** `eval_s` per `data_id` onto the vclock (+3.34 s/round).
+  - **B2** Widen the sim barrier straggler completion-spread to match real `trainer_speed_s` dispersion
+    (2.66–4.05 s), so the k-th-smallest `sct` reflects real (+~2.3 s/round). + pytest.
+  - **B3** WAN payload-transfer term (1.96 MB up / 3.45 MB down) — NOT measurable on localhost; add a documented
+    config knob, **do not enable this run** (no ground truth). **Exit: `wall_disparity/data_id` → residual ≈ the
+    4.7 s/round artifact, and throughput/K2/K3b within tolerance.**
+- **Stage C — #7 fwdllm_plus real liveness** (so its 10-`data_id` run actually completes). Real-mode sync barrier
+  under scarcity: relax the agg-goal to available-count OR honor `wait_until_next_avl` (sleep-to-next-avail)
+  instead of spin-to-cap; bound the log. + pytest. Independent of A/B.
+- **Stage D — cheap checker/telemetry gaps.** **D1** #8 emit `task_recv.sim_send_ts` (or alias). **D2** #9
+  `failsafe`/K5 compares sim wall vs the RUN wall budget (not vclock) for a real-compute sim.
+- **Stage E — optimization pass (#11; correctness-preserving, opportunistic).** Audit the `time.sleep(0.1)` pads
+  (`fwdllm_aggregator.py:2209/2338`, ≥28.7 s/run) — verify each one's purpose, gate/remove off the critical
+  path; profile GPU-shared trainer compute (A1's `gpu_compute_s` per trainer) for waste. **Re-run pytest to
+  prove grad values + cadence unchanged** (never trade correctness for wall).
+
+**Definition of done:** A + B + C + D pytest-green; **full `tests/` + shared parity suite green** (A3 spans the
+stack); E opportunistic. THEN one run per baseline banks: 12 un-skipped rungs live, `wall_disparity`→~0,
+fwdllm_plus completing 10 `data_id`s, and the fluxtune R1 emergent smoke.
 
 ### Open roots (fix lowest-rung-first)
 
-**TOP OPEN ROOT: #1c — the R1 residence regression K-D17b introduced (see NEXT SESSION block above). Fix this
-before anything else; do not launch the overnight run until R1 is back to ~0%.** Roots #1 (D-e), #1b (K-D17
-deadlock), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *Fixes landed*).
+**TOP: #1c (R1 residence regression) is now FIXED in code (K-D19) + pytest-green; the only thing owed on it is
+ONE fluxtune sim smoke to bank the emergent R1/in_flight numbers — the LAST step, not the debugger (principle
+#11c).** Roots #1 (D-e), #1b (K-D17 deadlock), #3 (field_coverage alias) FIXED; **#2 (clock-family AXIS) fixed
+but exposed the RATE gap #6.** **Ranking of what's OPEN:** bank the #1c re-run → then the sync-baseline work
+#6 (clock-RATE, shared with fluxtune #1) → #7 (fwdllm_plus real speed, gates #4) → #8/#9 (telemetry/checker
+gaps). Attack #6 and #1's wall gap together — they are the same time-base question on the async vs sync path.
 
-1c. **[OPEN — REGRESSION from K-D17b] R1 in-flight overlap 0% → 44.7% (fluxtune).** K-D17b's hold-to-commit
-   made `in_flight` correct (9.49 vs real 9.75) but re-dispatches a trainer while its prior grad is still in
-   flight. Root lead: buffered ends reset to `KEY_END_STATE=NONE` become re-selectable because async_oort
-   doesn't exclude `all_selected`. Full analysis + fix options in the NEXT SESSION block (top of §H) and
-   K-D17b (§K). Run `020254` / `parity_fluxtune_20260704_020254.json`.
+1c. **[FIXED in code — K-D19; emergent re-run pending] R1 in-flight overlap 0% → 44.7% (fluxtune).** Root was
+   NOT the doc's hypothesis (async_oort *does* exclude `all_selected`) but the guard being released on physical
+   grad **RETURN** (`_process_single_trainer_message` → `cleanup_provided_ends`) while the carried grad hadn't
+   committed in virtual time. Fixed fwdllm-only via `_release_end_on_return` (defers the async+sim+residence
+   release to COMMIT, felix-aligned); + a `[SIM_R1_DISPATCH]` tripwire + `TestReturnPathGuardHeldToCommit`
+   (the RETURN-path blind spot). `tests/mode -k fwdllm` 110 green. Full rationale **K-D19**. **Remaining:** one
+   fluxtune sim smoke to confirm R1≤2% + `in_flight`~9.5 (emergent — measured, not assertable from banked
+   telemetry; the `020254` raw dir was cleaned).
 
 1. **[FIXED — Option A / K-D16] D-e async concurrency starvation (fluxtune).** *Symptom (pre-fix):* sim kept
    ~1.5 trainers computing vs real's ~5.8, did fewer forward passes (89 vs 109) yet took **2.4× the wall**
@@ -526,20 +681,24 @@ deadlock), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *F
    RETURN (not dispatch). Full `tests/mode` green (314/7). Details **K-D17**. **Remaining: the fresh fluxtune
    re-run** confirms recovery (concurrency, wall, U3, V1, selection) — emergent, measured not asserted.
 
-2. **[FIXED — #2] Clock family re-keyed to the `data_id` progress axis.** `throughput_parity` /
-   `total_commits_parity` / `terminal_state_parity` now count units on the axis the run advances (a unified
-   `_progress_axis` / `_per_progress_last_event` helper): `round` for normal FL, committed `data_id` for
-   fwdllm (was collapsing to `sim_rounds=1`). async_cifar10 auto-detects `round` → byte-identical. Checker
-   fix, validates instantly on the banked dirs.
+2. **[AXIS FIXED — #2; but exposed the RATE gap #6] Clock family re-keyed to the `data_id` progress axis.**
+   `throughput_parity` / `total_commits_parity` / `terminal_state_parity` now count units on the axis the run
+   advances (a unified `_progress_axis` / `_per_progress_last_event` helper): `round` for normal FL, committed
+   `data_id` for fwdllm (was collapsing to `sim_rounds=1`). async_cifar10 auto-detects `round` → byte-identical.
+   The re-key was correct, but with the axis fixed the 10-`data_id` run shows these rungs **still FAIL on a
+   genuine per-round TIME-BASE gap** (sim vclock-s/round ≪ real wall-s/round) — that residual is **new root #6**,
+   not this checker fix.
 
 3. **[FIXED — #3] field_coverage accepts fwdllm field aliases.** The coverage spec rows for
    `gpu_compute_s` / `training_budget_s` now accept the fwdllm spellings `real_gpu_time_s` /
    `sim_round_duration_s` (a spec field may be a tuple of accepted names). No more false-FAIL / benign SKIP.
 
-4. **[OPEN — operational] V1/V2/V5 short-run truncation (fwdllm_plus + fluxtune).** Per-data_id series match
-   on every FULL data_id and diverge only on the last, truncated one; with 3 data_ids one boundary diff → KS
-   0.33. **Fix = the longer run** (`max_data_id_progress=10`, already the yaml default — do NOT pass
-   `--max-data-id 3`), not code. For fluxtune, partly downstream of the now-fixed D-e.
+4. **[CLEARED for fwdllm; now REAL-side for fwdllm_plus] V1/V2/V5/g2 short-run truncation.** Per-`data_id`
+   series match on every FULL `data_id` and diverge only on the last, truncated one. **fwdllm: CLEARED** — at
+   10 `data_id`s V1/V2/g2 all PASS (K-D18). **fwdllm_plus: now the truncation is on the REAL side** — sim did
+   10 `data_id`s but real reached only ≈3 (1 h cap, root #7), so KS blows up comparing 10 vs 3. Fix is to make
+   real reach 10 (i.e. resolve #7), NOT code and NOT a knob. The `--max-data-id` default is now 9999 (K-D18) so
+   `--max-runtime-s` governs — but for fwdllm_plus even 1 h wasn't enough, so #7 must be understood first.
 
 5. **[MOSTLY FIXED — K-D17b] fluxtune selection_detail (in_flight).** Was NOT an oort-fidelity gap: the
    `in_flight` metric = `len(selected_ends)`, and K-D16 freed `selected_ends` on physical RETURN, so it
@@ -547,7 +706,47 @@ deadlock), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *F
    K-D17b holds the slot to COMMIT (felix-aligned) so `len(selected_ends)` = virtual in-flight. Residual
    ~7.8 vs 9.75 (~20%) + preferred_duration to re-validate on the fresh re-run.
 
+6. **[OPEN — sync clock-RATE gap; new] throughput/commits/terminal: sim charges far less time/round than real.**
+   At 10 `data_id`s (both sides complete), fwdllm sim advances **~7.8 vclock-s/round** vs real **~34.9
+   wall-s/round** (rel 0.78); fwdllm_plus **~8.1** vs **~86** (but real truncated, #7 confounds). Do NOT read
+   this as a cadence bug (V1/V2/g2 PASS — the WORK per `data_id` matches). It is a **time-base** question:
+   real's per-round WALL bundles MQTT/dispatch/aggregation/eval overhead that the sim (correctly, principle #1)
+   does NOT put on the vclock (`vclock = max(vclock, sct)`), and real emits **no `vclock_now`** so the checker
+   uses real WALL as real's axis. **First move (telemetry, not a run):** decompose real's per-round wall into
+   D + per-phase transport overhead using the existing `trainer_phase` / `mqtt_fetch_s` / per-phase splits, and
+   compare against the sim `sct` model. Two outcomes: (i) the surplus is real-transport overhead → the rung is
+   comparing WALL-vs-VCLOCK and should anchor real on an intrinsic per-round span (like async_cifar10's
+   `WALL_SEND−WALL_RECV` duration lesson), a checker fix; (ii) part is modeled D the sim under-charges → a sim
+   `sct` fix. **Shared-shaped with the fluxtune 2.4× wall gap (#1)** — resolve the classification once, apply to
+   both. Dead-end guard: do NOT add a scalar overhead to the vclock (principle #1, async_cifar10 dead-ends).
+
+7. **[FIXED in code — Stage C / K-D21; emergent re-run pending] fwdllm_plus real spun to the cap under
+   `mobiperf_2st` scarcity (agg_goal=10 > avail).** ROOT was the real sync barrier hot-re-dispatching when the
+   eligible pool < `agg_goal` (292 MB log, reached `data_id`≈3). Fixed: `_await_dispatchable_under_scarcity`
+   sleep-to-next-avail (WAIT/accumulate — cohort stays == agg_goal, parity-faithful vs the sim vclock-jump;
+   operator-chosen over relax-to-available). Self-terminates at `max_runtime_s`; one warn per stall. **Remaining:
+   the sign-off run confirms fwdllm_plus now completes 10 `data_id`s** (emergent). The separate question of WHY
+   fwdllm_plus real is slower/round (per-iteration reselection + oracular read) is a real-config profiling item,
+   localizable from the banked per-phase log — now that the run can complete, it is judgeable.
+
+8. **[FIXED — Stage D1 / K-D21] field_coverage INV `task_recv.sim_send_ts` absent.** `fwdllm_trainer._fetch_
+   weights` re-emits `task_recv` carrying `sim_send_ts` (the override had dropped the base trainer's emission);
+   null in real, non-null in sim. Un-SKIPs K6. `test_fwdllm_trainer_task_recv.py`.
+
+9. **[FIXED — Stage D2 / K-D21] `failsafe`/K5 false-positive for fwdllm.** K5 flags sim WALL overshooting
+   the virtual budget by >20% (184s wall vs 78s vclock). For fwdllm this is EXPECTED and benign: the sim does
+   **real forward-grad GPU compute** (many passes), so sim wall ≫ vclock by construction — unlike async_cifar10
+   where compute is cheap. FIXED: `failsafe_ok` now compares sim wall against the RUN wall budget (`max_runtime_s`)
+   for a real-compute sim (auto-detected via the progress axis) and SKIPs when no run budget is available, instead
+   of the wall-vs-vclock fallback. `TestFailsafeRealComputeSim`.
+
 ### Fixes landed (what worked — do not redo)
+
+- **Pre-next-run plan A+B+C+D+E (K-D21)** — Stage C scarcity-wait liveness; A1 trainer phase timing; A2 agg
+  wall-decomp; A3 advance-rung re-key (shared engine, async byte-identical); A4 `wall_disparity` DIAG rung; B1/B2/
+  B3 sct-model folds (config-gated OFF ⇒ byte-identical); D1 `task_recv.sim_send_ts`; D2 K5 real-compute exemption;
+  E `sleep(0.1)`-pad gating. Full `tests/` 854 passed / 7 skipped. Emergent calibration (wall_disparity→~0, B1/B2
+  values, fwdllm_plus 10-`data_id` completion, fluxtune R1) is the sign-off run's job.
 
 - **Trainer sim clock** — additive `sct = send + gpu + D`, no-sleep on the sim path (Batch 1, K-D2/K-D3).
 - **Async grad loop on the vclock** — purpose-built `_sim_recv_min_grad` sct reorder buffer + in-flight gate
@@ -575,6 +774,20 @@ deadlock), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *F
   (`asyncfl::_sim_hold_busy_slots`/`_sim_recv_min`). Reverts K-D16's slot-on-return; safe now that K-D17
   fixed the drain. Full `tests/mode` green (315/7); `TestVirtualInflightSlotHold`. Concurrency/downstream
   recovery measured by the fresh fluxtune re-run.
+- **K-D19: R1 regression fixed — guard release deferred from RETURN to COMMIT (`_release_end_on_return`).**
+  Root was NOT the recorded `all_selected` hypothesis (async_oort *does* exclude it) but
+  `_process_single_trainer_message` freeing the re-pick guard on physical grad RETURN while the carried grad
+  was still uncommitted in virtual time. Fixed fwdllm-only (no shared `async_oort`/`asyncfl` edit — principle
+  #8); the async+sim+residence release now happens at COMMIT via `_sim_hold_busy_slots`, felix-aligned. Shipped
+  WITH a `[SIM_R1_DISPATCH]` dispatch-time tripwire + `TestReturnPathGuardHeldToCommit` (closes the RETURN-path
+  test blind spot). `tests/mode -k fwdllm` 110 green. Emergent R1/in_flight numbers pending one fluxtune smoke.
+- **Piece A: vclock-budget stop (matched-budget convergence axis; step 1 toward #6).** `_check_early_stop_
+  conditions` now interprets `max_runtime_s` as **wall in real / `vclock.now` in sim** (mirrors base
+  `max_experiment_runtime_s`, `top_aggregator.py:1140`), so one budget = "3600 wall-s of real work" AND "3600
+  virtual-s of modeled work". A `sim_wall_ceiling_s` failsafe (default = budget) stops a runaway when the vclock
+  is under-modeled (root #6) — that ceiling firing IS the #6 signal until piece B lands. `tests/mode/
+  test_fwdllm_early_stop_conditions.py` 17 green (4 new sim/vclock cases). **Does NOT alone fix #6** — the
+  vclock must first model real wall (step 2) or a vclock-bounded sim over-runs to the wall ceiling.
 - **Clock-family re-key to `data_id` (#2)** — unified `_progress_axis`/`_per_progress_last_event` helper;
   `throughput`/`total_commits`/`terminal_state` now count on the axis the run advances (fwdllm `data_id`,
   normal FL `round`). async_cifar10 byte-identical (auto-detects `round`). `TestProgressAxisRekey`.
@@ -1004,6 +1217,114 @@ decision. Keep appending; do not rewrite history (supersede with a new dated ent
 
   **STOPPED before the overnight run** — R1 is a correctness regression; banking 6h of runs on it would be
   wrong. Resume steps are in **§H -> "NEXT SESSION (2026-07-05) pickup"**.
+
+- **K-D18  Overnight 10-`data_id` grounding runs + the `--max-data-id` default raised to 9999.** The operator
+  launched `run_sequential.sh --mode both --max-runtime-s 3600 --only fwdllm,fwdllm_plus` (then fluxtune
+  real-only), intending 1 h runs, but `run_sequential.sh`'s `--max-data-id` **defaulted to 10** and its
+  `patch()` always overrides the yaml, so every run stopped at `data_id=10` instead of at 1 h. This was a
+  useful accident — 10 `data_id`s is >3× the prior banked runs and cleared the #4 truncation for fwdllm — but
+  the trap is real, so the default is now **9999** (effectively unbounded; `--max-runtime-s` governs) in both
+  `run_sequential.sh` and the six `expt_scripts/*_n10_smoke*.yaml`; pass `--max-data-id 10` (or 3) for a
+  deliberately short run. **Parity read** (`run_parity.py --baselines fwdllm fwdllm_plus`, JSONs
+  `parity_fwdllm_20260704_022610` / `parity_fwdllm_plus_20260704_033206`): *fwdllm* 37 pass / 5 fail — cadence
+  (V1/V2/g2/R1/W1/U3/S2/conv) CLEAN, surviving fails = the clock-RATE family (open root #6), field_coverage
+  (#8), failsafe (#9); *fwdllm_plus* 31 pass / 10 fail — but its **real run hit the 1 h cap at `data_id`≈3**
+  (86 wall-s/round; sim did 10 in 81 vclock-s), so the cadence/eligibility/selection fails are REAL-side
+  truncation (#4) driven by real-speed root #7, NOT a confirmed sim bug. *fluxtune* ran real-only (no sim), so
+  no parity — its sim is unchanged from `020254` (R1=44.7%, #1c). **Discipline applied (principle #11):** all of
+  the above was read from the ALREADY-banked telemetry + logs (stop-reason lines, per-round `runtime.py`
+  timings, the parity JSONs); no new run was launched to reach these conclusions.
+
+- **K-D19  The R1 residence regression (#1c) — root-caused to guard-release-on-RETURN, fixed fwdllm-only +
+  pytest + tripwire. (Corrects the K-D17b/§H "NEXT SESSION" hypothesis.)** The hypothesis on record was
+  "`_sim_hold_busy_slots` resets buffered ends to `KEY_END_STATE=NONE` and async_oort doesn't exclude
+  `all_selected`, so they're re-selectable." **That was wrong on the mechanism:** async_oort *does* exclude
+  `all_selected` (`async_oort.py:1586-1587`) and the channel passes the full pool regardless of `KEY_END_STATE`
+  (`channel.py:221-240`) — so the NONE reset is a red herring for re-selection; exclusion depends solely on
+  `all_selected` membership. **Real root:** on the async accept path, `_process_single_trainer_message` called
+  `channel.cleanup_provided_ends(end)` on **physical grad RETURN, per-message, mid-cycle**
+  (`fwdllm_aggregator.py:1259-60` pre-fix) → `async_oort._cleanup_provided_ends` (:889-916) deletes the trainer
+  from `all_selected`. But in sim residence the grad is **carried** (its `sct` is in the future), so the trainer
+  is torn out of the re-pick guard while still in flight in VIRTUAL time → any `_distribute_weights_async`
+  before its commit re-dispatches it → R1 overlap 0%→44.7%. K-D17b's per-**commit** `_sim_hold_busy_slots`
+  re-asserts the guard, but too late — it can't cover the RETURN→COMMIT window. felix (`asyncfl:1316`) releases
+  the guard only at the agg-goal boundary, never per-return — the divergence. *This is the D6 "carry was right,
+  release TIMING was wrong" pattern applied to the guard (`all_selected`), not just the compute slot.* **Fix
+  (fwdllm-only, principle #8 clean — no shared `async_oort`/`asyncfl` edit):** extracted the release into
+  `_release_end_on_return`, which in async+sim+residence **defers the release to COMMIT** (owned by
+  `_sim_hold_busy_slots`); real mode / non-residence / sync unchanged (return≈commit → byte-identical).
+  **Over-instrument (principle #11):** a dispatch-time `[SIM_R1_DISPATCH]` tripwire warns the instant a still-
+  outstanding trainer is re-dispatched (violation visible live, not reconstructed offline). **Pytest:**
+  `TestReturnPathGuardHeldToCommit` in `test_fwdllm_sim_grad_residence.py` drives the RETURN path directly —
+  the blind spot that let R1=44.7% ship with `tests/mode` green (the prior residence tests only poked
+  `_sim_hold_busy_slots`/`_release_sim_slots_at_agg_goal`, never `_release_end_on_return`). `tests/mode -k
+  fwdllm` 110 green. **Remaining = emergent-only validation** (principle #11c): one fluxtune sim smoke to
+  confirm R1≤2% with `in_flight` still ~9.5 — measured, not assertable from banked telemetry (the `020254` raw
+  dir was cleaned).
+
+- **K-D20  Real per-round wall decomposition — grounds #6 (`sct` model) and root-causes #7. (telemetry-only,
+  no run.)** For fwdllm sync the real aggregator spends **13.4 s/agg-round**, the sim vclock **3.0 s** — but the
+  gap is NOT all a modeling deficit. Barrier-anchored decomposition (dispatch → 1st grad → 10th grad → commit →
+  eval, from `runtime.py` decorator lines + `RECV_FIFO` markers + `agg_round`/`agg_eval` telemetry): **(a)**
+  trainer compute + round-trip 3.96 s (gpu 1.05 s; `sim_round_duration_s` 2.19 s already modeled), **(b)**
+  straggler/sync-barrier wait 3.06 s (GENUINE), **(c)** aggregator drain tail 2.48 s (**ARTIFACT** — real clamps
+  `num_min_req=min(agg_goal,1)` and acks one grad per poll-tick; the sim's all-k barrier is the correct model),
+  **(d)** `eval_model` 8.68 s/`data_id` = 3.34 s/round amortized (GENUINE server eval, the largest unmodeled
+  term), **(e)** FedAvg + redispatch ~0.6 s (mostly the `time.sleep(0.1)` pads, ARTIFACT). **Net: ~8.7 s/round
+  genuine vs ~4.7 s/round artifact → the true sct gap is ~2.9×, not 4.5×.** So piece B folds ONLY `eval_s`
+  (+3.34) + a widened straggler spread (+~2.3) into the vclock; the drain tail, the ≥28.7 s of `sleep(0.1)`
+  pads, and localhost-MQTT/GIL stay OFF the clock (principle #1) — and become optimization targets (#11). **#7
+  root cause:** fwdllm_plus real spun to the 1 h cap (log → 292 MB) because oracular `mobiperf_2st` drops avail
+  to 1/10 < `agg_goal=10` and the real sync barrier can't assemble the cohort (`wait_until_next_avl=False`); the
+  SIM completes the same trace (vclock jumps past the unavailability window), proving it's a **real-mode liveness
+  bug**, not a sim/model bug. Full anchors (trainer `_phase_times` already exist at `syncfl/trainer.py:143-150`
+  but fwdllm's `_fetch_weights` override drops them; per-field wrap points; the `async_cifar10 main.py:784-908`
+  reference) are in the Stage-A/A1 plan above. Feeds the entire "Pre-next-run implementation plan."
+
+- **K-D21  Pre-next-run implementation plan LANDED — Stages A + B + C + D + E (pytest-gated, config-gated;
+  emergent calibration deferred to the sign-off run).** All dev that lets the next run measure a nearly-complete
+  ladder is in code + pytest-green; nothing here needed a run (principle #11a/b — telemetry-first).
+  - **Stage C (fwdllm_plus liveness, decision: WAIT/accumulate — parity-faithful, operator-chosen over relax):**
+    `_await_dispatchable_under_scarcity` (real mode) sleep-to-next-avail instead of hot-re-dispatching when the
+    eligible pool < `agg_goal` — KEEPS cohort == `agg_goal` (matches the sim's vclock-jump, so cohort size stays
+    identical real↔sim; relaxing real's cohort would desync cadence). Self-terminates via
+    `_check_early_stop_conditions` at `max_runtime_s`; one warn per stall (bounds the 292 MB log). Byte-identical
+    when availability tracking is off / on the sim path. `test_fwdllm_sync_scarcity_wait.py` (8). *Note:* §C's
+    fwdllm_plus `agg_goal` row read 2; the landed yaml is **10** (all clients) — the yaml is source of truth.
+  - **Stage A1 (trainer per-phase timing):** `_phase`/`_phase_times` added to `fwdllm_trainer` (+ `mqtt_fetch_s`/
+    `weights_to_{ram,gpu}_s` wrapped in `_fetch_weights`); `FedSGDTrainer.train_with_data_id` drains those +
+    `pre_train_s`/`gpu_compute_s`/`post_train_s`/`training_budget_s`/`trainer_phase` into `trainer_round`. Un-skips
+    the 8 phase rungs. Manifest note updated (the phase fields ARE emitted for the #6 decomposition; the DERIVED
+    budget-slack/overrun plots stay not_populated — fwdllm's delay is a flat additive sleep). Reversed the Part-6
+    "don't emit training_budget_s" note for the decomposition (not for budget-slack).
+  - **Stage A2 (agg per-round wall decomposition):** `barrier_wait_s` (dispatch→last grad), `drain_tail_s` (last
+    grad→commit, the K-D20(c) ARTIFACT), `aggregate_fedavg_s`, `eval_s` in `agg_round` — via a dispatch wall stamp
+    (`_round_dispatch_wall_ts`) + a last-grad stamp (`_last_grad_wall_ts`) + timers around `aggregate()`/
+    `eval_model()`. Null-safe (rung SKIPs, no crash). `TestPerRoundWallDecomposition` (4).
+  - **Stage A3 (advance-rung re-key — SHARED engine):** `_per_round_advances` (feeds K3/K4/K3a/K3b) now keys on
+    `_progress_axis` via `_per_progress_last_event` — fwdllm advances on `data_id` (was <2 `round`s → SKIP);
+    async_cifar10 (round-advancing) falls through to `_per_round_last_event` → byte-identical. Full `tests/` +
+    `examples/async_cifar10/scripts/parity` re-run green.
+  - **Stage A4 (`wall_disparity` DIAG rung):** new `|real_wall − sim_vclock|` per matched progress unit
+    (cumulative-from-first-matched so a non-zero-start run still aligns); registered in `run_all_parity`/
+    `CHECK_META`/shim; never gates. The recurring #6 sanity metric → drive to ~0. `TestWallDisparity` (5).
+  - **Stage B (sct-model folds — CONFIG-GATED, flag-off ⇒ byte-identical; emergent calibration = the run):**
+    **B1** `simModelEvalTime` charges the MEASURED server-eval wall to the vclock after each committed data_id
+    (consistent with the existing real-gpu-on-vclock model; the largest genuine unmodeled term). **B2**
+    `simStragglerSpreadS` adds a STABLE per-trainer (crc32) offset in [0, spread) to the modeled delay in SIM
+    only, widening the barrier's k-th sct to real dispersion. **B3** `simWanTransferS` — documented knob, left 0
+    (no localhost ground truth; do NOT enable). All default OFF. `test_fwdllm_sct_model.py` (7) covers mechanism +
+    flag-off byte-identical. **Whether the folds drive `wall_disparity`→~0 is the sign-off run's job**, not
+    asserted here (principle #11c).
+  - **Stage D (checker/telemetry gaps):** **D1** `fwdllm_trainer._fetch_weights` re-emits `task_recv` carrying
+    `sim_send_ts` (the override had dropped the base trainer's emission → field_coverage INV + K6 had null/null);
+    `test_fwdllm_trainer_task_recv.py` (3). **D2** `failsafe_ok`/K5 now compares sim wall against the RUN wall
+    budget for a real-compute sim (auto-detected via the progress axis) and SKIPs when no run budget is available,
+    instead of the wall-vs-vclock fallback that false-failed every fwdllm run (sim wall ≫ vclock BY construction —
+    real forward-grad compute); `TestFailsafeRealComputeSim` (3).
+  - **Stage E (optimization):** the two `_distribute_weights_{sync,async}` `time.sleep(0.1)` "busy wait" pads
+    (real-transport artifacts, ≥28.7 s/run) gated `if not self.simulated` — real byte-identical, sim skips pure
+    wall overhead. Full pytest suite re-run proves grad values + cadence unchanged.
 
 ---
 

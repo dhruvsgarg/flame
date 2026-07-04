@@ -78,6 +78,7 @@ from parity.checks import (  # noqa: F401, E402
     throughput_parity,
     per_round_advance_parity,
     overlap_factor,
+    wall_disparity,
     total_commits_parity,
     terminal_state_parity,
     budget_not_cap,

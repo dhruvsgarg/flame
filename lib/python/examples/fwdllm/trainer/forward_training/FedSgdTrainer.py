@@ -6,6 +6,7 @@ import io
 import json
 import hashlib
 import os
+import zlib
 import numpy as np
 from datetime import datetime
 import ast
@@ -530,8 +531,26 @@ class FedSGDTrainer(Trainer):
                     f"Delayed eval time for trainer "
                     f"{self.trainer_id} by {eval_delay}s. Sleeping for {_delay_s}s."
                 )
+            _delay_s += self._sim_straggler_offset_s()
             return _delay_s
         return 0.0
+
+    def _sim_straggler_offset_s(self) -> float:
+        """B2 (K-D20 #6): the modeled delay D is flat across trainers, so the
+        sync barrier's k-th-smallest sct under-spreads vs real's trainer_speed_s
+        dispersion (~2.3 s/round). In SIM only (real gets its spread from GPU
+        contention) add a STABLE per-trainer offset in [0, simStragglerSpreadS)
+        so the cohort completion spread matches real. Deterministic in
+        trainer_id (crc32, not salted like hash()) ⇒ reproducible; spread 0 ⇒
+        byte-identical."""
+        if not self.simulated:
+            return 0.0
+        _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        spread = float(getattr(_hp, "sim_straggler_spread_s", 0.0) or 0.0)
+        if spread <= 0.0:
+            return 0.0
+        frac = (zlib.crc32(str(self.trainer_id).encode()) % 1000) / 1000.0
+        return spread * frac
 
     @timer_decorator
     def train_with_data_id(self):
@@ -546,12 +565,17 @@ class FedSGDTrainer(Trainer):
             )
             return
 
+        # Phase-timing entry (Stage A1): everything up to the compute loop is
+        # pre_train (avail check, FwdLLMStage setup, loader state).
+        _phase_entry = time.time()
         if not self._check_availability():
             return
 
         _round_start_ts = time.time()
+        _pre_train_s = _round_start_ts - _phase_entry
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
+        _phase_post_start = time.time()
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
@@ -565,7 +589,15 @@ class FedSGDTrainer(Trainer):
         # the optional pre-commit holding leg. _send_grads sends these so the
         # aggregator can order updates by _sim_completion_ts. In real mode these
         # stay None and the aggregator falls back to arrival order (unchanged).
-        self._sim_round_duration_s = _real_gpu_time_s + _delay_s
+        # B3 (K-D20 #6): WAN payload-transfer term (up+down). NOT measurable on
+        # localhost (no ground truth), so this is a DOCUMENTED knob left at 0 --
+        # do NOT enable without a real WAN measurement. Byte-identical at 0.
+        _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        _wan_s = (
+            float(getattr(_hp, "sim_wan_transfer_s", 0.0) or 0.0)
+            if (self.simulated and _hp is not None) else 0.0
+        )
+        self._sim_round_duration_s = _real_gpu_time_s + _delay_s + _wan_s
         if self.simulated:
             _leg = self.sim_completion_leg_s
             _base = self._sim_send_ts if self._sim_send_ts is not None else time.time()
@@ -584,14 +616,17 @@ class FedSGDTrainer(Trainer):
                 _stat_utility = float(self._stat_utility)
             except (TypeError, ValueError):
                 _stat_utility = None
+            # Post-compute overhead (delay emulation + telemetry build); the last
+            # trainer-side phase term for the #6 wall decomposition (Stage A1).
+            _post_train_s = time.time() - _phase_post_start
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
-                # real GPU compute + the emulated delay (0 if disabled) --
-                # NOT a budget-vs-actual quantity (fwdllm has no sleep-to-
-                # fill-budget model, unlike async_cifar10's trainer); this is
-                # simply the total wall time this round actually took.
-                sim_round_duration_s=_real_gpu_time_s + _delay_s,
+                # real GPU compute + the emulated delay (0 if disabled) + any
+                # sim sct-model folds (B2 straggler spread in _delay_s, B3 WAN) --
+                # NOT a budget-vs-actual quantity (fwdllm has no sleep-to-fill-
+                # budget model); the total modeled wall this round took.
+                sim_round_duration_s=self._sim_round_duration_s,
                 avail_state=self.avl_state.value,
                 dataset_size=self.dataset_size,
                 stat_utility=_stat_utility,
@@ -599,6 +634,17 @@ class FedSGDTrainer(Trainer):
                     "data_id": self.data_id,
                     "iteration_per_data_id": self.iteration_per_data_id,
                     "model_version": self._model_version,
+                    # Per-phase wall breakdown (Stage A1): pre/gpu/post are stamped
+                    # here; mqtt_fetch_s + weights_to_{ram,gpu}_s ride in via
+                    # _phase_times (populated in fwdllm_trainer._fetch_weights).
+                    "pre_train_s": _pre_train_s,
+                    "gpu_compute_s": _real_gpu_time_s,
+                    "post_train_s": _post_train_s,
+                    "training_budget_s": _delay_s,
+                    "trainer_phase": (
+                        f"{self._round}/{self.data_id}/{self.iteration_per_data_id}"
+                    ),
+                    **getattr(self, "_phase_times", {}),
                 },
             )
             telemetry.emit(ev, **fields)

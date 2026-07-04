@@ -144,6 +144,7 @@ class _RepickAgg:
     stamp lands before it) and telemetry stays disabled by default."""
 
     process = TopAggregator._process_single_trainer_message
+    _release_end_on_return = TopAggregator._release_end_on_return  # K-D19
 
     def __init__(self, residence=True, simulated=True, curr_ver=(5, 2, 1)):
         self.simulated = simulated

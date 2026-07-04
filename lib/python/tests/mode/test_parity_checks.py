@@ -390,6 +390,141 @@ class TestProgressAxisRekey:
         assert r["sim_rounds"] == 10, r
         assert r["ok"], r
 
+    # --- Stage A3: the 4 advance rungs (K3/K4/K3a/K3b) re-key too, via
+    # _per_round_advances. Keyed on `round` they saw <2 units for fwdllm and
+    # SKIPed ("<2 sim rounds"); on data_id they measure real advances. ---
+
+    def test_advance_rung_measures_on_data_id_axis(self):
+        # Matched 10 s/data_id on both sides -> K3 has advances and PASSes,
+        # instead of SKIP-ing for "<2 rounds" (round pinned at 1).
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 10),
+                                          ts=float(d)) for d in range(10)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert "run too short" not in r.get("note", ""), r
+        assert r["ok"], r
+
+    def test_advance_rung_catches_data_id_rate_gap(self):
+        # sim 26 s/data_id vclock vs real 15 s/data_id wall -> divergence caught.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 15))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 26),
+                                          ts=float(d)) for d in range(10)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert not r["ok"], r
+
+    def test_advance_mean_on_round_axis_unchanged(self):
+        # async_cifar10 (round-advancing): the sim mean advance is measured on
+        # `round` exactly as before the re-key (+7 vclock per round).
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 7))
+                                for r in range(1, 8)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 7),
+                                      ts=float(r)) for r in range(1, 8)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert r["sim_mean_advance_s"] == 7.0, r
+        assert r["real_mean_advance_s"] == 7.0, r
+
+    def test_advance_mean_on_data_id_when_round_static(self):
+        # fwdllm: round pinned at 1 -> mean advance is measured per data_id
+        # (+4 vclock per committed data_id), not collapsed to a single stuck bin.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 4))
+                                for d in range(5)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 4),
+                                          ts=float(d)) for d in range(5)])
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert r["sim_mean_advance_s"] == 4.0, r
+
+
+class TestWallDisparity:
+    """Stage A4 / K-D20 #6: a DIAG rung reporting |real_wall − sim_vclock| per
+    matched progress unit. Never gates; surfaces the residual to drive to ~0."""
+
+    def test_zero_disparity_when_clocks_match(self):
+        # real advances 10 wall-s/data_id, sim 10 vclock-s/data_id -> residual 0.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 10),
+                                          ts=float(d)) for d in range(10)])
+        r = pc.wall_disparity(real, sim)
+        assert r["axis"] == "data_id"
+        assert r["mean_abs_disparity_s"] == 0.0, r
+        assert r["max_abs_disparity_s"] == 0.0, r
+        assert r["n_matched_units"] == 10
+
+    def test_surfaces_the_rate_gap(self):
+        # real 35 wall-s/data_id vs sim 8 vclock-s/data_id -> growing residual,
+        # but the rung still "ok" (DIAG never fails).
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 35))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 8),
+                                          ts=float(d)) for d in range(10)])
+        r = pc.wall_disparity(real, sim)
+        assert r["ok"] is True  # DIAG: informational only
+        # by the last of 10 data_ids: |9*35 - 9*8| = 243
+        assert r["max_abs_disparity_s"] > 100.0, r
+        assert r["mean_abs_disparity_s"] > 0.0
+
+    def test_aligns_when_run_does_not_start_at_unit_zero(self):
+        # matched units start at data_id 3; cumulative-from-first-matched keeps
+        # residual 0 despite the nonzero vclock/ts origin.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
+                                for d in range(3, 8)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 10),
+                                          ts=float(d)) for d in range(3, 8)])
+        r = pc.wall_disparity(real, sim)
+        assert r["mean_abs_disparity_s"] == 0.0, r
+
+    def test_skips_when_too_few_matched_units(self):
+        real = _agg(agg_rounds=[_fwd_round(0, ["a"], ts=0.0)])
+        sim = _agg(agg_rounds=[_fwd_round(0, ["a"], vclock=0.0, ts=0.0)])
+        r = pc.wall_disparity(real, sim)
+        assert r.get("status") == "SKIP", r
+        assert r["ok"] is True
+
+    def test_round_axis_for_normal_fl(self):
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 5))
+                                for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 5),
+                                      ts=float(r)) for r in range(1, 6)])
+        r = pc.wall_disparity(real, sim)
+        assert r["axis"] == "round"
+        assert r["mean_abs_disparity_s"] == 0.0, r
+
+
+class TestFailsafeRealComputeSim:
+    """Stage D2 / §H #9: a real-compute sim (fwdllm runs the real forward-grad
+    pass in sim mode) has sim wall ≫ vclock by construction, so K5 must compare
+    wall against the RUN wall budget, not the vclock (else it false-fails)."""
+
+    def test_real_compute_sim_skips_without_run_budget(self):
+        # data_id axis auto-detects real_compute_sim; wall ≫ vclock but no run
+        # budget passed -> SKIP, not a false INV failure.
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 8),
+                                          ts=float(d * 35)) for d in range(6)])
+        r = pc.failsafe_ok(sim, budget_s=None)
+        assert r.get("status") == "SKIP", r
+        assert r["ok"] is True
+
+    def test_real_compute_sim_uses_run_budget_when_given(self):
+        # 6 data_ids, wall ends at 5*35=175s; run budget 3600s -> within budget.
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 8),
+                                          ts=float(d * 35)) for d in range(6)])
+        r = pc.failsafe_ok(sim, budget_s=3600.0)
+        assert r.get("status") != "SKIP", r
+        assert r["real_compute_sim"] is True
+        assert r["ok"] is True  # 175s wall << 3600s run budget
+
+    def test_cheap_compute_sim_keeps_vclock_fallback(self):
+        # round-advancing (async_cifar10): wall≈vclock, no run budget -> vclock
+        # fallback unchanged (byte-identical).
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 10),
+                                      ts=float(r * 10)) for r in range(1, 7)])
+        r = pc.failsafe_ok(sim, budget_s=None)
+        assert r["real_compute_sim"] is False
+        assert r.get("status") != "SKIP"
+        assert r["ok"] is True  # wall == vclock -> 0 overshoot
+
 
 class TestFieldCoverageAlias:
     """§H open-root #3: fwdllm's trainer emits gpu/budget under different names;

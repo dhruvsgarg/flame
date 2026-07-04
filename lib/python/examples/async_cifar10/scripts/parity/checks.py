@@ -402,13 +402,20 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
 
 
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
-    """Compute per-FL-round time advances.
+    """Compute per-progress-unit time advances (Stage A3 re-key).
 
-    use_vclock=True:  Δvclock_now between consecutive rounds (sim mode).
-    use_vclock=False: Δts (wall) between consecutive rounds (real mode).
+    use_vclock=True:  Δvclock_now between consecutive units (sim mode).
+    use_vclock=False: Δts (wall) between consecutive units (real mode).
     Returns list of positive advances.
+
+    Keyed on the run's TRUE progress axis (_progress_axis), not raw `round`:
+    fwdllm holds `round` static and advances committed `data_id`, so keying on
+    `round` yields <2 units and an empty list ("<2 sim rounds"). Auto-detect ->
+    async_cifar10 advances `round` -> _per_progress_last_event falls through to
+    _per_round_last_event -> byte-identical; only fwdllm re-keys to data_id.
     """
-    by_round = _per_round_last_event(agg_rounds)
+    axis = _progress_axis(agg_rounds)
+    by_round = _per_progress_last_event(agg_rounds, axis)
     rounds_sorted = sorted(by_round.keys())
     if len(rounds_sorted) < 2:
         return []
@@ -1803,13 +1810,25 @@ def sim_rate_ok(sim: dict, min_rate: float = 0.01, max_rate: float = 100.0) -> d
 
 
 def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
-                max_overshoot: float = 0.20) -> dict:
-    """K5 [INV]: sim wall must not overshoot sim_wall_ceiling_s by > 20%."""
+                max_overshoot: float = 0.20,
+                real_compute_sim: Optional[bool] = None) -> dict:
+    """K5 [INV]: sim wall must not overshoot the budget by > 20%.
+
+    D2 (§H #9): for a REAL-COMPUTE sim (fwdllm runs the real forward-grad GPU
+    pass in sim mode), sim wall ≫ vclock BY CONSTRUCTION -- so the vclock is the
+    wrong budget to compare wall against (K5 would false-fail every fwdllm run,
+    184 s wall vs 78 s vclock). Compare sim wall against the RUN WALL budget
+    (`max_runtime_s`, passed as budget_s) instead; if no run wall budget is
+    available, SKIP rather than falling back to the vclock. Auto-detected via the
+    progress axis when not passed explicitly. A cheap-compute sim (async_cifar10,
+    wall≈vclock) keeps the vclock fallback -> byte-identical."""
     rounds = [e for e in sim["agg_rounds"] if e.get("event") == "agg_round"]
     all_evs = sim.get("_all_events", sim["agg_rounds"])  # agg_rounds used as proxy
     if len(rounds) < 2:
         return {"ok": True, "tier": "INV", "status": "SKIP",
                 "note": "fewer than 2 agg_round events"}
+    if real_compute_sim is None:
+        real_compute_sim = _progress_axis(sim["agg_rounds"]) == "data_id"
     wall_elapsed = rounds[-1]["ts"] - rounds[0]["ts"]
     failsafe_fired = any(
         "SIM_WALL_CEILING" in str(e.get("stop_reason", "")) or
@@ -1817,6 +1836,11 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
         for e in all_evs
     )
     if budget_s is None:
+        if real_compute_sim:
+            return {"ok": True, "tier": "INV", "status": "SKIP",
+                    "note": "real-compute sim (sim wall ≫ vclock by construction); "
+                            "no run wall budget to compare against — SKIP not "
+                            "wall-vs-vclock (§H #9)"}
         vclock_final = rounds[-1].get("vclock_now")
         if not vclock_final:
             return {"ok": True, "tier": "INV", "status": "SKIP",
@@ -1832,6 +1856,7 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
         "overshoot_frac": round(overshoot, 3),
         "failsafe_fired": failsafe_fired,
         "max_overshoot": max_overshoot,
+        "real_compute_sim": real_compute_sim,
     }
 
 
@@ -1940,6 +1965,47 @@ def per_round_advance_parity(real: dict, sim: dict,
         "mean_tol_rel": mean_tol_rel,
         "n_sim_rounds": len(sim_adv),
         "n_real_rounds": len(real_adv),
+    }
+
+
+def wall_disparity(real: dict, sim: dict) -> dict:
+    """wall_disparity [DIAG]: |real_wall − sim_vclock| per matched progress unit
+    (Stage A4 / K-D20 #6). The recurring sanity metric to drive to ~0 -- surfaces
+    the gap between real's per-unit WALL and the sim's per-unit VCLOCK every run,
+    without gating (a persistent residual is root #6, the sct-model work, not a
+    ladder failure). Both clocks are measured cumulatively from the FIRST matched
+    unit (real: ts − ts0; sim: vclock_now − v0) so a run that does not start at
+    unit 0 still aligns. Keyed on the run's progress axis (data_id for fwdllm,
+    round otherwise). Never fails."""
+    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
+                                       _progress_axis(real["agg_rounds"])) else "round"
+    real_by = _per_progress_last_event(real["agg_rounds"], axis)
+    sim_by = _per_progress_last_event(sim["agg_rounds"], axis)
+    matched = [k for k in sorted(set(real_by) & set(sim_by))
+               if real_by[k].get("ts") is not None
+               and sim_by[k].get("vclock_now") is not None]
+    if len(matched) < 2:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "fewer than 2 matched units with both real ts and "
+                        "sim vclock_now"}
+    ts0 = real_by[matched[0]]["ts"]
+    v0 = sim_by[matched[0]]["vclock_now"]
+    residuals, per_unit = [], {}
+    for k in matched:
+        real_wall = real_by[k]["ts"] - ts0
+        sim_vclock = sim_by[k]["vclock_now"] - v0
+        resid = abs(real_wall - sim_vclock)
+        residuals.append(resid)
+        per_unit[k] = round(resid, 2)
+    mean_resid = sum(residuals) / len(residuals)
+    return {
+        "ok": True,  # DIAG: informational, never gates the ladder
+        "tier": "DIAG",
+        "axis": axis,
+        "mean_abs_disparity_s": round(mean_resid, 2),
+        "max_abs_disparity_s": round(max(residuals), 2),
+        "n_matched_units": len(residuals),
+        "per_unit_abs_disparity_s": per_unit,
     }
 
 
@@ -4011,6 +4077,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["overlap_factor"] = overlap_factor(real_agg, sim_agg)
     results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
     results["throughput"] = throughput_parity(real_agg, sim_agg)
+    results["wall_disparity"] = wall_disparity(real_agg, sim_agg)
 
     # ── Stage 2 Availability ──
     results["avail_composition"] = avail_composition_parity(real_agg, sim_agg)
@@ -4135,6 +4202,7 @@ CHECK_META: dict = {
     "overlap_factor":          {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
     "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
     "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
+    "wall_disparity":          {"stage": 1, "role": "DIAG",     "deps": ("throughput",)},
     # ── Stage 2 Availability ──
     "avail_composition":       {"stage": 2, "role": "MECHANISM", "deps": ()},
     "eligibility":             {"stage": 2, "role": "MECHANISM", "deps": ("avail_composition",)},

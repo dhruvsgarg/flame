@@ -68,6 +68,8 @@ class _FakeGradAgg:
     _sim_recv_grace_s = _SyncBase._sim_recv_grace_s
     # fwdllm overrides felix's hold with the Option-A two-lifetime split (K-D16).
     _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
+    # The return-path guard/slot release (K-D19: defers to COMMIT in sim residence).
+    _release_end_on_return = TopAggregator._release_end_on_return
     # grace-window class knobs the base method reads off self
     SIM_RECV_GRACE_FLOOR_S = 0.0
     SIM_RECV_GRACE_FACTOR = 0.0
@@ -222,6 +224,15 @@ class _FakeSelChannel(_FakeGradChannel):
         # path does channel._ends[e] guarded only by channel.has(e)).
         super().add_msg(end, sct, budget, release_at)
         self._ends.setdefault(end, _FakeEnd())
+
+    # Faithful mirror of channel.cleanup_provided_ends -> selector
+    # _cleanup_provided_ends: drop the end from the re-pick guard + slot.
+    def cleanup_provided_ends(self, end):
+        self._selector.all_selected.pop(end, None)
+        self._selector.selected_ends[self._selector.requester].discard(end)
+
+    def cleanup_recvd_end(self, end):  # sync path (random selector)
+        self.cleanup_provided_ends(end)
 
 
 class TestAsyncBoundaryReleasesSlots:

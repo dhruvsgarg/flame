@@ -30,7 +30,11 @@
 #   --mode           which time_mode variant(s) to run per baseline (default both).
 #   --delays         enable_training_delays for BOTH sides of a pair (default off=D=0).
 #   --max-runtime-s  wall/vclock cap per run (default 600 = 10 min).
-#   --max-data-id    stop a run once data_id reaches this (default 10).
+#   --max-data-id    stop a run once data_id reaches this (default 9999, i.e.
+#                    effectively unbounded -> the run is governed by --max-runtime-s.
+#                    Pass a small value (e.g. 10, 3) ONLY when you deliberately want
+#                    a short data-id-capped run. Defaulting high avoids the trap of a
+#                    "1h" run silently stopping early at a low data-id cap.
 #   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10).
 #   --num-gpus       override execution.num_gpus (default: each YAML's own).
 #   --c / --c-async / --k / --agg-goal / --min-initial-trainers
@@ -80,7 +84,10 @@ expt_pin_pythonpath "$REPO_ROOT"
 MODE="both"
 DELAYS="off"
 MAX_RUNTIME_S=600
-MAX_DATA_ID=10
+# Default high so a run is governed by --max-runtime-s, NOT a silent low data-id cap.
+# (An overnight "1h" run once stopped at data_id=10 because the default was 10; the
+# real cost of a too-high default is zero since --max-runtime-s still bounds the run.)
+MAX_DATA_ID=9999
 # Companion "was this passed on the command line?" flags. Needed because MODE/
 # DELAYS/MAX_RUNTIME_S/MAX_DATA_ID have non-empty defaults, so their value alone
 # can't tell "operator passed it (override -> green)" from "defaulted". (The

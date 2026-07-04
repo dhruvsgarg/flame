@@ -1003,6 +1003,26 @@ class TopAggregator(AsyncTopAgg):
             self._process_aggregation_goal_met(tag, channel, is_async=True)
 
     @timer_decorator
+    def _release_end_on_return(self, channel, end) -> None:
+        """Release a returned trainer's compute slot + re-pick guard on grad
+        RETURN -- EXCEPT on the async sim residence path, where the grad is
+        CARRIED and commits later in virtual time. There the guard/slot
+        lifetime is owned solely by `_sim_hold_busy_slots` (held to COMMIT,
+        mirroring felix's agg-goal-boundary release, `asyncfl:1316`); releasing
+        `all_selected` here on the physical RETURN would re-eligible a trainer
+        whose carried grad has NOT yet committed -> re-dispatch-while-in-flight
+        -> R1 residence violation (K-D19: 0% -> 44.7%). Real mode / non-residence:
+        return ~= commit, so release immediately as before (byte-identical).
+        """
+        if self.is_async:
+            if getattr(self, "simulated", False) and getattr(
+                self, "_sim_inflight_residence", False
+            ):
+                return  # guard/slot held to COMMIT by _sim_hold_busy_slots
+            channel.cleanup_provided_ends(end)
+        else:
+            channel.cleanup_recvd_end(end)
+
     def _process_single_trainer_message(self, channel, msg, end, timestamp):
         # An end may only contribute once per (round, data_id,
         # iteration_per_data_id) collection cycle -- _per_agg_trainer_list is
@@ -1076,6 +1096,9 @@ class TopAggregator(AsyncTopAgg):
                 f"with model version {msg[MessageType.MODEL_VERSION]}"
             )
             self._agg_goal_cnt += 1
+            # Wall of the most-recent accepted grad -> barrier_wait_s / drain_
+            # tail_s in the per-round wall decomposition (Stage A2).
+            self._last_grad_wall_ts = time.time()
 
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
@@ -1251,15 +1274,11 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
-        # Not remove_from_selected_ends(): it never clears the selector's
-        # all_selected set, permanently blocking this trainer from future
-        # reselection. Async selectors only implement the batch
-        # _cleanup_recvd_ends/_cleanup_provided_ends path; cleanup_recvd_end()
-        # is sync-only (random selector).
-        if self.is_async:
-            channel.cleanup_provided_ends(end)
-        else:
-            channel.cleanup_recvd_end(end)
+        # Release the slot/guard on return -- but the async sim residence path
+        # defers that release to COMMIT (K-D19); see _release_end_on_return.
+        # (cleanup_recvd_end() is sync-only, random selector; the async batch
+        # _cleanup_provided_ends path is the only one async selectors implement.)
+        self._release_end_on_return(channel, end)
         return True
 
     def _log_and_reset_model_version_stats(self):
@@ -1446,7 +1465,19 @@ class TopAggregator(AsyncTopAgg):
                 f"if variance check fails in aggregate()."
             )
 
+        # Per-round wall decomposition (Stage A2, grounds #6 / K-D20): the FedAvg
+        # merge, the dispatch→last-grad barrier wait, and the last-grad→commit
+        # drain tail (a real-transport ARTIFACT the sim's all-k barrier does not
+        # model). eval_s is measured on the pass path below. All wall (real);
+        # the sim advances the vclock instead, so these read ~0 there.
+        _agg_start_wall = time.time()
         self.aggregate(self._round)
+        _aggregate_fedavg_s = time.time() - _agg_start_wall
+        _disp = getattr(self, "_round_dispatch_wall_ts", None)
+        _lastg = getattr(self, "_last_grad_wall_ts", None)
+        _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
+        _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
+        _eval_s = None  # set below only when the variance gate passes (eval runs)
 
         _var_thr = getattr(self, "var_threshold", None)
         _ratio = (
@@ -1504,7 +1535,20 @@ class TopAggregator(AsyncTopAgg):
                 f"Variance check {_pass_kind}. Evaluating model and advancing data_id."
             )
             self.iteration_per_data_id += 1
+            _eval_start_wall = time.time()
             result, _, _ = self.eval_model()
+            _eval_s = time.time() - _eval_start_wall  # GENUINE server-eval term (B1)
+            # B1 (K-D20 #6): the server eval is genuine algorithmic time between
+            # committed data_ids that the sim's sct model omits, so the vclock
+            # under-counts by ~eval_s/commit. When enabled, charge the MEASURED
+            # eval wall (sim runs real eval compute, so it ≈ real's) to the
+            # vclock -- consistent with the existing model already putting
+            # real_gpu on the vclock via sct (principle #1: genuine compute, not
+            # transport overhead). Config-gated OFF ⇒ byte-identical.
+            if self.simulated and getattr(
+                self.config.hyperparameters, "sim_model_eval_time", False
+            ):
+                self._vclock.advance(self._vclock.now + _eval_s)
             logger.info(
                 f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}"
             )
@@ -1602,6 +1646,12 @@ class TopAggregator(AsyncTopAgg):
                         # R1/W1 residence rungs (§L.3): per-contributor
                         # [dispatch_ts, commit_ts] intervals for this cycle.
                         "contributor_intervals": _contributor_intervals,
+                        # Per-round wall decomposition (Stage A2, #6/K-D20):
+                        # barrier wait + drain tail (artifact) + fedavg + eval.
+                        "barrier_wait_s": _barrier_wait_s,
+                        "drain_tail_s": _drain_tail_s,
+                        "aggregate_fedavg_s": _aggregate_fedavg_s,
+                        "eval_s": _eval_s,
                     },
                 )
                 telemetry.emit(ev, **fields)
@@ -2163,6 +2213,52 @@ class TopAggregator(AsyncTopAgg):
             return merged
         return new_ends
 
+    def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
+        """Real-mode sync-barrier liveness under availability scarcity (Stage C).
+
+        With `agg_goal` clients required but a trace (e.g. mobiperf_2st) keeping
+        the eligible pool below `agg_goal`, the plain loop hot-re-dispatches every
+        pass -- burning the wall budget with no progress and ballooning the log
+        (payload-size lines ×∞, the observed 292 MB). Parity-faithful fix: KEEP
+        the cohort == `agg_goal` and WAIT for availability to recover
+        (sleep-to-next-avail, mirroring the trainer's `wait_until_next_avl` loop)
+        rather than spin -- the sim assembles the same full cohort by jumping its
+        vclock past the unavailable window, so cohort size stays identical
+        real↔sim. Self-terminates via `_check_early_stop_conditions` at
+        `max_runtime_s`. Byte-identical when availability tracking is off
+        (`trainer_event_dict is None` ⇒ nobody unavailable ⇒ never waits) and on
+        the sim path (the vclock, not a wall sleep, models the wait).
+        """
+        if self.simulated or getattr(self, "trainer_event_dict", None) is None:
+            return
+        # Only a genuine post-join scarcity, not startup join-lag: wait only once
+        # at least `agg_goal` trainers have joined.
+        if len(getattr(self, "all_trainers", ())) < self._agg_goal:
+            return
+        poll_s = float(getattr(self.config.hyperparameters, "scarcity_poll_s", 2.0))
+        warned = False
+        while not self._work_done:
+            unavail = set(self.get_curr_unavail_trainers())
+            contributed = set(self._per_agg_trainer_list or [])
+            # A trainer can still advance this cycle's barrier iff it is available
+            # AND has not already contributed to it.
+            dispatchable = [
+                e for e in self.all_trainers
+                if e not in unavail and e not in contributed
+            ]
+            if dispatchable or self._agg_goal_cnt >= self._agg_goal:
+                return  # progress possible this pass (or barrier already met)
+            if not warned:  # one line per stall, not one per spin
+                logger.warning(
+                    f"[SYNC_SCARCITY_WAIT] round={self._round} data_id={self.data_id} "
+                    f"committed={self._agg_goal_cnt}/{self._agg_goal} "
+                    f"unavail={len(unavail)}/{len(self.all_trainers)}; waiting for "
+                    f"availability (poll={poll_s}s) instead of spin-dispatching."
+                )
+                warned = True
+            time.sleep(poll_s)
+            self._check_early_stop_conditions()  # self-terminate at max_runtime_s
+
     @timer_decorator
     def _distribute_weights_sync(
         self, tag: str, task_to_perform: str = "train"
@@ -2182,6 +2278,9 @@ class TopAggregator(AsyncTopAgg):
             return
 
         channel.await_join()
+        # Sleep-to-next-avail under real-mode scarcity instead of hot-spinning
+        # (Stage C); no-op on the sim path / when availability tracking is off.
+        self._await_dispatchable_under_scarcity(task_to_perform)
         global_model_params = self.get_global_model_params()
         format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
         logging.info(
@@ -2189,9 +2288,14 @@ class TopAggregator(AsyncTopAgg):
         )
         self.weights = global_model_params
 
-        logger.debug(f"Starting busy wait at time {time.time()}")
-        time.sleep(0.1)
-        logger.debug(f"Ended busy wait at time {time.time()}")
+        # Real-transport pad to let just-distributed messages settle before the
+        # selection read (real-mode MQTT artifact, principle #8). No sim analog:
+        # the sim orders by sct, not physical arrival, so this is pure wall
+        # overhead there (≥28.7 s/run, Stage E) -- skip it. Real unchanged.
+        if not self.simulated:
+            logger.debug(f"Starting busy wait at time {time.time()}")
+            time.sleep(0.1)
+            logger.debug(f"Ended busy wait at time {time.time()}")
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
@@ -2304,6 +2408,11 @@ class TopAggregator(AsyncTopAgg):
             logger.info(f"Sent weights to {end}")
             # self.invoke_gc()
 
+        # Cohort-dispatch wall -> barrier_wait_s anchor (Stage A2). Sync barrier:
+        # all `ends` dispatch in this one pass, so this marks the start of the
+        # dispatch→last-grad window.
+        self._round_dispatch_wall_ts = time.time()
+
     @timer_decorator
     def _distribute_weights_async(
         self, tag: str, task_to_perform: str = "train"
@@ -2318,9 +2427,14 @@ class TopAggregator(AsyncTopAgg):
         channel.await_join()
         global_model_params = self.get_global_model_params()
         self.weights = global_model_params
-        logger.debug(f"Starting busy wait at time {time.time()}")
-        time.sleep(0.1)
-        logger.debug(f"Ended busy wait at time {time.time()}")
+        # Real-transport pad to let just-distributed messages settle before the
+        # selection read (real-mode MQTT artifact, principle #8). No sim analog:
+        # the sim orders by sct, not physical arrival, so this is pure wall
+        # overhead there (≥28.7 s/run, Stage E) -- skip it. Real unchanged.
+        if not self.simulated:
+            logger.debug(f"Starting busy wait at time {time.time()}")
+            time.sleep(0.1)
+            logger.debug(f"Ended busy wait at time {time.time()}")
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
@@ -2422,6 +2536,15 @@ class TopAggregator(AsyncTopAgg):
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
             if self.simulated:
+                # R1 tripwire (K-D19): dispatching a trainer already outstanding
+                # (in flight OR grad carried-but-uncommitted) IS the residence
+                # violation -- surface it at the dispatch instant instead of only
+                # reconstructing it offline from contributor_intervals.
+                if end in self._sim_inflight_expected or self._sim_buffer.has(end):
+                    logger.warning(
+                        f"[SIM_R1_DISPATCH] end={end} re-dispatched while still "
+                        f"outstanding (vclock={_round_now}) -- R1 residence violation"
+                    )
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _round_now)
                 # Expected completion = dispatch vclock + a lower-bound budget
                 # (this end's own last-observed TRAINING_BUDGET_S, else the
@@ -2480,13 +2603,41 @@ class TopAggregator(AsyncTopAgg):
 
         max_runtime_s = getattr(self.config.hyperparameters, "max_runtime_s", None)
         if max_runtime_s is not None:
-            elapsed = time.time() - self.agg_start_time_ts
+            # Mode-dependent clock (mirrors base syncfl `max_experiment_runtime_s`,
+            # top_aggregator.py:1140): real -> WALL seconds; sim -> VIRTUAL seconds
+            # (`vclock.now`). One budget then means "3600 wall-s of real work" AND
+            # "3600 virtual-s of MODELED work" -- the matched-budget axis
+            # convergence parity needs (real runs 3600s wall; sim runs until its
+            # vclock reaches the SAME 3600s of modeled real-time). Until root #6
+            # (vclock models real wall) lands, the sim vclock under-counts, so the
+            # wall failsafe below will fire first -- which is itself the #6 signal.
+            if self.simulated and hasattr(self, "_vclock"):
+                elapsed = float(self._vclock.now)
+                clock_label = "sim/vclock"
+            else:
+                elapsed = time.time() - self.agg_start_time_ts
+                clock_label = "real/wall"
             if elapsed >= float(max_runtime_s):
                 logger.info(
                     f"max_runtime_s={max_runtime_s}s reached "
-                    f"(elapsed={elapsed:.0f}s); stopping run."
+                    f"({clock_label}_elapsed={elapsed:.0f}s); stopping run."
                 )
                 self._work_done = True
+                return
+            # Sim wall failsafe: a well-behaved (correctly-clocked) sim finishes
+            # in <= real wall, so cap sim WALL at `sim_wall_ceiling_s` (default =
+            # the budget) so an under-modeled vclock (root #6) can't run away.
+            if self.simulated:
+                _wall = time.time() - self.agg_start_time_ts
+                _ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
+                _ceil = float(_ceil) if _ceil is not None else float(max_runtime_s)
+                if _wall > _ceil:
+                    logger.warning(
+                        f"[SIM_WALL_CEILING] wall={_wall:.0f}s > ceiling={_ceil:.0f}s "
+                        f"(vclock={self._vclock.now:.0f}s) -- sim slower than budget "
+                        f"OR vclock under-modeled (root #6); stopping run."
+                    )
+                    self._work_done = True
 
     def _async_inner_loop_done(self) -> bool:
         """Exit condition for the async/hybrid compose path's inner
