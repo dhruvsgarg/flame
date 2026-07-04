@@ -31,10 +31,12 @@ experiments:
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
-        # ORACULAR reads trainer 1-10's mobiperf_2st trace from _metadata --
-        # mode here just keeps the trainer-side avl_events_* fields
-        # consistent with what the aggregator reads.
-        mode: mobiperf_2st
+        # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
+        # reads all-available, so the sync barrier assembles the full agg_goal=10
+        # cohort. Switch to a mobiperf_* trace (via --avail-trace) only for the
+        # Phase-2 unavailability runs. Keep trainer + aggregator on the SAME
+        # trace (run_sequential.sh's --avail-trace patches both).
+        mode: syn_0
       # FedFwd has no simulated-clock support; always real.
       time_mode: real
       # Skip the registry's 4-18s artificial delay for a fast smoke run.

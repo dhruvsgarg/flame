@@ -37,10 +37,11 @@ experiments:
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
-        # Cosmetic here -- fluxtune's 3-tier signal comes from
-        # trainer.client_notify (set in the baseline), not this mode. Kept
-        # consistent with the baseline's mobiperf_3st_50 trace.
-        mode: mobiperf_3st_50
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs. run_sequential.sh's --avail-trace
+        # patches trainer mode + client_notify + trackTrainerAvail together.
+        mode: syn_0
       # Batch 1: drive the simulated virtual clock instead of real sleeps.
       time_mode: simulated
       # Skip the registry's 4-18s artificial delay for a fast smoke run.

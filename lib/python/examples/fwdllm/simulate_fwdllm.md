@@ -1326,6 +1326,20 @@ decision. Keep appending; do not rewrite history (supersede with a new dated ent
     (real-transport artifacts, ≥28.7 s/run) gated `if not self.simulated` — real byte-identical, sim skips pure
     wall overhead. Full pytest suite re-run proves grad values + cadence unchanged.
 
+- **K-D22  Availability params respected end-to-end — Phase-1 defaults to syn_0; the pre-flight table shows the
+  RESOLVED config, not a hardcoded default.** Two consistency bugs in `run_sequential.sh`: (1) the "trace" row
+  PRINTED `syn_0` whenever no `--avail-trace` was passed, but `patch()` only sets the mode when a trace is
+  truthy — so with no flag the yaml's OWN `mode:` ran (fwdllm_plus `mobiperf_2st`, fluxtune `mobiperf_3st_50`)
+  while the table claimed syn_0 (the K-D20 stall, mislabeled). (2) The yamls' source-of-truth `mode:` was a
+  mobiperf trace, not syn_0. **Fixes:** the availability trace now DEFAULTS to `syn_0` (Phase-1) so `patch()`
+  always sets trainer `availability.mode` + aggregator `trackTrainerAvail.trace` + `client_notify.trace`
+  EXPLICITLY on every baseline; the table's trace row + a new per-baseline `avail` column are read BACK from the
+  patched cfg (what actually launches), so print == run; the 4 source yamls flipped to `mode: syn_0` (switch to a
+  mobiperf trace via `--avail-trace` only for Phase-2); and a new **feasibility gate BLOCKS** a full-participation
+  sync barrier under a non-syn_0 trace (sync `agg_goal >= n_trainers` + unavailability = can't assemble → stall;
+  `--force` to override). Verified: generated launch cfg carries `syn_0` in all three availability fields; the
+  guard blocks `--avail-trace mobiperf_2st --only fwdllm_plus` at pre-flight (exit 2).
+
 ---
 
 ## §L  Phase-1 sign-off remediation — async grad-path residence & carry-over (Batch 2.5, staged)

@@ -230,7 +230,15 @@ LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
 DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
 delays_on = (DELAYS == "on")
 
-traces = [t for t in (env("TRACE_CSV") or "").replace(",", " ").split()] or [""]
+# Availability trace(s). Default to syn_0 (Phase-1, 100% availability) when the
+# operator passes no --avail-trace, so patch() ALWAYS sets the mode EXPLICITLY on
+# every baseline (trainer availability.mode + aggregator trackTrainerAvail +
+# client_notify -- lines below) rather than silently inheriting each yaml's own
+# `mode:`. This is what makes the printed "trace" row match what actually runs:
+# the resolved value is patched into the launched cfg, not just displayed.
+_trace_raw = [t for t in (env("TRACE_CSV") or "").replace(",", " ").split()]
+trace_set = bool(_trace_raw)              # operator passed --avail-trace(s)?
+traces = _trace_raw or ["syn_0"]          # Phase-1 default: 100% availability
 multi_trace = len(traces) > 1
 
 variants = {"real": 0, "sim": 1} if MODE == "both" else {MODE: (0 if MODE == "real" else 1)}
@@ -328,6 +336,9 @@ for trace in traces:
                 "n_gpus": e0.get("execution", {}).get("num_gpus"),
                 "partition": h0.get("partition_method"),
                 "delays": e0["trainer"].get("enable_training_delays"),
+                # RESOLVED availability mode read back from the PATCHED cfg (what
+                # actually launches), so the table can't show a stale default.
+                "avail": e0["trainer"].get("availability", {}).get("mode"),
                 "async": (run_key == "fluxtune"),
             })
 
@@ -358,8 +369,18 @@ def scalar_row(label, val, overridden, note=None, review=False):
 
 tiers = []
 # ① review every run
-trace_overridden = any(traces)
-trace_val = " ".join(traces) if trace_overridden else "syn_0"
+# The trace row reflects the RESOLVED per-baseline availability (read back from
+# the patched cfgs), NOT a hardcoded default -- so "what is printed" == "what
+# runs". If every baseline resolved to the same mode, show it; otherwise flag
+# the divergence and defer to the per-baseline table (tier ②).
+trace_overridden = trace_set
+_resolved_avails = {b.get("avail") for b in per_baseline.values() if b.get("avail")}
+if len(_resolved_avails) == 1:
+    trace_val = next(iter(_resolved_avails))
+elif _resolved_avails:
+    trace_val = "MIXED: " + ",".join(sorted(a or "?" for a in _resolved_avails)) + " (see ②)"
+else:
+    trace_val = " ".join(traces)
 # mode: single-sided always warns (parity needs both), regardless of override.
 if MODE != "both":
     mode_row = {"label": "mode", "value": MODE, "level": "warn", "note": "single-sided: parity needs both"}
@@ -373,7 +394,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     scalar_row("max_data_id_progress", MAX_DATA_ID, MAX_DATA_ID_SET,
                note="STOP condition: stop when data_id reaches this (--max-data-id)"),
     scalar_row("trace", trace_val, trace_overridden,
-               note=("Phase 1 is syn_0 (100% avail)" if any(t and t != "syn_0" for t in traces) else "100% availability")),
+               note=("resolved availability actually patched into each launched cfg; "
+                     + ("100% availability (Phase 1)" if _resolved_avails == {"syn_0"}
+                        else "NON-syn_0 — unavailability (Phase 2+)"))),
     scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
                note=f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; matched on BOTH sides — K-D8"),
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
@@ -394,7 +417,7 @@ tiers.append(tier1)
 tier2_cols = [
     ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
     ("min_init", "minInit"), ("n_trainers", "n_trainers"),
-    ("n_gpus", "n_gpus"), ("partition", "part"),
+    ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
 ]
 overridden2 = []
 if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
@@ -404,6 +427,7 @@ if bool(MIN_INIT):     overridden2.append("min_init")
 if bool(NUM_TRAINERS): overridden2.append("n_trainers")
 if bool(NUM_GPUS):     overridden2.append("n_gpus")
 if bool(PART):         overridden2.append("partition")
+if trace_set:          overridden2.append("avail")
 rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
@@ -411,6 +435,7 @@ for rk in (r[0] for r in runs):
         "c": b.get("c"), "agg_goal": b.get("agg_goal"), "k": b.get("k"),
         "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
         "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
+        "avail": b.get("avail"),
     }})
 tiers.append({"name": "② PER-BASELINE (moderate)",
               "table": {"columns": tier2_cols, "rows": rows2,
@@ -438,6 +463,25 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+# Availability consistency + sync-barrier liveness: surface the RESOLVED per-
+# baseline trace (what actually runs), and BLOCK a full-participation sync
+# barrier under a non-syn_0 trace -- agg_goal == n_trainers can never assemble if
+# any trainer is unavailable, so the real barrier waits to the wall cap (the
+# fwdllm_plus / K-D20 stall; Stage C's wait bounds the log but still can't
+# complete when full participation is required under scarcity).
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    av, g, n, is_async = b.get("avail"), b.get("agg_goal"), b.get("n_trainers"), b.get("async")
+    if av and av != "syn_0":
+        if (not is_async) and isinstance(g, int) and isinstance(n, int) and g >= n:
+            checks.append({"name": f"availability liveness ({rk})", "level": "error",
+                           "detail": f"trace={av} + sync agg_goal={g} >= n_trainers={n}: "
+                                     f"barrier can't assemble under unavailability → stall"})
+        else:
+            checks.append({"name": f"availability ({rk})", "level": "warn",
+                           "detail": f"trace={av} — non-syn_0 unavailability (Phase 2+); confirm intended"})
+    else:
+        checks.append({"name": f"availability ({rk})", "level": "ok", "detail": f"trace={av}"})
 # (No k-vs-agg_goal check: in the random selector, send-side selection/concurrency
 # is driven by `c` (required_trainers = min(len(ends), c - in_use)); `k` is the
 # RECV-side batch size (num_ends_to_remove = min(..., self.k)), NOT a selection
