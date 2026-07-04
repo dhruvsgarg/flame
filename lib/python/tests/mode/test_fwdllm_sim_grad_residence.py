@@ -60,14 +60,13 @@ class TestCommitThenCarryResidenceOn:
         assert agg._sim_inflight_expected == {"E": 50.0}
         # Per-cycle committed marks cleared so a re-contributor isn't skipped.
         assert agg._sim_committed == set()
-        # Option-A two-lifetime split (K-D16): every busy trainer (carried
-        # surplus C,D ∪ in-flight E) stays un-re-pickable in the all_selected
-        # GUARD; the two committed ones (A, B) are released. But only the
-        # still-COMPUTING trainer (E) holds a compute SLOT (selected_ends, which
-        # drives `extra`) -- the returned/carried C,D freed their slots so the
-        # next distribute refills concurrency with a different trainer.
+        # Felix-aligned virtual-time in-flight (K-D17b): every OUTSTANDING trainer
+        # (carried surplus C,D ∪ still-computing E) holds BOTH its re-pick guard
+        # (all_selected) AND its compute slot (selected_ends) until it commits --
+        # a returned-but-uncommitted trainer is still in flight in virtual time.
+        # The two committed ones (A, B) are released.
         assert set(ch._selector.all_selected) == {"C", "D", "E"}
-        assert ch._selector.selected_ends["agg"] == {"E"}
+        assert ch._selector.selected_ends["agg"] == {"C", "D", "E"}
 
     def test_end_to_end_surplus_commits_next_cycle_no_refetch(self):
         agg = _residence_agg(residence=True)
@@ -109,18 +108,20 @@ class TestCommitThenCarryResidenceOn:
         # only the committed A is released.
         assert "B" in held and "C" in held and "A" not in held
         assert "B" in agg._sim_pending_commit and "C" in agg._sim_pending_commit
-        # Two-lifetime split: returned/carried B freed its compute slot (frees
-        # `extra` -> a DIFFERENT trainer refills the pipeline), still-computing C
-        # keeps its slot. Neither can be re-picked (both in the all_selected guard).
-        assert ch._selector.selected_ends["agg"] == {"C"}
+        # Felix-aligned (K-D17b): both the carried B and still-computing C keep
+        # their compute slot (they're in flight in virtual time until commit);
+        # neither can be re-picked (both in the all_selected guard).
+        assert ch._selector.selected_ends["agg"] == {"B", "C"}
 
 
-class TestOptionASlotGuardSplit:
-    """Option-A (§H D-e / D6 / K-D16): compute-slot occupancy (selected_ends,
-    drives `extra`) frees on RETURN; re-pick guard (all_selected) frees on
-    COMMIT. The two ledgers async_oort already tracks, no longer conflated."""
+class TestVirtualInflightSlotHold:
+    """K-D17b (felix-aligned, supersedes K-D16 Option-A): a returned-but-
+    uncommitted trainer is still in flight in VIRTUAL time (its grad commits
+    when the vclock reaches its sct), so it KEEPS its compute slot
+    (selected_ends, drives `extra`) until COMMIT, not on physical return. Both
+    ledgers track the same virtual-time in-flight set until commit."""
 
-    def test_returned_trainer_frees_slot_but_stays_guarded(self):
+    def test_returned_trainer_keeps_slot_until_commit(self):
         agg = _residence_agg(residence=True)
         ch = _FakeSelChannel(["A", "B", "C", "D"])
         # A,B still computing; C,D returned (buffered surplus, not yet consumed).
@@ -130,10 +131,29 @@ class TestOptionASlotGuardSplit:
 
         agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
-        # Slot ledger (extra): only the two still-computing trainers occupy it.
-        assert ch._selector.selected_ends["agg"] == {"A", "B"}
-        # Guard ledger: all four busy trainers un-re-pickable.
+        # Slot ledger (extra = c - len(selected_ends)): ALL four outstanding
+        # trainers occupy a slot -- carried C,D are still in flight in virtual
+        # time, so `in_flight` telemetry (= len(selected_ends)) counts them.
+        assert ch._selector.selected_ends["agg"] == {"A", "B", "C", "D"}
+        # Guard ledger: all four un-re-pickable until they commit.
         assert set(ch._selector.all_selected) == {"A", "B", "C", "D"}
+
+    def test_selected_ends_tracks_inflight_across_a_commit(self):
+        """The invariant that fixes the concurrency mis-measurement: after each
+        commit, selected_ends == the still-outstanding (dispatched-not-committed)
+        set. Committing one trainer releases exactly its slot; the rest stay."""
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel([])
+        for e, sct in zip(["A", "B", "C"], (10.0, 20.0, 30.0)):
+            ch.add_msg(e, sct)
+        agg._sim_inflight_expected = {"A": 10.0, "B": 20.0, "C": 30.0}
+
+        # Commit the smallest-sct grad (A). _sim_recv_min_grad reasserts the hold.
+        scts = agg._drain(ch, ["A", "B", "C"], 1)
+        assert scts == [10.0]
+        # A committed -> slot released; B, C still in flight -> keep their slots.
+        assert ch._selector.selected_ends["agg"] == {"B", "C"}
+        assert "A" not in ch._selector.all_selected
 
     def test_triplet_guard_pruned_to_busy_on_commit(self):
         agg = _residence_agg(residence=True)

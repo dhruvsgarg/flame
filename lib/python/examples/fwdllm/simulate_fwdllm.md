@@ -131,7 +131,7 @@ the true current picture.* The `§K` column points at the full rationale.
 | 3 | Commit cadence | fixed `agg_goal` | endogenous **variance-gated dynamic-K** | the emergent layer the cifar ladder doesn't model; V/DK/G rungs verify it | §F.1 |
 | 4 | sct delay model | `sct = send + max(gpu, D)` (sleep-to-fill-budget) | `sct = send + gpu + D` (**additive**) | fwdllm's real mode sleeps D *on top of* GPU time; copying cifar's `max()` would desync real<->sim | **K-D2** |
 | 5 | Per-eval sct | distinct eval sct, ~20x eval speedup | **collapses to the train sct** | eval lives on the aggregator; forward-grad "train" IS a forward pass (no 20x factor); trainer eval msg is a utility report, not a clocked commit | **K-D3** |
-| 6 | Slot release | per-commit (inside `_sim_recv_min`), one ledger | **two-lifetime split at the boundary** — compute slot (`selected_ends`→`extra`) frees on grad RETURN; re-pick guard (`all_selected`→`filtered_ends`) frees on COMMIT | async_oort already tracks both ledgers; conflating them starved concurrency (D-e). Split: a returned trainer frees its slot (real frees on receipt) but stays un-re-pickable until commit, surviving carry + rollback | **K-D5**/**K-D16**, principle #4 |
+| 6 | Slot release | per-commit (inside `_sim_recv_min`), hold slot to COMMIT | **same as felix — hold slot to COMMIT** (`selected_ends` AND `all_selected` held for every dispatched-but-not-committed trainer, released on commit) | a returned-but-uncommitted trainer is still in flight in VIRTUAL time (grad commits when vclock reaches sct), so its slot is occupied; K-D16 briefly freed it on physical RETURN → undercounted `in_flight` 3× (K-D17b reverted, realigned with felix) | **K-D5**/**K-D16**/**K-D17b**, principle #4 |
 | 7 | Buffered-but-uncommitted grad on rollback | carried across the barrier | **carried** (async/fluxtune, K-D12) — commit-then-carry + Option-A slot/guard split (K-D16); **dropped** stays correct for sync (c≈agg_goal, no surplus) | drop was benign only for `\|selected\|≈agg_goal` (sync); fluxtune (c=10≫agg_goal=3) dropped ~7 grads/cycle → 2× passes → reversed to carry; the carry then needed the slot-release timing fix (K-D16) | **K-D6**, **K-D12**, **K-D16**, §L |
 | 8 | Async drain primitive | `_sim_recv_min` verbatim | purpose-built `_sim_recv_min_grad` / sync `_sync_sim_recv_first_k` (reuse the primitives, fork the orchestration) | `_sim_recv_min`'s per-commit slot release + withheld/staggered paths key on WEIGHTS semantics -- wrong for a grad pool released on the agg-goal boundary | **K-D4** |
 | 9 | `time_mode` default | `"simulated"` | `"real"` (getattr fallback) | fwdllm's entire config corpus is `time_mode: real` and shipped with no sim path; a "simulated" default risks silently half-activating an unbuilt path | **K-D1** |
@@ -313,8 +313,10 @@ from a *compounding* variance-feedback loop (the headline fwdllm risk, §G). **M
   advances every agg-goal boundary it does NOT block re-pick of a *carried* trainer across the boundary, and
   `_trainer_state_dict` was never even populated — so **Option B is unsafe** and A is required. Landed: free
   `selected_ends` (compute slot) on RETURN, hold `all_selected` (re-pick guard) to COMMIT, carry the grad,
-  survive the rollback boundary; triplet guard now populated at dispatch. See §H open-root #1 for the
-  root-cause and K-D16 for the as-built. *Original options analysis kept below for the record.* The bug: the
+  survive the rollback boundary; triplet guard populated on grad RETURN (**corrected in K-D17** — the K-D16
+  as-built stamped it at DISPATCH, which froze the pool before the first commit and deadlocked the re-run).
+  See §H open-root #1/#1b for the root-cause and K-D16/K-D17 for the as-built. *Original options analysis
+  kept below for the record.* The bug: the
   K-D12 commit-then-carry fix leaves a
   returned-but-uncommitted trainer in the selector's `all_selected`, which the dispatch top-up reads as an
   occupied compute slot (`extra = c − |all_selected|`, `count_avl_train` excludes `all_selected`,
@@ -441,27 +443,68 @@ so what we keep is (1) the current per-baseline state table, (2) the **open root
 ledger (what we tried or believed that was wrong, so we don't retry it). Per-run detail lives in the JSON +
 git history; the as-built rationale lives in §K.*
 
-**Status (2026-07-03 → Option-A landed; the numbers below are the PRE-fix run, `max_data_id=3` — a SHORT
-convergence run, agg_goal fwdllm/plus=10, fluxtune=3).** Batches 1–2 + §L Batch-2.5 + the **Option-A D-e fix
-(K-D16)** + the **clock-family re-key (#2)** + the **field-coverage alias (#3)** are landed & pytest-green
-(`tests/mode` 421 passed / 7 skipped incl. parity sub-package). Residence (R1) is exact on all three; grad
-values are mode-invariant. **No open sim-mechanism root remains in code** — the three checker/mechanism roots
-below (#1 D-e, #2 clock-family axis, #3 field-name) are FIXED and moved to *Fixes landed*; the only remaining
-action is the **§L step-6 re-run** to bank the post-fix numbers (esp. fluxtune concurrency vs real ~5.8 and
-wall) and a **longer run (max_data_id=10, the yaml default)** to clear the #4 short-run truncation. The table
-below is the pre-fix baseline the re-run is measured against.
+**Status (2026-07-04 EOD → K-D17 + K-D17b landed. in_flight measurement FIXED (sim 9.49 vs real 9.75) but
+K-D17b introduced an R1 residence regression (0%→44.7%). STOPPED before the overnight run; resume from the
+"NEXT SESSION" block below.)**
+> **NEXT SESSION (2026-07-05) pickup — start here.**
+> **Where we are:** fluxtune sim is healthy (no deadlock, K-D17). K-D17b made `in_flight` correct (virtual
+> in-flight ~9.5, matches real ~9.75) and fixed V2 — BUT it broke R1 residence (44.7% same-trainer in-flight
+> overlap; run `020254`, report `parity_fluxtune_20260704_020254.json`). Sync baselines (fwdllm/fwdllm_plus)
+> are untouched by all this and are safe to ground-run anytime.
+> **The R1 bug (prime hypothesis, ~1 fix + 1 smoke to confirm):** `_sim_hold_busy_slots`
+> (`fwdllm_aggregator.py`) resets buffered-but-uncommitted ends to `KEY_END_STATE=NONE` to preserve their
+> `selected_ends` slot. But async_oort selects by avail/end-state and does NOT exclude `all_selected`, so a
+> NONE-state buffered trainer is re-selectable → re-dispatched while in flight → R1 overlap.
+> **Fix options to try (in order):** (1) **Drop the `KEY_END_STATE=NONE` reset** for buffered ends and rely
+> only on the explicit `selected_ends[requester].add(eid)` to hold the slot — then re-run a fluxtune sim
+> smoke and check BOTH `sel_ends`≈8 (measurement still good) AND R1≈0% (`grep SIM_GRAD_RECV`; run
+> `run_parity.py --baselines fluxtune`). If the channel re-strips the slot without the reset (sel_ends drops
+> back to ~3), then (2) make async_oort's selection **exclude `all_selected` members** (or keep buffered ends
+> in RECV state, not NONE) so the guard actually blocks re-pick while the slot stays counted. (3) Failing
+> that, keep buffered ends un-selectable via the K-D17 triplet (verify the triplet covers them — it may have
+> advanced). **Validate:** R1 back to 0%, in_flight still ~9.5, `tests/mode` green, add a pytest that a
+> buffered-uncommitted trainer is NOT re-selected.
+> **Then:** re-check `selection_detail.chosen` (sim 0.83 vs real 1.76 — likely follows R1) and the
+> throughput/commits/terminal fails; run the **longer run** (`--max-data-id` dropped → 10) to clear the #4
+> short-run truncation before judging V1/g2/throughput. Only after R1 is clean, launch the overnight
+> grounding run: `bash run_sequential.sh --mode both --delays on --max-runtime-s 3600 --yes`.
+> **Do NOT redo:** the in_flight measurement fix (K-D17b) is correct and validated — keep the hold-to-commit;
+> only the state-reset that re-opens selection is at fault. The temporary `[SIM_GRAD_RECV] ... inflight_exp=/
+> sel_ends=` diagnostic in `_sim_recv_min_grad` is useful — keep it until R1 is closed, then optionally trim.
+
+**Status (2026-07-04 → K-D17 landed; the K-D16 re-run DEADLOCKED, root-caused to two bugs, now fixed —
+awaiting a fresh fluxtune re-run).** Batches 1–2 + §L Batch-2.5 + Option-A (K-D16) + clock-family re-key (#2)
++ field alias (#3) + the **K-D17 drain-gate + triplet-at-return fixes** are landed & pytest-green (full
+`tests/mode` 314 passed / 7 skipped). The **post-K-D16 fluxtune smoke (`run_20260703_230407`) did NOT
+recover — it deadlocked** (1 cohort dispatched, only 2 grads committed, 0 `agg_round` events, in-flight
+0.28, 1663 empty select-rounds). Root cause = **two independent bugs (K-D17)**: (A) the sim drain loop
+gated on channel RECV state instead of the `_sim_buffer` — the greedy first drain emptied RECV and stranded
+the other ~8 already-received grads (`"no ends yet"` ×1681), so agg_goal=3 was never met from a full cohort;
+(B) K-D16 stamped the async_oort re-pick triplet at DISPATCH, freezing the whole eligible pool before any
+commit could advance the version (bootstrap case the D6 note missed). Both fixed: drain now keys on the
+buffer/in-flight set; the triplet is stamped on grad RETURN. Residence (R1) exact on all three; grad values
+mode-invariant. **Remaining action: a fresh fluxtune re-run** to bank concurrency (vs real ~5.8) / wall / U3
+/ V1 / selection, then the **longer run (`max_data_id_progress=10`)** to clear #4. The table below is the
+PRE-K-D16 baseline the re-run is measured against (the K-D16 run is void — it deadlocked).
 
 **Per-baseline ground state (PRE-fix; re-run pending):**
 | baseline | wall real→sim | R1 resid | U3 staleness | V1/V2 cadence | status |
 |---|---|---|---|---|---|
 | **fwdllm** (sync) | 107→**96s** ✓ | PASS (0%) | PASS | PASS / PASS | clock-family axis re-keyed (#2 fixed); re-run to confirm |
 | **fwdllm_plus** (sync) | 335→**184s** ✓ | PASS (0%) | PASS | FAIL(trunc) / FAIL | #2 fixed; V1 trunc needs the longer run (#4); selection_detail after re-run |
-| **fluxtune** (async) | 125→**304s ✗ (2.4×)** | PASS (0%) | **FAIL** (sim 0.23<real 0.57) | FAIL / FAIL | **D-e FIXED (Option A, K-D16)**; re-run measures recovery of wall/U3/V1/selection |
+| **fluxtune** (async) | 125→304s (pre) | **K-D17b REGRESSED: 44.7%** (was 0%) | PASS | V2 now PASS / — | K-D17→K-D17b: **in_flight FIXED (sim 9.49 vs real 9.75)** + V2 PASS, but **R1 residence broke (0%→44.7%)**; STOPPED, see NEXT SESSION block |
 
 ### Open roots (fix lowest-rung-first)
 
-**Roots #1 (D-e), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *Fixes landed*); what
-remains is operational — the re-run to bank post-fix numbers.**
+**TOP OPEN ROOT: #1c — the R1 residence regression K-D17b introduced (see NEXT SESSION block above). Fix this
+before anything else; do not launch the overnight run until R1 is back to ~0%.** Roots #1 (D-e), #1b (K-D17
+deadlock), #2 (clock-family axis), #3 (field_coverage) are FIXED in code (see *Fixes landed*).
+
+1c. **[OPEN — REGRESSION from K-D17b] R1 in-flight overlap 0% → 44.7% (fluxtune).** K-D17b's hold-to-commit
+   made `in_flight` correct (9.49 vs real 9.75) but re-dispatches a trainer while its prior grad is still in
+   flight. Root lead: buffered ends reset to `KEY_END_STATE=NONE` become re-selectable because async_oort
+   doesn't exclude `all_selected`. Full analysis + fix options in the NEXT SESSION block (top of §H) and
+   K-D17b (§K). Run `020254` / `parity_fluxtune_20260704_020254.json`.
 
 1. **[FIXED — Option A / K-D16] D-e async concurrency starvation (fluxtune).** *Symptom (pre-fix):* sim kept
    ~1.5 trainers computing vs real's ~5.8, did fewer forward passes (89 vs 109) yet took **2.4× the wall**
@@ -470,9 +513,18 @@ remains is operational — the re-run to bank post-fix numbers.**
    ~1/cycle. `selected_ends`/`all_selected` conflated compute-slot occupancy with the re-pick guard. *Fix:*
    Option A two-lifetime split — free `selected_ends` on RETURN (slot reopens → a DIFFERENT trainer refills
    C, mirroring real's channel freeing on receipt), hold `all_selected` (guard) to COMMIT so
-   one-in-flight-per-trainer survives the carry + rollback. Details K-D16 / §F-D6. **Remaining: the §L step-6
-   re-run must confirm the recovery** (concurrency, wall, U3, V1, selection) — the absolute in-flight number
-   is emergent, measured not asserted.
+   one-in-flight-per-trainer survives the carry + rollback. Details K-D16 / §F-D6. **NOTE:** the K-D16 re-run
+   surfaced root #1b (K-D17) — the concurrency-recovery numbers are only measurable AFTER the K-D17 fixes.
+
+1b. **[FIXED — K-D17] Fluxtune deadlock in the K-D16 re-run (drain-gate + triplet-at-dispatch).** The K-D16
+   fluxtune smoke deadlocked: 2/10 grads committed, 0 `agg_round`, in-flight 0.28, 1663 empty select-rounds.
+   Two bugs: **(A)** `_aggregate_grads_async` gated the sim drain on `channel.ends(VAL_CH_STATE_RECV)` (empty
+   after the first greedy buffer-fill) → `"no ends yet"` ×1681 → the ~8 buffered grads never popped → agg_goal
+   never met; **(B)** K-D16 stamped the async_oort triplet at DISPATCH → whole pool matched `agg_version_state`
+   → `filtered_ends=0` → no re-dispatch, and the version never advanced to unfreeze it (bootstrap case D6
+   missed). *Fix:* drain keys on `_sim_buffer`/`_sim_inflight_expected` (not RECV); triplet stamped on grad
+   RETURN (not dispatch). Full `tests/mode` green (314/7). Details **K-D17**. **Remaining: the fresh fluxtune
+   re-run** confirms recovery (concurrency, wall, U3, V1, selection) — emergent, measured not asserted.
 
 2. **[FIXED — #2] Clock family re-keyed to the `data_id` progress axis.** `throughput_parity` /
    `total_commits_parity` / `terminal_state_parity` now count units on the axis the run advances (a unified
@@ -489,9 +541,11 @@ remains is operational — the re-run to bank post-fix numbers.**
    0.33. **Fix = the longer run** (`max_data_id_progress=10`, already the yaml default — do NOT pass
    `--max-data-id 3`), not code. For fluxtune, partly downstream of the now-fixed D-e.
 
-5. **[OPEN — re-validate after re-run] fluxtune selection_detail / preferred_duration (oort fidelity).**
-   Likely downstream of D-e (a collapsed in-flight set changed the selection sequence). Re-validate after the
-   re-run before treating as its own root.
+5. **[MOSTLY FIXED — K-D17b] fluxtune selection_detail (in_flight).** Was NOT an oort-fidelity gap: the
+   `in_flight` metric = `len(selected_ends)`, and K-D16 freed `selected_ends` on physical RETURN, so it
+   measured physically-COMPUTING (~2.7) not virtual-time in-flight (~7.8, measured — close to real 9.75).
+   K-D17b holds the slot to COMMIT (felix-aligned) so `len(selected_ends)` = virtual in-flight. Residual
+   ~7.8 vs 9.75 (~20%) + preferred_duration to re-validate on the fresh re-run.
 
 ### Fixes landed (what worked — do not redo)
 
@@ -505,12 +559,22 @@ remains is operational — the re-run to bank post-fix numbers.**
 - **Residence: commit-then-carry + R1/W1 rungs** — killed the 2× recompute (228→~89 passes); R1 in-flight
   overlap exact 0% on all three (K-D12/K-D14). *(This fix also introduced D-e — the carry was right, the
   slot-release timing was not; now resolved by K-D16 below.)*
-- **D-e: Option A two-lifetime split (K-D16)** — override fwdllm's `_sim_hold_busy_slots` so a
-  returned/carried trainer frees its compute slot (`selected_ends` → `extra` reopens → concurrency refills to
-  C with a different trainer) but stays un-re-pickable (`all_selected` guard) until COMMIT; carry + rollback
-  survive. Also populate the `(model_version, data_id, iteration)` triplet at dispatch so async_oort's
-  within-cycle filter has real state. Pytest-green (`TestOptionASlotGuardSplit`, residence suite);
-  concurrency recovery measured by the §L step-6 re-run.
+- **D-e: Option A two-lifetime split (K-D16)** — *SUPERSEDED by K-D17b.* Freed the compute slot
+  (`selected_ends`) on physical RETURN while holding the `all_selected` guard to COMMIT. The slot-on-return
+  half was wrong for virtual time (undercounted `in_flight` 3×); reverted in K-D17b. The `all_selected`
+  guard-to-commit half survives.
+- **K-D17: drain-gate + triplet-at-return (unblocks the K-D16 deadlock)** — (A) `_aggregate_grads_async`
+  now drains while `_sim_buffer`/`_sim_inflight_expected` is non-empty even when the channel has no RECV end
+  (the sct buffer, not RECV state, is the sim source of truth); (B) the async_oort re-pick triplet is stamped
+  on grad RETURN (in `_process_single_trainer_message`), not at dispatch, so the eligible pool isn't frozen
+  before the first commit. `test_fwdllm_sim_drain_and_repick.py`.
+- **K-D17b: hold the compute slot to COMMIT (felix-aligned; fixes the in_flight mis-measurement)** —
+  `_sim_hold_busy_slots` now holds EVERY dispatched-but-not-committed trainer (computing ∪ carried) in BOTH
+  `selected_ends` and `all_selected` until commit, called per-commit in `_sim_recv_min_grad`. `in_flight`
+  (= `len(selected_ends)`) and `extra` now reflect virtual-time in-flight, matching felix
+  (`asyncfl::_sim_hold_busy_slots`/`_sim_recv_min`). Reverts K-D16's slot-on-return; safe now that K-D17
+  fixed the drain. Full `tests/mode` green (315/7); `TestVirtualInflightSlotHold`. Concurrency/downstream
+  recovery measured by the fresh fluxtune re-run.
 - **Clock-family re-key to `data_id` (#2)** — unified `_progress_axis`/`_per_progress_last_event` helper;
   `throughput`/`total_commits`/`terminal_state` now count on the axis the run advances (fwdllm `data_id`,
   normal FL `round`). async_cifar10 byte-identical (auto-detects `round`). `TestProgressAxisRekey`.
@@ -530,6 +594,13 @@ remains is operational — the re-run to bank post-fix numbers.**
 
 ### Dead ends & corrections — do NOT retry
 
+- **"K-D16 fixed fluxtune; the re-run just banks numbers" (believed at K-D16 landing).** WRONG — the K-D16
+  re-run DEADLOCKED (2/10 grads, 0 `agg_round`). Two bugs (K-D17): the sim drain was gated on channel RECV
+  state (not the buffer), and K-D16 stamped the re-pick triplet at DISPATCH (freezing the pool pre-commit).
+  *Lesson:* stamping a "already contributed this triplet" guard at DISPATCH conflates in-flight with
+  contributed and, since the agg version only advances on commit, freezes the pool at bootstrap. The guard
+  belongs at RETURN. And the sim commit path's readiness must key on its OWN reorder buffer, never on the
+  real transport's RECV bookkeeping (principle #8).
 - **K-D6 "drop stranded grads at the agg-goal boundary"** — REVERSED for async (K-D12). The
   "|selected| ≈ agg_goal" premise holds only for the sync baselines; for c ≫ agg_goal (fluxtune) it dropped
   ~7 grads/cycle → residence violation. Commit-then-carry replaced it. (Drop stays correct for sync.)
@@ -852,6 +923,87 @@ decision. Keep appending; do not rewrite history (supersede with a new dated ent
   `tests/mode/test_fwdllm_sim_grad_residence.py::TestOptionASlotGuardSplit`. **Concurrency is emergent** —
   the split restores dispatch top-up; the actual in-flight number (vs real ~5.8) is measured by the §L step-6
   re-run, not asserted analytically.
+
+- **K-D17  Two bugs that deadlocked the K-D16 fluxtune re-run (drain-gate + triplet-at-dispatch).** The
+  post-K-D16 fluxtune syn_0 smoke (`run_20260703_230407`) did NOT recover — it DEADLOCKED: 1 cohort of 10
+  dispatched, **only 2 grads ever committed** (agg_goal=3 never met once), **0 `agg_round` events** (so
+  `vclock_telemetry`/`throughput`/`total_commits`/`terminal_state` all can't run), in-flight collapsed to
+  **0.28** (worse than pre-fix ~1.5), and the agg spun 1663 empty select-rounds (`feasible_extra: 0` ×1617)
+  until `max_runtime_s`. Two independent bugs, one masked the other:
+  - **Bug A — sim drain gated on channel RECV state, not on `_sim_buffer`.** `_aggregate_grads_async`
+    early-returned (`"no ends yet"`, **1681/1729** loop passes) whenever `channel.ends(VAL_CH_STATE_RECV) is
+    None`. But `_sim_recv_min_grad` greedily drains ALL ready channel messages into `_sim_buffer` on its
+    FIRST call (`recv_fifo(..., first_k=len(to_probe))`), which empties RECV — so the 8-9 already-received
+    grads sat in the buffer and were never popped (`buf_depth=9` then stuck). The commit path's readiness
+    must key on its OWN reorder buffer / in-flight set, not the real transport's RECV bookkeeping
+    (principle #8: RECV gating is a real-transport artifact, no sim analog). *Fix:* fall through to
+    `_sim_recv_min_grad` when `len(_sim_buffer) > 0 or _sim_inflight_expected` even with RECV empty; real
+    path unchanged (guarded on `self.simulated`).
+  - **Bug B — the K-D16 triplet was stamped at DISPATCH.** Stamping the whole cohort at the current
+    `_curr_agg_version` made every dispatched trainer match `agg_version_state`, so async_oort's filter
+    (`async_oort.py:1660`, skip if equal) excluded the ENTIRE pool → `filtered_ends=0` → no re-dispatch. The
+    version only advances at a commit boundary, which (via Bug A) is never reached → permanent freeze. **This
+    is the bootstrap case the D6 analysis missed:** D6 reasoned the triplet is safe because "it advances
+    every agg-goal boundary" — true only once commits flow; BEFORE the first commit (or whenever the
+    in-flight set alone can't reach agg_goal), it freezes the pool. Conceptually the triplet means "already
+    CONTRIBUTED this triplet," a property of a RETURNED trainer; an in-flight-but-not-returned trainer is
+    already guarded by its compute slot (`selected_ends`). *Fix:* stamp `_trainer_state_dict[end] =
+    _curr_agg_version` on grad RETURN (in `_process_single_trainer_message`, residence-gated), NOT at
+    dispatch. Preserves every K-D16 benefit (slot frees on return, guard holds return→commit, R1 intact) and
+    unfreezes the top-up.
+  Either fix alone breaks the deadlock (A lets the initial cohort drain to a commit which advances the
+  version and unfreezes the triplet; B restores the stream of RECV transitions that masked A pre-K-D16) —
+  both landed for correctness. **Where:** `fwdllm_aggregator.py::_aggregate_grads_async` (drain gate) +
+  `_process_single_trainer_message` (triplet on return) + `_distribute_weights_async` (dispatch stamp
+  removed); `tests/mode/test_fwdllm_sim_drain_and_repick.py` (`TestDrainGateNotBlockedByEmptyRecv` +
+  `TestRepickTripletStampedOnReturn`). **Scope:** fwdllm class only; async_oort/oort/asyncfl + sync path
+  untouched (empty triplet map ⇒ inert). Full `tests/mode` green (314 passed / 7 skipped). Concurrency/wall
+  recovery is emergent — measured by the fluxtune re-run, not asserted.
+
+- **K-D17b  The K-D17 fluxtune concurrency "gap" was mostly a MEASUREMENT artifact — revert the K-D16
+  Option-A slot split, realign with felix (hold the slot to COMMIT).** The post-K-D17 fluxtune run was
+  healthy (no deadlock) but `selection_detail` still FAILed: reported `in_flight` sim **3.38** vs real 9.75.
+  A diagnostic (`inflight_exp` = dispatched-not-committed vs `sel_ends` = `len(selected_ends)`) settled it:
+  the sim keeps **~7.8** trainers in flight in VIRTUAL time (close to real's 9.75), but the `in_flight`
+  telemetry reads `len(selected_ends)` ≈ **2.73** — trainers physically COMPUTING right now. *Root:* the
+  `in_flight` metric is `len(selected_ends)` (`selector/__init__.py:161`), and K-D16 Option A freed
+  `selected_ends` on **physical RETURN** — a wall event with no virtual-time meaning. In virtual time a
+  returned-but-uncommitted trainer is still in flight (its grad commits only when the vclock reaches its
+  sct), so its slot is genuinely occupied. Freeing it undercounts `in_flight` 3× AND makes
+  `extra = c − len(selected_ends)` read false free capacity (the selector churns `desired_extra` 7–10,
+  blocked by the guard). *Confirmed against felix:* `asyncfl/top_aggregator.py::_sim_hold_busy_slots`
+  (:1453) holds the FULL dispatched-but-not-committed set in `selected_ends` and `_sim_recv_min` (:606-627)
+  releases only on COMMIT; its docstring names freeing-the-slot-on-return as the "over-selection bug." So
+  fwdllm's Option-A split was a deviation from the proven reference; freeing the slot manifested as an
+  UNDER-count only because fwdllm's extra `all_selected` guard blocked the over-selection felix warns of.
+  *Fix (K-D17b):* rewrite `_sim_hold_busy_slots` to hold EVERY outstanding trainer (`_sim_inflight_expected`
+  ∪ buffered surplus, minus committed) in BOTH `selected_ends` and `all_selected` until commit, and call it
+  per-commit inside `_sim_recv_min_grad` (mirroring felix's per-commit reset, since recv_fifo marks
+  freshly-buffered ends RECVD and the channel strips their slots). Now `len(selected_ends)` = virtual-time
+  in-flight, so both `in_flight` and `extra` are correct. Safe to revert Option A *now* only because K-D17
+  fixed the drain (the pre-K-D16 "concurrency 1.5" was the drain stall, not holding-to-commit). **Where:**
+  `_sim_hold_busy_slots` + `_sim_recv_min_grad` (per-commit hold) + `_release_sim_slots_at_agg_goal`
+  (docstring); `tests/mode/test_fwdllm_sim_grad_residence.py::TestVirtualInflightSlotHold` (+ updated
+  `TestCommitThenCarryResidenceOn`). Full `tests/mode` green (315/7).
+
+  **VALIDATION RESULT (run `020254`, 2026-07-04) — PARTIAL WIN + A NEW R1 REGRESSION (do not ship as-is):**
+  - ✅ **in_flight measurement FIXED.** `sel_ends` 2.73 → **7.78**, matching `inflight_exp` (8.10). In the
+    parity battery `selection_detail.in_flight` = sim **9.49** vs real 9.75 (**rel_diff 0.027**, was 0.65).
+    The core goal is met — the telemetry now reports virtual-time in-flight.
+  - ✅ **V2 var-trajectory now PASSES** (sim 0.894 vs real 1.008, KS 0.177<0.20); U3/S2/conv/W1 pass.
+  - ❌ **R1 residence REGRESSED: 0.0% → 44.7% overlap** (real 1.8%, tol 2%). K-D17b re-dispatches a trainer
+    while its prior grad is still in flight. **Root lead:** `_sim_hold_busy_slots` resets buffered-but-
+    uncommitted ends to `KEY_END_STATE=NONE` (to stop the RECVD-strip of their slot, mirroring felix), but
+    **async_oort's selection filter keys on avail-state/end-state, NOT on `all_selected`** (`async_oort.py`
+    ~1643-1695 filters by `count_avl_train`+triplet; `all_selected` at :405 is only *logged*). So a NONE-state
+    buffered trainer looks idle/available -> re-selected -> overlapping in-flight interval -> residence
+    violation. fwdllm's async_oort does not exclude `all_selected` the way felix's path effectively does.
+  - ❌ still failing: `selection_detail.chosen` (sim 0.83 vs real 1.76), throughput/total_commits/terminal
+    (sim commits faster — 3 vs 1 at matched virtual budget 27.2s; partly short-run #4), field_coverage,
+    avail_composition, V1/g2 (#4 truncation).
+
+  **STOPPED before the overnight run** — R1 is a correctness regression; banking 6h of runs on it would be
+  wrong. Resume steps are in **§H -> "NEXT SESSION (2026-07-05) pickup"**.
 
 ---
 

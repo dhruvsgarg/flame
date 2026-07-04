@@ -217,6 +217,12 @@ class _FakeSelChannel(_FakeGradChannel):
         self._selector = _FakeSelector(ends)
         self._ends = {e: _FakeEnd() for e in ends}
 
+    def add_msg(self, end, sct, budget=None, release_at=0):
+        # Keep the real channel invariant has(e) <=> e in _ends (the slot-hold
+        # path does channel._ends[e] guarded only by channel.has(e)).
+        super().add_msg(end, sct, budget, release_at)
+        self._ends.setdefault(end, _FakeEnd())
+
 
 class TestAsyncBoundaryReleasesSlots:
     def test_async_boundary_frees_every_committed_slot(self):
