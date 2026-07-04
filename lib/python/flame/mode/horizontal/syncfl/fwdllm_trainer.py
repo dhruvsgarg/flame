@@ -833,7 +833,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        time.sleep(1)
+        # Per-round MQTT throttle ("don't overwhelm mqtt", :494) chained at the
+        # tail of the trainer loop (compose(): ...>> task_put_grad >> pause_exec).
+        # It is a real-transport artifact with NO sim analog (principle #8): the
+        # sim's inter-round barrier is the blocking recv in _fetch_weights + the
+        # sct reorder buffer, not a wall pause. Charging 1 wall-s/round to the
+        # sim is pure slowdown with zero fidelity value (root #13, Phase 2).
+        # Gate off in sim; real mode byte-identical.
+        if not getattr(self, "simulated", False):
+            time.sleep(1)
         return
 
     def compose(self) -> None:

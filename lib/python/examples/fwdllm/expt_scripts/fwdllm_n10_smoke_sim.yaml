@@ -56,6 +56,12 @@ experiments:
           # default adds a data-skew confound we don't want while validating
           # the launcher mechanics.
           partition_method: uniform
+          # Phase 4c (B2, #6): widen the sim barrier's k-th-smallest sct to
+          # match real's per-trainer completion dispersion (banked real compute
+          # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
+          # active with --delays on (convergence run); inert at D=0. Calibrate
+          # to wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.9
           client_notify:
             trace: syn_0
 
@@ -76,6 +82,11 @@ experiments:
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 1800  # ...or after 30 minutes wall time
+          # Phase 4c (B1, #6): charge the MEASURED server eval_s (~13s/data_id --
+          # the syn_0 wall dominator) onto the vclock so it models real wall and
+          # sim_rate approaches/exceeds 1 (self-calibrating: uses the actual
+          # eval wall, not a constant). Delay-independent; the point of Phase 2/4.
+          sim_model_eval_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform

@@ -239,6 +239,16 @@ class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
 
+    # Phase 4a (root S1): the sim runs REAL forward-grad GPU + server eval, so
+    # its physical WALL legitimately exceeds the vclock budget by construction
+    # (#6/#13). A wall ceiling = 1× max_runtime_s therefore ALWAYS truncated the
+    # sim before its vclock reached the budget (the 2026-07-04 sign-off void).
+    # The ceiling is decoupled to a GENEROUS multiple of the budget so it is a
+    # true runaway OUTER safety, not the primary stop -- the primary stops are
+    # max_data_id_progress (matched-data_id, 4b) and vclock >= max_runtime_s.
+    # Override with an explicit `sim_wall_ceiling_s` for a tighter outer bound.
+    SIM_WALL_CEILING_FACTOR = 20.0
+
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         super().internal_init()
@@ -2659,18 +2669,25 @@ class TopAggregator(AsyncTopAgg):
                 )
                 self._work_done = True
                 return
-            # Sim wall failsafe: a well-behaved (correctly-clocked) sim finishes
-            # in <= real wall, so cap sim WALL at `sim_wall_ceiling_s` (default =
-            # the budget) so an under-modeled vclock (root #6) can't run away.
+            # Sim wall failsafe (Phase 4a, root S1): the sim does REAL GPU +
+            # server eval, so its WALL legitimately exceeds the vclock budget --
+            # a 1× ceiling truncated every sim before the vclock stop it was
+            # paired with. Decoupled to `max_runtime_s × SIM_WALL_CEILING_FACTOR`
+            # (a runaway OUTER safety), overridable by an explicit
+            # `sim_wall_ceiling_s`. Primary stops stay max_data_id_progress /
+            # vclock >= max_runtime_s.
             if self.simulated:
                 _wall = time.time() - self.agg_start_time_ts
                 _ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
-                _ceil = float(_ceil) if _ceil is not None else float(max_runtime_s)
+                _ceil = (float(_ceil) if _ceil is not None
+                         else float(max_runtime_s) * self.SIM_WALL_CEILING_FACTOR)
                 if _wall > _ceil:
                     logger.warning(
                         f"[SIM_WALL_CEILING] wall={_wall:.0f}s > ceiling={_ceil:.0f}s "
-                        f"(vclock={self._vclock.now:.0f}s) -- sim slower than budget "
-                        f"OR vclock under-modeled (root #6); stopping run."
+                        f"(={self.SIM_WALL_CEILING_FACTOR:g}× budget {max_runtime_s}s; "
+                        f"vclock={self._vclock.now:.0f}s) -- runaway outer safety "
+                        f"tripped (a healthy sim stops on max_data_id/vclock first); "
+                        f"stopping run."
                     )
                     self._work_done = True
 

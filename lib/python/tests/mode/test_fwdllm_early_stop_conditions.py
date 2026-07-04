@@ -56,6 +56,8 @@ class _FakeAggregator:
     def _distribute_weights_async(self, tag, task_to_perform="train"):
         pass
 
+    # Phase 4a: the ceiling default reads self.SIM_WALL_CEILING_FACTOR.
+    SIM_WALL_CEILING_FACTOR = TopAggregator.SIM_WALL_CEILING_FACTOR
     check = TopAggregator._check_early_stop_conditions
     _check_early_stop_conditions = TopAggregator._check_early_stop_conditions
     distribute = TopAggregator._distribute_weights
@@ -130,13 +132,37 @@ class TestEarlyStopConditions:
         agg.check()
         assert agg._work_done is True
 
-    def test_sim_wall_ceiling_stops_runaway_undermodeled_vclock(self):
-        """The root-#6 failsafe: even with vclock below budget, a sim whose WALL
-        exceeds the ceiling (default = budget) stops -- an under-modeled vclock
-        must not run the sim forever."""
+    def test_sim_wall_below_decoupled_ceiling_keeps_running(self):
+        """Phase 4a (root S1): the default ceiling is now a GENEROUS multiple of
+        the budget (SIM_WALL_CEILING_FACTOR), NOT 1×. A sim whose WALL exceeds
+        the budget but is well under budget×factor must KEEP running -- the sim
+        legitimately uses more wall than vclock (real GPU + eval). This is the
+        S1 truncation the old 1× ceiling caused."""
         agg = _FakeAggregator(
             max_runtime_s=3600.0, simulated=True, vclock_now=80.0,   # under budget
-            agg_start_time_ts=time.time() - 3601.0,                  # wall > ceiling
+            agg_start_time_ts=time.time() - 7200.0,                  # wall 2× budget
+        )
+        agg.check()
+        assert agg._work_done is False   # 7200s < 20× × 3600s ceiling
+
+    def test_sim_wall_ceiling_stops_true_runaway(self):
+        """The outer safety still fires on a genuine runaway: wall beyond
+        budget × SIM_WALL_CEILING_FACTOR stops the sim."""
+        over = 3600.0 * TopAggregator.SIM_WALL_CEILING_FACTOR + 10.0
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,
+            agg_start_time_ts=time.time() - over,
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_explicit_sim_wall_ceiling_overrides_default(self):
+        """An explicit `sim_wall_ceiling_s` is honored verbatim (tighter outer
+        bound) -- not multiplied by the factor."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,
+            sim_wall_ceiling_s=100.0,
+            agg_start_time_ts=time.time() - 101.0,   # wall > explicit ceiling
         )
         agg.check()
         assert agg._work_done is True

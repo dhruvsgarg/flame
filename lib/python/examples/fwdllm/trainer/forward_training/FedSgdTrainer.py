@@ -454,6 +454,15 @@ class FedSGDTrainer(Trainer):
                     f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
                 )
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
+                    # Sim availability is enforced AGGREGATOR-side (ClientAvailability
+                    # send-gate / vclock-jump to the next avail event), never by a
+                    # trainer wall sleep: sim time cannot advance while a trainer is
+                    # blocked on time.sleep, so this spin would freeze the virtual
+                    # clock (root #13). The sim therefore never spins here -- it
+                    # proceeds and lets the agg-side gate withhold. Mirrors
+                    # async_cifar10's gated trainer avail wait; real byte-identical.
+                    if self.simulated:
+                        break
                     time.sleep(1)
                 logger.info(
                     f"Trainer id {self.trainer_id} is back to available to train."

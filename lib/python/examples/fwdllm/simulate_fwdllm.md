@@ -659,10 +659,10 @@ summary. Detailed rationale lives in the "Open roots" prose below + §K.*
 
 | # | issue (1 sentence) | baseline(s) | principled fix / next step |
 |---|---|---|---|
-| **#13** ⭐⭐ | **sim delivers a SLOWDOWN not speedup (`sim_rate`≈0.37×): the sim path still pays real waits it must skip** — trainer `await_join`+MQTT `recv_wrapper` per round (`fwdllm_trainer.py:213,218`), agg grace `recv_fifo` (≥2s floor) + `await_join` (`fwdllm_aggregator.py:2280/2427`), ungated `sleep(1)` backoffs | fwdllm, fwdllm_plus (+ fluxtune) | **THE root of S1/#6.** Gate the sim critical-path real-waits `and not self.simulated` / drive trainer progress off the vclock, so sim wall ≈ real GPU only and `vclock ≥ wall`. Mirror asyncfl base's skip pattern (principle #12/#13). Shared-base blast radius → full `tests/` (principle #9). Phase 2 of the plan below. |
-| **S1** ⭐ | sign-off run unusable: every sim died on `[SIM_WALL_CEILING]` (wall≫vclock for a real-compute sim), real died on `max_runtime_s` wall, so real/sim reached mismatched `data_id` — no comparison possible | all (2026-07-04 PM) | **DOWNSTREAM of #13:** once the sim runs faster than wall (`sim_rate>1`) the vclock-budget stop becomes reachable within the ceiling. Also: **stop the parity run on a matched committed-`data_id` target** (finite `--max-data-id`), not a wall/vclock budget; **decouple `sim_wall_ceiling_s`** to an outer safety. Confirms #6, not a new mechanism bug. |
+| **#13** ⭐⭐ | **sim delivers a SLOWDOWN not speedup (`sim_rate`≈0.37×).** Phase-2 skips **LANDED (K-D23)**: the doc's ranking was INVERTED by the `134801` telemetry + async_cifar10 map — the trainer `await_join`/`recv_wrapper` is barrier-wait that OVERLAPS irreducible agg eval+GPU (recv MUST stay), and the agg grace/`sleep(0.1)`/`await_join` were ALREADY sim-correct. The genuinely skippable per-round wall was the trainer `pause_execution` throttle + the `_check_availability` avail-spin. | fwdllm, fwdllm_plus (+ fluxtune) | **Phase-2 skips DONE (fwdllm-only, `and not self.simulated`, 146 green).** REMAINING for real-run `sim_rate>1`: **#6/Phase-4c** must fold `eval_s` (~13s/data_id, the syn_0 wall dominator) into the vclock, then the sign-off run confirms `vclock ≥ wall` live. Phase 2 exit (`sim_rate>1` on SYNTHETIC timings) is met. |
+| **S1** ⭐ | sign-off run unusable: every sim died on `[SIM_WALL_CEILING]` (wall≫vclock for a real-compute sim), real died on `max_runtime_s` wall, so real/sim reached mismatched `data_id` — no comparison possible | all (2026-07-04 PM) | **FIXED (Phase 4a / K-D24):** `sim_wall_ceiling_s` decoupled to `max_runtime_s × 20` (was 1×), so the ceiling is a runaway OUTER safety, not the primary stop — a real-compute sim is no longer truncated before its vclock/data_id stop. Sign-off run should also **stop on a matched `--max-data-id`** (present: `max_data_id_progress`), not a wall/vclock budget. |
 | **#12** | `--delays on` WAS honored by the trainer (real slept 0.4–1.8s; sim modeled it), but (a) `training_delay_factor=10` (`trainer_base.yaml:96`) shrank the 4–18s registry delay ÷10, (b) the agg-side sim-folds (`sim_model_eval_time`/`sim_straggler_spread_s`) were never wired from the launcher, (c) agg `training_delay_enabled` is an orphaned/misleading field, (d) banked `execution_config.yaml` omits the flag | all | **Config-flow fix (Phase 3 below).** Fan `--delays`/folds into `config_overrides.hyperparameters` for BOTH roles (mirror `agg_goal` single-source); expose `training_delay_factor` as a knob; bank the effective values + a post-launch assertion that banked config == requested flags; retire/wire the orphan. Extensible to async_cifar10 (same `runner.py`). |
-| **#6** ⭐ | sim vclock under-models real wall — **CONFIRMED again by the sign-off run** (fwdllm 3.2 vclock-s vs 15.5 wall-s/round; fluxtune 0.8 vs 3.6; fwdllm_plus 3.2 vs 59.7). **Decomp (K-D20): only 8.7 s/round is GENUINE** (gap ~2.9×); 4.7 s/round is harness artifact. NOTE: measured at D≈0 (#12), so the gap is inflated vs a D>0 run | fwdllm, fwdllm_plus (+ fluxtune 2.4× wall) | **PRIORITY.** Fold the two genuine unmodeled terms into `sct`: **`eval_s`** (+3.34 s/round, server eval) + **widen the barrier straggler spread** to real `trainer_speed_s` (+2.3 s/round). Do NOT add drain-tail/sleeps/localhost-MQTT (artifact, principle #1). Recurring sanity = `\|real_wall − sim_vclock\|/data_id`→~0. Piece A (vclock-budget stop) **landed but is unreachable until S1+#12 fixed** (ceiling truncates first). |
+| **#6** ⭐ | sim vclock under-models real wall — genuine unmodeled terms are `eval_s` (server eval, the syn_0 wall dominator) + barrier straggler under-spread. | fwdllm, fwdllm_plus (+ fluxtune 2.4× wall) | **FOLDS ENABLED (Phase 4c / K-D24):** B1 `sim_model_eval_time:true` charges the MEASURED eval_s to the vclock (self-calibrating, no constant); B2 `sim_straggler_spread_s:0.9` widens the barrier spread — both live in the 3 sim yamls. Do NOT add drain-tail/sleeps/localhost-MQTT (artifact, principle #1). `wall_disparity` DIAG rung (data_id axis) drives the residual → ~0; **final B2 value is calibrated FROM the sign-off run** (emergent). Ceiling decoupled (4a) so the vclock-budget stop is now reachable. |
 | **#7** | fwdllm_plus real STALLED — 5 agg-rounds then dead-spun to the 1 h cap (log ballooned to 292 MB); **AND (new, syn_0) real is 4× slower/round even with NO scarcity** (59.7 vs fwdllm 15.5 s/round, 8 rounds/data_id 4 in 600s) | fwdllm_plus | **Scarcity half ROOT-CAUSED (K-D20) + FIXED (Stage C):** oracular `mobiperf_2st` avail 1/10 < `agg_goal=10`; real sync barrier spun. **Slowness half (NEW, syn_0):** `reselect_each_iteration=True` per-iteration re-select + oracular read (29 sel events vs fwdllm's 1) — a distinct real-config cost, profile from the banked per-phase log; it caps fwdllm_plus real's data_id below sim's (#4 real-side truncation). Not a sim bug. |
 | **#8** | `field_coverage` INV fail: `task_recv.sim_send_ts` absent both modes | fwdllm, fwdllm_plus | Emit `task_recv.sim_send_ts` (over-instrument) or add it to the coverage alias tuple; unblocks K6. |
 | **#9** | `failsafe`/K5 false-positive: sim WALL ≫ vclock (real forward-grad compute) | fwdllm, fwdllm_plus | K5 should compare sim wall vs the RUN wall budget, not the vclock, for a real-compute sim (checker fix). Partly reframed by piece A's `sim_wall_ceiling_s`. |
@@ -694,8 +694,32 @@ do with Phase 4) · `✅ Phase 3` config-flow (operator chose 3b framework fan +
 `enable_training_delays`(+factor) into the aggregator (single source, both roles agree; safe: `training_delay_enabled`
 is read ONLY by the trainer, never the agg base, so async_cifar10 is behavior-neutral), honored-100% tripwire in
 `_build_aggregator_config`, effective flags banked in `execution_config`, `--delay-factor` CLI, fan+bank pytests green
-· ⏳ **Phase 2 (speedup leak)** and **Phase 4 (stopping rule + sct model)** NOT STARTED — Phase 2 is the prize (needs
-the 2a design decision from banked `mqtt_fetch_s` telemetry first). Full `tests/` gate pending.
+· `✅ Phase 2` **speedup leak (root #13) — DONE, pytest-green (K-D23).** 2a decision made FROM the banked
+`134801` telemetry (principle #11a): the trainer inter-round `mqtt_fetch_s` is barrier-wait realized by the
+**blocking recv** (~15s at each data_id boundary OVERLAPS the aggregator's irreducible server eval ~13s +
+real GPU — NOT an independent skippable sleep; recv MUST stay, it delivers the real weights for grad
+mode-invariance, exactly as async_cifar10 keeps real MQTT in sim). The only additive, fidelity-free per-round
+wall the sim skips is the **trainer `pause_execution` throttle** (`time.sleep(1)` at the tail of EVERY loop
+iteration, "don't overwhelm mqtt" — a real-transport artifact, principle #8) + the **`_check_availability`
+avail-spin** (`while UN_AVL: sleep(1)`, which would freeze the vclock in sim; avail is agg-side enforced). Both
+gated `and not self.simulated`; real byte-identical; `tests/mode -k fwdllm` 146 green (+6 new,
+`test_fwdllm_sim_speedup_waits.py`). **Turned out fwdllm-ONLY (no shared-base edit)** — the aggregator was
+already sim-correct (`_sync_sim_recv_first_k` 2s grace not 30/90s; `sleep(0.1)` pads gated real-only, Stage E;
+`await_join` kept per async_cifar10; agg `pause_execution` not in the loop), so per principle #9 the scoped
+suite is the gate, not full `tests/`. **REFRAME:** the leak inventory ranked "trainer await_join+recv" as
+DOMINANT (#1) and "sleep(1) backoffs" LAST (#4); the telemetry + async_cifar10 map INVERT this. **Phase 2 alone
+does NOT push the REAL-run `sim_rate>1`** — at syn_0 the sim wall is eval-dominated (#6/Phase-4c folds `eval_s`
+into the vclock) — its exit is `sim_rate>1` on SYNTHETIC timings + pytest, which is met. · `✅ Phase 4`
+**stopping rule + #6 sct model — DEV DONE, pytest-green (K-D24); emergent calibration is the sign-off run's
+job.** 4a: `sim_wall_ceiling_s` DECOUPLED from the vclock budget (default `max_runtime_s × SIM_WALL_CEILING_
+FACTOR=20`, explicit override honored) so a real-compute sim (wall ≫ vclock by construction) is no longer
+truncated before its vclock/data_id stop — root S1's direct fix; `test_fwdllm_early_stop_conditions.py` 19
+green. 4b: matched committed-`data_id` stop already present (`max_data_id_progress`; yamls 9999, `--max-data-id`
+governs). 4c: the B1 eval-fold (`sim_model_eval_time`, self-calibrating on the MEASURED eval_s) + B2 straggler
+spread (`sim_straggler_spread_s=0.9 ≈ real-compute-std·√12`) ENABLED in all 3 sim yamls (operator chose B1+B2);
+`wall_disparity` DIAG rung (already landed, keyed on the fwdllm `data_id` axis) drives the residual → ~0 at the
+run. **fwdllm-only edit (4a) → `tests/mode -k fwdllm` 148 green is the gate.** **NEXT: the Phase-1 sign-off
+RUN** — matched `--max-data-id`, `--delays on`, `sim_rate>1` confirmed live.
 
 **Scope decisions (which issues live / die):**
 - **KEPT & PROMOTED — #13 (the sim is a slowdown, not speedup).** New headline root. Was implicit in #6; now
@@ -968,6 +992,17 @@ gaps). Attack #6 and #1's wall gap together — they are the same time-base ques
 
 ### Fixes landed (what worked — do not redo)
 
+- **Phase 4 stopping rule + #6 folds (K-D24)** — 4a: `sim_wall_ceiling_s` decoupled to `max_runtime_s × 20`
+  (class const `SIM_WALL_CEILING_FACTOR`, explicit override honored) so a real-compute sim isn't wall-truncated
+  before its data_id/vclock stop (root S1). 4c: B1 `sim_model_eval_time:true` (self-calibrating eval_s fold) +
+  B2 `sim_straggler_spread_s:0.9` ON in all 3 sim yamls. `test_fwdllm_early_stop_conditions.py` 19 green;
+  `tests/mode -k fwdllm` 148. Do NOT re-derive the ceiling from 1× budget — it truncates real-compute sims.
+- **Phase 2 speedup-leak skips (K-D23)** — gated the trainer per-round `pause_execution` `time.sleep(1)`
+  throttle and the `_check_availability` avail-spin `and not self.simulated` (fwdllm-only; real byte-identical).
+  The trainer `recv`/`await_join` and the aggregator grace/`await_join` are LEFT AS-IS (recv delivers the real
+  weights; agg already uses the 2s sim grace + real-only `sleep(0.1)` pads). `test_fwdllm_sim_speedup_waits.py`
+  (6), `tests/mode -k fwdllm` 146 green. Do NOT try to short-circuit the trainer recv — it's barrier-wait over
+  irreducible agg eval+GPU, not a skippable sleep (K-D23). Real-run `sim_rate>1` still needs #6/Phase-4c.
 - **Pre-next-run plan A+B+C+D+E (K-D21)** — Stage C scarcity-wait liveness; A1 trainer phase timing; A2 agg
   wall-decomp; A3 advance-rung re-key (shared engine, async byte-identical); A4 `wall_disparity` DIAG rung; B1/B2/
   B3 sct-model folds (config-gated OFF ⇒ byte-identical); D1 `task_recv.sim_send_ts`; D2 K5 real-compute exemption;
@@ -1565,6 +1600,52 @@ decision. Keep appending; do not rewrite history (supersede with a new dated ent
   sync barrier under a non-syn_0 trace (sync `agg_goal >= n_trainers` + unavailability = can't assemble → stall;
   `--force` to override). Verified: generated launch cfg carries `syn_0` in all three availability fields; the
   guard blocks `--avail-trace mobiperf_2st --only fwdllm_plus` at pre-flight (exit 2).
+- **K-D23  Phase 2 (speedup leak, root #13) — the 2a "trainer inter-round fetch" hypothesis was REFUTED by
+  the telemetry; the real skippable wall was two per-round sleeps, gated fwdllm-only.** The pre-plan leak
+  inventory ranked the trainer's `await_join`+`recv_wrapper` fetch as the DOMINANT leak (#1) and "ungated
+  `sleep(1)` backoffs" LAST (#4). Localizing from the banked `134801` sim (principle #11a) + a full
+  async_cifar10 sim-path map INVERTED that ranking. **What the telemetry showed:** the trainer's
+  `mqtt_fetch_s` splits by `trainer_phase` into ~1s steady (iter `/1`) and ~15–18s at each data_id boundary
+  (iter `/0`); the ~15s OVERLAPS the aggregator's `agg_round` `eval_s` (~13s server eval) + real GPU — i.e.
+  it is **barrier-wait for irreducible real work, not an independent trainer sleep.** **2a decision:** do
+  NOT short-circuit the trainer `recv` — it delivers the real weights the forward-grad pass needs for grad
+  mode-invariance, and async_cifar10 confirms the sim keeps real MQTT recv (the map: "sim trainer physically
+  blocks on real MQTT for the fetch — intentional and cheap; do not expect a gate here to port"). The genuine,
+  additive, fidelity-free per-round wall was: **(1)** the trainer `pause_execution` throttle (`time.sleep(1)`
+  chained at the tail of EVERY loop iteration — `compose(): ... >> task_put_grad >> pause_exec`; comment
+  ":494 don't overwhelm mqtt" = a real-transport artifact, principle #8); **(2)** the `_check_availability`
+  avail-spin (`while UN_AVL: time.sleep(1)`, which in sim would FREEZE the vclock — sim time can't advance
+  while a trainer blocks — and is redundant because sim availability is enforced agg-side, mirroring
+  async_cifar10's gated trainer avail wait). Both gated `and not self.simulated`; real byte-identical.
+  **Aggregator side needed NO change** — verified already sim-correct: `_sync_sim_recv_first_k` uses the 2s
+  grace floor (not the 30/90s real timeout), the `sleep(0.1)` distribute pads are already gated real-only
+  (Stage E), `await_join` is kept (cheap, round-1, matches async_cifar10), and the agg's own
+  `pause_execution` is defined but NOT in its loop. **Blast radius:** fwdllm-only (`fwdllm_trainer.py`
+  `pause_execution` + example `FedSgdTrainer._check_availability`), so per principle #9 `tests/mode -k fwdllm`
+  (146 green, +6 in `test_fwdllm_sim_speedup_waits.py`) is the gate, NOT full `tests/` — the original plan
+  assumed shared-base edits that turned out unnecessary. **Scope note:** Phase 2 alone does NOT make the
+  REAL-run `sim_rate>1` — at syn_0 the sim wall is dominated by server `eval_s` (~13s/data_id), which is
+  #6/Phase-4c's job to fold into the vclock; Phase 2's own exit (`sim_rate>1` on SYNTHETIC timings + pytest)
+  is met. See §H issue #13 + the Phase-2 PROGRESS marker.
+- **K-D24  Phase 4 (parity stopping rule + #6 sct model) — ceiling decoupled, eval/straggler folds enabled
+  for the sign-off run; final calibration is the run's job (not pytest).** Three pieces: **(4a, root S1)**
+  `sim_wall_ceiling_s` defaulted to `1× max_runtime_s`, which ALWAYS truncated a real-compute sim (wall ≫
+  vclock by construction) before its paired vclock/data_id stop — the 2026-07-04 sign-off void. Decoupled to
+  `max_runtime_s × SIM_WALL_CEILING_FACTOR` (=20, class const, overridable by explicit `sim_wall_ceiling_s`)
+  so it is a runaway OUTER safety, not the primary stop; fwdllm-only (`_check_early_stop_conditions`), 19
+  tests. **(4b)** the matched committed-`data_id` stop already existed (`max_data_id_progress`; the sign-off
+  run passes `--max-data-id N` as the primary stop so real↔sim compare at identical progress, NOT a
+  time budget — a wall/vclock budget desyncs wall-bound real from the sim). **(4c, #6)** the two GENUINE
+  unmodeled `sct` terms (Stage B, landed config-gated in K-D21) turned ON in the 3 sim yamls per the
+  operator: **B1** `sim_model_eval_time:true` charges the MEASURED server `eval_s` (~13s/data_id, the syn_0
+  wall dominator) to the vclock — self-calibrating (uses the real eval wall, no magic constant), delay-
+  independent, and the term that actually lifts `sim_rate` toward/over 1; **B2** `sim_straggler_spread_s:0.9`
+  (≈ banked real-compute std 0.26s · √12, since the offset is uniform`[0,spread)`) widens the barrier's
+  k-th-smallest sct to real's completion dispersion — active only with `--delays on`. The `wall_disparity`
+  DIAG rung (A4, keyed on the fwdllm `data_id` axis) surfaces `|real_wall − sim_vclock|/data_id` every run;
+  the **B2 value is calibrated to drive that → ~0 FROM the sign-off run** (emergent, per the doc — do NOT
+  tune it blind, principle #3/#8). Blast radius: 4a is fwdllm-only → `tests/mode -k fwdllm` 148 green is the
+  gate. This closes all PRE-RUN dev; the Phase-1 sign-off run is next.
 
 ---
 

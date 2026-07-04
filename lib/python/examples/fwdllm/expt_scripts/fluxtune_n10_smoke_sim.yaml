@@ -56,6 +56,11 @@ experiments:
           # Uniform/IID partition for smoke tests -- avoids the niid_label
           # baseline default's data-skew confound while validating mechanics.
           partition_method: uniform
+          # Phase 4c (B2, #6): sim barrier straggler spread to match real's
+          # per-trainer completion dispersion (uniform[0,spread), spread ≈
+          # real-compute-std·√12). Active with --delays on; calibrate to
+          # wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.9
 
     aggregator:
       config_template: configs/aggregator_base.json
@@ -83,6 +88,9 @@ experiments:
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 1800  # ...or after 30 minutes wall time
+          # Phase 4c (B1, #6): charge the measured server eval_s onto the vclock
+          # so it models real wall (self-calibrating). Delay-independent.
+          sim_model_eval_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform
