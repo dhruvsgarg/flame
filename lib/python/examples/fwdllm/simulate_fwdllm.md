@@ -430,6 +430,33 @@ from a *compounding* variance-feedback loop (the headline fwdllm risk, §G). **M
       roots first; when a fluxtune fix or learning could apply to the sync baselines (e.g. the #6/#1 shared
       time-base question, a selector-ignores-hold-set bug, a duration-input anchor), note it in §B.1/§K and
       check the others from THEIR banked telemetry before assuming it's async-only.
+12. **Consult async_cifar10/PARITY.md's vclock principles BEFORE touching any sim/vclock behavior.** The virtual
+    clock is a shared flame-core capability that async_cifar10 already exercises correctly across sync AND async;
+    its rules are settled there. Before changing how the sim clock advances/increments/orders in any scenario,
+    read the relevant PARITY.md principle and mirror it — deviate only with a logged §K rationale (DESIGN
+    PRINCIPLE at the top). The settled rules (anchors verified 2026-07-04):
+    - **Clock is a monotone `max`.** `VirtualClock.advance(ts)` moves forward only (`flame/sim/virtual_clock.py:32-37`);
+      `_advance_sim_clock(sct)` = `vclock = max(vclock, sct)` (`syncfl/top_aggregator.py:331-343`). K1
+      `sim_commit_order_monotone` asserts `vclock_now` non-decreasing.
+    - **NEVER put overhead on the vclock.** `_sim_commit_overhead_s` defaults 0.0; PARITY.md dead-end forbids >0
+      ("masks & drifts; clock must `= max(vclock, sct)`"). K3b `overhead_residual` catches an uncharged/overcharged term.
+    - **sct = `sim_send_ts + max(gpu, D) + leg`** (`async_cifar10/.../main.py:831-845`); the `leg` goes on the vclock
+      but NOT on `trainer_speed_s`/utility/gate inputs (keep those pure compute).
+    - **sync charges MAX-of-K sct; async charges the K-th-fastest** (streaming) — the one real sync/async increment
+      difference (PARITY.md K3a). Starvation = a clock JUMP to the next availability event, never a spin.
+    - **The sim SKIPS real waits and reconstructs order from sct** (`SimReorderBuffer`, `virtual_clock.py:52-60`);
+      `mqtt_fetch_s` (re-selection wait) and `realDistributeSettleSeconds` are deliberately OFF the vclock.
+13. **The vclock is virtual wall-time; the sim MUST produce SPEEDUP (vclock ≥ physical-wall-elapsed).** (Operator's
+    model, locked.) If a trainer's work is 10 real wall-seconds, the vclock advances 10s while the sim executes it in
+    far less wall — same events, same order, same computation (fidelity preserved), but faster in time (the whole
+    reason the sim exists). Therefore, **for a healthy sim, `vclock.now ≥ physical_wall_elapsed` at all times**, and
+    `sim_rate = vclock/wall ≥ 1` and should GROW. A `sim_rate < 1` (as in the 2026-07-04 runs, 0.37×) means the sim is
+    a slowdown = BROKEN: either it under-charges the vclock (small/zero D) or it fails to skip a real wait (the leak),
+    or both. **fwdllm nuance:** the forward-grad "train" is a REAL GPU pass (~2s) that MUST run in sim for grad
+    mode-invariance — that GPU wall is irreducible. So sim wall ≈ gpu + (skippable transport); speedup comes from
+    skipping the transport/inter-round waits, NOT from skipping compute. `sim_rate` is the top-line health metric to
+    emit and drive EVERY run — async_cifar10 already logs it (`[VCLOCK_PROGRESS]`, `syncfl/top_aggregator.py:1189-1203`;
+    K7 `sim_rate_ok`); fwdllm must too (root S3 / issue #13).
 
 ---
 
@@ -465,6 +492,57 @@ so what we keep is (1) the current per-baseline state table, (2) the **open root
 (3) a **fixes-landed** ledger (what worked, so we don't redo it), and (4) a **dead-ends & corrections**
 ledger (what we tried or believed that was wrong, so we don't retry it). Per-run detail lives in the JSON +
 git history; the as-built rationale lives in §K.*
+
+**Status (2026-07-04 PM → the K-D21 Phase-1 sign-off run RAN but every pair is UNUSABLE — all 6 processes hit
+the 600s WALL, none reached a natural stop, and no `parity_*.json` was generated.** `bash run_sequential.sh
+--mode both --delays on --max-runtime-s 600` produced `run_20260704_133627..143445` (real+sim × 3 baselines).
+Two upstream mis-configs made the run non-comparable (analysis-from-telemetry, principle #11a — NOT re-run):
+> - **(root S1 — the "timeout") Every SIM died on `[SIM_WALL_CEILING]`, not the intended vclock budget.** The sim
+>   does REAL forward-grad GPU compute for every dispatched trainer, so physical wall (566–588s) hit the 600s
+>   ceiling while the vclock only reached **fwdllm 213 / fwdllm_plus 221 / fluxtune 85 s** (0.14–0.37× of the 600
+>   budget). Piece A set `sim_wall_ceiling_s = max_runtime_s = 600`, so for a real-compute sim (wall ≫ vclock by
+>   construction, #6/#9) the ceiling ALWAYS fires before the vclock-budget stop it was paired with — exactly what
+>   piece A's own comment warned ("a vclock-bounded sim over-runs to the wall ceiling"). Real stopped on
+>   `max_runtime_s` wall too. So the two sides stop at DIFFERENT progress and cannot be compared:
+>   | baseline | real rounds·data_id·wall/rnd | sim rounds·data_id·vclock(wall)·wall/rnd | stop |
+>   |---|---|---|---|
+>   | fwdllm | 36 · **13** · 15.5s | 66 · **23** · 213s(566s) · 8.6s vc-3.2s | real max_runtime / sim CEILING |
+>   | fwdllm_plus | 8 · **4** · 59.7s | 69 · **24** · 221s(588s) · 8.5s vc-3.2s | real max_runtime / sim CEILING |
+>   | fluxtune | 133 · **15** · 3.6s | 103 · **9** · 85s(579s) · 5.6s vc-0.8s | real max_runtime / sim CEILING |
+> - **(root S2 — CORRECTED after codepath trace) `--delays on` WAS honored by the trainer, but D was tiny (0.4–1.8s,
+>   not the 4–18s registry delay) and the aggregator sim-folds were never wired.** The literal "delays didn't reach
+>   the trainer" was WRONG: real trainers slept 0.4–1.8s (`FedSgdTrainer.py:530`), sim trainers modeled 1.0–1.3s and
+>   charged it to the vclock (`:524`). Three real gaps: (1) `training_delay_factor=10` (hardcoded
+>   `configs/trainer_base.yaml:96`) silently divides the registry 4–18s delay ÷10 → 0.4–1.8s; (2) the aggregator's
+>   logged `training_delay_enabled=False` is an **orphaned field the fwdllm aggregator never reads** (the sim D flows
+>   from the trainer-reported `sim_completion_ts`, not an agg hyperparam) — a misleading artifact; (3) the sim sct-model
+>   folds (`sim_model_eval_time`, `sim_straggler_spread_s`) were never patched by the launcher (they live only in
+>   `aggregator.config_overrides.hyperparameters`, which `--delays` never writes); (4) the banked
+>   `execution_config.yaml` OMITS `enable_training_delays`, so post-hoc the run looked off. Reframed **open issue #12**.
+>   NOTE: even a correct large D does NOT by itself give speedup — see root S3.
+> - **(root S3 — THE headline: the sim delivers a SLOWDOWN, not speedup — it still pays real waits it must skip).**
+>   The whole point of the sim is speedup: do the SAME events in the SAME logical order but advance the vclock
+>   (virtual wall-time) FASTER than physical wall by not waiting. Measured, the sim runs at **sim_rate ≈ 0.37×**
+>   (vclock 3.2 v-s/round vs physical wall 8.6 s/round) — SLOWER than wall. Root (codepath trace): the sim trainer
+>   still physically blocks on `await_join()` + real MQTT `recv_wrapper` every round (`fwdllm_trainer.py:213,218`,
+>   `mqtt_fetch_s`~1.8s steady / ~18s round 1), the aggregator still pays grace-bounded `recv_fifo` (≥2.0s floor,
+>   `syncfl/top_aggregator.py:347`) + `await_join` on distribute (`fwdllm_aggregator.py:2280/2427`), and ungated
+>   `time.sleep(1)` backoffs — **none gated `and not self.simulated`**. Real GPU compute (~2s) is irreducible in sim
+>   (needed for grad mode-invariance), so speedup REQUIRES skipping the transport waits (async_cifar10's base does;
+>   fwdllm's per-round sync trainer fetch does not). The invariant to restore: **vclock ≥ physical-wall-elapsed**
+>   (operator's model). New **open issue #13**; tracked via a `sim_rate` metric fwdllm does not yet emit.
+> - **fwdllm_plus real is pathologically slow even at syn_0 (no scarcity): 59.7 s/round (8 rounds, data_id 4)** vs
+>   fwdllm real 15.5 s/round — ~4×. This is NOT the Stage-C scarcity liveness (#7, syn_0 has 100% avail); it is the
+>   `reselect_each_iteration=True` per-iteration re-selection + oracular read overhead (29 selection events vs
+>   fwdllm's 1). Confirms the "why is fwdllm_plus real slower/round" half of #7 as a distinct real-config cost, and
+>   guarantees fwdllm_plus real can never reach the sim's data_id in a wall budget (#4 real-side truncation).
+> **Principled fix (design, not yet implemented — awaiting go-ahead):** for a valid parity/sign-off run the
+> stopping rule must be a **matched committed-`data_id` target** (finite `--max-data-id`, e.g. 10), NOT a wall or
+> vclock budget — a time budget desyncs wall-bound real from ceiling-truncated sim (the overnight 10-`data_id`
+> runs passed for exactly this reason). Couple that with: (1) fix the `--delays on` wiring so D>0 reaches BOTH the
+> trainer sleep AND the sim sct model (#12); (2) decouple `sim_wall_ceiling_s` from the vclock budget (generous
+> multiple / separate `--max-wall-s`) so the ceiling is an outer safety, not the primary stop; (3) resolve
+> fwdllm_plus real slowness (#7) so its real side can reach the matched data_id. See open roots S1/#12 below.
 
 **Status (2026-07-05 → overnight 10-`data_id` grounding runs BANKED; parity read below (K-D18). The fluxtune
 R1 residence regression (K-D17b) is STILL the top blocker — do it first (fluxtune ran real-only overnight, so
@@ -543,7 +621,12 @@ PRE-K-D16 baseline the re-run is measured against (the K-D16 run is void — it 
 *Discipline: keep exactly two columns per baseline — the latest parity JSON and the one before it — so drift is
 visible without a growing log. `run_parity.py` regenerates both from the banked dirs.*
 
-| baseline | penultimate (run · pass/fail/skip) | LATEST (run · pass/fail/skip) | Δ | failing rungs (latest) |
+*NOTE: the 2026-07-04 PM sign-off run (`run_20260704_133627..143445`) produced NO parity JSON — every sim was
+wall-ceiling-truncated and real/sim reached mismatched `data_id` (root S1 above), so a parity read would be
+meaningless. The LATEST column below is still the last VALID banked pair (the overnight 10-`data_id` runs); it
+does not advance until a matched-`data_id` sign-off run is banked.*
+
+| baseline | penultimate (run · pass/fail/skip) | LATEST valid (run · pass/fail/skip) | Δ | failing rungs (latest) |
 |---|---|---|---|---|
 | **fwdllm** | `0703_224641` (3 `data_id`) · 37/5/32 | `0704_022610` (10 `data_id`) · **37/5/32** | =0 | field_coverage, throughput, total_commits, terminal_state, failsafe |
 | **fwdllm_plus** | `0703_225614` (3 `data_id`) · 30/11/32 | `0704_033206` (10 `data_id`, real stalled) · **31/10/32** | +1 | above + eligibility, selection_detail, v1, v2, g2_grad_pool_size |
@@ -576,8 +659,11 @@ summary. Detailed rationale lives in the "Open roots" prose below + §K.*
 
 | # | issue (1 sentence) | baseline(s) | principled fix / next step |
 |---|---|---|---|
-| **#6** ⭐ | sim vclock under-models real wall — 3.0 vclock-s vs 13.4 wall-s/round. **Decomp (K-D20): only 8.7 s/round is GENUINE** (gap ~2.9×, not 4.5×); 4.7 s/round is harness artifact | fwdllm, fwdllm_plus (+ fluxtune 2.4× wall) | **PRIORITY.** Fold the two genuine unmodeled terms into `sct`: **`eval_s`** (+3.34 s/round, server eval) + **widen the barrier straggler spread** to real `trainer_speed_s` (+2.3 s/round). Do NOT add drain-tail/sleeps/localhost-MQTT (artifact, principle #1). Recurring sanity = `\|real_wall − sim_vclock\|/data_id`→~0. Piece A (vclock-budget stop) **landed**. |
-| **#7** | fwdllm_plus real STALLED — 5 agg-rounds then dead-spun to the 1 h cap (log ballooned to 292 MB) | fwdllm_plus | **ROOT-CAUSED (K-D20):** oracular `mobiperf_2st` drops avail to 1/10 < `agg_goal=10`; real sync barrier can't assemble the cohort and spins (`wait_until_next_avl=False`). Genuine unavailability exposing a **real-mode liveness bug** (sim jumps its vclock past it → completes). Fix real-mode: relax goal to available-count OR honor `wait_until_next_avl`. Not a sim bug. |
+| **#13** ⭐⭐ | **sim delivers a SLOWDOWN not speedup (`sim_rate`≈0.37×): the sim path still pays real waits it must skip** — trainer `await_join`+MQTT `recv_wrapper` per round (`fwdllm_trainer.py:213,218`), agg grace `recv_fifo` (≥2s floor) + `await_join` (`fwdllm_aggregator.py:2280/2427`), ungated `sleep(1)` backoffs | fwdllm, fwdllm_plus (+ fluxtune) | **THE root of S1/#6.** Gate the sim critical-path real-waits `and not self.simulated` / drive trainer progress off the vclock, so sim wall ≈ real GPU only and `vclock ≥ wall`. Mirror asyncfl base's skip pattern (principle #12/#13). Shared-base blast radius → full `tests/` (principle #9). Phase 2 of the plan below. |
+| **S1** ⭐ | sign-off run unusable: every sim died on `[SIM_WALL_CEILING]` (wall≫vclock for a real-compute sim), real died on `max_runtime_s` wall, so real/sim reached mismatched `data_id` — no comparison possible | all (2026-07-04 PM) | **DOWNSTREAM of #13:** once the sim runs faster than wall (`sim_rate>1`) the vclock-budget stop becomes reachable within the ceiling. Also: **stop the parity run on a matched committed-`data_id` target** (finite `--max-data-id`), not a wall/vclock budget; **decouple `sim_wall_ceiling_s`** to an outer safety. Confirms #6, not a new mechanism bug. |
+| **#12** | `--delays on` WAS honored by the trainer (real slept 0.4–1.8s; sim modeled it), but (a) `training_delay_factor=10` (`trainer_base.yaml:96`) shrank the 4–18s registry delay ÷10, (b) the agg-side sim-folds (`sim_model_eval_time`/`sim_straggler_spread_s`) were never wired from the launcher, (c) agg `training_delay_enabled` is an orphaned/misleading field, (d) banked `execution_config.yaml` omits the flag | all | **Config-flow fix (Phase 3 below).** Fan `--delays`/folds into `config_overrides.hyperparameters` for BOTH roles (mirror `agg_goal` single-source); expose `training_delay_factor` as a knob; bank the effective values + a post-launch assertion that banked config == requested flags; retire/wire the orphan. Extensible to async_cifar10 (same `runner.py`). |
+| **#6** ⭐ | sim vclock under-models real wall — **CONFIRMED again by the sign-off run** (fwdllm 3.2 vclock-s vs 15.5 wall-s/round; fluxtune 0.8 vs 3.6; fwdllm_plus 3.2 vs 59.7). **Decomp (K-D20): only 8.7 s/round is GENUINE** (gap ~2.9×); 4.7 s/round is harness artifact. NOTE: measured at D≈0 (#12), so the gap is inflated vs a D>0 run | fwdllm, fwdllm_plus (+ fluxtune 2.4× wall) | **PRIORITY.** Fold the two genuine unmodeled terms into `sct`: **`eval_s`** (+3.34 s/round, server eval) + **widen the barrier straggler spread** to real `trainer_speed_s` (+2.3 s/round). Do NOT add drain-tail/sleeps/localhost-MQTT (artifact, principle #1). Recurring sanity = `\|real_wall − sim_vclock\|/data_id`→~0. Piece A (vclock-budget stop) **landed but is unreachable until S1+#12 fixed** (ceiling truncates first). |
+| **#7** | fwdllm_plus real STALLED — 5 agg-rounds then dead-spun to the 1 h cap (log ballooned to 292 MB); **AND (new, syn_0) real is 4× slower/round even with NO scarcity** (59.7 vs fwdllm 15.5 s/round, 8 rounds/data_id 4 in 600s) | fwdllm_plus | **Scarcity half ROOT-CAUSED (K-D20) + FIXED (Stage C):** oracular `mobiperf_2st` avail 1/10 < `agg_goal=10`; real sync barrier spun. **Slowness half (NEW, syn_0):** `reselect_each_iteration=True` per-iteration re-select + oracular read (29 sel events vs fwdllm's 1) — a distinct real-config cost, profile from the banked per-phase log; it caps fwdllm_plus real's data_id below sim's (#4 real-side truncation). Not a sim bug. |
 | **#8** | `field_coverage` INV fail: `task_recv.sim_send_ts` absent both modes | fwdllm, fwdllm_plus | Emit `task_recv.sim_send_ts` (over-instrument) or add it to the coverage alias tuple; unblocks K6. |
 | **#9** | `failsafe`/K5 false-positive: sim WALL ≫ vclock (real forward-grad compute) | fwdllm, fwdllm_plus | K5 should compare sim wall vs the RUN wall budget, not the vclock, for a real-compute sim (checker fix). Partly reframed by piece A's `sim_wall_ceiling_s`. |
 | **#10** | 12 rungs SKIP as rigor gaps (4 advance rungs wrong-axis, 8 phase rungs missing telemetry) | fwdllm, fwdllm_plus | Re-key K3a/K3b/K3/K4 to `data_id` (shared engine → full suite); add per-phase timing telemetry (= step 2, feeds #6). |
@@ -591,7 +677,147 @@ summary. Detailed rationale lives in the "Open roots" prose below + §K.*
 | ~~#4~~ | V1/V2/g2 short-run truncation | fwdllm (cleared), fwdllm_plus | **CLEARED for fwdllm** at 10 `data_id`s; for fwdllm_plus it's real-side truncation → folds into #7. |
 | ~~#5~~ | fluxtune `selection_detail` in_flight (2.7 vs 9.75) | fluxtune | **MOSTLY FIXED K-D17b** — hold the compute slot to COMMIT so `len(selected_ends)` = virtual in-flight. |
 
-### Pre-next-run implementation plan (staged — the "definition of done" before spending another run)
+### ⭐ Next implementation plan (2026-07-04, post-sign-off) — SPEEDUP + CONFIG-FLOW + PARITY, phased
+
+*This supersedes the "Pre-next-run implementation plan (K-D21)" below (that plan's sign-off run RAN and was
+unusable — see the 2026-07-04 status block at the top of §H). The sign-off run surfaced THREE root causes that
+must be fixed, pytest-gated, BEFORE any next launch (principle #11). Derived from three codepath traces
+(async_cifar10 vclock principles; the bash→yaml→runtime config flow; the fwdllm sim vclock/wait machinery).
+Phases 0→1 are prerequisites; Phases 2 (speedup) and 3 (config-flow) are INDEPENDENT parallel threads; Phase 4
+depends on Phase 2. Every phase ships telemetry + pytest and ends pytest-green (no run in the inner loop).*
+
+**PROGRESS (2026-07-04, update in place):** `✅ Phase 0` principles #12/#13 locked · `✅ Phase 1` speedup
+instrumentation — `wall_elapsed_s`+`sim_rate` on agg_round, live `[VCLOCK_PROGRESS]` log, `sim_speedup` DIAG rung
+(VALIDATED on the banked `134801` sim: sim_rate=0.377, wall_speedup=0.986, "SLOWDOWN"), rung+emit pytests green;
+**Phase 1d PDF plot DEFERRED** (metric already in telemetry+log+rung; the analyze_run.py plotter add is low-value,
+do with Phase 4) · `✅ Phase 3` config-flow (operator chose 3b framework fan + 3c factor knob) — runner.py fans
+`enable_training_delays`(+factor) into the aggregator (single source, both roles agree; safe: `training_delay_enabled`
+is read ONLY by the trainer, never the agg base, so async_cifar10 is behavior-neutral), honored-100% tripwire in
+`_build_aggregator_config`, effective flags banked in `execution_config`, `--delay-factor` CLI, fan+bank pytests green
+· ⏳ **Phase 2 (speedup leak)** and **Phase 4 (stopping rule + sct model)** NOT STARTED — Phase 2 is the prize (needs
+the 2a design decision from banked `mqtt_fetch_s` telemetry first). Full `tests/` gate pending.
+
+**Scope decisions (which issues live / die):**
+- **KEPT & PROMOTED — #13 (the sim is a slowdown, not speedup).** New headline root. Was implicit in #6; now
+  first-class per the operator's vclock-is-virtual-wall-time model (principle #13). This is the prize.
+- **REFRAMED — S1 & #6** are now understood as *downstream* of #13: the `[SIM_WALL_CEILING]` truncation and the
+  "vclock ≪ wall/round" gap are the SYMPTOM of the speedup leak, not independent bugs. Fixing #13 makes the
+  vclock-budget stop reachable and shrinks the #6 residual to the genuine unmodeled terms (eval_s, straggler).
+- **REFRAMED — #12** is a config-flow bug (Phase 3), not a "flag dropped to trainer" bug (the trainer honored it).
+- **My earlier S1 "matched-`data_id` stopping rule"** is DEMOTED to a Phase-4 convenience, not the primary fix —
+  the real fix is #13 (make the sim fast so a time budget is honored on both sides). Kept, subordinated.
+
+---
+
+#### Phase 0 — Principles & invariant (DONE in this doc edit; no code)
+Locked **principle #12** (consult async_cifar10/PARITY.md vclock rules before any sim-clock change) and
+**principle #13** (vclock = virtual wall-time; sim must produce speedup, `vclock ≥ physical_wall_elapsed`,
+`sim_rate ≥ 1`). These are the acceptance criteria the rest of the plan is measured against. *No pytest — doc only.*
+
+#### Phase 1 — Speedup instrumentation (make the slowdown OBSERVABLE; prereq for 2 & 4)
+*You cannot fix or verify #13 without a `sim_rate` metric — fwdllm emits `vclock_now` but no paired wall stamp
+(principle #11b: ship the instrument with the mechanism). Mirror async_cifar10 which already has this.*
+- **1a** Emit a per-round **`wall_elapsed_s`** (= `time.time() − agg_start_ts`) alongside `vclock_now` in the
+  fwdllm `agg_round` `extra` (`fwdllm_aggregator.py` `build_agg_round`, ~:1627-1655), so `sim_rate` is joinable
+  per round without external data.
+- **1b** Add the **`[VCLOCK_PROGRESS] … sim_rate=…`** periodic log to the fwdllm sync/async loops (mirror
+  `syncfl/top_aggregator.py:1189-1203`; confirm whether fwdllm inherits/drives it — if not, wire it).
+- **1c** New parity DIAG rung **`sim_speedup`** (`sim_rate = final_vclock / sim_wall`, and `wall_speedup =
+  real_wall / sim_wall` at matched `data_id`) in the shared engine; + re-use async_cifar10's **K7 `sim_rate_ok`**
+  and **K1 monotonic-vclock** for fwdllm (they exist; ensure they run on the fwdllm axis). Shared engine →
+  full-suite gate (principle #9).
+- **1d** A speedup plot (sim_rate over `data_id`) in the run's `plots/`.
+- **Pytest:** synthetic agg_round series → assert `sim_rate` computed correctly, vclock monotonic, rung PASS/FAIL
+  on known-fast/known-slow fixtures. **Exit:** running Phase-1 on the BANKED 2026-07-04 sim dirs reproduces
+  `sim_rate≈0.37×` from telemetry alone (validates the instrument before any code that changes behavior).
+
+#### Phase 2 — Fix the speedup leak (#13; THE core work) — make the sim skip real waits
+*Goal: sim wall/round → real GPU only (~2s); `vclock ≥ wall`; `sim_rate > 1` and growing. Each sub-step is
+`and not self.simulated`-gated or vclock-driven so REAL mode is byte-identical (principle #8), and shared-base
+edits (`syncfl/`/`asyncfl/top_aggregator.py`) carry async_cifar10-regression risk → FULL `tests/` (principle #9).*
+
+> **COLD-START LEAK INVENTORY (from the 2026-07-04 codepath trace — don't re-derive).** The sim critical path
+> pays these real waits (ranked by cost); each is the Phase-2 work. `agg` = `fwdllm_aggregator.py`,
+> `fwd-tr` = `syncfl/fwdllm_trainer.py`, `FedSgd` = `trainer/forward_training/FedSgdTrainer.py`,
+> `sync-base` = `syncfl/top_aggregator.py`, `async-base` = `asyncfl/top_aggregator.py`.
+> 1. **Trainer inter-round fetch (dominant, ~1.8s steady / ~18s round-1 = `mqtt_fetch_s`):** `fwd-tr:213`
+>    `await_join()` + `fwd-tr:217-218` `recv_wrapper` real blocking MQTT recv — UNGATED. (2a; needs the
+>    barrier-vs-wire localization first.)
+> 2. **Aggregator commit/barrier grace recv:** grad path `agg:756-758` `recv_fifo(..., timeout=grace)` looped to
+>    `RECV_TIMEOUT_WAIT_S=30` (`async-base:66`); sync barrier `sync-base:386-398`; `grace` has a **2.0s floor ×4
+>    EMA** (`sync-base:347-352`). (2b.)
+> 3. **Aggregator `await_join` on distribute:** `agg:2280` (sync) / `agg:2427` (async) — UNGATED. (2b.)
+> 4. **Ungated `time.sleep(1)` backoffs / avail spin:** `fwd-tr:205`, `fwd-tr:230`, `FedSgd:457`. (2c.)
+>
+> **Already correctly skipped in sim — do NOT touch (byte-identical real; re-gating would be a no-op or a bug):**
+> post-distribute settle pads `agg:2295-2297`/`agg:2434-2436` (`if not self.simulated: time.sleep(0.1)`);
+> scarcity poll `_await_dispatchable_under_scarcity` early-returns in sim (`agg:2232`). And the base async
+> pattern to MIRROR: starvation = a vclock JUMP to the next avail event (`async-base:648-672`), the sim SKIPS the
+> real delay-sleep while charging `sct` (that's the speedup), `SimReorderBuffer` reconstructs order from `sct`
+> not wall (`virtual_clock.py:52-60`). fwdllm's deviation is that its SYNC per-round trainer fetch (leak #1) has
+> no async_cifar10 analog and was never gated — that's the core of #13.
+- **2a (dominant leak)** The sim trainer `_fetch_weights` blocks on `await_join()` + real MQTT `recv_wrapper`
+  every round (`fwdllm_trainer.py:213,218`; `mqtt_fetch_s`~1.8s steady/~18s round-1). **DECISION REQUIRED**
+  (design, not obvious): this inter-round fetch wait must become ~free in sim WITHOUT breaking real message
+  transport (grads/weights are real). Options to evaluate against async_cifar10's pattern: (i) the wait is really
+  *barrier* wait (trainer idle until the aggregator distributes) → it should overlap in virtual time, charged to
+  the vclock not physical wall; (ii) on localhost the transport is ms — confirm the ~1.8s is barrier-wait not wire
+  time, then the fix is to not physically block the trainer between rounds. Localize from the banked `mqtt_fetch_s`
+  + phase telemetry FIRST (principle #11a).
+- **2b** Aggregator `await_join` on distribute (`fwdllm_aggregator.py:2280/2427`) and the grace-bounded
+  `recv_fifo` (≥2.0s floor, `syncfl/top_aggregator.py:347-352`; `agg:756`) in the sim commit/barrier loops →
+  gate/shrink the grace to ~0 in sim (the sct reorder buffer, not a wall timeout, is the sim's ordering source —
+  principle #8 "real-transport artifact vs algorithmic property").
+- **2c** Ungated `time.sleep(1)` backoffs / avail spins (`fwdllm_trainer.py:205,230`; `FedSgdTrainer.py:457`) →
+  gate `and not self.simulated`.
+- **Pytest:** spy/mocked-channel test asserting the sim path issues NO blocking real-wait on the critical path
+  (or a bounded ~0 grace); a driven test asserting `sim_rate > 1` on synthetic timings; **async_cifar10
+  byte-identical** assertion for every shared-base edit. **Exit:** `sim_rate > 1` on a synthetic fwdllm round;
+  full `tests/` green.
+
+#### Phase 3 — Config-flow correctness (#12; INDEPENDENT thread) — flag → banked config → runtime, honored 100%
+*Trace result: `--delays` reaches the trainer via a bespoke bridge (`runner.py:250`) but NOT the aggregator/sim
+folds; there are ~10 layers that can set/override a delay value with disagreeing defaults; the effective value is
+not banked. Design goal: one flag → one canonical sink → fanned to both roles, asserted post-launch, reusable by
+async_cifar10 (same `runner.py`/harness).*
+- **3a** Make the launcher patch write the aggregator-side knobs too: `--delays`/folds →
+  `exp["aggregator"]["config_overrides"]["hyperparameters"]` (`sim_model_eval_time`, `sim_straggler_spread_s`,
+  and `trainingDelayEnabled` if kept), symmetric to how `max_runtime_s` is already written there
+  (`run_sequential.sh:260`). Smallest correct fix.
+- **3b** Better/extensible: fan the resolved flag into BOTH roles' `config_overrides.hyperparameters` as the last
+  merge layer in `runner.py` (mirror the `agg_goal` single-source pattern, `runner.py:531-543`), removing the
+  bespoke trainer-only bridge as a special case. **DECISION: 3a (local, fast) vs 3b (framework, extensible) —
+  choose per appetite; 3b is the principled one and helps async_cifar10.**
+- **3c** Expose `training_delay_factor` (hardcoded `"10"` in `trainer_base.yaml:96`) as a launcher knob so
+  "delays on" can mean the full registry delay, not a silent ÷10.
+- **3d** Bank the effective values: include `enable_training_delays`/folds in `create_execution_config`'s output;
+  add a **post-launch assertion** (in `expt_runner.render_and_gate` or a new `assert_banked_config`) that the
+  banked `execution_config.yaml` + `aggregator_config.json` equal the requested flags — BLOCK the run otherwise.
+- **3e** Retire or wire the orphaned aggregator `training_delay_enabled` (the fwdllm aggregator reads it nowhere)
+  so the log stops misleading.
+- **Pytest:** a launcher/render test that patches a config with `--delays on`, renders the yaml, loads it through
+  `runner.py`, and asserts both roles' runtime `Hyperparameters` reflect the flag + folds; a negative test that
+  the post-launch assertion BLOCKS on a mismatch. Extend the same test to an async_cifar10 config.
+
+#### Phase 4 — Parity stopping rule + #6 sct model (depends on Phase 2)
+*Only meaningful once the sim is fast (`sim_rate>1`). Then:*
+- **4a** Decouple `sim_wall_ceiling_s` from the vclock budget (generous multiple / separate `--max-wall-s`) → an
+  outer runaway safety, not the primary stop (which is vclock reaching `max_runtime_s`).
+- **4b** For the parity comparison, stop both sides at a **matched committed-`data_id`** target (finite
+  `--max-data-id`), so C1/C2/V1/V2 compare at identical progress (the overnight 10-`data_id` runs passed for
+  exactly this reason). Demoted from "primary fix" to convenience.
+- **4c** Calibrate B1/B2 folds (`eval_s` +3.34s, straggler-spread +2.3s) so `wall_disparity/data_id → ~0` (the
+  genuine #6 residual once the artifact waits from Phase 2 are gone). B3 WAN knob stays doc-only.
+- **Pytest:** ceiling-decouple + matched-data_id stop unit tests; `wall_disparity` rung on synthetic. **Exit:**
+  gated by the sign-off run (below), not pytest alone.
+
+#### THEN (not before): the Phase-1 sign-off RUN
+Only after Phases 0–4 are pytest-green + full `tests/` + shared-parity suite green: smoke → convergence per
+baseline at a matched `--max-data-id`, D>0 (full factor), **with `sim_rate>1` confirmed live**. It banks: the
+12 un-skipped rungs, `sim_rate`/`wall_speedup`, `wall_disparity→~0`, fwdllm_plus completing the matched data_id,
+and the fluxtune R1 emergent smoke. Record in the scoreboard.
+
+### Pre-next-run implementation plan (staged — the "definition of done" before spending another run) — ⚠️ SUPERSEDED by the plan above (its sign-off run was unusable; see 2026-07-04 status)
 
 *Goal: land ALL dev that lets the NEXT parity run extract maximum information — un-skip the 12 rigor-gap rungs,
 make #6/#7 first-class in telemetry, and close the sct model — so the run measures a nearly-complete ladder,

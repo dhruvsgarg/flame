@@ -13,6 +13,7 @@ when telemetry is enabled, and stays a true no-op (no emit call at all) when
 it isn't.
 """
 
+import time
 from datetime import timedelta
 
 import torch
@@ -199,6 +200,55 @@ class TestAggRoundTelemetry:
             assert sorted(r["contributing_trainers"]) == ["t1", "t2"]
             assert sorted(r["trainer_speed_s"]) == [5.0, 7.0]
             assert sorted(r["stat_utility"]) == [1.0, 2.0]
+        finally:
+            telemetry.shutdown()
+
+    def test_speedup_fields_emitted(self, tmp_path):
+        """§H #13: agg_round carries wall_elapsed_s in both modes and, in sim,
+        sim_rate = vclock/wall so the slowdown is observable in telemetry."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            # Put the aggregator on the sim path with a virtual clock ahead of
+            # a known wall span.
+            agg.simulated = True
+            agg._vclock = type("V", (), {"now": 120.0})()
+            agg.agg_start_time_ts = time.time() - 60.0  # ~60 wall-s elapsed
+            # The sim boundary hook is exercised elsewhere; no-op it here so this
+            # test isolates the speedup-telemetry emission.
+            agg._release_sim_slots_at_agg_goal = lambda *a, **k: None
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=1)}, utilities={"t1": 0.1}
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["wall_elapsed_s"] > 0
+            # vclock 120 over ~60 wall-s -> sim_rate ~2 (a speedup); must be present
+            assert r["sim_rate"] is not None and r["sim_rate"] > 1.0
+        finally:
+            telemetry.shutdown()
+
+    def test_wall_elapsed_emitted_in_real_mode_sim_rate_none(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            # default fake is real mode (simulated=False)
+            agg.agg_start_time_ts = time.time() - 5.0
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=1)}, utilities={"t1": 0.1}
+            )
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["wall_elapsed_s"] > 0
+            assert r["sim_rate"] is None  # real mode has no virtual clock rate
         finally:
             telemetry.shutdown()
 

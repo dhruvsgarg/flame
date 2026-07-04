@@ -213,6 +213,62 @@ class TestThroughputParity:
         assert not r["ok"] and "K10" in r.get("note", "")
 
 
+class TestSimSpeedup:
+    """sim_speedup [DIAG] asserts the principle-#13 invariant: the sim must run
+    virtual time at least as fast as physical wall (sim_rate >= 1). K7 sim_rate
+    only checks the sane range [0.01,100], so it PASSES a slowdown — this rung is
+    the one that catches it (§H #13)."""
+
+    def test_healthy_speedup_passes(self):
+        # sim: vclock 0..100 virtual-s in 0..10 wall-s (10x speedup);
+        # real: same work took 0..100 wall-s.
+        sim = _agg(agg_rounds=[
+            _round(r, ["a"], [0], vclock=float(r * 10), ts=float(r))
+            for r in range(1, 11)])
+        real = _agg(agg_rounds=[
+            _round(r, ["a"], [0], ts=float(r * 10)) for r in range(1, 11)])
+        r = pc.sim_speedup(real, sim)
+        assert r["ok"] and r["is_speedup"], r
+        assert r["sim_rate"] >= 1.0
+        assert r["wall_speedup"] > 1.0  # sim finished faster than real
+
+    def test_slowdown_fails(self):
+        # The 2026-07-04 bug shape: vclock reaches only ~213 while wall burns
+        # ~566 (sim_rate ~0.38 < 1) — a SLOWDOWN, sim is broken (root #13).
+        sim = _agg(agg_rounds=[
+            _round(r, ["a"], [0], vclock=float(r * 213.0 / 24),
+                   ts=float(r * 566.0 / 24))
+            for r in range(1, 25)])
+        real = _agg(agg_rounds=[
+            _round(r, ["a"], [0], ts=float(r * 558.0 / 14))
+            for r in range(1, 15)])
+        r = pc.sim_speedup(real, sim)
+        assert not r["ok"] and not r["is_speedup"], r
+        assert r["sim_rate"] < 1.0
+        assert "SLOWDOWN" in r["note"]
+
+    def test_prefers_wall_elapsed_s_over_ts_span(self):
+        # When agg_round carries wall_elapsed_s (the re-anchored measure), it is
+        # used instead of the ts epoch span.
+        sim_rounds = [
+            _round(r, ["a"], [0], vclock=float(r * 10), ts=float(r * 1000 + r))
+            for r in range(1, 11)]
+        for e in sim_rounds:
+            e["wall_elapsed_s"] = float(e["round"])  # 1..10, unlike the ts span
+        sim = _agg(agg_rounds=sim_rounds)
+        real = _agg(agg_rounds=[
+            _round(r, ["a"], [0], ts=float(r * 10)) for r in range(1, 11)])
+        r = pc.sim_speedup(real, sim)
+        assert r["sim_wall_s"] == 10.0  # from wall_elapsed_s, not the huge ts span
+        assert r["sim_rate"] >= 1.0
+
+    def test_no_vclock_skips(self):
+        real = _agg(agg_rounds=[_round(1, ["a"], [0], ts=10.0)])
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0], ts=5.0)])  # no vclock
+        r = pc.sim_speedup(real, sim)
+        assert r.get("status") == "SKIP"
+
+
 class TestPerRoundAdvanceParity:
     def test_matched_passes(self):
         # Both advance 10s per round

@@ -107,6 +107,7 @@ AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
+DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base) is 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay (simulate_fwdllm.md #12). Fans to BOTH roles via runner.py.
 ONLY=""
 AFTER=""          # comma list of post-launch hooks: parity,sanity,plot (see after_* below)
 DRY_RUN=0
@@ -118,7 +119,7 @@ usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
-  echo "          [--var-threshold F] [--max-iter-per-data-id N]" >&2
+  echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
   echo "          [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
   exit 2
@@ -142,6 +143,7 @@ while [[ $# -gt 0 ]]; do
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
+    --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
     --after)                AFTER="$2"; shift 2 ;;
     --stop-on-fail)         STOP_ON_FAIL=1; shift ;;
@@ -204,7 +206,7 @@ MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_D
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
-VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" \
+VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
@@ -222,6 +224,7 @@ SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env(
 AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
+DELAY_FACTOR = env("DELAY_FACTOR") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
 MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
 MAX_RUNTIME_S_SET = env("MAX_RUNTIME_S_SET") == "1"; MAX_DATA_ID_SET = env("MAX_DATA_ID_SET") == "1"
@@ -261,6 +264,13 @@ def patch(exp, run_key, variant, trace):
     h["max_data_id_progress"] = MAX_DATA_ID
     # enable_training_delays: SAME on both sides of a pair (K-D8).
     exp["trainer"]["enable_training_delays"] = delays_on
+    # training_delay_factor (simulate_fwdllm.md #12): divides the registry 4-18s
+    # delay (trainer_base default 10 => 0.4-1.8s). Set it on the TRAINER
+    # hyperparameters; runner.py fans the same value into the aggregator so both
+    # roles agree. Only patched when explicitly passed (else the base default).
+    if DELAY_FACTOR:
+        exp["trainer"].setdefault("hyperparameters", {})
+        exp["trainer"]["hyperparameters"]["training_delay_factor"] = float(DELAY_FACTOR)
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART

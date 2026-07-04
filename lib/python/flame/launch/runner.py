@@ -542,7 +542,47 @@ class ExperimentRunner:
                 },
             ))
 
+        # Training-delay config is a single source of truth: exp.trainer's
+        # flags govern the whole run. Fan them into the AGGREGATOR hyperparameters
+        # too (final, highest-precedence layer) so both roles agree. Previously
+        # only the trainer bridge (spawn config_overrides, see start_experiment)
+        # set training_delay_enabled, leaving the aggregator's trainingDelayEnabled
+        # at its pydantic default (False) -- a misleading orphan for fwdllm (whose
+        # sim D flows from the trainer-reported completion, not this field) and an
+        # actual real<->sim desync risk for examples whose aggregator DOES read it
+        # (async_cifar10). See simulate_fwdllm.md #12 / principle #13.
+        _delay_fan: dict = {
+            "trainingDelayEnabled": bool(exp.trainer.enable_training_delays),
+        }
+        # training_delay_factor: if the experiment set it on the trainer, fan the
+        # same value to the aggregator so a launcher knob (e.g. --delay-factor)
+        # reaches both roles from one place instead of the hardcoded per-role
+        # trainer_base default.
+        _tr_hp = exp.trainer.hyperparameters or {}
+        if "training_delay_factor" in _tr_hp:
+            _delay_fan["trainingDelayFactor"] = _tr_hp["training_delay_factor"]
+        layers.append((
+            "experiment.trainer.training_delay (fanned to aggregator)",
+            {"hyperparameters": _delay_fan},
+        ))
+
         merged, provenance = merge_with_provenance(layers)
+
+        # Honored-100% tripwire: the delay fan is the final layer, so the merged
+        # aggregator config MUST reflect the requested flag. If a later refactor
+        # reorders layers or a higher-precedence override shadows it, fail loudly
+        # here rather than silently running with a stale/default value (the exact
+        # class of bug behind simulate_fwdllm.md #12).
+        _eff = merged.get("hyperparameters", {}).get("trainingDelayEnabled")
+        _req = bool(exp.trainer.enable_training_delays)
+        if _eff is not None and bool(_eff) != _req:
+            raise ValueError(
+                "training-delay config did not flow to the aggregator: requested "
+                f"enable_training_delays={_req} but merged aggregator "
+                f"trainingDelayEnabled={_eff!r}. Check the config-override layer "
+                "order in _build_aggregator_config (simulate_fwdllm.md #12)."
+            )
+
         return merged, provenance
 
     def _create_experiment_directory(self, exp: ExperimentConfig) -> Path:

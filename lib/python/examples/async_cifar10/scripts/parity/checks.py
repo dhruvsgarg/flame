@@ -2009,6 +2009,59 @@ def wall_disparity(real: dict, sim: dict) -> dict:
     }
 
 
+def _wall_span_s(agg: dict) -> Optional[float]:
+    """Physical wall seconds spanned by a run's agg_round events. Prefers the
+    emitted `wall_elapsed_s` (measured from the re-anchored agg start, excludes
+    the join wait) when present; falls back to the ts epoch span."""
+    evs = [e for e in agg["agg_rounds"] if e.get("event") == "agg_round"]
+    we = [e.get("wall_elapsed_s") for e in evs if e.get("wall_elapsed_s") is not None]
+    if we:
+        return max(we)
+    ts = [e["ts"] for e in evs if e.get("ts") is not None]
+    if len(ts) >= 2:
+        return max(ts) - min(ts)
+    return None
+
+
+def sim_speedup(real: dict, sim: dict, min_rate: float = 0.98) -> dict:
+    """sim_speedup [DIAG]: the sim must be a SPEEDUP, not a slowdown (principle
+    #13 / §H #13). Two reported numbers:
+      - sim_rate    = final_vclock / sim_wall  (virtual-s per wall-s). The
+        operator's invariant is sim_rate >= 1 (vclock advances at least as fast
+        as physical wall). K7 `sim_rate` only checks the sane range [0.01,100],
+        so a 0.37x SLOWDOWN passes it silently -- this rung is the invariant.
+      - wall_speedup = real_wall / sim_wall   (how many times faster the sim
+        finishes the same work than the real run; > 1 is the whole point).
+    DIAG: surfaces every run, does not gate the ladder (a violation is root #13,
+    the speedup-leak work, not a downstream ladder failure). For a real-compute
+    sim (fwdllm) the GPU pass is irreducible wall, so once the transport waits
+    are skipped sim_rate -> (gpu+D)/gpu >= 1."""
+    vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
+                   if e.get("vclock_now") is not None]
+    sim_wall = _wall_span_s(sim)
+    real_wall = _wall_span_s(real)
+    if not vclock_vals or not sim_wall or sim_wall <= 0:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no sim vclock_now or zero sim wall span"}
+    final_vclock = max(vclock_vals)
+    sim_rate = final_vclock / sim_wall
+    wall_speedup = (real_wall / sim_wall) if (real_wall and sim_wall > 0) else None
+    ok = sim_rate >= min_rate
+    return {
+        "ok": ok,  # DIAG but ok reflects the #13 invariant so it shows red
+        "tier": "DIAG",
+        "sim_rate": round(sim_rate, 4),
+        "is_speedup": sim_rate >= min_rate,
+        "wall_speedup": round(wall_speedup, 3) if wall_speedup is not None else None,
+        "final_vclock_s": round(final_vclock, 1),
+        "sim_wall_s": round(sim_wall, 1),
+        "real_wall_s": round(real_wall, 1) if real_wall else None,
+        "min_rate": min_rate,
+        "note": ("SLOWDOWN — sim_rate < 1, the sim is broken (root #13)"
+                 if not ok else "speedup healthy"),
+    }
+
+
 def overlap_factor(real: dict, sim: dict, tol: float = 0.3) -> dict:
     """K4 [DIAG]: async overlap factor diagnostic.
 
@@ -4078,6 +4131,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
     results["throughput"] = throughput_parity(real_agg, sim_agg)
     results["wall_disparity"] = wall_disparity(real_agg, sim_agg)
+    results["sim_speedup"] = sim_speedup(real_agg, sim_agg)
 
     # ── Stage 2 Availability ──
     results["avail_composition"] = avail_composition_parity(real_agg, sim_agg)
@@ -4203,6 +4257,7 @@ CHECK_META: dict = {
     "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
     "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
     "wall_disparity":          {"stage": 1, "role": "DIAG",     "deps": ("throughput",)},
+    "sim_speedup":             {"stage": 1, "role": "DIAG",     "deps": ("sim_rate",)},
     # ── Stage 2 Availability ──
     "avail_composition":       {"stage": 2, "role": "MECHANISM", "deps": ()},
     "eligibility":             {"stage": 2, "role": "MECHANISM", "deps": ("avail_composition",)},

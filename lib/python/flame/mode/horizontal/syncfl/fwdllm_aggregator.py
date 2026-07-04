@@ -1613,6 +1613,36 @@ class TopAggregator(AsyncTopAgg):
             self._is_model_updated = False
 
         if telemetry.is_enabled():
+            # Speedup instrumentation (§H issue #13 / principle #13): the sim
+            # must run virtual time FASTER than physical wall (sim_rate >= 1).
+            # fwdllm emitted vclock_now but no paired wall stamp, so the
+            # slowdown (sim_rate~0.37x in the 2026-07-04 runs) was invisible.
+            # Emit wall_elapsed_s in BOTH modes (real needs it for wall_speedup
+            # = real_wall/sim_wall) and sim_rate = vclock/wall in sim only.
+            # agg_start_time_ts is re-anchored past the join wait (syncfl base),
+            # so this excludes the initial ~join stall.
+            _wall_elapsed_s = time.time() - getattr(
+                self, "agg_start_time_ts", time.time()
+            )
+            _sim_rate = None
+            if self.simulated and getattr(self, "_vclock", None) is not None:
+                _sim_rate = (
+                    float(self._vclock.now) / _wall_elapsed_s
+                    if _wall_elapsed_s > 0
+                    else None
+                )
+                # Live speedup log (throttled ~30s). The inherited base
+                # [VCLOCK_PROGRESS] lives in increment_round, which fwdllm's
+                # composer loop bypasses, so it never fired — emit it here.
+                _last = getattr(self, "_last_vclock_log_wall_ts", 0.0)
+                if time.time() - _last >= 30.0 and _sim_rate is not None:
+                    logger.info(
+                        f"[VCLOCK_PROGRESS] vclock={float(self._vclock.now):.1f}s "
+                        f"wall={_wall_elapsed_s:.1f}s sim_rate={_sim_rate:.3f} "
+                        f"(virtual-s/wall-s; <1 == SLOWDOWN) round={self._round} "
+                        f"data_id={self.data_id}"
+                    )
+                    self._last_vclock_log_wall_ts = time.time()
             try:
                 ev, fields = build_agg_round(
                     round_num=self._round,
@@ -1652,6 +1682,11 @@ class TopAggregator(AsyncTopAgg):
                         "drain_tail_s": _drain_tail_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
                         "eval_s": _eval_s,
+                        # Speedup metric (§H #13): wall in both modes; sim_rate
+                        # = vclock/wall (sim only, None in real). sim_rate < 1
+                        # means the sim is a SLOWDOWN (broken, principle #13).
+                        "wall_elapsed_s": _wall_elapsed_s,
+                        "sim_rate": _sim_rate,
                     },
                 )
                 telemetry.emit(ev, **fields)
