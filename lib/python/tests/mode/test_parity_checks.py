@@ -312,6 +312,108 @@ class TestTerminalStateParity:
         assert not r["ok"], r
 
 
+def _fwd_round(data_id, contributing, vclock=None, ts=0.0):
+    """fwdllm-style agg_round: `round` (model_version) static, progress on the
+    committed `data_id` axis (cycle_data_id, §K-D9)."""
+    e = {"event": "agg_round", "round": 1, "ts": ts,
+         "cycle_data_id": data_id, "var_good_enough": True,
+         "contributing_trainers": contributing, "staleness": [0],
+         "agg_goal_count": 1}
+    if vclock is not None:
+        e["vclock_now"] = vclock
+    return e
+
+
+class TestProgressAxisRekey:
+    """§H open-root #2 / §F.3: the clock family must measure progress on the axis
+    the run advances. fwdllm keeps `round` at 1 and advances committed `data_id`,
+    so a rung keyed on `round` divides by a counter stuck at 1. The re-key auto-
+    detects the axis; async_cifar10 (round-advancing) stays byte-identical."""
+
+    def test_throughput_counts_data_ids_not_static_round(self):
+        # 10 committed data_ids, round pinned at 1, matched 10 units / 100s.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float((d + 1) * 10))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float((d + 1) * 10),
+                                          ts=float(d + 1))
+                               for d in range(10)])
+        r = pc.throughput_parity(real, sim, tol_rel=0.10)
+        # Re-keyed to data_id: 10 units, NOT collapsed to 1 stuck round.
+        assert r["sim_rounds"] == 10 and r["real_rounds"] == 10, r
+        assert r["ok"], r
+
+    def test_throughput_divergence_caught_on_data_id_axis(self):
+        # sim crawls (10 data_ids in 200s vclock) vs real (10 in 100s wall) -> 2x.
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float((d + 1) * 10))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float((d + 1) * 20),
+                                          ts=float(d + 1))
+                               for d in range(10)])
+        r = pc.throughput_parity(real, sim, tol_rel=0.10)
+        assert not r["ok"], r
+
+    def test_terminal_state_data_ids_at_V_nonzero(self):
+        real = _agg(agg_rounds=[_fwd_round(d, ["a", "b"], ts=float((d + 1) * 10))
+                                for d in range(10)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a", "b"], vclock=float(d * 10),
+                                          ts=float(d + 1))
+                               for d in range(10)])
+        r = pc.terminal_state_parity(real, sim)
+        # Previously real_rounds_at_V==0 (round static); now counts data_ids.
+        assert r["real_rounds_at_V"] > 0 and r["sim_rounds_at_V"] > 0, r
+        assert r["ok"], r
+
+    def test_total_commits_counts_distinct_data_ids(self):
+        # A variance-FAIL retry emits 2 cycles on the SAME data_id; the commit
+        # count must be distinct data_ids (2), not raw cycles (3).
+        real = _agg(agg_rounds=[
+            _fwd_round(0, ["a"], ts=0.0),
+            _fwd_round(0, ["a"], ts=5.0),   # retry, same data_id
+            _fwd_round(1, ["a"], ts=10.0),
+        ])
+        sim = _agg(agg_rounds=[
+            _fwd_round(0, ["a"], vclock=0.0, ts=1.0),
+            _fwd_round(0, ["a"], vclock=5.0, ts=2.0),
+            _fwd_round(1, ["a"], vclock=10.0, ts=3.0),
+        ])
+        r = pc.total_commits_parity(real, sim, tol_rel=0.05)
+        assert r["n_sim_commits"] == 2 and r["n_real_commits"] == 2, r
+        assert r["ok"], r
+
+    def test_normal_fl_still_keyed_on_round(self):
+        # >1 distinct round -> axis stays "round"; identical to pre-re-key.
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
+                                for r in range(1, 11)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 10),
+                                      ts=float(r)) for r in range(1, 11)])
+        r = pc.throughput_parity(real, sim, tol_rel=0.10)
+        assert r["sim_rounds"] == 10, r
+        assert r["ok"], r
+
+
+class TestFieldCoverageAlias:
+    """§H open-root #3: fwdllm's trainer emits gpu/budget under different names;
+    the coverage matrix must accept either spelling instead of false-FAILing."""
+
+    def test_fwdllm_field_aliases_count_as_covered(self):
+        agg = _agg(agg_rounds=[{"event": "agg_round", "round": 1, "ts": 0.0,
+                                "vclock_now": 1.0, "trainer_speed_s": [1.0],
+                                "staleness": [0], "stat_utility": [1.0],
+                                "contributing_trainers": ["t1"]}])
+        sel = {"num_eligible": 5, "avail_composition": {"a": 1},
+               "num_chosen": 3}
+        agg["selection_train"] = [sel]
+        # trainer emits the fwdllm spellings only.
+        tr = {"t1": {"trainer_round": [
+            {"real_gpu_time_s": 1.2, "sim_round_duration_s": 2.3}]}}
+        r = pc.field_coverage(agg, agg, tr, tr)
+        gpu = r["matrix"]["trainer_round.gpu_compute_s"]
+        bud = r["matrix"]["trainer_round.training_budget_s"]
+        assert gpu["real"] == 1.0 and gpu["sim"] == 1.0, r
+        assert bud["real"] == 1.0 and bud["sim"] == 1.0, r
+        assert "trainer_round.gpu_compute_s(real)" not in r["violations"], r
+
+
 class TestTrainerSpeedParity:
     def test_identical_passes(self):
         rounds_with_speed = [

@@ -60,10 +60,14 @@ class TestCommitThenCarryResidenceOn:
         assert agg._sim_inflight_expected == {"E": 50.0}
         # Per-cycle committed marks cleared so a re-contributor isn't skipped.
         assert agg._sim_committed == set()
-        # Busy trainers (surplus ∪ in-flight) held in their slots; the two
-        # committed ones (A, B) released for re-selection.
+        # Option-A two-lifetime split (K-D16): every busy trainer (carried
+        # surplus C,D ∪ in-flight E) stays un-re-pickable in the all_selected
+        # GUARD; the two committed ones (A, B) are released. But only the
+        # still-COMPUTING trainer (E) holds a compute SLOT (selected_ends, which
+        # drives `extra`) -- the returned/carried C,D freed their slots so the
+        # next distribute refills concurrency with a different trainer.
         assert set(ch._selector.all_selected) == {"C", "D", "E"}
-        assert ch._selector.selected_ends["agg"] == {"C", "D", "E"}
+        assert ch._selector.selected_ends["agg"] == {"E"}
 
     def test_end_to_end_surplus_commits_next_cycle_no_refetch(self):
         agg = _residence_agg(residence=True)
@@ -105,6 +109,48 @@ class TestCommitThenCarryResidenceOn:
         # only the committed A is released.
         assert "B" in held and "C" in held and "A" not in held
         assert "B" in agg._sim_pending_commit and "C" in agg._sim_pending_commit
+        # Two-lifetime split: returned/carried B freed its compute slot (frees
+        # `extra` -> a DIFFERENT trainer refills the pipeline), still-computing C
+        # keeps its slot. Neither can be re-picked (both in the all_selected guard).
+        assert ch._selector.selected_ends["agg"] == {"C"}
+
+
+class TestOptionASlotGuardSplit:
+    """Option-A (§H D-e / D6 / K-D16): compute-slot occupancy (selected_ends,
+    drives `extra`) frees on RETURN; re-pick guard (all_selected) frees on
+    COMMIT. The two ledgers async_oort already tracks, no longer conflated."""
+
+    def test_returned_trainer_frees_slot_but_stays_guarded(self):
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["A", "B", "C", "D"])
+        # A,B still computing; C,D returned (buffered surplus, not yet consumed).
+        agg._sim_inflight_expected = {"A": 10.0, "B": 20.0, "C": 30.0, "D": 40.0}
+        agg._sim_buffer.add("C", 30.0, None)
+        agg._sim_buffer.add("D", 40.0, None)
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        # Slot ledger (extra): only the two still-computing trainers occupy it.
+        assert ch._selector.selected_ends["agg"] == {"A", "B"}
+        # Guard ledger: all four busy trainers un-re-pickable.
+        assert set(ch._selector.all_selected) == {"A", "B", "C", "D"}
+
+    def test_triplet_guard_pruned_to_busy_on_commit(self):
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["A", "B", "C"])
+        # A committed (popped) this cycle; B carried; C computing.
+        agg._trainer_state_dict = {
+            "A": (1, 0, 0), "B": (1, 0, 0), "C": (1, 0, 0),
+        }
+        agg._sim_committed = {"A"}
+        agg._sim_buffer.add("B", 20.0, None)
+        agg._sim_inflight_expected = {"C": 30.0}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        # The committed A is dropped from the triplet guard (re-pickable); the
+        # still-outstanding B, C remain so async_oort's filter keeps skipping them.
+        assert set(agg._trainer_state_dict) == {"B", "C"}
 
 
 class TestFlagOffByteIdentical:

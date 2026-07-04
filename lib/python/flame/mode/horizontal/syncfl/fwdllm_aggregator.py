@@ -32,7 +32,7 @@ from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STAT
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.config import OptimizerType, TrainerAvailState
-from flame.end import PROP_END_AVL_STATE
+from flame.end import KEY_END_STATE, PROP_END_AVL_STATE, VAL_END_STATE_NONE
 from flame.mode.composer import CloneComposer
 import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
@@ -814,13 +814,17 @@ class TopAggregator(AsyncTopAgg):
         return m, md
 
     def _release_sim_slots_at_agg_goal(self, channel, is_async):
-        """Sim slot release at the agg-goal boundary. Two policies (§L / K-D12):
+        """Sim slot release at the agg-goal boundary. Two policies (§L / K-D12/D16):
 
         - async + sim_inflight_residence (fluxtune, c >> agg_goal): COMMIT-THEN-
-          CARRY. Hold still-busy trainers (surplus buffer ∪ in-flight) in their
-          slots BEFORE clearing, release only the committed, and CARRY the surplus
-          buffer to the next fedbuff step (never dropped; version gap handled by
-          staleness_policy). fwdllm analog of felix/oort residence+carryover.
+          CARRY with the Option-A two-lifetime split (§H D-e / D6, K-D16). Hold
+          still-busy trainers BEFORE clearing and CARRY the surplus buffer to the
+          next fedbuff step (never dropped). The overridden `_sim_hold_busy_slots`
+          then splits the two lifetimes async_oort already tracks in separate
+          ledgers: a RETURNED-but-uncommitted (carried) trainer frees its compute
+          slot (selected_ends -> `extra`) so the next distribute refills
+          concurrency to C, while staying un-re-pickable (all_selected ->
+          filtered_ends) until its grad commits.
         - else (sync barriers c ≈ agg_goal, or residence off): LEGACY DROP
           (K-D5/K-D6) -- no surplus, so clearing is correct and flag-off is
           byte-identical to Batch 1.
@@ -839,6 +843,70 @@ class TopAggregator(AsyncTopAgg):
         self._sim_inflight_expected.clear()
         if is_async:
             self._sim_hold_busy_slots(channel)
+
+    def _sim_hold_busy_slots(self, channel) -> None:
+        """Option-A two-lifetime split (§H open-root D-e / D6 resolution, K-D16).
+
+        Overrides felix's `_sim_hold_busy_slots` (which held every busy trainer in
+        BOTH selector ledgers) to fix the fluxtune concurrency-starvation root: the
+        K-D12 carry parked a RETURNED-but-uncommitted trainer in `selected_ends`,
+        which drives the dispatch top-up (`extra = c − len(selected_ends)` in
+        async_oort), so the pipeline refilled ~1 trainer/cycle and sim wall blew up
+        2.4× (§H). async_oort already tracks the two lifetimes in SEPARATE ledgers;
+        we just stop conflating them:
+          - `selected_ends`  -> COMPUTE-SLOT occupancy (drives `extra`). A returned
+            trainer's grad is done computing, so its slot frees on RETURN — exactly
+            what real does when the channel leaves SEND on receipt — letting the
+            next distribute refill concurrency to C with a DIFFERENT trainer.
+          - `all_selected`   -> RE-PICK guard (drives `filtered_ends`). Held until
+            the grad COMMITS, so one-in-flight-per-trainer survives the carry
+            boundary (K-D12) and variance-FAIL rollbacks (principle #4): the same
+            trainer is never re-dispatched while its carried grad is outstanding.
+
+        Runs at the agg-goal boundary. Robust whether or not `cleanup_recvd_ends`
+        already stripped the RECVD (returned) ends from the ledgers: it explicitly
+        releases every no-longer-busy trainer and re-establishes the split for the
+        busy sets. fwdllm-class override only -> async_cifar10 (asyncfl) untouched
+        (principle #8)."""
+        sel = getattr(channel, "_selector", None)
+        if sel is None:
+            return
+        requester = getattr(sel, "requester", None)
+        all_selected = getattr(sel, "all_selected", None)
+        selected_ends = getattr(sel, "selected_ends", None)
+
+        buffered = set(self._sim_buffer.pending_ends())          # returned, carried grad
+        computing = set(self._sim_inflight_expected) - buffered  # dispatched, not returned
+        busy = buffered | computing
+        self._sim_pending_commit |= busy
+        # Prune the (model_version, data_id, iteration) triplet guard to the
+        # still-outstanding set (a trainer whose grad committed is re-pickable).
+        self._trainer_state_dict = {
+            e: v for e, v in getattr(self, "_trainer_state_dict", {}).items()
+            if e in busy
+        }
+
+        if isinstance(all_selected, dict):
+            # Release slot+guard for every trainer no longer busy (its grad
+            # committed this cycle) -> re-pickable next cycle.
+            for eid in [e for e in list(all_selected.keys()) if e not in busy]:
+                del all_selected[eid]
+                if channel is not None and channel.has(eid):
+                    channel._ends[eid].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+                if isinstance(selected_ends, dict) and requester in selected_ends:
+                    selected_ends[requester].discard(eid)
+            # Guard: block re-pick of every still-busy trainer (carried ∪ computing).
+            for eid in busy:
+                if eid not in all_selected:
+                    all_selected[eid] = time.time()
+
+        # Compute slot: held ONLY by still-computing trainers. Carried (returned)
+        # trainers are removed from selected_ends so `extra` reopens their slot.
+        if isinstance(selected_ends, dict) and requester in selected_ends:
+            for eid in computing:
+                selected_ends[requester].add(eid)
+            for eid in buffered:
+                selected_ends[requester].discard(eid)
 
     def _aggregate_grads_async(self, tag: str) -> None:
         """
@@ -2311,6 +2379,14 @@ class TopAggregator(AsyncTopAgg):
                 # running min) so the gate never laps a not-yet-committed trainer.
                 _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
                 self._sim_inflight_expected[end] = _round_now + _budget
+                # Record the (model_version, data_id, iteration) triplet this
+                # trainer is now outstanding at, so async_oort's triplet filter
+                # (the within-cycle re-pick guard) has real state to read and the
+                # R1 residence rung can prove no re-pick per triplet (§H D6). The
+                # boundary split prunes this to the still-busy set. Residence-only
+                # so the sync baselines stay byte-identical (empty map -> inert).
+                if getattr(self, "_sim_inflight_residence", False):
+                    self._trainer_state_dict[end] = self._curr_agg_version
             channel.send(end, payload)
         logger.info(
             f"[Distribute] Done. Sent {_n_weights_sent} WEIGHTS + "

@@ -351,6 +351,43 @@ def _per_round_last_event(agg_rounds: list) -> dict:
     return by_round
 
 
+def _progress_axis(agg_rounds: list) -> str:
+    """The run's true progress axis -- the shared "progress key" abstraction
+    (simulate_fwdllm.md §H open-root #2 / §F.3 re-key).
+
+    Normal FL advances the FL `round` (model_version). fwdllm holds `round`
+    static (one model, gradients aggregated in place) and advances committed
+    `data_id` (variance passes), so a clock-family rung keyed on `round` divides
+    by a counter stuck at 1 and reads the wrong axis. Auto-detect so ONE helper
+    serves both stacks: use `round` when the run advances it (>1 distinct), else
+    `data_id` when the fwdllm cadence field `cycle_data_id` (§K-D9) is present,
+    else fall back to `round`. Async_cifar10 (round-advancing) -> "round" ->
+    byte-identical; only fwdllm re-keys."""
+    rounds = {e.get("round") for e in agg_rounds if e.get("round") is not None}
+    if len(rounds) > 1:
+        return "round"
+    if any(e.get("cycle_data_id") is not None for e in agg_rounds):
+        return "data_id"
+    return "round"
+
+
+def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
+    """{progress_unit -> last event on that unit (by ts)} on the given axis.
+    Mirrors _per_round_last_event but keyed on the run's true progress axis
+    (`round` or fwdllm's `cycle_data_id`), so the clock family measures
+    progress-per-time on the axis the run actually advances."""
+    if axis == "round":
+        return _per_round_last_event(agg_rounds)
+    out: dict = {}
+    for e in agg_rounds:
+        k = e.get("cycle_data_id")
+        if k is None:
+            continue
+        if k not in out or e.get("ts", 0) > out[k].get("ts", 0):
+            out[k] = e
+    return out
+
+
 def _per_round_max_speed(agg_rounds: list) -> dict:
     """Per FL round: max trainer_speed_s across all commits in that round."""
     out: dict = {}
@@ -1818,7 +1855,11 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         return {"ok": False, "tier": "EXACT",
                 "note": "K10: no vclock_now in sim agg_round events — cannot compute throughput"}
     final_vclock = max(sim_vclock_vals)
-    sim_by_round = _per_round_last_event(sim["agg_rounds"])
+    # Progress-axis re-key (§H #2): count units on the axis the run advances --
+    # `round` for normal FL, committed `data_id` for fwdllm (else n_rounds==1).
+    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
+                                      _progress_axis(real["agg_rounds"])) else "round"
+    sim_by_round = _per_progress_last_event(sim["agg_rounds"], axis)
     n_sim_rounds = len(sim_by_round)
     sim_throughput = n_sim_rounds / final_vclock if final_vclock > 0 else 0.0
 
@@ -1827,7 +1868,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "insufficient real ts data (< 2 agg_round events)"}
     wall_elapsed = max(real_ts) - min(real_ts)
-    real_by_round = _per_round_last_event(real["agg_rounds"])
+    real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
     n_real_rounds = len(real_by_round)
     real_throughput = n_real_rounds / wall_elapsed if wall_elapsed > 0 else 0.0
 
@@ -1983,9 +2024,22 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     if V <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "matched virtual budget V ≤ 0 — run too short to measure"}
-    n_sim = sum(1 for e in sim["agg_rounds"] if (e.get("vclock_now") or 0) <= V + 1e-9)
-    n_real = sum(1 for e in real["agg_rounds"]
-                 if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9)
+    # Progress-axis re-key (§H #2): count commits on the axis the run advances.
+    # Normal FL commits once per agg_round event; fwdllm's committed unit is the
+    # `data_id` (a variance-FAIL cycle rolls back, so raw cycle events overcount),
+    # so count DISTINCT committed data_ids within V -- keeping U2 == K8's rollup.
+    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
+                                      _progress_axis(real["agg_rounds"])) else "round"
+    if axis == "round":
+        n_sim = sum(1 for e in sim["agg_rounds"] if (e.get("vclock_now") or 0) <= V + 1e-9)
+        n_real = sum(1 for e in real["agg_rounds"]
+                     if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9)
+    else:
+        sim_units = _per_progress_last_event(sim["agg_rounds"], axis)
+        real_units = _per_progress_last_event(real["agg_rounds"], axis)
+        n_sim = sum(1 for e in sim_units.values() if (e.get("vclock_now") or 0) <= V + 1e-9)
+        n_real = sum(1 for e in real_units.values()
+                     if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9)
     if max(n_sim, n_real, 1) == 0:
         return {"ok": True, "tier": "EXACT", "note": "no commits in V window"}
     rel_diff = abs(n_sim - n_real) / max(n_sim, n_real)
@@ -2024,18 +2078,23 @@ def terminal_state_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "matched virtual budget V ≤ 0 — run too short to measure"}
 
-    sim_by_round = _per_round_last_event(sim["agg_rounds"])
-    real_by_round = _per_round_last_event(real["agg_rounds"])
+    # Progress-axis re-key (§H #2): "rounds at V" is really "progress units at V"
+    # -- FL rounds for normal FL, committed data_ids for fwdllm (round static).
+    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
+                                      _progress_axis(real["agg_rounds"])) else "round"
+    unit_key = "round" if axis == "round" else "cycle_data_id"
+    sim_by_round = _per_progress_last_event(sim["agg_rounds"], axis)
+    real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
 
     sim_rounds_at_V = {r for r, e in sim_by_round.items()
                        if (e.get("vclock_now") or 0) <= V + 1e-9}
     real_rounds_at_V = {r for r, e in real_by_round.items()
                         if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9}
 
-    def _trainers(agg_rounds, round_set):
+    def _trainers(agg_rounds, unit_set):
         ts = set()
         for e in agg_rounds:
-            if e.get("round") in round_set:
+            if e.get(unit_key) in unit_set:
                 ts.update(e.get("contributing_trainers", []))
         return ts
 
@@ -2215,8 +2274,12 @@ _COVERAGE_SPEC = [
     ("selection.num_eligible",          "sel",           "num_eligible",          "both"),
     ("selection.avail_composition",     "sel",           "avail_composition",     "both"),
     ("selection.num_chosen",            "sel",           "num_chosen",            "both"),
-    ("trainer_round.gpu_compute_s",     "trainer_round", "gpu_compute_s",         "both"),
-    ("trainer_round.training_budget_s", "trainer_round", "training_budget_s",     "both"),
+    # fwdllm's trainer emits the same data under different names (§H #3): its
+    # forward-grad "compute" is real_gpu_time_s and its budget is
+    # sim_round_duration_s (gpu + modeled delay). Accept either spelling so the
+    # coverage matrix agrees on both examples instead of false-FAILing fwdllm.
+    ("trainer_round.gpu_compute_s",     "trainer_round", ("gpu_compute_s", "real_gpu_time_s"),         "both"),
+    ("trainer_round.training_budget_s", "trainer_round", ("training_budget_s", "sim_round_duration_s"), "both"),
     ("task_recv.sim_send_ts",           "task_recv",     "sim_send_ts",           "sim"),
 ]
 
@@ -2230,10 +2293,15 @@ def field_coverage(real_agg: dict, sim_agg: dict,
     into "these fields are absent in sim".  FAIL-LOUD when an expected field
     has zero density in a mode that requires it.
     """
-    def _density(events: list, field: str) -> Optional[float]:
+    def _density(events: list, field) -> Optional[float]:
+        # `field` may be a single name or a tuple of accepted aliases (an event
+        # counts as covered if ANY alias is present) -- lets one canonical spec
+        # row match a different-but-equivalent field name per example (§H #3).
         if not events:
             return None
-        n = sum(1 for e in events if e.get(field) not in (None, [], {}))
+        fields = field if isinstance(field, tuple) else (field,)
+        n = sum(1 for e in events
+                if any(e.get(f) not in (None, [], {}) for f in fields))
         return n / len(events)
 
     def _agg_evs(agg, src):

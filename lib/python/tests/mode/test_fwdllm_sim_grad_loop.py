@@ -15,9 +15,6 @@ commit a grad).
 
 from datetime import datetime
 
-from flame.mode.horizontal.asyncfl.top_aggregator import (
-    TopAggregator as _AsyncBase,
-)
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as _SyncBase
 from flame.mode.message import MessageType
@@ -69,7 +66,8 @@ class _FakeGradAgg:
     _release_sim_slots_at_agg_goal = TopAggregator._release_sim_slots_at_agg_goal
     _advance_sim_clock = _SyncBase._advance_sim_clock
     _sim_recv_grace_s = _SyncBase._sim_recv_grace_s
-    _sim_hold_busy_slots = _AsyncBase._sim_hold_busy_slots
+    # fwdllm overrides felix's hold with the Option-A two-lifetime split (K-D16).
+    _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
     # grace-window class knobs the base method reads off self
     SIM_RECV_GRACE_FLOOR_S = 0.0
     SIM_RECV_GRACE_FACTOR = 0.0
@@ -84,6 +82,9 @@ class _FakeGradAgg:
         self._sim_trainer_budget = {}
         self._sim_budget_min = 12.0
         self._sim_fill_ema = 0.0
+        self._sim_pending_commit = set()
+        self._sim_inflight_residence = False
+        self._trainer_state_dict = {}
 
     def _drain(self, channel, recv_ends, n):
         """Commit n grads, returning the ordered list of committed scts."""
