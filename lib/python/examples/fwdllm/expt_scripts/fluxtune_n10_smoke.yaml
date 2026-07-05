@@ -46,6 +46,12 @@ experiments:
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
+          # BIT-IDENTICAL to the grads (scripts/profile_jvp_opt.py). Cuts
+          # fluxtune's per-batch forward passes ~37% (25->20) + trainable-only
+          # FD, so GPU drops under the modeled mobile delay. Set true on BOTH
+          # real+sim (must match). Set false to revert to the un-optimized path.
+          jvp_perf_opt: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # Uniform/IID partition for smoke tests -- avoids the niid_label

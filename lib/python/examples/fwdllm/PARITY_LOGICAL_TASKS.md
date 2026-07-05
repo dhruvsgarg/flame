@@ -7,11 +7,12 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
 
 ---
 
-## ⏸ SESSION CHECKPOINT (2026-07-05, paused for a break — resume here)
+## ⏸ SESSION CHECKPOINT (2026-07-05 — DATABIN1 RUN LANDED; resume here)
 
-**Code + tests are landed and GREEN; NO run has been launched yet.** Full suite: 606 mode/telemetry/selector +
-115 async_cifar10 parity green; trainer files compile. NOTHING is half-edited. Nothing committed yet at pause →
-**commit + push done at end of session** (this checkpoint is the resume anchor).
+**Code + tests landed & GREEN; the P2-7 databin1 run is DONE and CHECKED.** Full suite: 606 mode/telemetry/
+selector + 115 async_cifar10 parity green. **Outcome (see P2-7 below):** K-D29 broke the RNG-desync root — sync
+baselines are `var` bit-identical + `timing_overrun=0%` on bin 1; the only sync residual is a benign delay-tie
+order swap (OPEN FORK P2-7a); fluxtune still overruns 38% as predicted → next is P2-5 (`perturbation_count`↓).
 
 **DONE (landed + tested):**
 - **P1-1/P1-2/P1-3** — enforced `cohort_sequence` rung (EXACT, ungated), V2 mean-guard, `--max-bin` window. Both
@@ -47,20 +48,39 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
      `training_overran` fraction per mode + earliest `(data_id, iter)` overrun — the K-D29 order-determinism tell
      (gpu > modeled D → arrival order can flip → cohort/var break is a TIMING-MODEL limit, not a sim bug). SKIPs on
      the banked logs (predate P2-6); will populate on the databin1 run and tell us WHY fluxtune breaks.
-2. **P2-7 — LAUNCH THE databin1 RUN** (the immediate experimental next step; command below), then re-run the
-   checker `--max-bin 1` and confirm the cascade: fwdllm/fwdllm_plus `cohort_sequence` should extend past bin 8;
-   fluxtune expected to still break (GPU overrun) → confirms P2-5 tuning is the fluxtune next step.
-3. **P0-2** — controlled grad-determinism-given-order confirmation (also unblocks the P1-6 live test).
-4. **P2-4 (optimize)** / **P2-5 (tune fluxtune `perturbation_count`)** — reduce fluxtune GPU below its D budget.
-5. **Phase 3** — extend beyond bin 1 once bin-1 parity holds.
+2. **✅ P2-7 DONE (databin1 run + `--max-bin 1` check).** Cascade verified — see P2-7 in PHASE 2. Sync RNG-desync
+   root broken (`var` bit-identical, `timing_overrun=0%`); fluxtune overruns 38% as predicted.
+3. **✅ P2-7a CODE LANDED (K-D31; operator chose canonicalize-by-trainer_id) — PENDING VALIDATION RUN.** Trainer
+   stamps pure `D` (`MODELED_DELAY_S`, both modes); agg `_canonicalize_cohort_commit_order` sorts each cohort by
+   `(D, str(end))` before the telemetry snapshot + `aggregate()` (reorders `_per_agg_trainer_list` + trailing
+   grad/jvp slice in lockstep). No-op when delays off / already canonical. 428 mode + **9 new**
+   `test_fwdllm_commit_canon.py` + 115 async_cifar10 parity green; async byte-identical. **NEXT: the operator runs
+   the validation command below** → confirm sync `cohort_sequence` order_match→1.0 (var already bit-identical).
+   A dry `--only fwdllm,fwdllm_plus` attempt crashed on a **missing `h5py`** (environment, not code) → operator
+   will run in the correct env.
+4. **✅ P2-4 GPU optimization — LANDED (K-D32, `jvp_perf_opt`, fluxtune-only, config-gated, bit-identical).**
+   Implemented in `calculate_jvp` (trainable_idx) + `tc_transformer_trainer_distribute._train_one_batch`
+   (skip 3 diagnostic passes + reuse winner JVP), threaded via main.py/fl_main.py, enabled in both fluxtune yamls
+   (default false in trainer_base). Startup `[JVP_PERF_OPT]` confirms 10/10 trainers True (aggregator's eval-only
+   trainer False, harmless). 13 pytests + 185 fwdllm mode + 115 parity green. NOT retained: vmap (fp32 FD
+   cancellation), fwd-AD (slower). **NEXT: the batch run** confirms fluxtune `timing_overrun`→0 + cohort set
+   recovers + real↔sim var parity at multi-bin.
+5. **P2-5 (tune fluxtune `perturbation_count`)** — only if the bit-identical cuts above don't fully clear overrun.
+   Lower it so GPU < min cohort D. Changes the baseline algorithm (deferred, operator call).
+5. **P0-2** — controlled grad-determinism-given-order confirmation (also unblocks the P1-6 live test).
+6. **Phase 3** — extend beyond bin 1 once bin-1 parity holds.
 
-**IMMEDIATE NEXT COMMAND (P2-7):**
+**IMMEDIATE NEXT COMMAND (P2-7a validation — confirm K-D31 closes the sync tie):**
 ```
 cd lib/python/examples/fwdllm/expt_scripts
-bash run_sequential.sh --mode both --delays on --delay-factor 2 --max-data-id 1 --max-runtime-s 1800 --yes
-python run_parity.py --yes --max-bin 1     # then inspect cohort_sequence + timing_overrun per baseline
-python plot_step_timing.py                 # NEW: per-step GPU breakdown (fine step_timing now populated)
+# sync baselines only (fluxtune still overruns → deferred to P2-5):
+bash run_sequential.sh --mode both --delays on --delay-factor 2 --max-data-id 1 \
+     --max-runtime-s 600 --only fwdllm,fwdllm_plus --yes
+python run_parity.py --yes --max-bin 1 --baselines fwdllm fwdllm_plus
+# EXPECT: cohort_sequence order_match_frac → 1.0 (was 0.5 / 0.0); var still bit-identical.
+# grep the agg log for [COMMIT_CANON] to see the tie reorder fire.
 ```
+(The dry attempt crashed on a missing `h5py` — environment, not code. Run in the env that has the fwdllm deps.)
 Expected: fwdllm/fwdllm_plus (GPU≈1s < D/2 of 2–9s) → order deterministic → `cohort_sequence` improves; fluxtune
 (GPU 7.57s > D/2) → `[TIMING_OVERRUN]` fires, order still flips → tune `perturbation_count` down next.
 
@@ -180,9 +200,20 @@ stochastic selectors (`DETERMINISTIC_SELECTORS=∅`, `checks.py:882`) and keys o
 - [x] **P2-6 DONE — budget-overrun telemetry** (`training_overran` + `remaining_time_s` on `trainer_round`,
       `[TIMING_OVERRUN]` warning). This is the "keep a tab" watch: if actual GPU > modeled sct, the update arrives
       after the vclock passed its sct → out-of-order commit. Expect it to fire on fluxtune this run.
-- [ ] **P2-7 Verify the cascade closes** — the launch below is the test: fwdllm/fwdllm_plus (GPU≈1s < D/2)
-      should extend cohort_sequence parity past bin 8; fluxtune (GPU overrun) is expected to still break → confirms
-      P2-5 is the fluxtune next step.
+- [x] **P2-7 DONE — cascade VERIFIED on the databin1 run** (`--delay-factor 2 --max-data-id 1`,
+      `smoke_logs/20260705_150145` → `experiments/run_20260705_15*`; `run_parity.py --yes --max-bin 1`).
+      **RNG-desync root BROKEN for the sync baselines:** on bin 1 `cohort_sequence` shows `var` **bit-identical**
+      real↔sim (fwdllm `0.21480107…`, fwdllm_plus `0.37160512…`; banked had `var_match=0.5`, real≠sim) +
+      `set_match=1.0` + `cadence_match=1.0` + **`timing_overrun=0%`** ⇒ grads mode-invariant on bin 1. RESIDUAL:
+      `order_match` 0.5 (fwdllm) / 0.0 (fwdllm_plus) from ONE benign **delay-TIE** — trainers 3 & 9 (…372/…378)
+      both drew `training_delay_s=13.0` (`_metadata/trainer_registry.yaml`, → D=6.5); their sct ties, real breaks
+      it by physical arrival & sim by sct-sort, both in the SAME split-half ⇒ var/grads unchanged. **fluxtune:**
+      `timing_overrun=38%` (GPU≈4.2s > min cohort D 2.0/2.5/3.5s), `set_match=0.22`, `var` mean off 29% → genuine
+      break, timing-model-limited → P2-5 (`perturbation_count`↓ so GPU<minD, and/or `delay_factor`=1). Parity
+      counts (`--max-bin 1`): fwdllm 45/4/27, fwdllm_plus 43/6/27, fluxtune 42/8/24 — each lists `cohort_sequence`
+      in FAILS. **OPEN FORK (P2-7a):** close the benign sync tie — canonicalize equal-D commit order by trainer_id
+      in BOTH modes, or relax the order rung to var-equivalent. Operator call (touches real commit path / rung
+      contract).
 
 ## PHASE 3 — validate on data bin 1, then extend
 - [ ] **P3-1 Fresh databin1 loop** (`--max-data-id 1`, delays configured per P2-2) across the 3 baselines.

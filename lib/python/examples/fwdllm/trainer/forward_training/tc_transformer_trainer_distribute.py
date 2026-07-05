@@ -217,6 +217,24 @@ class ForwardTextClassificationTrainer:
         except (TypeError, ValueError):
             self.perturbation_count = 10
 
+        # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
+        # BIT-IDENTICAL to the current grads (validated by scripts/profile_jvp_opt.py):
+        #   (a) trainable-only finite difference (skip frozen p-h*0=p);
+        #   (b) skip the 3 diagnostic-only forward passes (loss before/after-update
+        #       logging — never feed grads/telemetry);
+        #   (c) reuse the selected perturbation's JVP already computed in selection.
+        # Config-gated, default OFF (byte-identical); enabled ONLY in the fluxtune
+        # yamls (`jvp_perf_opt: true`). Revertible per-config -> fluxtune can run
+        # the un-optimized path any time. Real and sim MUST match (they read the
+        # same config), so it never breaks real<->sim parity.
+        self.jvp_perf_opt = bool(getattr(self.args, "jvp_perf_opt", False))
+        self._sel_jvp_cache = {}
+        logging.info(
+            f"[JVP_PERF_OPT] jvp_perf_opt={self.jvp_perf_opt} "
+            f"(trainable-only FD + skip diagnostic passes + reuse winner JVP; "
+            f"all bit-identical — simulate_fwdllm.md §L)"
+        )
+
         # var control TODO: It is not layer id it is param id. Distilbert for eg
         # has only 6 layers.
         if self.args.model_type == "distilbert":
@@ -452,11 +470,16 @@ class ForwardTextClassificationTrainer:
                 
 
                 jvp_all_perturbations = []
+                # perf-opt: cache each perturbation's (loss, jvp) so the winner's
+                # JVP is reused below instead of recomputed (2 fewer passes, §L).
+                self._sel_jvp_cache = {}
                 for i in range(0, self.perturbation_count):
                     v_params = _prepare_perturbation_tensors(device, v_buffer, i)
                     loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
                     # logging.info(f"Jvp of option: {jvp}")
                     jvp_all_perturbations.append(jvp)
+                    if self.jvp_perf_opt:
+                        self._sel_jvp_cache[i] = (loss, jvp)
 
                 logging.info(f"Number of pert and jvps: {len(jvp_all_perturbations)}")
                 
@@ -569,7 +592,11 @@ class ForwardTextClassificationTrainer:
                 t=labels,
             )
 
-            loss, jvp = calculate_jvp(f, self.params, v_params)
+            # Perf-opt (fluxtune): perturb only trainable params — bit-identical
+            # since v=0 on frozen params (p-h*0=p). None => legacy all-param path.
+            _tidx = ([i for i, p in enumerate(self.params) if p.requires_grad]
+                     if self.jvp_perf_opt else None)
+            loss, jvp = calculate_jvp(f, self.params, v_params, trainable_idx=_tidx)
             jvp = jvp.to(device)
             return loss, jvp
         
@@ -642,11 +669,23 @@ class ForwardTextClassificationTrainer:
         logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
         logging.info(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
-        loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
-        nonscaled_global_loss = _compute_loss_after_update(device, x, labels, v_params, jvp)
-        scaled_global_loss = _compute_loss_after_update(device, x, labels, v_params, jvp/15)
-        loss_before_update = _compute_loss_before_update(device, x, labels, v_params, jvp)
-        logging.info(f"At trainer: {self.trainer_id} - iteration: {logging_state.get('iteration')} - jvp_magnitude: {jvp} - loss before update: { loss_before_update } - loss after update (not downscaled): {nonscaled_global_loss}  - loss after update (down scaled): {scaled_global_loss}")
+        # perf-opt: reuse the winner's JVP already computed during selection
+        # (same params + same v_params for best_idx -> bit-identical), saving 2
+        # forward passes. Falls back to compute when the cache is absent (the
+        # cos-sim / sync path never ran the JVP-selection loop) or best_idx used
+        # the carried global-best v_params (the `best_idx == -1` branch).
+        if (self.jvp_perf_opt and best_idx != -1
+                and best_idx in getattr(self, "_sel_jvp_cache", {})):
+            loss, jvp = self._sel_jvp_cache[best_idx]
+        else:
+            loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
+        # 3 diagnostic-only passes: their losses ONLY feed the log below (never
+        # grads/telemetry), so skip them under perf-opt (bit-identical grads, §L).
+        if not self.jvp_perf_opt:
+            nonscaled_global_loss = _compute_loss_after_update(device, x, labels, v_params, jvp)
+            scaled_global_loss = _compute_loss_after_update(device, x, labels, v_params, jvp/15)
+            loss_before_update = _compute_loss_before_update(device, x, labels, v_params, jvp)
+            logging.info(f"At trainer: {self.trainer_id} - iteration: {logging_state.get('iteration')} - jvp_magnitude: {jvp} - loss before update: { loss_before_update } - loss after update (not downscaled): {nonscaled_global_loss}  - loss after update (down scaled): {scaled_global_loss}")
         self.jvp_for_snr_check = abs(jvp)
         logging.info(f"JVP of the perturbation: {jvp}")
 

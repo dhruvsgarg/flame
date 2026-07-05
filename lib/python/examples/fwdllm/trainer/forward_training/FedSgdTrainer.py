@@ -199,6 +199,11 @@ class FedSGDTrainer(Trainer):
         self._sim_send_ts = None
         self._sim_completion_ts = None
         self._sim_round_duration_s = None
+        # Pure modeled delay D for this round (K-D31/P2-7a): stamped in the grad
+        # message (MODELED_DELAY_S) so the aggregator can canonically order the
+        # cohort's commits by (D, trainer_id) identically in real and sim. None
+        # until the first round completes / when delays are disabled.
+        self._modeled_delay_s = None
         self._wall_recv_ts = None
 
         self.trainer_start_ts = time.time()
@@ -607,6 +612,11 @@ class FedSGDTrainer(Trainer):
         # sleeps max(0, delay - gpu); sim skips it. Returns the modeled budget,
         # the remainder actually waited, and whether the GPU overran the budget.
         _delay_s, _remaining_s, _overran = self._emulate_training_delay(_real_gpu_time_s)
+        # Stash the pure modeled delay D (deterministic from the registry) so
+        # _send_grads can stamp it (MODELED_DELAY_S) for the aggregator's
+        # canonical (D, trainer_id) commit ordering. 0.0 when delays are off ->
+        # stays None-equivalent (all-zero => no ordering signal, arrival order).
+        self._modeled_delay_s = _delay_s if _delay_s else None
 
         # post_train phase starts AFTER the modeled delay (Root B / #6): real
         # SLEEPS _delay_s above (the modeled-latency term, compared via

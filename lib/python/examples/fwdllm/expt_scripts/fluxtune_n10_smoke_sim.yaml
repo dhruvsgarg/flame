@@ -51,6 +51,10 @@ experiments:
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — BIT-IDENTICAL
+          # grads; MUST match the real yaml (both sides read this config, so the
+          # optimization keeps real<->sim parity). Set false to revert.
+          jvp_perf_opt: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # Uniform/IID partition for smoke tests -- avoids the niid_label

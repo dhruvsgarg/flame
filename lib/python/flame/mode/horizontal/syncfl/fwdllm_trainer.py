@@ -580,6 +580,12 @@ class Trainer(Role, metaclass=ABCMeta):
                 # the intrinsic (server-overhead-free) task duration from. All
                 # None in real mode -> aggregator ignores them (arrival order).
                 MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
+                # Pure modeled delay D (K-D31/P2-7a): deterministic from the
+                # registry (unlike SIM_COMPLETION_TS, which folds in GPU jitter),
+                # so the aggregator orders this cohort's commits by (D,
+                # trainer_id) identically in real and sim. Stamped in BOTH modes;
+                # None when delays are off -> aggregator keeps arrival order.
+                MessageType.MODELED_DELAY_S: getattr(self, "_modeled_delay_s", None),
                 # Echo the dispatch stamp so the aggregator can reconstruct this
                 # contribution's [dispatch, completion] interval for R1 (§L.3).
                 MessageType.SIM_SEND_TS: self._sim_send_ts,

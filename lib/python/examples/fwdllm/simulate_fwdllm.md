@@ -124,13 +124,23 @@ not delay-deterministic; fwdllm also uses a flat-additive delay, not the remaind
 deterministic GIVEN matched order** (batch/seed mode-invariant) → this is a sim ORDER bug, NOT nondeterminism →
 exact cadence parity IS achievable once order matches. **Full diagnosis + fix plan: [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.md).**
 
-> **STATUS (2026-07-05 checkpoint):** the checker now GATES on this (enforced `cohort_sequence` EXACT rung +
-> V2 mean-guard, P1) and the timing-model fix has LANDED (**K-D29** remainder-wait `max(gpu,D)` + per-trainer D +
-> crc32 straggler off + `perturbation_count` knob). **P1-4/P1-5 now RESOLVED** (K-D30): full-cohort determinism
-> gate un-gates fwdllm's selection/aggregation_sequence/utility to GENUINE enforcement (fluxtune/fwdllm_plus stay
-> gated); new `timing_overrun` DIAG rung surfaces the K-D29 overrun tell; P1-4 assessed redundant. 419 mode + 115
-> async_cifar10 parity tests green; banked scoreboard stable. **Not yet run.** Pending before close: the
-> **databin1 validation run** (`--delay-factor 2 --max-data-id 1`). Resume steps: the tracker's SESSION CHECKPOINT.
+> **STATUS (2026-07-05 — DATABIN1 RUN LANDED, `--delay-factor 2 --max-data-id 1`, `smoke_logs/20260705_150145`).**
+> The K-D29 model fix **broke the RNG-desync root** for the sync baselines: on bin 1 `cohort_sequence` now shows
+> **`var` BIT-IDENTICAL** real↔sim (fwdllm `0.21480107…`==, fwdllm_plus `0.37160512…`==; banked logs had
+> `var_match_frac=0.5` with real≠sim) + `set_match=1.0` + `cadence_match=1.0`, and **`timing_overrun=0%`** — grads
+> are now mode-invariant on bin 1. The SOLE residual is `order_match<1.0` from **one benign delay-TIE swap**:
+> trainers 3 & 9 (…372/…378) both drew `training_delay_s=13.0` (registry, → D=6.5) so their sct ties; real breaks
+> it by physical arrival, sim by sct-sort — but both land in the SAME split-half, so `var`/cadence/grads are
+> unchanged. `cohort_sequence` (EXACT order) still FAILs on it. **fluxtune** behaves exactly as predicted:
+> `timing_overrun=38%` (GPU≈4.2s > min cohort D of 2.0/2.5/3.5s), `set_match=0.22`, `var` mean off 29% → genuine
+> break, **timing-model-limited** → fix is P2-5 (`perturbation_count`↓ to put GPU<minD, and/or `delay_factor`=1).
+> **SYNC TIE FIX LANDED (K-D31, operator chose canonicalize-by-trainer_id):** the trainer stamps its pure modeled
+> delay `D` (`MODELED_DELAY_S`, both modes); the aggregator sorts each cohort's commits by `(D, str(end))` before
+> the telemetry snapshot + `aggregate()`, so equal-D ties break by trainer_id IDENTICALLY in real and sim →
+> receive order matches exactly while `var`/grads stay bit-identical (reorder only ever moves a grad WITHIN a
+> split-half). 428 mode + 9 new canon + 115 async_cifar10 parity tests green; async byte-identical.
+> **PENDING: the operator's re-run** (`--only fwdllm,fwdllm_plus --delay-factor 2 --max-data-id 1`) to confirm
+> `cohort_sequence` order_match→1.0. Full diagnosis + numbers: [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.md) P2-7/P2-7a.
 
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
@@ -419,5 +429,74 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
   limit not a sim bug). P1-4 (async_cifar10 cohort adapter) assessed redundant, not built. Sim/checker-only →
   async_cifar10 byte-identical; banked scoreboard stable.
 
+- **K-D31** — **canonical `(D, trainer_id)` cohort commit order (P2-7a; operator chose canonicalize-by-id).** The
+  databin1 run left ONE sync residual: two trainers sharing a registry delay (D=6.5) swap in receive order (real
+  breaks the sct tie by physical arrival, sim by sct-sort) — benign (both in the same split-half → `var`/grads
+  bit-identical) but the EXACT-order `cohort_sequence` rung flags it. Fix: trainer stamps pure `D`
+  (`MODELED_DELAY_S`, both modes, deterministic from the registry — unlike sct which folds in GPU jitter); agg
+  sorts each cohort by `(D, str(end))` in `_canonicalize_cohort_commit_order` before the telemetry snapshot +
+  `aggregate()`, reordering `_per_agg_trainer_list` + the trailing cohort slice of the grad/jvp lists in lockstep.
+  No-op when delays off / already canonical (real still receives in strict D-order, K-D29 — only ties move).
+  Sim/agg-only → async_cifar10 byte-identical; 428 mode + 9 canon + 115 parity green.
+
+- **K-D32** — **fluxtune JVP perf optimizations (`jvp_perf_opt`, §L; fluxtune-only, config-gated, all
+  BIT-IDENTICAL).** fluxtune's forward-grad JVP was ~10× the sync compute (2P=20 selection passes + 5 removable),
+  overrunning its modeled mobile delay → out-of-order commits (#1d). Fix (validated by
+  `scripts/profile_jvp_opt.py`): (a) trainable-only finite difference — `calculate_jvp(trainable_idx=…)` skips
+  `p−h·0=p` on the 98.5% frozen backbone (1.26× + −251 MB); (b) skip the 3 diagnostic-only forward passes; (c)
+  reuse the selected perturbation's cached JVP. Combined fluxtune −37% (sync would be −68% but is left OFF).
+  Gated on `jvp_perf_opt` (trainer_base default false = byte-identical; true in both fluxtune yamls, must match
+  real↔sim; revertible per-config). Startup `[JVP_PERF_OPT]` log confirms 10/10 trainers active. NOT adopted: vmap
+  (2× but fp32-diverges via FD cancellation), fwd-AD (slower). 13 pytests + 185 fwdllm mode + 115 parity green.
+
 *Retired/superseded anchors (kept only as pointers): K-D6 (→K-D12), K-D7/K-D8/K-D10/K-D16/K-D18/K-D19/K-D20/K-D23
 — landed scaffolding or corrections, folded into §G/§H; see git history for detail.*
+
+---
+
+## §L  Forward-grad JVP compute profile & retained fluxtune optimizations
+*(2026-07-05, tool: `scripts/profile_jvp_opt.py` — reuses the real `create_model` + `calculate_jvp`; distilbert-base
++ AdapterHub adapters, batch 8, seq 192, A40, fp16. Absolute ms are a CLEAN single-trainer profile; the real run
+multiplies by ~10× from GPU contention across the 10 concurrent trainers, but pass-counts/ratios/memory transfer.)*
+
+**Mechanism.** Forward-grad trains via a **central finite-difference JVP** (`fwdgrad_utils.calculate_jvp`): each
+perturbation = **2 forward passes** `f(θ±hv)`, h=0.01, autocast+no_grad → `jvp=(f(θ+hv)−f(θ−hv))/2h`. **fluxtune**
+SELECTS the best of `perturbation_count`(=10) perturbations by |jvp| (2P=**20 passes**); **fwdllm/sync** selects by
+cos-sim (**0 forward passes**) + 1 final JVP. Only **~1.5% of params are trainable** (bottleneck adapters in all 6
+layers + head, 1.04M/67.4M); the backbone is frozen.
+
+| path | fwd passes | ms/batch (clean) |
+|---|---|---|
+| sync fwdllm (current) | 5 | 50 |
+| **sync fwdllm (opt)** | 2 | **16 (−68%)** |
+| fluxtune P=1 (opt) | 2 | 16 (== sync) |
+| fluxtune P=5 (opt) | 10 | 80 |
+| fluxtune P=10 (current) | 25 | 251 |
+| **fluxtune P=10 (opt)** | 20 | **159 (−37%)** |
+| backprop ref (1 fwd+1 bwd) | — | 17 |
+
+- **Compute vs sync:** fluxtune = `2P × per-pass` → **10× sync at P=10**, linear in P, **equals sync at P=1**. The
+  JVP-selection is the entire fluxtune surcharge; sync's cos-sim selection is free.
+- **Memory:** forward-grad peak is **FLAT in P** (~3.2–3.4 GB = model + one held forward; **no autograd graph**).
+  Backprop stores activations (3.71 GB). fluxtune's extra JVP inferences cost **TIME, not memory** — same footprint
+  as sync (this is forward-grad's design tradeoff: many cheap forward passes, no backward, low memory).
+- **Per-pass:** full-param FD 10.0 ms; trainable-only FD 7.95 ms.
+
+**RETAINED — bit-identical (fidelity-preserving; real↔sim parity untouched):**
+1. **Trainable-only FD** — skip `p−h·0=p` on the 98.5% frozen params inside `calculate_jvp`: **1.26× + −251 MB**,
+   `max|Δjvp|=0`.
+2. **Drop the 3 diagnostic-only forward passes** (`_train_one_batch:646-648`, loss before/after-update logging —
+   never feed grads/telemetry) **+ reuse the winner's cached JVP** (`:645`, fluxtune): fluxtune 25→20, sync 5→2.
+
+Combined: **sync −68%, fluxtune −37%**, all bit-identical → should clear the `delay_factor=1` overrun
+(4.2s → ~2.6s < min cohort D 4.0s) WITHOUT touching fidelity. **LANDED (K-D32), fluxtune-only & config-gated**
+(`jvp_perf_opt`, default false = byte-identical; true in both fluxtune yamls; sync untouched). Startup log
+`[JVP_PERF_OPT]`; 13 new pytests + 185 fwdllm mode + 115 parity green.
+
+**NOT retained — change fidelity:**
+- **vmap-batching the perturbations** — **2.0×** (biggest single win) and mathematically exact (fp64 seq==vmap
+  BIT-IDENTICAL, deterministic run-to-run → *would* be real↔sim safe) BUT differs ~5% from the current sequential in
+  fp16/fp32: the FD subtracts two O(1) losses (catastrophic cancellation floors precision), so any reduction-order
+  change re-baselines the trajectory. Excluded per the fidelity bar; available if a re-baseline is ever accepted.
+- **Forward-mode AD** (exact JVP) — slower (0.5×, needs eager attention; not impl for SDPA) + different math.
+- **`perturbation_count`↓** — the direct lever, but changes the baseline algorithm.

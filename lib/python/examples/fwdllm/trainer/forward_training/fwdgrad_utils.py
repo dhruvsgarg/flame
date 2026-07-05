@@ -70,16 +70,30 @@ def functional_get_loss(
     return _get_loss(y, t, num_classes)
 
 
-def calculate_jvp(func, params, v):
+def calculate_jvp(func, params, v, trainable_idx=None):
     """
-    Calculations Jacobian-vector product using numerical differentiation
+    Calculations Jacobian-vector product using numerical differentiation.
+
+    trainable_idx (fluxtune perf-opt, simulate_fwdllm.md §L): when given, only
+    those param indices are perturbed; the rest keep v=0 so `p - h*0 = p`
+    EXACTLY -> BIT-IDENTICAL to perturbing every param, but skips copying the
+    ~98.5% frozen backbone twice per perturbation (1.26x, -251MB measured).
+    None => legacy all-param path (byte-identical to before).
     """
     h = 0.01
     with torch.no_grad(), autocast():
-        loss = func(tuple([params[i] - h * v[i] for i in range(len(params))]))
-        terbulence_loss = func(
-            tuple([params[i] + h * v[i] for i in range(len(params))])
-        )
+        if trainable_idx is None:
+            minus = tuple([params[i] - h * v[i] for i in range(len(params))])
+            plus = tuple([params[i] + h * v[i] for i in range(len(params))])
+        else:
+            minus = list(params)
+            plus = list(params)
+            for i in trainable_idx:
+                minus[i] = params[i] - h * v[i]
+                plus[i] = params[i] + h * v[i]
+            minus, plus = tuple(minus), tuple(plus)
+        loss = func(minus)
+        terbulence_loss = func(plus)
     avg_loss = (terbulence_loss + loss) / 2
     jvp = (terbulence_loss - loss) / (2 * h)
     return avg_loss, jvp

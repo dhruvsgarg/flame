@@ -275,6 +275,11 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = []
+        # end -> canonical commit-order key (modeled_delay D, str(end)) for the
+        # current cycle's cohort (K-D31/P2-7a). Populated per contribution in
+        # aggregate_weights; consumed by _canonicalize_cohort_commit_order to
+        # break equal-D ties by trainer_id IDENTICALLY in real and sim.
+        self._commit_key_by_end = {}
         self._model_version_unique_trainers = set()
         self._model_version_trainer_stats = {
             "train_duration": [],
@@ -1279,6 +1284,18 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
 
+        # Canonical commit-order key (K-D31/P2-7a): the trainer's pure modeled
+        # delay D (deterministic from the registry) + str(end) as the tie-break.
+        # Lets _canonicalize_cohort_commit_order reproduce real's D-ordered
+        # arrival AND break equal-D ties by trainer_id identically in both modes.
+        # None when delays are off / the trainer did not stamp D -> that cycle
+        # falls back to arrival order (byte-identical legacy behavior).
+        _md = msg.get(MessageType.MODELED_DELAY_S)
+        self._commit_key_by_end = getattr(self, "_commit_key_by_end", {})
+        self._commit_key_by_end[end] = (
+            (float(_md), str(end)) if _md is not None else None
+        )
+
         # Re-pick guard (async_oort triplet filter): record the (model_version,
         # data_id, iteration) this trainer just CONTRIBUTED at, so it is not
         # re-selected until the agg version advances (the commit boundary prunes
@@ -1509,11 +1526,70 @@ class TopAggregator(AsyncTopAgg):
             "target_iter_per_data_id": target_iter,
         }
 
+    def _canonicalize_cohort_commit_order(self):
+        """Reorder THIS cycle's cohort commits to a canonical (D, trainer_id)
+        order — IDENTICALLY in real and sim (K-D31/P2-7a).
+
+        Real receives updates in strict modeled-delay (D) order (device wall =
+        D, K-D29); sim commits in sct order (= D order). The sole residual
+        real↔sim divergence is the tie-break when two trainers share a D (a
+        realistic registry collision, e.g. trainers 3 & 9 both 13.0s → D=6.5):
+        real breaks it by physical arrival, sim by sct-sort. Both tied members
+        land in the SAME split-half so `var` is unchanged, but the EXACT-order
+        `cohort_sequence` rung flags the swap. Here we canonicalize: sort the
+        cohort by (D, str(end)) so equal-D ties break by trainer_id in BOTH
+        modes → identical receive order; `var`/grads stay bit-identical (the
+        aggregated grad is an order-independent sum; the split-half only ever
+        reshuffles WITHIN a half on a tie).
+
+        Scope = this cycle only. `grad_for_var_check_list` ACCUMULATES across a
+        data_id's iterations (reset on commit) while `_per_agg_trainer_list` is
+        per-cycle, so we reorder just the TRAILING len(cohort) slice of the
+        grad/jvp lists — the sync barrier appends this cohort contiguously at
+        the end, in `_per_agg_trainer_list` order.
+
+        No-op unless every contributor stamped a modeled delay (delays on) AND
+        a tie actually changes the order → delays-off / legacy runs and the
+        common non-tie case keep arrival order (byte-identical).
+        """
+        ends = self._per_agg_trainer_list
+        n = len(ends)
+        if n < 2:
+            return
+        keys = [self._commit_key_by_end.get(e) for e in ends]
+        if any(k is None for k in keys):
+            return  # delays off / a contributor without a stamp → arrival order
+        perm = sorted(range(n), key=lambda i: keys[i])
+        if perm == list(range(n)):
+            return  # already canonical (the common, non-tie path)
+        self._per_agg_trainer_list = [ends[i] for i in perm]
+        # Reorder the trailing cohort slice of the accumulating var/jvp lists in
+        # lockstep. Guard on length: only when the slice aligns 1:1 with this
+        # cohort (it does under the sync barrier; a mismatch means a non-grad
+        # message slipped in → leave the lists untouched rather than corrupt).
+        for lst in (self.grad_for_var_check_list, self.jvp_for_snr_check_list):
+            if len(lst) >= n:
+                tail = lst[-n:]
+                lst[-n:] = [tail[i] for i in perm]
+        logger.info(
+            f"[COMMIT_CANON] equal-D tie → reordered {n}-cohort to (D,id) order "
+            f"(perm={perm}); var/grads unchanged, receive order now real↔sim identical."
+        )
+
     @timer_decorator
     def _process_aggregation_goal_met(self, tag, channel, is_async=False):
         logger.info(
             f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation."
         )
+
+        # Canonicalize this cohort's commit order to (D, trainer_id) BEFORE the
+        # telemetry snapshot and aggregate() so the recorded receive order and
+        # the split-half var are computed on the SAME deterministic order in
+        # real and sim (K-D31/P2-7a). Gated on the presence of commit-key state
+        # (populated per contribution in aggregate_weights) → skipped entirely
+        # when delays are off / no keys were stamped (arrival order, unchanged).
+        if getattr(self, "_commit_key_by_end", None):
+            self._canonicalize_cohort_commit_order()
 
         # Snapshot for this cycle's agg_round telemetry (emitted further down,
         # after self._per_agg_trainer_list is cleared and self._model_version
@@ -1841,6 +1917,7 @@ class TopAggregator(AsyncTopAgg):
 
         self._updates_in_queue -= self._agg_goal
         self._per_agg_trainer_list = []
+        self._commit_key_by_end = {}  # cohort-scoped (K-D31/P2-7a)
 
         logger.info(
             f"====== aggregation finished for round {self._round}, "
