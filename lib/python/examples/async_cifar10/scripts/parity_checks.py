@@ -85,6 +85,7 @@ from parity.checks import (  # noqa: F401, E402
     budget_not_cap,
     # §F fwdllm variance-cadence layer (V/DK/G rungs)
     _iters_per_data_id,
+    cohort_sequence_parity,
     iters_per_data_id_parity,
     var_trajectory_parity,
     cached_v_pool_parity,

@@ -61,7 +61,7 @@ experiments:
           # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
           # active with --delays on (convergence run); inert at D=0. Calibrate
           # to wall_disparity→~0 at the sign-off run.
-          sim_straggler_spread_s: 0.9
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
           client_notify:
             trace: syn_0
 

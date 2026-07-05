@@ -60,7 +60,7 @@ experiments:
           # per-trainer completion dispersion (uniform[0,spread), spread ≈
           # real-compute-std·√12). Active with --delays on; calibrate to
           # wall_disparity→~0 at the sign-off run.
-          sim_straggler_spread_s: 0.9
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
 
     aggregator:
       config_template: configs/aggregator_base.json

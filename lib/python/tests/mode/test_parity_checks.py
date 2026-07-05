@@ -1157,3 +1157,103 @@ class TestR1W1Registered:
         assert "w1_compute_conservation" in pc.CHECK_META
         assert "r1_inflight_overlap" in pc.CHECK_META["v1_iter_per_data_id"]["deps"]
         assert pc.CHECK_META["w1_compute_conservation"]["deps"] == ("r1_inflight_overlap",)
+
+
+def _lcyc(data_id, iteration, cohort, var, var_good=False, force=False, goal=3):
+    """One fwdllm variance-cadence cycle event (cohort in receive/commit order)."""
+    return {"event": "agg_round", "round": 1,
+            "cycle_data_id": data_id, "iteration_per_data_id": iteration,
+            "contributing_trainers": list(cohort), "var": var,
+            "var_good_enough": var_good, "force_commit_planned": force,
+            "agg_goal_count": goal, "staleness": [0] * len(cohort)}
+
+
+class TestCohortSequence:
+    """L1 cohort_sequence_parity: the ordered per-aggregation logical sequence
+    (set + receive-ORDER + cadence + var value) must be IDENTICAL. EXACT, ungated
+    (real receive-order is deterministic in both modes by design)."""
+
+    def test_identical_sequence_passes(self):
+        cyc = [_lcyc(0, 1, ["a", "b", "c"], 0.9),
+               _lcyc(0, 2, ["a", "b", "c"], 0.28, var_good=True),
+               _lcyc(1, 1, ["a", "b", "c"], 0.5)]
+        r = pc.cohort_sequence_parity(_agg(agg_rounds=list(cyc)),
+                                      _agg(agg_rounds=list(cyc)))
+        assert r["ok"], r
+        assert r["order_match_frac"] == 1.0 and r["var_match_frac"] == 1.0
+
+    def test_reordered_cohort_same_set_FAILS(self):
+        # Same SET each cycle, different receive ORDER -> feeds split-half var.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"], r
+        assert r["set_match_frac"] == 1.0 and r["order_match_frac"] == 0.0
+        assert r["first_divergence"]["order_ok"] is False
+
+    def test_different_cohort_FAILS(self):
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "d"], 0.9)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"] and r["set_match_frac"] == 0.0
+
+    def test_var_divergence_FAILS_even_with_matched_order(self):
+        # Identical cohort+order, var off by >0.1% -> the RNG-desync tell.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.371605)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.371067)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"] and r["var_match_frac"] == 0.0
+        assert r["first_divergence"]["var_ok"] is False
+
+    def test_cadence_shift_FAILS(self):
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a"], 0.5), _lcyc(1, 0, ["a"], 0.2, var_good=True)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a"], 0.5), _lcyc(0, 2, ["a"], 0.4)])  # extra iter
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"] and r["cadence_match_frac"] < 1.0
+
+    def test_tier_exact_and_enforced(self):
+        # EXACT tier -> enforced FAIL even under --lenient (not a DIST/DIAG warn).
+        r = pc.cohort_sequence_parity(
+            _agg(agg_rounds=[_lcyc(0, 1, ["a"], 0.5)]),
+            _agg(agg_rounds=[_lcyc(0, 1, ["b"], 0.5)]))
+        assert r["tier"] == "EXACT" and r["ok"] is False
+        passed, roots, _down, _warn = pc.overall_verdict(
+            {"cohort_sequence": r}, lenient=True)
+        assert not passed and "cohort_sequence" in roots
+
+    def test_skips_on_non_fwdllm(self):
+        # No cadence fields (async_cifar10 shape) -> clean SKIP, byte-identical.
+        plain = {"event": "agg_round", "round": 0, "ts": 0.0,
+                 "contributing_trainers": ["a"], "staleness": [0]}
+        rd = _agg(agg_rounds=[plain])
+        r = pc.cohort_sequence_parity(rd, rd)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_max_bin_windows_to_first_bin(self):
+        # Cohorts match on bin 0, diverge on bin 1 -> --max-bin 0 passes.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5), _lcyc(1, 1, ["a", "b"], 0.5)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5), _lcyc(1, 1, ["b", "a"], 0.5)])
+        assert pc.cohort_sequence_parity(real, sim, max_bin=0)["ok"]
+        assert not pc.cohort_sequence_parity(real, sim)["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "cohort_sequence" in pc.CHECK_META
+        assert pc.CHECK_META["cohort_sequence"]["deps"]
+
+
+class TestVarTrajectoryMeanGuard:
+    """V2 must fail a systematic mean offset that KS alone misses (a uniform ~1%
+    shift barely moves the CDF -> KS~0 but grads have desynced)."""
+
+    def test_systematic_offset_fails_despite_low_ks(self):
+        base = [0.9, 0.5, 0.42, 0.31, 0.6, 0.48]
+        real = _agg(agg_rounds=[_lcyc(0, i, ["a"], v) for i, v in enumerate(base)])
+        sim = _agg(agg_rounds=[_lcyc(0, i, ["a"], v * 1.05) for i, v in enumerate(base)])
+        r = pc.var_trajectory_parity(real, sim)
+        assert r["mean_rel_diff"] > r["mean_tol_rel"], r
+        assert not r["ok"], r
+
+    def test_matched_var_passes(self):
+        base = [0.9, 0.5, 0.42, 0.31]
+        agg = _agg(agg_rounds=[_lcyc(0, i, ["a"], v) for i, v in enumerate(base)])
+        assert pc.var_trajectory_parity(agg, agg)["ok"]

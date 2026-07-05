@@ -102,8 +102,9 @@ class _FakeFedSgd:
     def _perform_training(self):
         pass
 
-    def _emulate_training_delay(self):
-        return self._delay_s
+    def _emulate_training_delay(self, gpu_time_s=0.0):
+        # K-D29 remainder-wait signature: (modeled_delay, remaining, overran).
+        return self._delay_s, max(0.0, self._delay_s - gpu_time_s), False
 
 
 class TestTrainWithDataIdEmitsPhases:

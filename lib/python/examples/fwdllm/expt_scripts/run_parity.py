@@ -75,9 +75,9 @@ def _agg_goal(run_dir: str) -> int | None:
 
 # rungs shown in the summary (name -> short label), in ladder-ish order
 _HEADLINE = [
-    ("vclock_telemetry", "vclock"), ("throughput", "thru"),
-    ("total_commits", "commits"), ("terminal_state", "terminal"),
-    ("r1_inflight_overlap", "R1"), ("w1_compute_conservation", "W1"),
+    ("cohort_sequence", "cohort"), ("vclock_telemetry", "vclock"),
+    ("throughput", "thru"), ("total_commits", "commits"),
+    ("terminal_state", "terminal"), ("r1_inflight_overlap", "R1"),
     ("v1_iter_per_data_id", "V1"), ("v2_var_trajectory", "V2"),
     ("staleness", "U3"), ("participation", "S2"),
     ("convergence", "conv"), ("convergence_loss", "conv_loss"),
@@ -129,6 +129,9 @@ def main(argv=None) -> int:
     ap.add_argument("--yes", action="store_true", help="skip the confirm prompt")
     ap.add_argument("--validate", action="store_true",
                     help="also report staleness_policy + vclock_now presence")
+    ap.add_argument("--max-bin", type=int, default=None,
+                    help="restrict fwdllm cadence rungs (cohort_sequence/V*) to "
+                         "cycle_data_id <= MAX_BIN (first-data-bin logical parity)")
     args = ap.parse_args(argv)
 
     from parity.checks import load_run_dir, run_all_parity  # noqa: E402
@@ -183,7 +186,8 @@ def main(argv=None) -> int:
         goal = _agg_goal(rdir) or 0
         real_agg, real_tr = load_run_dir(rdir)
         sim_agg, sim_tr = load_run_dir(sdir)
-        res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal)
+        res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal,
+                             max_bin=args.max_bin)
         jpath = os.path.join(json_dir, f"parity_{label.replace('/', '_')}_{sts}.json")
         json.dump(res, open(jpath, "w"), indent=2, default=str)
         n_pass = sum(1 for v in res.values()

@@ -3688,14 +3688,23 @@ def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
 # cached_v_size). Inputs source: fwdllm_aggregator.py _process_aggregation_goal_met.
 
 
-def _fwd_cadence_cycles(agg: dict) -> list:
+def _fwd_cadence_cycles(agg: dict, max_bin: Optional[int] = None) -> list:
     """Ordered per-cycle agg_round events carrying fwdllm cadence fields.
 
     A cycle is one agg-goal boundary (a variance gate). Non-fwdllm runs (no
     `var_good_enough`/`cycle_data_id`) yield [] -> the V/DK/G rungs SKIP.
+
+    `max_bin` restricts to cycles whose `cycle_data_id` <= max_bin (the
+    first-data-bin logical-parity window, simulate_fwdllm.md §A); None = all.
+    A cycle with no `cycle_data_id` is kept only when unwindowed.
     """
-    return [e for e in agg.get("agg_rounds", [])
-            if "cycle_data_id" in e or "var_good_enough" in e]
+    out = [e for e in agg.get("agg_rounds", [])
+           if "cycle_data_id" in e or "var_good_enough" in e]
+    if max_bin is not None:
+        out = [e for e in out
+               if e.get("cycle_data_id") is not None
+               and e["cycle_data_id"] <= max_bin]
+    return out
 
 
 def _iters_per_data_id(cycles: list) -> dict:
@@ -3714,7 +3723,8 @@ def _iters_per_data_id(cycles: list) -> dict:
 
 
 def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
-                             mean_tol_rel: float = 0.15) -> dict:
+                             mean_tol_rel: float = 0.15,
+                             max_bin: Optional[int] = None) -> dict:
     """V1 [DIST]: iterations-per-data_id distribution (realized dynamic K).
 
     The number of accumulation cycles a data_id needs to pass the variance gate.
@@ -3722,7 +3732,7 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     the accumulated grad-pool composition — and thus the variance trajectory —
     differs. KS on the per-data_id iteration counts + a mean guard.
     """
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     if not rc or not sc:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
@@ -3750,15 +3760,20 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     }
 
 
-def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
+                          mean_tol_rel: float = 0.02,
+                          max_bin: Optional[int] = None) -> dict:
     """V2 [DIST]: per-cycle `var` trajectory distribution.
 
     With V1's inputs matched, the variance *signal* itself must match; a
     divergence with matched iterations points at a grad-pool accumulation-order
     bug (a true sim bug, not an input divergence). KS over the per-cycle var
-    values (None dropped — a cycle before the first gate has no var).
+    values (None dropped — a cycle before the first gate has no var), PLUS a
+    relative-mean guard: KS alone is blind to a systematic offset (a uniform
+    ~1% shift barely moves the empirical CDFs → KS≈0), which is exactly the
+    grad-desync signature (simulate_fwdllm.md §A). The mean guard fails it.
     """
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     r_var = [e["var"] for e in rc if e.get("var") is not None]
     s_var = [e["var"] for e in sc if e.get("var") is not None]
     if not r_var or not s_var:
@@ -3767,11 +3782,15 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     ks = ks_stat(s_var, r_var)
     r_mean, _ = mean_std(r_var)
     s_mean, _ = mean_std(s_var)
+    mean_rel = (abs(r_mean - s_mean) / max(abs(r_mean), abs(s_mean))
+                if max(abs(r_mean), abs(s_mean)) > 0 else 0.0)
     return {
-        "ok": ks <= ks_tol,
+        "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
         "tier": "DIST",
         "real_mean_var": round(r_mean, 6),
         "sim_mean_var": round(s_mean, 6),
+        "mean_rel_diff": round(mean_rel, 4),
+        "mean_tol_rel": mean_tol_rel,
         "ks_stat": round(ks, 3),
         "ks_tol": ks_tol,
         "n_real_cycles": len(r_var),
@@ -3779,7 +3798,91 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     }
 
 
-def cached_v_pool_parity(real: dict, sim: dict, ks_tol: float = 0.25) -> dict:
+def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
+                           var_rel_tol: float = 1e-3) -> dict:
+    """L1 [EXACT]: the ordered per-aggregation logical sequence is IDENTICAL.
+
+    The strongest logical-parity rung (simulate_fwdllm.md §A / PARITY_LOGICAL_
+    TASKS.md P1-1). Unlike `aggregation_sequence_parity` (per-`round`, gated to
+    WARN for stochastic selectors), this keys on the fwdllm variance-cadence
+    *cycle* stream (`_fwd_cadence_cycles`, ordered) and asserts, cycle-by-cycle:
+
+      - COHORT SET   : same trainers committed together (which is fluxtune's bug)
+      - COHORT ORDER : same receive/commit order — NOT benign; the fwdllm
+        variance is a split-half statistic over the commit-ORDERED grad list, so
+        a reshuffle changes `var` even for an identical set
+      - CADENCE      : (cycle_data_id, iteration_per_data_id, agg_goal_count,
+        var_good_enough, force_commit_planned) identical
+      - VAR VALUE    : per-cycle `var` matches within var_rel_tol (grads are
+        deterministic GIVEN matched order → var must match; a ~1% gap is the
+        RNG-desync tell)
+
+    Real receive-order is deterministic in both modes by design, so exact match
+    is the correct target (NOT gated). Enforced EXACT: any divergence fails.
+    SKIPs cleanly on non-fwdllm runs (no cadence fields → async_cifar10 etc.).
+    `max_bin` restricts to the first-data-bin window.
+    """
+    rc = _fwd_cadence_cycles(real, max_bin)
+    sc = _fwd_cadence_cycles(sim, max_bin)
+    if not rc or not sc:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
+
+    def cohort(e):        # receive/commit-ordered contributing trainers
+        return list(e.get("contributing_trainers") or [])
+
+    def cadence(e):
+        return (e.get("cycle_data_id"), e.get("iteration_per_data_id"),
+                e.get("agg_goal_count"), e.get("var_good_enough"),
+                e.get("force_commit_planned"))
+
+    n = min(len(rc), len(sc))
+    set_m = order_m = cad_m = var_m = 0
+    first_div = None
+    for i in range(n):
+        r, s = rc[i], sc[i]
+        rc_ord, sc_ord = cohort(r), cohort(s)
+        set_ok = sorted(rc_ord) == sorted(sc_ord)
+        order_ok = rc_ord == sc_ord
+        cad_ok = cadence(r) == cadence(s)
+        rv, sv = r.get("var"), s.get("var")
+        var_ok = (rv is None and sv is None) or (
+            rv is not None and sv is not None
+            and abs(rv - sv) <= var_rel_tol * max(abs(rv), abs(sv), 1e-9))
+        set_m += set_ok; order_m += order_ok; cad_m += cad_ok; var_m += var_ok
+        if first_div is None and not (set_ok and order_ok and cad_ok and var_ok):
+            first_div = {
+                "cycle_index": i,
+                "real": {"data_id": r.get("cycle_data_id"),
+                         "iter": r.get("iteration_per_data_id"),
+                         "cohort": rc_ord, "var": rv,
+                         "var_good": r.get("var_good_enough")},
+                "sim": {"data_id": s.get("cycle_data_id"),
+                        "iter": s.get("iteration_per_data_id"),
+                        "cohort": sc_ord, "var": sv,
+                        "var_good": s.get("var_good_enough")},
+                "set_ok": set_ok, "order_ok": order_ok,
+                "cadence_ok": cad_ok, "var_ok": var_ok,
+            }
+    ok = (len(rc) == len(sc) and set_m == n and order_m == n
+          and cad_m == n and var_m == n)
+    return {
+        "ok": ok,
+        "tier": "EXACT",
+        "cycles_compared": n,
+        "n_real_cycles": len(rc),
+        "n_sim_cycles": len(sc),
+        "set_match_frac": round(set_m / n, 3) if n else None,
+        "order_match_frac": round(order_m / n, 3) if n else None,
+        "cadence_match_frac": round(cad_m / n, 3) if n else None,
+        "var_match_frac": round(var_m / n, 3) if n else None,
+        "max_bin": max_bin,
+        "first_divergence": first_div,
+    }
+
+
+def cached_v_pool_parity(real: dict, sim: dict, ks_tol: float = 0.25,
+                         max_bin: Optional[int] = None) -> dict:
     """V3 [DIAG]: `cached_v` (carried aggregated grad-pool) size over time.
 
     A rollback/cache bookkeeping divergence looks like a variance bug but is
@@ -3787,7 +3890,7 @@ def cached_v_pool_parity(real: dict, sim: dict, ks_tol: float = 0.25) -> dict:
     variance-FAIL rollbacks and clears on a commit; its size trajectory should
     match once V1 matches. SKIP if the field was not emitted.
     """
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     r_sz = [e["cached_v_size"] for e in rc if e.get("cached_v_size") is not None]
     s_sz = [e["cached_v_size"] for e in sc if e.get("cached_v_size") is not None]
     if not r_sz or not s_sz:
@@ -3804,7 +3907,8 @@ def cached_v_pool_parity(real: dict, sim: dict, ks_tol: float = 0.25) -> dict:
     }
 
 
-def force_commit_rate_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
+def force_commit_rate_parity(real: dict, sim: dict, tol: float = 0.05,
+                             max_bin: Optional[int] = None) -> dict:
     """V4 [DIST]: force-commit frequency (max_iterations_per_data_id bypass rate).
 
     The fraction of cycles that hit the iteration cap and force-commit despite a
@@ -3813,7 +3917,7 @@ def force_commit_rate_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
     var_threshold / max_iterations_per_data_id are baseline-defining config
     knobs, NOT parity levers.
     """
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     if not rc or not sc:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events"}
@@ -3831,7 +3935,8 @@ def force_commit_rate_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
     }
 
 
-def variance_pass_ratio_parity(real: dict, sim: dict, tol: float = 0.05) -> dict:
+def variance_pass_ratio_parity(real: dict, sim: dict, tol: float = 0.05,
+                               max_bin: Optional[int] = None) -> dict:
     """V5 [DIST]: genuine variance-pass ratio (the rollup feeding DynamicKC).
 
     A *genuine* pass is var<=var_threshold — a force-commit (var>threshold,
@@ -3850,7 +3955,7 @@ def variance_pass_ratio_parity(real: dict, sim: dict, tol: float = 0.05) -> dict
                 passes += 1
         return (passes / n if n else None), n
 
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     r_ratio, r_n = _ratio(rc)
     s_ratio, s_n = _ratio(sc)
     if r_ratio is None or s_ratio is None:
@@ -4159,7 +4264,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    rounds_cap: Optional[int] = None,
                    budget_s: Optional[float] = None,
                    real_ground_truth: Optional[dict] = None,
-                   sim_ground_truth: Optional[dict] = None) -> dict:
+                   sim_ground_truth: Optional[dict] = None,
+                   max_bin: Optional[int] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -4255,11 +4361,12 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # Pure functions over the per-cycle agg_round series; SKIP cleanly on
     # non-fwdllm runs (no cadence fields emitted). V/G rungs feed off Stage-5
     # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
-    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg)
-    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg)
-    results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg)
-    results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg)
-    results["v5_variance_pass_ratio"] = variance_pass_ratio_parity(real_agg, sim_agg)
+    results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v5_variance_pass_ratio"] = variance_pass_ratio_parity(real_agg, sim_agg, max_bin=max_bin)
     results["dk1_agg_goal_trajectory"] = agg_goal_trajectory_parity(real_agg, sim_agg)
     results["dk2_dynamic_c"] = dynamic_c_trajectory_parity(real_agg, sim_agg)
     results["dk3_eligible_ends_metric"] = eligible_ends_metric_parity(real_agg, sim_agg)
@@ -4368,6 +4475,7 @@ CHECK_META: dict = {
     "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness", "abandon_timeout")},
     "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
+    "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 3' FwdLLM async residence (R1/W1, simulate_fwdllm.md §L.3) ──
     # R1 is the residence INV the fluxtune 2x-recompute bug violated; W1 is the

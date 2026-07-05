@@ -45,7 +45,8 @@ def _run_pair(real_dir: str, sim_dir: str,
               agg_goal: int, rounds_cap, budget_s,
               strict: bool, lenient: bool,
               json_out, plot_out,
-              real_label: str = "", sim_label: str = "") -> bool:
+              real_label: str = "", sim_label: str = "",
+              max_bin=None) -> bool:
     """Load, check, and report one real/sim pair.  Returns True if passed."""
     # Import here to avoid circular import issues when run as __main__
     import sys as _sys
@@ -87,6 +88,7 @@ def _run_pair(real_dir: str, sim_dir: str,
         budget_s=budget_s,
         real_ground_truth=real_ground_truth,
         sim_ground_truth=sim_ground_truth,
+        max_bin=max_bin,
     )
 
     # Add first_divergence as a diagnostic summary entry (always ok — index=0 is expected for async)
@@ -127,6 +129,9 @@ def main() -> None:
                         help="rounds cap from config (enables K9 truncation check)")
     parser.add_argument("--budget-s", type=float, default=None,
                         help="max_experiment_runtime_s / sim_wall_ceiling_s (enables K5/K9)")
+    parser.add_argument("--max-bin", type=int, default=None,
+                        help="restrict fwdllm cadence rungs (cohort_sequence/V*) to "
+                             "cycle_data_id <= MAX_BIN (first-data-bin logical parity)")
     parser.add_argument("--strict", action="store_true",
                         help="Treat WARN as FAIL")
     parser.add_argument("--lenient", action="store_true",
@@ -194,6 +199,7 @@ def main() -> None:
                     lenient=args.lenient,
                     json_out=json_out,
                     plot_out=plot_out,
+                    max_bin=args.max_bin,
                 )
                 # Collect for roll-up (re-load results from JSON if written)
                 import json as _json
@@ -224,6 +230,7 @@ def main() -> None:
         lenient=args.lenient,
         json_out=args.json_out,
         plot_out=args.plot_out,
+        max_bin=args.max_bin,
     )
     sys.exit(0 if ok else 1)
 

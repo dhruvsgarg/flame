@@ -507,45 +507,57 @@ class FedSGDTrainer(Trainer):
         self.jvp_for_snr_check = self.trainer.model_trainer.jvp_for_snr_check
 
     @timer_decorator
-    def _emulate_training_delay(self):
-        """Returns the modeled emulated-delay seconds D (0.0 if delay emulation
-        is disabled) -- unlike cifar10's trainer, this is a flat additive delay
-        on top of GPU time, not a budget-minus-actual "sleep to fill" model, so
-        there is no meaningful overrun/remaining_time_s/training_budget_s concept
-        here (see ../../../MIGRATING_TO_LAUNCHER.md §9). The caller adds this to
-        real_gpu_time_s to report sim_round_duration_s.
+    def _emulate_training_delay(self, gpu_time_s: float = 0.0):
+        """REMAINDER-WAIT delay model (aligned with async_cifar10; supersedes the
+        old flat-additive model, K-D2 → K-D29). The modeled mobile device takes
+        `_delay_s = training_delay_s / factor / speedup`; on our GPU the forward
+        pass takes `gpu_time_s`, which SHOULD be << the device time (a faithful
+        emulation of a slow mobile client). So:
 
-        In real mode the delay is realized by an actual time.sleep(D); in
-        simulated mode the sleep is SKIPPED (the aggregator advances a virtual
-        clock instead) but the same D is still RETURNED so the additive
-        sim_round_duration_s = real_gpu_time_s + D stays identical across modes.
+          - REAL mode sleeps ONLY the remainder max(0, _delay_s - gpu_time_s) →
+            real wall this round ≈ _delay_s (the mobile device wall), with GPU
+            compute hidden inside it.
+          - SIM mode skips the sleep (charged to the vclock); the sct round
+            duration is max(gpu, _delay_s) (see train_with_data_id), NOT
+            gpu + _delay_s. The per-trainer registry delays give the completion
+            SPREAD, so update ORDER = delay order = deterministic and identical
+            real↔sim (this is what makes cohort_sequence parity attainable).
+
+        OVERRUN: if gpu_time_s > _delay_s the GPU is slower than the modeled
+        device (contention / too many trainers-per-GPU / delay_factor too big) —
+        the emulation is no longer faithful and update ORDER can flip, so we log
+        [TIMING_OVERRUN] and flag it in telemetry. Returns
+        (modeled_delay_s, remaining_s, overran).
         """
         # config schema types training_delay_enabled as bool (default False)
         # but historical launcher yamls pass the string "True"; accept both so
         # the modeled delay is not silently dropped to 0.
         _enabled = self.training_delay_enabled in (True, "True", "true")
-        if _enabled:
-            # Eval is 3X faster than training on CPU
-            # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
-            eval_delay = self.training_delay_s / self.training_delay_factor
-            _delay_s = eval_delay / self.speedup_factor
-            if self.simulated:
-                logger.info(
-                    f"time_mode=simulated: modeled eval delay for trainer "
-                    f"{self.trainer_id} = {_delay_s}s (not slept; charged to vclock)."
-                )
-            else:
-                time.sleep(_delay_s)
-                logger.info(
-                    f"Delayed eval time for trainer "
-                    f"{self.trainer_id} by {eval_delay}s. Sleeping for {_delay_s}s."
-                )
-            # Returns the BASE modeled delay (identical real↔sim). The B2 straggler
-            # spread is NOT added here -- it belongs in the sct (sim_round_duration_s,
-            # below) so the emitted training_budget_s stays a mode-invariant INPUT
-            # (T2), while the sct still carries the per-trainer dispersion (#6/Root B).
-            return _delay_s
-        return 0.0
+        if not _enabled:
+            return 0.0, 0.0, False
+        _delay_s = (self.training_delay_s / self.training_delay_factor) / self.speedup_factor
+        _remaining_s = max(0.0, _delay_s - gpu_time_s)
+        _overran = gpu_time_s > _delay_s
+        if _overran:
+            logger.warning(
+                f"[TIMING_OVERRUN] trainer {self.trainer_id} data_id={self.data_id} "
+                f"iter={self.iteration_per_data_id}: gpu={gpu_time_s:.2f}s > "
+                f"budget={_delay_s:.2f}s (excess={gpu_time_s - _delay_s:.2f}s) — "
+                f"emulation unfaithful, update order may flip. Reduce trainers/GPU "
+                f"or raise training_delay_factor."
+            )
+        if self.simulated:
+            logger.info(
+                f"time_mode=simulated: modeled delay for trainer {self.trainer_id} "
+                f"= {_delay_s:.3f}s (not slept; charged to vclock; gpu={gpu_time_s:.3f}s)."
+            )
+        elif _remaining_s > 0:
+            time.sleep(_remaining_s)
+            logger.info(
+                f"Trainer {self.trainer_id} slept remainder {_remaining_s:.3f}s "
+                f"(budget {_delay_s:.3f}s - gpu {gpu_time_s:.3f}s)."
+            )
+        return _delay_s, _remaining_s, _overran
 
     def _sim_straggler_offset_s(self) -> float:
         """B2 (K-D20 #6): the modeled delay D is flat across trainers, so the
@@ -588,9 +600,10 @@ class FedSGDTrainer(Trainer):
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
 
-        # emulate delays in training (due to compute resource and/or
-        # dataset size and/or network latency)
-        _delay_s = self._emulate_training_delay()
+        # emulate the mobile-device delay via the REMAINDER-WAIT model: real
+        # sleeps max(0, delay - gpu); sim skips it. Returns the modeled budget,
+        # the remainder actually waited, and whether the GPU overran the budget.
+        _delay_s, _remaining_s, _overran = self._emulate_training_delay(_real_gpu_time_s)
 
         # post_train phase starts AFTER the modeled delay (Root B / #6): real
         # SLEEPS _delay_s above (the modeled-latency term, compared via
@@ -615,13 +628,15 @@ class FedSGDTrainer(Trainer):
             float(getattr(_hp, "sim_wan_transfer_s", 0.0) or 0.0)
             if (self.simulated and _hp is not None) else 0.0
         )
-        # B2 straggler spread lives HERE (in the sct / modeled round duration),
-        # NOT in _delay_s, so the emitted training_budget_s (the modeled-delay
-        # INPUT) stays identical real↔sim (T2) while the sct still carries the
-        # per-trainer completion dispersion the sync barrier needs (#6/Root B).
-        # sim-only (the offset is 0 in real).
+        # REMAINDER-WAIT sct (K-D29): the modeled round wall is max(gpu, delay),
+        # NOT gpu + delay — the mobile device's compute is HIDDEN inside its
+        # delay budget (real slept only the remainder above; sim charges the
+        # same max() to the vclock). The per-trainer registry delays supply the
+        # completion spread, so the legacy crc32 straggler offset is redundant
+        # (kept flag-gated at 0 in the sim yamls; supersedes #6/Root B B2).
+        # _wan_s stays a documented knob at 0 (no localhost ground truth).
         self._sim_round_duration_s = (
-            _real_gpu_time_s + _delay_s + self._sim_straggler_offset_s() + _wan_s
+            max(_real_gpu_time_s, _delay_s) + self._sim_straggler_offset_s() + _wan_s
         )
         if self.simulated:
             _leg = self.sim_completion_leg_s
@@ -668,6 +683,11 @@ class FedSGDTrainer(Trainer):
                     "gpu_compute_s": _real_gpu_time_s,
                     "post_train_s": _post_train_s,
                     "training_budget_s": _delay_s,
+                    # Remainder-wait model (K-D29): what real actually slept +
+                    # whether the GPU overran the modeled device budget (P2-6:
+                    # an overrun can flip update order → cohort_sequence break).
+                    "remaining_time_s": _remaining_s,
+                    "training_overran": _overran,
                     "trainer_phase": (
                         f"{self._round}/{self.data_id}/{self.iteration_per_data_id}"
                     ),

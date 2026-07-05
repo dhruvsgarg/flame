@@ -118,6 +118,9 @@ if __name__ == "__main__":
             "var_control": config.hyperparameters.var_control,
             "perturbation_sampling": config.hyperparameters.perturbation_sampling,
             "select_perturbation_using_jvp": config.hyperparameters.select_perturbation_using_jvp,
+            # P2-5: forward-pass count knob (default 10 = historical behavior).
+            "perturbation_count": getattr(
+                config.hyperparameters, "perturbation_count", 10),
         }
     )
     model_args.config["num_labels"] = num_labels

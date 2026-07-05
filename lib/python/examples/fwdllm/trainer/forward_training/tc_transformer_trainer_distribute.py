@@ -205,6 +205,18 @@ class ForwardTextClassificationTrainer:
         if self.args.select_perturbation_using_jvp:
             self.select_perturbation_using_jvp = self.args.select_perturbation_using_jvp
 
+        # Number of candidate perturbations sampled per param (P2-5). Drives the
+        # forward-pass count: the select_perturbation_using_jvp path does 2
+        # forward passes (JVP) PER perturbation, so N perturbations = ~2N passes
+        # → the dominant fluxtune GPU cost. Default 10 (byte-identical to the
+        # historical hardcode); a config knob so the JVP cost can be tuned to
+        # keep GPU << the modeled mobile delay (the remainder-wait invariant).
+        # Real and sim MUST use the same value (they read the same config).
+        try:
+            self.perturbation_count = int(getattr(self.args, "perturbation_count", 10) or 10)
+        except (TypeError, ValueError):
+            self.perturbation_count = 10
+
         # var control TODO: It is not layer id it is param id. Distilbert for eg
         # has only 6 layers.
         if self.args.model_type == "distilbert":
@@ -303,9 +315,9 @@ class ForwardTextClassificationTrainer:
             if self.grad is not None and v.requires_grad:
                 self.total_rng_iter += 1
                 shape = v.shape
-                candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
                 logging.debug(f"Candidate v - random generation for layer - '{index}' layer shape {candidate_v.shape}")
-                # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
+                # torch.randn((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng)
                 target_grad = self.grad[index]
 
                 target_grad = torch.flatten(target_grad)
@@ -342,8 +354,8 @@ class ForwardTextClassificationTrainer:
                 if self.grad is not None and v.requires_grad:
                     self.total_rng_iter += 1
                     shape = v.shape
-                    candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                    # torch.randn((1 * 10, *shape), device="cpu", generator=self.torch_rng)
+                    candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                    # torch.randn((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng)
                     target_grad = self.grad[index]
 
                     target_grad = torch.flatten(target_grad)
@@ -411,7 +423,7 @@ class ForwardTextClassificationTrainer:
                     if v.requires_grad:
                         self.total_rng_iter += 1
                         shape = v.shape
-                        candidate_v = _randn_wrapper((1 * 10, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                        candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
                         candidate_v = torch.flatten(candidate_v, start_dim=1)
                         logging.info(f"len of candidate_v {len(candidate_v)}")
 
@@ -430,7 +442,7 @@ class ForwardTextClassificationTrainer:
                             del candidate_v, target_grad, cos_sim, sorted_indices, shape
                         else:
                             v_buffer[index] = [
-                                candidate_v[i].reshape(v.shape) for i in range(0, 10)
+                                candidate_v[i].reshape(v.shape) for i in range(0, self.perturbation_count)
                             ]
                             del candidate_v, shape
                     index += 1
@@ -440,7 +452,7 @@ class ForwardTextClassificationTrainer:
                 
 
                 jvp_all_perturbations = []
-                for i in range(0,10):
+                for i in range(0, self.perturbation_count):
                     v_params = _prepare_perturbation_tensors(device, v_buffer, i)
                     loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
                     # logging.info(f"Jvp of option: {jvp}")
