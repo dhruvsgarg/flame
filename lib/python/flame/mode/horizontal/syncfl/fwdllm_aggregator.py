@@ -249,6 +249,19 @@ class TopAggregator(AsyncTopAgg):
     # Override with an explicit `sim_wall_ceiling_s` for a tighter outer bound.
     SIM_WALL_CEILING_FACTOR = 20.0
 
+    # #13 recv-grace floor (fwdllm-scoped override of SyncTopAgg's 2.0). This is
+    # the per-pass recv_fifo window the drain waits for an in-flight grad to
+    # physically arrive. async_cifar10's 2.0s suffices there (weights come back
+    # fast); fwdllm's forward-grad "train" is a REAL GPU pass that can take ~4s,
+    # so a 2s window can close before the grad reassembles and force needless
+    # extra gate passes. 5s covers the slow GPU here.
+    #   TUNABLE: keep this as LOW as possible without compromising correctness --
+    #   too low and a genuinely-in-flight grad is missed within the pass; too high
+    #   and every stuck-end failsafe pass pays the full window. Re-measure the
+    #   real per-trainer GPU wall (fluxtune telemetry) and pull it down toward the
+    #   observed max compute + a small slack once the drain is validated.
+    SIM_RECV_GRACE_FLOOR_S = 5.0
+
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         super().internal_init()
@@ -753,33 +766,74 @@ class TopAggregator(AsyncTopAgg):
         deadline = time.time() + RECV_TIMEOUT_WAIT_S
         for _pass in range(_SIM_GATE_MAX_PASSES):
             grace = self._sim_recv_grace_s()
-            # Probe live recv ends UNION the tracked in-flight set (an end that
-            # entered RECV after the snapshot is still drained), minus anything
+            # Base probe: the live recv_ends (always drained), minus anything
             # already buffered or committed this cycle.
-            to_probe = [
-                e for e in set(live) | set(self._sim_inflight_expected)
-                if channel.has(e)
-                and not self._sim_buffer.has(e)
-                and e not in self._sim_committed
+            _base = [
+                e for e in live
+                if not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
-            if to_probe:
-                for m, md in channel.recv_fifo(
-                    to_probe, first_k=len(to_probe), timeout=grace
-                ):
-                    if m is None:  # no more ready (grace expired or set drained)
-                        break
-                    _e = md[0]
-                    _s = m.get(MessageType.SIM_COMPLETION_TS)
-                    _s = float(_s) if _s is not None else self._vclock.now
-                    self._sim_buffer.add(_e, _s, (m, md))
+            _seen = set(_base)
+            if getattr(self, "_sim_sct_ordered_drain", False):
+                # #13 step 3 -- direct sct-ordered ingest (felix _sim_recv_min:375-390).
+                # Drain each live in-flight end's rx queue DIRECTLY (no recv_fifo
+                # streamer), taking the FULL live in-flight set. Two wins: (1) the
+                # buffer is a COMPLETE snapshot of every arrived grad -- the
+                # streamer's background task + shared queue can strand a delivered
+                # grad out of the buffer's view (is_rxq_empty true) and let the clock
+                # lap it (past-dated commit); (2) drain_ready sweeps all ready rxqs
+                # non-blocking and returns on the FIRST arrival, so it does NOT burn
+                # the full grace PER not-ready end -- the recv_fifo per-end timeout
+                # that dominated the post-step-2 wall (the 4-10s gaps, #13). No
+                # ready-gating needed here (non-blocking sweep + poll-to-first).
+                to_probe = _base + [
+                    e for e in self._sim_inflight_expected
+                    if e not in _seen and channel.has(e)
+                    and not self._sim_buffer.has(e) and e not in self._sim_committed
+                ]
+                if to_probe:
+                    for m, md in channel.drain_ready(to_probe, timeout=grace):
+                        _e = md[0]
+                        _s = m.get(MessageType.SIM_COMPLETION_TS)
+                        _s = float(_s) if _s is not None else self._vclock.now
+                        self._sim_buffer.add(_e, _s, (m, md))
+            else:
+                # #13 step 2 -- probe-ceiling + ready-gating (felix _sim_recv_min:399-411).
+                # ALSO probe an in-flight-expected end that is NOT already a recv_end only
+                # if it is physically READY (its grad arrived) OR its modeled completion
+                # `exp` is at/before the buffered minimum (+slack). Without this the drain
+                # blocked the FULL grace window every pass on far-future / not-yet-arrived
+                # stragglers -- the dominant inter-burst wall waste (#13, the 4-10s gaps).
+                # Safe against the HOLD gate below: any end that could trigger
+                # `earlier_stuck` (exp < bmin - slack) also satisfies exp <= bmin + slack,
+                # so the gate's stuck end is always in this probe set -- no new deadlock.
+                _bmin = self._sim_buffer.peek_min_ts()
+                _probe_ceiling = (
+                    _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
+                )
+                to_probe = _base + [
+                    e for e, exp in self._sim_inflight_expected.items()
+                    if e not in _seen and channel.has(e)
+                    and not self._sim_buffer.has(e) and e not in self._sim_committed
+                    and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
+                ]
+                if to_probe:
+                    for m, md in channel.recv_fifo(
+                        to_probe, first_k=len(to_probe), timeout=grace
+                    ):
+                        if m is None:  # no more ready (grace expired or set drained)
+                            break
+                        _e = md[0]
+                        _s = m.get(MessageType.SIM_COMPLETION_TS)
+                        _s = float(_s) if _s is not None else self._vclock.now
+                        self._sim_buffer.add(_e, _s, (m, md))
             # Gate: earliest expected completion among un-buffered in-flight ends.
             bmin = self._sim_buffer.peek_min_ts()
-            min_stuck = None
+            _stuck_end, min_stuck = None, None
             for e, exp in self._sim_inflight_expected.items():
                 if self._sim_buffer.has(e) or e in self._sim_committed:
                     continue
                 if min_stuck is None or exp < min_stuck:
-                    min_stuck = exp
+                    min_stuck, _stuck_end = exp, e
             earlier_stuck = (
                 bmin is not None and min_stuck is not None
                 and min_stuck + _SIM_ORDER_SLACK_S < bmin
@@ -789,6 +843,21 @@ class TopAggregator(AsyncTopAgg):
             if not earlier_stuck:
                 break  # the buffered minimum is the true next completion
             if time.time() >= deadline:
+                # #13 step 1 (felix _sim_recv_min:436-442): the earliest-expected
+                # in-flight trainer never physically arrived within the failsafe
+                # window. WITHOUT this eviction it stays in _sim_inflight_expected
+                # forever, so `earlier_stuck` re-fires the FULL deadline on every
+                # future drain cycle -> the composer freezes 30s/commit ->
+                # pipeline starvation. Treat the straggler as lost: drop it from
+                # the expected set so it can't block future commits, and commit
+                # the buffered min now. Sim-only path (real never enters here).
+                self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
+                self._sim_inflight_expected.pop(_stuck_end, None)
+                logger.info(
+                    f"[SIM_GRAD_STUCK_EVICT] round={getattr(self, '_round', -1)} "
+                    f"end={str(_stuck_end)[-4:]} exp={min_stuck} bmin={bmin} "
+                    f"failsafe={self._sim_gate_failsafe}"
+                )
                 break  # failsafe: a stuck trainer never arrived; commit buffered
         popped = self._sim_buffer.pop_min()
         if popped is None:
@@ -810,6 +879,18 @@ class TopAggregator(AsyncTopAgg):
         self._advance_sim_clock(_advance_to)
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
+        # #13 step 4 -- freed-slot refill stamp (felix _sim_recv_min:513-520). This
+        # grad commit frees a compute slot; record the just-advanced vclock so the
+        # trainer that REFILLS the slot rides THIS vclock (popped FIFO in
+        # _distribute_weights_async) instead of the round-start frontier. Spreads
+        # each cohort's expected completions across the timeline (matching real's
+        # staggered returns) instead of collapsing them at one frozen `_round_now`,
+        # so the drain gate stops HOLDING for a batch of same-expected stragglers
+        # (the residual 11-12s multi-pass holds after step 3). fwdllm's grad loop is
+        # all-train (every commit frees a slot), so no train/eval discriminator is
+        # needed. Sim-only + flag-gated (real never enters this method).
+        if getattr(self, "_sim_staggered_redispatch", False):
+            self._sim_free_slot_ts.append(self._vclock.now)
         # K-D27 (felix-parallel, asyncfl:618): the grad committed -> the trainer is
         # no longer in flight in virtual time -> drop it from pending so it is
         # re-pickable. (_sim_hold_busy_slots reconciles right after, but be explicit.)
@@ -2593,14 +2674,18 @@ class TopAggregator(AsyncTopAgg):
 
         self._update_state_after_payload_prepared()
 
-        # Sim-clock dispatch stamp (Batch 1): all ends in this dispatch share the
-        # same virtual instant, so one _round_now stamp is injected into each
-        # payload variant. Unlike the sync barrier the async path also arms the
-        # in-flight gate (_sim_inflight_expected[end] = dispatch vclock + a
-        # lower-bound budget) so the reorder-buffer drain can't lap a trainer
-        # whose modeled completion is still in the future. Inert in real mode.
+        # Sim-clock dispatch stamp (Batch 1): the async path arms the in-flight gate
+        # (_sim_inflight_expected[end] = send vclock + a lower-bound budget) so the
+        # reorder-buffer drain can't lap a trainer whose modeled completion is still
+        # in the future. Inert in real mode.
+        #   #13 step 4 (staggered): when on, each end's SEND vclock is popped from
+        # the freed-slot FIFO (_pop_free_slot_ts) instead of the shared round
+        # frontier, so a cohort's expected completions spread across the timeline
+        # (see the commit-side stamp). Off/real ⇒ one shared _round_now injected
+        # into the two payload variants (byte-identical to Batch 1).
         _round_now = self._vclock.now if self.simulated else None
-        if self.simulated:
+        _staggered = self.simulated and getattr(self, "_sim_staggered_redispatch", False)
+        if self.simulated and not _staggered:
             for _p in (payload_weights, payload_var_bad):
                 if _p is not None:
                     _p[MessageType.SIM_SEND_TS] = _round_now
@@ -2645,12 +2730,21 @@ class TopAggregator(AsyncTopAgg):
                         f"[SIM_R1_DISPATCH] end={end} re-dispatched while still "
                         f"outstanding (vclock={_round_now}) -- R1 residence violation"
                     )
-                channel.set_end_property(end, PROP_SIM_SEND_TS, _round_now)
-                # Expected completion = dispatch vclock + a lower-bound budget
+                # #13 step 4: SEND vclock = the freed-slot stamp (staggered) else the
+                # shared round frontier. _pop_free_slot_ts is FIFO + clamped <= now;
+                # an empty queue (cold start / no held slot) falls back to _round_now.
+                _sst = self._pop_free_slot_ts(_round_now) if _staggered else _round_now
+                channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
+                # Expected completion = SEND vclock + a lower-bound budget
                 # (this end's own last-observed TRAINING_BUDGET_S, else the
                 # running min) so the gate never laps a not-yet-committed trainer.
                 _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
-                self._sim_inflight_expected[end] = _round_now + _budget
+                self._sim_inflight_expected[end] = _sst + _budget
+                # Staggered: this end's payload must carry its OWN SIM_SEND_TS, so
+                # rebuild a shallow copy (weights shared by ref; small vs GPU cost).
+                if _staggered and isinstance(payload, dict):
+                    payload = dict(payload)
+                    payload[MessageType.SIM_SEND_TS] = _sst
                 # K-D27 (felix-parallel, asyncfl:1490): the instant a trainer is
                 # dispatched it is in flight in virtual time -> add to the pending-
                 # commit set so the selector's eligibility filter excludes it until

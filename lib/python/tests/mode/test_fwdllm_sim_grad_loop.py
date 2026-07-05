@@ -13,8 +13,10 @@ variance-FAIL rolls back to the same data_id and must NOT strand or double-
 commit a grad).
 """
 
+from collections import deque
 from datetime import datetime
 
+from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator as _AsyncBase
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as _SyncBase
 from flame.mode.message import MessageType
@@ -58,6 +60,19 @@ class _FakeGradChannel:
                 self._delivered.add(e)
                 yield self._msgs[e], (e, datetime.now())
 
+    def drain_ready(self, end_ids, timeout=None):
+        """Non-blocking snapshot: return every arrived-but-undelivered message
+        for the given ends (mirrors channel.drain_ready's direct rxq sweep)."""
+        self._probe += 1
+        out = []
+        for e in end_ids:
+            if e in self._delivered or e not in self._msgs:
+                continue
+            if self._probe > self._release_at.get(e, 0):
+                self._delivered.add(e)
+                out.append((self._msgs[e], (e, datetime.now())))
+        return out
+
 
 class _FakeGradAgg:
     """Binds the real sim grad-loop methods onto a minimal stand-in."""
@@ -66,6 +81,10 @@ class _FakeGradAgg:
     _release_sim_slots_at_agg_goal = TopAggregator._release_sim_slots_at_agg_goal
     _advance_sim_clock = _SyncBase._advance_sim_clock
     _sim_recv_grace_s = _SyncBase._sim_recv_grace_s
+    # #13 step 2 ready-gating helper (inherited by the real fwdllm agg from asyncfl).
+    _sim_end_has_ready_msg = staticmethod(TopAggregator._sim_end_has_ready_msg)
+    # #13 step 4 freed-slot FIFO consumer (inherited from asyncfl).
+    _pop_free_slot_ts = _AsyncBase._pop_free_slot_ts
     # fwdllm overrides felix's hold with the Option-A two-lifetime split (K-D16).
     _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
     # The return-path guard/slot release (K-D19: defers to COMMIT in sim residence).
@@ -86,6 +105,8 @@ class _FakeGradAgg:
         self._sim_fill_ema = 0.0
         self._sim_pending_commit = set()
         self._sim_inflight_residence = False
+        self._sim_staggered_redispatch = False   # #13 step 4 (default off)
+        self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
 
     def _drain(self, channel, recv_ends, n):
@@ -156,6 +177,244 @@ class TestInFlightGate:
         second_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
         assert second_msg[MessageType.SIM_COMPLETION_TS] == 100.0  # then A
         assert agg._vclock.now == 100.0
+
+
+class _RecordingChannel(_FakeGradChannel):
+    """Records the end sets passed to recv_fifo so a test can assert WHICH
+    in-flight ends the drain chose to probe (#13 step 2 ready-gating). Optionally
+    reports a subset of ends as physically READY (non-empty rxq) via _ready."""
+
+    def __init__(self, ends, ready=()):
+        super().__init__(ends)
+        self.probe_calls = []          # recv_fifo end-id lists
+        self.drain_calls = []          # drain_ready end-id lists
+        self._ready = set(ready)
+
+    def recv_fifo(self, end_ids, first_k=None, timeout=None):
+        self.probe_calls.append(list(end_ids))
+        yield from super().recv_fifo(end_ids, first_k=first_k, timeout=timeout)
+
+    def drain_ready(self, end_ids, timeout=None):
+        self.drain_calls.append(list(end_ids))
+        return super().drain_ready(end_ids, timeout=timeout)
+
+    # Mirrors channel._ends[e].is_rxq_empty() as read by _sim_end_has_ready_msg.
+    class _E:
+        def __init__(self, empty):
+            self._empty = empty
+
+        def is_rxq_empty(self):
+            return self._empty
+
+    @property
+    def _ends(self):
+        return {e: _RecordingChannel._E(e not in self._ready) for e in self._ends_set}
+
+
+class TestProbeCeilingReadyGating:
+    """#13 step 2 (felix _sim_recv_min:399-411): an in-flight end that is NOT a
+    recv_end is probed ONLY if it is physically ready OR its modeled `exp` is at/
+    before the buffered minimum (+slack) -- so the drain stops burning the full
+    grace window on far-future / not-yet-arrived stragglers each pass."""
+
+    def test_far_future_straggler_is_not_probed(self):
+        agg = _FakeGradAgg()
+        # FAR is expected far past the buffered min and has no ready message; the
+        # buffered A (sct=10) is the true next completion.
+        agg._sim_inflight_expected = {"FAR": 1000.0}
+        ch = _RecordingChannel([])
+        ch._ends_set.add("FAR")            # in-flight but no message queued
+        agg._sim_buffer.add("A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now())))
+
+        msg, _ = agg._sim_recv_min_grad(ch, [])   # A not a recv_end (already buffered)
+        assert msg[MessageType.SIM_COMPLETION_TS] == 10.0
+        # FAR was never handed to recv_fifo -> no grace burned waiting on it.
+        assert all("FAR" not in call for call in ch.probe_calls)
+
+    def test_near_expected_straggler_is_probed(self):
+        agg = _FakeGradAgg()
+        # NEAR's exp (11) is within bmin(10)+slack -> the gate may still wait for
+        # it, so it MUST be probed.
+        agg._sim_inflight_expected = {"NEAR": 11.0}
+        ch = _RecordingChannel([])
+        ch.add_msg("NEAR", sct=11.0, release_at=0)
+        agg._sim_buffer.add("A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now())))
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("NEAR" in call for call in ch.probe_calls)
+
+    def test_physically_ready_straggler_is_probed_regardless_of_exp(self):
+        agg = _FakeGradAgg()
+        # READY is expected far in the future BUT its grad has physically arrived
+        # (ready rxq) -> drain it now so it buffers as a future rather than being
+        # committed past-dated later.
+        agg._sim_inflight_expected = {"READY": 1000.0}
+        ch = _RecordingChannel([], ready={"READY"})
+        ch.add_msg("READY", sct=1000.0, release_at=0)
+        agg._sim_buffer.add("A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now())))
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("READY" in call for call in ch.probe_calls)
+
+
+class TestSctOrderedDrain:
+    """#13 step 3: with sim_sct_ordered_drain ON, the drain ingests via
+    channel.drain_ready (direct rxq sweep, no per-end grace timeout) instead of
+    the blocking recv_fifo streamer, while keeping sct-ordered commit."""
+
+    def test_commits_via_drain_ready_not_recv_fifo(self):
+        agg = _FakeGradAgg()
+        agg._sim_sct_ordered_drain = True
+        ch = _RecordingChannel([])
+        ch.add_msg("A", sct=30.0)
+        ch.add_msg("B", sct=10.0)
+
+        scts = agg._drain(ch, ["A", "B"], 2)
+        assert scts == [10.0, 30.0]        # still committed in sct order
+        assert ch.drain_calls              # drain_ready was used...
+        assert not ch.probe_calls          # ...and recv_fifo was NOT
+
+    def test_recv_fifo_path_when_flag_off(self):
+        agg = _FakeGradAgg()               # flag defaults off
+        ch = _RecordingChannel([])
+        ch.add_msg("A", sct=10.0)
+
+        agg._drain(ch, ["A"], 1)
+        assert ch.probe_calls              # recv_fifo used
+        assert not ch.drain_calls          # drain_ready NOT used
+
+    def test_drain_ready_still_honors_inflight_gate(self):
+        """A (sct=100) arrives; B (sct=50) is expected earlier and arrives on the
+        2nd sweep -- the gate must still hold A and commit B first."""
+        agg = _FakeGradAgg()
+        agg._sim_sct_ordered_drain = True
+        agg._sim_inflight_expected = {"A": 98.0, "B": 48.0}
+        ch = _RecordingChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=50.0, release_at=1)
+
+        first, _ = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first[MessageType.SIM_COMPLETION_TS] == 50.0   # B, not A
+        second, _ = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert second[MessageType.SIM_COMPLETION_TS] == 100.0
+
+
+class TestFreedSlotRefill:
+    """#13 step 4: a grad commit stamps the freed-slot vclock into the FIFO; a
+    later dispatch pops it (oldest-first, clamped) as the re-dispatched trainer's
+    SEND vclock -- spreading expected completions instead of collapsing the cohort
+    at one round frontier (the residual multi-pass gate-holds after step 3)."""
+
+    def test_commit_stamps_freed_slot_vclock_when_staggered(self):
+        agg = _FakeGradAgg()
+        agg._sim_staggered_redispatch = True
+        agg._sim_inflight_expected = {"X": 10.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("X", sct=10.0)
+
+        agg._sim_recv_min_grad(ch, ["X"])
+        # vclock advanced to sct=10 on commit -> that freed-slot vclock is stamped.
+        assert list(agg._sim_free_slot_ts) == [10.0]
+
+    def test_commit_does_not_stamp_when_flag_off(self):
+        agg = _FakeGradAgg()               # staggered off (default)
+        agg._sim_inflight_expected = {"X": 10.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("X", sct=10.0)
+
+        agg._sim_recv_min_grad(ch, ["X"])
+        assert len(agg._sim_free_slot_ts) == 0
+
+    def test_pop_free_slot_ts_is_fifo_and_clamped(self):
+        agg = _FakeGradAgg()
+        agg._sim_free_slot_ts.extend([5.0, 8.0])
+        assert agg._pop_free_slot_ts(100.0) == 5.0    # oldest first
+        assert agg._pop_free_slot_ts(100.0) == 8.0
+        assert agg._pop_free_slot_ts(100.0) == 100.0  # empty -> live frontier
+        agg._sim_free_slot_ts.append(50.0)
+        assert agg._pop_free_slot_ts(30.0) == 30.0    # min(stamp, round_now)
+
+    def test_staggered_expected_completions_spread_not_bunched(self):
+        """End-to-end at the unit level: two commits free slots at vclock 10 and
+        25; a subsequent 2-trainer refill pops those as SEND vclocks, so expected
+        completions (sst + budget) SPREAD (14, 29) instead of bunching at one
+        round frontier (which would give the same expected for both)."""
+        agg = _FakeGradAgg()
+        agg._sim_staggered_redispatch = True
+        agg._sim_budget_min = 4.0
+        for e, s in [("A", 10.0), ("B", 25.0)]:
+            agg._sim_inflight_expected = {e: s}
+            ch = _FakeGradChannel([])
+            ch.add_msg(e, sct=s)
+            agg._sim_recv_min_grad(ch, [e])
+        assert list(agg._sim_free_slot_ts) == [10.0, 25.0]
+
+        sst1 = agg._pop_free_slot_ts(100.0)
+        sst2 = agg._pop_free_slot_ts(100.0)
+        exp1 = sst1 + agg._sim_budget_min
+        exp2 = sst2 + agg._sim_budget_min
+        assert (exp1, exp2) == (14.0, 29.0)   # spread, not (round_now+budget)×2
+
+
+class TestStuckEndEviction:
+    """#13 step 1 (felix _sim_recv_min:436-442): a trainer that is EXPECTED to
+    complete earlier than the buffered minimum but never physically arrives must
+    be evicted from _sim_inflight_expected on the recv failsafe deadline -- else
+    `earlier_stuck` re-fires the full 30s deadline on every future drain cycle
+    and the composer freezes (pipeline starvation, the #13 drain stall)."""
+
+    def _immediate_deadline(self, monkeypatch):
+        # Fire the recv failsafe on the first pass (no real 30s wait).
+        import flame.mode.horizontal.syncfl.fwdllm_aggregator as fa
+        monkeypatch.setattr(fa, "RECV_TIMEOUT_WAIT_S", 0.0)
+
+    def test_stuck_end_evicted_on_deadline_and_buffered_min_commits(self, monkeypatch):
+        self._immediate_deadline(monkeypatch)
+        agg = _FakeGradAgg()
+        # STUCK is expected early (10) but has no message; A arrived at sct=100.
+        agg._sim_inflight_expected = {"STUCK": 10.0, "A": 98.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "STUCK"])
+
+        # The buffered min commits despite the earlier-expected straggler...
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        # ...and STUCK is dropped so it can't block future cycles.
+        assert "STUCK" not in agg._sim_inflight_expected
+        assert agg._sim_gate_failsafe == 1
+
+    def test_evicted_end_does_not_block_the_next_cycle(self, monkeypatch):
+        self._immediate_deadline(monkeypatch)
+        agg = _FakeGradAgg()
+        agg._sim_inflight_expected = {"STUCK": 10.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=200.0, release_at=0)
+
+        # Cycle 1: STUCK holds the gate, hits the failsafe, is evicted; A commits.
+        m1, _ = agg._sim_recv_min_grad(ch, ["A", "B", "STUCK"])
+        assert m1[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert "STUCK" not in agg._sim_inflight_expected
+
+        # Cycle 2: with STUCK gone, B commits WITHOUT re-arming the failsafe.
+        m2, _ = agg._sim_recv_min_grad(ch, ["A", "B", "STUCK"])
+        assert m2[MessageType.SIM_COMPLETION_TS] == 200.0
+        assert agg._sim_gate_failsafe == 1  # not re-incremented
+
+    def test_no_spurious_eviction_when_buffered_min_is_the_true_next(self, monkeypatch):
+        # STUCK expected LATER than the buffered min -> not `earlier_stuck` ->
+        # commit proceeds without touching the failsafe or the expected set.
+        self._immediate_deadline(monkeypatch)
+        agg = _FakeGradAgg()
+        agg._sim_inflight_expected = {"LATE": 500.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+
+        msg, _ = agg._sim_recv_min_grad(ch, ["A", "LATE"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert agg._sim_inflight_expected == {"LATE": 500.0}  # untouched
+        assert getattr(agg, "_sim_gate_failsafe", 0) == 0
 
 
 class TestRollbackSafety:
