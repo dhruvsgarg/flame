@@ -404,3 +404,68 @@ class TestChallenge13SendStateCleanup:
             ends=make_ends(["t1"]), concurrency=1, channel_props={},
         )
         assert async_oort.selected_ends["agg"] == {"t1"}
+
+
+class TestPendingCommitExcludedFromSelection:
+    """K-D27: async_oort must exclude the aggregator's VIRTUAL in-flight set
+    (`_agg_pending_commit_ref`, bound live to the fwdllm aggregator's
+    `_sim_pending_commit`) from selection eligibility -- so a returned-but-
+    uncommitted trainer is NEVER re-dispatched even when `all_selected` has been
+    pruned by a physical event (the recv-fifo 2s re-select loop / RECVD-NONE
+    cleanup that a slow sim triggers). This is the fwdllm-side hardening over
+    felix's all_selected-only guard (felix leaves the ref unset -> byte-identical).
+    """
+
+    def test_pending_end_excluded_even_when_all_selected_empty(
+        self, async_oort, make_ends
+    ):
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}
+        async_oort.all_selected = {}                 # guard pruned by a physical event
+        async_oort._agg_pending_commit_ref = {"t3"}  # agg still holds t3 in flight
+        ends = make_ends(count=5, prefix="t")
+
+        result = async_oort._handle_send_state(
+            ends=ends, concurrency=5, channel_props={"round": 1},
+            trainer_unavail_list=[], task_to_perform="train",
+            agg_version_state=(1, 0, 0), trainer_version_states={},
+            connected_ends=ends,
+        )
+
+        # t3 is still outstanding in virtual time -> must not be re-picked.
+        assert "t3" not in result
+        # the other four are eligible -> selection still works (no over-restriction).
+        assert len(result) >= 1
+        assert set(result).issubset({"t0", "t1", "t2", "t4"})
+
+    def test_all_pending_yields_no_selection(self, async_oort, make_ends):
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}
+        async_oort.all_selected = {}
+        ends = make_ends(count=4, prefix="t")
+        async_oort._agg_pending_commit_ref = set(ends)  # every trainer in flight
+
+        result = async_oort._handle_send_state(
+            ends=ends, concurrency=4, channel_props={"round": 1},
+            trainer_unavail_list=[], task_to_perform="train",
+            agg_version_state=(1, 0, 0), trainer_version_states={},
+            connected_ends=ends,
+        )
+        assert result == {}   # nobody eligible -> no re-dispatch-while-in-flight
+
+    def test_empty_ref_is_byte_identical_noop(self, async_oort, make_ends):
+        """Real / async_cifar10 never populate the ref -> selection is unchanged."""
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}
+        async_oort.all_selected = {}
+        # no _agg_pending_commit_ref attribute at all -> getattr default {}
+        ends = make_ends(count=5, prefix="t")
+
+        result = async_oort._handle_send_state(
+            ends=ends, concurrency=5, channel_props={"round": 1},
+            trainer_unavail_list=[], task_to_perform="train",
+            agg_version_state=(1, 0, 0), trainer_version_states={},
+            connected_ends=ends,
+        )
+        assert len(result) >= 1
+        assert set(result).issubset(set(ends))

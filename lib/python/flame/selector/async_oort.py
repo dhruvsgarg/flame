@@ -1599,19 +1599,33 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
 
+        # SIM R1 guard (K-D27): async_oort releases `all_selected` on PHYSICAL
+        # events (the recv-fifo 2s re-select loop, RECVD/NONE cleanup). In a slow
+        # sim (fluxtune wall >> vclock) a grad stays returned-but-uncommitted for a
+        # long VIRTUAL window during which the aggregator still models the trainer
+        # as in flight; a physical prune in that window frees a still-outstanding
+        # trainer -> the aggregator's own select() re-dispatches it -> R1 residence
+        # violation. Additionally exclude the aggregator's virtual in-flight set
+        # (bound live via `_agg_pending_commit_ref` = its `_sim_pending_commit`) so
+        # a trainer is un-re-pickable until its grad COMMITS, regardless of
+        # all_selected churn. Empty (default) in real / async_cifar10 (felix keeps
+        # this ref unset; its wall~=vclock makes the window ~0) -> byte-identical.
+        _pending = getattr(self, "_agg_pending_commit_ref", None) or set()
+
         # Check the eligible set first. Out of the ends, how many are
         # not in all_selected? Only those are eligible since the rest
         # have weights already sent to them for either train/eval
         # task.
         count_eligible_set_to_check = [
-            end for end in ends if end not in self.all_selected
+            end for end in ends
+            if end not in self.all_selected and end not in _pending
         ]
         logger.debug(
             f"Before creating filtered_ends. count_eligible_set_to_check: {len(count_eligible_set_to_check)} from total {len(ends)} ends."
         )
 
         for end_id in ends:
-            if end_id not in self.all_selected.keys():
+            if end_id not in self.all_selected.keys() and end_id not in _pending:
                 logger.debug(
                     f"Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}"
                 )

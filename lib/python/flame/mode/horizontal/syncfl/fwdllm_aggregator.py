@@ -810,6 +810,10 @@ class TopAggregator(AsyncTopAgg):
         self._advance_sim_clock(_advance_to)
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
+        # K-D27 (felix-parallel, asyncfl:618): the grad committed -> the trainer is
+        # no longer in flight in virtual time -> drop it from pending so it is
+        # re-pickable. (_sim_hold_busy_slots reconciles right after, but be explicit.)
+        self._sim_pending_commit.discard(_end)
         # Learn this end's MODELED budget (contention-free lower bound) so the
         # gate fires on genuine stragglers for not-yet-observed trainers.
         _b = m.get(MessageType.TRAINING_BUDGET_S) if isinstance(m, dict) else None
@@ -868,6 +872,10 @@ class TopAggregator(AsyncTopAgg):
         self._sim_committed.clear()
         self._sim_buffer.clear()
         self._sim_inflight_expected.clear()
+        # K-D27: legacy-drop path abandons all in-flight -> nothing is pending.
+        # (async path clears via _sim_hold_busy_slots' reconcile; sync barriers use
+        # the random selector where the ref is inert, but keep the set bounded.)
+        self._sim_pending_commit.clear()
         if is_async:
             self._sim_hold_busy_slots(channel)
 
@@ -905,7 +913,17 @@ class TopAggregator(AsyncTopAgg):
         buffered = set(self._sim_buffer.pending_ends())          # returned, grad carried
         # Outstanding = still in flight in virtual time (not yet committed).
         outstanding = (set(self._sim_inflight_expected) | buffered) - self._sim_committed
-        self._sim_pending_commit |= outstanding
+        # K-D27: `_sim_pending_commit` is the aggregator's authoritative VIRTUAL
+        # in-flight set; reconcile it to `outstanding` IN PLACE (clear+update, never
+        # rebind -- the selector holds a live reference) so a committed trainer
+        # drops out and becomes re-pickable, while a returned-but-uncommitted one
+        # stays. Bind the reference so async_oort's eligibility filter excludes it
+        # (see async_oort `_pending`), making a still-outstanding trainer
+        # un-re-pickable regardless of all_selected churn. `|=` (the old accumulate)
+        # would never shrink -> a committed trainer would be starved forever.
+        self._sim_pending_commit.clear()
+        self._sim_pending_commit.update(outstanding)
+        sel._agg_pending_commit_ref = self._sim_pending_commit
         # Prune the (model_version, data_id, iteration) triplet guard to the
         # still-outstanding set (a trainer whose grad committed is re-pickable).
         self._trainer_state_dict = {
@@ -2625,6 +2643,11 @@ class TopAggregator(AsyncTopAgg):
                 # running min) so the gate never laps a not-yet-committed trainer.
                 _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
                 self._sim_inflight_expected[end] = _round_now + _budget
+                # K-D27 (felix-parallel, asyncfl:1490): the instant a trainer is
+                # dispatched it is in flight in virtual time -> add to the pending-
+                # commit set so the selector's eligibility filter excludes it until
+                # its grad COMMITS (discarded in _sim_recv_min_grad).
+                self._sim_pending_commit.add(end)
                 # NOTE: the async_oort re-pick triplet is stamped on grad RETURN
                 # (in _process_single_trainer_message), NOT here at dispatch --
                 # stamping the whole cohort at the current _curr_agg_version froze

@@ -259,3 +259,70 @@ class TestFlagOffByteIdentical:
         assert agg._sim_committed == {"X"}
         assert len(agg._sim_buffer) == 1
         assert agg._sim_inflight_expected == {"X": 1.0}
+
+
+class TestPendingCommitBridge:
+    """K-D27: the fwdllm aggregator maintains its VIRTUAL in-flight set
+    (`_sim_pending_commit`) and BINDS it to the selector's `_agg_pending_commit_ref`
+    so async_oort's eligibility filter excludes a returned-but-uncommitted trainer
+    regardless of `all_selected` churn. Felix-parallel (asyncfl maintains
+    `_sim_pending_commit` add@dispatch/discard@commit); the reconcile must SHRINK
+    (a committed trainer becomes re-pickable), which the old `|= outstanding`
+    accumulate did not -> it would starve every committed trainer forever.
+    """
+
+    def test_hold_reconciles_pending_to_outstanding_and_binds_ref(self):
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._sim_committed = {"A"}                 # committed this cycle
+        agg._sim_buffer.add("B", 20.0, None)       # returned, carried (uncommitted)
+        agg._sim_inflight_expected = {"C": 30.0}   # still computing
+
+        agg._sim_hold_busy_slots(ch)
+
+        # pending == still-outstanding (carried B ∪ computing C); committed A dropped.
+        assert agg._sim_pending_commit == {"B", "C"}
+        # bound to the SAME live object the selector reads (never rebind).
+        assert ch._selector._agg_pending_commit_ref is agg._sim_pending_commit
+
+    def test_committed_trainer_drops_out_not_starved(self):
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["A", "B"])
+        agg._sim_inflight_expected = {"A": 10.0, "B": 20.0}
+        agg._sim_hold_busy_slots(ch)
+        assert agg._sim_pending_commit == {"A", "B"}
+
+        # A commits -> leaves in-flight, marked committed.
+        agg._sim_inflight_expected = {"B": 20.0}
+        agg._sim_committed = {"A"}
+        agg._sim_hold_busy_slots(ch)
+
+        # A is re-pickable again (dropped from pending); `|=` would have kept it.
+        assert agg._sim_pending_commit == {"B"}
+
+    def test_commit_discards_from_pending(self):
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel([])
+        for e, sct in zip(["A", "B"], (10.0, 20.0)):
+            ch.add_msg(e, sct)
+        agg._sim_inflight_expected = {"A": 10.0, "B": 20.0}
+        agg._sim_pending_commit = {"A", "B"}
+
+        agg._drain(ch, ["A", "B"], 1)   # commit the smallest-sct grad (A)
+
+        assert "A" not in agg._sim_pending_commit   # discarded on COMMIT
+        assert "B" in agg._sim_pending_commit       # still in flight
+
+    def test_legacy_drop_path_clears_pending(self):
+        # residence OFF -> the boundary drops all in-flight; pending must clear
+        # too (else the sync-barrier set grows unbounded).
+        agg = _residence_agg(residence=False)
+        ch = _FakeSelChannel([])
+        agg._sim_committed = {"X"}
+        agg._sim_buffer.add("Y", 5.0, None)
+        agg._sim_inflight_expected = {"Z": 9.0}
+        agg._sim_pending_commit = {"X", "Y", "Z"}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        assert agg._sim_pending_commit == set()
