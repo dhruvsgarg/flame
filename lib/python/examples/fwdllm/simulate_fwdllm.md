@@ -77,7 +77,7 @@ NOT run** — a startup MQTT join-notify race dropped trainer #379's JOIN → 9/
 |---|---|---|---|---|---|---|
 | **fwdllm** (sync) | data_id=20 both | **0% PASS** | **all PASS** | ~0.8 | per_round_advance + phase_gpu_compute (marginal KS 0.211/0.257 vs 0.20/0.25, means match 17.85≈17.48 / 1.03≈1.13), gpu_budget_real/sim (~40% overrun **symmetric** both modes — mis-applied invariant, not a divergence) | **49/4/21.** K-D25/K-D26 clock-rate+phase rungs VALIDATED PASS (44→49). Cadence CLEAN; 4 surviving fails all benign |
 | **fwdllm_plus** (sync) | real→wall-cap 1800s (data_id<20); sim→data_id=20 | 0% PASS | **all PASS** | ~0.85 | #7 eligibility/selection_detail/avail_timebase (real 4.9/4.87 vs sim 9.6 eligible/chosen; in_flight 10=10), gpu_budget (symmetric ~40%), total_commits/terminal (13 vs 14 off-by-one, stop-mismatch) | **45/7/21.** Clock-rate rungs VALIDATED PASS (40→45). Fails = #7 + gpu_budget + stop-mismatch boundary; real ~4× slow (#7) |
-| **fluxtune** (async) | data_id=20 both | **62.9% FAIL** ⛔ | V2 PASS; V1/g2 marginal (10.9 vs 9.1) | **0.29** | **R1** (part-a alone recovered ~0), throughput/overhead/per_round/total_commits/terminal/staleness (all R1+#13-confounded), selection_detail (1.68 vs 1.34), gpu_budget, convergence (1 eval) | **39/14/19.** #14 fix let the sim RUN (10 ends, data_id=20). R1 still 62.9% (215 tripwire fires) → **#1c part (b)/#13 required**, K-D26 confirmed |
+| **fluxtune** (async) | R1 FIXED; sim **STALLS** on #13 (killed early, data_id=1) | **0% (FIXED, K-D27b)** | V2 PASS; V1/g2 marginal | **0.06 ⛔** | **#13 drain stall** (30s/cycle, pipeline starvation — see "#13 DESIGN") + throughput/overhead/commits/staleness (all #13-confounded), gpu_budget | **R1 FIXED** (`SIM_R1_DISPATCH` 238→0, `_012922`). #13 drain redesign is NEXT (port felix `_sim_recv_min`). Can't bank a valid pair until the sim runs at speed |
 
 ### Parity scoreboard — LATEST vs penultimate (rewrite in place; two columns only)
 | baseline | penultimate (sign-off `_1721..1819`) | **LATEST (`_2224..2258`, data_id=20)** | Δpass | key failing rungs |
@@ -111,20 +111,69 @@ fwdllm's 3 marginal rungs (finer KS + boundary washout); fwdllm_plus real ~26 mi
 | **#1c** ⭐⭐ | **R1 residence 60.4% — ROOT-CAUSED (K-D26): a physical-wall vs vclock desync in the shared `async_oort` re-pick guard, exposed by the slow sim (#13).** Two paths drop a still-outstanding trainer from `all_selected`: (a) the 90s `SEND_TIMEOUT_WAIT_S` abandon-timeout keyed on `time.time()` (round-1 trigger); (b) the aggregator marks carried grads `KEY_END_STATE=NONE` to keep their slot, and async_oort reads `NONE` as "left" → deletes from `all_selected` (sustained). Both misfire only because wall ≫ vclock. K-D19 misdiagnosed (checked the selection filter, not these deletion paths); K-D17b's NONE hypothesis was right. **DEEPER ROOT-CAUSE (K-D27, telemetry `_2327`): the NONE-delete is just ONE symptom of a two-ledger split — async_oort's selection eligibility (`filtered_ends`, async_oort:1607) is gated SOLELY on `all_selected`, a PHYSICAL-event-pruned ledger (recv-fifo 2s re-select, RECVD/NONE cleanup), and NEVER consults the aggregator's VIRTUAL in-flight truth (`_sim_inflight_expected ∪ _sim_buffer`). The bridge that would fix this — `_agg_pending_commit_ref` — is read for telemetry (async_oort:423) but NEVER assigned (always ∅) and never used as a filter; the aggregator's `_sim_pending_commit` is accumulated (fwdllm_aggregator:908) but never cleared/bridged (contrast asyncfl:618/1490 where felix DOES maintain it). So in the slow sim a grad sits returned-but-uncommitted for a long virtual window; the selector frees it on a physical event while the aggregator still holds it → own select() re-dispatches → R1. Real/async_cifar10 dodge it ONLY because wall≈vclock (window≈0), not by design.** Evidence: R1 62.9% vs 0.2%, 215 `SIM_R1_DISPATCH`, `num_eligible=10` while `in_flight=10`, `in_pending_commit=0/879` (dead hook), `[CHANNEL_CLEANUP] freed=0`×218 + 0 fires of the 90s-timeout/removed-ends prunes. | fluxtune | **Fix (a) LANDED (K-D26); robust fix (b) LANDED (K-D27+K-D27b):** `_sim_pending_commit` maintained felix-style + bound live to `sel._agg_pending_commit_ref`; async_oort `filtered_ends` excludes it (both spots). **K-D27b:** the bind alone left R1 at 67.6% (`_005222`) — the reconcile subtracted the STALE `_sim_committed`, dropping re-dispatched-after-commit trainers; fixed to `outstanding = inflight ∪ buffer`. Sim-only (∅ in real → async_cifar10 byte-identical); full `tests/` 887-green. **Re-run the fluxtune sim to confirm `SIM_R1_DISPATCH→0` / R1→~0.2%** (`--only fluxtune --mode sim`). Underlying window also collapses if #13 makes the sim fast. |
 | **#6** ✅ | clock-rate rungs anchored real on FULL wall (genuine + ~7.7s/round transport artifact) vs sim-vclock — **checker-anchor bug, sim vclock is correct** | all | **FIXED (K-D25):** agg emits `intrinsic_span_s` (barrier+eval, mirrors the sim vclock composition, fedavg excluded); the 5 clock-rate rungs + `wall_disparity` anchor real on the cumulative intrinsic clock (async byte-identical). Validated: throughput 0.47→0.048, overhead 21→1.1, wall_disparity 90→1.6. **Residual:** `per_round_advance` KS + `total_commits`/`terminal_state` off-by-one at 10 data_id (small-sample + B2 straggler boundary) → clear at longer run / B2 calibration. |
 | **~~phase~~** ✅ | `phase_post_train`/`training_budget` compared a mode-dependent phase (real slept the delay; sim carried B2 straggler in its emitted budget) | all | **FIXED (Root B, K-D25):** post_train stamped after the delay (pure post-proc ~0 both modes); B2 straggler moved from `_delay_s` into the sct only, so `training_budget_s` emits the base delay (identical real/sim). Validated 0/0 and 1.14/1.14. |
-| **#13** ⭐ | sim is physically slow (`sim_rate` 0.26 fluxtune / 0.82–0.85 sync). **Now promoted:** the slow sim (wall ≫ vclock) is the ROOT that makes async_oort's wall-keyed guard machinery misfire → #1c (both the 90s timeout and the NONE-delete race). | all (fluxtune worst) | Cure the fluxtune inter-round physical wall (the recv_fifo/MQTT waits, #11-adjacent) so wall≈vclock like async_cifar10 — then the #1c NONE-delete sustained path collapses on its own. Tracked as the deeper follow-up per the #1c "both" decision. |
+| **#13** ⭐⭐ | **sim physically slow (`sim_rate` 0.06–0.29 fluxtune) — ROOT-CAUSED (2026-07-05): fwdllm's async drain `_sim_recv_min_grad` is an EARLY port that lacks ALL of felix's straggler-handling refinements, so a stuck/idle in-flight trainer blocks every commit for the full 30s `RECV_TIMEOUT_WAIT_S`, forever.** Exposed once #1c/R1 stopped the (incorrect) re-dispatch churn that was masking it. | fluxtune (all) | **Port felix's drain (design locked below — "#13 DESIGN").** The `_sim_recv_min` reference in `asyncfl/top_aggregator.py` IS the intended event-driven model; fwdllm has the skeleton but not the refinements. |
 | **#7** | fwdllm_plus real ~4× slower/round (156 vs 41 s/round); at syn_0 real sees only 4.9 eligible vs sim 9.6 | fwdllm_plus | Real liveness FIXED (Stage C — completes 10). Remaining: profile the per-iteration reselection + oracular read cost from the banked per-phase log; explain the real/sim eligible-count gap at 100% avail. Not a sim bug. |
 | **#12c** | `--delays on` uses the hardcoded `training_delay_factor=10` ÷10 shrink unless `--delay-factor` passed | all | Optional: pass `--delay-factor` for the full 4–18s registry delay. Config-flow otherwise correct (K-D24/K-D21). |
 | **#11** | real-mode critical-path waste (`sleep(0.1)` MQTT-settle busy-waits, real-only; one-grad-per-poll drain tail) | fwdllm, fwdllm_plus (real) | **Deferred to a validated pass** — ZERO parity impact (sim already skips them); removing them changes the working real reference + needs a real run to validate the MQTT settle timing (principle #8/#11c). Never change grad values/cadence. |
 
 ### Open roots — ranked lowest-rung-first
-1. **#1c R1 residence (fluxtune)** — ROOT-CAUSED (K-D26): a wall-vs-vclock desync in the shared async_oort
-   re-pick guard. Wall-timeout path FIXED; the sustained NONE-delete path is the same slow-sim root → **#13**.
-2. **#13 slow sim (fluxtune wall ≫ vclock)** — promoted: it is what makes the async_oort guard machinery misfire
-   (#1c) AND the headline slowdown. Cure the fluxtune inter-round physical wall → wall≈vclock (async_cifar10).
+1. **#13 slow sim / drain stall (fluxtune)** — ROOT-CAUSED + design LOCKED (see "#13 DESIGN"): fwdllm's
+   `_sim_recv_min_grad` lacks felix's straggler refinements → a stuck in-flight trainer blocks every commit the
+   full 30s → starvation. NEXT to implement (port felix's `_sim_recv_min`). Now the top blocker.
+2. **#1c R1 residence (fluxtune)** — FIXED (K-D27/b): `SIM_R1_DISPATCH` 238→0. The pending-commit bridge +
+   dropping the stale `_sim_committed` subtraction. (Was masking #13; fixing it exposed the drain stall.)
 3. **#7 fwdllm_plus real speed / selection divergence** — real completes now; explain the 4× slowness and the
    syn_0 eligible-count gap from banked telemetry.
 3. *(#6 clock-rate — RESOLVED as a checker anchor, K-D25; sim vclock was correct. Only the 3 marginal rungs +
    the B2 straggler calibration remain, both emergent at the longer sign-off run.)*
+
+### #13 DESIGN — event-driven drain redesign (design LOCKED 2026-07-05; NEXT to implement)
+*R1 is FIXED (K-D27/b: `SIM_R1_DISPATCH` 238→0). But fixing R1 unmasked #13: the `_2327`→`_005222`→`_012922`
+runs got progressively slower (`sim_rate` 0.29→0.06), `data_id=1` in ~9 min, `aggregate` calls taking exactly
+30.0s. The R1-violation churn had been masking a broken drain by (incorrectly) keeping trainers busy.*
+
+**Root cause (verified by side-by-side with felix `asyncfl/top_aggregator.py::_sim_recv_min`).** fwdllm's
+`_sim_recv_min_grad` is an EARLY port that lacks every one of felix's straggler-handling refinements
+(grep-confirmed felix=N / fwdllm=0): `_stuck_end`/`_sim_gate_failsafe`/`inflight_expected.pop(_stuck_end)`,
+`probe_ceiling` + `_sim_end_has_ready_msg` ready-gating, `drain_ready`/`_sim_sct_ordered_drain` direct ingest,
+`_sim_free_slot_ts` freed-slot refill. Consequence: on the 30s `RECV_TIMEOUT_WAIT_S` deadline fwdllm just
+`break`s and **leaves the stuck trainer in `_sim_inflight_expected` forever**, so `earlier_stuck` re-fires the
+FULL 30s every commit cycle. Evidence: trainer idle in `_fetch_weights` (already replied, awaiting reselect) sits
+in the expected set; the composer loop is frozen 30s in the drain so freed slots never re-dispatch → pipeline
+starvation (only 5/10 trainers active, 205 recv 2s-timeouts = 74% of wall).
+
+**Confirmed pathway = felix's model (this is what SHOULD happen, verified in async_cifar10).** Slot-based
+discrete-event sim: dispatch to fill `c` slots → trainers compute the REAL grad in parallel (~4s) and reply
+carrying their modeled `sct` (the aggregator only learns an `sct` on receipt) → the recv window batch-collects
+the cohort's replies at once → **reorder by `sct` AT THE AGGREGATOR** → **skip the vclock to the next visible
+`sct`** (accounting jump, ~0 wall), at which one update commits, ONE slot frees (`_sim_free_slot_ts` stamps the
+freed vclock), and the aggregator **selects again** to refill. Physical wall = GPU compute only; the vclock
+charges GPU + the SKIPPED modeled delays → `sim_rate>1`.
+
+**Design choices (operator-confirmed):** (1) residence = **invisible-until-`sct`, released-at-boundary** — a
+replied trainer is NOT eagerly re-dispatched; it and its update stay invisible until vclock reaches `sct`, then
+the update releases and the trainer is re-usable only AFTER the round/bin/iteration boundary. (2) committed SET =
+**modeled-fastest-k** (strict `sct` order kept; do NOT relax to arrival order). (3) **variance-BAD rollbacks are
+NORMAL** (happen in real too — most cycles var isn't met, discarded until finally met); do NOT touch variance —
+the fix is purely drain timing. (4) sim-only, real-mode byte-identical.
+
+**Plan (incremental, drain is the K-D16/K-D17 deadlock zone — one step per short-sim validation):**
+1. **Stuck-end eviction** (felix `_sim_recv_min:436-442`): on the deadline, `pop(_stuck_end)` from
+   `_sim_inflight_expected` so a lost/idle straggler can't block every future cycle. *Suspected to break the 30s
+   stall alone.* Validate with a short fluxtune sim + the residence pytests.
+2. **Probe-ceiling + ready-gating** (felix `:399-411`, `_sim_end_has_ready_msg`): only probe an in-flight end if
+   its rxq is physically ready OR its `exp ≤ buffered_min + slack` — stop burning 2s grace on far-future or
+   not-arrived stragglers.
+3. **Direct `drain_ready` ingest** (felix `_sim_sct_ordered_drain`, `:375-390`): drain each live end's rxq
+   directly (no recv_fifo streamer) so a delivered-but-stranded update is a COMPLETE buffer snapshot (the streamer
+   can strand a delivered grad out of the buffer's view → the gate waits on a grad it already has).
+4. **Freed-slot refill stamp** (felix `_sim_free_slot_ts`, `:507-520`): stamp each train-commit's freed vclock and
+   refill the slot's next dispatch at THAT vclock, so re-selection is prompt + correctly timed.
+   Keep the fwdllm-specific grad orchestration (one-grad-per-call loop, agg-goal-boundary carry, K-D12/K-D17b).
+
+**Expected result:** `aggregate` wall per cycle 30s→~GPU-compute (seconds); slots stay full; `data_id` progresses
+at ~real speed; `sim_rate`→≥1 once `--delay-factor` gives the vclock delay-headroom (#12c). R1 stays 0 (residence
+unchanged). Real byte-identical. Watch: throughput/staleness/commits rungs should ease (they were #13-confounded).
 
 ### SKIP audit (19–21 skips; ~16 legit)
 Legit (mechanism genuinely absent at Phase-1 syn_0 + `random` selector): 7 availability ground-truth rungs +
