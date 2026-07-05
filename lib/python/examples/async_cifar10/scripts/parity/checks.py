@@ -875,10 +875,15 @@ def _by_round_selection(selection_train: list) -> dict:
 
 
 # Selectors whose per-round SET selection is a deterministic function of
-# (candidate set, seed).  Currently empty — every shipped selector samples
-# from a join-order-dependent candidate list, making exact per-round set
-# identity unattainable across real/sim.  participation_parity is the
-# enforced selection invariant for stochastic selectors.
+# (candidate set, seed) INDEPENDENT of the draw.  Currently empty — every
+# shipped selector samples from a join-order-dependent candidate list, so a
+# stochastic SUBSET draw is not per-round set-identical across real/sim.  But
+# set-identity is ALSO attainable without a deterministic selector when the
+# run is FULL-COHORT (K >= candidate pool → everyone selected): that case is
+# detected data-drivenly by `_full_cohort_selection` / `_selection_is_
+# deterministic`, which un-gates the set/sequence rungs for fwdllm (syn_0,
+# K=all) while leaving fluxtune/fwdllm_plus gated.  participation_parity is the
+# enforced selection invariant for the remaining stochastic-subset case.
 DETERMINISTIC_SELECTORS: set = set()
 
 
@@ -892,12 +897,76 @@ def _selector_name(*loaded: dict) -> str:
     return ""
 
 
+def _has_cohort_counts(loaded: dict) -> bool:
+    """True iff selection telemetry carries the num_chosen/num_candidates fields
+    the full-cohort gate needs (real runs always do; synthetic/legacy may not)."""
+    for e in loaded.get("selection_train", []):
+        if e.get("num_candidates") is not None or e.get("num_chosen") is not None:
+            return True
+    return False
+
+
+def _full_cohort_selection(loaded: dict) -> bool:
+    """True iff EVERY selection round chose the whole candidate pool
+    (num_chosen == num_candidates, pool > 0).
+
+    When K >= the candidate pool the selected SET is the entire pool — a
+    deterministic function of the pool regardless of the stochastic draw — so
+    the set/sequence selection rungs become exact-enforceable (fwdllm at
+    syn_0, K=all). Under scarcity (K < pool) or ASYMMETRIC eligibility across
+    modes (fwdllm_plus #7: real ~4.9 vs sim ~9.6 eligible → num_chosen <
+    num_candidates in real) some round is not full-cohort → False → the rung
+    stays gated to a trivial pass rather than false-failing a genuinely
+    stochastic/divergent selection. Missing telemetry (either field absent)
+    also returns False — never assert determinism we cannot see. Data-driven,
+    so it self-disables under Phase-2 unavailability with no config change."""
+    train = loaded.get("selection_train") or []
+    saw = False
+    for e in train:
+        nchosen, ncand = e.get("num_chosen"), e.get("num_candidates")
+        if nchosen is None or ncand is None or ncand <= 0:
+            return False
+        saw = True
+        if nchosen != ncand:
+            return False
+    return saw
+
+
+def _selection_is_deterministic(real: dict, sim: dict) -> bool:
+    """Whether the per-round selected SET is a deterministic function of the
+    candidate pool, so the set/sequence selection rungs should ENFORCE rather
+    than gate to a trivial pass.
+
+    True when the selector is declared deterministic (DETERMINISTIC_SELECTORS)
+    OR the run is full-cohort in BOTH modes (_full_cohort_selection). This
+    un-gates fwdllm (syn_0 K=all) while keeping fluxtune (agg_goal=3 < K) and
+    asymmetric-eligibility fwdllm_plus (#7) gated. NOTE: the fwdllm variance-
+    cadence logical rung `cohort_sequence` is ungated-EXACT for ALL fwdllm
+    baselines (receive-order is deterministic BY DESIGN, operator-confirmed) —
+    it is intentionally NOT gated by this helper, so fluxtune's #1d cohort
+    divergence still FAILs there.
+
+    Fallback: when neither mode carries num_chosen/num_candidates telemetry
+    (synthetic/legacy runs) the data-driven path is unavailable, so we revert to
+    the original selector-name rule — enforce on an unknown/deterministic
+    selector, gate a known stochastic one — to avoid silently WEAKENING a check
+    on telemetry that predates the count fields (principle #8)."""
+    selector = _selector_name(real, sim)
+    if selector and selector in DETERMINISTIC_SELECTORS:
+        return True
+    if _has_cohort_counts(real) and _has_cohort_counts(sim):
+        return _full_cohort_selection(real) and _full_cohort_selection(sim)
+    return not bool(selector)  # legacy fallback = old `not gated` semantics
+
+
 def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
                      warn_jaccard: float = 0.7) -> dict:
     """S1/S2: Per-round selection overlap (Jaccard).
 
-    Enforced only for DETERMINISTIC_SELECTORS; gated to WARN for stochastic
-    selectors (participation_parity is the enforced invariant for those).
+    Enforced when selection is deterministic (`_selection_is_deterministic`:
+    a DETERMINISTIC_SELECTORS selector OR a full-cohort run); gated to a
+    trivial pass otherwise (participation_parity is the enforced invariant for
+    the stochastic-subset case).
     """
     r = _by_round_selection(real["selection_train"])
     s = _by_round_selection(sim["selection_train"])
@@ -912,7 +981,7 @@ def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
             exact += 1
     mean_j = sum(js) / len(js) if js else float("nan")
     selector = _selector_name(real, sim)
-    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    gated = not _selection_is_deterministic(real, sim)
     enforced_ok = (not js) or mean_j >= warn_jaccard
     return {
         "ok": True if gated else enforced_ok,
@@ -1072,9 +1141,11 @@ def aggregation_sequence_parity(real: dict, sim: dict,
                                  max_rounds: Optional[int] = None) -> dict:
     """P1 / U1: Per-round set of contributing trainers matches across modes.
 
-    Enforced only for DETERMINISTIC_SELECTORS; gated to WARN for stochastic
-    selectors.  Exact per-round contributing-set identity is unattainable for a
-    stochastic, streaming, path-dependent selector (a trainer is chosen in
+    Enforced when selection is deterministic (`_selection_is_deterministic`:
+    a DETERMINISTIC_SELECTORS selector OR a full-cohort run — fwdllm syn_0);
+    gated to a trivial pass otherwise.  Exact per-round contributing-set
+    identity is unattainable for a stochastic-SUBSET, streaming, path-dependent
+    selector (a trainer is chosen in
     *different* rounds across modes), the same reason S1 (selection_parity) is
     gated.  The enforced selection invariants for stochastic selectors are
     participation_parity (S2) + the pooled distributions; this check stays as a
@@ -1092,7 +1163,7 @@ def aggregation_sequence_parity(real: dict, sim: dict,
         rounds = [x for x in rounds if x <= max_rounds]
     matches = sum(1 for rd in rounds if r[rd] == s[rd])
     selector = _selector_name(real, sim)
-    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    gated = not _selection_is_deterministic(real, sim)
     enforced_ok = (not rounds) or matches == len(rounds)
     return {
         "ok": True if gated else enforced_ok,
@@ -1456,6 +1527,13 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
         speed_class_tvd = 0.5 * sum(abs(rcs.get(b, 0) - scs.get(b, 0)) for b in buckets)
 
     selector = _selector_name(real, sim)
+    # NOT un-gated by the full-cohort rule: participation keys on `round`, which
+    # is CONSTANT for fwdllm (progress axis is data_id), so the matched-round
+    # window degenerates to nmatch=1 → a mechanical KS=1.0 that says nothing (the
+    # utility_parity "seen only 1-2 times" artifact). fwdllm's genuine per-cycle
+    # cohort enforcement is cohort_sequence; here the stochastic speed-class TVD
+    # branch stays the right call. Set-based round rungs (selection/aggregation_
+    # sequence) ARE full-cohort-safe (all-K union both sides); count rungs aren't.
     gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
     tvd_tol = 0.15
     if gated and speed_class_tvd is not None:
@@ -1677,7 +1755,7 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
     avg_mean_diff = sum(mean_diffs) / len(mean_diffs) if mean_diffs else float("nan")
 
     selector = _selector_name(real, sim)
-    gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
+    gated = not _selection_is_deterministic(real, sim)
     pooled_ok = math.isnan(pooled_ks) or pooled_ks <= max_ks
     per_trainer_ok = math.isnan(max_ks_val) or max_ks_val <= max_ks
     # Stochastic: enforce the pooled distribution only.  Deterministic: also
@@ -2388,6 +2466,83 @@ def gpu_budget_ok(trainers: dict, warn_overrun_frac: float = 0.25) -> dict:
         "tier": "INV",
         "mean_overrun_frac": round(mean_frac, 3),
         "trainers_with_any_overrun": int(sum(1 for f in fracs if f > 0)),
+    }
+
+
+def _overrun_stats(trainers: dict) -> tuple:
+    """(#rounds, #overran, earliest (data_id, iter) overran) from trainer_round
+    telemetry. An event counts only when `training_overran` is present."""
+    n = over = 0
+    first = None
+    for _tid, d in trainers.items():
+        for e in d.get("trainer_round", []):
+            if "training_overran" not in e:
+                continue
+            n += 1
+            if e.get("training_overran"):
+                over += 1
+                did = e.get("data_id")
+                if did is not None:
+                    it = e.get("iteration_per_data_id")
+                    cand = (did, it if it is not None else 0)
+                    if first is None or cand < first:
+                        first = cand
+    return n, over, first
+
+
+def timing_overrun(real_trainers: dict, sim_trainers: dict,
+                   warn_frac: float = 0.05) -> dict:
+    """Ovr [DIAG]: fraction of trainer rounds where the real GPU pass OVERRAN
+    the modeled mobile-device delay budget (K-D29 remainder-wait model, P2-6).
+
+    Precondition-for-parity localizer, NOT a real↔sim diff. Under the K-D29
+    model a trainer's arrival order is deterministic ONLY while gpu_time_s <=
+    the modeled delay D (the GPU hides inside the device wall). When gpu > D the
+    update completes AFTER the vclock passed its sct → the sim can commit it out
+    of order → the deterministic per-trainer arrival order that
+    `cohort_sequence`/`v2_var_trajectory` require is broken. So a cohort/var
+    divergence with a HIGH overrun fraction is a TIMING-MODEL limitation (GPU
+    too slow for the budget — fluxtune's 20-pass JVP at 7.57s vs a ~2-9s D/2
+    budget), fixable by raising `delay_factor` or lowering `perturbation_count`,
+    NOT a sim ordering bug. A near-zero overrun fraction is the precondition for
+    exact cohort/var parity — expect ~0 for fwdllm/fwdllm_plus (GPU ~1s).
+
+    DIAG (never fails the scoreboard); reports per-mode overrun fraction + the
+    earliest (data_id, iteration) an overrun occurs (where order first risks
+    flipping — cross-check against the cohort_sequence first_divergence).
+    SKIPs when `training_overran` is absent (delays disabled / pre-P2-6 run).
+    """
+    rn, ro, rf = _overrun_stats(real_trainers)
+    sn, so, sf = _overrun_stats(sim_trainers)
+    if rn == 0 and sn == 0:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no training_overran telemetry (delays disabled or "
+                        "pre-P2-6 run)"}
+    r_frac = ro / rn if rn else 0.0
+    s_frac = so / sn if sn else 0.0
+    worst = max(r_frac, s_frac)
+    if worst == 0.0:
+        verdict = ("no overrun — GPU within the modeled delay budget in both "
+                   "modes; per-trainer arrival order is deterministic → exact "
+                   "cohort/var parity is attainable")
+    elif worst < warn_frac:
+        verdict = (f"marginal overrun ({worst:.1%} < {warn_frac:.0%}) — order "
+                   "determinism mostly holds; watch the cohort_sequence tail")
+    else:
+        verdict = (f"OVERRUN {worst:.1%} — GPU exceeds the modeled delay budget; "
+                   "update order can flip → expect cohort_sequence/v2 breaks. "
+                   "Raise delay_factor or lower perturbation_count (fluxtune).")
+    return {
+        "ok": True,
+        "tier": "DIAG",
+        "real_overrun_frac": round(r_frac, 4),
+        "sim_overrun_frac": round(s_frac, 4),
+        "real_overran": ro, "real_rounds": rn,
+        "sim_overran": so, "sim_rounds": sn,
+        "real_first_overrun": list(rf) if rf else None,
+        "sim_first_overrun": list(sf) if sf else None,
+        "warn_frac": warn_frac,
+        "verdict": verdict,
     }
 
 
@@ -4340,6 +4495,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
+    results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers)
     results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
 
     # ── Stage 5 Update return & ordering ──
@@ -4463,6 +4619,7 @@ CHECK_META: dict = {
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
+    "timing_overrun":          {"stage": 4, "role": "DIAG",     "deps": ("gpu_budget_real", "gpu_budget_sim")},
     "sim_send_ts":             {"stage": 4, "role": "CONTROL",  "deps": ("vclock_telemetry",)},
     # ── Stage 5 Update return & ordering ──
     "inter_arrival_order":     {"stage": 5, "role": "MECHANISM", "deps": ("per_round_advance", "selection_detail")},

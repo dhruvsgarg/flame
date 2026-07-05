@@ -29,6 +29,7 @@ EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validati
 EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
 EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
+EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 
 KNOWN_EVENTS = frozenset(
     {
@@ -47,6 +48,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_WITHHELD_DELIVERY,
         EVENT_ABANDON_TIMEOUT,
         EVENT_AGG_BELIEF_CHANGE,
+        EVENT_STEP_TIMING,
     }
 )
 
@@ -186,6 +188,35 @@ def build_trainer_round(
     if extra:
         fields.update(extra)
     return EVENT_TRAINER_ROUND, fields
+
+
+def build_step_timing(
+    *,
+    func: str,
+    duration_s: float,
+    round_num: Optional[int] = None,
+    data_id: Optional[int] = None,
+    iteration: Optional[int] = None,
+    trainer_id: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Per-function wall duration of one timed compute step (`timer_decorator`).
+
+    The fine-grained companion to `trainer_round`'s coarse phase split: it
+    attributes wall time to the individual forward-grad steps (functional-model
+    setup, perturbation selection, per-batch JVP, delay emulation) so the GPU
+    cost can be decomposed and optimized (P2-4, fluxtune's 20-pass JVP). Keyed by
+    (data_id, iteration) so a step's cost can be tracked across the cadence.
+    """
+    fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
+    for k, v in (
+        ("round", round_num),
+        ("data_id", data_id),
+        ("iteration_per_data_id", iteration),
+        ("trainer_id", trainer_id),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_STEP_TIMING, fields
 
 
 def build_util_disparity(

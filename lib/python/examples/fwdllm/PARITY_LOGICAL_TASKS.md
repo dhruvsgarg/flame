@@ -17,6 +17,10 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
 - **P1-1/P1-2/P1-3** — enforced `cohort_sequence` rung (EXACT, ungated), V2 mean-guard, `--max-bin` window. Both
   new rungs correctly FAIL the banked pairs (were invisible). New enforced ref: fwdllm 41/13/21, fwdllm_plus
   36/17/21, fluxtune 35/19/19.
+- **P1-5 / P1-4** — full-cohort determinism gate (un-gates fwdllm selection/aggregation_sequence/utility;
+  fluxtune/fwdllm_plus stay gated); `timing_overrun` DIAG signal rung added; P1-4 assessed redundant. See the
+  DEFERRED list below for the full rationale. +9 pytests; banked scoreboard stable (only a new SKIP for the
+  overrun rung, which predates the banked logs).
 - **P1-6 (partial)** — 11 rung/guard pytests. *Still missing: a LIVE sim==real grad-determinism test (needs P0-2).*
 - **P1-8** — banked logs re-run through the upgraded checker.
 - **P2-1/P2-3/P2-5/P2-6** — remainder-wait delay model (K-D29: real sleeps `max(0,D−gpu)`, sct `max(gpu,D)`,
@@ -25,11 +29,24 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
 - **P2-4 (partial)** — GPU profiled: fwdllm/plus ~1.0s, **fluxtune 7.57s** (JVP 20 passes). Optimization deferred.
 
 **NOT DONE / DEFERRED (pick up here) — in priority order:**
-1. **⚠ P1-4 and P1-5 were SKIPPED before jumping to Phase 2** (operator flagged this):
-   - **P1-4** — uniform cohort-record ADAPTER so the `cohort_sequence` rung also runs on **async_cifar10**'s
-     per-commit `agg_round` shape (fwdllm's 3 baselines already work; async_cifar10 does not yet).
-   - **P1-5** — enforce `selection`/`decision_determinism`/`selection_detail` where order is deterministic
-     (populate `DETERMINISTIC_SELECTORS` / per-baseline gate; today WARN-only via the empty set at `checks.py:882`).
+1. **✅ P1-4 / P1-5 RESOLVED (this session):**
+   - **P1-5 DONE** — data-driven **full-cohort determinism gate** (`_selection_is_deterministic`:
+     `num_chosen==num_candidates` in both modes, else the DETERMINISTIC_SELECTORS name rule as a legacy fallback).
+     Un-gates `selection`/`aggregation_sequence`/`utility` for fwdllm (syn_0, K=all → GENUINELY enforced, no
+     longer a trivial gated pass) while self-keeping fluxtune (agg_goal=3) + fwdllm_plus (#7 asymmetric eligible)
+     gated. **participation deliberately NOT un-gated** — it keys on `round` (constant for fwdllm's data_id axis)
+     so it degenerates to a mechanical KS=1.0; cohort_sequence is fwdllm's per-cycle enforcement. Banked scoreboard
+     unchanged (41/13, 36/17, 35/19) — the un-gated rungs pass genuinely; utility's fail is a pre-existing pooled
+     KS=0.45 (bin-8 desync), not new.
+   - **P1-4 ASSESSED REDUNDANT (not built)** — extending `cohort_sequence` to async_cifar10's per-commit shape
+     yields a GATED trivial pass (stochastic subset, no `var`, exact order unattainable by design); its set+order
+     are already covered there by `aggregation_sequence` (gated) + `inter_arrival_order` + `first_divergence`.
+     Building the adapter adds a muddying no-signal rung (principle #16). Revisit only if async_cifar10 ever needs
+     an exact-ordered cohort rung.
+   - **NEW SIGNAL — `timing_overrun` DIAG rung** (`checks.py`, wired + tested): surfaces the P2-6
+     `training_overran` fraction per mode + earliest `(data_id, iter)` overrun — the K-D29 order-determinism tell
+     (gpu > modeled D → arrival order can flip → cohort/var break is a TIMING-MODEL limit, not a sim bug). SKIPs on
+     the banked logs (predate P2-6); will populate on the databin1 run and tell us WHY fluxtune breaks.
 2. **P2-7 — LAUNCH THE databin1 RUN** (the immediate experimental next step; command below), then re-run the
    checker `--max-bin 1` and confirm the cascade: fwdllm/fwdllm_plus `cohort_sequence` should extend past bin 8;
    fluxtune expected to still break (GPU overrun) → confirms P2-5 tuning is the fluxtune next step.
@@ -41,7 +58,8 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
 ```
 cd lib/python/examples/fwdllm/expt_scripts
 bash run_sequential.sh --mode both --delays on --delay-factor 2 --max-data-id 1 --max-runtime-s 1800 --yes
-python run_parity.py --yes --max-bin 1     # then inspect cohort_sequence per baseline
+python run_parity.py --yes --max-bin 1     # then inspect cohort_sequence + timing_overrun per baseline
+python plot_step_timing.py                 # NEW: per-step GPU breakdown (fine step_timing now populated)
 ```
 Expected: fwdllm/fwdllm_plus (GPU≈1s < D/2 of 2–9s) → order deterministic → `cohort_sequence` improves; fluxtune
 (GPU 7.57s > D/2) → `[TIMING_OVERRUN]` fires, order still flips → tune `perturbation_count` down next.
@@ -115,13 +133,16 @@ stochastic selectors (`DETERMINISTIC_SELECTORS=∅`, `checks.py:882`) and keys o
       (KS-only used to pass the ~1% offset).
 - [x] **P1-3 DONE — `--max-bin` window** threaded through `_fwd_cadence_cycles` → V1/V2/V3/V4/V5 + `cohort_sequence`
       + `run_all_parity` + `run_parity.py` + `cli.py`. `run_parity.py --max-bin 1` verified.
-- [ ] **P1-4 Uniform cohort-record adapter** so async (per-commit `agg_round`, `contributing=[end]`) and sync
-      (per-cycle cohort) run ONE cohort/order diff. NOTE: fluxtune already emits per-cycle cadence fields (it's the
-      fwdllm aggregator with `is_async`), so `cohort_sequence` ALREADY runs on all 3 fwdllm baselines. The adapter
-      is only needed to extend the rung to async_cifar10's per-commit shape — lower priority.
-- [ ] **P1-5 Enforce selection/determinism rungs** where order is deterministic: populate
-      `DETERMINISTIC_SELECTORS` (or a per-baseline determinism gate) so `selection`/`decision_determinism`/
-      `selection_detail` stop being WARN-only.
+- [x] **P1-4 ASSESSED REDUNDANT (not built).** Extending `cohort_sequence` to async_cifar10's per-commit shape is
+      a GATED trivial pass (stochastic subset, no `var`); async_cifar10's set+order are already covered by
+      `aggregation_sequence` + `inter_arrival_order` + `first_divergence`. No new signal → not built (principle #16).
+- [x] **P1-5 DONE — data-driven full-cohort determinism gate** (`_selection_is_deterministic` /
+      `_full_cohort_selection` / `_has_cohort_counts`, `checks.py`). Un-gates `selection`/`aggregation_sequence`/
+      `utility` when `num_chosen==num_candidates` in both modes (fwdllm syn_0) → GENUINELY enforced; fluxtune +
+      fwdllm_plus stay gated (subset / #7 asymmetric eligible); legacy no-count telemetry falls back to the old
+      selector-name rule (no regression). participation EXCLUDED (round-keyed → mechanical KS on fwdllm's data_id
+      axis). `decision_determinism` left DIAG (a localizer by design, not an enforce target). 6 gate pytests +
+      banked-log validation (scoreboard stable). NEW `timing_overrun` DIAG rung surfaces the P2-6 overrun signal.
 - [~] **P1-6 PARTIAL — rung + guard pytests landed** (`TestCohortSequence` ×9, `TestVarTrajectoryMeanGuard` ×2 in
       `tests/mode/test_parity_checks.py`). STILL TODO: a LIVE sim==real grad-determinism test given matched order
       (needs P0-2 infra).
@@ -144,10 +165,14 @@ stochastic selectors (`DETERMINISTIC_SELECTORS=∅`, `checks.py:882`) and keys o
 - [x] **P2-3 DONE — crc32 straggler offset disabled** (`sim_straggler_spread_s: 0.0` in all 3 sim yamls). The
       per-trainer registry delays now supply the completion spread; the offset would re-noise the deterministic
       order. `_wan_s` already 0. (Helper kept flag-gated for its unit tests.)
-- [~] **P2-4 PARTIAL — GPU profiled** (from telemetry): fwdllm/fwdllm_plus **~1.0s** (cos-sim path, ~1 forward
-      pass); **fluxtune 7.57s mean, max 59.6s** (JVP path, 2×10 = 20 passes). fwdllm is forward-ONLY (FedFwd, no
-      backprop) so "forward<backprop" is moot — the real GPU lever is the **perturbation count** (P2-5). fluxtune's
-      7.57s WILL overrun a D/2 budget (2–9s) → tracked via P2-6, tuned via P2-5 next step.
+- [~] **P2-4 PARTIAL — GPU profiled + per-step telemetry LANDED.** Coarse (from `trainer_round`): fwdllm/
+      fwdllm_plus **~1.0s** (cos-sim path), **fluxtune 7.57s mean** (JVP, 20 passes). NEW **per-step telemetry**
+      (`EVENT_STEP_TIMING` via `timer_decorator` — no-op unless telemetry on) + plotter
+      `expt_scripts/plot_step_timing.py` (fine `step_timing` funcs + coarse `trainer_round` phases; PNG + table).
+      **Finding from banked logs:** the dominant REAL wall is `mqtt_fetch_s` (fwdllm 4.2s/round, **fluxtune
+      18.3s/round**) ≫ `gpu_compute_s` (1.1 / 3.6s) — that's the #11 real-transport cost the SIM already skips, not
+      a GPU lever. The FINE GPU sub-step split (perturbation-selection vs per-batch JVP) populates on the next run
+      (telemetry now in place). fwdllm is forward-ONLY → the GPU lever is `perturbation_count` (P2-5).
 - [x] **P2-5 DONE (knob) — `perturbation_count` config knob** (default 10 = byte-identical) threaded
       config→`main.py`/`fl_main.py`→`tc_transformer_trainer_distribute.py`, replacing the hardcoded `1*10` /
       `range(0,10)` in all 4 sites. Lowering it cuts fluxtune's forward-pass cost. LEFT AT 10 for this run

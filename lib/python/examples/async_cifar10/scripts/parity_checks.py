@@ -33,6 +33,9 @@ from parity.checks import (  # noqa: F401, E402
     # selection constants
     DETERMINISTIC_SELECTORS,
     _selector_name,
+    _has_cohort_counts,
+    _full_cohort_selection,
+    _selection_is_deterministic,
     # §3.B selection
     selection_parity,
     # §3.D updates
@@ -52,6 +55,7 @@ from parity.checks import (  # noqa: F401, E402
     # §3.C sim invariants
     sim_send_ts_ok,
     gpu_budget_ok,
+    timing_overrun,
     trainer_phase_parity,
     # Stage 0 / 1 / 2 / 4 / 8 additions (causal ladder)
     field_coverage,

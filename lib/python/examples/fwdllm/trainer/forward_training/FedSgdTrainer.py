@@ -578,16 +578,19 @@ class FedSGDTrainer(Trainer):
 
     @timer_decorator
     def train_with_data_id(self):
-        # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(
-            self._round, self.data_id, self.iteration_per_data_id, self.trainer_id
-        )
-
         if self.abort_training == True:
             logger.info(
                 f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}"
             )
             return
+
+        # Create FwdLLMStage for timing/metrics logging. Set AFTER the abort
+        # check so an aborted round stays a true no-op (no fwd_llm_stage → the
+        # @timer_decorator emits no step_timing record for it, and nothing else
+        # fires either — see test_aborted_round_emits_nothing).
+        self.fwd_llm_stage = FwdLLMStage(
+            self._round, self.data_id, self.iteration_per_data_id, self.trainer_id
+        )
 
         # Phase-timing entry (Stage A1): everything up to the compute loop is
         # pre_train (avail check, FwdLLMStage setup, loader state).
@@ -612,14 +615,15 @@ class FedSGDTrainer(Trainer):
         # Without this, phase_post_train saw real ~1.14 vs sim 0.0.
         _phase_post_start = time.time()
 
-        # Sim-mode stamps (Batch 1): the modeled round duration is ADDITIVE
-        # (real_gpu + D), matching real mode's sleep-D-on-top-of-GPU semantics
-        # -- NOT cifar10's max(gpu, D) "sleep to fill a budget" model. The sct
-        # (when this update COMMITS on the virtual clock) is the aggregator's
-        # dispatch stamp (SIM_SEND_TS, read in _fetch_weights) + that duration +
-        # the optional pre-commit holding leg. _send_grads sends these so the
-        # aggregator can order updates by _sim_completion_ts. In real mode these
-        # stay None and the aggregator falls back to arrival order (unchanged).
+        # Sim-mode stamps: the modeled round duration is the REMAINDER-WAIT
+        # max(real_gpu, D) (K-D29), matching real mode's sleep-the-remainder
+        # semantics (device wall = D, GPU hidden inside) -- NOT the old additive
+        # gpu + D (K-D2, reversed). The sct (when this update COMMITS on the
+        # virtual clock) is the aggregator's dispatch stamp (SIM_SEND_TS, read in
+        # _fetch_weights) + that duration + the optional pre-commit holding leg.
+        # _send_grads sends these so the aggregator can order updates by
+        # _sim_completion_ts. In real mode these stay None and the aggregator
+        # falls back to arrival order (unchanged).
         # B3 (K-D20 #6): WAN payload-transfer term (up+down). NOT measurable on
         # localhost (no ground truth), so this is a DOCUMENTED knob left at 0 --
         # do NOT enable without a real WAN measurement. Byte-identical at 0.
@@ -664,10 +668,11 @@ class FedSGDTrainer(Trainer):
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
-                # real GPU compute + the emulated base delay (0 if disabled) + the
-                # sim sct-model folds (B2 straggler spread, B3 WAN) -- NOT a
-                # budget-vs-actual quantity (fwdllm has no sleep-to-fill-budget
-                # model); the total modeled wall this round took.
+                # the total modeled wall this round took: max(real_gpu, D) under
+                # the K-D29 remainder-wait model (device wall = D, GPU hidden),
+                # + the sim sct-model folds (B2 straggler spread, B3 WAN, both 0
+                # by default). training_budget_s below carries D separately so
+                # the overrun (gpu > D) is recoverable from telemetry.
                 sim_round_duration_s=self._sim_round_duration_s,
                 avail_state=self.avl_state.value,
                 dataset_size=self.dataset_size,

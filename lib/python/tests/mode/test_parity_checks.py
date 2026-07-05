@@ -1257,3 +1257,110 @@ class TestVarTrajectoryMeanGuard:
         base = [0.9, 0.5, 0.42, 0.31]
         agg = _agg(agg_rounds=[_lcyc(0, i, ["a"], v) for i, v in enumerate(base)])
         assert pc.var_trajectory_parity(agg, agg)["ok"]
+
+
+def _selc(round_, chosen, num_candidates, selector="random", ts=0.0):
+    """Selection event WITH the num_chosen/num_candidates count fields the
+    full-cohort determinism gate reads (real runs always emit these)."""
+    return {"event": "selection", "task": "train", "round": round_, "ts": ts,
+            "selector": selector, "chosen": list(chosen),
+            "num_chosen": len(chosen), "num_candidates": num_candidates}
+
+
+class TestSelectionDeterminismGate:
+    """P1-5: set/sequence selection rungs ENFORCE when selection is provably
+    deterministic (full-cohort K>=pool, or a declared deterministic selector)
+    and gate to a trivial pass otherwise — data-driven from num_chosen/
+    num_candidates so it self-splits fwdllm (enforce) vs fluxtune / fwdllm_plus
+    #7 (gate) and self-disables under Phase-2 scarcity."""
+
+    def test_full_cohort_helper(self):
+        full = _agg(selection=[_selc(1, ["a", "b", "c"], 3),
+                               _selc(2, ["a", "b", "c"], 3)])
+        subset = _agg(selection=[_selc(1, ["a", "b", "c"], 10)])  # fluxtune-like
+        assert pc._full_cohort_selection(full)
+        assert not pc._full_cohort_selection(subset)
+
+    def test_full_cohort_ungates_and_enforces(self):
+        # fwdllm syn_0: everyone selected -> deterministic -> ENFORCED. A genuine
+        # per-round contributing-set divergence must now FAIL (was invisible).
+        real = _agg(selection=[_selc(1, ["a", "b", "c"], 3)],
+                    agg_rounds=[_round(1, ["a", "b", "c"], [0, 0, 0])])
+        sim = _agg(selection=[_selc(1, ["a", "b", "c"], 3)],
+                   agg_rounds=[_round(1, ["a", "b", "x"], [0, 0, 0])])  # x != c
+        assert pc._selection_is_deterministic(real, sim)
+        agg_seq = pc.aggregation_sequence_parity(real, sim)
+        assert agg_seq["gated"] is False and agg_seq["ok"] is False
+
+    def test_full_cohort_matched_is_genuine_pass(self):
+        a = _agg(selection=[_selc(1, ["a", "b", "c"], 3)],
+                 agg_rounds=[_round(1, ["a", "b", "c"], [0, 0, 0])])
+        agg_seq = pc.aggregation_sequence_parity(a, a)
+        assert agg_seq["gated"] is False and agg_seq["ok"] is True
+
+    def test_subset_selection_stays_gated(self):
+        # fluxtune agg_goal=3 < pool=10: stochastic subset -> gated trivial pass
+        # even when the sim picks a DIFFERENT subset (cohort_sequence owns that).
+        real = _agg(selection=[_selc(1, ["a", "b", "c"], 10)],
+                    agg_rounds=[_round(1, ["a", "b", "c"], [0, 0, 0])])
+        sim = _agg(selection=[_selc(1, ["d", "e", "f"], 10)],
+                   agg_rounds=[_round(1, ["d", "e", "f"], [0, 0, 0])])
+        assert not pc._selection_is_deterministic(real, sim)
+        agg_seq = pc.aggregation_sequence_parity(real, sim)
+        assert agg_seq["gated"] is True and agg_seq["ok"] is True
+
+    def test_asymmetric_eligibility_stays_gated(self):
+        # fwdllm_plus #7: real sees fewer eligible than the pool -> not full
+        # cohort in real -> gated (don't hard-fail a real-side eligibility gap).
+        real = _agg(selection=[_selc(1, ["a", "b"], 5)])       # 2 of 5 chosen
+        sim = _agg(selection=[_selc(1, ["a", "b", "c", "d", "e"], 5)])  # full
+        assert not pc._selection_is_deterministic(real, sim)
+
+    def test_legacy_no_counts_falls_back_to_selector_rule(self):
+        # No count telemetry + unknown selector -> old behavior: ENFORCED (so the
+        # pre-existing disjoint-fails test semantics are preserved, no regression).
+        real = _agg(selection=[_sel(1, ["a", "b"])])
+        sim = _agg(selection=[_sel(1, ["c", "d"])])
+        assert pc._selection_is_deterministic(real, sim)  # enforce on unknown
+        assert not pc.selection_parity(real, sim)["ok"]
+
+
+def _tr_round(overran, data_id=0, it=0, gpu=1.0, budget=2.0):
+    return {"real_gpu_time_s": gpu, "training_budget_s": budget,
+            "training_overran": overran, "data_id": data_id,
+            "iteration_per_data_id": it}
+
+
+class TestTimingOverrun:
+    """Ovr: the K-D29 order-determinism tell (P2-6). A high overrun fraction
+    means gpu > modeled D -> arrival order can flip -> cohort_sequence/v2 breaks
+    are a TIMING-MODEL limit, not a sim ordering bug. DIAG (never fails)."""
+
+    def test_no_overrun_verdict(self):
+        tr = {"a": {"trainer_round": [_tr_round(False), _tr_round(False)]}}
+        r = pc.timing_overrun(tr, tr)
+        assert r["ok"] and r["tier"] == "DIAG"
+        assert r["real_overrun_frac"] == 0.0
+        assert "attainable" in r["verdict"]
+
+    def test_overrun_flags_and_reports_first_bin(self):
+        # fluxtune-like: some rounds overrun; earliest at (data_id, iter).
+        real = {"a": {"trainer_round": [
+            _tr_round(False, 0, 0), _tr_round(True, 0, 1), _tr_round(True, 2, 0)]}}
+        sim = {"a": {"trainer_round": [_tr_round(False, 0, 0)]}}
+        r = pc.timing_overrun(real, sim)
+        assert r["ok"]  # DIAG never fails the scoreboard
+        assert r["real_overrun_frac"] == pytest.approx(2 / 3, abs=1e-3)
+        assert r["real_first_overrun"] == [0, 1]
+        assert "OVERRUN" in r["verdict"]
+
+    def test_skips_without_telemetry(self):
+        tr = {"a": {"trainer_round": [{"real_gpu_time_s": 1.0}]}}  # no overran field
+        r = pc.timing_overrun(tr, tr)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "timing_overrun" in pc.CHECK_META
+        tr = {"a": {"trainer_round": [_tr_round(False)]}}
+        res = pc.run_all_parity(_agg(), _agg(), tr, tr)
+        assert "timing_overrun" in res

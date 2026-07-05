@@ -70,9 +70,14 @@ P1) — these two now correctly FAIL the order/grad divergence that used to be i
 
 | baseline | pass / fail / skip | JSON |
 |---|---|---|
-| **fwdllm/syn_0** | **41 / 13 / 21** | `experiments/_parity_reports/parity_fwdllm_syn_0_20260705_045724.json` |
-| **fwdllm_plus/syn_0** | **36 / 17 / 21** | `parity_fwdllm_plus_syn_0_20260705_063350.json` |
-| **fluxtune/syn_0** | **35 / 19 / 19** | `parity_fluxtune_syn_0_20260705_080931.json` |
+| **fwdllm/syn_0** | **41 / 13 / 22** | `experiments/_parity_reports/parity_fwdllm_syn_0_20260705_045724.json` |
+| **fwdllm_plus/syn_0** | **36 / 17 / 22** | `parity_fwdllm_plus_syn_0_20260705_063350.json` |
+| **fluxtune/syn_0** | **35 / 19 / 20** | `parity_fluxtune_syn_0_20260705_080931.json` |
+
+*(skip +1 each vs the prior ref = the new `timing_overrun` DIAG rung, which SKIPs on these banked logs — they
+predate its P2-6 `training_overran` telemetry; it populates on the databin1 run. Pass/fail unchanged: the K-D30
+full-cohort gate flipped fwdllm's `selection`/`aggregation_sequence`/`utility` from a trivial GATED pass to GENUINE
+enforcement without moving the counts — they pass truthfully; `utility` still fails on a pre-existing pooled KS.)*
 
 **Fails, categorized by blast radius (fix the SHARED roots first — principle #14).**
 - **SHARED — all 3 (top priority):** `throughput` / `overhead_residual` / `per_round_advance` (the `sim_rate<1`
@@ -121,8 +126,10 @@ exact cadence parity IS achievable once order matches. **Full diagnosis + fix pl
 
 > **STATUS (2026-07-05 checkpoint):** the checker now GATES on this (enforced `cohort_sequence` EXACT rung +
 > V2 mean-guard, P1) and the timing-model fix has LANDED (**K-D29** remainder-wait `max(gpu,D)` + per-trainer D +
-> crc32 straggler off + `perturbation_count` knob; 606+115 tests green). **Not yet run.** Pending before close:
-> **P1-4/P1-5** (async_cifar10 cohort adapter + enforce determinism rungs — skipped en route to Phase 2) and the
+> crc32 straggler off + `perturbation_count` knob). **P1-4/P1-5 now RESOLVED** (K-D30): full-cohort determinism
+> gate un-gates fwdllm's selection/aggregation_sequence/utility to GENUINE enforcement (fluxtune/fwdllm_plus stay
+> gated); new `timing_overrun` DIAG rung surfaces the K-D29 overrun tell; P1-4 assessed redundant. 419 mode + 115
+> async_cifar10 parity tests green; banked scoreboard stable. **Not yet run.** Pending before close: the
 > **databin1 validation run** (`--delay-factor 2 --max-data-id 1`). Resume steps: the tracker's SESSION CHECKPOINT.
 
 ### Open issues (OPEN only — closed items live in §G/§H)
@@ -147,10 +154,11 @@ exact cadence parity IS achievable once order matches. **Full diagnosis + fix pl
    completes now; explain the 4× slowness + the syn_0 eligible-count gap from telemetry. Not a sim bug.
 4. Then C1/C2 convergence at matched `data_id` per baseline → gate to Phase 2 (unavailability).
 
-### SKIP audit (19–21 skips; ~16 legit)
+### SKIP audit (20–22 skips; ~17 legit)
 Legit at Phase-1 syn_0 + `random` selector: 7 availability ground-truth rungs + 4 delivery/withheld (Phase-2
 effect path, not built) + 3 DynamicKC (disabled by design) + 2 oort-only (`random` baselines) + `residence`
-(async telemetry). The 12 former rigor-gap skips (4 advance, 8 phase-timing) are un-skipped (K-D21).
+(async telemetry) + `timing_overrun` (banked logs predate its P2-6 telemetry; populates on the next run). The 12
+former rigor-gap skips (4 advance, 8 phase-timing) are un-skipped (K-D21).
 
 ---
 
@@ -398,6 +406,18 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
   & real↔sim identical. Overrun (gpu>D) is flagged (`training_overran`, `[TIMING_OVERRUN]`) — it un-determinises
   order, so it's the fluxtune watch (its JVP GPU 7.57s overruns D/2). Crc32 straggler offset disabled
   (`sim_straggler_spread_s=0`); `perturbation_count` made a knob (default 10). See PARITY_LOGICAL_TASKS.md P2.
+
+- **K-D30** — **full-cohort determinism gate + `timing_overrun` signal (P1-5, closes the P1-4/P1-5 gap).** The
+  selection set/sequence rungs (`selection`/`aggregation_sequence`/`utility`) gated to a TRIVIAL pass for every
+  stochastic selector, so fwdllm's syn_0 selection was never actually checked. Fix: `_selection_is_deterministic`
+  un-gates when `num_chosen==num_candidates` in BOTH modes (K≥pool → set-deterministic) — data-driven, so it
+  enforces fwdllm (K=all), keeps fluxtune (agg_goal=3) + fwdllm_plus (#7 asymmetric eligible) gated, self-disables
+  under Phase-2 scarcity, and falls back to the old selector-name rule on count-less legacy telemetry (no
+  regression). `participation` EXCLUDED (round-keyed → mechanical KS on fwdllm's constant-`round`/`data_id` axis;
+  cohort_sequence is its per-cycle enforcement). New `timing_overrun` DIAG rung surfaces the K-D29 overrun tell
+  (P2-6 `training_overran` fraction + first-overrun bin → gpu>D flips order → cohort/var break is a timing-model
+  limit not a sim bug). P1-4 (async_cifar10 cohort adapter) assessed redundant, not built. Sim/checker-only →
+  async_cifar10 byte-identical; banked scoreboard stable.
 
 *Retired/superseded anchors (kept only as pointers): K-D6 (→K-D12), K-D7/K-D8/K-D10/K-D16/K-D18/K-D19/K-D20/K-D23
 — landed scaffolding or corrections, folded into §G/§H; see git history for detail.*
