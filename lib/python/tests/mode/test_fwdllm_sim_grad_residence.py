@@ -326,3 +326,26 @@ class TestPendingCommitBridge:
         agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
         assert agg._sim_pending_commit == set()
+
+    def test_recommitted_trainer_stays_pending_despite_stale_committed(self):
+        """The K-D27 R1 regression: `_sim_committed` is a STALE cross-cycle marker
+        (cleared only at the boundary). A trainer that committed then was re-picked
+        + re-dispatched is back in `_sim_inflight_expected`; the reconcile must NOT
+        drop it from pending just because it lingers in `_sim_committed` -- else it
+        is re-pickable while its NEW dispatch is still in flight -> R1 (the 67.6%
+        overlap the first K-D27 attempt still showed). `outstanding` therefore keys
+        on inflight/buffer membership only, never `- _sim_committed`."""
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["A", "B"])
+        # A committed earlier this cycle (still in the stale marker) AND has been
+        # re-dispatched -> back in flight. B is a first-time in-flight trainer.
+        agg._sim_committed = {"A"}
+        agg._sim_inflight_expected = {"A": 40.0, "B": 20.0}
+
+        agg._sim_hold_busy_slots(ch)
+
+        # A is genuinely in flight again -> stays pending + held (un-re-pickable).
+        assert "A" in agg._sim_pending_commit
+        assert "B" in agg._sim_pending_commit
+        assert "A" in ch._selector.all_selected
+        assert "A" in ch._selector.selected_ends["agg"]

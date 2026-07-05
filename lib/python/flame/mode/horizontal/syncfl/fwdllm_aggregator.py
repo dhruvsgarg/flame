@@ -911,15 +911,23 @@ class TopAggregator(AsyncTopAgg):
         selected_ends = getattr(sel, "selected_ends", None)
 
         buffered = set(self._sim_buffer.pending_ends())          # returned, grad carried
-        # Outstanding = still in flight in virtual time (not yet committed).
-        outstanding = (set(self._sim_inflight_expected) | buffered) - self._sim_committed
-        # K-D27: `_sim_pending_commit` is the aggregator's authoritative VIRTUAL
-        # in-flight set; reconcile it to `outstanding` IN PLACE (clear+update, never
-        # rebind -- the selector holds a live reference) so a committed trainer
-        # drops out and becomes re-pickable, while a returned-but-uncommitted one
-        # stays. Bind the reference so async_oort's eligibility filter excludes it
-        # (see async_oort `_pending`), making a still-outstanding trainer
-        # un-re-pickable regardless of all_selected churn. `|=` (the old accumulate)
+        # Outstanding = still in flight in virtual time. Membership in
+        # `_sim_inflight_expected` (popped on commit @811) or `_sim_buffer` (popped
+        # on commit @793) IS the "not yet committed" truth. Do NOT subtract
+        # `_sim_committed` (K-D27 fix): it is a STALE, cross-cycle marker cleared
+        # only at the agg-goal boundary, so a trainer that committed and was then
+        # legitimately re-picked + re-dispatched (re-added to `_sim_inflight_expected`)
+        # would be wrongly dropped from `outstanding` -> re-pickable while its NEW
+        # dispatch is still in flight -> R1 residence violation. A trainer that
+        # committed THIS cycle is already absent from both sets, so the subtraction
+        # was redundant for it and harmful for the re-dispatch case.
+        outstanding = set(self._sim_inflight_expected) | buffered
+        # `_sim_pending_commit` is the aggregator's authoritative VIRTUAL in-flight
+        # set; reconcile it to `outstanding` IN PLACE (clear+update, never rebind --
+        # the selector holds a live reference) so a genuinely-committed trainer drops
+        # out (re-pickable) while a dispatched-but-uncommitted one stays. Bind the
+        # reference so async_oort's eligibility filter excludes it (see async_oort
+        # `_pending`) regardless of all_selected churn. `|=` (the old accumulate)
         # would never shrink -> a committed trainer would be starved forever.
         self._sim_pending_commit.clear()
         self._sim_pending_commit.update(outstanding)
