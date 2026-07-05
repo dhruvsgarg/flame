@@ -401,11 +401,36 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
     return out
 
 
+def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
+    """Real's GENUINE-time coordinate for the #6 clock-rate family, or None.
+
+    When the aggregator emits ``intrinsic_span_s`` (fwdllm), returns a dict
+    {id(agg_round_event): cumulative_intrinsic_s} -- the running sum of per-cycle
+    algorithmic spans (barrier + fedavg + eval), the real analog of the sim's
+    vclock. Real's raw wall Δts bundles a ~constant inter-round transport ARTIFACT
+    (mqtt re-fetch / redistribute / drain-tail / sleeps) the sim omits by design
+    (principle #1), so anchoring the clock-rate rungs (K2/K3/K3b/K8/U2 + wall_
+    disparity) on Δts spuriously fails #6; anchoring on this intrinsic clock
+    compares real-genuine vs sim-vclock like for like. Returns None when
+    ``intrinsic_span_s`` is absent (async_cifar10 -> callers fall back to ``ts``
+    -> byte-identical)."""
+    evs = [e for e in agg_rounds if e.get("event") == "agg_round"]
+    if not any(e.get("intrinsic_span_s") is not None for e in evs):
+        return None
+    coord, run = {}, 0.0
+    for e in evs:
+        run += (e.get("intrinsic_span_s") or 0.0)
+        coord[id(e)] = run
+    return coord
+
+
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
     """Compute per-progress-unit time advances (Stage A3 re-key).
 
     use_vclock=True:  Δvclock_now between consecutive units (sim mode).
-    use_vclock=False: Δts (wall) between consecutive units (real mode).
+    use_vclock=False: real mode -- Δ(intrinsic algorithmic clock) when the
+      aggregator emits ``intrinsic_span_s`` (#6 anchor, see _real_intrinsic_clock),
+      else Δts (wall) -> async_cifar10 byte-identical.
     Returns list of positive advances.
 
     Keyed on the run's TRUE progress axis (_progress_axis), not raw `round`:
@@ -419,6 +444,8 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
     rounds_sorted = sorted(by_round.keys())
     if len(rounds_sorted) < 2:
         return []
+    # REAL (#6): prefer real's intrinsic algorithmic clock over raw wall ts.
+    real_coord = None if use_vclock else _real_intrinsic_clock(agg_rounds)
     advances = []
     for i in range(1, len(rounds_sorted)):
         e_prev = by_round[rounds_sorted[i - 1]]
@@ -426,15 +453,15 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
         if use_vclock:
             v_prev = e_prev.get("vclock_now")
             v_curr = e_curr.get("vclock_now")
-            if v_prev is None or v_curr is None:
-                continue
-            adv = v_curr - v_prev
+        elif real_coord is not None:
+            v_prev = real_coord.get(id(e_prev))
+            v_curr = real_coord.get(id(e_curr))
         else:
-            t_prev = e_prev.get("ts")
-            t_curr = e_curr.get("ts")
-            if t_prev is None or t_curr is None:
-                continue
-            adv = t_curr - t_prev
+            v_prev = e_prev.get("ts")
+            v_curr = e_curr.get("ts")
+        if v_prev is None or v_curr is None:
+            continue
+        adv = v_curr - v_prev
         if adv > 0:
             advances.append(adv)
     return advances
@@ -1888,11 +1915,20 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     n_sim_rounds = len(sim_by_round)
     sim_throughput = n_sim_rounds / final_vclock if final_vclock > 0 else 0.0
 
-    real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
-    if not real_ts or len(real_ts) < 2:
-        return {"ok": True, "tier": "EXACT", "status": "SKIP",
-                "note": "insufficient real ts data (< 2 agg_round events)"}
-    wall_elapsed = max(real_ts) - min(real_ts)
+    # REAL (#6): denominator is real's GENUINE algorithmic time -- total
+    # intrinsic span (barrier+fedavg+eval) when emitted, else wall ts span
+    # (async_cifar10 byte-identical). Excludes real's inter-round transport
+    # artifact so rounds-per-genuine-second compares like-for-like vs the sim's
+    # rounds-per-vclock-second.
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    if real_coord is not None:
+        wall_elapsed = max(real_coord.values()) if real_coord else 0.0
+    else:
+        real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
+        if not real_ts or len(real_ts) < 2:
+            return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                    "note": "insufficient real ts data (< 2 agg_round events)"}
+        wall_elapsed = max(real_ts) - min(real_ts)
     real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
     n_real_rounds = len(real_by_round)
     real_throughput = n_real_rounds / wall_elapsed if wall_elapsed > 0 else 0.0
@@ -1969,32 +2005,38 @@ def per_round_advance_parity(real: dict, sim: dict,
 
 
 def wall_disparity(real: dict, sim: dict) -> dict:
-    """wall_disparity [DIAG]: |real_wall − sim_vclock| per matched progress unit
+    """wall_disparity [DIAG]: |real_genuine − sim_vclock| per matched progress unit
     (Stage A4 / K-D20 #6). The recurring sanity metric to drive to ~0 -- surfaces
-    the gap between real's per-unit WALL and the sim's per-unit VCLOCK every run,
-    without gating (a persistent residual is root #6, the sct-model work, not a
-    ladder failure). Both clocks are measured cumulatively from the FIRST matched
-    unit (real: ts − ts0; sim: vclock_now − v0) so a run that does not start at
-    unit 0 still aligns. Keyed on the run's progress axis (data_id for fwdllm,
-    round otherwise). Never fails."""
+    the gap between real's per-unit GENUINE algorithmic time and the sim's per-unit
+    VCLOCK every run, without gating. Real's coordinate is the cumulative intrinsic
+    span (barrier+fedavg+eval) when the aggregator emits ``intrinsic_span_s`` --
+    NOT raw wall, which bundles the inter-round transport artifact the sim omits
+    (principle #1); driving THIS residual to ~0 is the correct #6 target (chasing
+    real's full wall would over-charge the vclock). Falls back to wall ts for async
+    (byte-identical). Both clocks cumulative from the FIRST matched unit. Keyed on
+    the progress axis (data_id for fwdllm, round otherwise). Never fails."""
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                        _progress_axis(real["agg_rounds"])) else "round"
     real_by = _per_progress_last_event(real["agg_rounds"], axis)
     sim_by = _per_progress_last_event(sim["agg_rounds"], axis)
+    # REAL (#6): genuine algorithmic clock when emitted, else raw wall ts.
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    _real_t = ((lambda e: real_coord.get(id(e))) if real_coord is not None
+               else (lambda e: e.get("ts")))
     matched = [k for k in sorted(set(real_by) & set(sim_by))
-               if real_by[k].get("ts") is not None
+               if _real_t(real_by[k]) is not None
                and sim_by[k].get("vclock_now") is not None]
     if len(matched) < 2:
         return {"ok": True, "tier": "DIAG", "status": "SKIP",
-                "note": "fewer than 2 matched units with both real ts and "
+                "note": "fewer than 2 matched units with both real time and "
                         "sim vclock_now"}
-    ts0 = real_by[matched[0]]["ts"]
+    ts0 = _real_t(real_by[matched[0]])
     v0 = sim_by[matched[0]]["vclock_now"]
     residuals, per_unit = [], {}
     for k in matched:
-        real_wall = real_by[k]["ts"] - ts0
+        real_genuine = _real_t(real_by[k]) - ts0
         sim_vclock = sim_by[k]["vclock_now"] - v0
-        resid = abs(real_wall - sim_vclock)
+        resid = abs(real_genuine - sim_vclock)
         residuals.append(resid)
         per_unit[k] = round(resid, 2)
     mean_resid = sum(residuals) / len(residuals)
@@ -2002,6 +2044,7 @@ def wall_disparity(real: dict, sim: dict) -> dict:
         "ok": True,  # DIAG: informational, never gates the ladder
         "tier": "DIAG",
         "axis": axis,
+        "anchor": "intrinsic_span" if real_coord is not None else "wall_ts",
         "mean_abs_disparity_s": round(mean_resid, 2),
         "max_abs_disparity_s": round(max(residuals), 2),
         "n_matched_units": len(residuals),
@@ -2137,8 +2180,17 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
+    # REAL (#6): matched-budget window on real's GENUINE algorithmic clock
+    # (cumulative intrinsic span) when emitted, else raw wall ts (async byte-
+    # identical). _real_time(e) is 0-based cumulative-intrinsic OR ts-real_t0.
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts)
-    final_real_wall = max(real_ts) - real_t0
+    if real_coord is not None:
+        _real_time = lambda e: real_coord.get(id(e))
+        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+    else:
+        _real_time = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
+        final_real_wall = max(real_ts) - real_t0
     V = min(final_sim_vclock, final_real_wall)
     if V <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
@@ -2152,13 +2204,13 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     if axis == "round":
         n_sim = sum(1 for e in sim["agg_rounds"] if (e.get("vclock_now") or 0) <= V + 1e-9)
         n_real = sum(1 for e in real["agg_rounds"]
-                     if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9)
+                     if _real_time(e) is not None and _real_time(e) <= V + 1e-9)
     else:
         sim_units = _per_progress_last_event(sim["agg_rounds"], axis)
         real_units = _per_progress_last_event(real["agg_rounds"], axis)
         n_sim = sum(1 for e in sim_units.values() if (e.get("vclock_now") or 0) <= V + 1e-9)
         n_real = sum(1 for e in real_units.values()
-                     if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9)
+                     if _real_time(e) is not None and _real_time(e) <= V + 1e-9)
     if max(n_sim, n_real, 1) == 0:
         return {"ok": True, "tier": "EXACT", "note": "no commits in V window"}
     rel_diff = abs(n_sim - n_real) / max(n_sim, n_real)
@@ -2190,8 +2242,16 @@ def terminal_state_parity(real: dict, sim: dict,
     real_ts_all = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts_all:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
+    # REAL (#6): matched-budget window on real's GENUINE algorithmic clock (see
+    # total_commits_parity); falls back to wall ts for async (byte-identical).
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts_all)
-    final_real_wall = max(real_ts_all) - real_t0
+    if real_coord is not None:
+        _real_time = lambda e: real_coord.get(id(e))
+        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+    else:
+        _real_time = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
+        final_real_wall = max(real_ts_all) - real_t0
     V = min(final_sim_vclock, final_real_wall)
     if V <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
@@ -2208,7 +2268,7 @@ def terminal_state_parity(real: dict, sim: dict,
     sim_rounds_at_V = {r for r, e in sim_by_round.items()
                        if (e.get("vclock_now") or 0) <= V + 1e-9}
     real_rounds_at_V = {r for r, e in real_by_round.items()
-                        if e.get("ts") is not None and (e["ts"] - real_t0) <= V + 1e-9}
+                        if _real_time(e) is not None and _real_time(e) <= V + 1e-9}
 
     def _trainers(agg_rounds, unit_set):
         ts = set()

@@ -540,7 +540,10 @@ class FedSGDTrainer(Trainer):
                     f"Delayed eval time for trainer "
                     f"{self.trainer_id} by {eval_delay}s. Sleeping for {_delay_s}s."
                 )
-            _delay_s += self._sim_straggler_offset_s()
+            # Returns the BASE modeled delay (identical real↔sim). The B2 straggler
+            # spread is NOT added here -- it belongs in the sct (sim_round_duration_s,
+            # below) so the emitted training_budget_s stays a mode-invariant INPUT
+            # (T2), while the sct still carries the per-trainer dispersion (#6/Root B).
             return _delay_s
         return 0.0
 
@@ -584,11 +587,17 @@ class FedSGDTrainer(Trainer):
         _pre_train_s = _round_start_ts - _phase_entry
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
-        _phase_post_start = time.time()
 
         # emulate delays in training (due to compute resource and/or
         # dataset size and/or network latency)
         _delay_s = self._emulate_training_delay()
+
+        # post_train phase starts AFTER the modeled delay (Root B / #6): real
+        # SLEEPS _delay_s above (the modeled-latency term, compared via
+        # training_budget_s), so stamping here EXCLUDES it -> post_train_s is pure
+        # post-processing, mode-comparable (~0 both modes; sim never slept).
+        # Without this, phase_post_train saw real ~1.14 vs sim 0.0.
+        _phase_post_start = time.time()
 
         # Sim-mode stamps (Batch 1): the modeled round duration is ADDITIVE
         # (real_gpu + D), matching real mode's sleep-D-on-top-of-GPU semantics
@@ -606,7 +615,14 @@ class FedSGDTrainer(Trainer):
             float(getattr(_hp, "sim_wan_transfer_s", 0.0) or 0.0)
             if (self.simulated and _hp is not None) else 0.0
         )
-        self._sim_round_duration_s = _real_gpu_time_s + _delay_s + _wan_s
+        # B2 straggler spread lives HERE (in the sct / modeled round duration),
+        # NOT in _delay_s, so the emitted training_budget_s (the modeled-delay
+        # INPUT) stays identical real↔sim (T2) while the sct still carries the
+        # per-trainer completion dispersion the sync barrier needs (#6/Root B).
+        # sim-only (the offset is 0 in real).
+        self._sim_round_duration_s = (
+            _real_gpu_time_s + _delay_s + self._sim_straggler_offset_s() + _wan_s
+        )
         if self.simulated:
             _leg = self.sim_completion_leg_s
             _base = self._sim_send_ts if self._sim_send_ts is not None else time.time()
@@ -625,16 +641,18 @@ class FedSGDTrainer(Trainer):
                 _stat_utility = float(self._stat_utility)
             except (TypeError, ValueError):
                 _stat_utility = None
-            # Post-compute overhead (delay emulation + telemetry build); the last
-            # trainer-side phase term for the #6 wall decomposition (Stage A1).
+            # Post-compute overhead (telemetry build); the last trainer-side phase
+            # term for the #6 wall decomposition (Stage A1). The modeled delay is
+            # EXCLUDED via the _phase_post_start stamp position (after the delay) --
+            # see Root B note above.
             _post_train_s = time.time() - _phase_post_start
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
-                # real GPU compute + the emulated delay (0 if disabled) + any
-                # sim sct-model folds (B2 straggler spread in _delay_s, B3 WAN) --
-                # NOT a budget-vs-actual quantity (fwdllm has no sleep-to-fill-
-                # budget model); the total modeled wall this round took.
+                # real GPU compute + the emulated base delay (0 if disabled) + the
+                # sim sct-model folds (B2 straggler spread, B3 WAN) -- NOT a
+                # budget-vs-actual quantity (fwdllm has no sleep-to-fill-budget
+                # model); the total modeled wall this round took.
                 sim_round_duration_s=self._sim_round_duration_s,
                 avail_state=self.avl_state.value,
                 dataset_size=self.dataset_size,

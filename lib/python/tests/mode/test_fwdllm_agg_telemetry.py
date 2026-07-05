@@ -233,6 +233,33 @@ class TestAggRoundTelemetry:
         finally:
             telemetry.shutdown()
 
+    def test_intrinsic_span_is_barrier_plus_eval_excludes_fedavg(self, tmp_path):
+        """#6 anchor: intrinsic_span_s = the barrier (MAX committed-cohort
+        duration) + eval_s (commit only), EXCLUDING the FedAvg merge -- it must
+        mirror the sim vclock's composition (barrier sct + eval fold) so the
+        clock-rate rungs anchor REAL like-for-like. A variance-FAIL cycle runs no
+        eval, so intrinsic collapses to exactly the barrier -- which also proves
+        max() (not min/sum) and that fedavg is not folded in."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"],
+                                  var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=5),
+                                              "t2": timedelta(seconds=3)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            # barrier = max(5, 3) = 5; no eval on the fail path; fedavg (stubbed
+            # ~0) is excluded regardless -> intrinsic == the barrier.
+            assert r["intrinsic_span_s"] is not None
+            assert abs(r["intrinsic_span_s"] - 5.0) < 0.5, r
+        finally:
+            telemetry.shutdown()
+
     def test_wall_elapsed_emitted_in_real_mode_sim_rate_none(self, tmp_path):
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:

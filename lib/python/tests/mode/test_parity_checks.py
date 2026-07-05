@@ -213,6 +213,54 @@ class TestThroughputParity:
         assert not r["ok"] and "K10" in r.get("note", "")
 
 
+class TestIntrinsicSpanAnchor:
+    """#6: the clock-rate rungs anchor REAL on `intrinsic_span_s` (genuine
+    algorithmic time = barrier+eval) instead of raw wall ts, which bundles a
+    fixed inter-round transport artifact the sim (correctly) omits. Same run,
+    with vs without the field, must flip the verdict -- proving the anchor IS the
+    fix and that async_cifar10 (no field) is byte-identical (raw-ts fallback)."""
+
+    def _pair(self, with_intrinsic):
+        # 10 committed data_ids. GENUINE work = 20 s/data_id (sim vclock advances
+        # 20/unit). REAL wall carries +15 s/data_id transport artifact (35/unit),
+        # but real's intrinsic_span_s reports the clean 20.
+        real_rounds, sim_rounds = [], []
+        for d in range(1, 11):
+            re = {"event": "agg_round", "round": 1, "ts": float(d * 35),
+                  "data_id": d, "cycle_data_id": d,
+                  "contributing_trainers": ["a"], "staleness": [0],
+                  "agg_goal_count": 1}
+            if with_intrinsic:
+                re["intrinsic_span_s"] = 20.0
+            real_rounds.append(re)
+            sim_rounds.append({"event": "agg_round", "round": 1, "ts": float(d),
+                               "vclock_now": float(d * 20), "data_id": d,
+                               "cycle_data_id": d, "contributing_trainers": ["a"],
+                               "staleness": [0], "agg_goal_count": 1,
+                               "intrinsic_span_s": 20.0})
+        return _agg(agg_rounds=real_rounds), _agg(agg_rounds=sim_rounds)
+
+    def test_intrinsic_anchor_passes(self):
+        real, sim = self._pair(with_intrinsic=True)
+        assert pc.throughput_parity(real, sim, tol_rel=0.05)["ok"]
+        assert pc.per_round_advance_parity(real, sim)["ok"]
+        assert pc.total_commits_parity(real, sim)["ok"]
+        assert pc.terminal_state_parity(real, sim)["ok"]
+        wd = pc.wall_disparity(real, sim)
+        assert wd["anchor"] == "intrinsic_span"
+        assert wd["mean_abs_disparity_s"] < 1.0, wd
+
+    def test_raw_wall_fallback_fails_and_is_byte_identical(self):
+        # Field absent -> real anchors on raw ts (35/unit) vs sim vclock (20/unit)
+        # -> the #6 gap the anchor exists to remove. Also the async_cifar10 path.
+        real, sim = self._pair(with_intrinsic=False)
+        assert not pc.throughput_parity(real, sim, tol_rel=0.05)["ok"]
+        assert not pc.per_round_advance_parity(real, sim)["ok"]
+        wd = pc.wall_disparity(real, sim)
+        assert wd["anchor"] == "wall_ts"
+        assert wd["max_abs_disparity_s"] > 100.0, wd  # 15 s/unit artifact, cumulative
+
+
 class TestSimSpeedup:
     """sim_speedup [DIAG] asserts the principle-#13 invariant: the sim must run
     virtual time at least as fast as physical wall (sim_rate >= 1). K7 sim_rate

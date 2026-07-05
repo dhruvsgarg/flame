@@ -1653,6 +1653,30 @@ class TopAggregator(AsyncTopAgg):
                         f"data_id={self.data_id}"
                     )
                     self._last_vclock_log_wall_ts = time.time()
+
+            # Intrinsic algorithmic span of this cycle (#6 anchor): the GENUINE
+            # per-cycle work the sim charges to the vclock -- the barrier (slowest
+            # committed trainer's intrinsic compute+delay) plus the server eval
+            # (commit cycles only). Must mirror the sim vclock's COMPOSITION exactly
+            # (barrier sct + eval fold): the FedAvg merge is deliberately EXCLUDED
+            # because the sim does NOT charge it to the vclock -- including it made
+            # real intrinsic overshoot sim by ~fedavg×cycles (wall_disparity 5.5->1.6
+            # once dropped). If fedavg is ever folded into the sim vclock, add it
+            # here too. Emitted in BOTH modes so the clock-rate rungs (K2/K3/K3b/K8/
+            # U2 + wall_disparity) anchor REAL on its intrinsic time instead of raw
+            # wall Δts: real's wall bundles a ~constant inter-round transport ARTIFACT
+            # (mqtt re-fetch/redistribute/drain-tail/sleeps) the sim (correctly,
+            # principle #1) omits, which spuriously fails #6. The barrier uses the
+            # trainer INTRINSIC duration (PROP_CLIENT_TASK_TRAIN_DURATION = WALL_SEND-
+            # WALL_RECV, _cycle_speed_s) not the agg-side barrier_wait_s, which reads
+            # ~0 in real because real trainers pipeline (grads pre-queued at dispatch).
+            # max() = the sync barrier (MAX-of-K sct, principle #12).
+            _barrier_span_s = max(_cycle_speed_s) if _cycle_speed_s else None
+            _intrinsic_span_s = (
+                _barrier_span_s + (_eval_s or 0.0)
+                if _barrier_span_s is not None
+                else None
+            )
             try:
                 ev, fields = build_agg_round(
                     round_num=self._round,
@@ -1692,6 +1716,11 @@ class TopAggregator(AsyncTopAgg):
                         "drain_tail_s": _drain_tail_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
                         "eval_s": _eval_s,
+                        # #6 anchor: real's GENUINE per-cycle algorithmic time
+                        # (barrier+fedavg+eval), the like-for-like counterpart to
+                        # the sim's Δvclock. Lets the clock-rate rungs exclude
+                        # real's inter-round transport artifact. See computation above.
+                        "intrinsic_span_s": _intrinsic_span_s,
                         # Speedup metric (§H #13): wall in both modes; sim_rate
                         # = vclock/wall (sim only, None in real). sim_rate < 1
                         # means the sim is a SLOWDOWN (broken, principle #13).

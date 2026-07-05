@@ -133,6 +133,9 @@ class _StampTrainer:
     heavy compute so only the sim-stamp arithmetic is exercised."""
 
     train_with_data_id = FedSGDTrainer.train_with_data_id
+    # train_with_data_id now folds the B2 straggler into the sct (#6/Root B);
+    # no config -> spread 0 -> offset 0 -> additive duration preserved.
+    _sim_straggler_offset_s = FedSGDTrainer._sim_straggler_offset_s
 
     def __init__(self, sim_send_ts, delay_d, leg_s=0.0):
         self.simulated = True

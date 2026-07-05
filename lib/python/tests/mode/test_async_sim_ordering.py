@@ -427,6 +427,26 @@ class TestSendTimeoutReclaimsConcurrencySlot:
 
         assert result == {}
         assert not pacer_called
+
+    def test_sim_vclock_keeps_virtually_recent_end_despite_old_wall(self):
+        """#1c: in sim the abandon-timeout runs on the VCLOCK, not physical wall.
+        A trainer stamped at a small vclock (recent in VIRTUAL time) is NOT
+        reclaimed even though a slow sim has burned >90 physical wall-seconds --
+        which was evicting still-outstanding trainers from all_selected and
+        causing R1 re-dispatch. Contrast test_stale_end_* (wall) which reclaims."""
+        sel = self._stub_selector(stale=True)  # wall-old stamp from the helper...
+        # ...but drive the timeout on the VIRTUAL clock instead: stamp = vclock 5
+        # at dispatch, sim-now = vclock 10 -> delta 5 < SEND_TIMEOUT_WAIT_S (90).
+        sel.all_selected = {self.STALE_END: 5.0}
+        sel._sim_now_s = 10.0  # would come from channel_props["vclock_now"]
+        pacer_called = []
+        sel.pacer = lambda: pacer_called.append(True)
+
+        result = self._call(sel, concurrency=1)
+
+        # Guard held: still in all_selected, concurrency saturated -> short-circuit.
+        assert self.STALE_END in sel.all_selected
+        assert result == {} and not pacer_called
         assert self.STALE_END in sel.all_selected
         assert self.STALE_END in sel.selected_ends["agg"]
 

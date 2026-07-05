@@ -63,6 +63,11 @@ class AsyncOortSelector(AbstractSelector):
         """Initailize instance."""
         super().__init__(**kwargs)
 
+        # #1c: the abandon-timeout clock — set per-select() from
+        # channel_props["vclock_now"] (sim) or left None (real -> wall). See
+        # _abandon_clock_now.
+        self._sim_now_s = None
+
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use != MLFramework.PYTORCH:
             raise NotImplementedError(
@@ -322,6 +327,18 @@ class AsyncOortSelector(AbstractSelector):
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
+
+        # #1c: the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S) must run on the
+        # SAME clock the trainer commits on. In sim that is the virtual clock
+        # (vclock_now, plumbed via channel_props), NOT physical wall: a slow sim
+        # (fwdllm fluxtune sim_rate 0.26) runs ~90 wall-s while only ~7 vclock-s
+        # elapse, so a wall-keyed 90s timeout evicts a still-outstanding trainer
+        # from all_selected -> re-dispatch -> R1 residence violation. Stash the sim
+        # clock so the dispatch STAMP (process_chosen_candidate_dict/_handle_recv_
+        # state) and the CHECK (_handle_send_state) use it consistently. None in
+        # real -> falls back to time.time() -> byte-identical (async_cifar10's fast
+        # sim has vclock≈wall, so it is unaffected either way).
+        self._sim_now_s = channel_props.get("vclock_now")
 
         # TODO: (DG) Is explicit round tracking required here? round =
         # channel_props["round"] if "round" in channel_props else 0
@@ -1392,6 +1409,16 @@ class AsyncOortSelector(AbstractSelector):
 
         return candidates, exploit_end_ids
 
+    def _abandon_clock_now(self) -> float:
+        """Clock for the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S): the
+        VIRTUAL clock in sim (vclock_now stashed per-select), physical wall in
+        real. Keeping the STAMP (all_selected[end]) and the CHECK on the same
+        clock makes the 90s timeout mean 90 *virtual* seconds in sim, so a slow
+        sim no longer evicts a still-outstanding trainer from the re-pick guard
+        (#1c). Real / async_cifar10 fast-sim: unchanged (None -> wall / vclock≈wall)."""
+        sim_now = getattr(self, "_sim_now_s", None)
+        return sim_now if sim_now is not None else time.time()
+
     def _handle_send_state(
         self,
         ends: dict[str, End],
@@ -1425,7 +1452,7 @@ class AsyncOortSelector(AbstractSelector):
         # deadlock this caused).
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
-            current_time_s = time.time()
+            current_time_s = self._abandon_clock_now()  # vclock in sim, wall in real (#1c)
             if end in self.all_selected.keys():
                 # Check again to avoid possible case of race condition
                 # when all_selected has been updated from another
@@ -2010,7 +2037,7 @@ class AsyncOortSelector(AbstractSelector):
 
             for selected_end in selected_ends:
                 # Add to all_selected. {key: end, val: TS epoch (s)}
-                self.all_selected[selected_end] = time.time()
+                self.all_selected[selected_end] = self._abandon_clock_now()  # #1c
             logging.debug(
                 f"self.all_selected {self.all_selected} after combining with "
                 f"selected_ends {selected_ends}"
@@ -2084,7 +2111,7 @@ class AsyncOortSelector(AbstractSelector):
 
         for candidate_end in candidates:
             # Add to all_selected. {key: end, val: TS epoch (s)}
-            self.all_selected[candidate_end] = time.time()
+            self.all_selected[candidate_end] = self._abandon_clock_now()  # #1c
         logging.debug(
             f"self.all_selected {self.all_selected} after combining"
             f" with candidates {candidates}"

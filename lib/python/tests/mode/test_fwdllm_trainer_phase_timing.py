@@ -73,6 +73,9 @@ class _FakeFedSgd:
     + telemetry-emit logic under test runs for real."""
 
     train_with_data_id = FedSgdTrainer.train_with_data_id
+    # train_with_data_id now folds the B2 straggler into the sct (#6/Root B);
+    # no config -> spread 0 -> offset 0 -> phase/duration values preserved.
+    _sim_straggler_offset_s = FedSgdTrainer._sim_straggler_offset_s
 
     def __init__(self, phase_times=None, delay_s=1.5):
         self._round = 7
@@ -129,11 +132,41 @@ class TestTrainWithDataIdEmitsPhases:
             assert ev["weights_to_gpu_s"] == 0.1
             # training_budget_s is the modeled additive delay
             assert ev["training_budget_s"] == 1.5
+            # post_train excludes the delay (stamped after it) -> pure post-proc.
+            assert ev["post_train_s"] >= 0.0 and ev["post_train_s"] < 0.5
             # trainer_phase encodes round/data_id/iteration identity
             assert ev["trainer_phase"] == "7/3/2"
             # pre/post are real non-negative wall slivers
             assert ev["pre_train_s"] >= 0.0
             assert ev["post_train_s"] >= 0.0
+        finally:
+            telemetry.shutdown()
+
+    def test_straggler_in_sct_not_in_training_budget(self, tmp_path):
+        """#6/Root B: the B2 straggler spread is folded into the sct
+        (sim_round_duration_s) but NOT into the emitted training_budget_s -- so
+        training_budget stays a mode-invariant INPUT (T2 passes) while the sync
+        barrier still gets its per-trainer dispersion."""
+        from types import SimpleNamespace
+        telemetry.configure(role="trainer", run_dir=str(tmp_path))
+        try:
+            t = _FakeFedSgd(delay_s=1.5)
+            t.simulated = True
+            t._sim_send_ts = 100.0
+            t.config = SimpleNamespace(
+                hyperparameters=SimpleNamespace(sim_straggler_spread_s=0.9))
+            offset = t._sim_straggler_offset_s()
+            assert offset > 0.0, "t1 should have a non-zero stable offset"
+            t.train_with_data_id()
+
+            ev = [json.loads(l) for l in
+                  (tmp_path / "trainer.jsonl").read_text().splitlines()
+                  if json.loads(l)["event"] == "trainer_round"][0]
+            # training_budget = the BASE delay; straggler EXCLUDED.
+            assert ev["training_budget_s"] == 1.5
+            # sct carries the straggler: duration - budget == gpu(~0) + offset.
+            assert (ev["sim_round_duration_s"] - ev["training_budget_s"]) == \
+                pytest.approx(offset, abs=0.05)
         finally:
             telemetry.shutdown()
 
