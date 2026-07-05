@@ -58,24 +58,35 @@ emergent smoke (was 44.7%); `[SIM_R1_DISPATCH]` fires despite `_release_end_on_r
 (3) **#13 sim_rate** for the sync baselines is near-1 (0.82/0.85) and Root A shows the vclock is correct — the
 residual is a small physical overhead; the severe case (fluxtune 0.26) is **R1-confounded** → fix #1c first.
 
+**UPDATE (2026-07-04 later PM, `run_20260704_2224..2258`, data_id=20): K-D25/K-D26 clock-rate+phase fixes
+VALIDATED on fresh banked pairs — for BOTH sync baselines.** fwdllm rose **44→49 pass**, fwdllm_plus **40→45**:
+the 5 clock-rate rungs (throughput/overhead/per_round base/commits/terminal) + phase all **flipped to PASS**
+exactly as predicted. fwdllm's 4 survivors are benign (2 marginal-KS, 2 mis-applied gpu_budget). fwdllm_plus's 7
+survivors are the #7 selection divergence (eligibility/selection_detail/avail_timebase — real 4.9 vs sim 9.6
+eligible at syn_0), gpu_budget, and a 13-vs-14 total_commits/terminal off-by-one (real capped at
+`max_runtime_s=1800s`, data_id<20; sim finished 20 — a stop-mismatch + boundary, not a bug). **fluxtune sim did
+NOT run** — a startup MQTT join-notify race dropped trainer #379's JOIN → 9/10 ends → async_oort never reached
+`minInitialTrainers=10` → hung with **zero selections** (#14, **now FIXED** — `join()` waits for connect;
+full `tests/` 879-green). fluxtune real is a clean reference (10 ends, data_id=20); re-run the fluxtune sim.
+
 ### Per-baseline ground state
 | baseline | stop | R1 | cadence (V1/V2/g2/U3/S2/conv) | sim_rate | surviving fails | verdict |
 |---|---|---|---|---|---|---|
-| **fwdllm** (sync) | data_id=10 both | **0% PASS** | **all PASS** | 0.82 | #6 clock-RATE family (throughput/commits/terminal + advance/phase rungs now un-skipped), gpu_budget, training_budget | **44/9/21.** Cadence CLEAN; fails all trace to #6 rate gap, no cadence bug |
-| **fwdllm_plus** (sync) | data_id=10 both | 0% PASS | PASS (real completes now) | 0.85 | above + eligibility/selection_detail (real sees 4.9 eligible vs sim 9.6 at syn_0), avail_timebase | **40/12/21.** Real liveness FIXED (Stage C); new open: real/sim selection divergence #7 |
-| **fluxtune** (async) | data_id ≥9 both | **60.4% FAIL** ⛔ | V2 PASS | **0.26** | R1, staleness, selection_detail (chosen 1.68 vs 1.19), avail_composition + #6 family | **39/15/19.** K-D19 R1 fix REFUTED — top blocker |
+| **fwdllm** (sync) | data_id=20 both | **0% PASS** | **all PASS** | ~0.8 | per_round_advance + phase_gpu_compute (marginal KS 0.211/0.257 vs 0.20/0.25, means match 17.85≈17.48 / 1.03≈1.13), gpu_budget_real/sim (~40% overrun **symmetric** both modes — mis-applied invariant, not a divergence) | **49/4/21.** K-D25/K-D26 clock-rate+phase rungs VALIDATED PASS (44→49). Cadence CLEAN; 4 surviving fails all benign |
+| **fwdllm_plus** (sync) | real→wall-cap 1800s (data_id<20); sim→data_id=20 | 0% PASS | **all PASS** | ~0.85 | #7 eligibility/selection_detail/avail_timebase (real 4.9/4.87 vs sim 9.6 eligible/chosen; in_flight 10=10), gpu_budget (symmetric ~40%), total_commits/terminal (13 vs 14 off-by-one, stop-mismatch) | **45/7/21.** Clock-rate rungs VALIDATED PASS (40→45). Fails = #7 + gpu_budget + stop-mismatch boundary; real ~4× slow (#7) |
+| **fluxtune** (async) | real→data_id=20; **sim FAILED to launch** ⛔ | — (no sim) | — | — | **#14 sim join-race: 9/10 ends, no selection** (see below); prior pair: R1 60.4%, staleness, selection_detail, avail_composition | **No valid pair this run** — sim hung at startup. Prior banked pair (`_1721..`): 39/15/19, R1 refuted (#1c) |
 
 ### Parity scoreboard — LATEST vs penultimate (rewrite in place; two columns only)
-| baseline | penultimate (10-data_id, K-D18) | **LATEST (sign-off `_1721..1819`)** | Δpass | key failing rungs |
+| baseline | penultimate (sign-off `_1721..1819`) | **LATEST (`_2224..2258`, data_id=20)** | Δpass | key failing rungs |
 |---|---|---|---|---|
-| **fwdllm** | `0704_022610` · 37/5/32 | **44 / 9 / 21** | +7 (skips −11) | overhead_residual, per_round_advance, throughput, total_commits, terminal_state, training_budget, gpu_budget |
-| **fwdllm_plus** | `0704_033206` (real stalled) · 31/10/32 | **40 / 12 / 21** | +9 | above + eligibility, avail_timebase, selection_detail |
-| **fluxtune** | `0704_020254` (R1 44.7%) · — | **39 / 15 / 19** | first valid pair since K-D19 | **r1_inflight_overlap**, staleness, avail_composition, selection_detail + #6 family |
+| **fwdllm** | `0704_173105` · 44/9/21 | **49 / 4 / 21** | +5 (clock-rate+phase→PASS) | per_round_advance (KS 0.211), phase_gpu_compute (KS 0.257), gpu_budget_real/sim (~40% symmetric overrun) |
+| **fwdllm_plus** | `0704_180511` · 40/12/21 | **45 / 7 / 21** | +5 (clock-rate→PASS) | #7 eligibility/selection_detail/avail_timebase, gpu_budget_real/sim, total_commits/terminal (13 vs 14, stop-mismatch) |
+| **fluxtune** | `0704_181912` · 39/15/19 | **sim FAILED to launch** (#14) | — | no valid pair — 9/10 ends, zero selections (join race) |
 
-*Pass counts rose / skips fell because the 12 rigor-gap rungs (#10) un-skipped; several FAIL on the #6 clock-rate
-gap made observable, not new bugs. **Those fails (throughput/overhead/per_round/total_commits/terminal +
-training_budget/phase_post_train) are now FIXED IN CODE (K-D25), validated on this banked pair — the scoreboard
-counts above are the pre-fix JSON and advance only when the next run is banked.***
+*fwdllm's +5 is the K-D25/K-D26 validation: the 5 clock-rate rungs (throughput/overhead/per_round base/commits/
+terminal) + phase (training_budget/post_train) all flipped to PASS on this fresh `intrinsic_span_s`-carrying
+pair. The 4 survivors are benign — 2 marginal-KS (means match) + the mis-applied gpu_budget invariant (symmetric
+real/sim overrun, not a divergence). **fluxtune could not be scored** — see #14.*
 
 ### Next run — expected per-baseline deltas (K-D25 baseline-agnostic; K-D26 fluxtune-only)
 *A FRESH run is required for ALL THREE — `intrinsic_span_s` is a new agg emit; the checker's #6 anchor only
@@ -93,6 +104,7 @@ fwdllm's 3 marginal rungs (finer KS + boundary washout); fwdllm_plus real ~26 mi
 ### Open issues — master index (OPEN top; 1-line issue + next step)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
+| **#14** ✅ | **fluxtune sim hung at startup — a shared-MQTT join-notify race dropped 1/10 trainers' JOIN → no selection.** `backend/mqtt.py` registers an end ONLY on receipt of a `NotifyType.JOIN` (health-check `ON` is ignored for adds, mqtt.py:243). `join()` fired `notify(JOIN)` fire-and-forget; for trainer #379 the MainThread called `join`→`notify` **2ms before** the async `on_connect` set `_is_connected=True`, so notify returned False ("Cannot send notify: MQTT client not connected") and the JOIN was **dropped with no retry** (subscriptions too). Later STATE_UPDATE notifies don't add an unknown end → #379 invisible → async_oort stuck below `minInitialTrainers=10` → looped `distribute→ends:None→no ends yet`, zero selections, killed by timeout. Real dodged it (all 10 `on_connect` fired before `join`) → flaky startup race, not sim-logic. | all (MQTT) | **FIXED (robust):** `join()` calls `_wait_for_connect()` (spin on `_is_connected`, 10s bound) before subscribe+notify, so both the subscriptions and the JOIN happen post-connect; no-op when already connected (async_cifar10 unchanged). Full `tests/` 879-green. **Re-run the fluxtune sim to bank the pair.** |
 | **#1c** ⭐⭐ | **R1 residence 60.4% — ROOT-CAUSED (K-D26): a physical-wall vs vclock desync in the shared `async_oort` re-pick guard, exposed by the slow sim (#13).** Two paths drop a still-outstanding trainer from `all_selected`: (a) the 90s `SEND_TIMEOUT_WAIT_S` abandon-timeout keyed on `time.time()` (round-1 trigger); (b) the aggregator marks carried grads `KEY_END_STATE=NONE` to keep their slot, and async_oort reads `NONE` as "left" → deletes from `all_selected` (sustained). Both misfire only because wall ≫ vclock. K-D19 misdiagnosed (checked the selection filter, not these deletion paths); K-D17b's NONE hypothesis was right. | fluxtune | **Fix (a) LANDED (K-D26):** vclock-key the abandon-timeout in sim (`_abandon_clock_now`, stamp+check on `vclock_now`); async_cifar10 byte-identical (vclock≈wall). **Fix (b) = the sustained NONE path** is the same slow-sim root → cured by **#13** (tracked), or a follow-up aggregator-side race fix. Re-run confirms how much (a) alone recovers. |
 | **#6** ✅ | clock-rate rungs anchored real on FULL wall (genuine + ~7.7s/round transport artifact) vs sim-vclock — **checker-anchor bug, sim vclock is correct** | all | **FIXED (K-D25):** agg emits `intrinsic_span_s` (barrier+eval, mirrors the sim vclock composition, fedavg excluded); the 5 clock-rate rungs + `wall_disparity` anchor real on the cumulative intrinsic clock (async byte-identical). Validated: throughput 0.47→0.048, overhead 21→1.1, wall_disparity 90→1.6. **Residual:** `per_round_advance` KS + `total_commits`/`terminal_state` off-by-one at 10 data_id (small-sample + B2 straggler boundary) → clear at longer run / B2 calibration. |
 | **~~phase~~** ✅ | `phase_post_train`/`training_budget` compared a mode-dependent phase (real slept the delay; sim carried B2 straggler in its emitted budget) | all | **FIXED (Root B, K-D25):** post_train stamped after the delay (pure post-proc ~0 both modes); B2 straggler moved from `_delay_s` into the sct only, so `training_budget_s` emits the base delay (identical real/sim). Validated 0/0 and 1.14/1.14. |
@@ -245,6 +257,11 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
 ---
 
 ## §G  Fixes landed (what worked — one line each; do not redo)
+- **#14 MQTT join-notify startup race (2026-07-04)** — `backend/mqtt.py` `join()` fired `notify(JOIN)`
+  fire-and-forget; when the MainThread beat the async `on_connect`, the subscriptions AND the JOIN were dropped
+  (notify's own `_is_connected` guard) with no retry → the end never registered → async_oort hung below
+  `minInitialTrainers`. Fix: `join()` calls `_wait_for_connect()` (spin on `_is_connected`, 10s bound) before
+  subscribe+notify; no-op when already connected → async_cifar10/all examples unchanged. Full `tests/` 879-green.
 - **#1c abandon-timeout vclock-key (K-D26, part a)** — the shared `async_oort` 90s `SEND_TIMEOUT_WAIT_S`
   in-flight abandon-timeout was keyed on `time.time()` (physical wall); in a slow sim (wall ≫ vclock) it evicted
   still-outstanding trainers from `all_selected` → R1 re-dispatch. Now runs on the vclock in sim
