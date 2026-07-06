@@ -29,6 +29,82 @@ open roots:
 **NEXT: #15 — decouple real-GPU dispatch from the sct-ordered commit drain** (keep GPUs full like real; drain orders
 commits by sct for the vclock only). This is the one thing keeping fluxtune `sim_rate<1`, and it also lifts #1d.
 
+---
+
+## ⭐ #15 fluxtune `sim_rate=0.50` — ROOT CAUSE FOUND (resume implementation here)
+
+Banked evidence run: `experiments/run_20260705_204619_fluxtune_n10_smoke_syn_0_sim` (+ `_real` pair
+`run_20260705_202448`). Primary drain diagnostic = the `[SIM_GRAD_RECV]` log line
+(`fwdllm_aggregator.py:926`, format `end= sct= T_v= buf_depth= inflight_exp= sel_ends=`).
+
+**ROOT CAUSE (evidence-backed): a circular wait between the drain's `earlier_stuck` gate and hold-to-commit.**
+The drain (`_sim_recv_min_grad`, `fwdllm_aggregator.py:752`) blocks REAL WALL to keep sct-ordered commits: it won't
+commit a buffered grad while an in-flight trainer has a smaller **expected** sct (`_sim_inflight_expected[end]`). But
+that trainer is itself blocked in `recv_wrapper` (hold-to-commit: `_release_end_on_return:1136` returns early on the
+residence path, so its slot frees only when its PREVIOUS grad commits) → it is NOT computing → its grad never comes →
+30s `RECV_TIMEOUT_WAIT_S` failsafe evict. Circular. Steady state (startup is fine — 10 dispatched fresh → parallel;
+collapses at the first commit when trainers start getting held).
+```
+hold-to-commit blocks trainers in recv → gate waits real-wall for NON-COMPUTING in-flight trainers
+  → circular stall (30s failsafe) → ~1974s (81% of 2425s wall) burned → GPU 1.54x (real 3.37x) → sim_rate 0.50
+```
+
+**EVIDENCE:** per-commit real 4.30s wall vs sim 6.60s wall / 3.27s vclock (sim_rate 0.50). GPU concurrency real
+3.37x (98% busy) / sim 1.54x (85%); same GPU work (~3.7-4.0k trainer-s), same ~480s 8-way floor, `max=10` at
+startup (HW sustains 10-wide). Trainer 371 `recv_wrapper` mean **30.9s** sim (max 55) vs **0.01s** median real;
+compute mode-invariant (~3-4s, `_emulate_training_delay=0.000s`). Smoking gun: `[SIM_GRAD_STUCK_EVICT] end=0379
+exp=24.0 bmin=27.0` — drain blocked ~30s for 379 while **6 grads sat ready**; 379's telemetry: blocked in
+`recv_wrapper` **60.39s**, got weights the instant after evict. `buf_depth` **constantly 6**; **524/1093 commits
+(48%) stall >2s = 1974s**. Committed scts already go out of order (11,13,7,5.4,5.5) → the strict order the gate
+blocks for isn't even preserved. Eval is once/data-bin (23/24), not per-iter, but 8.5s BLOCKING (~195s, secondary).
+
+**PROPER FIX — re-dispatch on RETURN** (match real, recv 0.01s), decoupling physical GPU pipelining from the
+virtual in-flight ledger. Returned trainer gets next weights + computes immediately → never idle in recv → the
+in-flight trainer the gate waits for produces its grad in ~4s IN PARALLEL with 7 others → drain commits a BATCH per
+GPU-pass. Keep the gate + sct-order commits (preserve #1d cohort parity); keep the virtual in-flight COUNT /
+selection eligibility (R1) held-to-commit — that's a SEPARATE ledger from physical compute (K-D17b wrongly welded
+them). **Hard constraint (principle #16):** the compute-ahead grad must use the model version real dispatched
+(fedbuff staleness `V'-V`) — real also cycles on return so versions come from the same deterministic commit order
+(K-D29); VERIFY from telemetry, don't assume. **Belt-and-suspenders:** `_sim_inflight_expected[end]` is stamped at
+DISPATCH (`:2819`, `_sst + _budget`, `_sst=self._vclock.now`) assuming immediate compute-start; a held trainer
+hasn't started → expected sct is a fiction. Tie it to actual compute-START and/or bound the wait << 30s.
+
+**IMPLEMENTATION PLAN (resume tomorrow):**
+- **P0 (verify, read-only):** diff per-trainer `MessageType.MODEL_VERSION` (grad's dispatch version) vs the commit
+  sequence, real vs sim (`inc_model_version_per_data_id=True`; staleness log ~`fwdllm_aggregator.py:1170`). Confirm
+  re-dispatch-on-return in sim yields the SAME dispatch-version sequence as real. If not, pin version to the
+  trainer's virtual completion (sct), not physical dispatch — revisit before coding.
+- **P1 (core):** in `_release_end_on_return:1128` async-sim-residence branch, let PHYSICAL re-dispatch (weights send
+  → compute next grad) happen on return, while the SELECTOR's virtual in-flight set (`selected_ends`/`all_selected`,
+  driving R1 + `extra = c - inflight`) stays held to commit via `_sim_hold_busy_slots`. Re-dispatched grad enters
+  the sct buffer with its own `SIM_COMPLETION_TS`; drain keeps committing in sct order. Keep K-D27 two-ledger
+  discipline (`_sim_pending_commit`) — do NOT reintroduce the R1 regression. Fix the `_sim_inflight_expected` stamp.
+- **P2 (tests+telemetry, same change):** `pytest tests/mode -k fwdllm` + `-k parity`; async_cifar10 byte-identical
+  (fwdllm_aggregator-only edit; `_sim_recv_min` untouched, principle #8/#9). Assert `recv_wrapper`→~0, concurrency
+  up; R1 must stay ~0 (bank it — K-D19: not done until smoke shows R1<=2%).
+- **P3 (validate):** `run_sequential.sh --only fluxtune --mode both --delays on --delay-factor 1 --max-data-id 2`.
+  Expect `recv_wrapper`→~0, concurrency→~3.37x+, `sim_rate`→>1, no `[SIM_GRAD_STUCK_EVICT]`, and `cohort_sequence`/
+  `var` parity UNCHANGED (if it moves, the P0 version assumption was wrong).
+- **P4 (docs):** fold into `simulate_fwdllm.md` §G/§K (new K-D34, the two-ledger physical/virtual dispatch split);
+  update this checkpoint.
+
+**Repro (read-only, from `lib/python/examples/fwdllm`):**
+```bash
+FS=$(ls -td experiments/run_*_fluxtune_n10_smoke_syn_0_sim | head -1); AGG=$(ls "$FS"/*aggregator.log|head -1)
+grep "SIM_GRAD_RECV" "$AGG" | python3 -c "import sys;from datetime import datetime as D;p=None;b=w=t=0
+for l in sys.stdin:
+ s=D.strptime(l.split(' | ')[0],'%Y-%m-%d %H:%M:%S,%f').timestamp()
+ if p is not None:
+  d=s-p;t+=1
+  if d>2:b+=1;w+=d
+ p=s
+print(f'commits={t+1} gaps>2s={b} wall_in_waits={w:.0f}s')"          # -> 48% / ~1974s
+grep "SIM_GRAD_STUCK_EVICT" "$AGG"                                    # the head-of-line evict
+grep "SIM_GRAD_RECV" "$AGG" | grep -oE 'buf_depth=[0-9]+' | sort | uniq -c   # buf_depth stuck at 6
+```
+
+---
+
 **DONE (landed + tested):**
 - **P1-1/P1-2/P1-3** — enforced `cohort_sequence` rung (EXACT, ungated), V2 mean-guard, `--max-bin` window. Both
   new rungs correctly FAIL the banked pairs (were invisible). New enforced ref: fwdllm 41/13/21, fwdllm_plus
