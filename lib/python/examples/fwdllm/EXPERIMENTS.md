@@ -81,13 +81,21 @@ accuracy `τ`.** Defaults `W=20`, `τ` per-condition in `experiments.yaml`.
 - **Mechanism:** a poller in the `expt_launch` ticker loop tails the aggregator telemetry, maintains the
   per-`data_id` representative accuracy, and fires when the last `W` distinct completed bins are all ≥ `τ`
   → clean process-group termination.
-- **Health verdicts:** new `CONVERGED` (window satisfied) and `DID_NOT_CONVERGE` (hit a safety cap first),
-  alongside existing `COMPLETED` / `CRASH` / `WALL_CEILING`.
-- **Output:** per-run `converge.json` = time-to-converge in **wall + vclock (sim) + data_id + round**.
-  *This is the Expt-1 metric captured at the source*, not reconstructed post-hoc.
-- **Safety caps stay:** `max_runtime_s` / `max_data_id_progress` bound a non-converging run.
+- **Health verdicts:** `CONVERGED` (window satisfied), `STALLED` (early-terminated, not learning),
+  `DID_NOT_CONVERGE` (hit the wall ceiling still learning), alongside `COMPLETED` / `CRASH` / `WALL_CEILING`.
+- **Output:** per-run `converge.json` = time-to-converge in **wall + vclock (sim) + data_id + round**
+  (or `stall.json` on a stall). *This is the Expt-1 metric captured at the source*, not reconstructed.
+- **Wall ceiling = 48h.** A convergence run is accuracy-governed, so `max_runtime_s` defaults to
+  **172800s (48h)** whenever `--target-acc` is set (a short default would kill a legitimately-learning
+  run). `max_data_id_progress` also bounds it.
+- **Stall guard (early-out).** Terminate BEFORE the 48h ceiling if the run is clearly not learning:
+  **best accuracy hasn't gained ≥ `stall_min_delta` (default 0.01 = 1%) within `stall_window_s`
+  (default 7200s = 2h)** → verdict `STALLED`. Any ≥1% gain resets the 2h clock; convergence is checked
+  first, so a just-converged run is never called stalled. `stall_window_s=0` disables it.
+  *Validated: flat accuracy → STALLED; steady +1%/window → clock resets, keeps running.*
 
-New flags on `run_sequential.sh`: `--target-acc τ`, `--converge-window W`.
+New flags on `run_sequential.sh`: `--target-acc τ`, `--converge-window W`, `--stall-window-s S`,
+`--stall-min-delta D` (all also settable from the registry via `--run-set`).
 
 ---
 
@@ -218,7 +226,8 @@ is defined **once** and every node verifies it launched the same thing.
 
 ### 7.0 Signed-off condition (2026-07-06) — `run_set: main`
 N=100 · K=10 · C=10 (sync) / 30 (fluxtune) · **agg_goal=10 matched across all three**
-· partition alpha=0.1 · syn_0 · delays ON at **delay_factor=2** · target 0.82 / window 20.
+· partition alpha=0.1 · syn_0 · delays ON at **delay_factor=2** · target 0.82 / window 20
+· **wall ceiling 48h · stall-out after 2h with no ≥1% gain**.
 A pre-flight check enforces the agg_goal match; the `condition_fp` (includes delay_factor)
 must match across nodes. **Manual pre-run check:** verify the partition group
 `niid_label_clients=100_alpha=0.1` exists in `agnews_partition.h5` (the gate only warns —
@@ -299,6 +308,10 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-06 (b) — termination policy.** Convergence runs now use a **48h wall ceiling** (was 1h)
+  when `--target-acc` is set, plus a **stall guard**: terminate early (`STALLED`) if best accuracy
+  gains < `stall_min_delta` (1%) within `stall_window_s` (2h). Wired through the watcher, registry
+  defaults, gate (`stall_guard` row + fingerprint), and `--run-set`. Stall logic unit + integration tested.
 - **2026-07-06 — implementation landed & N=10-validated.** WS2 convergence watcher (`converge.json`,
   `CONVERGED`/`DID_NOT_CONVERGE`); WS3-a `comm` telemetry both directions (incl. the async-dispatch
   site); WS3-b forward-pass/perturbation counters; WS4 `compare_baselines.py`; enhanced gate

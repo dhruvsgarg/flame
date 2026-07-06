@@ -110,6 +110,9 @@ MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review
 TARGET_ACC=""          # convergence stop (EXPERIMENTS.md WS2): terminate when the last
                        # --converge-window data bins are ALL >= this test accuracy.
 CONVERGE_WINDOW=""     # W consecutive-bin window for the convergence stop (default 20 when --target-acc set)
+STALL_WINDOW_S=""      # stall guard: terminate EARLY if best acc hasn't gained --stall-min-delta
+                       # within this many wall s (empty/0 = off unless registry/--run-set sets it)
+STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
 DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base) is 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay (simulate_fwdllm.md #12). Fans to BOTH roles via runner.py.
 RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
                   # (single source of truth for multi-node runs; CLI flags override)
@@ -125,7 +128,7 @@ usage() {
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
-  echo "          [--target-acc A] [--converge-window W]" >&2
+  echo "          [--target-acc A] [--converge-window W] [--stall-window-s S] [--stall-min-delta D]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
   exit 2
@@ -151,6 +154,8 @@ while [[ $# -gt 0 ]]; do
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
+    --stall-window-s)       STALL_WINDOW_S="$2"; shift 2 ;;
+    --stall-min-delta)      STALL_MIN_DELTA="$2"; shift 2 ;;
     --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
     --run-set)              RUN_SET="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
@@ -200,6 +205,8 @@ if _dl is not None:
     emit("DELAYS", "on" if _dl in (True, "on", "ON", "true", 1) else "off")
 emit("DELAY_FACTOR", c.get("delay_factor"))
 emit("TARGET_ACC", c.get("target_accuracy")); emit("CONVERGE_WINDOW", c.get("converge_window"))
+emit("STALL_WINDOW_S", c.get("stall_window_s", d.get("stall_window_s")))
+emit("STALL_MIN_DELTA", c.get("stall_min_delta", d.get("stall_min_delta")))
 emit("MAX_RUNTIME_S", c.get("max_runtime_s", d.get("max_runtime_s")))
 emit("MAX_DATA_ID", c.get("max_data_id_progress", d.get("max_data_id_progress")))
 PY
@@ -216,11 +223,21 @@ PY
   [ -z "$TARGET_ACC" ]        && [ -n "${REG_TARGET_ACC:-}" ]      && TARGET_ACC="$REG_TARGET_ACC"
   [ -z "$CONVERGE_WINDOW" ]   && [ -n "${REG_CONVERGE_WINDOW:-}" ] && CONVERGE_WINDOW="$REG_CONVERGE_WINDOW"
   [ -z "$DELAY_FACTOR" ]      && [ -n "${REG_DELAY_FACTOR:-}" ]    && DELAY_FACTOR="$REG_DELAY_FACTOR"
+  [ -z "$STALL_WINDOW_S" ]    && [ -n "${REG_STALL_WINDOW_S:-}" ]  && STALL_WINDOW_S="$REG_STALL_WINDOW_S"
+  [ -z "$STALL_MIN_DELTA" ]   && [ -n "${REG_STALL_MIN_DELTA:-}" ] && STALL_MIN_DELTA="$REG_STALL_MIN_DELTA"
   # non-empty-default knobs: apply registry only when the operator didn't pass the flag
   if [ "$DELAYS_SET" = "0" ] && [ -n "${REG_DELAYS:-}" ]; then DELAYS="$REG_DELAYS"; fi
   if [ "$MAX_RUNTIME_S_SET" = "0" ] && [ -n "${REG_MAX_RUNTIME_S:-}" ]; then MAX_RUNTIME_S="$REG_MAX_RUNTIME_S"; fi
   if [ "$MAX_DATA_ID_SET" = "0" ] && [ -n "${REG_MAX_DATA_ID:-}" ]; then MAX_DATA_ID="$REG_MAX_DATA_ID"; fi
   echo "run-set '$RUN_SET' loaded from experiments.yaml (explicit CLI flags override registry)."
+fi
+
+# A convergence run (target-acc set) is governed by accuracy, not the clock, so a
+# short wall default would kill a legitimately-learning run early. Default the wall
+# ceiling to 48h whenever a target is set and the operator neither passed
+# --max-runtime-s nor got a value from a run-set (still the hardcoded 600 default).
+if [ -n "$TARGET_ACC" ] && [ "$MAX_RUNTIME_S_SET" = "0" ] && [ "$MAX_RUNTIME_S" = "600" ]; then
+  MAX_RUNTIME_S=172800   # 48h
 fi
 
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
@@ -274,6 +291,7 @@ SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
+STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
@@ -293,6 +311,7 @@ PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
+STALL_WINDOW_S = env("STALL_WINDOW_S") or ""; STALL_MIN_DELTA = env("STALL_MIN_DELTA") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
 MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
 MAX_RUNTIME_S_SET = env("MAX_RUNTIME_S_SET") == "1"; MAX_DATA_ID_SET = env("MAX_DATA_ID_SET") == "1"
@@ -489,6 +508,7 @@ _cond = {
     "delays": "on" if delays_on else "off",
     "delay_factor": DELAY_FACTOR or "base",
     "target_acc": TARGET_ACC or "none",
+    "stall_window_s": STALL_WINDOW_S or "off", "stall_min_delta": STALL_MIN_DELTA or "off",
     "converge_window": (CONVERGE_WINDOW or "20") if TARGET_ACC else "none",
     "max_runtime_s": MAX_RUNTIME_S, "max_data_id": MAX_DATA_ID,
 }
@@ -547,6 +567,13 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                note=("convergence stop: last %s bins all >= this (--target-acc). "
                      "unset ⇒ NO accuracy stop, only max_runtime_s/max_data_id"
                      % (CONVERGE_WINDOW or "20"))),
+    # Stall guard: early-terminate a not-learning run before the wall ceiling.
+    scalar_row("stall_guard",
+               (f"<{STALL_MIN_DELTA or '0.01'} acc in {int(float(STALL_WINDOW_S))//3600}h→STALLED"
+                if STALL_WINDOW_S and float(STALL_WINDOW_S) > 0 else "off"),
+               bool(STALL_WINDOW_S), review=True,
+               note=("terminate EARLY if best acc gains < stall_min_delta within stall_window_s "
+                     "(--stall-window-s/--stall-min-delta). off ⇒ run to convergence or the wall ceiling")),
 ]}
 tiers.append(tier1)
 
@@ -748,6 +775,8 @@ after_plot() {
 if [ -n "$TARGET_ACC" ]; then
   export EXPT_TARGET_ACC="$TARGET_ACC"
   export EXPT_CONVERGE_WINDOW="${CONVERGE_WINDOW:-20}"
+  [ -n "$STALL_WINDOW_S" ]  && export EXPT_STALL_WINDOW_S="$STALL_WINDOW_S"
+  [ -n "$STALL_MIN_DELTA" ] && export EXPT_STALL_MIN_DELTA="$STALL_MIN_DELTA"
 fi
 
 # ---- PHASE B: launch each generated cfg sequentially ----
@@ -768,10 +797,10 @@ while IFS=$'\t' read -r name cfg variant budget; do
   # child's non-zero exit). This keeps the per-run line and the summary in
   # agreement, and never calls a mere completion "PASS" (PASS is for checks).
   expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
-  if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ]; then
-    # Convergence stop kills the run's process group -> rc is the SIGKILL code
-    # (expected), NOT a failure. Report the clean verdict without the exit noise.
-    RESULT[$name]="CONVERGED"
+  if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ] || [ "${EXPT_LAST_HEALTH:-}" = "STALLED" ]; then
+    # Watcher kills the run's process group -> rc is the SIGKILL code (expected),
+    # NOT a failure. Report the clean verdict (CONVERGED / STALLED) without exit noise.
+    RESULT[$name]="${EXPT_LAST_HEALTH}"
   elif [ "$rc" -ne 0 ]; then
     # Launcher itself failed: surface that, but keep the health word if the
     # scan caught a more specific cause (e.g. CRASH) than a bare exit code.

@@ -120,14 +120,17 @@ expt_launch() {
   # "EXPT_CONVERGE_WINDOW consecutive data bins all >= EXPT_TARGET_ACC", writes
   # converge.json + kills the run's process group. Absent -> the run is governed
   # only by its own max_runtime_s / max_data_id caps (default behavior unchanged).
-  local watcher_pid="" cj=""
+  local watcher_pid="" cj="" sj=""
   EXPT_LAST_CONVERGE_JSON=""; export EXPT_LAST_CONVERGE_JSON
   if [ -n "${EXPT_TARGET_ACC:-}" ]; then
     cj="$logdir/converge_${label}.json"
+    sj="$logdir/stall_${label}.json"
+    # EXPT_STALL_WINDOW_S=0 (default) disables the stall guard -> pure wall/window run.
     python "$EXPT_RUNNER_DIR/converge_watch.py" \
         --exp-dir "$exp_dir" --marker "$EXPT_LAST_MARKER" \
         --target-acc "$EXPT_TARGET_ACC" --window "${EXPT_CONVERGE_WINDOW:-20}" \
-        --pgid "$run_pid" --converge-json "$cj" \
+        --pgid "$run_pid" --converge-json "$cj" --stall-json "$sj" \
+        --stall-window-s "${EXPT_STALL_WINDOW_S:-0}" --stall-min-delta "${EXPT_STALL_MIN_DELTA:-0.01}" \
         --poll "${EXPT_CONVERGE_POLL_S:-15}" 2>&1 | tee -a "$logdir/expt_runner.log" &
     watcher_pid=$!
     EXPT_LAST_CONVERGE_JSON="$cj"; export EXPT_LAST_CONVERGE_JSON
@@ -139,17 +142,18 @@ expt_launch() {
   kill "$ticker_pid" 2>/dev/null; wait "$ticker_pid" 2>/dev/null
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null; fi
 
-  # Convergence verdict: converge.json exists iff the watcher fired. On a
-  # watcher-driven kill, sweep any orphaned workers so GPU memory frees.
-  EXPT_LAST_CONVERGED=0; export EXPT_LAST_CONVERGED
-  if [ -n "$cj" ] && [ -f "$cj" ]; then
-    EXPT_LAST_CONVERGED=1
+  # Watcher verdict: converge.json = CONVERGED, stall.json = STALLED. On a
+  # watcher-driven kill (either), sweep any orphaned workers so GPU memory frees.
+  EXPT_LAST_CONVERGED=0; EXPT_LAST_STALLED=0; export EXPT_LAST_CONVERGED EXPT_LAST_STALLED
+  [ -n "$cj" ] && [ -f "$cj" ] && EXPT_LAST_CONVERGED=1
+  [ -n "$sj" ] && [ -f "$sj" ] && EXPT_LAST_STALLED=1
+  if [ "$EXPT_LAST_CONVERGED" = "1" ] || [ "$EXPT_LAST_STALLED" = "1" ]; then
     pkill -9 -f "trainer/forward_training" 2>/dev/null || true
     pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
   fi
 
   local elapsed=$(( $(date +%s) - start_ts ))
-  echo "[$(date '+%F %T')] DONE  $label exit=$rc converged=${EXPT_LAST_CONVERGED} (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
+  echo "[$(date '+%F %T')] DONE  $label exit=$rc converged=${EXPT_LAST_CONVERGED} stalled=${EXPT_LAST_STALLED} (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
   EXPT_LAST_RC=$rc
   return $rc
 }
@@ -196,7 +200,9 @@ expt_assert_run() {
   # is CONVERGED; a run that instead ran out its safety caps without the window is
   # DID_NOT_CONVERGE. A crash/wall-ceiling still wins (that's a failure, not a verdict).
   if [ -n "${EXPT_TARGET_ACC:-}" ] && [ "$crash" -eq 0 ] && [ "$wall" -eq 0 ] && [ "$agg" -gt 0 ]; then
-    if [ "${EXPT_LAST_CONVERGED:-0}" = "1" ]; then status="CONVERGED"; else status="DID_NOT_CONVERGE"; fi
+    if [ "${EXPT_LAST_CONVERGED:-0}" = "1" ]; then status="CONVERGED"
+    elif [ "${EXPT_LAST_STALLED:-0}" = "1" ]; then status="STALLED"
+    else status="DID_NOT_CONVERGE"; fi
   fi
   EXPT_LAST_HEALTH="$status"; export EXPT_LAST_HEALTH
   printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s (%s agg log(s))\n" \

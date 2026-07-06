@@ -19,8 +19,13 @@ defaults:
   converge_window: 20          # W : consecutive data bins all >= tau  -> stop
   stop: converge               # converge | data_id | runtime
   # safety caps (a non-converging run is bounded by these -> DID_NOT_CONVERGE)
-  max_runtime_s: 3600
+  max_runtime_s: 172800        # 48h wall ceiling — a convergence run needs room to reach tau
   max_data_id_progress: 9999
+  # stall guard: terminate EARLY (before 48h) if the run is clearly not learning —
+  # best accuracy hasn't improved by >= stall_min_delta within stall_window_s.
+  # -> verdict STALLED (distinct from DID_NOT_CONVERGE). 0 window disables it.
+  stall_window_s: 7200         # 2h with no >=1% accuracy gain ⇒ stalled
+  stall_min_delta: 0.01        # 1% absolute test-accuracy gain counts as progress
 
 # ---- baselines (descriptive; substance lives in _metadata/baselines.yaml) ---
 baselines:

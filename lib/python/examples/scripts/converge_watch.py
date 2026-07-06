@@ -138,6 +138,14 @@ def main() -> int:
     ap.add_argument("--converge-json", required=True)
     ap.add_argument("--poll", type=float, default=15.0)
     ap.add_argument("--grace", type=float, default=20.0)
+    # Stall guard: terminate early (before the wall ceiling) if the run is clearly
+    # not learning — best accuracy has not improved by >= --stall-min-delta within
+    # any --stall-window-s wall window. 0 window ⇒ disabled.
+    ap.add_argument("--stall-window-s", type=float, default=0.0,
+                    help="terminate if best acc hasn't gained --stall-min-delta in this many wall s (0=off)")
+    ap.add_argument("--stall-min-delta", type=float, default=0.01,
+                    help="minimum accuracy gain that counts as progress (default 0.01 = 1%%)")
+    ap.add_argument("--stall-json", default=None, help="written on a stall termination")
     args = ap.parse_args()
 
     try:
@@ -146,7 +154,17 @@ def main() -> int:
         start_wall = time.time()
 
     label = os.path.basename(args.converge_json)
-    print(f"  [converge] watching for {args.window} consecutive bins >= {args.target_acc:.4f} acc", flush=True)
+    _stall_desc = (f"; stall if <{args.stall_min_delta:.3f} acc gain in {args.stall_window_s/3600:.1f}h"
+                   if args.stall_window_s > 0 else "")
+    print(f"  [converge] watching for {args.window} consecutive bins >= {args.target_acc:.4f} acc"
+          f"{_stall_desc}", flush=True)
+
+    # Stall tracking: milestone_acc = best acc at the last recorded improvement;
+    # last_improve_ts = when that improvement happened. A gain >= min_delta resets
+    # the clock; the clock also runs from launch, so a run that produces NO eval
+    # (or no progress) within the window is caught too.
+    milestone_acc = None
+    last_improve_ts = time.time()
 
     while _pgid_alive(args.pgid):
         agg_path = _newest_agg_jsonl(args.exp_dir, args.marker)
@@ -159,11 +177,20 @@ def main() -> int:
             time.sleep(args.poll)
             continue
         streak, first = _trailing_streak(acc_by_bin, args.target_acc)
+        best = max(acc_by_bin.values()) if acc_by_bin else None
+        now = time.time()
+        # progress bookkeeping for the stall guard
+        if best is not None and (milestone_acc is None or best - milestone_acc >= args.stall_min_delta):
+            milestone_acc = best
+            last_improve_ts = now
+        no_improve_s = now - last_improve_ts
         if acc_by_bin:
             top = max(acc_by_bin)
+            _stall_note = (f" no_improve={no_improve_s/60:.0f}m/{args.stall_window_s/60:.0f}m"
+                           if args.stall_window_s > 0 else "")
             print(f"  [converge] bins={len(acc_by_bin)} top_bin={top} "
                   f"streak>={args.target_acc:.3f}={streak}/{args.window} "
-                  f"acc_top={acc_by_bin[top]:.4f}", flush=True)
+                  f"best_acc={best:.4f}{_stall_note}", flush=True)
         if streak >= args.window:
             wall_s = time.time() - start_wall
             payload = {
@@ -187,6 +214,32 @@ def main() -> int:
                 print(f"  [converge] WARN could not write {args.converge_json}: {e}", flush=True)
             print(f"  [{label}] CONVERGED at data_id={max(acc_by_bin)} "
                   f"(wall={wall_s:.0f}s vclock={vclock}) -> terminating run", flush=True)
+            _terminate(args.pgid, args.grace)
+            return 0
+        # Stall termination: no >=min_delta gain within the window (and NOT converged).
+        if args.stall_window_s > 0 and no_improve_s >= args.stall_window_s:
+            payload = {
+                "stalled": True,
+                "reason": "no_accuracy_improvement",
+                "stall_window_s": args.stall_window_s,
+                "stall_min_delta": args.stall_min_delta,
+                "no_improve_s": round(no_improve_s, 1),
+                "best_accuracy": best,
+                "milestone_accuracy": milestone_acc,
+                "target_accuracy": args.target_acc,
+                "n_bins_completed": len(acc_by_bin),
+                "wall_s": round(now - start_wall, 1),
+                "rounds": max_round,
+                "agg_telemetry": agg_path,
+            }
+            if args.stall_json:
+                try:
+                    with open(args.stall_json, "w", encoding="utf-8") as fh:
+                        json.dump(payload, fh, indent=2)
+                except OSError as e:
+                    print(f"  [converge] WARN could not write {args.stall_json}: {e}", flush=True)
+            print(f"  [{label}] STALLED: best_acc={best} gained <{args.stall_min_delta} in "
+                  f"{args.stall_window_s/3600:.1f}h -> terminating run (not learning)", flush=True)
             _terminate(args.pgid, args.grace)
             return 0
         time.sleep(args.poll)
