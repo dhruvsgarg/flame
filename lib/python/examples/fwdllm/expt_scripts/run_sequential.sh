@@ -122,6 +122,7 @@ DRY_RUN=0
 ASSUME_YES=0
 FORCE=0
 SHOW_ALL=0
+CLEAN=0           # --clean: auto-kill stray workers from a prior run (default: abort if dirty)
 
 usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
@@ -130,7 +131,9 @@ usage() {
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S] [--stall-min-delta D]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
-  echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
+  echo "          [--dry-run] [--yes] [--force] [--show-all] [--clean]" >&2
+  echo "    --clean  auto-kill stray FL workers from a prior/crashed run before each" >&2
+  echo "             launch (default: verify clean & ABORT if the node is dirty)." >&2
   exit 2
 }
 
@@ -165,6 +168,7 @@ while [[ $# -gt 0 ]]; do
     --yes)                  ASSUME_YES=1; shift ;;
     --force)                FORCE=1; shift ;;
     --show-all)             SHOW_ALL=1; shift ;;
+    --clean)                CLEAN=1; shift ;;
     *) echo "ERROR: unknown arg '$1'" >&2; usage ;;
   esac
 done
@@ -784,8 +788,32 @@ declare -A RESULT DURATION_S
 ORDERED_KEYS=()
 STOP_ALL=0
 cd "$REPO_ROOT" || exit 1
+
+# Backstop trap for Ctrl+C landing OUTSIDE a run (between baselines, after-hooks);
+# expt_launch installs its own thorough handler during each run. Sweep + exit.
+_rs_interrupt() {
+  trap - INT TERM
+  echo "" >&2
+  echo "[$(date '+%F %T')] INTERRUPT — aborting run-set, sweeping any workers ..." >&2
+  pkill -TERM -f 'flame.launch.run_experiment' 2>/dev/null || true
+  pkill -9 -f 'trainer/forward_training'  2>/dev/null || true
+  pkill -9 -f 'trainer/pytorch/main.py'   2>/dev/null || true
+  pkill -9 -f 'aggregator/pytorch/main_'  2>/dev/null || true
+  pkill -9 -f converge_watch.py           2>/dev/null || true
+  exit 130
+}
+trap _rs_interrupt INT TERM
+
+[ "$CLEAN" = "1" ] && export EXPT_AUTOCLEAN=1   # --clean -> preflight kills stragglers instead of aborting
 while IFS=$'\t' read -r name cfg variant budget; do
   [ -n "$name" ] || continue
+  trap _rs_interrupt INT TERM   # re-arm: expt_launch clears its trap on return
+  # Clean-slate guard: refuse to launch on top of a prior run's stray workers.
+  if ! expt_assert_clean_slate "$name"; then
+    RESULT[$name]="DIRTY_ABORT"; ORDERED_KEYS+=("$name"); DURATION_S[$name]=0
+    echo "  [$name] aborting: node not clean (use --clean to auto-kill stragglers)." >&2
+    STOP_ALL=1; break
+  fi
   start_ts=$(date +%s)
   expt_launch "$name" "$cfg" "$EXAMPLE_DIR" "$budget" 1 "$LOGDIR"
   rc=$?

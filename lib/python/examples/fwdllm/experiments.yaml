@@ -41,7 +41,7 @@ run_sets:
       pure reducers over these run dirs (no new GPU runs). One run per baseline.
     baselines: [fwdllm, fwdllm_plus, fluxtune]
     # Active condition = the real comparison (operator-signed-off 2026-07-06):
-    # N=100, 82% target, syn_0 (Phase 1), data heterogeneity alpha=0.1, modeled
+    # N=100, 82% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
     # mobile-latency delays ON at delay_factor=2. agg_goal MATCHES across all three
     # baselines (=10); fluxtune's concurrency C=30 (async) while sync baselines C=10.
     condition:
@@ -51,7 +51,7 @@ run_sets:
       # agg_goal is fanned from C.sync -> 10 for EVERY baseline (matched across
       # baselines, per sign-off). fluxtune therefore uses agg_goal=10 (NOT its
       # native fedbuff 3) with C=30. A pre-flight check enforces the match.
-      partition_method: niid_label_clients=100_alpha=0.1   # data heterogeneity 0.1
+      partition_method: niid_label_clients=100_alpha=1     # data heterogeneity alpha=1 (was 0.1)
       avail_trace: syn_0          # 100% available (Phase 1); -> mobiperf_* at Phase 2
       delays: on                  # enable_training_delays, matched both sides (K-D8)
       delay_factor: 2             # divides the yaml base compute-latency delay (full/2) — mobile-latency model

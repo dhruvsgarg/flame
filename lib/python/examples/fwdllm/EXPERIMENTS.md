@@ -1,7 +1,7 @@
 # FLUXTUNE vs FWDLLM / FWDLLM_PLUS — experiment design (living doc)
 
 **Status:** Tooling **IMPLEMENTED & validated end-to-end at N=10** (2026-07-06). Signed-off
-`main` condition (N=100, 82%, syn_0, α=0.1, delay_factor=2, agg_goal=10 matched) is loaded and
+`main` condition (N=100, 82%, syn_0, α=1, delay_factor=2, agg_goal=10 matched) is loaded and
 gated; **N=100 real convergence runs are the next action**.
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail`
 
@@ -226,11 +226,11 @@ is defined **once** and every node verifies it launched the same thing.
 
 ### 7.0 Signed-off condition (2026-07-06) — `run_set: main`
 N=100 · K=10 · C=10 (sync) / 30 (fluxtune) · **agg_goal=10 matched across all three**
-· partition alpha=0.1 · syn_0 · delays ON at **delay_factor=2** · target 0.82 / window 20
+· partition alpha=1 · syn_0 · delays ON at **delay_factor=2** · target 0.82 / window 20
 · **wall ceiling 48h · stall-out after 2h with no ≥1% gain**.
 A pre-flight check enforces the agg_goal match; the `condition_fp` (includes delay_factor)
 must match across nodes. **Manual pre-run check:** verify the partition group
-`niid_label_clients=100_alpha=0.1` exists in `agnews_partition.h5` (the gate only warns —
+`niid_label_clients=100_alpha=1` exists in `agnews_partition.h5` (the gate only warns —
 it can't read the H5 from the launch env) — a missing group crashes all 100 trainers.
 
 ### 7.1 Baseline defaults — REVIEW before the first real run
@@ -258,22 +258,27 @@ cd lib/python/examples/fwdllm/expt_scripts
 bash run_sequential.sh --run-set main --mode real --yes
 ```
 
-### 7.3 Two-node run (split baselines, ONE source of truth)
-Both nodes read the SAME condition from `experiments.yaml` via `--run-set main`;
+### 7.3 Multi-node run (split baselines, ONE source of truth)
+All nodes read the SAME condition from `experiments.yaml` via `--run-set main`;
 only `--only` differs. **The gate prints `condition_fp` — it MUST be identical on
-both nodes.** If the two fingerprints differ, a knob was mistyped: stop and fix.
+every node.** If fingerprints differ, a knob was mistyped: stop and fix.
 
+**Three-node run (one baseline per node) — pass `--clean` so each node auto-clears
+any stray workers from a prior run before launching:**
 ```bash
 # node A
-bash run_sequential.sh --run-set main --only fwdllm,fwdllm_plus --mode real --yes
-# node B (shared filesystem: run dirs land in the same experiments/)
-bash run_sequential.sh --run-set main --only fluxtune --mode real --yes
+bash run_sequential.sh --run-set main --only fwdllm       --mode real --clean --yes
+# node B
+bash run_sequential.sh --run-set main --only fwdllm_plus  --mode real --clean --yes
+# node C  (shared filesystem: run dirs land in the same experiments/)
+bash run_sequential.sh --run-set main --only fluxtune     --mode real --clean --yes
 ```
 Pre-run checklist (the gate does most of this — eyeball, don't skip):
-1. `condition_fp` identical across nodes.
+1. `condition_fp` identical across nodes (expect `04d64814` for the current `main`).
 2. tier ② `mode/selector/optim` match the baseline table above (right algorithm per baseline).
-3. `target_acc`, `trace`, `part` are the intended values (🟢 = from flag/registry).
+3. `target_acc`, `trace`, `part` are the intended values (🟢 = from flag/registry); `part` = `niid_label_clients=100_alpha=1`.
 4. no ✗ pre-flight checks (a ⚠ on the niid partition group just says "verify it exists").
+5. `[<baseline>] clean slate verified` printed before launch (the clean-slate guard, §7.6).
 
 ### 7.4 After the runs — compare
 ```bash
@@ -287,6 +292,34 @@ shared axes (N/partition/trace) disagree — the post-hoc twin of `condition_fp`
 `CONVERGED` (window met, `converge.json` written) or `DID_NOT_CONVERGE` (hit a
 safety cap). `--run-set main` sets these from the registry, so you rarely pass them.
 
+### 7.6 Stopping a run & the clean-slate guard
+The run's trainers/aggregator run in their **own process group** (so the watcher
+can signal the whole tree), which means a bare terminal **Ctrl+C would not reach
+them**. `run_sequential.sh`/`expt_runner.sh` now install a **SIGINT/SIGTERM trap**:
+one Ctrl+C tears down the run's process group + the convergence watcher
+(`converge_watch.py`) + the progress ticker, escalates SIGTERM→SIGKILL after a
+short grace (`EXPT_INT_GRACE_S`, default 5s), sweeps stragglers, and frees GPU/RAM.
+
+**Manual teardown** (if a run was killed the wrong way and left orphans):
+```bash
+pkill -TERM -f 'flame.launch.run_experiment'; sleep 3
+pkill -9 -f 'trainer/forward_training'; pkill -9 -f 'trainer/pytorch/main.py'
+pkill -9 -f 'aggregator/pytorch/main_';  pkill -9 -f converge_watch.py
+pkill -9 -f run_sequential.sh
+# verify clean (want: nothing, GPU ~0 MiB)
+pgrep -af -u "$USER" -f 'run_experiment|forward_training|trainer/pytorch/main.py|aggregator/pytorch/main_|converge_watch.py' || echo clean
+nvidia-smi --query-gpu=index,memory.used --format=csv
+```
+
+**Clean-slate guard (`expt_assert_clean_slate`).** Before every launch the runner
+checks for stray FL workers (own procs only) and residual GPU memory:
+- **default:** if the node is dirty it **ABORTS** and prints the kill command (never
+  nukes a process you didn't sign off on — safe on shared boxes);
+- **`--clean`** (or `EXPT_AUTOCLEAN=1`): kills the stragglers, re-verifies, and only
+  aborts if still dirty;
+- `EXPT_GPU_FREE_MB` (default 500) warns on residual GPU memory; `EXPT_GPU_STRICT=1`
+  turns that warning into an abort.
+
 ---
 
 ## 8. Files & entry points
@@ -295,7 +328,7 @@ safety cap). `--run-set main` sets these from the registry, so you rarely pass t
 |---|---|
 | [`experiments.yaml`](experiments.yaml) | machine registry — run-sets, conditions, analyses (source of truth for *what runs*) |
 | [`expt_scripts/run_sequential.sh`](expt_scripts/run_sequential.sh) | launcher — `--run-set`, condition_fp gate, tier ② internals, agg_goal-match check, convergence flags |
-| [`../scripts/expt_runner.sh`](../scripts/expt_runner.sh) | shared harness — `expt_launch` (arms watcher), `expt_assert_run` (`CONVERGED`/`DID_NOT_CONVERGE`) |
+| [`../scripts/expt_runner.sh`](../scripts/expt_runner.sh) | shared harness — `expt_launch` (arms watcher + SIGINT/SIGTERM teardown), `expt_assert_clean_slate` (pre-launch guard), `expt_assert_run` (`CONVERGED`/`DID_NOT_CONVERGE`) |
 | [`../scripts/converge_watch.py`](../scripts/converge_watch.py) | WS2 side-car — polls `agg_eval`, writes `converge.json`, kills the run on convergence |
 | [`expt_scripts/compare_baselines.py`](expt_scripts/compare_baselines.py) | WS4 reducer — 5-experiment table/CSV + overlay plots + mix-guard |
 | `flame/telemetry/events.py` | `build_comm` (WS3-a) |
@@ -308,6 +341,12 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-06 (c) — teardown, clean-slate guard, alpha=1.** Ctrl+C/SIGTERM now cleanly tears
+  down the whole run (own process group) + watcher + ticker and frees GPU/RAM (was: orphaned
+  workers, forever-looping ticker). Added `expt_assert_clean_slate` pre-launch guard (`--clean` /
+  `EXPT_AUTOCLEAN`) so a run never starts on top of a prior run's stragglers. Manual teardown +
+  guard documented in §7.6. **`main` condition partition changed alpha=0.1 → alpha=1** (base-config
+  default; group present in `agnews_partition.h5`); `condition_fp` is now `04d64814`.
 - **2026-07-06 (b) — termination policy.** Convergence runs now use a **48h wall ceiling** (was 1h)
   when `--target-acc` is set, plus a **stall guard**: terminate early (`STALLED`) if best accuracy
   gains < `stall_min_delta` (1%) within `stall_window_s` (2h). Wired through the watcher, registry

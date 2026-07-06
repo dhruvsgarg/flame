@@ -70,6 +70,71 @@ expt_pin_pythonpath() {
   export PYTHONPATH="$repo_root/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 }
 
+# FL worker process patterns — single source of truth for interrupt teardown and
+# the clean-slate preflight (run orchestrator, trainers, aggregator, watcher).
+EXPT_WORKER_PATS=(
+  'flame.launch.run_experiment'
+  'trainer/forward_training'
+  'trainer/pytorch/main.py'
+  'aggregator/pytorch/main_'
+  'converge_watch.py'
+)
+
+# expt_assert_clean_slate [label] -- refuse to launch on top of stray FL workers
+# from a prior/crashed/Ctrl+C'd run (own procs only). EXPT_AUTOCLEAN=1 kills them
+# and re-checks; default ABORTS and prints the kill command. Returns 1 if dirty.
+# EXPT_GPU_FREE_MB (default 500) warns on residual GPU memory; EXPT_GPU_STRICT=1 aborts.
+expt_assert_clean_slate() {
+  local label="${1:-preflight}" uid; uid="$(id -u)"
+  _ecs_scan() {
+    local p pids out=""
+    for p in "${EXPT_WORKER_PATS[@]}"; do
+      pids="$(pgrep -u "$uid" -f "$p" 2>/dev/null | tr '\n' ' ')"
+      [ -n "$pids" ] && out+="    ${p} -> ${pids}\n"
+    done
+    printf '%b' "$out"
+  }
+  local dirty; dirty="$(_ecs_scan)"
+  if [ -n "$dirty" ]; then
+    echo "  [$label] NOT CLEAN — stray FL workers from a previous run:" >&2
+    printf '%b' "$dirty" >&2
+    if [ "${EXPT_AUTOCLEAN:-0}" = "1" ]; then
+      echo "  [$label] EXPT_AUTOCLEAN=1 → killing and re-checking ..." >&2
+      # TERM the orchestrator first (lets it tear down its own group), then KILL all.
+      pkill -TERM -u "$uid" -f 'flame.launch.run_experiment' 2>/dev/null || true
+      sleep "${EXPT_CLEAN_GRACE_S:-3}"
+      local p
+      for p in "${EXPT_WORKER_PATS[@]}"; do
+        pkill -9 -u "$uid" -f "$p" 2>/dev/null || true
+      done
+      sleep 2
+      dirty="$(_ecs_scan)"
+      if [ -n "$dirty" ]; then
+        echo "  [$label] STILL NOT CLEAN after autoclean — aborting:" >&2
+        printf '%b' "$dirty" >&2; return 1
+      fi
+      echo "  [$label] cleaned." >&2
+    else
+      echo "  [$label] refusing to launch. Clean it, or re-run with EXPT_AUTOCLEAN=1 (or --clean):" >&2
+      echo "      pkill -TERM -f 'flame.launch.run_experiment'; sleep 3; pkill -9 -f 'trainer/forward_training'; pkill -9 -f 'trainer/pytorch/main.py'; pkill -9 -f 'aggregator/pytorch/main_'; pkill -9 -f converge_watch.py" >&2
+      return 1
+    fi
+  fi
+  # Residual GPU memory here is a peer's job (your workers are gone) -> warn only.
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local maxused; maxused="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | sort -n | tail -1)"
+    local thresh="${EXPT_GPU_FREE_MB:-500}"
+    if [ -n "$maxused" ] && [ "$maxused" -gt "$thresh" ] 2>/dev/null; then
+      echo "  [$label] WARNING: a GPU shows ${maxused}MB used (> ${thresh}MB) — a peer job may be resident." >&2
+      if [ "${EXPT_GPU_STRICT:-0}" = "1" ]; then
+        echo "  [$label] EXPT_GPU_STRICT=1 → aborting." >&2; return 1
+      fi
+    fi
+  fi
+  echo "  [$label] clean slate verified." >&2
+  return 0
+}
+
 # expt_launch label cfg example_dir budget_s n_exps logdir [experiments_dir]
 # Runs one flame experiment-config file in the foreground with a 30s progress
 # ticker (elapsed/remaining/percent + how many run_* dirs have appeared). Sets
@@ -87,7 +152,10 @@ expt_launch() {
 
   echo "[$(date '+%F %T')] START $label ($n_exps exp(s), ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
 
-  # Background progress ticker.
+  # Progress ticker in its OWN process group (set -m) so the interrupt handler
+  # kills the whole tree (subshell + its sleep child) via kill -<pgid>; otherwise
+  # the orphaned sleep lingers.
+  set -m
   (
     while true; do
       sleep 30
@@ -105,6 +173,7 @@ expt_launch() {
     done
   ) &
   local ticker_pid=$!
+  set +m
 
   # Launch the run in its OWN process group (set -m -> bg job's pgid == its pid;
   # run_experiment's Popen children inherit it, no setsid — same pattern as
@@ -136,10 +205,37 @@ expt_launch() {
     EXPT_LAST_CONVERGE_JSON="$cj"; export EXPT_LAST_CONVERGE_JSON
   fi
 
+  # Ctrl+C/SIGTERM teardown: the run is in its OWN process group (set -m) so a
+  # terminal SIGINT never reaches it — without this trap it (and the watcher and
+  # ticker) would orphan and keep the GPU pinned. TERM run group + watcher +
+  # ticker, escalate to KILL after a grace, sweep stragglers, exit 130.
+  _expt_interrupt() {
+    trap - INT TERM
+    echo "" >&2
+    echo "[$(date '+%F %T')] INTERRUPT — tearing down '$label' (run pgid=$run_pid) ..." >&2
+    kill -TERM -"$run_pid" 2>/dev/null || true
+    [ -n "$ticker_pid" ] && kill -TERM -"$ticker_pid" 2>/dev/null    # ticker group (subshell + sleep)
+    # $watcher_pid is the tee of the `converge_watch.py | tee` pipeline, so also
+    # kill the poller by name.
+    [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
+    pkill -TERM -f converge_watch.py 2>/dev/null || true
+    sleep "${EXPT_INT_GRACE_S:-5}"
+    kill -KILL -"$run_pid" 2>/dev/null || true
+    [ -n "$ticker_pid" ] && kill -KILL -"$ticker_pid" 2>/dev/null
+    pkill -9 -f 'trainer/forward_training'  2>/dev/null || true
+    pkill -9 -f 'trainer/pytorch/main.py'   2>/dev/null || true
+    pkill -9 -f 'aggregator/pytorch/main_'  2>/dev/null || true
+    pkill -9 -f converge_watch.py           2>/dev/null || true
+    echo "[$(date '+%F %T')] INTERRUPT — teardown complete for '$label'. GPU/RAM freed." >&2
+    exit 130
+  }
+  trap _expt_interrupt INT TERM
+
   wait "$run_pid"
   local rc=$?
+  trap - INT TERM
 
-  kill "$ticker_pid" 2>/dev/null; wait "$ticker_pid" 2>/dev/null
+  kill -"$ticker_pid" 2>/dev/null; wait "$ticker_pid" 2>/dev/null   # ticker GROUP, so its sleep child dies too
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null; fi
 
   # Watcher verdict: converge.json = CONVERGED, stall.json = STALLED. On a
