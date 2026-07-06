@@ -155,6 +155,7 @@ class ConfigGenerator:
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
         config["hyperparameters"]["training_delay_enabled"] = training_delay_enabled
+        config["hyperparameters"]["satellite_index"] = trainer_id - 1
 
         # Add availability traces
         if availability_mode.startswith("mobiperf"):

@@ -295,6 +295,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     inc_model_version_per_data_id: t.Optional[bool] = Field(
         alias="incModelVersionPerDataId", default=False
     )
+    satellite_coordinates_path: t.Optional[str]=None
+    satellite_index: t.Optional[int]=None
 
 
 class Groups(FlameSchema):

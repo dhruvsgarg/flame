@@ -32,6 +32,7 @@ import threading
 import time
 import math
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -162,6 +163,12 @@ class PyTorchCifar10Trainer(Trainer):
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+
+        # Add satellite coordinates
+        self.satellite_index = int(self.config.hyperparameters.satellite_index)
+        coords_path = self.config.hyperparameters.satellite_coordinates_path
+        if (coords_path):
+             self.coords = np.load(coords_path)["coords"]
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -462,7 +469,7 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
         dataset = CIFAR10(
-            "/home/dgarg39/flame/lib/python/examples/async_cifar10/data",
+            "lib/python/examples/async_cifar10/data",
             train=True,
             download=True,
             transform=transform_train,
@@ -774,6 +781,13 @@ class PyTorchCifar10Trainer(Trainer):
         )
         _cycle_start = time.time()
 
+        # Find current location
+        elapsed_s = self._sim_now()
+        timestep = min(int(elapsed_s), self.coords.shape[0]-1)
+        lat = self.coords[timestep, self.satellite_index, 0]
+        lon = self.coords[timestep, self.satellite_index, 1]
+        logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
+
         total_batches_processed = 0
         final_loss = None
         self._grad_norm_epoch1 = None
@@ -906,6 +920,8 @@ class PyTorchCifar10Trainer(Trainer):
                     "sleep_s": _remaining_time,
                     "post_train_s": _post_train_s,
                     **getattr(self, "_phase_times", {}),
+                    "lat": lat,
+                    "lon": lon
                 },
             )
             telemetry.emit(ev, **fields)
