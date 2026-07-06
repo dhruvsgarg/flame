@@ -8,6 +8,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# --- forward-pass accounting (EXPERIMENTS.md WS3-b) -------------------------
+# Each trainer runs in its OWN process, so these module-level counters are
+# per-client CUMULATIVE. The three calculate_jvp* helpers below are the only
+# places the functional model is actually evaluated (a "forward pass"):
+#   calculate_jvp                      -> 2 passes (loss + terbulence_loss) = 1 scored perturbation
+#   calculate_jvp_before_actual_update -> 1 pass
+#   calculate_jvp_after_actual_update  -> 1 pass
+# FedSgdTrainer reads fwd_pass_counts() into trainer_round telemetry (per-
+# iteration delta + cumulative), giving Experiment 3 a hardware-independent
+# compute denominator immune to the 8-GPU contention confound. Pure counters:
+# no behavior change, zero cost when unread.
+_FWD_PASSES = 0     # total forward passes (func evaluations) this trainer
+_JVP_EVALS = 0      # total calculate_jvp() calls (= perturbations scored)
+
+
+def fwd_pass_counts() -> Tuple[int, int]:
+    """(forward_passes, jvp_evals) cumulative for THIS trainer process."""
+    return _FWD_PASSES, _JVP_EVALS
+
 
 def _get_loss(x: torch.Tensor, t: torch.Tensor, num_classes: int = 10) -> torch.Tensor:
     """Compute cross-entropy loss.
@@ -80,6 +99,9 @@ def calculate_jvp(func, params, v, trainable_idx=None):
     ~98.5% frozen backbone twice per perturbation (1.26x, -251MB measured).
     None => legacy all-param path (byte-identical to before).
     """
+    global _FWD_PASSES, _JVP_EVALS
+    _FWD_PASSES += 2   # loss + terbulence_loss forward passes below
+    _JVP_EVALS += 1
     h = 0.01
     with torch.no_grad(), autocast():
         if trainable_idx is None:
@@ -103,6 +125,8 @@ def calculate_jvp_after_actual_update(func, params, v, jvp_scalar):
     """
     Calculations Jacobian-vector product using numerical differentiation
     """
+    global _FWD_PASSES
+    _FWD_PASSES += 1
     h = 0.01 # learning rate factor
     with torch.no_grad(), autocast():
         loss = func(tuple([params[i] - h * jvp_scalar * v[i] for i in range(len(params))]))
@@ -112,6 +136,8 @@ def calculate_jvp_before_actual_update(func, params):
     """
     Calculations Jacobian-vector product using numerical differentiation
     """
+    global _FWD_PASSES
+    _FWD_PASSES += 1
     with torch.no_grad(), autocast():
         loss = func(tuple([params[i] for i in range(len(params))]))
     return loss

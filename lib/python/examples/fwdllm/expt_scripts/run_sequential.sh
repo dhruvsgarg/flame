@@ -107,7 +107,12 @@ AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
+TARGET_ACC=""          # convergence stop (EXPERIMENTS.md WS2): terminate when the last
+                       # --converge-window data bins are ALL >= this test accuracy.
+CONVERGE_WINDOW=""     # W consecutive-bin window for the convergence stop (default 20 when --target-acc set)
 DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base) is 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay (simulate_fwdllm.md #12). Fans to BOTH roles via runner.py.
+RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
+                  # (single source of truth for multi-node runs; CLI flags override)
 ONLY=""
 AFTER=""          # comma list of post-launch hooks: parity,sanity,plot (see after_* below)
 DRY_RUN=0
@@ -120,7 +125,8 @@ usage() {
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
-  echo "          [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
+  echo "          [--target-acc A] [--converge-window W]" >&2
+  echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all]" >&2
   exit 2
 }
@@ -143,7 +149,10 @@ while [[ $# -gt 0 ]]; do
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
+    --target-acc)           TARGET_ACC="$2"; shift 2 ;;
+    --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
     --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
+    --run-set)              RUN_SET="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
     --after)                AFTER="$2"; shift 2 ;;
     --stop-on-fail)         STOP_ON_FAIL=1; shift ;;
@@ -156,6 +165,63 @@ while [[ $# -gt 0 ]]; do
 done
 case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (got '$MODE')" >&2; exit 2 ;; esac
 case "$DELAYS" in on|off) ;; *) echo "ERROR: --delays must be on|off (got '$DELAYS')" >&2; exit 2 ;; esac
+
+# --run-set NAME: pull the SHARED condition from experiments.yaml so every node in
+# a multi-node run launches the SAME condition from ONE source of truth — only
+# --only (the baseline subset) differs per node. Explicit CLI flags still WIN;
+# the registry only fills knobs the operator left unset. Combined with the
+# condition_fp printed in the gate, this is the anti-misconfig backbone: define
+# the condition once, verify the fingerprint matches across nodes.
+if [ -n "$RUN_SET" ]; then
+  REG="$(EXAMPLE_DIR="$EXAMPLE_DIR" RUN_SET="$RUN_SET" python3 - <<'PY'
+import os, sys, yaml
+p = os.path.join(os.environ["EXAMPLE_DIR"], "experiments.yaml")
+try:
+    reg = yaml.safe_load(open(p, encoding="utf-8"))
+except Exception as e:
+    sys.stderr.write(f"ERROR: cannot read {p}: {e}\n"); sys.exit(3)
+rs = (reg.get("run_sets") or {}).get(os.environ["RUN_SET"])
+if not rs:
+    valid = list((reg.get("run_sets") or {}).keys())
+    sys.stderr.write(f"ERROR: run_set '{os.environ['RUN_SET']}' not in {p}. Valid: {valid}\n"); sys.exit(3)
+c = rs.get("condition", {}) or {}
+d = reg.get("defaults", {}) or {}
+C = c.get("C", {})
+def emit(k, v):
+    if v is not None: print(f"REG_{k}={v}")
+emit("N", c.get("N")); emit("K", c.get("K"))
+if isinstance(C, dict):
+    emit("C_SYNC", C.get("sync")); emit("C_ASYNC", C.get("async"))
+elif C not in (None, {}):
+    emit("C_SYNC", C); emit("C_ASYNC", C)
+emit("PART", c.get("partition_method")); emit("TRACE", c.get("avail_trace"))
+_dl = c.get("delays")
+if _dl is not None:
+    emit("DELAYS", "on" if _dl in (True, "on", "ON", "true", 1) else "off")
+emit("DELAY_FACTOR", c.get("delay_factor"))
+emit("TARGET_ACC", c.get("target_accuracy")); emit("CONVERGE_WINDOW", c.get("converge_window"))
+emit("MAX_RUNTIME_S", c.get("max_runtime_s", d.get("max_runtime_s")))
+emit("MAX_DATA_ID", c.get("max_data_id_progress", d.get("max_data_id_progress")))
+PY
+)"
+  rc=$?; if [ "$rc" -ne 0 ]; then echo "$REG" >&2; exit "$rc"; fi
+  eval "$REG"   # defines REG_* shell vars from the registry condition
+  # empty-default knobs: empty ⇒ operator didn't set ⇒ fill from registry
+  [ -z "$NUM_TRAINERS" ]      && [ -n "${REG_N:-}" ]               && NUM_TRAINERS="$REG_N"
+  [ -z "$SEL_K" ]             && [ -n "${REG_K:-}" ]               && SEL_K="$REG_K"
+  [ -z "$SEL_C" ]             && [ -n "${REG_C_SYNC:-}" ]          && SEL_C="$REG_C_SYNC"
+  [ -z "$SEL_C_ASYNC" ]       && [ -n "${REG_C_ASYNC:-}" ]         && SEL_C_ASYNC="$REG_C_ASYNC"
+  [ -z "$PARTITION_METHOD" ]  && [ -n "${REG_PART:-}" ]            && PARTITION_METHOD="$REG_PART"
+  [ -z "$AVAIL_TRACE" ] && [ -z "$AVAIL_TRACES" ] && [ -n "${REG_TRACE:-}" ] && AVAIL_TRACE="$REG_TRACE"
+  [ -z "$TARGET_ACC" ]        && [ -n "${REG_TARGET_ACC:-}" ]      && TARGET_ACC="$REG_TARGET_ACC"
+  [ -z "$CONVERGE_WINDOW" ]   && [ -n "${REG_CONVERGE_WINDOW:-}" ] && CONVERGE_WINDOW="$REG_CONVERGE_WINDOW"
+  [ -z "$DELAY_FACTOR" ]      && [ -n "${REG_DELAY_FACTOR:-}" ]    && DELAY_FACTOR="$REG_DELAY_FACTOR"
+  # non-empty-default knobs: apply registry only when the operator didn't pass the flag
+  if [ "$DELAYS_SET" = "0" ] && [ -n "${REG_DELAYS:-}" ]; then DELAYS="$REG_DELAYS"; fi
+  if [ "$MAX_RUNTIME_S_SET" = "0" ] && [ -n "${REG_MAX_RUNTIME_S:-}" ]; then MAX_RUNTIME_S="$REG_MAX_RUNTIME_S"; fi
+  if [ "$MAX_DATA_ID_SET" = "0" ] && [ -n "${REG_MAX_DATA_ID:-}" ]; then MAX_DATA_ID="$REG_MAX_DATA_ID"; fi
+  echo "run-set '$RUN_SET' loaded from experiments.yaml (explicit CLI flags override registry)."
+fi
 
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
 # "n10" baked into each source filename.
@@ -207,11 +273,12 @@ NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$S
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
+TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
-import os, sys, copy, yaml, json
+import os, sys, copy, yaml, json, hashlib
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
 
@@ -225,6 +292,7 @@ AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
+TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
 MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
 MAX_RUNTIME_S_SET = env("MAX_RUNTIME_S_SET") == "1"; MAX_DATA_ID_SET = env("MAX_DATA_ID_SET") == "1"
@@ -245,6 +313,30 @@ traces = _trace_raw or ["syn_0"]          # Phase-1 default: 100% availability
 multi_trace = len(traces) > 1
 
 variants = {"real": 0, "sim": 1} if MODE == "both" else {MODE: (0 if MODE == "real" else 1)}
+
+# Baseline-distinguishing internals (selector algorithm / optimizer / sync|async)
+# come from the shared catalog _metadata/baselines.yaml, merged at LAUNCH — NOT
+# from the per-run YAML the operator edits. Surface them in the review table so a
+# mis-picked baseline (e.g. a sync selector where async was intended) is caught
+# BEFORE the run, not after. Best-effort: if the catalog can't be read, the
+# columns show "?" rather than blocking.
+_BL_INTERNALS = {}
+try:
+    _bl_path = os.path.join(env("EXAMPLE_DIR"), "..", "_metadata", "baselines.yaml")
+    _bl = yaml.safe_load(open(_bl_path, encoding="utf-8"))
+    _bl = _bl.get("baselines", _bl)
+    for _name, _b in (_bl or {}).items():
+        _agg = (_b or {}).get("aggregator", {}) or {}
+        _sel = _agg.get("selector", {}) or {}
+        _opt = _agg.get("optimizer", {}) or {}
+        _is_async = bool((_sel.get("kwargs", {}) or {}).get("is_async"))
+        _BL_INTERNALS[_name] = {
+            "selector": _sel.get("sort", "?"),
+            "optimizer": _opt.get("sort", "?"),
+            "async": "async" if _is_async else "sync",
+        }
+except Exception:
+    _BL_INTERNALS = {}
 
 runs = []  # (baseline, real_yaml, sim_yaml)
 with open(env("RUN_TSV")) as fh:
@@ -350,6 +442,10 @@ for trace in traces:
                 # actually launches), so the table can't show a stale default.
                 "avail": e0["trainer"].get("availability", {}).get("mode"),
                 "async": (run_key == "fluxtune"),
+                # baseline-distinguishing internals from the shared catalog
+                "selector": _BL_INTERNALS.get(run_key, {}).get("selector", "?"),
+                "optimizer": _BL_INTERNALS.get(run_key, {}).get("optimizer", "?"),
+                "sync_async": _BL_INTERNALS.get(run_key, {}).get("async", "?"),
             })
 
 with open(MANIFEST, "w") as fh:
@@ -377,6 +473,27 @@ def scalar_row(label, val, overridden, note=None, review=False):
         d["note"] = note
     return d
 
+# --- condition fingerprint (TWO-NODE SAFETY) ----------------------------------
+# A short hash over the SHARED condition axes that MUST match for a valid cross-
+# baseline comparison. agg_goal / selector / optimizer legitimately DIFFER per
+# baseline, so they are EXCLUDED. Uses RESOLVED partition/trace (what actually
+# runs), not just the flags. Print it on every node: if node A and node B show
+# the SAME fingerprint, they launched the same condition — the single check that
+# catches a mistyped flag on the second node before the runs diverge.
+_res_parts = sorted({str(b.get("partition")) for b in per_baseline.values()})
+_res_traces = sorted({str(b.get("avail")) for b in per_baseline.values()})
+_cond = {
+    "N": NUM_TRAINERS or "yaml", "K": SEL_K or "yaml",
+    "C_sync": SEL_C or "yaml", "C_async": SEL_C_ASYNC or SEL_C or "yaml",
+    "partition": _res_parts, "trace": _res_traces,
+    "delays": "on" if delays_on else "off",
+    "delay_factor": DELAY_FACTOR or "base",
+    "target_acc": TARGET_ACC or "none",
+    "converge_window": (CONVERGE_WINDOW or "20") if TARGET_ACC else "none",
+    "max_runtime_s": MAX_RUNTIME_S, "max_data_id": MAX_DATA_ID,
+}
+_cond_fp = hashlib.sha256(json.dumps(_cond, sort_keys=True).encode()).hexdigest()[:8]
+
 tiers = []
 # ① review every run
 # The trace row reflects the RESOLVED per-baseline availability (read back from
@@ -397,6 +514,9 @@ if MODE != "both":
 else:
     mode_row = scalar_row("mode", MODE, MODE_SET, note="real+sim pair (--mode)")
 tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
+    {"label": "condition_fp", "value": _cond_fp, "level": "set",
+     "note": "TWO-NODE CHECK: same fingerprint on every node ⇒ same shared condition "
+             "(N/K/C/partition/trace/delays/target_acc/caps). Differs ⇒ a knob was mistyped."},
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
@@ -408,7 +528,8 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                      + ("100% availability (Phase 1)" if _resolved_avails == {"syn_0"}
                         else "NON-syn_0 — unavailability (Phase 2+)"))),
     scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
-               note=f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; matched on BOTH sides — K-D8"),
+               note=(f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; "
+                     f"delay_factor={DELAY_FACTOR or 'base(10)'} (divides yaml base 4-18s delay); matched BOTH sides — K-D8")),
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
     # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
     # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
@@ -418,6 +539,14 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset",
                bool(MAX_ITER), review=True,
                note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above. unset ⇒ code default"),
+    # Convergence stop (EXPERIMENTS.md WS2): terminate when the last W data bins
+    # are ALL >= target accuracy. When set, max_runtime_s/max_data_id become
+    # SAFETY CAPS (a non-converging run -> DID_NOT_CONVERGE). unset ⇒ time/data-id bound only.
+    scalar_row("target_acc", TARGET_ACC if TARGET_ACC else "unset",
+               bool(TARGET_ACC), review=True,
+               note=("convergence stop: last %s bins all >= this (--target-acc). "
+                     "unset ⇒ NO accuracy stop, only max_runtime_s/max_data_id"
+                     % (CONVERGE_WINDOW or "20"))),
 ]}
 tiers.append(tier1)
 
@@ -425,6 +554,7 @@ tiers.append(tier1)
 # renderer highlights any column whose value differs across the baselines (those
 # are the ones to eyeball); columns identical across all 3 stay dim (expected).
 tier2_cols = [
+    ("sync_async", "mode"), ("selector", "selector"), ("optimizer", "optim"),
     ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
     ("min_init", "minInit"), ("n_trainers", "n_trainers"),
     ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
@@ -442,6 +572,8 @@ rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
     rows2.append({"name": rk, "cells": {
+        "sync_async": b.get("sync_async"), "selector": b.get("selector"),
+        "optimizer": b.get("optimizer"),
         "c": b.get("c"), "agg_goal": b.get("agg_goal"), "k": b.get("k"),
         "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
         "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
@@ -473,6 +605,18 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+# agg_goal MATCHES across baselines (operator invariant 2026-07-06): the aggregation
+# batch size should be identical for a fair head-to-head; a mismatch is almost always
+# an unintended fan from --c/--c-async. Warn (visible), don't block (an experiment
+# MAY intentionally vary it -- but then it's an eyeballed choice, not a silent one).
+_goals = {rk: per_baseline.get(rk, {}).get("agg_goal") for rk in (r[0] for r in runs)}
+_gset = {g for g in _goals.values() if g is not None}
+if len(_gset) > 1:
+    checks.append({"name": "agg_goal matches across baselines", "level": "warn",
+                   "detail": f"agg_goal differs: {_goals} — intended? (fair comparison expects one value)"})
+elif _gset:
+    checks.append({"name": "agg_goal matches across baselines", "level": "ok",
+                   "detail": f"all baselines agg_goal={next(iter(_gset))}"})
 # Availability consistency + sync-barrier liveness: surface the RESOLVED per-
 # baseline trace (what actually runs), and BLOCK a full-participation sync
 # barrier under a non-syn_0 trace -- agg_goal == n_trainers can never assemble if
@@ -598,6 +742,14 @@ after_plot() {
   done < <(find "$EXAMPLE_DIR/experiments" -maxdepth 1 -type d -name "run_*" -newer "$MANIFEST" 2>/dev/null)
 }
 
+# Convergence stop (EXPERIMENTS.md WS2): export so expt_launch arms the watcher.
+# Only when --target-acc was passed; otherwise runs stay governed by their caps
+# (default behavior unchanged). Window defaults to 20 bins.
+if [ -n "$TARGET_ACC" ]; then
+  export EXPT_TARGET_ACC="$TARGET_ACC"
+  export EXPT_CONVERGE_WINDOW="${CONVERGE_WINDOW:-20}"
+fi
+
 # ---- PHASE B: launch each generated cfg sequentially ----
 declare -A RESULT DURATION_S
 ORDERED_KEYS=()
@@ -616,7 +768,11 @@ while IFS=$'\t' read -r name cfg variant budget; do
   # child's non-zero exit). This keeps the per-run line and the summary in
   # agreement, and never calls a mere completion "PASS" (PASS is for checks).
   expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
-  if [ "$rc" -ne 0 ]; then
+  if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ]; then
+    # Convergence stop kills the run's process group -> rc is the SIGKILL code
+    # (expected), NOT a failure. Report the clean verdict without the exit noise.
+    RESULT[$name]="CONVERGED"
+  elif [ "$rc" -ne 0 ]; then
     # Launcher itself failed: surface that, but keep the health word if the
     # scan caught a more specific cause (e.g. CRASH) than a bare exit code.
     case "${EXPT_LAST_HEALTH:-}" in

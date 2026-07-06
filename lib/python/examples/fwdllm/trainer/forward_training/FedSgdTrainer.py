@@ -18,6 +18,9 @@ import math
 
 from flame import telemetry
 from flame.telemetry.events import build_trainer_round
+# Same absolute path tc_transformer_trainer_distribute.py imports it under, so we
+# read the SAME module-global forward-pass counters (WS3-b), not a second copy.
+from examples.fwdllm.trainer.forward_training import fwdgrad_utils
 
 logger = logging.getLogger(__name__)
 
@@ -675,6 +678,16 @@ class FedSGDTrainer(Trainer):
             # EXCLUDED via the _phase_post_start stamp position (after the delay) --
             # see Root B note above.
             _post_train_s = time.time() - _phase_post_start
+            # Forward-pass / perturbation accounting (WS3-b). Cumulative counters
+            # live in fwdgrad_utils (per-process = per-client); the delta since the
+            # last trainer_round is this iteration's cost. jvp_evals == scored
+            # perturbations. getattr defaults keep the first iteration correct
+            # without touching __init__.
+            _fp_total, _jvp_total = fwdgrad_utils.fwd_pass_counts()
+            _fp_iter = _fp_total - getattr(self, "_fwd_pass_last", 0)
+            _jvp_iter = _jvp_total - getattr(self, "_jvp_eval_last", 0)
+            self._fwd_pass_last = _fp_total
+            self._jvp_eval_last = _jvp_total
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
@@ -706,6 +719,12 @@ class FedSGDTrainer(Trainer):
                     "trainer_phase": (
                         f"{self._round}/{self.data_id}/{self.iteration_per_data_id}"
                     ),
+                    # WS3-b: forward passes / scored perturbations this iteration
+                    # (+ cumulative). Experiment 3's hardware-independent compute unit.
+                    "forward_passes_iter": _fp_iter,
+                    "forward_passes_total": _fp_total,
+                    "perturbations_iter": _jvp_iter,
+                    "perturbations_total": _jvp_total,
                     **getattr(self, "_phase_times", {}),
                 },
             )

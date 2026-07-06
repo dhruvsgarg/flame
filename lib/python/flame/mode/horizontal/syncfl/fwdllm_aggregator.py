@@ -73,7 +73,7 @@ from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import math
 
 from flame import telemetry
-from flame.telemetry.events import build_agg_eval, build_agg_round, build_utility_belief
+from flame.telemetry.events import build_agg_eval, build_agg_round, build_utility_belief, build_comm
 
 
 logger = logging.getLogger(__name__)
@@ -2685,6 +2685,8 @@ class TopAggregator(AsyncTopAgg):
                     for key, value in payload.items()
                 }
                 total_size_mb = sum(sizes_mb.values())
+                _send_bytes = int(round(total_size_mb * 1024 * 1024))
+                _payload_kind = "weights"
 
                 logger.info(
                     f"[DEBUG] Payload size breakdown for {end}: "
@@ -2697,9 +2699,24 @@ class TopAggregator(AsyncTopAgg):
                 )
 
                 msg_bytes = pickle.dumps(payload)
+                _send_bytes = len(msg_bytes)
+                _payload_kind = "var_bad"
                 logger.info(
                     f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
                 )
+
+            # WS3-a network telemetry: one dispatch message onto the wire. Size is
+            # the value already computed for the debug log above; no extra pickling.
+            try:
+                ev, f = build_comm(
+                    direction="agg_to_trainer", size_bytes=_send_bytes, peer_id=str(end),
+                    round_num=int(self._round), data_id=self.data_id,
+                    iteration=self.iteration_per_data_id, payload_kind=_payload_kind,
+                    n_tensors=len(payload),
+                )
+                telemetry.emit(ev, **f)
+            except Exception as e:
+                logger.debug(f"comm telemetry emit failed (agg send): {e}")
 
             channel.send(end, payload)
             logger.info(f"Sent weights to {end}")
@@ -2790,6 +2807,17 @@ class TopAggregator(AsyncTopAgg):
 
         self._update_state_after_payload_prepared()
 
+        # WS3-a network telemetry (Experiment 4): serialized size of each payload
+        # variant, computed ONCE per distribute (not per-end) — the async path has
+        # no per-end debug-size log like the sync path, so we pickle the two shared
+        # variants here and reuse per end below. Cheap (~trainable-param bytes, once).
+        try:
+            _bytes_weights = len(pickle.dumps(payload_weights)) if payload_weights is not None else 0
+            _bytes_var_bad = len(pickle.dumps(payload_var_bad)) if payload_var_bad is not None else 0
+        except Exception as e:
+            _bytes_weights = _bytes_var_bad = 0
+            logger.debug(f"comm telemetry size calc failed (async): {e}")
+
         # Sim-clock dispatch stamp (Batch 1): the async path arms the in-flight gate
         # (_sim_inflight_expected[end] = send vclock + a lower-bound budget) so the
         # reorder-buffer drain can't lap a trainer whose modeled completion is still
@@ -2814,6 +2842,7 @@ class TopAggregator(AsyncTopAgg):
 
             if self.var_good_enough or is_stale:
                 payload = payload_weights
+                _pk = "weights"          # WS3-a: kind set here (survives staggered rebuild below)
                 _n_weights_sent += 1
                 if not self.var_good_enough and is_stale:
                     logger.debug(
@@ -2823,6 +2852,7 @@ class TopAggregator(AsyncTopAgg):
                     )
             else:
                 payload = payload_var_bad
+                _pk = "var_bad"          # WS3-a
                 _n_var_bad_sent += 1
                 logger.debug(
                     f"[Distribute] Trainer {end} has current v{trainer_version}; "
@@ -2872,6 +2902,18 @@ class TopAggregator(AsyncTopAgg):
                 # the eligible pool before any commit could advance the version
                 # (re-dispatch deadlock, §K-D17). An in-flight-but-not-returned
                 # trainer is already guarded by its compute slot (selected_ends).
+            # WS3-a: one dispatch message onto the wire (async path).
+            try:
+                _sz = _bytes_weights if _pk == "weights" else _bytes_var_bad
+                ev, f = build_comm(
+                    direction="agg_to_trainer", size_bytes=_sz, peer_id=str(end),
+                    round_num=int(self._round), data_id=self.data_id,
+                    iteration=self.iteration_per_data_id, payload_kind=_pk,
+                    n_tensors=len(payload) if isinstance(payload, dict) else None,
+                )
+                telemetry.emit(ev, **f)
+            except Exception as e:
+                logger.debug(f"comm telemetry emit failed (agg async send): {e}")
             channel.send(end, payload)
             # #15 compute-truthful gate: stamp the wall time this end was actually
             # dispatched (weights OR VAR=bad), so the drain can tell a live straggler

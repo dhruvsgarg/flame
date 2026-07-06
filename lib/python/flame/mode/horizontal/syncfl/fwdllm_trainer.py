@@ -41,7 +41,7 @@ from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 from flame import telemetry
-from flame.telemetry.events import build_task_recv
+from flame.telemetry.events import build_task_recv, build_comm
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
@@ -554,7 +554,24 @@ class Trainer(Role, metaclass=ABCMeta):
                 format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
                 logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
             else:
+                total_bytes = 0
                 logger.info("No gradients exist; sending an empty dictionary.")
+
+            # WS3-a network telemetry: the update this trainer uploads. total_bytes
+            # is the gradient payload the debug log already reports (the substantive
+            # wire cost — fluxtune's whole comm story is that this is small).
+            if telemetry.is_enabled():
+                try:
+                    ev, f = build_comm(
+                        direction="trainer_to_agg", size_bytes=total_bytes,
+                        peer_id=str(end), round_num=int(self._round),
+                        data_id=self.data_id, iteration=self.iteration_per_data_id,
+                        payload_kind="gradients", n_tensors=len(grad_dict),
+                        trainer_id=self.trainer_id,
+                    )
+                    telemetry.emit(ev, **f)
+                except Exception as e:
+                    logger.debug(f"comm telemetry emit failed (trainer send): {e}")
 
             logger.debug(f"self.jvp_for_snr_check on trainer before sending message: {self.jvp_for_snr_check}")
 

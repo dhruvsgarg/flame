@@ -30,6 +30,7 @@ EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-g
 EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
+EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -49,6 +50,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_ABANDON_TIMEOUT,
         EVENT_AGG_BELIEF_CHANGE,
         EVENT_STEP_TIMING,
+        EVENT_COMM,
     }
 )
 
@@ -217,6 +219,47 @@ def build_step_timing(
         if v is not None:
             fields[k] = v
     return EVENT_STEP_TIMING, fields
+
+
+def build_comm(
+    *,
+    direction: str,
+    size_bytes: int,
+    peer_id: Optional[str] = None,
+    round_num: Optional[int] = None,
+    data_id: Optional[int] = None,
+    iteration: Optional[int] = None,
+    payload_kind: Optional[str] = None,
+    n_tensors: Optional[int] = None,
+    trainer_id: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """One message placed on the wire, for network-cost accounting (Experiment 4).
+
+    Emitted by BOTH roles so total bytes / message counts / per-message size
+    distributions are directly comparable across baselines — the point of
+    Experiment 4 (fluxtune sends perturbation seeds/scalars, not full gradients,
+    so real wire size differs from the static model_param_count reconstruction).
+
+    direction: "agg_to_trainer" (aggregator dispatch) | "trainer_to_agg" (update
+        upload). peer_id: the OTHER end (trainer end id for agg-side; the
+        aggregator for trainer-side, may be None). payload_kind: "weights" /
+        "var_bad" / "gradients" — lets the analysis split dispatch vs update and
+        full-weight vs var-signal messages. size_bytes: serialized message size
+        (the value the emitter already computes for its debug log).
+    """
+    fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
+    for k, v in (
+        ("peer_id", peer_id),
+        ("round", round_num),
+        ("data_id", data_id),
+        ("iteration_per_data_id", iteration),
+        ("payload_kind", payload_kind),
+        ("n_tensors", n_tensors),
+        ("trainer_id", trainer_id),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_COMM, fields
 
 
 def build_util_disparity(
