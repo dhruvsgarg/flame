@@ -98,6 +98,18 @@ experiments:
           # earlier -> more holds. Code kept (flag-gated) for a possible reworked
           # attempt; see §H. Leave OFF -> validated steps 1-3 drain.
           sim_staggered_redispatch: false
+          # #15: compute-truthful commit gate. The earlier_stuck gate blocks real
+          # wall on `_sim_inflight_expected` entries stamped at DISPATCH; a trainer
+          # whose payload was sent long ago but hasn't returned is idle-in-recv
+          # (not computing) behind the single-threaded drain, so waiting for it
+          # burns the grace floor / 30s failsafe and throttles commits -> via
+          # hold-to-commit, starves re-dispatch (sim concurrency 1.65 vs real 7.69).
+          # When on, the gate only blocks on a trainer still within its modeled
+          # compute window (sim_gate_compute_cap_s). Hold-to-commit UNTOUCHED; this
+          # only unblocks the commit path so held trainers are freed promptly.
+          # SIM-only; must not move cohort/var/staleness parity (PARITY_LOGICAL_TASKS.md #15).
+          sim_compute_truthful_gate: true
+          sim_gate_compute_cap_s: 10.0
           # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
           # not reject (K-D13). Set identically in the real sibling; never a
           # parity lever. camelCase MUST match the base key to override it —

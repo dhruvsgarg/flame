@@ -41,9 +41,12 @@ discipline, starvation self-termination, A6/A7/A8/K11 ground-truth rungs).
 delay (`--delay-factor 1`) `sim_rate` is now 2.9–3.0 (#12c RESOLVED for sync) and K-D31 makes bin-1 cohort order
 BIT-EXACT (P2-7a validated). The two live fronts are now BOTH understood at the root: (1) a SYNC float-nondeterminism
 wall at ~bin 7 (grads are not bit-reproducible → exact cadence parity is unattainable past bin ~6 → the parity
-target beyond bin 1 must be DISTRIBUTIONAL); (2) fluxtune `sim_rate = 0.50` — a pure GPU-PIPELINING loss (the sim
-runs its 8 GPUs at 1.54× concurrency vs real's 3.37×), NOT the commit gating (which is correct) and NOT GPU
-under-provisioning (pinning is clean — see §H).**
+target beyond bin 1 must be DISTRIBUTIONAL); (2) fluxtune `sim_rate = 0.50` — a COMMIT-PATH STALL: hold-to-commit is
+a CORRECTNESS check (a trainer is freed only when its update commits), so the commit RATE sets throughput; the sim's
+drain blocks real wall on PHANTOM `_sim_inflight_expected` entries (30s failsafe) → correctly-held trainers idle far
+longer than their GPU pass → 1.54× concurrency vs real's 3.37×. NOT a gate bug (felix's gate is INERT), NOT
+over-restrictive hold-to-commit, NOT GPU under-provisioning (pinning clean — §H). Fix = fast/non-stalling commit path.
+Grounding + fix in [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.md) (FELIX GROUNDING + #15).**
 
 Latest FULL pairs (`run_sequential.sh --mode both --delays on --delay-factor 1 --max-runtime-s 2700`,
 `run_20260705_1924 → 2046`):
@@ -52,19 +55,22 @@ Latest FULL pairs (`run_sequential.sh --mode both --delays on --delay-factor 1 -
 |---|---|---|---|
 | **fwdllm** (sync) | **2.93** ✓ | 1139s / 389s | clean; sim ~3× faster than the virtual time it models |
 | **fwdllm_plus** (sync) | **3.01** ✓ | 1137s / 378s | clean; sim ~3× faster |
-| **fluxtune** (async) | **0.50** ⛔ | 1191s / 2425s | `sim_rate<1` is now isolated to a GPU-pipelining loss (#15), not #12c |
+| **fluxtune** (async) | **0.50** ⛔ | 1191s / 2425s | `sim_rate<1` = a commit-path stall (phantom drain gate, #15), not #12c; hold-to-commit is correct |
 
 **Why fluxtune `sim_rate = 0.50` — objective real↔sim telemetry (supersedes the #12c-delay-headroom reading).**
 Real and sim do the SAME GPU work (~3.7–4.0k trainer-s) with the same ~480s 8-way pipeline floor. Real packs it into
 1210s wall by keeping **3.37 trainers on the GPUs at once (98% busy)**; the sim takes **2425s** at **1.54×
 concurrency (85% busy)**, converting real's correctly-skipped device-delay waits (4775s) into **19807s of trainer
 idle in `recv`** (vs real 380s). Per-commit: real reaches agg-goal in **4.30s wall**; the sim models **3.27s vclock**
-but spends **6.60s wall** → sim_rate 0.50. ROOT: the strict-sct-order drain (`_sim_recv_min_grad`) commits one grad
-per call and blocks real wall for the *earliest-sct* in-flight trainer, starving GPU pipelining. The hold-to-commit
-slot residence (K-D17b) is CORRECT and per-grad (released at that grad's commit) — the loss is pure pipelining. Fix:
-**#15 — decouple real-GPU dispatch from virtual commit ordering** (keep all GPUs full like real; let the drain order
-commits by sct purely for the vclock). Target: 3 grads at the ~2.4s uncontended floor, pipelined ⇒ ~2.4s wall <
-3.27s vclock ⇒ sim_rate ~1.35.
+but spends **6.60s wall** → sim_rate 0.50. **ROOT (corrected 2026-07-06):** hold-to-commit is a CORRECTNESS check — a
+trainer is freed only when its update is committed (guards: no same-version re-dispatch, none while computing, none
+while returned-but-uncommitted), so the commit RATE sets throughput. In felix/cifar commit is effectively instant
+(compute ~0.4s) so held trainers barely idle; fluxtune's commit path STALLS — the drain's `earlier_stuck` gate blocks
+real wall on a PHANTOM `_sim_inflight_expected` entry (a trainer stamped expected-at-dispatch that isn't computing,
+e.g. still waiting for weights the gate-blocked aggregator can't send) → 30s failsafe → the correctly-held trainers
+idle 30s instead of ~one GPU pass. Fix: make the commit path fast/non-stalling (gate only waits on a
+genuinely-computing trainer); **hold-to-commit stays**. Grounding: [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.md)
+FELIX GROUNDING F5/F6 + D1-D3.
 
 ### Parity scoreboard — REFERENCE baseline (checker run on the pairs above; `expt_scripts/run_parity.py --yes`)
 *These are the numbers we hold against until the open issues resolve — it will be a while before a longer run.
@@ -142,16 +148,17 @@ nondeterminism. Full diagnosis: [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.m
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
-| **#15** ⭐⭐ | **fluxtune `sim_rate = 0.50` — GPU-PIPELINING loss, not delay-headroom (#12c) or gating.** Objective telemetry: same GPU work as real (~3.7–4.0k trainer-s), same ~480s 8-way floor, but sim runs 1.54× concurrency vs real 3.37×; per-commit real 4.30s wall, sim 6.60s wall / 3.27s vclock. The strict-sct-order drain commits one grad/call blocking real wall for the earliest-sct straggler → GPU starved. Hold-to-commit residence is CORRECT (per-grad). | fluxtune | **DECOUPLE real-GPU dispatch from virtual commit ordering**: keep all 8 GPUs full (dispatch/refill like real); `_sim_recv_min_grad` orders commits by sct purely for the vclock, never blocking a ready GPU on a slower-sct straggler. Target sim_rate ~1.35. |
+| **#15** ⭐⭐ | **fluxtune `sim_rate = 0.50` — a COMMIT-PATH STALL** (corrected 2026-07-06; NOT delay-headroom #12c, NOT a gate bug — felix's gate is INERT, NOT over-restrictive hold-to-commit). Hold-to-commit is a CORRECTNESS check: a trainer is freed only when its update commits, so commit RATE = throughput. The drain's `earlier_stuck` gate blocks real wall on a PHANTOM `_sim_inflight_expected` entry (trainer stamped at dispatch, not actually computing — e.g. waiting for weights the gate-blocked aggregator can't send) → 30s failsafe → correctly-held trainers idle ~30s not ~one GPU pass → 1.54× vs real 3.37×. Grounding: PARITY_LOGICAL_TASKS.md FELIX GROUNDING F5/F6. | fluxtune | **Make the commit path fast/non-stalling** — the gate only waits on a genuinely-computing trainer (compute-truthful `_sim_inflight_expected` / bound the wait / yield instead of blocking). Hold-to-commit UNTOUCHED. Diagnose D1/D2 first (D3 N=20/C=10/K=3 optional). Target sim_rate >1. |
 | **#N (bin-7 nondeterminism)** ⭐ | **SYNC exact-cadence parity has a float-nondeterminism wall at ~bin 7.** Order matches 41/41 (K-D31) yet cadence breaks: ~1e-3 GPU fp16 grad jitter, amplified by the split-half variance ratio, flips the `var<0.3` gate at (7,2). Not a sim bug. | fwdllm (fwdllm_plus latent) | Confirm with a 2-real-run diff (P0-2). Then land the parity-target relaxation: `cohort_sequence` EXACT scoped to `--max-bin 1`; distributional cadence/var rung (mean-band + KS + `var_good` fraction) for the full run. |
 | **#1d** ⭐ | **fluxtune cohort SET diverges (thin-margin overrun).** `set_match=3/272`. `jvp_perf_opt` cut GPU to 3.61s MEAN (<4.0s budget) but the tail (4.1–5.4s) still overruns on the two GPUs that carry 2 trainers each (10/8) + the aggregator's eval GPU. Order flips → wrong 3-of-K commit. | fluxtune | Aggregator-GPU pin landed (K-D33); with #15's pipelining the compute drops toward the ~2.4s uncontended floor (<4.0s). If a residual tail remains: `perturbation_count`↓ (P2-5) or 1-trainer/GPU. |
 | **#7** | fwdllm_plus real ~4× slower/round; at syn_0 real sees only ~4.9 eligible vs sim ~9.6. Not a sim bug. | fwdllm_plus | Profile per-iteration reselection + oracular-read cost from the banked per-phase log; explain the eligible-count gap at 100% avail. |
 | **#11** | real-mode critical-path waste (`sleep(0.1)` MQTT-settle busy-waits; one-grad-per-poll drain tail) — real-only. | fwdllm, fwdllm_plus (real) | **Deferred to a validated pass** — ZERO parity impact (sim already skips them); removing them changes the working real reference + needs a real run (principle #8/#11c). |
 
 ### Next roots — ranked (correctness before time; SHARED before per-baseline — principle #14)
-1. **#15 fluxtune GPU-pipelining decouple (time, per-baseline) — TOP, IN PROGRESS.** The one thing keeping fluxtune
-   `sim_rate<1`. Decouple GPU dispatch from the sct-ordered commit drain. Also lifts #1d (compute → uncontended floor
-   < budget). Sync `sim_rate` already 2.9–3.0.
+1. **#15 fluxtune — make the commit path fast/non-stalling (time, per-baseline) — TOP, IN PROGRESS.** The one thing
+   keeping fluxtune `sim_rate<1`. Fix the phantom `_sim_inflight_expected` so the drain gate never blocks real wall on
+   a non-computing trainer → commits flow → held trainers freed promptly. Hold-to-commit STAYS (correctness). Diagnose
+   D1/D2 first. Also lifts #1d. Sync `sim_rate` 2.9–3.0.
 2. **bin-7 nondeterminism → relax the parity target (SHARED, correctness-of-CHECK).** Land the distributional
    cadence/var rung + scope `cohort_sequence` EXACT to bin 1, after the P0-2 two-real-run confirmation. Un-reds the
    sync full-run cadence fails that are float-noise, not bugs.
@@ -187,7 +194,7 @@ rationale.
 | 3 | Commit cadence | fixed `agg_goal` | endogenous **variance-gated dynamic-K** | the emergent layer cifar doesn't model; V/DK/G rungs verify it | §F.1 |
 | 4 | sct delay model | `send + max(gpu, D)` | `send + max(gpu, D)` (**remainder-wait, was additive**) | K-D29: real now sleeps `max(0,D−gpu)` (device wall = D, GPU hidden), so update order = per-trainer D order = deterministic & real↔sim identical. Reverses K-D2 | K-D2/**K-D29** |
 | 5 | Per-eval sct | distinct, ~20× faster | **collapses to train sct** | eval lives on the aggregator; forward-grad "train" IS a forward pass (no 20× factor) | K-D3 |
-| 6 | Slot residence | per-commit release | **hold slot to COMMIT** (felix-aligned) — dispatched-but-uncommitted trainer held in `selected_ends`+`all_selected`, released on commit | a returned-but-uncommitted grad is still in flight in VIRTUAL time (commits when vclock reaches sct) | K-D5/K-D17b, principle #4 |
+| 6 | Slot residence | per-commit release | **hold slot to COMMIT** (felix port, K-D17b) — a trainer is freed only when its update commits (guards: no same-version dispatch, none while computing, none while returned-but-uncommitted) | Correct for BOTH sync & async — it is a correctness check, not a lever. fluxtune's `sim_rate<1` is a COMMIT-PATH STALL (K-D34/#15), NOT this rule. Commit RATE = throughput | K-D17b/**K-D34**, principle #4 |
 | 7 | Surplus grad on rollback | carried | **carried** for async (fluxtune, c≫agg_goal); **drop** stays correct for sync (c≈agg_goal) | drop was benign only for sync; fluxtune dropped ~7/cycle → 2× passes | K-D12 |
 | 8 | Async drain primitive | `_sim_recv_min` verbatim | purpose-built `_sim_recv_min_grad` / sync `_sync_sim_recv_first_k` | cifar's per-commit release + withheld paths key on WEIGHTS semantics | K-D4 |
 | 9 | `time_mode` default | `"simulated"` | `"real"` (getattr fallback) | fwdllm's whole config corpus is `real`; a `simulated` default risks half-activating an unbuilt path | K-D1 |
@@ -342,6 +349,16 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
 ---
 
 ## §H  Dead-ends & corrections — do NOT retry
+- **fluxtune #15 — three superseded framings (all 2026-07-06, same session; final root = COMMIT-PATH STALL).**
+  (1) "pure GPU-PIPELINING loss; keep the gate, decouple dispatch" — WRONG, felix's arrival gate is INERT
+  (gate_holds=0), not the culprit. (2) "the fix is re-dispatch on physical RETURN to keep GPUs busy" — WRONG, fedbuff
+  never re-hands a returner the same version, and real's 3.37 concurrency is a duty cycle `gpu/max(gpu,D)`, not
+  under-use. (3) "hold-to-commit is a SYNC barrier / over-restrictive; replace with model-advance re-dispatch" — WRONG,
+  hold-to-commit is a CORRECTNESS check (a trainer is freed only when its update commits; guards no-same-version /
+  not-while-computing / not-while-returned-uncommitted). *Final root:* the commit path STALLS (the drain gate blocks
+  real wall on PHANTOM `_sim_inflight_expected` entries), keeping correctly-held trainers idle. Fix = fast/non-stalling
+  commit path; hold-to-commit untouched. *Lesson:* commit RATE is the throughput lever, not the residence rule. See
+  PARITY_LOGICAL_TASKS.md FELIX GROUNDING F5/F6.
 - **"The sync cadence break is a sim ORDER bug (order → split-half var → RNG desync) — exact cadence parity is
   achievable once order matches."** CORRECT for bin ≤1, REFUTED for the full run (2026-07-05). K-D31 made
   receive-ORDER 41/41 identical, yet fwdllm cadence STILL breaks at bin 7. Root is grad NON-reproducibility given
@@ -401,8 +418,10 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
   identically real+sim (a definition, not a lever).
 - **K-D14** — R1/W1 sourced from an ECHOED per-contribution interval (not the agg's per-end dispatch stamp, which
   is overwritten on re-dispatch — exactly when residence is broken).
-- **K-D17b** — hold the compute slot to COMMIT (felix-aligned): `len(selected_ends)` = virtual-time in-flight
-  (fixed in_flight 2.7→9.5). Reverts K-D16's slot-on-return.
+- **K-D17b** — hold the compute slot to COMMIT (felix port): `len(selected_ends)` = virtual-time in-flight
+  (fixed in_flight 2.7→9.5). Reverts K-D16's slot-on-return. **CONFIRMED CORRECT for both sync AND async (K-D34):** a
+  trainer is freed only when its update commits — a correctness check, not a throughput lever. fluxtune's `sim_rate<1`
+  is a commit-path STALL (#15), NOT this rule; it stays untouched.
 - **K-D21** — pre-run instrumentation A–E landed & pytest-green; un-skipped the 12 rigor-gap rungs (§G).
 - **K-D22** — availability params respected end-to-end; Phase-1 syn_0 default; print==run (§G).
 - **K-D24** — Phase-4 ceiling decouple (×20) + B1/B2 sct folds; fixed root S1 (§G).
@@ -470,6 +489,22 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
   dedicated (idle if `visible>num_gpus`, else least-loaded) GPU so its eval stops contending GPU 0. Confirmed the
   `client_idx%8` device arg is vestigial (`FedSgdTrainer:388` overwrites `self.device=torch.device("cuda")`=cuda:0 of
   the CVD-masked view) → the spawner's pin is authoritative. Shared launcher; 120 launch tests green.
+
+- **K-D34** — **fluxtune #15 = a COMMIT-PATH STALL; `sim_compute_truthful_gate` fix LANDED (P1/P2), P3 pending
+  (2026-07-06).** Supersedes three same-session mis-framings (§H): pipelining-loss, re-dispatch-on-return, and
+  "hold-to-commit is over-restrictive." Grounding (PARITY_LOGICAL_TASKS.md FELIX GROUNDING F5/F6): hold-to-commit
+  correctly frees a trainer only when its update COMMITS (guards: no same-version dispatch, none while computing, none
+  while returned-but-uncommitted), so the commit RATE is the throughput lever. felix's gate is INERT and cifar's
+  commit is instant (~0.4s) so held trainers barely idle. **D1/D2 CONFIRMED** (banked pair): fluxtune's
+  `_sim_recv_min_grad` `earlier_stuck` gate holds already-arrived grads (`buf_depth=7`, 99.7%) to wait on trainers
+  stamped-expected-at-DISPATCH but idle-in-recv (not computing) behind the single-threaded drain → 82% of wall
+  (~1974s) burned → concurrency sim 1.65 vs real 7.69 → sim_rate 0.50. **Fix (flag `sim_compute_truthful_gate`,
+  default off = byte-identical, fluxtune-yaml on):** stamp `_sim_dispatch_wall[end]` at the real `channel.send`; the
+  gate skips any expected entry whose last dispatch is older than `sim_gate_compute_cap_s` (default 10s) — a
+  stamped-but-idle phantom no longer blocks a ready commit, while a genuine in-window straggler is still held (commit
+  order preserved). Hold-to-commit, the sct-ordered drain, K-D12, K-D27 UNTOUCHED; `fwdllm_aggregator`-only →
+  async_cifar10 byte-identical. 25 pytests green. **P3 gate:** the run must show sim_rate>1 with
+  cohort_sequence/var/staleness parity UNCHANGED (else the cap skips a genuine straggler → raise it).
 
 *Retired/superseded anchors (kept only as pointers): K-D6 (→K-D12), K-D7/K-D8/K-D10/K-D16/K-D18/K-D19/K-D20/K-D23
 — landed scaffolding or corrections, folded into §G/§H; see git history for detail.*

@@ -13,6 +13,7 @@ variance-FAIL rolls back to the same data_id and must NOT strand or double-
 commit a grad).
 """
 
+import time
 from collections import deque
 from datetime import datetime
 
@@ -524,3 +525,76 @@ class TestFlagOffNoOp:
         assert agg._sim_committed == {"X"}
         assert agg._sim_inflight_expected == {"X": 1.0}
         assert len(agg._sim_buffer) == 1
+
+
+class TestComputeTruthfulGate:
+    """#15 (PARITY_LOGICAL_TASKS.md): the compute-truthful commit gate
+    (`sim_compute_truthful_gate`, flag-gated, default off) must not block a ready
+    commit on a trainer that is NOT actually computing -- one stamped 'expected'
+    at dispatch but idle-in-recv behind the single-threaded drain (never dispatched
+    within its compute window). That phantom wait is what burns the grace floor /
+    30s failsafe and, via hold-to-commit, starves re-dispatch (sim concurrency 1.65
+    vs real 7.69). The guard stays SELECTIVE: a genuine in-window straggler is still
+    waited for, so sct-commit order is preserved."""
+
+    def test_idle_phantom_is_skipped_and_ready_grad_commits(self):
+        agg = _FakeGradAgg()
+        agg._sim_compute_truthful_gate = True
+        agg._sim_gate_compute_cap_s = 10.0
+        agg._sim_dispatch_wall = {}   # PHANTOM: never dispatched -> no wall stamp
+        agg._sim_inflight_expected = {"PHANTOM": 10.0, "A": 98.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)  # A arrived; PHANTOM never will
+
+        # No monkeypatched deadline: flag OFF would spin to the 30s failsafe;
+        # flag ON skips the phantom and commits A at once.
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "PHANTOM"])
+
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert agg._sim_gate_phantom_skip >= 1
+        assert getattr(agg, "_sim_gate_failsafe", 0) == 0  # never hit the failsafe
+
+    def test_stale_dispatch_is_treated_as_phantom(self):
+        agg = _FakeGradAgg()
+        agg._sim_compute_truthful_gate = True
+        agg._sim_gate_compute_cap_s = 10.0
+        # dispatched 30s ago -> older than the 10s cap -> not genuinely computing.
+        agg._sim_dispatch_wall = {"STALE": time.time() - 30.0}
+        agg._sim_inflight_expected = {"STALE": 10.0, "A": 98.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "STALE"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert agg._sim_gate_phantom_skip >= 1
+
+    def test_in_window_straggler_is_still_held(self):
+        """Selective guard: a trainer dispatched WITHIN the compute window is a
+        genuine straggler and must still be waited for -- commit order preserved."""
+        agg = _FakeGradAgg()
+        agg._sim_compute_truthful_gate = True
+        agg._sim_gate_compute_cap_s = 10.0
+        agg._sim_dispatch_wall = {"B": time.time()}   # just dispatched -> computing
+        agg._sim_inflight_expected = {"A": 98.0, "B": 48.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)  # arrives first
+        ch.add_msg("B", sct=50.0, release_at=1)   # arrives on the 2nd probe
+
+        first_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first_msg[MessageType.SIM_COMPLETION_TS] == 50.0  # B still held-for
+        assert agg._vclock.now == 50.0
+
+    def test_flag_off_is_byte_identical(self, monkeypatch):
+        """Flag OFF (default): a phantom still blocks to the failsafe (unchanged
+        K-D28 behavior) and phantom_skip stays 0."""
+        import flame.mode.horizontal.syncfl.fwdllm_aggregator as fa
+        monkeypatch.setattr(fa, "RECV_TIMEOUT_WAIT_S", 0.0)
+        agg = _FakeGradAgg()  # flag defaults off (never set)
+        agg._sim_inflight_expected = {"PHANTOM": 10.0, "A": 98.0}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "PHANTOM"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert getattr(agg, "_sim_gate_phantom_skip", 0) == 0
+        assert agg._sim_gate_failsafe == 1

@@ -321,6 +321,28 @@ class TopAggregator(AsyncTopAgg):
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
 
+        # #15 compute-truthful commit gate (flag-gated; default off = byte-identical).
+        # `_sim_recv_min_grad`'s earlier_stuck gate blocks real wall on
+        # `_sim_inflight_expected` entries stamped at DISPATCH. A trainer whose
+        # weights/VAR=bad payload was sent long ago but has not returned is NOT
+        # actually computing (it is idle-in-recv behind the single-threaded drain);
+        # waiting for it burns the grace floor / 30s failsafe and throttles commits,
+        # which (via hold-to-commit) starves re-dispatch -> concurrency collapses
+        # (sim 1.65 vs real 7.69). When on, the gate only blocks on a trainer still
+        # within its modeled compute window (dispatched recently enough to plausibly
+        # still be computing) -- so a stamped-but-idle phantom no longer defers a
+        # ready commit. Hold-to-commit (K-D17b) is untouched; this only unblocks the
+        # commit path so held trainers are freed promptly (PARITY_LOGICAL_TASKS.md #15).
+        self._sim_compute_truthful_gate = bool(getattr(
+            self.config.hyperparameters, "sim_compute_truthful_gate", False))
+        # Wall seconds a dispatched grad may still plausibly be computing before it
+        # is treated as idle/phantom (comfortably above the ~3.6s mean / 5.6s max
+        # observed JVP compute). Only consulted when the gate flag is on.
+        _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
+        self._sim_gate_compute_cap_s = float(_cap) if _cap is not None else 10.0
+        # end -> wall time its weights/VAR=bad payload was last sent (sim only).
+        self._sim_dispatch_wall = {}
+
         # Selection granularity for the sync path (fwdllm/fwdllm_plus):
         # True (default, preserves pre-existing behavior) = re-select
         # trainers on every SEND-state call, i.e. every iteration of every
@@ -834,9 +856,25 @@ class TopAggregator(AsyncTopAgg):
             # Gate: earliest expected completion among un-buffered in-flight ends.
             bmin = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
+            # #15 compute-truthful gate: only a trainer still within its modeled
+            # compute window can be a live earlier-sct straggler. A trainer whose
+            # last dispatch is older than the compute cap (or was never dispatched)
+            # is idle-in-recv / phantom -- it will not produce a grad until the drain
+            # yields and the aggregator re-dispatches it, so blocking on it deadlocks
+            # to the grace/30s failsafe (PARITY_LOGICAL_TASKS.md #15). Skip it so the
+            # already-buffered commit proceeds and the loop can re-dispatch.
+            _truthful = getattr(self, "_sim_compute_truthful_gate", False)
+            _now_wall = time.time()
+            _cap = getattr(self, "_sim_gate_compute_cap_s", 10.0)
             for e, exp in self._sim_inflight_expected.items():
                 if self._sim_buffer.has(e) or e in self._sim_committed:
                     continue
+                if _truthful:
+                    _dw = self._sim_dispatch_wall.get(e)
+                    if _dw is None or (_now_wall - _dw) > _cap:
+                        self._sim_gate_phantom_skip = getattr(
+                            self, "_sim_gate_phantom_skip", 0) + 1
+                        continue  # not genuinely computing -> can't block a commit
                 if min_stuck is None or exp < min_stuck:
                     min_stuck, _stuck_end = exp, e
             earlier_stuck = (
@@ -927,7 +965,8 @@ class TopAggregator(AsyncTopAgg):
             f"[SIM_GRAD_RECV] round={getattr(self, '_round', -1)} "
             f"end={str(_end)[-4:]} sct={sct:.1f} T_v={self._vclock.now:.1f} "
             f"buf_depth={len(self._sim_buffer)} "
-            f"inflight_exp={len(self._sim_inflight_expected)} sel_ends={_sel_n}"
+            f"inflight_exp={len(self._sim_inflight_expected)} sel_ends={_sel_n} "
+            f"phantom_skip={getattr(self, '_sim_gate_phantom_skip', 0)}"
         )
         return m, md
 
@@ -2834,6 +2873,11 @@ class TopAggregator(AsyncTopAgg):
                 # (re-dispatch deadlock, §K-D17). An in-flight-but-not-returned
                 # trainer is already guarded by its compute slot (selected_ends).
             channel.send(end, payload)
+            # #15 compute-truthful gate: stamp the wall time this end was actually
+            # dispatched (weights OR VAR=bad), so the drain can tell a live straggler
+            # from an idle-in-recv phantom. Sim-only; inert unless the gate flag is on.
+            if self.simulated:
+                self._sim_dispatch_wall[end] = time.time()
         logger.info(
             f"[Distribute] Done. Sent {_n_weights_sent} WEIGHTS + "
             f"{_n_var_bad_sent} VAR=bad payloads to {len(ends)} trainers "
