@@ -7,12 +7,27 @@ dimension. Correctness before speed; no hacks (simulate_fwdllm.md principles #14
 
 ---
 
-## ⏸ SESSION CHECKPOINT (2026-07-05 — DATABIN1 RUN LANDED; resume here)
+## ⏸ SESSION CHECKPOINT (2026-07-05 — P2-7a VALIDATED + full-run roots nailed; resume at #15)
 
-**Code + tests landed & GREEN; the P2-7 databin1 run is DONE and CHECKED.** Full suite: 606 mode/telemetry/
-selector + 115 async_cifar10 parity green. **Outcome (see P2-7 below):** K-D29 broke the RNG-desync root — sync
-baselines are `var` bit-identical + `timing_overrun=0%` on bin 1; the only sync residual is a benign delay-tie
-order swap (OPEN FORK P2-7a); fluxtune still overruns 38% as predicted → next is P2-5 (`perturbation_count`↓).
+**P2-7a (K-D31) VALIDATED and full runs analyzed.** Databin1 checks (`--max-bin 1`): sync `cohort_sequence`
+ok=true, set/order/var/cadence=1.0 — the delay-tie is closed. Full runs (`--delay-factor 1`) then settled BOTH
+open roots:
+- **SYNC:** `sim_rate` 2.9–3.0 (#12c resolved). But receive-ORDER now 41/41 identical yet cadence still breaks at
+  **bin 7** → the "order→var→RNG-desync" root is REFUTED for the full run. Real root = **grad non-reproducibility
+  given matched order** (~1e-3 GPU fp16 jitter amplified by the split-half variance → gate flip at (7,2)). This
+  **answers P0-2**: exact cadence parity is unattainable past ~bin 6. ⇒ relax the target: `cohort_sequence` EXACT
+  scoped to `--max-bin 1`; add a DISTRIBUTIONAL cadence/var rung (mean-band + KS + `var_good` fraction) for the full
+  run. (Confirm with a 2-real-run diff before landing — strong single-run evidence already.)
+- **fluxtune:** `sim_rate=0.50` is a **GPU-PIPELINING loss (#15)**, not #12c and not the commit gating (which is
+  correct, per-grad). Objective telemetry: sim 1.54× GPU concurrency vs real 3.37×; per-commit real 4.30s wall, sim
+  6.60s wall / 3.27s vclock. The overrun (#1d, `set_match=3/272`) is a thin-margin contention tail (10 trainers /
+  8 GPUs doubling + aggregator eval GPU) — `jvp_perf_opt` already put the MEAN (3.61s) under the 4.0s budget.
+- **Pinning is clean** (earlier "under-provisioned" read was a misread of `gpu=4.9s` compute-time as device IDs):
+  8 GPUs, balanced round-robin, CPU-pinned. Aggregator GPU pin + trainer `[PIN]` self-report + `[LOAD_BALANCE]`
+  check landed (K-D33, 120 launch tests green).
+
+**NEXT: #15 — decouple real-GPU dispatch from the sct-ordered commit drain** (keep GPUs full like real; drain orders
+commits by sct for the vclock only). This is the one thing keeping fluxtune `sim_rate<1`, and it also lifts #1d.
 
 **DONE (landed + tested):**
 - **P1-1/P1-2/P1-3** — enforced `cohort_sequence` rung (EXACT, ungated), V2 mean-guard, `--max-bin` window. Both

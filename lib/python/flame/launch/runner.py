@@ -202,12 +202,28 @@ class ExperimentRunner:
                     },
                 )
 
+            # Dedicated aggregator GPU: prefer a physical GPU the trainer pool
+            # does NOT use (visible > num_gpus → the first idle one); else the
+            # least-loaded trainer GPU (highest index under (tid-1)%num_gpus).
+            _num_gpus = exp.execution.num_gpus
+            try:
+                import torch as _torch
+                _visible = _torch.cuda.device_count()
+            except Exception:
+                _visible = 0
+            if _visible > _num_gpus:
+                _agg_gpu = _num_gpus            # a fully idle physical GPU
+            elif _num_gpus > 0:
+                _agg_gpu = _num_gpus - 1        # least-loaded trainer GPU
+            else:
+                _agg_gpu = None
             self.aggregator_spawner.spawn(
                 paths["aggregator_main"],
                 config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
                 cpu_cores=reserved_cores,
+                gpu_id=_agg_gpu,
             )
             if not self.aggregator_spawner.wait_until_ready(
                 exp.execution.aggregator_warmup_time

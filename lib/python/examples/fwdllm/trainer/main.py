@@ -76,6 +76,29 @@ if __name__ == "__main__":
     config.hyperparameters.time_mode = _cli_args.time_mode
     set_seed(config.hyperparameters.manual_seed)
 
+    # Pinning self-report: confirm the CPU/GPU affinity the spawner INTENDED
+    # (spawner.py sets CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer)
+    # actually took effect in THIS child. The trainer trains on torch.device
+    # ("cuda") == cuda:0 of the CVD-masked single-GPU view (FedSgdTrainer:388),
+    # so one visible device here == correct pinning. Emitted as a grep-able
+    # [PIN] line so a post-proc step can verify balanced trainer->(gpu,core)
+    # placement against the hardware, not just the parent's intended table.
+    try:
+        _cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+        _cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
+        _gpu_name, _gpu_dev, _ndev = "<no-cuda>", -1, 0
+        if torch.cuda.is_available():
+            _gpu_dev = torch.cuda.current_device()
+            _gpu_name = torch.cuda.get_device_name(_gpu_dev)
+            _ndev = torch.cuda.device_count()
+        logging.info(
+            f"[PIN] pid={os.getpid()} client_idx={config.hyperparameters.client_idx} "
+            f"CUDA_VISIBLE_DEVICES={_cvd} cuda_device={_gpu_dev} ({_gpu_name}) "
+            f"cuda_device_count={_ndev} cpu_affinity={_cores}"
+        )
+    except Exception as _pin_exc:  # never let self-report break a trainer
+        logging.warning(f"[PIN] self-report failed: {_pin_exc}")
+
     # dataset attributes
     attributes = BaseDataManager.load_attributes(config.hyperparameters.data_file_path)
     num_labels = len(attributes["label_vocab"])

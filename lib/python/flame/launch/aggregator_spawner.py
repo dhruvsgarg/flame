@@ -28,6 +28,7 @@ class AggregatorSpawner:
         log_to_wandb: bool = False,
         wandb_run_name: Optional[str] = None,
         cpu_cores: Optional[set] = None,
+        gpu_id: Optional[int] = None,
     ) -> subprocess.Popen:
         """Spawn aggregator process.
 
@@ -88,6 +89,14 @@ class AggregatorSpawner:
         # math libs use exactly that many threads (it benefits from a few cores
         # for chunk reassembly / aggregation, unlike a 1-core-pinned trainer).
         env = os.environ.copy()
+        # GPU pin: give the aggregator its own device so its eval pass (a real
+        # forward on the model, ~8s for fwdllm) does not time-slice the GPU a
+        # trainer is pinned to. Without this the aggregator defaults to GPU 0 —
+        # exactly where trainer 1 (and, at 10 trainers/8 GPUs, trainer 9) run —
+        # inflating those trainers' compute over the modeled delay budget.
+        if gpu_id is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"  ✓ Aggregator pinned to GPU {gpu_id}")
         preexec_fn = None
         if cpu_cores:
             _cores = {int(c) for c in cpu_cores}

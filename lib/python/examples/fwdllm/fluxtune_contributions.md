@@ -132,8 +132,11 @@ so training fidelity and real↔sim simulator parity are untouched:
 2. **Remove redundant/diagnostic forward passes** — 3 passes that only fed a log line, plus (fluxtune) reusing the
    selected perturbation's already-computed JVP: **fluxtune 25→20 passes, sync 5→2.**
 
-**Combined: sync −68%, fluxtune −37% GPU time, zero fidelity change.** This alone is expected to bring fluxtune's
-per-batch compute under its modeled mobile-delay budget.
+**Combined: sync −68%, fluxtune −37% GPU time, zero fidelity change.** Measured under the real 10-trainer / 8-GPU
+run this brings fluxtune's **mean** per-batch compute (3.61s) under the 4.0s modeled mobile-delay budget, but the
+**tail** (4.1–5.4s) still overruns on the two GPUs that carry 2 trainers each (10>8) plus the aggregator's eval
+GPU — a contention effect, not the JVP cost. Clearing the tail needs the sim's GPU pipelining fix (keeps compute
+near the ~2.4s uncontended floor) and/or 1-trainer-per-GPU.
 
 **Deliberately *not* adopted** (they change fidelity / are inferior here): **vmap batching** (2× but re-baselines
 the fp32 trajectory via §4.2 cancellation — exact only in fp64), **exact forward-mode AD** (0.5×, needs eager
