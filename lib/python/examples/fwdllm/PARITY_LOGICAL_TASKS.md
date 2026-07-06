@@ -6,27 +6,66 @@ these properties. Correctness before speed; no hacks (simulate_fwdllm.md princip
 
 ---
 
-## ⏸ RESUME HERE (2026-07-06) — #15 fix LANDED, P3 run is the gate
+## ⏸⏸ SIM DEBUG PAUSED (2026-07-06) — switching to REAL-experiment telemetry/impl on this branch
 
-**#15 fluxtune `sim_rate=0.50` fix (`sim_compute_truthful_gate`) is CODE-COMPLETE + unit-green; the P3 validation run
-is the only remaining step and needs the GPU + h5py env (operator runs it).** Everything else below is either DONE or
-a lower-priority open task.
+**We are PAUSING fluxtune sim debugging.** Next work on `dg/fwdllm_sim_unavail` is a set of **real-experiment-run
+telemetry + implementation changes** the operator wants to launch first (added to this branch, separate from the sim
+loop). Resume the sim work from the "RESUME HERE" block below once those land. No sim code is mid-edit — the tree is
+clean; everything needed to resume is captured here + in the #15 section.
 
-### ▶ IMMEDIATE NEXT COMMAND (P3 — validate the #15 fix)
+### ✅ P3 was RUN — phantom stall CONFIRMED FIXED, but `sim_rate` still <1 for TWO NEW (non-drain-gate) reasons
+Pair: sim `run_20260706_112114_fluxtune_n10_smoke_syn_0_sim` / real `run_20260706_110555_..._real` (both `--max-data-id 2`,
+`--delay-factor 1`, `sim_compute_truthful_gate=True`, `jvp_perf_opt=True` on trainers — verified symmetric real↔sim).
+Sim ran clean to `data_id=2` (NOT stuck — an earlier run was mistakenly Ctrl-C'd ~48s into steady state).
+
+- **Phantom fix WORKS + is load-bearing:** `SIM_GRAD_STUCK_EVICT=0`; `phantom_skip` rises **~1 per commit** (→65); the
+  30s failsafe stalls are GONE (max gap **12.8s once**, rest ≤5s; baseline had 31s failsafe + 24 gaps ≥10s). Without the
+  guard these would each be 30s stalls. **Original #15 root (phantom `_sim_inflight_expected` 30s failsafe) is RESOLVED.**
+- **But `sim_rate` did NOT cross 1** (steady-state ~0.49, == pre-fix 0.494; overall 0.31 is startup-dominated on this
+  short scope). **Per-commit `Δvclock/Δwall = 0.465`** — vclock does NOT advance by the wall elapsed. Recurring ~4–5s
+  wall gaps advance vclock only 0–1s. So the phantom fix was **necessary, not sufficient**; the ceiling is now elsewhere:
+  - **(a) The vclock OMITS the aggregator's own serialized compute.** `aggregate()` (variance pass, O(pool); grows with
+    the 126-entry `cached_v`) runs 1–3s **between every commit** = **32s in sim**, and is **never credited to the vclock**.
+    Code: [`fwdllm_aggregator.py:1783`](../../flame/mode/horizontal/syncfl/fwdllm_aggregator.py#L1783) folds **eval** into
+    vclock (`_vclock.advance(now+_eval_s)`) but there is **no analogous fold for the variance-compute time**. It's genuine,
+    symmetric compute: **real `aggregate()`=29s (mean 1.25s), sim=32s (mean 1.34s)** — the K-D25 "fold genuine unmodeled
+    compute" class. This ~32s + ~29s drain/distribute/MQTT = the 61s steady-state deficit (145s wall − 84s vclock).
+  - **(b) No GPU-vs-D skip headroom (#1d).** `sct=send+max(gpu,D)`; real JVP GPU ≈4–5s (contended, 10 trainers/8 GPUs;
+    ~2.4s uncontended floor) ≈ min modeled `D=4.0` → `max(gpu,D)≈gpu` → the sim BLOCKS in `drain_ready` on the real GPU
+    pass for ~0 virtual headroom. `buf_depth` pinned at **6** (grads buffered, ready) while the strict-sct drain waits for
+    the specific next-sct grad's GPU to finish. Net: **sim steady-state wall (145s) > real (91s)** — the sim is SLOWER in
+    wall than real because the sct-ordered drain over-serializes behind genuinely-computing trainers.
+
+### ▶ RESUME HERE (after the real-experiment work) — resolve the residual, then re-validate P3
+1. **Fold the non-overlapped `aggregate()` variance-compute time into the vclock** (mirror the eval fold at `:1783`).
+   Biggest, most principled lever. **CAVEAT (validate first):** in real async, that compute partially OVERLAPS other
+   trainers' GPU passes, so folding the *full* time over-counts — fold only the *non-overlapped* portion. **First measure
+   how much of real's `aggregate()` overlaps GPU** before choosing the fold. Baseline-affecting vclock change → operator
+   sign-off (principles #1/#12/#16); land behind a flag, byte-identical off.
+2. **Restore GPU-vs-D headroom (#1d):** pin **1 trainer/GPU** (GPU → ~2.4s floor, well under min D=4.0) and/or raise
+   `--delay-factor` so `max(gpu,D)=D` gives real skip-able headroom. Lifts both #15-residual-(b) AND #1d cohort overrun.
+3. **Then re-validate:** a LONGER flag-on run (past the ~125s startup, which dominated this short scope), PLUS a flag-OFF
+   A/B at matched scope to prove parity UNCHANGED (this run's 11 parity fails all look pre-existing cohort/cadence/
+   throughput — none obviously new — but not provable without the A/B). Re-run command below.
+
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
 bash run_sequential.sh --only fluxtune --mode both --delays on --delay-factor 1 --max-data-id 2 --yes
 python run_parity.py --yes --max-bin 1 --baselines fluxtune
-# then inspect the new sim agg log (see "Repro" at the end of the #15 section):
+# P3 gate greps (new sim agg log):
 #   FS=$(ls -td ../experiments/run_*_fluxtune_n10_smoke_syn_0_sim | head -1); AGG=$(ls "$FS"/*aggregator.log|head -1)
-#   grep -c SIM_GRAD_STUCK_EVICT "$AGG"                       # expect ~0
-#   grep SIM_GRAD_RECV "$AGG" | grep -oE 'phantom_skip=[0-9]+' | tail -1   # expect > 0 (guard firing)
+#   grep -c SIM_GRAD_STUCK_EVICT "$AGG"                                    # expect ~0  (WAS 0 ✓)
+#   grep SIM_GRAD_RECV "$AGG" | grep -oE 'phantom_skip=[0-9]+' | tail -1   # expect >0  (WAS 65 ✓)
+#   grep VCLOCK_PROGRESS "$AGG" | tail -1                                  # the sim_rate verdict (WAS ~0.49 steady ✗)
 ```
-**EXPECT (PASS):** no/near-zero `[SIM_GRAD_STUCK_EVICT]`, `phantom_skip` rising, the `gap>2s` wall (~1974s baseline)
-collapsing, concurrency↑, **`sim_rate` → >1** — AND `cohort_sequence`/`var`/`staleness` parity **UNCHANGED** vs the
-flag-off banked run. **If parity MOVES:** the compute cap is too tight (skipping a genuine straggler) → raise
-`sim_gate_compute_cap_s` (yaml, default 10.0) and re-run; if it still moves, the guard is reordering commits →
-revisit (the fix must only remove dead wall, not change WHICH grad commits WHEN).
+**EXPECT (PASS):** `STUCK_EVICT~0` ✓ + `phantom_skip` rising ✓ (both already hold) AND **`sim_rate` → >1** (the open
+part) AND `cohort_sequence`/`var`/`staleness` parity **UNCHANGED** vs the flag-off run. **If parity MOVES:** compute cap
+too tight → raise `sim_gate_compute_cap_s` (yaml, default 10.0); the fix must only remove dead wall, not change WHICH
+grad commits WHEN.
+
+**Telemetry we still want (add when resuming):** per-commit `Δvclock` vs `Δwall` line (ratio<1 tell); `aggregate()`
+overlap-with-GPU fraction (decides fold (1)); explicit `[VCLOCK_DEFICIT] aggregate_s=… drain_s=… uncredited_s=…` at each
+`VCLOCK_PROGRESS`. Repro one-liners for the per-commit ratio + gap histogram are in the #15 "Repro" block below.
 
 ### Other OPEN fronts (after P3), priority order
 1. **bin-7 nondeterminism → relax the parity target (SHARED, correctness-of-CHECK).** SYNC full-run cadence breaks at
@@ -100,7 +139,7 @@ Adds a 10-trainer idle pool; confirms real fills C from fresh idle trainers whil
 
 ---
 
-## ⭐ #15 fluxtune `sim_rate=0.50` — COMMIT-PATH STALL (root confirmed; fix LANDED, P3 pending)
+## ⭐ #15 fluxtune `sim_rate=0.50` — COMMIT-PATH STALL (phantom fix LANDED+VALIDATED; residual = vclock-omits-aggregate + GPU≈D)
 
 **Superseded framings (do not revisit):** (1) "GPU-pipelining loss / decouple dispatch" — felix's gate is INERT (F1).
 (2) "re-dispatch on return / hold-to-commit is over-restrictive" — hold-to-commit is a CORRECTNESS check (F5). The
@@ -140,8 +179,11 @@ correctly-held trainers idle ~30s instead of ~one GPU pass → sim_rate 0.50.
   `sim_gate_compute_cap_s: 10.0`).
 - **P2:** 4 new `TestComputeTruthfulGate` (phantom skipped; stale-dispatch=phantom; in-window straggler STILL held;
   flag-off byte-identical) in `tests/mode/test_fwdllm_sim_grad_loop.py`; +189 fwdllm mode tests green.
-- **P3 = the gate (RESUME HERE, command at top).** Preserve the committed LOGICAL trace (grads/versions/order/
-  staleness = real; #1d/cohort parity) — the fix must only remove dead wall. **P4:** §G one-liner after P3 passes.
+- **P3 = RAN 2026-07-06 (pair `run_20260706_112114` sim / `_110555` real).** Phantom fix **VALIDATED**: `STUCK_EVICT=0`,
+  `phantom_skip`→65 (~1/commit, load-bearing), 30s failsafes gone (max gap 12.8s). **But `sim_rate` still <1** (steady
+  ~0.49; per-commit `Δvclock/Δwall=0.465`). **Residual root (NEW, non-drain-gate):** (a) vclock omits `aggregate()`
+  variance compute (sim 32s / real 29s, uncredited — `:1783` folds eval only) + (b) GPU≈D no-headroom (#1d). See the
+  PAUSED checkpoint at the top for the full evidence + resume plan. **P4:** §G/§K one-liner after `sim_rate>1` + parity A/B.
 
 **Repro (read-only, from `lib/python/examples/fwdllm`):**
 ```bash

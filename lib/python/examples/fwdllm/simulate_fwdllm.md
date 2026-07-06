@@ -37,6 +37,14 @@ discipline, starvation self-termination, A6/A7/A8/K11 ground-truth rungs).
 
 ## §A  Current status
 
+> **⏸ SIM DEBUG PAUSED (2026-07-06) — real-experiment telemetry/impl next on this branch.** #15 update: the phantom
+> commit-path stall is **FIXED + P3-validated** (`sim_compute_truthful_gate`; `STUCK_EVICT=0`, `phantom_skip` firing,
+> 30s failsafes gone). `sim_rate` is still <1 for a **NEW, non-drain-gate** reason — (a) the vclock omits `aggregate()`
+> variance-compute wall (sim 32s / real 29s, symmetric, uncredited) + (b) GPU≈D no-headroom (#1d). So the "sim_rate=0.50
+> — a COMMIT-PATH STALL / phantom drain gate" reading in the scoreboard + prose immediately below is now the **fixed**
+> part; the live residual + resume plan live in [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.md) (PAUSED checkpoint at
+> top + #15). Don't re-debug the sim until the real-experiment work lands.
+
 **All three baselines run end-to-end (#14/#1c/#13 fixed). SYNC baselines are in good shape: with the full registry
 delay (`--delay-factor 1`) `sim_rate` is now 2.9–3.0 (#12c RESOLVED for sync) and K-D31 makes bin-1 cohort order
 BIT-EXACT (P2-7a validated). The two live fronts are now BOTH understood at the root: (1) a SYNC float-nondeterminism
@@ -148,7 +156,7 @@ nondeterminism. Full diagnosis: [PARITY_LOGICAL_TASKS.md](PARITY_LOGICAL_TASKS.m
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
-| **#15** ⭐⭐ | **fluxtune `sim_rate = 0.50` — a COMMIT-PATH STALL** (corrected 2026-07-06; NOT delay-headroom #12c, NOT a gate bug — felix's gate is INERT, NOT over-restrictive hold-to-commit). Hold-to-commit is a CORRECTNESS check: a trainer is freed only when its update commits, so commit RATE = throughput. The drain's `earlier_stuck` gate blocks real wall on a PHANTOM `_sim_inflight_expected` entry (trainer stamped at dispatch, not actually computing — e.g. waiting for weights the gate-blocked aggregator can't send) → 30s failsafe → correctly-held trainers idle ~30s not ~one GPU pass → 1.54× vs real 3.37×. Grounding: PARITY_LOGICAL_TASKS.md FELIX GROUNDING F5/F6. | fluxtune | **Make the commit path fast/non-stalling** — the gate only waits on a genuinely-computing trainer (compute-truthful `_sim_inflight_expected` / bound the wait / yield instead of blocking). Hold-to-commit UNTOUCHED. Diagnose D1/D2 first (D3 N=20/C=10/K=3 optional). Target sim_rate >1. |
+| **#15** ⭐⭐ (⏸ PAUSED) | **fluxtune `sim_rate<1` — phantom COMMIT-PATH STALL FIXED (`sim_compute_truthful_gate`, P3 VALIDATED 2026-07-06: `STUCK_EVICT=0`, `phantom_skip`→65 ~1/commit, 30s failsafes gone). But `sim_rate` still <1** (steady ~0.49; per-commit `Δvclock/Δwall=0.465`). **Residual root (NEW, non-drain-gate):** (a) the vclock OMITS `aggregate()` variance-compute wall — sim 32s / real 29s, symmetric, uncredited (`fwdllm_aggregator.py:1783` folds eval only); (b) GPU≈D no-headroom (`max(gpu,D)≈gpu`, sim blocks in `drain_ready` on the real GPU pass while `buf_depth=6` waits) = #1d. Net: sim wall 145s > real 91s. Full evidence+plan: PARITY_LOGICAL_TASKS.md top (PAUSED checkpoint) + #15. | fluxtune | **PAUSED** (operator doing real-experiment telemetry/impl first). On resume: (1) fold the *non-overlapped* `aggregate()` time into the vclock (measure GPU-overlap first; flag-gated, operator sign-off); (2) GPU-vs-D headroom — 1 trainer/GPU or `--delay-factor` up; (3) longer flag-on run + flag-off A/B for parity. |
 | **#N (bin-7 nondeterminism)** ⭐ | **SYNC exact-cadence parity has a float-nondeterminism wall at ~bin 7.** Order matches 41/41 (K-D31) yet cadence breaks: ~1e-3 GPU fp16 grad jitter, amplified by the split-half variance ratio, flips the `var<0.3` gate at (7,2). Not a sim bug. | fwdllm (fwdllm_plus latent) | Confirm with a 2-real-run diff (P0-2). Then land the parity-target relaxation: `cohort_sequence` EXACT scoped to `--max-bin 1`; distributional cadence/var rung (mean-band + KS + `var_good` fraction) for the full run. |
 | **#1d** ⭐ | **fluxtune cohort SET diverges (thin-margin overrun).** `set_match=3/272`. `jvp_perf_opt` cut GPU to 3.61s MEAN (<4.0s budget) but the tail (4.1–5.4s) still overruns on the two GPUs that carry 2 trainers each (10/8) + the aggregator's eval GPU. Order flips → wrong 3-of-K commit. | fluxtune | Aggregator-GPU pin landed (K-D33); with #15's pipelining the compute drops toward the ~2.4s uncontended floor (<4.0s). If a residual tail remains: `perturbation_count`↓ (P2-5) or 1-trainer/GPU. |
 | **#7** | fwdllm_plus real ~4× slower/round; at syn_0 real sees only ~4.9 eligible vs sim ~9.6. Not a sim bug. | fwdllm_plus | Profile per-iteration reselection + oracular-read cost from the banked per-phase log; explain the eligible-count gap at 100% avail. |
@@ -503,8 +511,14 @@ Phase 2); D4 (eval-delay factor — confirmed ~1× train cost, K-D3). D1/D6 reso
   gate skips any expected entry whose last dispatch is older than `sim_gate_compute_cap_s` (default 10s) — a
   stamped-but-idle phantom no longer blocks a ready commit, while a genuine in-window straggler is still held (commit
   order preserved). Hold-to-commit, the sct-ordered drain, K-D12, K-D27 UNTOUCHED; `fwdllm_aggregator`-only →
-  async_cifar10 byte-identical. 25 pytests green. **P3 gate:** the run must show sim_rate>1 with
-  cohort_sequence/var/staleness parity UNCHANGED (else the cap skips a genuine straggler → raise it).
+  async_cifar10 byte-identical. 25 pytests green. **P3 RAN 2026-07-06 (`run_20260706_112114` sim / `_110555` real):**
+  phantom fix **VALIDATED** — `STUCK_EVICT=0`, `phantom_skip`→65 (~1/commit, load-bearing), 30s failsafes gone (max gap
+  12.8s). **But `sim_rate` still <1** (steady ~0.49; per-commit `Δvclock/Δwall=0.465`) — the phantom stall was necessary
+  but NOT the sim_rate ceiling. **Residual root (NEW):** (a) vclock omits `aggregate()` variance-compute wall (sim 32s /
+  real 29s, symmetric, uncredited — `:1783` folds eval only); (b) GPU≈D no-headroom (#1d) → sim blocks in `drain_ready`
+  on the real GPU pass. Sim wall (145s) > real (91s). **PAUSED** for operator real-experiment work; resume plan (fold
+  non-overlapped aggregate into vclock + GPU-vs-D headroom + longer flag-on run & flag-off A/B) at PARITY_LOGICAL_TASKS.md
+  top. jvp_perf_opt verified symmetric (trainers True, aggregator-eval False, both modes) — NOT a mismatch.
 
 *Retired/superseded anchors (kept only as pointers): K-D6 (→K-D12), K-D7/K-D8/K-D10/K-D16/K-D18/K-D19/K-D20/K-D23
 — landed scaffolding or corrections, folded into §G/§H; see git history for detail.*
