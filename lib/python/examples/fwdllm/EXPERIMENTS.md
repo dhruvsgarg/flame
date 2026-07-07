@@ -210,6 +210,22 @@ Legend — **provenance**: `EMIT` already in telemetry · `DERIVE` reducer over 
 > **Optimize:** delta/compressed model distribution on re-pull + staleness-aware throttling would cut
 > Fluxtune's dominant weight-download term.
 
+> 🔧 **These are single-contribution results — Fluxtune's efficiency mechanisms (2 & 3) are OFF.**
+> The current run-set exercises only Fluxtune's **contribution 1 — guided (JVP-magnitude) perturbation
+> selection**. Its two *efficiency* contributions are inactive: **(2) dynamic K/C** — the `main`
+> condition fixes `agg_goal=10` / `C=30` (static) for the agg_goal-matched head-to-head (§7.0; design in
+> [`docs/dynamic_kc_design.md`](docs/dynamic_kc_design.md)) — and **(3) intelligent aggregation** — the run
+> uses plain `stalenessPolicy=fedbuff` down-weighting, not staleness/variance-aware aggregation. Those two
+> mechanisms target *exactly* the inefficiencies E2–E4 surface: **dynamic C** throttles concurrency under
+> high staleness → fewer wasted stale updates and fewer continuous model re-pulls (E3 compute + E4 bytes);
+> **intelligent aggregation** weights contributions by usefulness → more Δloss per forward pass (E3), and
+> dynamic K right-sizes the aggregation goal (E2). **So the utilization (E2), compute-productivity (E3)
+> and communication (E4) claims must be (re)made with contributions 2 & 3 enabled** — with only guided
+> perturbations, Fluxtune is *expected* to trade efficiency for speed. Note this needs a **separate
+> full-system Fluxtune run**: enabling dynamic K/C breaks the deliberate `agg_goal=10` match, so the
+> agg_goal-matched condition isolates contribution 1, while the efficiency claims need the full system.
+> **E1 (speed + final accuracy) already holds on contribution 1 alone.**
+
 ### Experiment 5 — Client training-session durations & participation
 > **Takeaway:** Fluxtune's client sessions are much shorter than FwdLLM's.
 - **Reuse:** **Expt-1 run-set**.
@@ -396,6 +412,10 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
   amortize communication and spend every forward pass on a fresh, fully-weighted update. Fluxtune's win
   is E1 (wall-clock speed + final accuracy), not per-unit efficiency. Documented under §4 E3/E4 with
   optimization directions (staleness-aware admission, delta model distribution, JVP overhead reduction).
+  **Caveat:** these runs exercise only Fluxtune's contribution 1 (guided perturbations); its efficiency
+  mechanisms — dynamic K/C (2) and intelligent aggregation (3) — are OFF (static `agg_goal=10`/`C=30`,
+  plain `fedbuff`), so the E2/E3/E4 efficiency claims must be re-made with a full-system Fluxtune run (a
+  separate condition, since enabling dynamic K/C breaks the agg_goal match). E1 holds on contribution 1.
 - **2026-07-07 (e) — target 0.82 → 0.84 + paper-figure pipeline.** Raised the `main` convergence
   target to **0.84** (fluxtune reaches it; the baselines don't — the E1 gap is the story) in
   `experiments.yaml` and the plot defaults. Added `expt_scripts/plotlib/` (single-source SOCC-2026
