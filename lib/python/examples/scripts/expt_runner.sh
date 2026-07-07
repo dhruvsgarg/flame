@@ -212,6 +212,7 @@ expt_launch() {
         --target-acc "$EXPT_TARGET_ACC" --window "${EXPT_CONVERGE_WINDOW:-20}" \
         --pgid "$run_pid" --converge-json "$cj" --stall-json "$sj" \
         --stall-window-s "${EXPT_STALL_WINDOW_S:-0}" --stall-min-delta "${EXPT_STALL_MIN_DELTA:-0.01}" \
+        --stall-on "${EXPT_STALL_ON:-either}" --loss-min-rel-delta "${EXPT_LOSS_MIN_REL_DELTA:-0.01}" \
         --poll "${EXPT_CONVERGE_POLL_S:-15}" 2>&1 | tee -a "$logdir/expt_runner.log" &
     watcher_pid=$!
     EXPT_LAST_CONVERGE_JSON="$cj"; export EXPT_LAST_CONVERGE_JSON

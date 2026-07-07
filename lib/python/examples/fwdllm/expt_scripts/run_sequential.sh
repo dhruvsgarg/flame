@@ -115,6 +115,11 @@ STALL_WINDOW_S=""      # stall guard: terminate EARLY if best acc hasn't gained 
                        # Set from the CLI via --stall-window-s S or the hours alias --stall-window-h H;
                        # either OVERRIDES the registry value (e.g. main's 7200 = 2h).
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
+STALL_ON=""            # which signal resets the idle clock: acc | loss | either (default either).
+                       # 'either' keeps a run alive if EITHER accuracy gains >=stall_min_delta OR
+                       # test-loss drops >=loss_min_rel_delta — so a run that plateaus in accuracy
+                       # while loss is still falling is NOT killed. (empty => converge_watch default: either)
+LOSS_MIN_REL_DELTA=""  # RELATIVE test-loss drop vs running-best that counts as progress (default 0.01 = 1%)
 DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base) is 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay (simulate_fwdllm.md #12). Fans to BOTH roles via runner.py.
 RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
                   # (single source of truth for multi-node runs; CLI flags override)
@@ -132,6 +137,7 @@ usage() {
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
+  echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all] [--clean]" >&2
   echo "    --clean  auto-kill stray FL workers from a prior/crashed run before each" >&2
@@ -164,6 +170,9 @@ while [[ $# -gt 0 ]]; do
       case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --stall-window-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
       STALL_WINDOW_S="$(awk "BEGIN{printf \"%d\", ($2)*3600}")"; shift 2 ;;
     --stall-min-delta)      STALL_MIN_DELTA="$2"; shift 2 ;;
+    --stall-on)             case "$2" in acc|loss|either) ;; *) echo "ERROR: --stall-on must be acc|loss|either (got '$2')" >&2; exit 2 ;; esac
+                            STALL_ON="$2"; shift 2 ;;
+    --loss-min-rel-delta)   LOSS_MIN_REL_DELTA="$2"; shift 2 ;;
     --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
     --run-set)              RUN_SET="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
@@ -216,6 +225,8 @@ emit("DELAY_FACTOR", c.get("delay_factor"))
 emit("TARGET_ACC", c.get("target_accuracy")); emit("CONVERGE_WINDOW", c.get("converge_window"))
 emit("STALL_WINDOW_S", c.get("stall_window_s", d.get("stall_window_s")))
 emit("STALL_MIN_DELTA", c.get("stall_min_delta", d.get("stall_min_delta")))
+emit("STALL_ON", c.get("stall_on", d.get("stall_on")))
+emit("LOSS_MIN_REL_DELTA", c.get("loss_min_rel_delta", d.get("loss_min_rel_delta")))
 emit("MAX_RUNTIME_S", c.get("max_runtime_s", d.get("max_runtime_s")))
 emit("MAX_DATA_ID", c.get("max_data_id_progress", d.get("max_data_id_progress")))
 PY
@@ -234,6 +245,8 @@ PY
   [ -z "$DELAY_FACTOR" ]      && [ -n "${REG_DELAY_FACTOR:-}" ]    && DELAY_FACTOR="$REG_DELAY_FACTOR"
   [ -z "$STALL_WINDOW_S" ]    && [ -n "${REG_STALL_WINDOW_S:-}" ]  && STALL_WINDOW_S="$REG_STALL_WINDOW_S"
   [ -z "$STALL_MIN_DELTA" ]   && [ -n "${REG_STALL_MIN_DELTA:-}" ] && STALL_MIN_DELTA="$REG_STALL_MIN_DELTA"
+  [ -z "$STALL_ON" ]          && [ -n "${REG_STALL_ON:-}" ]        && STALL_ON="$REG_STALL_ON"
+  [ -z "$LOSS_MIN_REL_DELTA" ] && [ -n "${REG_LOSS_MIN_REL_DELTA:-}" ] && LOSS_MIN_REL_DELTA="$REG_LOSS_MIN_REL_DELTA"
   # non-empty-default knobs: apply registry only when the operator didn't pass the flag
   if [ "$DELAYS_SET" = "0" ] && [ -n "${REG_DELAYS:-}" ]; then DELAYS="$REG_DELAYS"; fi
   if [ "$MAX_RUNTIME_S_SET" = "0" ] && [ -n "${REG_MAX_RUNTIME_S:-}" ]; then MAX_RUNTIME_S="$REG_MAX_RUNTIME_S"; fi
@@ -301,6 +314,7 @@ PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
 STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
+STALL_ON="$STALL_ON" LOSS_MIN_REL_DELTA="$LOSS_MIN_REL_DELTA" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
@@ -319,6 +333,7 @@ AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
+STALL_ON = env("STALL_ON") or ""; LOSS_MIN_REL_DELTA = env("LOSS_MIN_REL_DELTA") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
 STALL_WINDOW_S = env("STALL_WINDOW_S") or ""; STALL_MIN_DELTA = env("STALL_MIN_DELTA") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
@@ -518,6 +533,7 @@ _cond = {
     "delay_factor": DELAY_FACTOR or "base",
     "target_acc": TARGET_ACC or "none",
     "stall_window_s": STALL_WINDOW_S or "off", "stall_min_delta": STALL_MIN_DELTA or "off",
+    "stall_on": STALL_ON or "either", "loss_min_rel_delta": LOSS_MIN_REL_DELTA or "0.01",
     "converge_window": (CONVERGE_WINDOW or "20") if TARGET_ACC else "none",
     "max_runtime_s": MAX_RUNTIME_S, "max_data_id": MAX_DATA_ID,
 }
@@ -578,11 +594,16 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                      % (CONVERGE_WINDOW or "20"))),
     # Stall guard: early-terminate a not-learning run before the wall ceiling.
     scalar_row("stall_guard",
-               (f"<{STALL_MIN_DELTA or '0.01'} acc in {int(float(STALL_WINDOW_S))//3600}h→STALLED"
+               ((lambda _on, _h: {
+                   "acc":    f"<{STALL_MIN_DELTA or '0.01'} acc in {_h}h→STALLED",
+                   "loss":   f"<{float(LOSS_MIN_REL_DELTA or '0.01')*100:g}% loss in {_h}h→STALLED",
+                   "either": f"<{STALL_MIN_DELTA or '0.01'} acc AND <{float(LOSS_MIN_REL_DELTA or '0.01')*100:g}% loss in {_h}h→STALLED",
+                 }[_on])(STALL_ON or "either", int(float(STALL_WINDOW_S))//3600)
                 if STALL_WINDOW_S and float(STALL_WINDOW_S) > 0 else "off"),
                bool(STALL_WINDOW_S), review=True,
-               note=("terminate EARLY if best acc gains < stall_min_delta within stall_window_s "
-                     "(--stall-window-s/--stall-min-delta). off ⇒ run to convergence or the wall ceiling")),
+               note=("terminate EARLY if there is no PROGRESS within stall_window_s on the armed signal "
+                     "(--stall-on acc|loss|either): acc gain < stall_min_delta (abs) and/or test-loss "
+                     "drop < loss_min_rel_delta (rel vs running-best). off ⇒ run to convergence or the wall ceiling")),
 ]}
 tiers.append(tier1)
 
@@ -786,6 +807,8 @@ if [ -n "$TARGET_ACC" ]; then
   export EXPT_CONVERGE_WINDOW="${CONVERGE_WINDOW:-20}"
   [ -n "$STALL_WINDOW_S" ]  && export EXPT_STALL_WINDOW_S="$STALL_WINDOW_S"
   [ -n "$STALL_MIN_DELTA" ] && export EXPT_STALL_MIN_DELTA="$STALL_MIN_DELTA"
+  [ -n "$STALL_ON" ]          && export EXPT_STALL_ON="$STALL_ON"
+  [ -n "$LOSS_MIN_REL_DELTA" ] && export EXPT_LOSS_MIN_REL_DELTA="$LOSS_MIN_REL_DELTA"
 fi
 
 # ---- PHASE B: launch each generated cfg sequentially ----

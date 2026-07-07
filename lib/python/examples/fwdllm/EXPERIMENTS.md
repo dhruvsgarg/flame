@@ -89,14 +89,23 @@ accuracy `τ`.** Defaults `W=20`, `τ` per-condition in `experiments.yaml`.
   **172800s (48h)** whenever `--target-acc` is set (a short default would kill a legitimately-learning
   run). `max_data_id_progress` also bounds it.
 - **Stall guard (early-out).** Terminate BEFORE the 48h ceiling if the run is clearly not learning:
-  **best accuracy hasn't gained ≥ `stall_min_delta` (default 0.01 = 1%) within `stall_window_s`
-  (default 7200s = 2h)** → verdict `STALLED`. Any ≥1% gain resets the 2h clock; convergence is checked
-  first, so a just-converged run is never called stalled. `stall_window_s=0` disables it.
-  *Validated: flat accuracy → STALLED; steady +1%/window → clock resets, keeps running.*
+  **no PROGRESS within `stall_window_s` (default 7200s = 2h)** → verdict `STALLED`. Any progress
+  resets the clock; convergence is checked first, so a just-converged run is never called stalled.
+  `stall_window_s=0` disables it. **What counts as progress is set by `--stall-on` (default `either`):**
+  - `acc` — best accuracy gained ≥ `stall_min_delta` (default 0.01 = **1% absolute**; accuracy ∈ [0,1]).
+  - `loss` — best (running-min) test-loss dropped ≥ `loss_min_rel_delta` (default 0.01 = **1% relative**;
+    loss is unbounded/scale-dependent, so the bar is *fractional vs the running-best*, not absolute).
+  - `either` — reset the clock if **either** fired. Motivating case: a run can plateau in accuracy while
+    test-loss keeps falling (still learning) — `either`/`loss` keeps it alive; `acc` would kill it.
+
+  Both signals use the running-best (max acc / min loss), so a single noisy eval can neither reset the
+  clock nor fake progress. *Validated end-to-end: flat acc + flat loss → `STALLED [either]`; flat acc +
+  steadily-falling loss → clock resets on the loss signal, keeps running until loss too plateaus.*
 
 New flags on `run_sequential.sh`: `--target-acc τ`, `--converge-window W`, `--stall-window-s S`
-(or the hours alias `--stall-window-h H`, e.g. `6` ⇒ 21600s), `--stall-min-delta D` (all also
-settable from the registry via `--run-set`). **The CLI value overrides the registry** — so a run
+(or the hours alias `--stall-window-h H`, e.g. `6` ⇒ 21600s), `--stall-min-delta D`,
+`--stall-on acc|loss|either`, `--loss-min-rel-delta R` (all also settable from the registry via
+`--run-set`). **The CLI value overrides the registry** — so a run
 that stalls too eagerly (flat accuracy but loss still falling) can be re-launched with a wider
 idle window, e.g. `--stall-window-h 6`, without editing `experiments.yaml`. The stall window is
 part of `condition_fp` (it changes the fingerprint), but it is a *termination-policy* knob, not a
@@ -348,6 +357,16 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 (c) — loss-aware stall guard (`--stall-on`).** The stall guard now resets its idle
+  clock on progress in **accuracy, loss, or either** (default `either`), not accuracy alone. Loss
+  progress is a **relative** drop vs the running-best (`--loss-min-rel-delta`, default 1%) because
+  test-loss is unbounded; accuracy stays **absolute** 1%. Both use the running-best (max acc / min
+  loss) so a noisy eval can't reset or fake progress. Fixes the failure mode where a run whose
+  accuracy plateaus while test-loss keeps falling (still learning) was killed at the window. Wired
+  through `converge_watch.py` (`--stall-on`, `--loss-min-rel-delta`; stall.json now records
+  `stall_on`/`best_loss`/`milestone_loss`), `expt_runner.sh`, `run_sequential.sh` (flags + registry
+  + gate row + `condition_fp`), and `experiments.yaml` defaults. Validated end-to-end: flat acc +
+  flat loss → `STALLED [either]`; flat acc + falling loss → kept alive until loss also plateaus.
 - **2026-07-07 (b) — CLI-configurable stall window (hours alias).** Added `--stall-window-h H`
   to `run_sequential.sh` (ergonomic hours alias for `--stall-window-s`); either overrides the
   registry's `stall_window_s`. Motivated by a fwdllm N=100 run the 2h guard killed at the very
