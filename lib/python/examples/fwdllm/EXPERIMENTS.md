@@ -174,11 +174,41 @@ Legend — **provenance**: `EMIT` already in telemetry · `DERIVE` reducer over 
   - **Forward passes** (perturbations): Σ per-client perturbation count. *(WS3-b — hardware-independent)*
   - `Δloss` = first `agg_eval.test-loss` − final `agg_eval.test-loss`. *(EMIT)*
 
+> ⚠ **Observed (N=100 smoke, 2026-07-07) — does NOT yet support the takeaway.** Learning-per-compute
+> ranks **FwdLLM++ > Fluxtune > FwdLLM** on *both* denominators (Δloss/GPU-h 0.055 vs 0.016 vs −0.014;
+> Δloss/M-fwd **5.62 vs 1.27** vs −1.26). Fluxtune attains the most *total* Δloss (0.82) and the fastest
+> wall-clock convergence (E1) but spends **~5–6× the forward-pass compute** to get there, so per-unit it
+> is *less* efficient. GPU-h is confounded by 8-GPU contention (§7.1); the hardware-independent
+> forward-pass denominator is clean and still favors FwdLLM++.
+> **Why:** Fluxtune's async high-concurrency design does more *unproductive* compute — (i) fedbuff
+> **staleness**: concurrent clients train on stale models and their updates are down-weighted, so part of
+> the forward-pass compute yields little Δloss; (ii) it keeps ~30 clients busy speculatively. FwdLLM++ is
+> synchronous with **oracular** availability, so every forward pass feeds a fresh, fully-weighted update
+> on a client that will contribute — no stale or dropped-out work. Concurrency buys wall-clock speed, not
+> compute efficiency.
+> **Optimize:** staleness-aware admission / adaptive concurrency + cutting JVP forward-pass overhead to
+> close the per-compute gap while keeping Fluxtune's speed. (The per-resource-constrained-client framing
+> the takeaway intends still needs a per-client-normalized metric — a metric decision, not a plot bug.)
+
 ### Experiment 4 — Data transmitted over the network
 > **Takeaway:** Fluxtune incurs lower total data overhead despite more messages per round/iteration.
 - **Reuse:** **Expt-1 run-set** (requires WS3-a telemetry present at run time).
 - **Metrics reported:** total messages sent (each side); total bytes transmitted (each side);
   per-message size distribution. *(WS3-a)*
+
+> ⚠ **Observed (N=100 smoke, 2026-07-07) — contradicts the takeaway.** Fluxtune transmits **~1.9× more
+> total bytes** than FwdLLM++ (**146 vs 79 GB**) and ~1.6× more messages — it does *not* incur lower
+> overhead here. Per-message size is identical (1.8 MB/upload), so the gap is message **count**, not
+> payload.
+> **Why:** (i) **Model distribution dominates** — FwdLLM++ (sync) sends the model once per round to the K
+> selected clients (weights **9 GB**); Fluxtune (async) has ~30 clients *continuously re-pull* the latest
+> global model as they finish and re-enlist → weights balloon to **88 GB**. (ii) **Uploads scale with
+> iterations** — one gradient upload (1.8 MB) per trainer-iteration; Fluxtune runs ~1.6× more iterations
+> (concurrency) → 58 vs 36 GB up. FwdLLM++'s synchronous rounds amortize both, and oracular selection
+> avoids dispatching to non-contributors (it *does* pay a 33 GB method-specific `var_bad` payload, yet
+> still totals less). **Same root cause as E3:** async concurrency does more total work.
+> **Optimize:** delta/compressed model distribution on re-pull + staleness-aware throttling would cut
+> Fluxtune's dominant weight-download term.
 
 ### Experiment 5 — Client training-session durations & participation
 > **Takeaway:** Fluxtune's client sessions are much shorter than FwdLLM's.
@@ -357,6 +387,15 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 (f) — E3/E4 observed results (Fluxtune trades efficiency for speed).** N=100 smoke data
+  contradicts the E3 and E4 takeaways: FwdLLM++ is **more compute-efficient** (Δloss/M-fwd 5.62 vs 1.27)
+  **and more communication-efficient** (79 vs 146 GB total) than Fluxtune. Root cause (both): Fluxtune's
+  async high-concurrency design does more total work — fedbuff staleness + speculative concurrency waste
+  forward-pass compute, and continuous async model re-pulls balloon weight-download bytes (88 vs 9 GB),
+  while more iterations mean more gradient uploads. FwdLLM++'s sync rounds + oracular availability
+  amortize communication and spend every forward pass on a fresh, fully-weighted update. Fluxtune's win
+  is E1 (wall-clock speed + final accuracy), not per-unit efficiency. Documented under §4 E3/E4 with
+  optimization directions (staleness-aware admission, delta model distribution, JVP overhead reduction).
 - **2026-07-07 (e) — target 0.82 → 0.84 + paper-figure pipeline.** Raised the `main` convergence
   target to **0.84** (fluxtune reaches it; the baselines don't — the E1 gap is the story) in
   `experiments.yaml` and the plot defaults. Added `expt_scripts/plotlib/` (single-source SOCC-2026
