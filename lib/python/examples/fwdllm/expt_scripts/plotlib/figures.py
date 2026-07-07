@@ -45,34 +45,62 @@ def _cdf_xy(values):
     return xs, ys
 
 
+def _plot_curve(ax, x, y_raw, st, smooth, label):
+    """Smoothed line + a faint RAW envelope underneath — the envelope preserves the
+    true peaks (e.g. the accuracy actually reached) that EMA smoothing pulls down."""
+    if smooth and smooth > 0:
+        ax.plot(x, y_raw, color=st.color, linestyle=st.linestyle, lw=0.7,
+                alpha=0.22, zorder=2 + st.order)
+        y = S.ema(y_raw, smooth)
+    else:
+        y = y_raw
+    ax.plot(x, y, color=st.color, linestyle=st.linestyle, marker=st.marker,
+            markevery=0.1, markersize=4.5, markeredgecolor="white",
+            markeredgewidth=0.5, label=label, zorder=3 + st.order)
+
+
+def _round_boundaries(ax, rr, hrs):
+    for i in rr.round_transition_indices():
+        ax.axvline(hrs[i], color=B.style_for(rr.key).color, ls=(0, (1, 2)),
+                   lw=0.9, alpha=0.55, zorder=2)
+
+
 # --------------------------------------------------------------------------- #
-# Experiment 1 — accuracy vs wall-clock time (the time-to-target money plot)
+# Experiment 1 — accuracy / loss vs wall-clock time (adjacent paper figures)
 # --------------------------------------------------------------------------- #
 def fig_e1_acc_vs_time(runs, target=None, smooth=0.0, **_):
     fig, ax = _new_ax(aspect=0.68)
     for rr in runs:
-        st = B.style_for(rr.key)
         hrs, acc, _loss, _rnd = rr.learning_curve()
         if not hrs:
             continue
-        acc = S.ema(acc, smooth)                 # visual smoothing only (scalars use raw)
-        ax.plot(hrs, acc, color=st.color, linestyle=st.linestyle,
-                marker=st.marker, markevery=0.1, markersize=4.5,
-                markeredgecolor="white", markeredgewidth=0.5,
-                label=st.label, zorder=3 + st.order)
-        # mark round (epoch) boundaries — data_id cycles per round, so a faint
-        # vertical rule at each transition shows where a new pass over the data
-        # begins (kept off the line so it never collides with the data markers).
-        for i in rr.round_transition_indices():
-            ax.axvline(hrs[i], color=st.color, ls=(0, (1, 2)), lw=0.9,
-                       alpha=0.55, zorder=2)
+        _plot_curve(ax, hrs, acc, B.style_for(rr.key), smooth, B.style_for(rr.key).label)
+        _round_boundaries(ax, rr, hrs)          # data_id cycles per round → mark epochs
     if target is not None:
         ax.axhline(target * 100, ls=":", color="#555555", lw=1.0, zorder=2)
         ax.text(ax.get_xlim()[1], target * 100, f" target {target*100:.0f}%",
                 va="center", ha="left", fontsize=7, color="#555555")
     ax.set_xlabel("wall-clock time (h)")
     ax.set_ylabel("test accuracy (%)")
-    # note the round-boundary semantics once, unobtrusively
+    ax.plot([], [], color="#888888", ls=(0, (1, 2)), lw=0.9, label="round boundary")
+    return _finish(fig, ax, [r.key for r in runs])
+
+
+def fig_e1_loss_vs_time(runs, smooth=0.0, **_):
+    """Test-loss vs wall time — the grounded companion to the accuracy curve."""
+    fig, ax = _new_ax(aspect=0.68)
+    any_data = False
+    for rr in runs:
+        hrs, _acc, loss, _rnd = rr.learning_curve()
+        if not hrs or all(v is None for v in loss):
+            continue
+        _plot_curve(ax, hrs, loss, B.style_for(rr.key), smooth, B.style_for(rr.key).label)
+        _round_boundaries(ax, rr, hrs)
+        any_data = True
+    if not any_data:
+        return None
+    ax.set_xlabel("wall-clock time (h)")
+    ax.set_ylabel("test loss")
     ax.plot([], [], color="#888888", ls=(0, (1, 2)), lw=0.9, label="round boundary")
     return _finish(fig, ax, [r.key for r in runs])
 
@@ -102,34 +130,43 @@ def fig_e2_trainer_busy_cdf(runs, **_):
 
 
 # --------------------------------------------------------------------------- #
-# Experiment 3 — learning per unit compute (grouped bar, two denominators)
+# Experiment 3 — learning per unit compute (ONE figure per denominator: the two
+# metrics differ ~100x in scale, so a shared axis makes one set of bars invisible)
 # --------------------------------------------------------------------------- #
-def fig_e3_productivity(runs, **_):
-    fig, ax = _new_ax(aspect=0.7)
-    groups = ["Δloss / GPU-hour", "Δloss / M fwd-pass"]
+def _bar_by_baseline(runs, valfn, ylabel, fmt="{:.3g}"):
+    fig, ax = _new_ax(aspect=0.72)
     keys = [r.key for r in runs]
-    n = len(keys)
-    if n == 0:
+    if not keys:
         return None
-    width = 0.8 / n
-    x = np.arange(len(groups))
-    plotted = False
-    for j, rr in enumerate(runs):
-        st = B.style_for(rr.key)
-        dl = rr.delta_loss()
-        gpu_h = rr.gpu_s_total() / 3600.0
-        v_gpu = (dl / gpu_h) if (dl is not None and gpu_h) else 0.0
-        v_fwd = (dl / (rr.fwd_total / 1e6)) if (dl is not None and rr.have_fwd and rr.fwd_total) else 0.0
-        ax.bar(x + (j - (n - 1) / 2) * width, [v_gpu, v_fwd], width * 0.92,
-               color=st.color, label=st.label, zorder=3)
-        plotted = True
-    if not plotted:
-        return None
+    xs = np.arange(len(keys))
+    vals = [(valfn(rr) or 0.0) for rr in runs]
+    ax.bar(xs, vals, 0.62, color=[B.style_for(k).color for k in keys], zorder=3)
     ax.axhline(0, color="#888888", lw=0.6)
-    ax.set_xticks(x)
-    ax.set_xticklabels(groups)
-    ax.set_ylabel("loss reduction per unit compute")
-    return _finish(fig, ax, keys)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([B.style_for(k).label for k in keys])
+    for t, k in zip(ax.get_xticklabels(), keys):        # bold/italic per registry
+        w, s = B.style_for(k).legend_font()
+        t.set_fontweight(w); t.set_fontstyle(s)
+    for xi, v in zip(xs, vals):
+        ax.text(xi, v, fmt.format(v), ha="center",
+                va="bottom" if v >= 0 else "top", fontsize=7)
+    ax.set_ylabel(ylabel)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    return fig
+
+
+def fig_e3_dloss_per_gpu_hour(runs, **_):
+    return _bar_by_baseline(
+        runs, lambda rr: (rr.delta_loss() / (rr.gpu_s_total() / 3600.0))
+        if (rr.delta_loss() and rr.gpu_s_total()) else 0.0, "Δloss per GPU-hour")
+
+
+def fig_e3_dloss_per_mfwd(runs, **_):
+    return _bar_by_baseline(
+        runs, lambda rr: (rr.delta_loss() / (rr.fwd_total / 1e6))
+        if (rr.delta_loss() and rr.have_fwd and rr.fwd_total) else 0.0,
+        "Δloss per M forward-pass")
 
 
 # --------------------------------------------------------------------------- #
@@ -183,8 +220,10 @@ def fig_e5_session_cdf(runs, **_):
 # stable name -> builder (name is also the PDF basename)
 FIG_BUILDERS = {
     "e1_acc_vs_time": fig_e1_acc_vs_time,
+    "e1_loss_vs_time": fig_e1_loss_vs_time,
     "e2_trainer_busy_cdf": fig_e2_trainer_busy_cdf,
-    "e3_productivity": fig_e3_productivity,
+    "e3_dloss_per_gpu_hour": fig_e3_dloss_per_gpu_hour,
+    "e3_dloss_per_mfwd": fig_e3_dloss_per_mfwd,
     "e4_network_bytes": fig_e4_network_bytes,
     "e5_session_cdf": fig_e5_session_cdf,
 }
