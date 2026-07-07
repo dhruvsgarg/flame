@@ -111,7 +111,9 @@ TARGET_ACC=""          # convergence stop (EXPERIMENTS.md WS2): terminate when t
                        # --converge-window data bins are ALL >= this test accuracy.
 CONVERGE_WINDOW=""     # W consecutive-bin window for the convergence stop (default 20 when --target-acc set)
 STALL_WINDOW_S=""      # stall guard: terminate EARLY if best acc hasn't gained --stall-min-delta
-                       # within this many wall s (empty/0 = off unless registry/--run-set sets it)
+                       # within this many wall s (empty/0 = off unless registry/--run-set sets it).
+                       # Set from the CLI via --stall-window-s S or the hours alias --stall-window-h H;
+                       # either OVERRIDES the registry value (e.g. main's 7200 = 2h).
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
 DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base) is 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay (simulate_fwdllm.md #12). Fans to BOTH roles via runner.py.
 RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
@@ -129,7 +131,7 @@ usage() {
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
-  echo "          [--target-acc A] [--converge-window W] [--stall-window-s S] [--stall-min-delta D]" >&2
+  echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all] [--clean]" >&2
   echo "    --clean  auto-kill stray FL workers from a prior/crashed run before each" >&2
@@ -158,6 +160,9 @@ while [[ $# -gt 0 ]]; do
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
     --stall-window-s)       STALL_WINDOW_S="$2"; shift 2 ;;
+    --stall-window-h)       # ergonomic hours alias -> seconds (e.g. --stall-window-h 6 => 21600)
+      case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --stall-window-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
+      STALL_WINDOW_S="$(awk "BEGIN{printf \"%d\", ($2)*3600}")"; shift 2 ;;
     --stall-min-delta)      STALL_MIN_DELTA="$2"; shift 2 ;;
     --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
     --run-set)              RUN_SET="$2"; shift 2 ;;

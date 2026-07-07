@@ -94,8 +94,14 @@ accuracy `τ`.** Defaults `W=20`, `τ` per-condition in `experiments.yaml`.
   first, so a just-converged run is never called stalled. `stall_window_s=0` disables it.
   *Validated: flat accuracy → STALLED; steady +1%/window → clock resets, keeps running.*
 
-New flags on `run_sequential.sh`: `--target-acc τ`, `--converge-window W`, `--stall-window-s S`,
-`--stall-min-delta D` (all also settable from the registry via `--run-set`).
+New flags on `run_sequential.sh`: `--target-acc τ`, `--converge-window W`, `--stall-window-s S`
+(or the hours alias `--stall-window-h H`, e.g. `6` ⇒ 21600s), `--stall-min-delta D` (all also
+settable from the registry via `--run-set`). **The CLI value overrides the registry** — so a run
+that stalls too eagerly (flat accuracy but loss still falling) can be re-launched with a wider
+idle window, e.g. `--stall-window-h 6`, without editing `experiments.yaml`. The stall window is
+part of `condition_fp` (it changes the fingerprint), but it is a *termination-policy* knob, not a
+scientific-condition one: the cross-baseline mix-guard compares only N/partition/trace, so widening
+it for one baseline's re-run does not taint the Expt-1 comparison.
 
 ---
 
@@ -342,6 +348,11 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 (b) — CLI-configurable stall window (hours alias).** Added `--stall-window-h H`
+  to `run_sequential.sh` (ergonomic hours alias for `--stall-window-s`); either overrides the
+  registry's `stall_window_s`. Motivated by a fwdllm N=100 run the 2h guard killed at the very
+  start (flat accuracy but loss still falling slowly). Re-launch with a 6h idle window:
+  `run_sequential.sh --run-set main --only fwdllm --mode real --clean --yes --stall-window-h 6`.
 - **2026-07-07 — per-run plots + ticker-orphan fix.** Added `plot_run.py`: the single-run
   twin of `compare_baselines.py` that streams one run's telemetry in a single pass (the
   aggregator JSONL runs >1 GB — never loaded whole) and renders the full 5-experiment plot
