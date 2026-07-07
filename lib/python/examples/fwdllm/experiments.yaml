@@ -15,7 +15,7 @@ version: 1
 
 # ---- run-time defaults (per-condition overridable) -------------------------
 defaults:
-  target_accuracy: 0.82        # tau: convergence-stop accuracy threshold
+  target_accuracy: 0.84        # tau: convergence-stop accuracy threshold
   converge_window: 20          # W : consecutive data bins all >= tau  -> stop
   stop: converge               # converge | data_id | runtime
   # safety caps (a non-converging run is bounded by these -> DID_NOT_CONVERGE)
@@ -46,7 +46,7 @@ run_sets:
       pure reducers over these run dirs (no new GPU runs). One run per baseline.
     baselines: [fwdllm, fwdllm_plus, fluxtune]
     # Active condition = the real comparison (operator-signed-off 2026-07-06):
-    # N=100, 82% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
+    # N=100, 84% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
     # mobile-latency delays ON at delay_factor=2. agg_goal MATCHES across all three
     # baselines (=10); fluxtune's concurrency C=30 (async) while sync baselines C=10.
     condition:
@@ -60,7 +60,7 @@ run_sets:
       avail_trace: syn_0          # 100% available (Phase 1); -> mobiperf_* at Phase 2
       delays: on                  # enable_training_delays, matched both sides (K-D8)
       delay_factor: 2             # divides the yaml base compute-latency delay (full/2) — mobile-latency model
-      target_accuracy: 0.82       # convergence stop threshold
+      target_accuracy: 0.84       # convergence stop threshold
       converge_window: 20         # W consecutive bins >= target
     scale_n100:                   # target config, DEFERRED until pipeline proven
       N: 100

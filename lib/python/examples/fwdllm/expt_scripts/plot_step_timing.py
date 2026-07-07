@@ -114,7 +114,7 @@ def _fmt_table(label: str, agg: dict) -> str:
     return "\n".join(lines)
 
 
-def _plot(label: str, agg: dict, out_png: str) -> bool:
+def _plot(label: str, agg: dict, out_path: str) -> bool:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -156,7 +156,7 @@ def _plot(label: str, agg: dict, out_png: str) -> bool:
         ax.set_axis_off()
 
     fig.tight_layout()
-    fig.savefig(out_png, dpi=110)
+    fig.savefig(out_path)
     plt.close(fig)
     return True
 
@@ -212,9 +212,9 @@ def main(argv=None) -> int:
         agg = _collect(rdir)
         print(_fmt_table(label, agg))
         if not args.no_plot:
-            png = os.path.join(out_dir, f"step_timing_{label}.png")
-            if _plot(label, agg, png):
-                print(f"  -> {png}")
+            pdf = os.path.join(out_dir, f"step_timing_{label}.pdf")
+            if _plot(label, agg, pdf):
+                print(f"  -> {pdf}")
     return 0
 
 

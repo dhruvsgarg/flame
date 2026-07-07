@@ -1,0 +1,18 @@
+# SOCC-2026 paper-figure manifest — baseline → run dir (the reproducible mapping).
+#
+# Paths resolve relative to the fwdllm example dir (…/examples/fwdllm) or absolute.
+# Fill entries as logs land; missing baselines are skipped, not fatal. Override a
+# single entry without editing this file via:  make_paper_figs.py --run KEY=PATH
+#
+# Keys are INTERNAL baseline names (telemetry keys); paper display names/colors
+# live in plotlib/baselines.py (e.g. our system's codename is switchable there).
+
+runs:
+  # fwdllm: terminated at ~6h (usable now; refresh path when the full run lands)
+  fwdllm:      experiments/run_20260707_015846_fwdllm_n100_smoke_syn_0_real
+  fwdllm_plus: experiments/run_20260706_185023_fwdllm_plus_n100_smoke_syn_0_real
+  fluxtune:    experiments/run_20260706_185045_fluxtune_n100_smoke_syn_0_real
+  # fluxtune_nojvp: <ablation run dir>   # also register it in plotlib/baselines.py
+
+target_acc: 0.84
+window: 20

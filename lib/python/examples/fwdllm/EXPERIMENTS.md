@@ -1,7 +1,7 @@
 # FLUXTUNE vs FWDLLM / FWDLLM_PLUS — experiment design (living doc)
 
 **Status:** Tooling **IMPLEMENTED & validated end-to-end at N=10** (2026-07-06). Signed-off
-`main` condition (N=100, 82%, syn_0, α=1, delay_factor=2, agg_goal=10 matched) is loaded and
+`main` condition (N=100, 84%, syn_0, α=1, delay_factor=2, agg_goal=10 matched) is loaded and
 gated; **N=100 real convergence runs are the next action**.
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail`
 
@@ -241,7 +241,7 @@ is defined **once** and every node verifies it launched the same thing.
 
 ### 7.0 Signed-off condition (2026-07-06) — `run_set: main`
 N=100 · K=10 · C=10 (sync) / 30 (fluxtune) · **agg_goal=10 matched across all three**
-· partition alpha=1 · syn_0 · delays ON at **delay_factor=2** · target 0.82 / window 20
+· partition alpha=1 · syn_0 · delays ON at **delay_factor=2** · target 0.84 / window 20
 · **wall ceiling 48h · stall-out after 2h with no ≥1% gain**.
 A pre-flight check enforces the agg_goal match; the `condition_fp` (includes delay_factor)
 must match across nodes. **Manual pre-run check:** verify the partition group
@@ -297,13 +297,13 @@ Pre-run checklist (the gate does most of this — eyeball, don't skip):
 
 ### 7.4 After the runs — compare
 ```bash
-python compare_baselines.py --variant real --target-acc 0.82 --window 20 --plots
+python compare_baselines.py --variant real --target-acc 0.84 --window 20 --plots
 ```
 Reducers pull from the same run dirs; the **mix-guard** warns if the baselines'
 shared axes (N/partition/trace) disagree — the post-hoc twin of `condition_fp`.
 
 ### 7.5 Convergence-stop knobs (recap)
-`--target-acc 0.82 --converge-window 20` arm the watcher (WS2). A run ends
+`--target-acc 0.84 --converge-window 20` arm the watcher (WS2). A run ends
 `CONVERGED` (window met, `converge.json` written) or `DID_NOT_CONVERGE` (hit a
 safety cap). `--run-set main` sets these from the registry, so you rarely pass them.
 
@@ -357,6 +357,15 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 (e) — target 0.82 → 0.84 + paper-figure pipeline.** Raised the `main` convergence
+  target to **0.84** (fluxtune reaches it; the baselines don't — the E1 gap is the story) in
+  `experiments.yaml` and the plot defaults. Added `expt_scripts/plotlib/` (single-source SOCC-2026
+  style + baseline registry + streaming reducer + figure builders) and `make_paper_figs.py`
+  (figs.yaml manifest → PDF-only, timestamped output). `plot_run.py`/`compare_baselines.py` migrated
+  onto the shared reducer. Fixed a latent bug: eval reducers keyed accuracy/loss by `data_id`, which
+  cycles per round, silently overwriting earlier rounds and corrupting Δloss — now a time-ordered
+  series. Per-run cutoff at the **last significant test-loss improvement** (loss, not accuracy, is the
+  grounded learning signal); visual EMA smoothing (`--smooth`).
 - **2026-07-07 (c) — loss-aware stall guard (`--stall-on`).** The stall guard now resets its idle
   clock on progress in **accuracy, loss, or either** (default `either`), not accuracy alone. Loss
   progress is a **relative** drop vs the running-best (`--loss-min-rel-delta`, default 1%) because
