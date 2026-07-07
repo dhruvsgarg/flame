@@ -152,18 +152,30 @@ expt_launch() {
 
   echo "[$(date '+%F %T')] START $label ($n_exps exp(s), ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
 
-  # Progress ticker in its OWN process group (set -m) so the interrupt handler
-  # kills the whole tree (subshell + its sleep child) via kill -<pgid>; otherwise
-  # the orphaned sleep lingers.
+  # Launch the run in its OWN process group (set -m -> bg job's pgid == its pid;
+  # run_experiment's Popen children inherit it, no setsid — same pattern as
+  # expt_timed_run) so the convergence watcher can signal the whole tree.
   set -m
+  python -m flame.launch.run_experiment "$cfg" --example-dir "$example_dir" \
+      < /dev/null >> "$logdir/${label}.out" 2>&1 &
+  local run_pid=$!
+  set +m
+
+  # Progress ticker. It SELF-TERMINATES the instant the run process is gone, so it
+  # can never outlive the run however the run ends (watcher kill, crash, Ctrl+C).
+  # It is torn down explicitly below BY PID (+ its in-flight `sleep` child), NEVER
+  # by process group: job control does not reliably place a backgrounded subshell
+  # in a fresh group in this launch context, so `kill -<pid>` (a process-group
+  # signal) misses it — and the old `wait "$ticker_pid"` after that missed kill is
+  # exactly what hung the whole harness while the orphaned ticker kept printing.
   (
-    while true; do
+    while kill -0 "$run_pid" 2>/dev/null; do
       sleep 30
-      local now elapsed pct=0 remaining=0
+      kill -0 "$run_pid" 2>/dev/null || break   # run gone -> stop; never outlive it
+      local now elapsed pct=0
       now=$(date +%s); elapsed=$(( now - start_ts ))
       if [ "$budget_s" -gt 0 ]; then
-        pct=$(( elapsed * 100 / budget_s )); remaining=$(( budget_s - elapsed ))
-        [ "$pct" -gt 100 ] && pct=100; [ "$remaining" -lt 0 ] && remaining=0
+        pct=$(( elapsed * 100 / budget_s )); [ "$pct" -gt 100 ] && pct=100
       fi
       local curr started
       curr=$(find "$exp_dir" -maxdepth 1 -name "run_*" -type d 2>/dev/null | wc -l)
@@ -173,16 +185,16 @@ expt_launch() {
     done
   ) &
   local ticker_pid=$!
-  set +m
 
-  # Launch the run in its OWN process group (set -m -> bg job's pgid == its pid;
-  # run_experiment's Popen children inherit it, no setsid — same pattern as
-  # expt_timed_run) so the convergence watcher can signal the whole tree.
-  set -m
-  python -m flame.launch.run_experiment "$cfg" --example-dir "$example_dir" \
-      < /dev/null >> "$logdir/${label}.out" 2>&1 &
-  local run_pid=$!
-  set +m
+  # PID-based ticker teardown (NOT group-based — see above). Idempotent: the
+  # ticker may already have self-exited when run_pid died. Kills the in-flight
+  # `sleep` child first, then the subshell, then reaps so no `wait` can hang.
+  _expt_stop_ticker() {
+    [ -n "$ticker_pid" ] || return 0
+    pkill -P "$ticker_pid" 2>/dev/null || true   # its in-flight `sleep`
+    kill "$ticker_pid" 2>/dev/null || true
+    wait "$ticker_pid" 2>/dev/null || true
+  }
 
   # Optional convergence-stop watcher (EXPERIMENTS.md WS2) — ONLY when the driver
   # set EXPT_TARGET_ACC. Side-car: reads the run's aggregator telemetry and, on
@@ -213,15 +225,17 @@ expt_launch() {
     trap - INT TERM
     echo "" >&2
     echo "[$(date '+%F %T')] INTERRUPT — tearing down '$label' (run pgid=$run_pid) ..." >&2
-    kill -TERM -"$run_pid" 2>/dev/null || true
-    [ -n "$ticker_pid" ] && kill -TERM -"$ticker_pid" 2>/dev/null    # ticker group (subshell + sleep)
+    kill -TERM -"$run_pid" 2>/dev/null || true   # run's process group ...
+    kill -TERM  "$run_pid" 2>/dev/null || true   # ... and its leader (group may not have formed)
+    _expt_stop_ticker                            # PID-based; never a group signal
     # $watcher_pid is the tee of the `converge_watch.py | tee` pipeline, so also
     # kill the poller by name.
     [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
     pkill -TERM -f converge_watch.py 2>/dev/null || true
     sleep "${EXPT_INT_GRACE_S:-5}"
     kill -KILL -"$run_pid" 2>/dev/null || true
-    [ -n "$ticker_pid" ] && kill -KILL -"$ticker_pid" 2>/dev/null
+    kill -KILL  "$run_pid" 2>/dev/null || true
+    pkill -9 -f 'flame.launch.run_experiment' 2>/dev/null || true
     pkill -9 -f 'trainer/forward_training'  2>/dev/null || true
     pkill -9 -f 'trainer/pytorch/main.py'   2>/dev/null || true
     pkill -9 -f 'aggregator/pytorch/main_'  2>/dev/null || true
@@ -235,7 +249,7 @@ expt_launch() {
   local rc=$?
   trap - INT TERM
 
-  kill -"$ticker_pid" 2>/dev/null; wait "$ticker_pid" 2>/dev/null   # ticker GROUP, so its sleep child dies too
+  _expt_stop_ticker   # PID-based (+ its sleep child); may already have self-exited
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null; fi
 
   # Watcher verdict: converge.json = CONVERGED, stall.json = STALLED. On a

@@ -330,7 +330,8 @@ checks for stray FL workers (own procs only) and residual GPU memory:
 | [`expt_scripts/run_sequential.sh`](expt_scripts/run_sequential.sh) | launcher — `--run-set`, condition_fp gate, tier ② internals, agg_goal-match check, convergence flags |
 | [`../scripts/expt_runner.sh`](../scripts/expt_runner.sh) | shared harness — `expt_launch` (arms watcher + SIGINT/SIGTERM teardown), `expt_assert_clean_slate` (pre-launch guard), `expt_assert_run` (`CONVERGED`/`DID_NOT_CONVERGE`) |
 | [`../scripts/converge_watch.py`](../scripts/converge_watch.py) | WS2 side-car — polls `agg_eval`, writes `converge.json`, kills the run on convergence |
-| [`expt_scripts/compare_baselines.py`](expt_scripts/compare_baselines.py) | WS4 reducer — 5-experiment table/CSV + overlay plots + mix-guard |
+| [`expt_scripts/compare_baselines.py`](expt_scripts/compare_baselines.py) | WS4 reducer — 5-experiment table/CSV + overlay plots + mix-guard (cross-baseline) |
+| [`expt_scripts/plot_run.py`](expt_scripts/plot_run.py) | per-run twin — streams ONE run's telemetry (handles the >1 GB agg JSONL) → full 5-experiment plot set + `summary.json` |
 | `flame/telemetry/events.py` | `build_comm` (WS3-a) |
 | `flame/.../fwdllm_aggregator.py`, `fwdllm_trainer.py` | `comm` emit sites (WS3-a, both dispatch paths + upload) |
 | `trainer/forward_training/fwdgrad_utils.py`, `FedSgdTrainer.py` | forward-pass counters (WS3-b) |
@@ -341,6 +342,17 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 — per-run plots + ticker-orphan fix.** Added `plot_run.py`: the single-run
+  twin of `compare_baselines.py` that streams one run's telemetry in a single pass (the
+  aggregator JSONL runs >1 GB — never loaded whole) and renders the full 5-experiment plot
+  set + `summary.json`. Used it on the first N=100 fluxtune convergence run
+  (`run_20260706_185045…`, STALLED at **84.08%** > target, 139 bins). **Fixed a harness hang:**
+  the progress ticker was assumed to be its own process group (`set -m`), but job control did
+  not place the backgrounded subshell in a fresh group, so `kill -"$ticker_pid"` (a
+  process-group signal) missed it and the following `wait "$ticker_pid"` blocked forever —
+  `expt_launch` hung after a watcher/Ctrl+C stop and the orphaned ticker kept printing
+  `… Ns elapsed …`. The ticker now **self-terminates** the instant the run process dies and is
+  torn down **by PID** (+ its `sleep` child), never by group.
 - **2026-07-06 (c) — teardown, clean-slate guard, alpha=1.** Ctrl+C/SIGTERM now cleanly tears
   down the whole run (own process group) + watcher + ticker and frees GPU/RAM (was: orphaned
   workers, forever-looping ticker). Added `expt_assert_clean_slate` pre-launch guard (`--clean` /
