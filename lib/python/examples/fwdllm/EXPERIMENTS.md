@@ -12,8 +12,14 @@ same discipline as the pre-flight gate — *what is printed == what runs*. When 
 `experiments.yaml` is the source of truth for **what ran**; this doc is the source of truth for
 **what we intend and why**.
 
+**Paper ⇄ code reconciliation:** conflicts-resolved + task tracking live in
+[`EXPTS_CHARTER.md`](EXPTS_CHARTER.md) (the charter reconciling this doc with the paper draft
+[`05-evaluation.tex`](05-evaluation.tex)). The **run ledger** — which log file on which node feeds
+which result/sub-section — is §10 below.
+
 Related docs: [`simulate_fwdllm.md`](simulate_fwdllm.md) (principles), [`PARITY_LOGICAL_TASKS.md`](PARITY_LOGICAL_TASKS.md)
-(real↔sim parity), [`fluxtune_contributions.md`](fluxtune_contributions.md).
+(real↔sim parity), [`fluxtune_contributions.md`](fluxtune_contributions.md) (systems/ML contributions,
+incl. the argued memory/inference-only-NPU thesis — a motivation/design claim, not an eval experiment).
 
 ---
 
@@ -144,15 +150,26 @@ CUDA-event timing only if a reviewer challenges the number.
 
 ## 4. The five experiments (analyses over the one run-set)
 
-All reducers live in `expt_scripts/compare_baselines.py` (one function per experiment).
-Legend — **provenance**: `EMIT` already in telemetry · `DERIVE` reducer over existing telemetry ·
-`WS3` the instrumentation add (now emitted) · `WS2` from the convergence watcher.
+The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `RunResult`), consumed by
+`compare_baselines.py` (the `expt1..5_*` table wrappers) and `plot_run.py`. Legend — **provenance**:
+`EMIT` already in telemetry · `DERIVE` reducer over existing telemetry · `WS3` the instrumentation add
+(now emitted) · `WS2` from the convergence watcher.
+
+> ⚠ **Reducer-audit findings (2026-07-07, tracked in [`EXPTS_CHARTER.md`](EXPTS_CHARTER.md) §2b):**
+> **N3** — E1 time-to-τ is **reconstructed** from `agg_eval` (streak-over-window scan, over the
+> loss-truncated series), it does **not** read `converge.json`; it can silently diverge from the
+> watcher's verdict. **N5** — E2 idle is only `1−busy_frac`; `mqtt_fetch_s` is emitted but unused, and
+> `barrier_wait_s`/`drain_tail_s` read ≈0 in sim. **N6** — E5 sync sessions use `contributor_intervals`
+> (dispatch→commit) for *all* baselines (the one-round-span method is unimplemented);
+> `agg_round.contributing_trainers` is emitted but never consumed. Fix or re-scope before the claims land.
 
 ### Experiment 1 — Time to target accuracy
 > **Takeaway:** Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM_Plus.
 - **Config:** the `main` run-set. Baselines: all three. **Reuse:** none (this *defines* the runs).
 - **Metrics reported:**
-  - Time to reach `τ` (the convergence event) — wall, vclock, #rounds, #data_bins. *(WS2 `converge.json`)*
+  - Time to reach `τ` (the convergence event) — **wall, #rounds, #data_bins, #iterations**. *(WS2
+    intent; currently DERIVE — see N3.)* **Virtual-clock is deferred** (real-mode runs emit no vclock;
+    sim vclock is unvalidated, `sim_rate≈0.50`) — add later if a validated sim lands.
   - Maximum accuracy attained. *(DERIVE: max `agg_eval.test-accuracy`)*
 
 ### Experiment 2 — Resource utilization (wait-time reduction)
@@ -170,9 +187,16 @@ Legend — **provenance**: `EMIT` already in telemetry · `DERIVE` reducer over 
 > **Takeaway:** At resource-constrained clients, Fluxtune yields more learning per unit compute.
 - **Reuse:** **Expt-1 run-set**.
 - **Metrics reported:** `Δloss / cumulative compute`, reported against **two** compute denominators:
-  - GPU-seconds: Σ(trainer `gpu_compute_s`) + aggregator compute wall-time. *(DERIVE)*
-  - **Forward passes** (perturbations): Σ per-client perturbation count. *(WS3-b — hardware-independent)*
-  - `Δloss` = first `agg_eval.test-loss` − final `agg_eval.test-loss`. *(EMIT)*
+  - **Forward passes** (perturbations): Σ per-client perturbation count — **PRIMARY / clean**. *(WS3-b —
+    hardware-independent: counts actual passes regardless of contention.)*
+  - GPU-seconds: Σ(trainer `gpu_compute_s`) + aggregator compute wall-time — **SECONDARY, confounded**.
+    *(DERIVE.)* ⚠ `gpu_compute_s` is **wall-time** GPU work; 100 trainers time-share **8 GPUs**, so
+    contention inflates it (~8–10 ms/pass clean → ~0.21 s/pass under load, ≈20×), and Fluxtune's ~30
+    concurrent clients contend differently than the sync baselines' K=10 bursts — so the GPU-second
+    denominator measures scheduling contention, not algorithmic compute. Report it with this caveat; lean
+    on the forward-pass denominator.
+  - `Δloss` = first `agg_eval.test-loss` − final `agg_eval.test-loss`, **in time order** (never keyed by
+    `data_id`, which cycles per round). *(EMIT)*
 
 > ⚠ **Observed (N=100 smoke, 2026-07-07) — does NOT yet support the takeaway.** Learning-per-compute
 > ranks **FwdLLM++ > Fluxtune > FwdLLM** on *both* denominators (Δloss/GPU-h 0.055 vs 0.016 vs −0.014;
@@ -210,21 +234,51 @@ Legend — **provenance**: `EMIT` already in telemetry · `DERIVE` reducer over 
 > **Optimize:** delta/compressed model distribution on re-pull + staleness-aware throttling would cut
 > Fluxtune's dominant weight-download term.
 
-> 🔧 **These are single-contribution results — Fluxtune's efficiency mechanisms (2 & 3) are OFF.**
-> The current run-set exercises only Fluxtune's **contribution 1 — guided (JVP-magnitude) perturbation
-> selection**. Its two *efficiency* contributions are inactive: **(2) dynamic K/C** — the `main`
-> condition fixes `agg_goal=10` / `C=30` (static) for the agg_goal-matched head-to-head (§7.0; design in
-> [`docs/dynamic_kc_design.md`](docs/dynamic_kc_design.md)) — and **(3) intelligent aggregation** — the run
-> uses plain `stalenessPolicy=fedbuff` down-weighting, not staleness/variance-aware aggregation. Those two
-> mechanisms target *exactly* the inefficiencies E2–E4 surface: **dynamic C** throttles concurrency under
-> high staleness → fewer wasted stale updates and fewer continuous model re-pulls (E3 compute + E4 bytes);
-> **intelligent aggregation** weights contributions by usefulness → more Δloss per forward pass (E3), and
-> dynamic K right-sizes the aggregation goal (E2). **So the utilization (E2), compute-productivity (E3)
-> and communication (E4) claims must be (re)made with contributions 2 & 3 enabled** — with only guided
-> perturbations, Fluxtune is *expected* to trade efficiency for speed. Note this needs a **separate
+> 🔧 **These are single-contribution results — Fluxtune's efficiency levers are not yet delivering.**
+> The three contributions (charter B2) are **C1** guided (JVP-magnitude) perturbation selection · **C2**
+> dynamic K/C · **C3** intelligent (gradient-aware) aggregation. In the current `main` run-set:
+> - **C1 is active** (the only lever exercised).
+> - **C2 (dynamic K/C) is OFF** — `main` fixes `agg_goal=10` / `C=30` (static) for the agg_goal-matched
+>   head-to-head (§7.0; controller exists but `dynamic_kc.enabled=false`; design in
+>   [`docs/dynamic_kc_design.md`](docs/dynamic_kc_design.md)).
+> - **C3 is a BORROWED PLACEHOLDER, not Fluxtune's intended aggregation.** ⚠ Correction to earlier
+>   wording: the run does **not** use "plain fedbuff." Fluxtune runs the fedbuff **"new"** rate
+>   `weight_factor = scale·α(staleness) + (1−scale)·β(stat_utility)` (scale 0.4, a_exp 0.25, b_exp 0.1;
+>   `flame/optimizer/fedbuff.py:110`) **plus** a `var ≤ var_threshold=0.3` commit gate — a
+>   staleness×utility **scalar rate** borrowed from weight-averaging async FL (async_cifar10 / REFL
+>   lineage), applied as scalar multiplication of the update. **This is not gradient-aware and is not the
+>   C3 we intend** (see §4-C3 investigation below). Default fedbuff ("old" rate `1/√(1+Δv)`) looked only
+>   at round-based staleness; the "new" rate adds statistical utility, but still scalar-weights the update.
+>
+> These levers target *exactly* the inefficiencies E2–E4 surface: **dynamic C** throttles concurrency
+> under high staleness → fewer wasted stale updates and fewer continuous model re-pulls (E3 compute + E4
+> bytes); **gradient-aware aggregation** weights contributions by usefulness → more Δloss per forward pass
+> (E3); **dynamic K** right-sizes the aggregation goal (E2). **So the E2/E3/E4 efficiency claims must be
+> (re)made with C2 + a real C3 enabled** — with only C1, Fluxtune is *expected* to trade efficiency for
+> speed (per the charter, we retain E3/E4 as hypotheses assuming C2/C3 deliver). This needs a **separate
 > full-system Fluxtune run**: enabling dynamic K/C breaks the deliberate `agg_goal=10` match, so the
-> agg_goal-matched condition isolates contribution 1, while the efficiency claims need the full system.
-> **E1 (speed + final accuracy) already holds on contribution 1 alone.**
+> agg_goal-matched condition isolates C1, while the efficiency claims need the full system.
+> **E1 (speed + final accuracy) already holds on C1 alone.**
+
+### Experiment 3-adjacent — C3 intelligent (gradient-aware) aggregation: design investigation
+> **Status: NOT the intended contribution yet.** The active weighting (above) is a borrowed scalar rate.
+> Fluxtune needs a **gradient-aware** aggregation rule; this section seeds that design (implement later,
+> then move the feature doc to [`fluxtune_contributions.md`](fluxtune_contributions.md) and delete from here).
+> **Dimensions to evaluate:**
+> 1. **Staleness under iteration-based progression.** Staleness = `agg_model_version − trainer_version`;
+>    `_model_version` advances **per data-bin completion**, and a data-bin completes only when the
+>    **variance threshold is met** ([`fwdllm_aggregator.py:1422`](../../flame/mode/horizontal/syncfl/fwdllm_aggregator.py#L1422),
+>    [`fedbuff.py:194`](../../flame/optimizer/fedbuff.py#L194)) → staleness accrues at the *variance-gated
+>    data-bin rate, not wall-clock*. Hypothesis: staleness grows **slower** in Fluxtune than round-based
+>    FL. Quantify the effective staleness distribution vs a round-based baseline.
+> 2. **Scalar rate vs gradient-aware combination.** Scalar-multiplying a *gradient* update (forward-mode
+>    JVP estimate) may be the wrong operator vs down-weighting *weights*. Explore direction-/variance-aware
+>    combination (weight by JVP magnitude / SNR / agreement with the running aggregate), not just
+>    staleness×loss.
+> 3. **Interaction with C1 + the variance gate.** Updates already passed `var ≤ var_threshold`; does
+>    re-weighting by loss (`stat_utility`) double-count what the gate filtered?
+> 4. **Interaction with C2 (dynamic K/C).** Concurrency C sets how many stale/in-flight updates coexist;
+>    aggregation rule and concurrency controller co-determine the wasted work E3/E4 measure.
 
 ### Experiment 5 — Client training-session durations & participation
 > **Takeaway:** Fluxtune's client sessions are much shorter than FwdLLM's.
@@ -403,6 +457,17 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-07 (g) — paper ⇄ code reconciliation ([`EXPTS_CHARTER.md`](EXPTS_CHARTER.md)).** Opened the
+  charter reconciling this doc with `05-evaluation.tex`. Key corrections landed here: (i) **contribution
+  taxonomy → C1 guided perturbations / C2 dynamic K/C / C3 intelligent aggregation** (async is structural,
+  not a numbered contribution); (ii) **C3 is a borrowed placeholder, not the intended gradient-aware
+  aggregation** — corrected the earlier "plain fedbuff / off" wording (fluxtune actually runs the fedbuff
+  "new" staleness×utility scalar rate + variance gate; still not gradient-aware) and added the C3 design
+  investigation (§4); (iii) **E1 units → wall/rounds/data-bins/iterations**, vclock deferred (real emits
+  none, sim unvalidated); (iv) **E3 forward-pass denominator is primary**, GPU-seconds secondary with the
+  8-GPU-contention caveat; (v) reducer-audit gaps N3/N5/N6 logged; (vi) added the run ledger (§10). Open
+  item: α (config says 1, runs ran 0.1). Paper-side rewrites (DistilBERT/AG News substrate, FwdLLM_Plus
+  definition, fidelity accuracy-parity, surcharge numbers) delivered in `05-evaluation.tex`.
 - **2026-07-07 (f) — E3/E4 observed results (Fluxtune trades efficiency for speed).** N=100 smoke data
   contradicts the E3 and E4 takeaways: FwdLLM++ is **more compute-efficient** (Δloss/M-fwd 5.62 vs 1.27)
   **and more communication-efficient** (79 vs 146 GB total) than Fluxtune. Root cause (both): Fluxtune's
@@ -468,3 +533,24 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
   registry launch). Sign-off applied to `main`: N=100, delay_factor=2, agg_goal=10 matched, target 0.82.
 - _(init)_ Doc + registry scaffold. Backbone, convergence-stop spec, metric map incl. operator's
   second metric list (#8 forward passes, #13 participation granularities).
+
+---
+
+## 10. Run ledger (which log feeds which result)
+
+Update as runs land — this is how we know exactly which log file on which node backs each figure/claim.
+`Status`: SMOKE (validation, not for paper) · FINAL (paper number) · STALLED/CONVERGED/DNC (verdict).
+⚠ The three N=100 runs below ran at **α=0.1** (log filenames say `alpha0p1`). **α=0.1 is now excluded** —
+learning was too slow across all baselines to complete convergence runs — so the paper's primary condition
+is **α=1** (`experiments.yaml main`), and these runs will be **re-run at α=1** for final numbers. Treat the
+α=0.1 runs as smoke / evidence-that-0.1-is-too-slow, not paper numbers.
+
+| Run dir | Baseline | Node | Condition | Verdict | Feeds | Notes |
+|---|---|---|---|---|---|---|
+| `run_20260707_015846_fwdllm_n100_smoke_syn_0_real` | fwdllm | shepherd | N=100, syn_0, α0.1, df=2, agg_goal=10 | SMOKE | E1–E5 (baseline) | log `07_07_26_01_59_random_n100_default_alpha0p1_syn0_*` |
+| `run_20260706_185023_fwdllm_plus_n100_smoke_syn_0_real` | fwdllm_plus | kaylee | N=100, syn_0, α0.1, df=2, agg_goal=10 | SMOKE | E1–E5 (baseline) | log `06_07_26_18_50_random_n100_oracular_alpha0p1_syn0_*`; oracular **inert** at syn_0 |
+| `run_20260706_185045_fluxtune_n100_smoke_syn_0_real` | fluxtune | shepherd | N=100, syn_0, α0.1, df=2, agg_goal=10, C=30 | STALLED @84.08% (139 bins) | E1–E5 (C1-only) | log `06_07_26_18_51_async_oort_n100_client_notify_alpha0p1_syn0_*`; C2 off, C3=placeholder |
+| _pending_ | fluxtune (full-system) | — | C2 dynamic K/C **ON** + real C3 ON | — | E2/E3/E4 efficiency | breaks agg_goal match → separate run-set |
+| _pending_ | all three | — | `mobiperf_*` (real-world availability) | — | E1 headline | needs fwdllm_plus-under-scarcity policy |
+| _pending_ | fwdllm (or port) | — | fidelity: accuracy vs `xu2024fwdllm` | — | Setup (D3) | locate **old** run data; accuracy parity, not time |
+| _pending_ | ablations | — | JVP-sens / K-C-sens / α∈{0.1,0.5} | — | Ablation §§ | tooling TBD (charter §2e) |
