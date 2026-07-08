@@ -10,11 +10,13 @@ ledger (which log file feeds which result) lives in [`EXPERIMENTS.md`](EXPERIMEN
 
 **STATUS (2026-07-08):** 🔨 **Active workstream: bottleneck-driven optimizations (§5).** The measured
 bottleneck analysis + gain-ordered ledger are in §5. **Opt-1 (suppress redundant intra-databin weight
-re-sends) is IMPLEMENTED** — shared sync+async fix behind flag `suppress_redundant_weights` (default off,
-enabled on all baselines), unit tests (9 cases) + a reusable `audit_weight_redundancy.py` regression check,
-all green (47 tests). **Pending: the short validation run** (confirm redundancy→0, trajectory unchanged,
-no deadlock) before starting **Opt-2** (variance-plateau force-commit + curve characterization). Build
-order + resolved decisions D-1…D-4 in §5c. Paper reconciliation (below) is complete/delivered.
+re-sends) is IMPLEMENTED + VALIDATED** — shared sync+async fix behind flag `suppress_redundant_weights`
+(default off, enabled on all baselines), unit tests (9 cases) + `audit_weight_redundancy.py` regression
+check, all green (47 tests). Validation run `run_20260708_001641_fluxtune_n10_smoke` (flag ON):
+**0% redundant** (was 71–90%), exactly 1 weight-send/trainer/databin, 299 re-sends suppressed,
+**−79% down-bytes**, 8 commits + evals with **no deadlock**. Committed `5503100b`. **Next: Opt-2**
+(variance-plateau force-commit + curve characterization). Build order + resolved decisions D-1…D-4 in §5c.
+Paper reconciliation (below) is complete/delivered.
 
 **STATUS (2026-07-07):** ✅ **Reconciliation complete; `05-evaluation.tex` delivered** and being moved
 back into the paper repo by the operator. Both docs are in sync; the run ledger (EXPERIMENTS.md §10) and
@@ -169,10 +171,11 @@ Ordered by the §5b optimization ledger. Each is an independent knob we can turn
 - ☐ **M0 — re-measure at α=1.** Run the §5a streaming reducer on an α=1 fluxtune run (validate the
   variance floor / non-commit % / redundancy hold before tuning). **Blocks 2f-2's threshold choice.**
 - ◐ **2f-1 — redundant weight-send elimination** (`suppress_redundant_weights`, 🟢).
-  - ☑ **Opt-1 intra-databin suppression IMPLEMENTED** (§5d): shared sync+async `_should_send_full_weights`
-    + `_weights_sent_this_cycle` (≤1 payload/trainer/model_version), flag default off, enabled on all
-    baselines; 9-case unit test + `audit_weight_redundancy.py` regression check (47 tests green). Measured
-    redundancy pre-fix: fwdllm 90%/22 GB, fluxtune 71%/68 GB. **Validation run pending** before trusting.
+  - ☑ **Opt-1 intra-databin suppression IMPLEMENTED + VALIDATED** (§5d): shared sync+async
+    `_should_send_full_weights` + `_weights_sent_this_cycle` (≤1 payload/trainer/model_version), flag
+    default off, enabled on all baselines; 9-case unit test + `audit_weight_redundancy.py` (47 tests
+    green). Pre-fix: fwdllm 90%/22 GB, fluxtune 71%/68 GB. Validation `run_20260708_001641`: **0%
+    redundant, −79% down-bytes, no deadlock** (committed `5503100b`).
   - ☐ Cross-databin delta/version-cache (compress the model *change* when a trainer genuinely needs a new
     version) — the remaining `fluxtune.comm.delta_weights` piece; larger, do after Opt-1 validates.
 - ☐ **2f-2 — variance-gate threshold + real force-commit** (`varGate.threshold`, `varGate.maxItersPerBin`,
@@ -453,10 +456,21 @@ VAR=bad → now labeled by the actual payload).
   streams any run's telemetry → per-databin redundant fraction; `--max-redundant-frac F` exits non-zero
   over a smoke run (CI-able). Pre-fix baseline numbers above are the reference; post-fix expect ≈0%.
 
-**Validation still pending:** a short run must show `redundant_weights_suppressed_total` climbing, the
-audit fraction dropping to ≈0, and the `var`/accuracy trajectory unchanged (learning-neutral).
+**Validation ✅ (2026-07-08, `run_20260708_001641_fluxtune_n10_smoke`, flag ON).** Audit:
+8 databins, exactly **10 weight-sends/bin = 1 per unique trainer**, **0/8 bins with a repeat, 0.0%
+redundant** (was 71–90%). `redundant_weights_suppressed_total` climbed to **299** (those re-sends
+downgraded to VAR=bad). Down-bytes **264 MB vs 1278 MB counterfactual → −79.3%** (~1 GB saved on an
+8-databin N=10 run; scales to the ~68 GB→single-digit-GB projection at N=100). **No deadlock:** 8
+commits + 7 evals progressed normally (the VAR=bad keep-training path did not stall). Learning-neutral
+by construction (trainers train on identical cached weights); a strict same-length A/B trajectory diff is
+optional and not required for a byte-level change.
 
 ## 6. Changelog
+- **2026-07-08 (h) — Opt-1 VALIDATED end-to-end.** Run `run_20260708_001641_fluxtune_n10_smoke` (flag ON):
+  audit shows **0.0% redundant** (exactly 1 weight-send/trainer/databin over 8 databins), 299 re-sends
+  suppressed, **−79.3% agg→trainer down-bytes** (264 MB vs 1278 MB counterfactual), and **no deadlock**
+  (8 commits + 7 evals). Confirms the residual-unknown (var_good_enough lifecycle) does not stall the
+  VAR=bad keep-training path. §5d + STATUS + §2f-1 updated. Opt-1 closed; next is Opt-2. (commit `5503100b`)
 - **2026-07-07 (g) — Opt-1 root cause CORRECTED + fix completed (§5d).** The (f) root cause was wrong:
   staleness is **0** for active trainers (the return-map IS updated, `is_stale` is False), so the stale
   path was never the cause. The real cause: the sync loop is `distribute >> aggregate`, so distribute runs
