@@ -1,8 +1,8 @@
 # FLUXTUNE vs FWDLLM / FWDLLM_PLUS — experiment design (living doc)
 
-**Status:** Tooling **IMPLEMENTED & validated end-to-end at N=10** (2026-07-06). Signed-off
-`main` condition (N=100, 84%, syn_0, α=1, delay_factor=2, agg_goal=10 matched) is loaded and
-gated; **N=100 real convergence runs are the next action**.
+**Status:** N=100 α=1 runs landed (2×2 opt ablation + baseline comparison — charter). E1 headline holds on
+**peak** accuracy; runs do not yet *hold* the minimum (Issue I-1, **root-caused** → `fluxtune_contributions.md`
+§8, next = S1 server optimizer). Tooling validated end-to-end; `main` condition gated.
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail`
 
 This is the human design doc. Its machine-readable twin is [`experiments.yaml`](experiments.yaml),
@@ -179,11 +179,10 @@ The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `Ru
 > FeLiX** — it does forward-mode LLM fine-tuning, only borrowing FeLiX's scalar agg rate). Plots
 > (`e1_acc_vs_time.pdf`, both sets)
 > mark each run's peak with a ★ + legend value against the 84% target line.
-> ⚠ **Caveat (Issue I-1, [`EXPTS_CHARTER.md`](EXPTS_CHARTER.md)):** peak is **transient** — every fluxtune
-> run **diverges at the round-1→round-2 boundary** (acc→25% chance, loss explodes; a suspected epoch-boundary
-> bug, worst under grad-aware). E1 uses the round-1 peak and clips plots there (`--cutoff-mode peak_acc`);
-> the *time-to-τ streak metric never fires* because accuracy only grazes 84% amid oscillation. Fix + next
-> steps tracked as I-1 in the charter; re-run the 2×2 once the minimum is held.
+> ⚠ **Caveat (Issue I-1):** peak is **transient** — runs oscillate and collapse after the round-1 peak,
+> **root-caused** as an undamped high-variance optimizer (NOT the once-suspected epoch bug; see charter I-1 +
+> `fluxtune_contributions.md` §8, fix = server optimizer S1 / M2 below). E1 uses the round-1 peak, plots clipped
+> there (`--cutoff-mode peak_acc`); the time-to-τ streak never fires (accuracy only grazes 84% amid oscillation).
 
 ### Experiment 2 — Resource utilization (wait-time reduction)
 > **Takeaway:** Fluxtune improves utilization by cutting wait times at trainers (primary, thousands) and
@@ -247,31 +246,14 @@ The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `Ru
 > **Optimize:** delta/compressed model distribution on re-pull + staleness-aware throttling would cut
 > Fluxtune's dominant weight-download term.
 
-> 🔧 **These are single-contribution results — Fluxtune's efficiency levers are not yet delivering.**
-> The three contributions (charter B2) are **C1** guided (JVP-magnitude) perturbation selection · **C2**
-> dynamic K/C · **C3** intelligent (gradient-aware) aggregation. In the current `main` run-set:
-> - **C1 is active** (the only lever exercised).
-> - **C2 (dynamic K/C) is OFF** — `main` fixes `agg_goal=10` / `C=30` (static) for the agg_goal-matched
->   head-to-head (§7.0; controller exists but `dynamic_kc.enabled=false`; design in
->   [`docs/dynamic_kc_design.md`](docs/dynamic_kc_design.md)).
-> - **C3 is a BORROWED PLACEHOLDER, not Fluxtune's intended aggregation.** ⚠ Correction to earlier
->   wording: the run does **not** use "plain fedbuff." Fluxtune runs the fedbuff **"new"** rate
->   `weight_factor = scale·α(staleness) + (1−scale)·β(stat_utility)` (scale 0.4, a_exp 0.25, b_exp 0.1;
->   `flame/optimizer/fedbuff.py:110`) **plus** a `var ≤ var_threshold=0.3` commit gate — a
->   staleness×utility **scalar rate** borrowed from weight-averaging async FL (async_cifar10 / REFL
->   lineage), applied as scalar multiplication of the update. **This is not gradient-aware and is not the
->   C3 we intend** (see §4-C3 investigation below). Default fedbuff ("old" rate `1/√(1+Δv)`) looked only
->   at round-based staleness; the "new" rate adds statistical utility, but still scalar-weights the update.
->
-> These levers target *exactly* the inefficiencies E2–E4 surface: **dynamic C** throttles concurrency
-> under high staleness → fewer wasted stale updates and fewer continuous model re-pulls (E3 compute + E4
-> bytes); **gradient-aware aggregation** weights contributions by usefulness → more Δloss per forward pass
-> (E3); **dynamic K** right-sizes the aggregation goal (E2). **So the E2/E3/E4 efficiency claims must be
-> (re)made with C2 + a real C3 enabled** — with only C1, Fluxtune is *expected* to trade efficiency for
-> speed (per the charter, we retain E3/E4 as hypotheses assuming C2/C3 deliver). This needs a **separate
-> full-system Fluxtune run**: enabling dynamic K/C breaks the deliberate `agg_goal=10` match, so the
-> agg_goal-matched condition isolates C1, while the efficiency claims need the full system.
-> **E1 (speed + final accuracy) already holds on C1 alone.**
+> 🔧 **Single-contribution results — efficiency levers not yet on.** Contributions (charter B2): **C1** guided
+> perturbations · **C2** dynamic K/C · **C3** gradient-aware aggregation. In `main`: **C1 active**; **C2 OFF**
+> (static `agg_goal=10`/`C=30` for the agg_goal-matched head-to-head, §7.0; `dynamic_kc.enabled=false`); **C3**
+> runs the fedbuff "new" staleness×utility *scalar* rate + `var≤0.3` gate — a borrowed FeLiX placeholder, not
+> the intended gradient-aware rule (charter N2; `grad_aware`=Opt-3). C2/C3 target exactly the E2-E4
+> inefficiencies (throttle stale concurrency; weight by usefulness; right-size agg_goal). **So E2/E3/E4
+> efficiency claims need a separate full-system run (C2 + real C3 on)** — enabling dynamic K/C breaks the
+> agg_goal match. **E1 (speed + final accuracy) holds on C1 alone.**
 
 ### Experiment 3-adjacent — C3 intelligent (gradient-aware) aggregation: design investigation
 > **Status: NOT the intended contribution yet.** The active weighting (above) is a borrowed scalar rate.
@@ -307,6 +289,41 @@ The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `Ru
   - P50 / P90 / P99 of session duration across clients + a histogram. *(DERIVE)*
   - **Per-client participation counts at three granularities across baselines** — #rounds, #data_bins,
     #iterations each client participated in. *(DERIVE: `trainer_round` + `agg_round.contributing_trainers`)*
+
+### Experiments M1–M2 — training-stability track (motivation / ablation)
+> Context: the α=1 N=100 runs oscillate and single-class-collapse (charter I-1). The H0 diagnostic
+> **refuted** data-class-bias as the cause (`fluxtune_contributions.md` §8, F11-F15) → the driver is the
+> **undamped, high-variance forward-gradient optimizer**. These two experiments motivate and validate the fix.
+
+**M1 — Data-bin size × heterogeneity (the forward-mode bias/variance tradeoff).**
+- **Hypothesis (bidirectional):** per-commit **variance** falls as bin/cohort size grows (favors *large* bins),
+  BUT a large, class-mixed bin **averages conflicting per-sample gradients → small mean-gradient magnitude →
+  the scalar JVP signal sinks below its noise floor and learning stalls** (favors *small* bins). ⇒ an
+  **α-dependent optimum**: too-small = oscillation (observed), too-large = no learning (recalled).
+- **Design:** sweep `train_batch_size` (bin) ∈ {2,4,8,16,32,…} × α ∈ {0.1,1,100}, N=100, fluxtune. Report
+  peak/final acc, Δloss, and **per-commit JVP SNR / variance** (WS3-b + var telemetry). Cross-baseline
+  (bin size is a shared knob), flag-gated.
+- **Reads on:** whether small bins are *required* for a usable forward-gradient signal — i.e. we **cannot**
+  just "enlarge bins to kill variance" (the H2 caveat) → motivates fixing variance at the **aggregator** (M2),
+  not the data.
+
+**M2 — Aggregator optimizer (descent to a minimum) vs. random walk. [FLUXTUNE CONTRIBUTION]**
+- **Claim:** FwdLLM applies each committed JVP estimate as a **raw, undamped SGD step**
+  (`FedSgdAggregator.py:322-324`) → under small-bin noise the global model **random-walks** (charter I-1; §8
+  F8/F13). Fluxtune's contribution is a **server-side optimizer that integrates the noisy-but-informative
+  small-bin updates into a smooth descent and holds the minimum** — momentum / EMA-of-weights / adaptive step
+  (§8 S1). **Distinct from and composable with C3**: C3 reweights contributions *within* a commit; the
+  optimizer damps *across* commits.
+- **Metric:** sustained peak (no post-peak divergence) · monotone test-loss envelope · and the real prize —
+  the run **fills the W=20 convergence window** (never fires today, I-1) → turns E1's *transient* peak into a
+  genuine time-to-τ. Compare undamped baseline vs optimizer, α=1 N=100.
+- **Opportunity experiments:** (a) momentum/EMA coefficient sweep; (b) does the optimizer let the run
+  *converge & sustain* 84%?; (c) optimizer × grad-aware (Opt-3) — does damping remove the "R4 diverges worst"
+  effect?; (d) optimizer × bin size (M1) — does a real optimizer widen the usable bin range?
+- **Validate / fix before finalizing:** (i) optimizer-not-data established (✅ H0); (ii) confirm momentum does
+  not **double-damp** with the fedbuff staleness/utility rate and the variance gate; (iii) **real↔sim parity**
+  preserved (server optimizer state must be deterministic under the frozen update order); (iv) gain holds
+  across α, not just α=1. Flag-gated, default off; A/B before permanent (contributions §8 rule 6).
 
 ---
 
@@ -472,6 +489,11 @@ per-run `experiments/run_*/telemetry/*.jsonl`; comparison output `experiments/_c
 ---
 
 ## 9. Changelog
+- **2026-07-08 — stability track (Experiments M1–M2).** Added M1 (data-bin size × α, the forward-mode
+  bias/variance tradeoff — small bins give signal, large bins cancel it) and M2 (aggregator optimizer /
+  descent-to-a-minimum vs. random walk — a fluxtune contribution). Motivated by charter I-1 + the H0
+  diagnostic that refuted data-class-bias (`fluxtune_contributions.md` §8, F11-F15). Both flag-gated; ledger
+  row added (§10).
 - **2026-07-07 (g) — paper ⇄ code reconciliation ([`EXPTS_CHARTER.md`](EXPTS_CHARTER.md)).** Opened the
   charter reconciling this doc with `05-evaluation.tex`. Key corrections landed here: (i) **contribution
   taxonomy → C1 guided perturbations / C2 dynamic K/C / C3 intelligent aggregation** (async is structural,
@@ -573,3 +595,4 @@ is **α=1** (`experiments.yaml main`), and these runs will be **re-run at α=1**
 | _pending_ | all three | — | `mobiperf_*` (real-world availability) | — | E1 headline | needs fwdllm_plus-under-scarcity policy |
 | _pending_ | fwdllm (or port) | — | fidelity: accuracy vs `xu2024fwdllm` | — | Setup (D3) | locate **old** run data; accuracy parity, not time |
 | _pending_ | ablations | — | JVP-sens / K-C-sens / α∈{0.1,0.5} | — | Ablation §§ | tooling TBD (charter §2e) |
+| _pending_ | fluxtune | — | stability: bin-size×α sweep (M1) + server-optimizer (M2) | — | I-1 fix / E1 convergence | flag-gated; see `fluxtune_contributions.md` §8 |

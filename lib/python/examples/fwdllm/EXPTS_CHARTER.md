@@ -94,44 +94,28 @@ this causes makes staleness degenerate and drives long non-commit comm stretches
 Floor is **structural** (grad pool grows but `var` asymptotes) → more samples won't lower it; "weight
 smarter" (C3) or "accept the floor" (plateau) will → dynamic-K de-prioritized.
 
-### ⚠ Issue I-1 — Round-2 catastrophic divergence (the runs do NOT hold the minimum)
+### ⚠ Issue I-1 — runs don't hold the minimum (ROOT-CAUSED; fix = `fluxtune_contributions.md` §8)
 
-**Status: OPEN, fix deferred.** The 4 ablation runs were **force-stopped 2026-07-08** after they had
-already diverged (so no clean verdict was written); the paper uses each run's **round-1 peak** (table
-above), and E1 plots are **clipped at peak accuracy** to exclude the divergence tail. Fix is a separate
-training-stability task, not a blocker for the E1 headline.
+**Status: root-caused, fix in progress (§8 track, next = S1).** All 4 ablation runs learn in round 1
+(peak 82-84%, min loss 0.55-0.66) then oscillate and collapse to ~25% (mcc 0) with loss blow-up (R4
+loss→4.9); force-stopped 2026-07-08 (no clean verdict). Paper uses each run's round-1 peak; E1 plots clipped
+at peak. Not a blocker for the E1 headline.
 
-**Symptom.** All four runs learn cleanly in **round 1** (peak 82–84%, min test-loss 0.55–0.66 at 2.4–4.1h)
-then **diverge at the round-1→round-2 (epoch) boundary**: accuracy collapses monotonically to **~25%
-(4-class chance)** and test-loss **explodes** (R4: 1.0→2.5→3.9→**4.9** over ~2h). This is
-**divergence/unlearning, NOT overfitting** (overfitting holds train acc while test slips slowly; here loss
-blows up unbounded and the learned solution is destroyed). Within round 1, accuracy already oscillates
-(R4 80%↔64%) — the M-12 aggregation-instability symptom, now seen in full.
-**Suspected cause: a bug at the epoch/round boundary** (round-2 restart re-initializes or mis-scales
-something in the async aggregation / staleness clock). **Severity tracks aggregation aggressiveness — R4
-full (grad-aware+var-stop) diverges WORST** (loss→4.9), R2/R3 to ~2.2, R1 FluxTune-base least (loss~2.0, partial
-recovery). So Opt-3 grad-aware as tuned (`align_gate` on, `align_floor=0`, `inverse_var` off) *amplifies*
-the instability rather than damping it.
+**Root cause (H0 diagnostic — `fluxtune_contributions.md` §8, F1-F15):** an **undamped, high-variance
+forward-gradient optimizer** — each noisy JVP commit applied raw (`FedSgdAggregator.py:322`, no momentum/EMA)
+→ the model random-walks. Severity tracks aggregation aggressiveness (R4 grad-aware worst; R1 least → Opt-3
+as tuned *amplifies*, `align_floor=0`/`inverse_var` off). **Refuted:** the epoch-boundary reset bug (F10 —
+`_model_version` monotonic across the boundary) and data class-bias (F11 — K=10 cohort near class-balanced
+at α=1). The frozen data schedule only *freezes* the noise → position-locked collapse (F13).
 
-**Why it didn't self-terminate.** (i) convergence needs `W=20` *consecutive* bins ≥0.84, but accuracy only
-*grazed* 84% once (R4) amid oscillation → window never filled; (ii) the stall guard's `either` signal keeps
-a run alive while running-best loss improves (all of round 1), so it cannot fire until ≥2h *after* loss
-bottoms — by then round 2 is already destroying the model; (iii) no `converge.json`/`stall.json` in any dir
-→ they were killed by hand the next morning (agg logs cut mid-message ~09:37–10:19).
+**Fix:** server-side optimizer (momentum/weight-EMA) = descent, not random walk (§8 **S1** / EXPERIMENTS.md M2);
+interim tempering = cross-round LR decay + grad-aware `align_floor>0`/`inverse_var` (§8 S3). Also make the stall
+guard **divergence-aware** (fire on rising loss) — today it can't: W=20 needs consecutive bins ≥0.84 (accuracy
+only grazed it) and the `either` guard stays alive while round-1 loss still improves, so it can't fire before
+round 2 destroys the model.
 
-**Next steps (in priority order).**
-1. **Locate the round-boundary bug** — inspect the round-1→2 transition in the async aggregation path
-   (`fwdllm_aggregator.py` `_distribute_weights_async`, staleness/model-version reset, LR/optimizer state
-   carry-over across rounds). This is the real fix — the model *should* stay in the minimum.
-2. **Interim stability tempering** — cross-round LR decay, or `align_floor>0` / `inverse_var=on` to damp
-   aggressive grad-aware updates (test whether R4's divergence softens toward R1's).
-3. **Config guard** — cap to 1 epoch / early-stop at peak so a re-run terminates cleanly at the minimum
-   (`--converge-window` reachable), and make the stall guard divergence-aware (fire on a *rising* loss).
-4. Re-run the 2×2 after the fix; the peak numbers should then be *sustained*, not transient.
-
-**α=1 tuning (`characterize_variance_curve.py`):** var@commit≈0.29 (noise dip), plateau ~0.45; cap-12 ≈
-−48% iters. Chose plateau **ε=0.15** (fires ~iter 17, denoised var ~0.43) + **cap=20** (late backstop).
-Opt-1 audit: pre-fix fwdllm 90% / 22 GB, fluxtune 71% / 68 GB → 0% post-fix.
+**Opt tuning (kept, `characterize_variance_curve.py`):** var@commit≈0.29 (noise dip), plateau ~0.45; cap-12 ≈
+−48% iters → chose plateau **ε=0.15** + **cap=20**. Opt-1 audit: fwdllm 90%/22 GB, fluxtune 71%/68 GB → 0% post-fix.
 
 ## Latest figures (for paper embedding)
 

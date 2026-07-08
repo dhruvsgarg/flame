@@ -176,3 +176,105 @@ math so measured gains transfer directly to the trainer. It reports, per stage, 
 against the ground-truth sequential path, plus an fp64 cancellation diagnosis (`--fp64-check`). The high-fidelity
 real↔sim simulator that validates fluxtune's *training dynamics* under a virtual clock is documented separately in
 `simulate_fwdllm.md` (compute profile persisted there in §L).
+
+---
+
+## 8. Training-stability track — root cause & resolution (LIVE)
+
+> **DOC DISCIPLINE — STRICT. This section is *current truth*, not a log.**
+> 1. **Edit in place. Do NOT append.** When a finding or fix changes state, **rewrite its existing row** —
+>    never add a dated "update:" note, a changelog entry, or a sibling row. Git holds the history; this
+>    section holds only what is true *now*. (This is the opposite of `EXPERIMENTS.md`, which keeps a changelog.)
+> 2. **One row per finding, one row per fix.** If a finding is superseded or refuted, overwrite it. No duplicates.
+> 3. **Every claim carries a status tag:** `VERIFIED` (evidence cited) · `SUSPECTED` (hypothesis, unchecked) ·
+>    `REFUTED` (checked false — keep the row, it stops us re-chasing it) · `TODO` (fix not started) ·
+>    `WIP` · `DONE` (fix landed **and** sanity-checked).
+> 4. **No fix moves to `DONE` without its sanity check** named in the same row (telemetry signal / unit test /
+>    metric that proved it). Sanity checks are first-class here, not afterthoughts.
+> 5. **Crisp only:** claim · evidence · status. No narration, no prose paragraphs in the ledgers.
+> 6. **Flag-gate every change for A/B; the lifecycle decision is the operator's, not mine.** Each fix lands
+>    **behind a named flag, default = old behavior (byte-identical off)**, so old vs. new run A/B. Name the flag
+>    in the row's "Code — how". A flagged change moves through lifecycle states: **`A/B`** (both variants live,
+>    testing) → one of **`PERMANENT`** (new is default, old fully deprecated/removed) · **`FLAGGED`** (new default
+>    but flag retained) · **`REVERTED`** (new dropped, old reinstated behind the flag). **Never pick the terminal
+>    state unilaterally — ASK the operator** with the A/B evidence; record the chosen state (and the deciding
+>    metric) in the row, in place.
+
+**The issue (one line).** On the N=100 α=1 runs the global model never converges — it **oscillates** with
+recurring **single-class collapses** (acc 0.250, mcc 0.000 on balanced 4-class); peaks are transient and the
+*same* positions collapse every epoch. Root cause (H0): an **undamped, high-variance forward-gradient
+optimizer** (F6-F9) — each noisy JVP commit is applied raw, so the model random-walks. Data/heterogeneity is
+**not** the driver (F11 refuted class-bias; F13: the fixed data schedule only *freezes* the noise → the
+position-lock). Supersedes the charter's I-1 "epoch-boundary bug" framing (F10 refuted).
+
+### 8.1 Verified-findings ledger (sanity checks / things found)
+
+| # | Finding | Evidence | Status |
+|---|---|---|---|
+| F1 | `data_id` selects the *actual training data*: at `data_id=k` a trainer trains on ONE fixed 8-sample batch `train_local_list[0][k]` | `FedSgdTrainer.py:500-505`, `:148-150`; `train_batch_size=8` (`configs/aggregator_base.json:37`); 1200 samples/client → 150 bins | VERIFIED |
+| F2 | Per-client **train** loader is `shuffle=False` (SequentialSampler) → raw partition index order; the global **test** loader is `shuffle=True` | `base_data_manager.py:490` vs `:287` | VERIFIED |
+| F3 | Bins materialized once, **never reshuffled across epochs**; round boundary resets `data_id=0` only → round 2 replays identical batch order | `FedSgdTrainer.py:148-150`; `fwdllm_aggregator.py:1940-1946` | VERIFIED |
+| F4 | Down-swings are **single-class collapse**, not generic noise: acc = 0.250 **and** mcc = 0.000 exactly (32 of 150 R1 bins) | `agg_eval` telemetry, run `…025543…` | VERIFIED |
+| F5 | Collapses are **position-locked and replay**: R1 and R2 collapse at the same `data_id` ranges (≈4-7, ≈63-79) | `agg_eval` telemetry | VERIFIED |
+| F6 | Early variance-gate commits yield worse models: commit at it<15 → mean acc **0.289**; it≥20 → **0.595** | `agg_eval` telemetry | VERIFIED |
+| F7 | Variance **floor (~0.45) > threshold (0.30)** → bins commit only on a *noise dip*, i.e. the noisiest estimates | charter M-3; `characterize_variance_curve.py` | VERIFIED |
+| F8 | Global update is a **direct in-place SGD step** — `param.sub_(lr·Σ rate·gᵢ / N)` — with **no momentum, no EMA of global weights, no server optimizer state** across commits | `FedSgdAggregator.py:322-324`; §5 (aggregator trace) | VERIFIED |
+| F9 | fedbuff "new" rate can exceed 1 (`beta_polynomial_upshift` adds +0.5) → some updates **amplified**, not damped | `fedbuff.py:100-101,139` | VERIFIED |
+| F10 | Suspected round-boundary **staleness-reset bug is REFUTED**: `_model_version` is monotonic across the boundary, staleness stays ≥ 0. Only real discontinuity is the LR `ratio` warmup→decay step | `fwdllm_aggregator.py:1926-1929,1940-1946`; `FedSgdAggregator.py:234-242` | REFUTED |
+| F11 | **REFUTED as the primary driver:** the per-`data_id` gradient the aggregator sees is **not** class-biased. Pooled over a realistic K=10 commit cohort at α=1 the class mix is near-balanced (dominant frac med **0.36**, entropy **0.95**, only **2.8%** of commits majority-one-class); pooled composition has **zero correlation** with which data_ids collapse (Spearman +0.002, p=0.98). A 0.36-dominant gradient cannot drive an exact single-class (25%/mcc=0) collapse. | H0 `diagnose_partition_binning.py` Layer C′ + overlay, `_diag_partition/` | REFUTED |
+| F12 | Per-client class skew by α (100-client dist, exact): **α=0.1** dom-frac med **1.00** (½ of clients single-class) · **α=1** med **0.72**, 3 classes, entropy 0.50 · **α=100** med **0.30**, 4 classes, entropy 0.99 | H0 Layer A | VERIFIED |
+| F13 | Collapses are **frozen-noise events, not class-structure events**: data (bins/cohort) is identical every epoch → the same high-variance JVP estimates recur at the same data_ids → position-locked collapse (F5). The *magnitude/variance* of the update, not its class direction, is the driver → points at F6-F9 (optimizer), not H1 (shuffle). | H0 (F11) + F6-F9 | VERIFIED |
+| F14 | Partition is **quantity-balanced label-skew**: exactly **1200 samples/trainer at every α** (per-class totals 30k each) — α changes only the class *mix*, never the amount. Heterogeneity ladder (per-bin dom-frac mean / % bins ≥50%-one-class / #single-class trainers): α0.1 **0.94/96%/53** · α0.5 0.83/90%/0 · α1 **0.75/81%/1** · α5 0.57/46% · α10 0.52/32% · α100 **0.45/14%/0**. | H0 `--dist`, `trainer_class_heatmap.pdf` | VERIFIED |
+| F15 | **Small-batch lumpiness is α-independent:** even at α=100 (near-IID clients) 14% of 8-sample bins are ≥50% one class — an artifact of the bin *size*, not heterogeneity. Within a trainer, bins are ≈ iid draws of that trainer's own class mix (the `executor.map` load already scrambles intra-trainer order — no class-sorted sequence). So **bin *composition/size* matters; intra-bin *order* is a no-op** (JVP/loss is a mean over the bin → permutation-invariant). | H0 `--dist`; F1 | VERIFIED |
+
+### 8.2 Resolution plan — by scope
+
+Two independent levers. Each item is tagged **cross-baseline hygiene** (applied identically to `fwdllm` /
+`fwdllm++` / `fluxtune` — a fair-comparison correctness fix, **not** claimed as a fluxtune contribution) or a
+**fluxtune-specific contribution** (claimed improvement over baselines). Cross-references to the charter's Opt
+ladder are noted where they overlap.
+
+**Cross-baseline hygiene (H).**
+
+| ID | Fix | Why (finding) | Code — how | Sanity check to pass | Status |
+|---|---|---|---|---|---|
+| H0 | Diagnostic: per-client × per-`data_id` × per-K-cohort class distribution from `agnews_partition.h5` + frozen caches; overlay vs. observed collapses | Confirm/refute F1-F5 before any change | `expt_scripts/diagnose_partition_binning.py` (faithful cache order; α∈{0.1,1,100}) | ran; overlay Spearman +0.002 → **refuted** the data-bias story (F11) | **DONE** |
+| H1 | ~~Shuffle each client's local train data before binning~~ **DE-PRIORITIZED** | F11: bins/cohort already near class-balanced at α=1 → little bias to remove. Only value is de-correlating F13 frozen noise across epochs (marginal) | `base_data_manager.py:490` `shuffle=True`+seed / per-round permute | would break F5 position-lock but not the collapse magnitude | PARKED (revisit if α=0.1) |
+| H2 | **Larger data bins / higher agg_goal** (variance reduction) — ⚠ *not unambiguously good:* a large class-mixed bin averages conflicting per-sample gradients → the scalar JVP signal can sink below its noise floor and learning stalls. α-dependent optimum → sweep first (EXPERIMENTS.md **M1**). | F13,F6,F15: 8-sample bins × K=10 → high-variance, lumpy JVP is the driver, but too-large kills the signal | `train_batch_size` / bin regroup; `agg_goal` | M1 sweep finds the acc-maximizing bin size per α | DEFERRED |
+| H3 | **Per-epoch, seeded, aggregator-orchestrated bin-order permutation** (visit bins in a fresh random order each round, once each) | F13,F15: visit order is irrelevant *in expectation* but the frozen 0→149 order replays the same noisy-estimate sequence every epoch → position-locked collapse. Randomizing de-correlates it across epochs. Intra-bin shuffle is NOT needed (F15). | aggregator drives `data_id` (`fwdllm_aggregator.py:1922`); broadcast a per-round seeded permutation — **must stay deterministic for real↔sim cohort_sequence parity** | F5 position-lock disappears across epochs; collapses stop recurring at fixed data_ids | TODO |
+
+**Fluxtune-specific contributions (S — stability).** Claimed over baselines; these are where we take credit.
+
+| ID | Contribution | Why (finding) | Code — how | Sanity check to pass | Status |
+|---|---|---|---|---|---|
+| S1 | **Server-side optimizer with momentum / EMA of the global model** (a damping / restoring force) | F8: undamped direct SGD → random walk on the loss surface | `FedSgdAggregator.py:322-324` add a server momentum buffer or global-weight EMA | loss envelope becomes monotone; peak is *sustained*, not transient | TODO |
+| S2 | **Variance-gate recalibration** — commit on the *plateau*, not on a noise dip; align threshold to the achievable floor | F6,F7: gate commits the noisiest updates | `var_threshold` + plateau policy (extends charter **Opt-2**) | mean it-at-commit rises; early-commit collapse (F6) gone | TODO (Opt-2 partial) |
+| S3 | **Aggregation-rate tempering** — cap rate ≤ 1; retune grad-aware to damp, not amplify | F9 + charter: R4 (full grad-aware) diverged *worst* | `fedbuff.py` beta upshift; grad_aware `align_floor`/`inverse_var` (retunes charter **Opt-3**) | R4 no longer the worst diverger; per-commit step magnitude bounded | TODO |
+
+**Order of attack — pick by IMPACT, not table order.** Re-rank each turn to whatever best fixes the problem:
+- **NEXT → S1** (server optimizer: descent, not random walk) — the root cause (EXPERIMENTS.md M2).
+- then **S2** (don't commit on noise dips), **S3** (rate cap).
+- **DEFERRED:** H2 (bin size — needs the M1 sweep), H3 (bin-order permutation). **PARKED:** H1.
+
+### 8.3 Claim vs. correctness
+- **Claimable (S1-S3):** fluxtune's async forward-grad aggregation is uniquely exposed to high-variance,
+  amplifiable, undamped updates (F8,F9) → a *server optimizer* (S1) and *signal-aware commit gate* (S2) that
+  stabilize forward-mode async FL are genuine contributions the sync baselines don't need.
+- **Not claimable (H1-H3):** shuffle / bin-size / bin-order are correctness fixes any FL should have; applied to
+  all three baselines so E1 stays fair (P1). Reported as fixed, not as wins.
+
+### 8.4 Design Q&A
+- **Bin vs. classical-FL round?** FedAvg updates from the *whole* local set (batch washed out before aggregation);
+  FwdLLM commits per **8-sample bin** ⇒ bin/cohort size *is* the per-update variance. A knob that matters here,
+  not in FedAvg (M1).
+- **Shuffle *within* a bin?** No — JVP/loss is a mean over the bin ⇒ permutation-invariant (F15). No-op.
+- **Why sequential bin order?** Order is irrelevant *in expectation*; the harm is the **frozen** 0→149 replaying
+  the same noisy sequence every epoch → position-locked collapse (F13). Fix = per-epoch **seeded, aggregator-driven**
+  permutation (H3), deterministic for sim parity. Reduces *repetition*, not *amplitude*.
+- **Why does order matter if the model ignores sequence?** Only because the optimizer random-walks today (F8). At a
+  real minimum order won't matter ⇒ fix the optimizer (S1), don't lean on order.
+
+**S1 scoping (next task).** Flag `server_optimizer` (default off = raw SGD, byte-identical). Add momentum /
+weight-EMA at `FedSgdAggregator.py:322-324` (`param.sub_(lr·Σg/N)`). Validate before A/B: (i) optimizer state
+**deterministic** under frozen update order (sim parity); (ii) no **double-damp** with the fedbuff rate + variance
+gate; (iii) A/B vs off at α=1 N=100 → sustained peak + W=20 window fills. Composable with C3/Opt-3, not a replacement.
