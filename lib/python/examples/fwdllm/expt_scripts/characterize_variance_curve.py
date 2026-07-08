@@ -60,18 +60,23 @@ def _pct(xs, q):
     return s[k]
 
 
-def load_curves(path):
+def load_curves(path, max_databins=None):
     """Stream agg_round events -> {databin_id: [(iteration, var, committed), ...]}.
 
     Data-bin id is the running commit count: a bin ends when an agg_round commits
     (`var_good_enough=True`); every non-commit iteration before it belongs to the
     current bin. Uses `cycle_iteration` (0-based attempt index this cycle worked on)
     as the intra-bin iteration axis -- unambiguous, unlike the post-mutation
-    `iteration_per_data_id`.
+    `iteration_per_data_id`. `max_databins` caps analysis to the first N committed
+    bins (for like-for-like truncation across runs of different length).
+
+    Also returns, per committed bin, the `commit_reason` recorded on the committing
+    cycle (Opt-2 telemetry: natural / cap / plateau; None on legacy runs).
     """
     f = _agg_jsonl(path)
     databin = 0
     curves = defaultdict(list)  # databin -> [(iter, var, committed)]
+    reasons = {}                # databin -> commit_reason on the committing cycle
     thr_seen = set()
     with open(f) as fh:
         for line in fh:
@@ -94,14 +99,18 @@ def load_curves(path):
             if var is not None:
                 curves[databin].append((it, float(var), committed))
             if committed:
+                reasons[databin] = e.get("commit_reason")
                 databin += 1
+                if max_databins is not None and databin >= max_databins:
+                    break
     # sort each bin by iteration; drop a trailing open (never-committed) bin
     out = {}
     for b, pts in curves.items():
-        pts = sorted(pts, key=lambda p: (p[0] if p[0] is not None else 0))
-        out[b] = pts
+        if max_databins is not None and b >= max_databins:
+            continue
+        out[b] = sorted(pts, key=lambda p: (p[0] if p[0] is not None else 0))
     threshold = min(thr_seen) if thr_seen else None
-    return out, threshold
+    return out, threshold, reasons
 
 
 def _plateau_onset(vars_, N, eps):
@@ -119,9 +128,17 @@ def _plateau_onset(vars_, N, eps):
     return None, None
 
 
-def characterize(curves, threshold, caps, plateau_N, plateau_eps_list):
+def characterize(curves, threshold, caps, plateau_N, plateau_eps_list, reasons=None):
     committed_bins = {b: pts for b, pts in curves.items() if any(c for _, _, c in pts)}
     n_bins = len(committed_bins)
+
+    # Opt-2 commit-reason split (natural gate / max-iter cap / plateau); None on
+    # legacy runs (policy off) -> reported as "natural(legacy)".
+    reason_counts = defaultdict(int)
+    if reasons:
+        for b in committed_bins:
+            r = reasons.get(b)
+            reason_counts["natural(legacy)" if r is None else r] += 1
 
     per_bin = []  # list of dicts, in databin order
     for b in sorted(committed_bins):
@@ -241,6 +258,7 @@ def characterize(curves, threshold, caps, plateau_N, plateau_eps_list):
         "n_committed_bins": n_bins,
         "var_threshold": threshold,
         "total_natural_iters": total_natural_iters,
+        "commit_reasons": dict(reason_counts),
         "summary": summary,
         "evolution_thirds": thirds,
         "cap_sweep": cap_sweep,
@@ -257,7 +275,10 @@ def print_report(r):
     print(f"\n=== Variance-decay curve characterization ===")
     print(f"committed data-bins: {r['n_committed_bins']}   "
           f"var_threshold: {_fmt(r['var_threshold'])}   "
-          f"total natural iters: {r['total_natural_iters']}")
+          f"total iters (compute): {r['total_natural_iters']}")
+    if r.get("commit_reasons"):
+        split = "  ".join(f"{k}={v}" for k, v in sorted(r["commit_reasons"].items()))
+        print(f"commit reasons: {split}")
 
     print(f"\n-- per-bin distribution (p10 / p50 / p90 / mean) --")
     s = r["summary"]
@@ -318,16 +339,18 @@ def main():
     ap.add_argument("--plateau-N", type=int, default=3, help="plateau patience window")
     ap.add_argument("--plateau-eps", default="0.05,0.10,0.15",
                     help="comma list of relative-drop tolerances to sweep")
+    ap.add_argument("--max-databins", type=int, default=None,
+                    help="only analyze the first N committed data-bins (like-for-like truncation)")
     ap.add_argument("--json", default=None, help="write full result as JSON here")
     a = ap.parse_args()
 
     caps = [int(x) for x in a.caps.split(",") if x.strip()]
     eps_list = [float(x) for x in a.plateau_eps.split(",") if x.strip()]
 
-    curves, threshold = load_curves(a.run)
+    curves, threshold, reasons = load_curves(a.run, max_databins=a.max_databins)
     if not curves:
         sys.exit("no agg_round events with var found")
-    r = characterize(curves, threshold, caps, a.plateau_N, eps_list)
+    r = characterize(curves, threshold, caps, a.plateau_N, eps_list, reasons=reasons)
     print_report(r)
     if a.json:
         with open(a.json, "w") as fh:
