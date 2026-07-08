@@ -265,18 +265,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     computation_time_ms: t.Optional[t.Any] = Field(
     alias="computationTimeMs", default=None
     )
-    rtt_communication_time_ms: t.Optional[float] = Field(
-        alias="rttCommunicationTimeMs", default=None
-    )
-    rtt_base_ms: t.Optional[float] = Field(
-        alias="rttBaseMs", default=None
-    )
-    rtt_amplitude: t.Optional[float] = Field(
-        alias="rttAmplitude", default=0.3
-    )
-    rtt_period_s: t.Optional[float] = Field(
-        alias="rttPeriodS", default=120.0
-    )
+    # deprecated rtt_communication_time_ms, rtt_base_ms, rtt_amplitude, rtt_period_s
     satellite_latencies_path: t.Optional[str] = Field(
         alias="satelliteLatenciesPath", default=None
     )  

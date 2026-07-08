@@ -163,10 +163,7 @@ class PyTorchCifar10Trainer(Trainer):
         )
         # training_delay_s deprecated in favour of computation_time_ms (per-device dict)
         self.computation_time_ms = float(self.config.hyperparameters.computation_time_ms["gpu_a40"])
-        self.rtt_communication_time_ms = float(self.config.hyperparameters.rtt_communication_time_ms)
-        self.rtt_base_ms = float(self.config.hyperparameters.rtt_base_ms)
-        self.rtt_amplitude = float(self.config.hyperparameters.rtt_amplitude)
-        self.rtt_period_s = float(self.config.hyperparameters.rtt_period_s)
+        # rtt_communication_time_ms, rtt_base_mas, rtt_amplitude, and rtt_period_s deprecated
         _sat_path = self.config.hyperparameters.satellite_latencies_path
         self.satellite_rtt_latencies_ms = np.load(_sat_path)
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
