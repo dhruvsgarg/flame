@@ -7,6 +7,7 @@ experiments:
     
     trainer:
       num_trainers: 10  # Small test
+      split_num_trainers: 300
       start_id: 1
       dataset:
         name: cifar10
