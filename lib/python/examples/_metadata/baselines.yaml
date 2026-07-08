@@ -469,24 +469,30 @@ baselines:
           # has no fwdllm/agnews entry. Starting point; retune against
           # fluxtune's live smoke test.
           learning_rate: 0.075
-          # Aggregation rate (per-update weight). DEFAULT `new` = fedbuff scalar
-          # staleness×utility (rescales magnitude only). Opt-3 / C3 (charter §5c)
-          # adds `grad_aware`, which weights by DIRECTION/reliability and is bounded
-          # ≤ base so the effective LR never inflates (no LR re-tune needed):
-          #   type: grad_aware
-          #   base: new           # multiply the staleness×utility rate (or "neutral" = 1.0)
+          # Aggregation rate (per-update weight). DEFAULT for fluxtune is now C3
+          # `grad_aware` (Opt-3, charter §5c) -- fluxtune's OWN aggregation. `type: new`
+          # is the borrowed FeLiX scalar staleness×utility (magnitude only, charter N2)
+          # and is NOT a fluxtune contribution; set it only for the FeLiX-baseline
+          # ablation arm. grad_aware weights by DIRECTION/reliability, bounded ≤ base so
+          # the effective LR never inflates (no LR re-tune):
+          #   base: new           # keep staleness×utility as the base (mobiperf async);
+          #                       #   `neutral` = 1.0 (pure gradient-aware, no staleness)
           #   align_gate: true    # S2 (primary): down-weight updates whose cos vs the
-          #                       #   running aggregate < align_floor -> 0 at cos=-1.
-          #                       #   Fixes H1 (averaging anti-aligned JVP estimates).
+          #                       #   running aggregate < align_floor -> 0 at cos=-1
+          #                       #   (fixes H1: averaging anti-aligned JVP estimates)
           #   align_floor: 0.0    # gate below this cosine (0 = gate only anti-aligned)
-          #   inverse_var: false  # S1 (optional): also *min(1, var_ref/(var_i+eps))
+          #   inverse_var: false  # S1 (optional stronger C3): *min(1, var_ref/(var_i+eps))
           #   var_ref: 0.3        #   reliability reference (defaults to var_threshold)
-          # `grad_aware_gated_total` + `agg_rate_type` are emitted on agg_round.
-          # This is the "new aggregation strategy" run; the all-features run enables
-          # it alongside suppress_redundant_weights + the plateau stopping policy.
+          # `grad_aware_gated_total` + `agg_rate_type` emitted on agg_round.
+          # ABLATION: to revert this arm to FeLiX aggregation set `type: new`.
           agg_rate_conf:
-            type: new
-            scale: 0.4
+            type: grad_aware
+            base: new
+            align_gate: true
+            align_floor: 0.0
+            inverse_var: false
+            var_ref: 0.3
+            scale: 0.4        # base=new (staleness×utility) params
             a_exp: 0.25
             b_exp: 0.1
       hyperparameters:

@@ -17,15 +17,26 @@ primary **α=1** operating point (experiments never go below α=1; ablations go 
 |---|---|---|---|
 | **1** | Suppress redundant intra-databin weight re-sends | `suppress_redundant_weights` (ON all baselines) | ✅ validated: 0% redundant, −79% down-bytes, no deadlock (`5503100b`) |
 | **2** | Variance-plateau force-commit (plateau early + max-iter cap late) | `var_stopping_policy=plateau`, `var_plateau_patience`, `var_plateau_rel_delta`, `max_iterations_per_data_id` | ✅ **default ON fluxtune** (N=3, ε=0.15, cap=20); smoke vs var≤0.3 baseline: −25% iters, plateau fired on the grindy early bin |
-| **3** | Gradient-aware aggregation / C3 (align gate + inverse-var) | `agg_rate_conf.type=grad_aware` | ✅ implemented, **default OFF** (baseline stays `new`); enable per-run |
-| 4 | Dynamic C | `dynamic_kc.enabled` | ⬚ wired, not enabled (§5c Opt-4) |
+| **3** | Gradient-aware aggregation / C3 (align gate + inverse-var) | `agg_rate_conf.type=grad_aware` | ✅ **default ON fluxtune** (`type=new` = FeLiX ablation only); align_gate on, inverse_var opt-in |
+| 4 | Dynamic C | `dynamic_kc.enabled` | ⬚ wired, not enabled (§5c Opt-4) — remaining |
 
-**Three planned runs (operator, target_acc=84%, run in parallel):** (A) **var-stop only** = current
-fluxtune default (Opt-1+Opt-2 on, `grad_aware` off); (B) **new-aggregation only** = set
-`agg_rate_conf.type: grad_aware` (Opt-1 on, Opt-2 off via `var_stopping_policy: off`); (C) **all
-features** = both on (+ optionally Opt-4). Compare learning/data-bin progress against the earlier
-var≤0.3-only fluxtune run. **Next:** run them, read `commit_reason` + `grad_aware_gated_total` telemetry,
-tune ε/cap and the align/inverse-var knobs, then re-characterize at α∈{10,100}.
+**Default fluxtune = full stack** (C1 JVP + Opt-1 comm + Opt-2 plateau + Opt-3 grad_aware). Remaining
+opts (§2f): **Opt-4 dynamic C** (wired, not enabled), **Opt-5 finer staleness clock** (bundle w/ Opt-3),
+and Opt-1's **cross-databin delta-cache** (the larger comm piece); X1 dynamic-K / X2 staleness-C parked.
+
+**Four planned full runs (operator, N=100, target_acc=84%, parallel — a 2×2 over the two
+learning-affecting opts, C1+Opt-1 constant):**
+
+| Run | C1 JVP | Opt-1 comm | Opt-2 var-plateau stop | Opt-3 grad-aware agg | Isolates |
+|---|---|---|---|---|---|
+| **R1** FeLiX baseline | ✓ | ✓ | ✗ (var≤0.3 only) | ✗ (`new`) | reference (≈ last night) |
+| **R2** + var-stop | ✓ | ✓ | ✓ plateau | ✗ (`new`) | Opt-2 alone |
+| **R3** + grad-aware agg | ✓ | ✓ | ✗ | ✓ grad_aware | Opt-3 alone |
+| **R4** all contributions (= default) | ✓ | ✓ | ✓ | ✓ | full fluxtune |
+
+R2−R1 & R4−R3 = Opt-2 main effect; R3−R1 & R4−R2 = Opt-3 main effect; the 2×2 also gives the
+interaction. Compare all vs last night's var≤0.3-only run. **Next:** launch, read `commit_reason` +
+`grad_aware_gated_total`, tune ε/cap + align_floor/inverse_var, then re-characterize at α∈{10,100}.
 
 **Directional source-of-truth (P4).** Implementation facts (model, trace, denominators,
 session defs, surcharge numbers) flow **code → paper**. Narrative/positioning (the "why", SPRY
@@ -206,8 +217,9 @@ Ordered by the §5b optimization ledger. Each is an independent knob we can turn
   `align_floor` (→0 at cos=−1; fixes H1/M-12 — averaging anti-aligned JVP estimates), **inverse-variance
   (S1, optional `inverse_var`)** ×min(1, var_ref/var_i) from the trainer's own perturbation grads. Pure
   `TopAggregator._grad_aware_rate` + `_cosine_flat` (13-case unit test). Telemetry `agg_rate_type` +
-  `grad_aware_gated_total` on `agg_round`. Baseline stays `new` (byte-identical); enable per-run. Validated
-  by the operator's target_acc run (the run IS the weight↔Δloss test). **Next: run B/C, tune align_floor +
+  `grad_aware_gated_total` on `agg_round`. **DEFAULT ON for fluxtune** (align_gate on, base=new,
+  inverse_var off); `type=new` = FeLiX, kept only for the R1 ablation arm. Validated by the operator's
+  target_acc runs (the run IS the weight↔Δloss test). **Next: run the 2×2 (R1–R4), tune align_floor +
   inverse_var on/off.**
 - ☐ **2f-4 — dynamic C** (`dynamic_kc.enabled` + `EligibleEndsBasedPolicy`, 🟡) — sequence **after** 2f-1;
   drive by eligible-pool/wasted-work, not staleness. Re-measure the C↔wall-clock tradeoff post-delta-encode.
@@ -559,6 +571,11 @@ estimate earlier on the bins that flatten, deferring to the cap for bins that ne
 at α∈{10,100} before claiming the win there.
 
 ## 6. Changelog
+- **2026-07-08 (n) — Opt-3 grad_aware made the fluxtune DEFAULT + 4-run 2×2 ablation (STATUS, §2f-3).**
+  Per operator: `type=new` is FeLiX (not a fluxtune contribution), so fluxtune now defaults to
+  `agg_rate_conf.type=grad_aware` (align_gate on, base=new, inverse_var off); `new` kept only for the R1
+  ablation arm. Defined the four full N=100 target_acc=84% runs as a 2×2 over {Opt-2 var-stop, Opt-3
+  grad-aware}, C1+Opt-1 constant: R1 FeLiX baseline, R2 +var-stop, R3 +grad-aware, R4 all (=default).
 - **2026-07-08 (m) — Opt-3 gradient-aware aggregation IMPLEMENTED (§5c, §2f-3, baselines.yaml).** Added
   `agg_rate_conf.type=grad_aware` to `aggregate_grads_from_trainers`: bounded direction/reliability-aware
   per-update weight (align gate S2 primary + optional inverse-variance S1), ≤ base so the LR never
