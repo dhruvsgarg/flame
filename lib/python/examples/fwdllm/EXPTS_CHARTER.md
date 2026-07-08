@@ -8,34 +8,24 @@ ledger (which log file feeds which result) lives in [`EXPERIMENTS.md`](EXPERIMEN
 
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail` · **Opened:** 2026-07-07
 
-**STATUS (2026-07-08):** 🔨 **Active workstream: bottleneck-driven optimizations (§5).** The measured
-bottleneck analysis + gain-ordered ledger are in §5. **Opt-1 (suppress redundant intra-databin weight
-re-sends) is IMPLEMENTED + VALIDATED** — shared sync+async fix behind flag `suppress_redundant_weights`
-(default off, enabled on all baselines), unit tests (9 cases) + `audit_weight_redundancy.py` regression
-check, all green (47 tests). Validation run `run_20260708_001641_fluxtune_n10_smoke` (flag ON):
-**0% redundant** (was 71–90%), exactly 1 weight-send/trainer/databin, 299 re-sends suppressed,
-**−79% down-bytes**, 8 commits + evals with **no deadlock**. Committed `5503100b`. Build order + resolved
-decisions D-1…D-4 in §5c. Paper reconciliation (below) is complete/delivered.
+**STATUS (2026-07-08).** Paper reconciliation ✅ delivered (§1–§3). Bottleneck optimizations (§5) built —
+all **flag-gated, byte-identical off, fluxtune-only**, unit-tested. Measurements are at the paper's
+primary **α=1** operating point (experiments never go below α=1; ablations go UP to α∈{10,100} —
+[[fwdllm-alpha-convention]]; the `...185045...alpha0p1...` dir name was a mislabel, it loaded α=1).
 
-**STATUS (2026-07-08, later):** 🔬 **Opt-2 measure-first (M0) DONE; grind confirmed at α=1.** Built the
-M0 reducer `characterize_variance_curve.py` (per-databin variance-decay curve + fixed_cap/plateau
-counterfactual sweeps, §5e). **Key correction:** the §5a/§5e source run
-(`...185045_fluxtune...alpha0p1...`) actually loaded **α=1** (verified from `*trainers.log`; the dir
-name is mislabeled) — so §5's bottleneck ledger IS an α=1 measurement, resolving the operator's "where
-are you finding α=0.1" question. Experiments are **α=1 primary, never below 1; ablations go UP to
-α∈{10,100}** ([[fwdllm-alpha-convention]]). The variance grind (var@commit≈0.29, floor~0.45, bins
-15→34 iters) is real at the primary operating point → Opt-2 built + **enabled as the fluxtune default**.
-The `var_stopping_policy` framework (plateau primary/early + max-iter cap late backstop; pure
-`_should_force_commit_on_plateau`, 8-case unit test, `commit_reason` telemetry, byte-identical off) is
-live; `_metadata/baselines.yaml` fluxtune = **plateau, N=3, ε=0.15, cap=20**. No A/B — compared directly
-against the earlier var≤0.3-only run. **Next: 10-trainer smoke vs that baseline → read commit_reason
-split + learning → tune ε/cap → re-characterize at α∈{10,100}.**
+| Opt | Feature | Flag(s) | Status |
+|---|---|---|---|
+| **1** | Suppress redundant intra-databin weight re-sends | `suppress_redundant_weights` (ON all baselines) | ✅ validated: 0% redundant, −79% down-bytes, no deadlock (`5503100b`) |
+| **2** | Variance-plateau force-commit (plateau early + max-iter cap late) | `var_stopping_policy=plateau`, `var_plateau_patience`, `var_plateau_rel_delta`, `max_iterations_per_data_id` | ✅ **default ON fluxtune** (N=3, ε=0.15, cap=20); smoke vs var≤0.3 baseline: −25% iters, plateau fired on the grindy early bin |
+| **3** | Gradient-aware aggregation / C3 (align gate + inverse-var) | `agg_rate_conf.type=grad_aware` | ✅ implemented, **default OFF** (baseline stays `new`); enable per-run |
+| 4 | Dynamic C | `dynamic_kc.enabled` | ⬚ wired, not enabled (§5c Opt-4) |
 
-**STATUS (2026-07-07):** ✅ **Reconciliation complete; `05-evaluation.tex` delivered** and being moved
-back into the paper repo by the operator. Both docs are in sync; the run ledger (EXPERIMENTS.md §10) and
-this charter are current. **Remaining work is all code/implementation** — see **§Next steps** below.
-Two large items (C2 dynamic-K/C, C3 gradient-aware aggregation) are tracked in §2c/§2d but are
-**out of scope for the immediate next steps** (operator is designing them separately).
+**Three planned runs (operator, target_acc=84%, run in parallel):** (A) **var-stop only** = current
+fluxtune default (Opt-1+Opt-2 on, `grad_aware` off); (B) **new-aggregation only** = set
+`agg_rate_conf.type: grad_aware` (Opt-1 on, Opt-2 off via `var_stopping_policy: off`); (C) **all
+features** = both on (+ optionally Opt-4). Compare learning/data-bin progress against the earlier
+var≤0.3-only fluxtune run. **Next:** run them, read `commit_reason` + `grad_aware_gated_total` telemetry,
+tune ε/cap and the align/inverse-var knobs, then re-characterize at α∈{10,100}.
 
 **Directional source-of-truth (P4).** Implementation facts (model, trace, denominators,
 session defs, surcharge numbers) flow **code → paper**. Narrative/positioning (the "why", SPRY
@@ -209,9 +199,16 @@ Ordered by the §5b optimization ledger. Each is an independent knob we can turn
   (E3), faster model-version (revives staleness). **Next: 10-trainer smoke vs the var≤0.3 baseline, read
   commit_reason split + learning; then tune ε/cap; re-characterize at α∈{10,100}.** (The M0 threshold-raise
   idea is subsumed — the plateau commits ≈ the denoised estimate ~0.45, so raising the 0.30 bar is moot.)
-- ☐ **2f-3 — gradient-aware aggregation (C3)** — inverse-variance (S1) + alignment-gate (S2); reuse the
-  already-computed var/SNR stats; re-normalize + re-tune server LR. **This is §2d's implementation.**
-  Instrument weight↔realized-Δloss correlation first. Target: E3 quality + fix M-12 instability.
+- ☑ **2f-3 — gradient-aware aggregation (C3): IMPLEMENTED, default OFF** (`agg_rate_conf.type=grad_aware`).
+  New rate branch in `aggregate_grads_from_trainers` replacing the scalar staleness×utility weight with a
+  DIRECTION/reliability-aware one, **bounded ≤ base so the effective LR never inflates** (no re-tune needed):
+  **align gate (S2, primary)** down-weights an update whose cos vs the running aggregate `self.grad` <
+  `align_floor` (→0 at cos=−1; fixes H1/M-12 — averaging anti-aligned JVP estimates), **inverse-variance
+  (S1, optional `inverse_var`)** ×min(1, var_ref/var_i) from the trainer's own perturbation grads. Pure
+  `TopAggregator._grad_aware_rate` + `_cosine_flat` (13-case unit test). Telemetry `agg_rate_type` +
+  `grad_aware_gated_total` on `agg_round`. Baseline stays `new` (byte-identical); enable per-run. Validated
+  by the operator's target_acc run (the run IS the weight↔Δloss test). **Next: run B/C, tune align_floor +
+  inverse_var on/off.**
 - ☐ **2f-4 — dynamic C** (`dynamic_kc.enabled` + `EligibleEndsBasedPolicy`, 🟡) — sequence **after** 2f-1;
   drive by eligible-pool/wasted-work, not staleness. Re-measure the C↔wall-clock tradeoff post-delta-encode.
 - ☐ **2f-5 — finer staleness clock** (`agg_rate_conf.staleness_clock`) — Δcommits/wall-age; **bundle with
@@ -392,7 +389,17 @@ adaptive rule is designed, or wait? (ii) should the rule adapt on **wall/compute
 sooner when behind), or purely on the variance curve? *Recommend: land `fixed_cap=~12` behind the flag
 immediately as a floor, run the curve-characterization in parallel, then design `adaptive`.*
 
-#### Opt-3 — gradient-aware aggregation, C3 (`agg_rate_conf.type=grad_aware`) — **MEASURE-FIRST / design**
+#### Opt-3 — gradient-aware aggregation, C3 (`agg_rate_conf.type=grad_aware`) — **IMPLEMENTED (default OFF)**
+**Status (2026-07-08).** Landed as a `grad_aware` branch in `aggregate_grads_from_trainers` (the same
+per-update rate hook the `new`/`old` types use). It replaces the scalar staleness×utility weight with a
+direction/reliability-aware one, **bounded ≤ base (never inflates the effective LR → no re-tune)**:
+**align gate (S2)** = down-weight `cos(update, running self.grad) < align_floor`, linearly → 0 at cos=−1
+(fixes H1: averaging anti-aligned JVP estimates, the M-12 instability); **inverse-variance (S1, opt-in)** =
+×min(1, var_ref/var_i) from the trainer's own perturbation grads. Pure `TopAggregator._grad_aware_rate` +
+`_cosine_flat`, 13-case unit test; `agg_rate_type` + `grad_aware_gated_total` on `agg_round`. Config in
+`_metadata/baselines.yaml` (documented; default `new` → byte-identical). Deviates from the original
+MEASURE-FIRST plan (instrument-then-prototype) at the operator's request so run B/C are launchable — the
+target_acc run is the validation. The design notes below are retained for provenance.
 **Verified.** `FedSgdAggregator.aggregate()` ([`FedSgdAggregator.py:192`](aggregator/FedSgdAggregator.py#L192))
 computes `var`, `real_var` (JVP), `snr`, `grads_snr`, `cv` — then uses them **only to gate the commit**;
 the per-update weight is the scalar fedbuff `weight_factor` (staleness×utility,
@@ -552,6 +559,17 @@ estimate earlier on the bins that flatten, deferring to the cap for bins that ne
 at α∈{10,100} before claiming the win there.
 
 ## 6. Changelog
+- **2026-07-08 (m) — Opt-3 gradient-aware aggregation IMPLEMENTED (§5c, §2f-3, baselines.yaml).** Added
+  `agg_rate_conf.type=grad_aware` to `aggregate_grads_from_trainers`: bounded direction/reliability-aware
+  per-update weight (align gate S2 primary + optional inverse-variance S1), ≤ base so the LR never
+  inflates. Pure `_grad_aware_rate`/`_cosine_flat` (13-case unit test, green; 30 total across the 3 opts).
+  `agg_rate_type`/`grad_aware_gated_total` telemetry. Default `new` (byte-identical); enable per-run for
+  the "new-aggregation" and "all-features" runs. Crisp STATUS + feature/run matrix added at the top.
+- **2026-07-08 (l) — Opt-2 smoke compared vs var≤0.3 baseline; reducer `--max-databins`/`commit_reason`.**
+  New run `run_20260708_014305` (plateau on) vs `run_20260708_001641` (var≤0.3), first 5 databins: **45 vs
+  60 iters (−25%)**; plateau fired on the grindy early bin (databin 0: 17→10 iters, committed var 0.55),
+  4/5 committed natural, cap unused (bins < 20, expected this early). Learning inconclusive (both ~chance
+  at 5 bins). Watch: plateau at var 0.55 = a temporary-flat "false plateau" on the first high-var bin.
 - **2026-07-08 (k) — Opt-2 ENABLED as the fluxtune default (operator decision; §5c, §2f-2, baselines.yaml).**
   Per the operator's regime model (plateau primary/early, cap = late-stage backstop) set
   `_metadata/baselines.yaml` fluxtune: **var_stopping_policy=plateau, N=3, ε=0.15, cap(max_iter)=20**

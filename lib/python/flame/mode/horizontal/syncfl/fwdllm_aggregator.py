@@ -335,6 +335,7 @@ class TopAggregator(AsyncTopAgg):
             getattr(self.config.hyperparameters, "var_plateau_rel_delta", 0.10)
         )
         self._force_commit_reason = None  # {natural, cap, plateau}; for agg_round
+        self._grad_aware_gated_total = 0  # Opt-3: anti-aligned updates down-weighted
         if self._var_stopping_policy not in (None, "off", "fixed_cap", "plateau"):
             raise ValueError(
                 f"unknown var_stopping_policy={self._var_stopping_policy!r}; "
@@ -789,6 +790,52 @@ class TopAggregator(AsyncTopAgg):
                         f"Falling back to neutral rate due to error in weight_factor: {e}"
                     )
                     rate = 1.0
+
+            elif self.optimizer.agg_rate_conf["type"] == "grad_aware":
+                # Opt-3 / C3 (charter §5c): gradient-aware aggregation. The "new"
+                # rate rescales an update's MAGNITUDE by staleness×utility but can't
+                # refuse a wrong DIRECTION -> anti-aligned JVP estimates still get
+                # averaged (H1, the M-12 instability). grad_aware weights by direction
+                # (align gate) and optionally reliability (inverse-variance), bounded
+                # ≤ base so the effective LR never inflates. OFF unless type set here.
+                conf = self.optimizer.agg_rate_conf
+                if conf.get("base", "new") == "new":
+                    try:
+                        base = self.optimizer.weight_factor(
+                            scale=conf.get("scale", 0.4), staleness=staleness_val,
+                            a_exp=conf.get("a_exp", 0.25), loss=stat_utility,
+                            b_exp=conf.get("b_exp", 0.1), alpha_type="polynomial",
+                            beta_type="polynomial_upshift",
+                        )
+                    except Exception:
+                        base = 1.0
+                else:
+                    base = 1.0
+                cos = self._cosine_flat(
+                    trainer_grad, self.grad, list(self.model.named_parameters())
+                )
+                var_i = None
+                if conf.get("inverse_var", False) and grad_for_var_check is not None:
+                    try:
+                        var_i = float(torch.stack(list(grad_for_var_check)).var())
+                    except Exception:
+                        var_i = None
+                _align_floor = conf.get("align_floor", 0.0)
+                rate = self._grad_aware_rate(
+                    base, cos, var_i,
+                    var_ref=getattr(self, "var_threshold", conf.get("var_ref", 0.3)),
+                    align_gate=conf.get("align_gate", True),
+                    inverse_var=conf.get("inverse_var", False),
+                    align_floor=_align_floor, var_eps=conf.get("var_eps", 1e-8),
+                )
+                if cos is not None and cos < _align_floor:
+                    self._grad_aware_gated_total = (
+                        getattr(self, "_grad_aware_gated_total", 0) + 1
+                    )
+                    logger.info(
+                        f"[GradAware] anti-aligned update gated: cos={cos:.3f} "
+                        f"< floor={_align_floor} base={base:.3f} -> rate={rate:.4f}"
+                    )
 
         if rate != 1.0:
             logger.info(
@@ -2002,6 +2049,14 @@ class TopAggregator(AsyncTopAgg):
                         # cause and measure the plateau firing rate.
                         "stopping_policy": getattr(self, "_var_stopping_policy", None),
                         "commit_reason": getattr(self, "_force_commit_reason", None),
+                        # Opt-3 (§5c/C3): active aggregation rate type + running count
+                        # of anti-aligned updates the grad-aware gate down-weighted.
+                        "agg_rate_type": (self.optimizer.agg_rate_conf.get("type")
+                                          if getattr(self, "optimizer", None) and
+                                          getattr(self.optimizer, "agg_rate_conf", None)
+                                          else None),
+                        "grad_aware_gated_total": getattr(
+                            self, "_grad_aware_gated_total", 0),
                         "is_async": is_async,
                         # Variance-cadence rung inputs (Batch 2, §K-D9):
                         # cycle-relative identity for V1, pool sizes for V3/G2.
@@ -2703,6 +2758,51 @@ class TopAggregator(AsyncTopAgg):
             return False
         rel_drop = (hist[-1 - n] - hist[-1]) / hist[-1 - n]
         return rel_drop < eps and hist[-1] > self.var_threshold
+
+    @staticmethod
+    def _grad_aware_rate(base_rate, cos, var_i, var_ref, *, align_gate=True,
+                         inverse_var=False, align_floor=0.0, var_eps=1e-8):
+        """Opt-3 (C3) gradient-aware aggregation weight -- PURE scalar math,
+        unit-tested in isolation. Replaces the scalar staleness×utility rate with a
+        DIRECTION/RELIABILITY-aware weight, bounded so it only ever DOWN-weights
+        (result ≤ base_rate) → it never inflates the effective server LR (charter
+        Axis E), so no LR re-tune is needed to stay stable.
+          * align_gate (S2, primary): down-weight an update whose direction OPPOSES
+            the running aggregate. factor = 1 for cos ≥ align_floor, linearly → 0 at
+            cos = -1. Fixes H1 (averaging anti-aligned JVP estimates → the M-12
+            mid-run instability); the current scalar rate can only rescale magnitude,
+            never refuse a wrong direction.
+          * inverse_var (S1, optional): down-weight an update noisier than the
+            reference (var_ref, e.g. the commit threshold):
+            factor = min(1, var_ref / (var_i + eps)). Min-variance-style combine.
+        cos / var_i == None → that factor is 1 (e.g. the first update of a cycle has
+        no running aggregate to align against).
+        """
+        rate = float(base_rate)
+        if align_gate and cos is not None and cos < align_floor:
+            denom = align_floor + 1.0
+            rate *= (max(0.0, (cos + 1.0) / denom) if denom > 0 else 0.0)
+        if inverse_var and var_i is not None:
+            rate *= min(1.0, var_ref / (var_i + var_eps))
+        return rate
+
+    @staticmethod
+    def _cosine_flat(grad_named, running_grad, named_params):
+        """Cosine between a trainer's gradient (dict name→tensor) and the running
+        aggregate `self.grad` (list indexed by `named_params` order), flattened over
+        all trainable params. Returns None if either side has ~zero norm (e.g. the
+        running aggregate before any update has landed this cycle)."""
+        dot = nt = ng = 0.0
+        for i, (name, _p) in enumerate(named_params):
+            if name in grad_named:
+                t = grad_named[name]
+                g = running_grad[i].to(t.device)
+                dot += float((t * g).sum())
+                nt += float((t * t).sum())
+                ng += float((g * g).sum())
+        if nt <= 0.0 or ng <= 0.0:
+            return None
+        return dot / (math.sqrt(nt) * math.sqrt(ng))
 
     @timer_decorator
     def _distribute_weights_sync(
