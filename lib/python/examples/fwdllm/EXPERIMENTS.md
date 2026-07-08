@@ -172,6 +172,19 @@ The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `Ru
     sim vclock is unvalidated, `sim_rate≈0.50`) — add later if a validated sim lands.
   - Maximum accuracy attained. *(DERIVE: max `agg_eval.test-accuracy`)*
 
+> ✅ **Observed (N=100 α=1, 2026-07-08) — supports the takeaway on PEAK accuracy + speed.** Peak test
+> accuracy: **FluxTune (R4 full) 84.1% @ 3.9h** reaches target · FwdLLM++ 80.9% @ 7.4h (−3.1 from target,
+> ~2× slower) · FwdLLM 30.3% (never learned). Within the fluxtune 2×2, peak rises with the opt ladder
+> (R1 FluxTune-base 83.0 → R2 82.2 → R3 grad-aware 83.9 → R4 full 84.1; R1 = C1 guided-JVP base, **not
+> FeLiX** — it does forward-mode LLM fine-tuning, only borrowing FeLiX's scalar agg rate). Plots
+> (`e1_acc_vs_time.pdf`, both sets)
+> mark each run's peak with a ★ + legend value against the 84% target line.
+> ⚠ **Caveat (Issue I-1, [`EXPTS_CHARTER.md`](EXPTS_CHARTER.md)):** peak is **transient** — every fluxtune
+> run **diverges at the round-1→round-2 boundary** (acc→25% chance, loss explodes; a suspected epoch-boundary
+> bug, worst under grad-aware). E1 uses the round-1 peak and clips plots there (`--cutoff-mode peak_acc`);
+> the *time-to-τ streak metric never fires* because accuracy only grazes 84% amid oscillation. Fix + next
+> steps tracked as I-1 in the charter; re-run the 2×2 once the minimum is held.
+
 ### Experiment 2 — Resource utilization (wait-time reduction)
 > **Takeaway:** Fluxtune improves utilization by cutting wait times at trainers (primary, thousands) and
 > the aggregator (secondary, single).
@@ -551,7 +564,11 @@ is **α=1** (`experiments.yaml main`), and these runs will be **re-run at α=1**
 |---|---|---|---|---|---|---|
 | `run_20260707_015846_fwdllm_n100_smoke_syn_0_real` | fwdllm | shepherd | N=100, syn_0, α0.1, df=2, agg_goal=10 | SMOKE | E1–E5 (baseline) | log `07_07_26_01_59_random_n100_default_alpha0p1_syn0_*` |
 | `run_20260706_185023_fwdllm_plus_n100_smoke_syn_0_real` | fwdllm_plus | kaylee | N=100, syn_0, α0.1, df=2, agg_goal=10 | SMOKE | E1–E5 (baseline) | log `06_07_26_18_50_random_n100_oracular_alpha0p1_syn0_*`; oracular **inert** at syn_0 |
-| `run_20260706_185045_fluxtune_n100_smoke_syn_0_real` | fluxtune | shepherd | N=100, syn_0, α0.1, df=2, agg_goal=10, C=30 | STALLED @84.08% (139 bins) | E1–E5 (C1-only) | log `06_07_26_18_51_async_oort_n100_client_notify_alpha0p1_syn0_*`; C2 off, C3=placeholder |
+| `run_20260706_185045_fluxtune_n100_smoke_syn_0_real` | fluxtune | shepherd | N=100, syn_0, α0.1, df=2, agg_goal=10, C=30 | STALLED @84.08% (139 bins) | E1–E5 (C1-only, superseded) | log `06_07_26_18_51_…`; C2 off, C3=placeholder. **Superseded by R4 (`…025716…`) for the baseline comparison.** |
+| `run_20260708_025543_fluxtune_n100_smoke_syn_0_real` | fluxtune **R1** base | — | N=100, α=1, agg_goal=10, C=30, var-stop=off, agg-rate=new | max 83.00% | ablation (Opt-2/3 off) | 2×2 opt ablation; `figs_ablation.yaml`. **FluxTune-base (C1 guided-JVP + Opt-1), NOT FeLiX.** α=1 (dir mislabeled `alpha0p1`) |
+| `run_20260708_025616_fluxtune_n100_smoke_syn_0_real` | fluxtune **R2** +var-stop | — | …var-stop=plateau, agg-rate=new | max 82.25% | ablation (Opt-2 only) | isolates Opt-2 |
+| `run_20260708_025636_fluxtune_n100_smoke_syn_0_real` | fluxtune **R3** +grad-aware | — | …var-stop=off, agg-rate=grad_aware | max 83.91% | ablation (Opt-3 only) | isolates Opt-3 |
+| `run_20260708_025716_fluxtune_n100_smoke_syn_0_real` | fluxtune **R4** full (=default) | — | …var-stop=plateau, agg-rate=grad_aware | max 84.08% | ablation (full) **+ E1–E5 baseline comparison** | full-stack default; feeds `figs.yaml fluxtune` |
 | _pending_ | fluxtune (full-system) | — | C2 dynamic K/C **ON** + real C3 ON | — | E2/E3/E4 efficiency | breaks agg_goal match → separate run-set |
 | _pending_ | all three | — | `mobiperf_*` (real-world availability) | — | E1 headline | needs fwdllm_plus-under-scarcity policy |
 | _pending_ | fwdllm (or port) | — | fidelity: accuracy vs `xu2024fwdllm` | — | Setup (D3) | locate **old** run data; accuracy parity, not time |

@@ -54,9 +54,19 @@ def _tint(family: str, level: int) -> str:
     return ramp[min(level, len(ramp) - 1)]
 
 
-def _mk(key, family, tint, linestyle, emphasis, order, label, marker="o") -> Style:
-    return Style(key=key, label=label, color=_tint(family, tint),
+def _mk(key, family, tint, linestyle, emphasis, order, label, marker="o",
+        color=None) -> Style:
+    # `color` overrides the family tint ramp — used by the fluxtune ablation, whose
+    # four variants need a dedicated sequential-blue ramp (light→dark = more opts on),
+    # not the two categorical family tints.
+    return Style(key=key, label=label, color=(color or _tint(family, tint)),
                  linestyle=linestyle, marker=marker, emphasis=emphasis, order=order)
+
+
+# Sequential CVD-safe blue ramp (ColorBrewer "Blues"), light→dark encodes the
+# ablation ladder: more learning-affecting opts enabled ⇒ darker. Ordered, not
+# categorical — the four fluxtune configs form a 2×2 over Opt-2/Opt-3.
+_ABLATION_BLUES = ["#9ecae1", "#4292c6", "#2171b5", "#08306b"]
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +81,22 @@ BASELINES: dict[str, Style] = {
     # ablations (uncomment when the runs exist):
     # "fluxtune_nojvp": _mk("fluxtune_nojvp", "fluxtune", 1, "--", "regular", 3,
     #                       f"{SYSTEM_LABEL}−JVP", marker="v"),
+
+    # ---- 2×2 opt ablation (N=100, α=1, 2026-07-08 run-set) --------------------
+    # Constant across all four: C1 guided JVP perturbations (trainer-side
+    # select_perturbation_using_jvp=true) + Opt-1 weight-suppression. Varies: Opt-2
+    # var-stop, Opt-3 grad-aware. R1 is the FluxTune BASE (NOT FeLiX — it does
+    # forward-mode LLM perturbation fine-tuning; it only borrows FeLiX's scalar
+    # aggregation rate `type=new`). R4 == the full FluxTune default ("fluxtune" above).
+    # Blue ramp + distinct marker/linestyle so identity survives grayscale/CVD.
+    "fluxtune_r1_base":      _mk("fluxtune_r1_base",      "fluxtune", 0, ":",  "regular", 10,
+                                 f"{SYSTEM_LABEL}-base", marker="o", color=_ABLATION_BLUES[0]),
+    "fluxtune_r2_varstop":   _mk("fluxtune_r2_varstop",   "fluxtune", 0, "-.", "regular", 11,
+                                 "+ var-stop",      marker="s", color=_ABLATION_BLUES[1]),
+    "fluxtune_r3_gradaware": _mk("fluxtune_r3_gradaware", "fluxtune", 0, "--", "regular", 12,
+                                 "+ grad-aware",    marker="^", color=_ABLATION_BLUES[2]),
+    "fluxtune_r4_full":      _mk("fluxtune_r4_full",      "fluxtune", 0, "-",  "bold",    13,
+                                 f"{SYSTEM_LABEL} (full)", marker="D", color=_ABLATION_BLUES[3]),
 }
 
 # linestyles + markers cycled for un-registered ablations of the same family

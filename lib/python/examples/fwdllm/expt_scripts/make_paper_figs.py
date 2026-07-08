@@ -76,6 +76,13 @@ def main() -> int:
                          "(default 0 — the plateau is deterministic, no buffer needed)")
     ap.add_argument("--no-cutoff", action="store_true",
                     help="disable the cutoff (use full telemetry)")
+    ap.add_argument("--cutoff-mode", choices=["peak_acc", "loss_plateau"],
+                    default="peak_acc",
+                    help="where to clip each run: 'peak_acc' (default) at its "
+                         "highest-accuracy eval — every baseline stops very close "
+                         "to its best accuracy, clipping post-peak drift/divergence; "
+                         "'loss_plateau' at the last significant test-loss drop. "
+                         "A run that never learned (flat loss) is never clipped.")
     args = ap.parse_args()
     grace_s = None if args.no_cutoff else args.post_peak_grace_min * 60.0
 
@@ -98,14 +105,15 @@ def main() -> int:
     loaded = {}
     for key in B.ordered(runs_map.keys()):
         rr = R.load_run(_resolve(runs_map[key]), key=key, post_peak_grace_s=grace_s,
-                        loss_plateau_rel=args.loss_plateau_rel)
+                        loss_plateau_rel=args.loss_plateau_rel,
+                        cutoff_mode=args.cutoff_mode)
         if rr is None or not rr.evals:
             print(f"  [paper-figs] WARN no usable telemetry for '{key}' "
                   f"({runs_map[key]}) — skipping", file=sys.stderr)
             continue
         loaded[key] = rr
         cut = " (no cutoff — never learned)" if rr.cutoff_ts is None else (
-            f", cut @loss-plateau {(rr.cutoff_ts - rr.t0)/3600:.2f}h")
+            f", cut @{args.cutoff_mode} {(rr.cutoff_ts - rr.t0)/3600:.2f}h")
         print(f"  [paper-figs] loaded {key}: {len(rr.evals)} evals, "
               f"{rr.n_trainers} trainers, max_acc={100*(rr.max_accuracy() or 0):.2f}%{cut}")
     if not loaded:
@@ -139,6 +147,7 @@ def main() -> int:
             "figures": written,
             "system_label": B.SYSTEM_LABEL,
             "smooth": args.smooth,
+            "cutoff_mode": None if args.no_cutoff else args.cutoff_mode,
             "loss_plateau_rel": None if args.no_cutoff else args.loss_plateau_rel,
             "post_peak_grace_min": None if args.no_cutoff else args.post_peak_grace_min,
             "cutoff_h": {k: (None if loaded[k].cutoff_ts is None

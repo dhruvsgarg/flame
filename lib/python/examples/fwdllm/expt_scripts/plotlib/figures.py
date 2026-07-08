@@ -65,6 +65,19 @@ def _round_boundaries(ax, rr, hrs):
                    lw=0.9, alpha=0.55, zorder=2)
 
 
+def _mark_peak(ax, hrs, acc, st):
+    """Star at a run's highest accuracy (over the RAW series, so it survives EMA
+    smoothing) + return the peak value so the caller can print it in the legend —
+    lets the reader read each baseline's best acc and its gap to the target line."""
+    pts = [(h, a) for h, a in zip(hrs, acc) if a is not None]
+    if not pts:
+        return None
+    hp, ap = max(pts, key=lambda p: p[1])
+    ax.scatter([hp], [ap], marker="*", s=95, color=st.color, edgecolor="white",
+               linewidth=0.6, zorder=8 + st.order)
+    return ap
+
+
 # --------------------------------------------------------------------------- #
 # Experiment 1 — accuracy / loss vs wall-clock time (adjacent paper figures)
 # --------------------------------------------------------------------------- #
@@ -74,7 +87,10 @@ def fig_e1_acc_vs_time(runs, target=None, smooth=0.0, **_):
         hrs, acc, _loss, _rnd = rr.learning_curve()
         if not hrs:
             continue
-        _plot_curve(ax, hrs, acc, B.style_for(rr.key), smooth, B.style_for(rr.key).label)
+        st = B.style_for(rr.key)
+        peak = _mark_peak(ax, hrs, acc, st)     # ★ + peak value in the legend
+        label = st.label if peak is None else f"{st.label} — peak {peak:.1f}%"
+        _plot_curve(ax, hrs, acc, st, smooth, label)
         _round_boundaries(ax, rr, hrs)          # data_id cycles per round → mark epochs
     if target is not None:
         ax.axhline(target * 100, ls=":", color="#555555", lw=1.0, zorder=2)
@@ -83,6 +99,8 @@ def fig_e1_acc_vs_time(runs, target=None, smooth=0.0, **_):
     ax.set_xlabel("wall-clock time (h)")
     ax.set_ylabel("test accuracy (%)")
     ax.plot([], [], color="#888888", ls=(0, (1, 2)), lw=0.9, label="round boundary")
+    ax.scatter([], [], marker="*", s=95, color="#555555", edgecolor="white",
+               linewidth=0.6, label="peak accuracy")
     return _finish(fig, ax, [r.key for r in runs])
 
 

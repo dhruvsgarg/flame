@@ -189,18 +189,29 @@ def _read_aggregator(path: str) -> dict:
             "sessions": sessions, "vclock": vclock, "t0": t0}
 
 
-def _compute_cutoff(evals, grace_s, loss_rel):
-    """(cutoff_ts, plateau_ts): cut at the last significant loss improvement.
+def _compute_cutoff(evals, grace_s, loss_rel, mode="peak_acc"):
+    """(cutoff_ts, anchor_ts): where the productive window ends.
 
-    Loss (not accuracy — a coarse quantized readout) is the grounded learning
-    signal, so the productive window ends at the last eval where running-best
-    test-loss dropped cumulatively >= `loss_rel` since its previous milestone (the
-    stall-guard rule, §2). Deterministic, so grace_s defaults to 0 (grace_s=None
-    disables). A run that never improved loss returns inf (no cutoff → shown full).
+    Two anchors, same "did it actually learn?" gate:
+      * ``loss_plateau`` — the last eval where running-best test-loss dropped
+        cumulatively >= ``loss_rel`` since its previous milestone (the stall-guard
+        rule, §2). Loss is the grounded, un-quantized learning signal.
+      * ``peak_acc`` (default) — the first eval attaining the run's global-max
+        accuracy. Anchors the plot to the highest accuracy point, so a post-peak
+        drift (e.g. fwdllm_plus sliding 81%→77% while loss still creeps down) or a
+        round-boundary DIVERGENCE (the fluxtune runs collapse to ~25% chance with
+        exploding loss when round 2 starts) is clipped off. This is the operator's
+        "stop every baseline very close to its highest accuracy" request.
+
+    The loss scan is ALSO the learned-at-all detector: a run whose loss never
+    dropped ``loss_rel`` (e.g. fwdllm, flat at chance) returns inf (no cutoff →
+    shown in full so the flat non-learning line stays visible), regardless of mode.
+    Deterministic, so grace_s defaults to 0; grace_s=None disables cutoff entirely.
     """
     if grace_s is None or not evals:
         return float("inf"), None
-    rmin = milestone = last_ts = None
+    # loss-improvement scan — doubles as the "did it learn?" gate
+    rmin = milestone = plateau_ts = None
     advanced = False
     for e in evals:
         L, ts = e["loss"], e["ts"]
@@ -208,16 +219,29 @@ def _compute_cutoff(evals, grace_s, loss_rel):
             continue
         if rmin is None:
             rmin = milestone = L
-            last_ts = ts
+            plateau_ts = ts
             continue
         rmin = min(rmin, L)
         if rmin <= milestone * (1 - loss_rel):     # cumulative >= loss_rel drop
             milestone = rmin
-            last_ts = ts
+            plateau_ts = ts
             advanced = True
-    if last_ts is None or not advanced:
+    if plateau_ts is None or not advanced:
         return float("inf"), None                  # never learned → show full run
-    return last_ts + grace_s, last_ts
+    if mode == "loss_plateau":
+        return plateau_ts + grace_s, plateau_ts
+    # peak_acc: first occurrence of the global-max accuracy (strict > keeps the
+    # earliest peak, so a later noisy re-touch of the same max doesn't extend the tail)
+    best = peak_ts = None
+    for e in evals:
+        a, ts = e["acc"], e["ts"]
+        if a is None or ts is None:
+            continue
+        if best is None or a > best:
+            best, peak_ts = a, ts
+    if peak_ts is None:
+        return plateau_ts + grace_s, plateau_ts    # no accuracy series → fall back
+    return peak_ts + grace_s, peak_ts
 
 
 def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
@@ -271,18 +295,21 @@ def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
 
 def load_run(run_dir: str, key: str | None = None,
              post_peak_grace_s: float | None = 0.0,
-             loss_plateau_rel: float = 0.01) -> RunResult | None:
+             loss_plateau_rel: float = 0.01,
+             cutoff_mode: str = "peak_acc") -> RunResult | None:
     """Stream one run dir's telemetry into a RunResult (None if no aggregator file).
-    Truncates at the last significant loss improvement (>= `loss_plateau_rel`) so a
-    non-productive tail can't skew the metrics; `post_peak_grace_s`=None disables it.
-    See _compute_cutoff."""
+    Truncates the productive-learning tail (`cutoff_mode`: 'peak_acc' cuts at the
+    highest-accuracy eval, 'loss_plateau' at the last significant loss improvement)
+    so a post-peak drift/divergence can't skew the metrics; `post_peak_grace_s`=None
+    disables it. The learned-at-all gate is loss-based either way. See _compute_cutoff."""
     run_dir = os.path.abspath(run_dir)
     tdir = os.path.join(run_dir, "telemetry")
     agg_files = sorted(glob.glob(os.path.join(tdir, "aggregator_*.jsonl")))
     if not agg_files:
         return None
     raw = _read_aggregator(agg_files[0])
-    cutoff, plateau_ts = _compute_cutoff(raw["evals"], post_peak_grace_s, loss_plateau_rel)
+    cutoff, plateau_ts = _compute_cutoff(raw["evals"], post_peak_grace_s,
+                                         loss_plateau_rel, mode=cutoff_mode)
 
     rr = RunResult(key=key or os.path.basename(run_dir), run_dir=run_dir)
     rr.t0 = raw["t0"]

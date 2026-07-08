@@ -11,7 +11,10 @@ runs:
   # fwdllm: terminated at ~6h (usable now; refresh path when the full run lands)
   fwdllm:      experiments/run_20260707_015846_fwdllm_n100_smoke_syn_0_real
   fwdllm_plus: experiments/run_20260706_185023_fwdllm_plus_n100_smoke_syn_0_real
-  fluxtune:    experiments/run_20260706_185045_fluxtune_n100_smoke_syn_0_real
+  # fluxtune = full-stack default (C1 + Opt-1 + Opt-2 var-stop + Opt-3 grad-aware),
+  # N=100 α=1 launched 2026-07-08 (== R4 of the opt-ablation, figs_ablation.yaml).
+  # Was run_20260706_185045 (FeLiX-era, C3=placeholder); refreshed to the full stack.
+  fluxtune:    experiments/run_20260708_025716_fluxtune_n100_smoke_syn_0_real
   # fluxtune_nojvp: <ablation run dir>   # also register it in plotlib/baselines.py
 
 target_acc: 0.84

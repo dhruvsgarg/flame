@@ -39,9 +39,15 @@ baselines.yaml catalog at launch — validated by dry-run); no per-run config fi
 Common: `--only fluxtune --mode real --num-trainers 100 --partition-method niid_label_clients=100_alpha=1
 --agg-goal 10 --c 30 --target-acc 0.84 --yes` (agg_goal/C match the n100 reference run — confirm vs last night).
 
+**Naming:** R1 is the **FluxTune-base** (C1 guided JVP perturbations + Opt-1, both ON in all four runs),
+NOT FeLiX — it does forward-mode LLM perturbation fine-tuning and merely *borrows* FeLiX's scalar
+aggregation rate (`agg_rate_conf.type=new`, decision N2). FeLiX targets the CNN/speech family and has no
+perturbation-based fine-tuning (`baselines.yaml` fluxtune spec). `select_perturbation_using_jvp=true` is a
+**trainer-side** flag (the aggregator config's copy reads false and is unused).
+
 | Run | Opt-2 var-stop | Opt-3 grad-aware | Extra CLI flags | Isolates |
 |---|:---:|:---:|---|---|
-| **R1** FeLiX baseline | ✗ | ✗ | `--var-stopping-policy off --agg-rate-type new` | reference (≈ last night) |
+| **R1** FluxTune-base | ✗ | ✗ | `--var-stopping-policy off --agg-rate-type new` | C1-only reference (≈ last night) |
 | **R2** + var-stop | ✓ | ✗ | `--agg-rate-type new` | Opt-2 alone |
 | **R3** + grad-aware | ✗ | ✓ | `--var-stopping-policy off` | Opt-3 alone |
 | **R4** all (= default) | ✓ | ✓ | *(none)* | full fluxtune |
@@ -49,6 +55,25 @@ Common: `--only fluxtune --mode real --num-trainers 100 --partition-method niid_
 R2−R1 & R4−R3 = Opt-2 effect; R3−R1 & R4−R2 = Opt-3 effect; the 2×2 also gives the interaction. After:
 read `commit_reason` (natural/cap/plateau) + `grad_aware_gated_total` telemetry; tune ε/cap +
 align_floor/inverse_var; re-characterize at α∈{10,100}.
+
+**LANDED 2026-07-08** (N=100, α=1 — dir names say `alpha0p1`, MISLABELED; loaded-partition log reads
+`niid_label_clients=100_alpha=1`). Identified by `aggregator_config.json` (`var_stopping_policy` ×
+`agg_rate_conf.type`); figures via `expt_scripts/figs_ablation.yaml` + blue-ramp styles in
+`plotlib/baselines.py`. R4 = full default, also feeds the baseline comparison (`figs.yaml fluxtune`).
+
+**Results — peak test accuracy (the paper number; every run diverges after → see Issue I-1).**
+Peak is at/near the target and rises with the opt ladder (R4 full ≈ target); no run *sustains* it.
+
+| Run | var_stopping_policy | agg-rate type | Run dir | **peak acc @ round-1** | gap to 84% |
+|---|---|---|---|---|---|
+| **R1** FluxTune-base | off | new | `run_20260708_025543_fluxtune_n100_smoke_syn_0_real` | 83.00% @ 2.91h | −1.0 |
+| **R2** +var-stop | plateau | new | `run_20260708_025616_fluxtune_n100_smoke_syn_0_real` | 82.25% @ 4.07h | −1.8 |
+| **R3** +grad-aware | off | grad_aware | `run_20260708_025636_fluxtune_n100_smoke_syn_0_real` | 83.91% @ 2.44h | −0.1 |
+| **R4** full (=default) | plateau | grad_aware | `run_20260708_025716_fluxtune_n100_smoke_syn_0_real` | **84.08% @ 3.90h** | **+0.1** |
+
+**Baseline comparison (`figs.yaml`, R4 = fluxtune):** FluxTune **84.1% @ 3.9h** · FwdLLM++ 80.9% @ 7.4h
+(−3.1 from target, ~2× slower) · FwdLLM 30.3% (never learned, shown full). E1 headline (speed + reaching
+target) holds; the peak-accuracy ★ + legend value on every E1 acc plot shows each baseline's gap to target.
 
 ## Bottleneck (measured, α=1 run `run_20260706_185045_fluxtune_n100…`)
 
@@ -69,9 +94,60 @@ this causes makes staleness degenerate and drives long non-commit comm stretches
 Floor is **structural** (grad pool grows but `var` asymptotes) → more samples won't lower it; "weight
 smarter" (C3) or "accept the floor" (plateau) will → dynamic-K de-prioritized.
 
+### ⚠ Issue I-1 — Round-2 catastrophic divergence (the runs do NOT hold the minimum)
+
+**Status: OPEN, fix deferred.** The 4 ablation runs were **force-stopped 2026-07-08** after they had
+already diverged (so no clean verdict was written); the paper uses each run's **round-1 peak** (table
+above), and E1 plots are **clipped at peak accuracy** to exclude the divergence tail. Fix is a separate
+training-stability task, not a blocker for the E1 headline.
+
+**Symptom.** All four runs learn cleanly in **round 1** (peak 82–84%, min test-loss 0.55–0.66 at 2.4–4.1h)
+then **diverge at the round-1→round-2 (epoch) boundary**: accuracy collapses monotonically to **~25%
+(4-class chance)** and test-loss **explodes** (R4: 1.0→2.5→3.9→**4.9** over ~2h). This is
+**divergence/unlearning, NOT overfitting** (overfitting holds train acc while test slips slowly; here loss
+blows up unbounded and the learned solution is destroyed). Within round 1, accuracy already oscillates
+(R4 80%↔64%) — the M-12 aggregation-instability symptom, now seen in full.
+**Suspected cause: a bug at the epoch/round boundary** (round-2 restart re-initializes or mis-scales
+something in the async aggregation / staleness clock). **Severity tracks aggregation aggressiveness — R4
+full (grad-aware+var-stop) diverges WORST** (loss→4.9), R2/R3 to ~2.2, R1 FluxTune-base least (loss~2.0, partial
+recovery). So Opt-3 grad-aware as tuned (`align_gate` on, `align_floor=0`, `inverse_var` off) *amplifies*
+the instability rather than damping it.
+
+**Why it didn't self-terminate.** (i) convergence needs `W=20` *consecutive* bins ≥0.84, but accuracy only
+*grazed* 84% once (R4) amid oscillation → window never filled; (ii) the stall guard's `either` signal keeps
+a run alive while running-best loss improves (all of round 1), so it cannot fire until ≥2h *after* loss
+bottoms — by then round 2 is already destroying the model; (iii) no `converge.json`/`stall.json` in any dir
+→ they were killed by hand the next morning (agg logs cut mid-message ~09:37–10:19).
+
+**Next steps (in priority order).**
+1. **Locate the round-boundary bug** — inspect the round-1→2 transition in the async aggregation path
+   (`fwdllm_aggregator.py` `_distribute_weights_async`, staleness/model-version reset, LR/optimizer state
+   carry-over across rounds). This is the real fix — the model *should* stay in the minimum.
+2. **Interim stability tempering** — cross-round LR decay, or `align_floor>0` / `inverse_var=on` to damp
+   aggressive grad-aware updates (test whether R4's divergence softens toward R1's).
+3. **Config guard** — cap to 1 epoch / early-stop at peak so a re-run terminates cleanly at the minimum
+   (`--converge-window` reachable), and make the stall guard divergence-aware (fire on a *rising* loss).
+4. Re-run the 2×2 after the fix; the peak numbers should then be *sustained*, not transient.
+
 **α=1 tuning (`characterize_variance_curve.py`):** var@commit≈0.29 (noise dip), plateau ~0.45; cap-12 ≈
 −48% iters. Chose plateau **ε=0.15** (fires ~iter 17, denoised var ~0.43) + **cap=20** (late backstop).
 Opt-1 audit: pre-fix fwdllm 90% / 22 GB, fluxtune 71% / 68 GB → 0% post-fix.
+
+## Latest figures (for paper embedding)
+
+Two PDF sets, same 7 basenames, regenerated by `make_paper_figs.py` (cutoff `--cutoff-mode peak_acc`
+default → every run clipped at its peak, Issue I-1 tail excluded; E1 acc plots carry a ★ + legend "peak
+X%" per run). Rebuild: `cd expt_scripts && python make_paper_figs.py --manifest <m> [--out-root <r>]`.
+`latest` symlinks to the newest timestamped dir; copy PDFs into Overleaf by basename.
+
+| Set | Manifest | Dir (`latest` symlink) |
+|---|---|---|
+| **Baseline comparison** (FwdLLM / FwdLLM++ / FluxTune=R4) | `expt_scripts/figs.yaml` | `expt_scripts/paper_figs/latest/` |
+| **FluxTune opt-ablation** (R1–R4, blue ramp) | `expt_scripts/figs_ablation.yaml` | `expt_scripts/paper_figs_ablation/latest/` |
+
+Figure basenames (both sets): `e1_acc_vs_time.pdf` (time-to-acc, peak ★) · `e1_loss_vs_time.pdf` ·
+`e2_trainer_busy_cdf.pdf` · `e3_dloss_per_gpu_hour.pdf` · `e3_dloss_per_mfwd.pdf` ·
+`e4_network_bytes.pdf` · `e5_session_cdf.pdf`. Each dir also has `manifest.json` (run dirs + cutoff h).
 
 ## Resolved decisions
 

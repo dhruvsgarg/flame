@@ -1,0 +1,25 @@
+# SOCC-2026 FluxTune opt-ablation figure manifest — the 2×2 over the two
+# learning-affecting opts (Opt-2 var-stop × Opt-3 grad-aware), C1+Opt-1 held
+# constant. See EXPTS_CHARTER.md "Four planned full runs" and EXPERIMENTS.md §10.
+#
+# Landed N=100, α=1 (dir names say alpha0p1 — MISLABELED; the loaded-partition log
+# line reads niid_label_clients=100_alpha=1), target 0.84, launched 2026-07-08.
+# Identified by config (aggregator_config.json): var_stopping_policy × agg_rate type.
+#
+# Render:  python make_paper_figs.py --manifest figs_ablation.yaml
+# Keys are INTERNAL; blue-shade styles/labels live in plotlib/baselines.py.
+
+runs:
+  # R1 FluxTune-base — var-stop OFF, agg-rate=new (neither Opt-2 nor Opt-3).
+  # C1 guided JVP perturbations + Opt-1 ON (as in all four). NOT FeLiX: it does
+  # forward-mode LLM perturbation fine-tuning, only borrowing FeLiX's scalar agg rate.
+  fluxtune_r1_base:      experiments/run_20260708_025543_fluxtune_n100_smoke_syn_0_real
+  # R2 + var-stop (Opt-2) — var-stop=plateau, agg-rate=new
+  fluxtune_r2_varstop:   experiments/run_20260708_025616_fluxtune_n100_smoke_syn_0_real
+  # R3 + grad-aware (Opt-3) — var-stop OFF, agg-rate=grad_aware
+  fluxtune_r3_gradaware: experiments/run_20260708_025636_fluxtune_n100_smoke_syn_0_real
+  # R4 all (= full FluxTune default) — var-stop=plateau, agg-rate=grad_aware
+  fluxtune_r4_full:      experiments/run_20260708_025716_fluxtune_n100_smoke_syn_0_real
+
+target_acc: 0.84
+window: 20
