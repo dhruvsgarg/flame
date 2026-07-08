@@ -32,14 +32,19 @@ the floor (floor is structural non-IID) and staleness-based-C (staleness too low
 
 ## Four planned full runs
 
-N=100, `target_acc=84%`, parallel — a **2×2 over the two learning-affecting opts** (C1+Opt-1 constant):
+N=100, `target_acc=84%`, parallel — a **2×2 over the two learning-affecting opts** (C1+Opt-1 constant).
+Toggled via `run_sequential.sh` CLI flags (they patch the per-run config_overrides, which WIN over the
+baselines.yaml catalog at launch — validated by dry-run); no per-run config files needed.
 
-| Run | Opt-2 var-stop | Opt-3 grad-aware | Overrides vs default | Isolates |
+Common: `--only fluxtune --mode real --num-trainers 100 --partition-method niid_label_clients=100_alpha=1
+--agg-goal 10 --c 30 --target-acc 0.84 --yes` (agg_goal/C match the n100 reference run — confirm vs last night).
+
+| Run | Opt-2 var-stop | Opt-3 grad-aware | Extra CLI flags | Isolates |
 |---|:---:|:---:|---|---|
-| **R1** FeLiX baseline | ✗ | ✗ | `var_stopping_policy: off` **+** `agg_rate_conf.type: new` | reference (≈ last night) |
-| **R2** + var-stop | ✓ | ✗ | `agg_rate_conf.type: new` | Opt-2 alone |
-| **R3** + grad-aware | ✗ | ✓ | `var_stopping_policy: off` | Opt-3 alone |
-| **R4** all (= default) | ✓ | ✓ | none | full fluxtune |
+| **R1** FeLiX baseline | ✗ | ✗ | `--var-stopping-policy off --agg-rate-type new` | reference (≈ last night) |
+| **R2** + var-stop | ✓ | ✗ | `--agg-rate-type new` | Opt-2 alone |
+| **R3** + grad-aware | ✗ | ✓ | `--var-stopping-policy off` | Opt-3 alone |
+| **R4** all (= default) | ✓ | ✓ | *(none)* | full fluxtune |
 
 R2−R1 & R4−R3 = Opt-2 effect; R3−R1 & R4−R2 = Opt-3 effect; the 2×2 also gives the interaction. After:
 read `commit_reason` (natural/cap/plateau) + `grad_aware_gated_total` telemetry; tune ε/cap +

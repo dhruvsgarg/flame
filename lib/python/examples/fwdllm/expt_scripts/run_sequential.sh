@@ -107,6 +107,10 @@ AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
+VAR_STOPPING_POLICY=""   # Opt-2 stopping policy: off|fixed_cap|plateau. Empty => baselines.yaml default
+                         # (fluxtune=plateau). `off` reverts to var<=threshold only (the R1/R3 ablation arms).
+AGG_RATE_TYPE=""         # Opt-3 aggregation rate: grad_aware|new. Empty => baselines.yaml default
+                         # (fluxtune=grad_aware). `new` = the FeLiX scalar rate (the R1/R2 ablation arms).
 TARGET_ACC=""          # convergence stop (EXPERIMENTS.md WS2): terminate when the last
                        # --converge-window data bins are ALL >= this test accuracy.
 CONVERGE_WINDOW=""     # W consecutive-bin window for the convergence stop (default 20 when --target-acc set)
@@ -163,6 +167,10 @@ while [[ $# -gt 0 ]]; do
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
+    --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
+                            VAR_STOPPING_POLICY="$2"; shift 2 ;;
+    --agg-rate-type)        case "$2" in grad_aware|new|old) ;; *) echo "ERROR: --agg-rate-type must be grad_aware|new|old (got '$2')" >&2; exit 2 ;; esac
+                            AGG_RATE_TYPE="$2"; shift 2 ;;
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
     --stall-window-s)       STALL_WINDOW_S="$2"; shift 2 ;;
@@ -312,6 +320,7 @@ NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$S
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
+VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
 STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
 STALL_ON="$STALL_ON" LOSS_MIN_REL_DELTA="$LOSS_MIN_REL_DELTA" \
@@ -332,6 +341,7 @@ SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env(
 AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
+VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 STALL_ON = env("STALL_ON") or ""; LOSS_MIN_REL_DELTA = env("LOSS_MIN_REL_DELTA") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
@@ -415,6 +425,25 @@ def patch(exp, run_key, variant, trace):
         h["var_threshold"] = float(VAR_THRESHOLD)
     if MAX_ITER:
         h["max_iterations_per_data_id"] = int(MAX_ITER)
+    # Opt-2/Opt-3 ablation toggles (charter 4-run 2x2). Written into the per-run
+    # config_overrides, which WIN over the baselines.yaml catalog at launch. A full
+    # agg_rate_conf dict is written per type so the result is deterministic
+    # regardless of merge depth (the felix `new` branch needs scale/a_exp/b_exp).
+    if VAR_STOPPING_POLICY:
+        h["var_stopping_policy"] = VAR_STOPPING_POLICY
+    if AGG_RATE_TYPE:
+        _opt = exp["aggregator"]["config_overrides"].setdefault("optimizer", {})
+        _ok = _opt.setdefault("kwargs", {})
+        if AGG_RATE_TYPE == "grad_aware":
+            _ok["agg_rate_conf"] = {
+                "type": "grad_aware", "base": "new", "align_gate": True,
+                "align_floor": 0.0, "inverse_var": False, "var_ref": 0.3,
+                "scale": 0.4, "a_exp": 0.25, "b_exp": 0.1,
+            }
+        else:  # new (FeLiX) or old
+            _ok["agg_rate_conf"] = {
+                "type": AGG_RATE_TYPE, "scale": 0.4, "a_exp": 0.25, "b_exp": 0.1,
+            }
     if NUM_TRAINERS:
         exp["trainer"]["num_trainers"] = int(NUM_TRAINERS)
     if NUM_GPUS:
@@ -584,6 +613,12 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset",
                bool(MAX_ITER), review=True,
                note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above. unset ⇒ code default"),
+    scalar_row("var_stopping_policy", VAR_STOPPING_POLICY if VAR_STOPPING_POLICY else "default",
+               bool(VAR_STOPPING_POLICY), review=True,
+               note="Opt-2 (--var-stopping-policy) off|fixed_cap|plateau. default ⇒ baselines.yaml (fluxtune=plateau)"),
+    scalar_row("agg_rate_type", AGG_RATE_TYPE if AGG_RATE_TYPE else "default",
+               bool(AGG_RATE_TYPE), review=True,
+               note="Opt-3 (--agg-rate-type) grad_aware|new. default ⇒ baselines.yaml (fluxtune=grad_aware); new = FeLiX"),
     # Convergence stop (EXPERIMENTS.md WS2): terminate when the last W data bins
     # are ALL >= target accuracy. When set, max_runtime_s/max_data_id become
     # SAFETY CAPS (a non-converging run -> DID_NOT_CONVERGE). unset ⇒ time/data-id bound only.
