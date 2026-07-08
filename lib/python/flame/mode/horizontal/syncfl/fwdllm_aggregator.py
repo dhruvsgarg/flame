@@ -312,6 +312,50 @@ class TopAggregator(AsyncTopAgg):
                 f"[MaxIterBypass] max_iterations_per_data_id={self._max_iter_per_data_id}"
             )
 
+        # Opt-2 (charter §5c/§5e): variance-plateau stopping policy. At the paper's
+        # α=1 operating point the achievable variance floor (~0.45) sits ABOVE the
+        # gate (0.30), so a data-bin crosses the gate only on a noise dip and grinds
+        # ~15-34 iterations while the DENOISED estimate has long since plateaued. This
+        # policy commits a bin early once its variance-decay curve flattens
+        # (diminishing returns), committing the denoised estimate instead of a lucky
+        # noise sample. fluxtune-only (set only in the fluxtune config); absent/'off'
+        # => byte-identical (the legacy max-iter cap above still governs).
+        #   * fixed_cap: rely on max_iterations_per_data_id (the cap above) as the ceiling.
+        #   * plateau:   ALSO commit when the relative var drop over the last N cycles
+        #                < rel_delta while var is still above threshold (a fixed_cap
+        #                ceiling still applies if max_iterations_per_data_id is set).
+        # The commit reason (natural/cap/plateau) is recorded for telemetry.
+        self._var_stopping_policy = getattr(
+            self.config.hyperparameters, "var_stopping_policy", None
+        )
+        self._var_plateau_patience = int(
+            getattr(self.config.hyperparameters, "var_plateau_patience", 3)
+        )
+        self._var_plateau_rel_delta = float(
+            getattr(self.config.hyperparameters, "var_plateau_rel_delta", 0.10)
+        )
+        self._force_commit_reason = None  # {natural, cap, plateau}; for agg_round
+        if self._var_stopping_policy not in (None, "off", "fixed_cap", "plateau"):
+            raise ValueError(
+                f"unknown var_stopping_policy={self._var_stopping_policy!r}; "
+                "expected one of off/fixed_cap/plateau"
+            )
+        if self._var_stopping_policy in ("fixed_cap", "plateau"):
+            if (
+                self._var_stopping_policy == "fixed_cap"
+                and self._max_iter_per_data_id is None
+            ):
+                logger.warning(
+                    "[VarStopPolicy] policy=fixed_cap but "
+                    "max_iterations_per_data_id is unset -> no cap will fire."
+                )
+            logger.info(
+                f"[VarStopPolicy] policy={self._var_stopping_policy} "
+                f"cap(max_iter)={self._max_iter_per_data_id} "
+                f"plateau_N={self._var_plateau_patience} "
+                f"plateau_rel_delta={self._var_plateau_rel_delta}"
+            )
+
         # Opt-1 (charter §5c): suppress byte-identical intra-databin weight
         # re-sends. Within a databin the model_version is constant and the full
         # WEIGHTS+GRAD_POOL payload is byte-identical across iterations, yet a
@@ -1952,6 +1996,12 @@ class TopAggregator(AsyncTopAgg):
                         "var_threshold": getattr(self, "var_threshold", None),
                         "var_good_enough": self.var_good_enough,
                         "force_commit_planned": _force_commit_planned,
+                        # Opt-2 (§5c/§5e): which stopping policy is active and WHY
+                        # this cycle committed (natural gate / max-iter cap / plateau).
+                        # None on non-commit cycles. Lets the reducer split commits by
+                        # cause and measure the plateau firing rate.
+                        "stopping_policy": getattr(self, "_var_stopping_policy", None),
+                        "commit_reason": getattr(self, "_force_commit_reason", None),
                         "is_async": is_async,
                         # Variance-cadence rung inputs (Batch 2, §K-D9):
                         # cycle-relative identity for V1, pool sizes for V3/G2.
@@ -2628,6 +2678,31 @@ class TopAggregator(AsyncTopAgg):
         # Legacy stale path (kept so flag OFF is byte-identical): a trainer the
         # return-map still shows on an older version gets the weights.
         return is_stale
+
+    def _should_force_commit_on_plateau(self) -> bool:
+        """Opt-2 (charter §5c/§5e) variance-plateau rule -- PURE decision that reads
+        only instance attrs, so it is unit-testable in isolation (the Opt-1
+        `_should_send_full_weights` pattern). Called from FedSGDAggregator.aggregate()
+        once the current cycle's var has been appended to `var_prev_iter_list`.
+
+        Returns True iff the 'plateau' policy is active AND the per-bin variance
+        curve `self.var_prev_iter_list` (newest last, includes this cycle) has
+        FLATTENED -- the relative drop over the last N cycles is < rel_delta -- while
+        var is still ABOVE the commit threshold. That is the "more denoising buys
+        nothing" signal: at α=1 the variance floor sits above the gate, so a bin
+        otherwise grinds ~15-34 iterations for a noise dip; committing at the plateau
+        ships the denoised estimate instead. Policy off/absent, fewer than N+1
+        samples, or a non-positive baseline => False (=> byte-identical when off).
+        """
+        if getattr(self, "_var_stopping_policy", None) != "plateau":
+            return False
+        hist = self.var_prev_iter_list
+        n = getattr(self, "_var_plateau_patience", 3)
+        eps = getattr(self, "_var_plateau_rel_delta", 0.10)
+        if len(hist) <= n or hist[-1 - n] <= 0:
+            return False
+        rel_drop = (hist[-1 - n] - hist[-1]) / hist[-1 - n]
+        return rel_drop < eps and hist[-1] > self.var_threshold
 
     @timer_decorator
     def _distribute_weights_sync(

@@ -497,9 +497,33 @@ baselines:
         # caches its weights). Learning-neutral; here it was 71% redundant / ~68 GB.
         # Set false to revert (byte-on-wire identical off).
         suppress_redundant_weights: true
-        # Opt-2 (variance-plateau force-commit cap) is added in a later step after
-        # its curve characterization -- deliberately left unset (unbounded) here so
-        # the Opt-1 validation run isolates the learning-neutral comm change.
+        # Opt-2 — variance-plateau force-commit (charter §5c/§5e; DEFAULT ON for
+        # fluxtune). The plain var<=threshold gate is a FIXED ABSOLUTE bar: as the
+        # model converges, gradients shrink but the perturbation-noise floor doesn't,
+        # so a bin needs ever-more JVP samples to average down to 0.30 (measured
+        # 15->34 iters/bin early->late at α=1) -> 95.7% of aggregation iterations
+        # commit nothing. This policy adds TWO commit triggers on top of var<=thr:
+        #   * plateau (PRIMARY, helps early): commit once the per-bin variance curve
+        #     FLATTENS -- relative var drop over the last `var_plateau_patience` (N)
+        #     iters < `var_plateau_rel_delta` (ε) while var is still above threshold.
+        #     Scale-invariant, so it commits the DENOISED estimate at whatever iter it
+        #     flattens (early bins ~12-17). This is the "more denoising buys nothing" cut.
+        #   * cap (LATE-STAGE BACKSTOP): `max_iterations_per_data_id`. Late in training
+        #     the plateau onset drifts out (~33 iters) -- the model is already stable so
+        #     waiting that long is wasteful; the cap force-commits at 20 first. Sits
+        #     ABOVE the early plateau fire (so plateau stays primary) and BELOW the late
+        #     grind (so it caps the tail). Whichever trigger fires first wins; the
+        #     `commit_reason` field on agg_round telemetry records which (natural/cap/plateau).
+        # Learning is compared against the earlier var<=0.3-only fluxtune run (no A/B).
+        # TO DISABLE (revert to var<=thr only, byte-identical): var_stopping_policy: off.
+        # TO TUNE: lower ε -> plateau fires later/less; raise ε -> earlier/more (ε=0.25
+        # fires ~94% at iter ~11). Lower the cap -> more late-stage forcing (and it
+        # engages on shorter bins, e.g. the smoke). Re-characterize at the more-IID
+        # ablations (α∈{10,100}) where the floor drops and the grind may soften.
+        var_stopping_policy: plateau
+        var_plateau_patience: 3       # N: look-back window for the flatten test
+        var_plateau_rel_delta: 0.15   # ε: commit when rel var-drop over last N < ε
+        max_iterations_per_data_id: 20  # late-stage force-commit ceiling
     trainer:
       hyperparameters:
         select_perturbation_using_jvp: true

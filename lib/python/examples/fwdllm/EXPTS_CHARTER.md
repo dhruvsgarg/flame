@@ -14,9 +14,22 @@ re-sends) is IMPLEMENTED + VALIDATED** — shared sync+async fix behind flag `su
 (default off, enabled on all baselines), unit tests (9 cases) + `audit_weight_redundancy.py` regression
 check, all green (47 tests). Validation run `run_20260708_001641_fluxtune_n10_smoke` (flag ON):
 **0% redundant** (was 71–90%), exactly 1 weight-send/trainer/databin, 299 re-sends suppressed,
-**−79% down-bytes**, 8 commits + evals with **no deadlock**. Committed `5503100b`. **Next: Opt-2**
-(variance-plateau force-commit + curve characterization). Build order + resolved decisions D-1…D-4 in §5c.
-Paper reconciliation (below) is complete/delivered.
+**−79% down-bytes**, 8 commits + evals with **no deadlock**. Committed `5503100b`. Build order + resolved
+decisions D-1…D-4 in §5c. Paper reconciliation (below) is complete/delivered.
+
+**STATUS (2026-07-08, later):** 🔬 **Opt-2 measure-first (M0) DONE; grind confirmed at α=1.** Built the
+M0 reducer `characterize_variance_curve.py` (per-databin variance-decay curve + fixed_cap/plateau
+counterfactual sweeps, §5e). **Key correction:** the §5a/§5e source run
+(`...185045_fluxtune...alpha0p1...`) actually loaded **α=1** (verified from `*trainers.log`; the dir
+name is mislabeled) — so §5's bottleneck ledger IS an α=1 measurement, resolving the operator's "where
+are you finding α=0.1" question. Experiments are **α=1 primary, never below 1; ablations go UP to
+α∈{10,100}** ([[fwdllm-alpha-convention]]). The variance grind (var@commit≈0.29, floor~0.45, bins
+15→34 iters) is real at the primary operating point → Opt-2 built + **enabled as the fluxtune default**.
+The `var_stopping_policy` framework (plateau primary/early + max-iter cap late backstop; pure
+`_should_force_commit_on_plateau`, 8-case unit test, `commit_reason` telemetry, byte-identical off) is
+live; `_metadata/baselines.yaml` fluxtune = **plateau, N=3, ε=0.15, cap=20**. No A/B — compared directly
+against the earlier var≤0.3-only run. **Next: 10-trainer smoke vs that baseline → read commit_reason
+split + learning → tune ε/cap → re-characterize at α∈{10,100}.**
 
 **STATUS (2026-07-07):** ✅ **Reconciliation complete; `05-evaluation.tex` delivered** and being moved
 back into the paper repo by the operator. Both docs are in sync; the run ledger (EXPERIMENTS.md §10) and
@@ -92,7 +105,7 @@ then the **α=1 re-runs** (§2c) produce the final numbers into the ledger. The 
 | **A2** Task | Paper claimed Alpaca/FLAN instruction-following | **AG News 4-class topic classification.** | tex Setup |
 | **A3** Hardware | Paper claimed Pixel 7 Pro NPU on-device | **NVIDIA A40, 8-GPU box, with a *modeled* mobile-latency delay (`delay_factor=2` = base/2, forward-only cheaper than backprop). Mobile figures are argued from structural properties, not measured.** | tex Setup |
 | **A4** Real-world trace | Paper claimed REFL 136K-device trace | **`mobiperf_*` is the condition of record** (wired in `FedSgdTrainer.py`). **REFL** (`third_party/REFL/`) is a scoped future item, not a claim. | tex Setup |
-| **A5** Non-IID α | Paper {0.1, 0.5}; `experiments.yaml` main=1; early runs ran α=0.1 | **RESOLVED: primary α=1** (matches `experiments.yaml main`). **α=0.1 excluded** — learning too slow across all baselines to finish convergence runs; kept only as a one-line "excluded, too slow" note. Non-IID ablation → {0.5, 1.0}. The α=0.1 smoke runs will be **re-run at α=1** for final numbers. | tex + code |
+| **A5** Non-IID α | Paper {0.1, 0.5}; `experiments.yaml` main=1; early runs ran α=0.1 | **RESOLVED (operator 2026-07-08): primary α=1; experiments NEVER go below α=1.** α=0.1/0.5 excluded (learning too slow; kept as a one-line "excluded, too slow" note). **Non-IID ablation moves toward MORE IID → α ∈ {10, 100}** (higher α = clients agree more = lower variance floor). All early α=0.1 smoke runs are **deprecated for tuning** and re-run at α=1 for final numbers. See [[fwdllm-alpha-convention]]. | tex + code |
 | **B1** FwdLLM_Plus def | Paper: "cosine filtering / async" (`\tbd`) | **FwdLLM + three mechanisms: (1) per-iteration reselection [defining], (2) oracular availability, (3) relaxed `round_data_id` staleness. Sync, random selector, agg_goal=10.** Oracular is **inert under syn_0** (100% avail) — scope its benefit to unavailability (mobiperf, deferred); do not attribute current behavior to it. | tex Baselines |
 | **B2** Contribution taxonomy | Paper used fine C1/C3/C6; code used coarse 1/2/3 | **Align on THREE contributions, code labels:** **C1** guided (JVP-magnitude) perturbation selection · **C2** dynamic K/C · **C3** intelligent (gradient-aware) aggregation. Async/iteration-level is the *structural substrate*, not a numbered contribution. | both |
 | **C1/C2** E3/E4 vs data | Observed data contradicts E3 (compute) & E4 (comm) takeaways | **Retain E3/E4 as hypotheses** (they are `\plannedexp`); they assume C2 + C3 (being implemented) deliver. Current contribution-1-only data is the *expected intermediate* — documented in `EXPERIMENTS.md` §4 as ⚠. E1 stands on C1 alone. | both |
@@ -168,8 +181,12 @@ The `compare_baselines.py` CSV already has every metric's *numbers*; these are t
 
 ### 2f. Bottleneck-driven optimizations (measured — see §5; all flag-gated, byte-identical off)
 Ordered by the §5b optimization ledger. Each is an independent knob we can turn on/off.
-- ☐ **M0 — re-measure at α=1.** Run the §5a streaming reducer on an α=1 fluxtune run (validate the
-  variance floor / non-commit % / redundancy hold before tuning). **Blocks 2f-2's threshold choice.**
+- ☑ **M0 — measure at α=1: DONE.** Tool `expt_scripts/characterize_variance_curve.py` (per-databin
+  variance-decay curve + evolution + counterfactual fixed_cap/plateau sweeps, §5e). The §5a/§5e source
+  run turned out to be **α=1** (loaded `niid_label_clients=100_alpha=1`, verified from `*trainers.log`;
+  the `alpha0p1` dir name is a mislabel). So the grind IS confirmed at the primary operating point
+  (var@commit ≈0.29 noise-dip, floor ~0.45, bins 15→34 iters) → Opt-2 unblocked, tunable off §5e.
+  Follow-up: re-characterize at α∈{10,100} to see if the grind (hence Opt-2's win) survives more IID.
 - ◐ **2f-1 — redundant weight-send elimination** (`suppress_redundant_weights`, 🟢).
   - ☑ **Opt-1 intra-databin suppression IMPLEMENTED + VALIDATED** (§5d): shared sync+async
     `_should_send_full_weights` + `_weights_sent_this_cycle` (≤1 payload/trainer/model_version), flag
@@ -178,10 +195,20 @@ Ordered by the §5b optimization ledger. Each is an independent knob we can turn
     redundant, −79% down-bytes, no deadlock** (committed `5503100b`).
   - ☐ Cross-databin delta/version-cache (compress the model *change* when a trainer genuinely needs a new
     version) — the remaining `fluxtune.comm.delta_weights` piece; larger, do after Opt-1 validates.
-- ☐ **2f-2 — variance-gate threshold + real force-commit** (`varGate.threshold`, `varGate.maxItersPerBin`,
-  `varGate.plateauRelDelta`, 🟡). Raise threshold to the natural plateau (~0.45–0.5) **and** wire the
-  diminishing-returns force-commit (currently 0% firings). A/B on E1 accuracy. Target: iters 18→~7 (E3),
-  faster model-version (revives staleness).
+- ☑ **2f-2 — variance-gate force-commit (Opt-2): IMPLEMENTED + DEFAULT ON (fluxtune)** (`var_stopping_policy`,
+  `max_iterations_per_data_id`, `var_plateau_patience`, `var_plateau_rel_delta`, 🟡). Policy ∈
+  {off, fixed_cap, plateau}. **Two triggers on top of var≤thr, per the operator's regime model:**
+  **plateau = PRIMARY/early** (commit when the per-bin var curve flattens — rel var-drop over last N < ε
+  while var>thr — scale-invariant → commits the denoised estimate at ~iter 12–17), **cap = LATE backstop**
+  (`max_iterations_per_data_id`; late-stage plateau onset drifts to ~33 and the model is already stable, so
+  the cap force-commits first). Whichever fires first wins; `commit_reason` (natural/cap/plateau) on
+  `agg_round` records which. Defaults `_metadata/baselines.yaml` fluxtune: **policy=plateau, N=3, ε=0.15,
+  cap=20** (cap ABOVE early plateau fire, BELOW late grind). Pure decision
+  `TopAggregator._should_force_commit_on_plateau` (8-case unit test, green). **byte-identical when
+  `off`.** No A/B — compared directly against the earlier var≤0.3-only fluxtune run. Target: iters ~18→~12
+  (E3), faster model-version (revives staleness). **Next: 10-trainer smoke vs the var≤0.3 baseline, read
+  commit_reason split + learning; then tune ε/cap; re-characterize at α∈{10,100}.** (The M0 threshold-raise
+  idea is subsumed — the plateau commits ≈ the denoised estimate ~0.45, so raising the 0.30 bar is moot.)
 - ☐ **2f-3 — gradient-aware aggregation (C3)** — inverse-variance (S1) + alignment-gate (S2); reuse the
   already-computed var/SNR stats; re-normalize + re-tune server LR. **This is §2d's implementation.**
   Instrument weight↔realized-Δloss correlation first. Target: E3 quality + fix M-12 instability.
@@ -195,7 +222,7 @@ Ordered by the §5b optimization ledger. Each is an independent knob we can turn
 ### 2e. Ablations (paper has them planned; no tooling yet — D5)
 - ☐ JVP guidance sensitivity (C1): threshold, refresh frequency.
 - ☐ K/C policy sensitivity (C2): window N, growth/shrink factors, C_max.
-- ☐ Non-IID robustness: Dirichlet α ∈ {0.5, 1.0} (α=0.1 excluded, too slow — A5).
+- ☐ Non-IID robustness: Dirichlet α ∈ {10, 100} (more-IID direction; α<1 excluded — A5 / [[fwdllm-alpha-convention]]).
 - ☐ Build ablation tooling (reuse the reducer backbone; new run-sets).
 
 ---
@@ -220,22 +247,28 @@ and α=1/mobiperf runs land to fill the ledger.
 
 ## 4. Open items still needing a decision
 
-- _(none open)_ — **A5 (α) resolved** (2026-07-07): primary **α=1**; α=0.1 excluded (too slow across all
-  baselines), retained only as a one-line note; non-IID ablation → {0.5, 1.0}. The α=0.1 smoke runs
-  (ledger, EXPERIMENTS.md §10) are to be **re-run at α=1** for final numbers. Follow-up (not blocking):
-  confirm the earlier config↔run mismatch (runs ran α=0.1 while `experiments.yaml` recorded α=1) doesn't
-  recur when the α=1 runs launch.
+- _(none open)_ — **A5 (α) resolved** (2026-07-07, refined 2026-07-08): primary **α=1**, experiments
+  **never below 1**; non-IID ablation moves to MORE IID → **α∈{10,100}** ([[fwdllm-alpha-convention]]).
+  **Config↔run-name mismatch RESOLVED (2026-07-08):** the mismatch is only in the run *directory names*
+  (three n100 runs are dir-named `alpha0p1` but their `*trainers.log` + config loaded
+  `niid_label_clients=100_alpha=1`); the *data* matched `experiments.yaml`'s α=1. Only
+  `run_20260706_161938_fwdllm` is genuinely α=0.1. **Verify α from the loaded-partition log line, never
+  the dir name.** So §5's ledger is already an α=1 measurement — no α=1 re-run of §5 needed.
 
 ---
 
 ## 5. FluxTune bottleneck analysis & optimization ledger (measured)
 
 **Source.** All numbers below are a full streaming reducer pass over
-`run_20260706_185045_fluxtune_n100_smoke_syn_0_real` (α=0.1, N=100, C=30, agg_goal=10, C1-only,
-C2 off, C3=borrowed placeholder). **⚠ α=0.1 caveat (A5):** the paper condition is **α=1**; the
-*mechanisms* below are structural and will hold qualitatively, but *magnitudes* (esp. the variance
-floor and non-commit %) likely soften at α=1 where clients disagree less — so **task M0 is to re-run
-this exact pass on an α=1 fluxtune run before tuning any threshold.**
+`run_20260706_185045_fluxtune_n100_smoke_syn_0_real` (**α=1**, N=100, C=30, agg_goal=10, C1-only,
+C2 off, C3=borrowed placeholder). **✅ α CORRECTED (2026-07-08):** the directory name says
+`alpha0p1` but the run's config AND its `*trainers.log` both show it loaded
+`niid_label_clients=100_alpha=1` — verified by grepping the loaded-partition log line. **These are
+α=1 measurements at the paper's primary operating point**, not α=0.1 as originally labeled (that came
+from the stale dir name + the known config↔run-name mismatch). Consequence: **task M0 is effectively
+satisfied** — the variance grind is real at α=1, so Opt-2 tuning may proceed off these numbers. (Of the
+n100 runs only `run_20260706_161938_fwdllm` is genuinely α=0.1. See [[fwdllm-alpha-convention]].)
+Ablations move to MORE IID (α∈{10,100}) where the floor should drop further — re-measure there.
 
 ### 5a. Measured diagnostics (what the run actually did)
 
@@ -321,7 +354,23 @@ per databin." Re-run the §5a reducer: weight bytes ↓, `agg_eval` acc/loss + v
 grad tagged M−1 → normal staleness down-weight), but not belt-and-suspenders. Accept mark-at-send
 (simplest), or add an ack/confirm before downgrading? *Recommend mark-at-send + the suppressed-counter telemetry.*
 
-#### Opt-2 — adaptive variance-plateau force-commit (`varGate.stopping_policy`) — **MEASURE-FIRST**
+#### Opt-2 — variance-plateau force-commit (`var_stopping_policy`) — **IMPLEMENTED + DEFAULT ON (2026-07-08)**
+**Status.** Measure-first done (§5e, α=1 curve) → framework landed and enabled as the fluxtune default.
+`var_stopping_policy ∈ {off, fixed_cap, plateau}` (config, `Extra.allow` hyperparameters). `plateau` =
+commit when the per-bin var curve flattens: pure `TopAggregator._should_force_commit_on_plateau`
+(rel var-drop over last `var_plateau_patience` N < `var_plateau_rel_delta` ε, while var>thr) called from
+`FedSGDAggregator.aggregate()` right after the cycle's var is appended to `var_prev_iter_list`; it ORs
+into the existing `_force_commit_this_cycle` cap path. **Operator regime model (drives the values):**
+plateau is the PRIMARY early trigger (curve flattens fast when the model is still moving → commit the
+denoised estimate ~iter 12–17); the max-iter CAP is the LATE-stage backstop (near convergence the plateau
+onset drifts to ~33 but the model is already stable, so the cap force-commits first). So the cap sits
+ABOVE the early plateau fire and BELOW the late grind. `_metadata/baselines.yaml` fluxtune defaults:
+**policy=plateau, N=3, ε=0.15, cap=20**; disable with `var_stopping_policy: off` (byte-identical).
+`commit_reason` (natural/cap/plateau) + `stopping_policy` on `agg_round` measure the actual split.
+**Byte-identical when off** (unit-tested, 8 cases). The "adaptive" tier is deferred (D-2) — the plateau
+rule already commits ≈ the denoised estimate, covering the fixed-cap+plateau intent. Original
+MEASURE-FIRST notes retained below for provenance.
+
 **Verified.** The force-commit path **already exists** — `_force_commit_this_cycle` fires when
 `iteration_per_data_id+1 >= self._max_iter_per_data_id` (`:1687`), read from config
 `max_iterations_per_data_id` (`:307`), **default `None` ⇒ never armed** (0.0% in the run; bins grind to 61).
@@ -465,7 +514,70 @@ commits + 7 evals progressed normally (the VAR=bad keep-training path did not st
 by construction (trainers train on identical cached weights); a strict same-length A/B trajectory diff is
 optional and not required for a byte-level change.
 
+### 5e. Opt-2 measure-first tooling + α=0.1 tooling-validation (2026-07-08)
+
+**Tool.** [`expt_scripts/characterize_variance_curve.py`](expt_scripts/characterize_variance_curve.py)
+streams `agg_round` telemetry, reconstructs each data-bin by **commit counting** (robust to the
+`data_id` cycling footgun), extracts each bin's (iteration → `var`) curve keyed on `cycle_iteration`,
+and reports: per-bin distribution (initial var, commit var, min, plateau onset), **evolution over
+training** (databins split in thirds), and two counterfactual sweeps that directly design the policy —
+**fixed_cap** (iters/forward-passes saved + the var we'd commit at) and **plateau** (patience N, tol ε →
+fire iteration + var). α-agnostic; runs over multi-GB logs. This IS the M0 reducer.
+
+**✅ These ARE α=1 numbers (the M0 measurement).** The source run's dir name says `alpha0p1` but it
+loaded `niid_label_clients=100_alpha=1` (verified from `*trainers.log`, 2026-07-08), so this is the
+paper's primary operating point — a valid tuning basis, NOT α=0.1 as first assumed. Per
+[[fwdllm-alpha-convention]] experiments are α=1 primary (never lower); ablations go to α∈{10,100} where
+the floor should drop further (re-measure there before claiming Opt-2 helps at α≥10).
+
+Run `run_20260706_185045_fluxtune_n100_smoke_syn_0_real` (**α=1**, 139 committed data-bins):
+- **var @ commit ≈ 0.29 always** (p10 .282 / p50 .293 / p90 .298) — the gate commits only when a noise
+  dip crosses thr=0.30; `var_min == var_commit` (commit = first sub-0.30 dip). **var @ iter 0 ≈ 5.4**
+  (p90 10.6); iters/bin p50 **19** (p90 37) — matches §5a M-5.
+- **Evolution:** bins grind LONGER as training progresses (median iters early **15** → late **34**);
+  plateau (rel-drop<5% over 3 iters) fires late at iter ~33, var ~0.35 ≈ the structural floor.
+- **fixed_cap sweep:** cap 12 → cuts 88.5% of bins, saves **47.9%** of iters, commits at median var
+  **0.50** (p90 0.89); cap 15 → 71.9% of bins, saves 37%, commits at var 0.47 (p90 0.72); cap 10 →
+  56.3% saved but commits at var 0.56 (p90 1.05, riskier). Committing at the plateau (~0.45–0.50) is the
+  *denoised* estimate, arguably better signal than a lucky 0.29 noise dip.
+- **plateau sweep (N=3):** ε=0.10 fires 33.8% of bins at iter ~22 (var .38); ε=0.15 fires 56.8% at
+  iter 17 (var .43); ε=0.25 fires 94.2% at iter 11 (var .52). A plateau rule commits the denoised
+  estimate; pair it with a fixed_cap ceiling for the bins that never flatten.
+
+**Design consequence.** The floor sits above the threshold **at α=1** (var@commit ≈0.29 by noise dip,
+plateau ~0.45), so the grind is real at the paper's operating point and **M0 is satisfied** — Opt-2 can
+proceed with these numbers. Starting design point: **fixed_cap ≈ 12** (safety ceiling; −48% iters,
+commit-var ~0.50) as a floor now, plus a **plateau rule (N=3, ε≈0.10–0.15)** that commits the denoised
+estimate earlier on the bins that flatten, deferring to the cap for bins that never do. Re-characterize
+at α∈{10,100} before claiming the win there.
+
 ## 6. Changelog
+- **2026-07-08 (k) — Opt-2 ENABLED as the fluxtune default (operator decision; §5c, §2f-2, baselines.yaml).**
+  Per the operator's regime model (plateau primary/early, cap = late-stage backstop) set
+  `_metadata/baselines.yaml` fluxtune: **var_stopping_policy=plateau, N=3, ε=0.15, cap(max_iter)=20**
+  (cap above the early plateau fire ~12–17, below the late grind ~33). fluxtune-only (fwdllm/fwdllm_plus
+  unset). No A/B — to be compared directly against the earlier var≤0.3-only fluxtune run via a 10-trainer
+  smoke. Disable/tune documented inline. Byte-identical when `off`.
+- **2026-07-08 (j) — Opt-2 variance-plateau force-commit FRAMEWORK implemented (§5c, §2f-2).** Added
+  `var_stopping_policy ∈ {off, fixed_cap, plateau}` (+ `var_plateau_patience` N, `var_plateau_rel_delta`
+  ε; `max_iterations_per_data_id` = cap ceiling), read in `internal_init`. Pure decision
+  `TopAggregator._should_force_commit_on_plateau` (rel var-drop over last N < ε while var>thr), called
+  from `FedSGDAggregator.aggregate()` after the cycle var is appended to `var_prev_iter_list`; ORs into
+  the existing cap path. `stopping_policy`/`commit_reason` (natural/cap/plateau) added to `agg_round`
+  telemetry. **8-case unit test** `test_fwdllm_var_stopping_policy.py` (all green; Opt-1's 9 still green).
+  **Byte-identical OFF.**
+- **2026-07-08 (i) — Opt-2 measure-first (M0) DONE + α-label bug found (§5e, A5, §5a, M0).** Wrote
+  `characterize_variance_curve.py` (per-databin variance-decay curve + evolution + fixed_cap/plateau
+  counterfactual sweeps) — the M0 reducer. **Discovered the §5a/§5e source run
+  `run_20260706_185045_fluxtune…alpha0p1…` actually loaded α=1** (verified from its `*trainers.log`; the
+  `alpha0p1` in the dir name is a mislabel — only `…161938_fwdllm` is genuinely α=0.1). So §5's whole
+  bottleneck ledger IS an **α=1** measurement, not α=0.1 — resolving the operator's "where are you finding
+  α=0.1". **M0 satisfied:** the grind is real at the primary operating point (var@commit≈0.29 noise-dip,
+  floor~0.45, bins 15→34 iters, cap-12 ≈ −48% iters @ commit-var ~0.50) → Opt-2 unblocked, tunable off
+  §5e. **α convention (operator):** α=1 primary, never below 1; ablations go UP to α∈{10,100} (was
+  {0.5,1.0}) — re-characterize there before claiming Opt-2 survives more IID. New memory
+  [[fwdllm-alpha-convention]]. No aggregator/config code changed yet; next is the flag-gated
+  `stopping_policy` framework.
 - **2026-07-08 (h) — Opt-1 VALIDATED end-to-end.** Run `run_20260708_001641_fluxtune_n10_smoke` (flag ON):
   audit shows **0.0% redundant** (exactly 1 weight-send/trainer/databin over 8 databins), 299 re-sends
   suppressed, **−79.3% agg→trainer down-bytes** (264 MB vs 1278 MB counterfactual), and **no deadlock**
