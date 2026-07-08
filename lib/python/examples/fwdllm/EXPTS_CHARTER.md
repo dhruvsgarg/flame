@@ -8,6 +8,14 @@ ledger (which log file feeds which result) lives in [`EXPERIMENTS.md`](EXPERIMEN
 
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail` · **Opened:** 2026-07-07
 
+**STATUS (2026-07-08):** 🔨 **Active workstream: bottleneck-driven optimizations (§5).** The measured
+bottleneck analysis + gain-ordered ledger are in §5. **Opt-1 (suppress redundant intra-databin weight
+re-sends) is IMPLEMENTED** — shared sync+async fix behind flag `suppress_redundant_weights` (default off,
+enabled on all baselines), unit tests (9 cases) + a reusable `audit_weight_redundancy.py` regression check,
+all green (47 tests). **Pending: the short validation run** (confirm redundancy→0, trajectory unchanged,
+no deadlock) before starting **Opt-2** (variance-plateau force-commit + curve characterization). Build
+order + resolved decisions D-1…D-4 in §5c. Paper reconciliation (below) is complete/delivered.
+
 **STATUS (2026-07-07):** ✅ **Reconciliation complete; `05-evaluation.tex` delivered** and being moved
 back into the paper repo by the operator. Both docs are in sync; the run ledger (EXPERIMENTS.md §10) and
 this charter are current. **Remaining work is all code/implementation** — see **§Next steps** below.
@@ -146,6 +154,7 @@ The `compare_baselines.py` CSV already has every metric's *numbers*; these are t
 
 ### 2d. Contribution C3 — gradient-aware aggregation (design → implement → document) — *operator's separate track*
 - ☑ Write up the C3 investigation in `EXPERIMENTS.md` §4 (hypothesis + 4 dimensions).
+- ☑ **Design starter doc:** [`docs/aggregation_design.md`](docs/aggregation_design.md) — FedBuff→FeLiX→FluxTune regime, the weights≠gradients + slow-staleness hypothesis, 5-axis design space, candidate schemes S0–S5, and how to evaluate the aggregation itself.
 - ☐ Implement fluxtune's gradient-aware aggregation; disable the borrowed fedbuff "new" placeholder.
 - ☐ On landing: move feature doc → `fluxtune_contributions.md`; remove from `EXPERIMENTS.md`.
 
@@ -154,6 +163,31 @@ The `compare_baselines.py` CSV already has every metric's *numbers*; these are t
 2. **Scalar rate vs gradient-aware combination.** The current `weight_factor` scalar-multiplies the whole update — borrowed from weight-averaging async FL. For *gradient* updates (forward-mode JVP estimates), a scalar down-weight may be the wrong operator. Explore direction-/variance-aware combination (e.g. weight by JVP magnitude / SNR / agreement with the running aggregate), not just staleness×loss.
 3. **Interaction with C1 (guided perturbations) & the variance gate.** Updates already passed a `var ≤ var_threshold` gate; does re-weighting by loss (`stat_utility`) double-count what the gate filtered?
 4. **Interaction with C2 (dynamic K/C).** Concurrency (C) sets how many stale/in-flight updates coexist; the aggregation rule and the concurrency controller co-determine wasted work (the E3/E4 root cause).
+
+### 2f. Bottleneck-driven optimizations (measured — see §5; all flag-gated, byte-identical off)
+Ordered by the §5b optimization ledger. Each is an independent knob we can turn on/off.
+- ☐ **M0 — re-measure at α=1.** Run the §5a streaming reducer on an α=1 fluxtune run (validate the
+  variance floor / non-commit % / redundancy hold before tuning). **Blocks 2f-2's threshold choice.**
+- ◐ **2f-1 — redundant weight-send elimination** (`suppress_redundant_weights`, 🟢).
+  - ☑ **Opt-1 intra-databin suppression IMPLEMENTED** (§5d): shared sync+async `_should_send_full_weights`
+    + `_weights_sent_this_cycle` (≤1 payload/trainer/model_version), flag default off, enabled on all
+    baselines; 9-case unit test + `audit_weight_redundancy.py` regression check (47 tests green). Measured
+    redundancy pre-fix: fwdllm 90%/22 GB, fluxtune 71%/68 GB. **Validation run pending** before trusting.
+  - ☐ Cross-databin delta/version-cache (compress the model *change* when a trainer genuinely needs a new
+    version) — the remaining `fluxtune.comm.delta_weights` piece; larger, do after Opt-1 validates.
+- ☐ **2f-2 — variance-gate threshold + real force-commit** (`varGate.threshold`, `varGate.maxItersPerBin`,
+  `varGate.plateauRelDelta`, 🟡). Raise threshold to the natural plateau (~0.45–0.5) **and** wire the
+  diminishing-returns force-commit (currently 0% firings). A/B on E1 accuracy. Target: iters 18→~7 (E3),
+  faster model-version (revives staleness).
+- ☐ **2f-3 — gradient-aware aggregation (C3)** — inverse-variance (S1) + alignment-gate (S2); reuse the
+  already-computed var/SNR stats; re-normalize + re-tune server LR. **This is §2d's implementation.**
+  Instrument weight↔realized-Δloss correlation first. Target: E3 quality + fix M-12 instability.
+- ☐ **2f-4 — dynamic C** (`dynamic_kc.enabled` + `EligibleEndsBasedPolicy`, 🟡) — sequence **after** 2f-1;
+  drive by eligible-pool/wasted-work, not staleness. Re-measure the C↔wall-clock tradeoff post-delta-encode.
+- ☐ **2f-5 — finer staleness clock** (`agg_rate_conf.staleness_clock`) — Δcommits/wall-age; **bundle with
+  2f-3 only** (re-check sim parity — reorders commits).
+- 🔴 **Parked (measured dead-ends):** dynamic-K-to-lower-variance-floor (floor is structural non-IID) and
+  StalenessBasedPolicy-for-C (staleness too low at syn_0 to trigger). Revisit X2 only under mobiperf scarcity.
 
 ### 2e. Ablations (paper has them planned; no tooling yet — D5)
 - ☐ JVP guidance sensitivity (C1): threshold, refresh frequency.
@@ -191,7 +225,276 @@ and α=1/mobiperf runs land to fill the ledger.
 
 ---
 
-## 5. Changelog
+## 5. FluxTune bottleneck analysis & optimization ledger (measured)
+
+**Source.** All numbers below are a full streaming reducer pass over
+`run_20260706_185045_fluxtune_n100_smoke_syn_0_real` (α=0.1, N=100, C=30, agg_goal=10, C1-only,
+C2 off, C3=borrowed placeholder). **⚠ α=0.1 caveat (A5):** the paper condition is **α=1**; the
+*mechanisms* below are structural and will hold qualitatively, but *magnitudes* (esp. the variance
+floor and non-commit %) likely soften at α=1 where clients disagree less — so **task M0 is to re-run
+this exact pass on an α=1 fluxtune run before tuning any threshold.**
+
+### 5a. Measured diagnostics (what the run actually did)
+
+| # | Metric | Measured | What it means |
+|---|--------|----------|---------------|
+| M-1 | agg iterations that **commit** a model update | **4.3%** (139 / 3212) | 95.7% of aggregation work advances nothing |
+| M-2 | median `var` vs `var_threshold` | **0.55 vs 0.30** | the *median* iteration is 1.8× over the commit bar |
+| M-3 | achievable **variance floor** (asymptote by itr≈10) | **~0.45 median / ~0.30 min** | denoising plateaus **above** the threshold → gate crossed only by noise dips |
+| M-4 | marginal var drop, itr 11→19 | **0.506 → 0.453** (≈0.007/itr) | iterations past ~10 buy almost nothing |
+| M-5 | median iterations per data-bin (max) | **18 (61)** | bins grind far past the point of diminishing returns |
+| M-6 | `force_commit` (anti-grind escape valve) firings | **0.0%** | the safety valve that should cap the tail is **inert** |
+| M-7 | buffers with **zero** staleness spread | **61.7%** | staleness axis is degenerate → aggregation rate can't differentiate (H2 ✓) |
+| M-8 | staleness distribution | **median 1, p90 3, mean 1.23** | model-version crawls (caused by M-1) → updates read identical versions |
+| M-9 | model versions shipped vs weight **downloads** | **139 vs ~26k (≈189×)** | each committed model is re-sent ~189 times |
+| M-10 | redundant weight bytes | **~88 GB weights = 65% of 146 GB total; ≈99% re-sends of an unchanged model** | async re-enlist re-pulls the *same* weights during non-commit stretches |
+| M-11 | trainer busy fraction (p50) | **8.3%** | trainers idle 92% (expected for async; not the bottleneck) |
+| M-12 | accuracy 50%→75%→100% wall | **0.825 → 0.743 → 0.806** | ~10-pt mid-run regression while loss keeps falling → aggregation instability (H1) |
+
+**The through-line: the variance gate is the hub.** M-1 (wasted compute) is *caused by* the M-3
+threshold-vs-floor mismatch + M-6 inert escape valve; M-7/M-8 (dead staleness) are *caused by* M-1
+(slow model-version advance); and half of M-9/M-10 (redundant comm) is *caused by* M-1's long
+non-commit stretches. So one ML knob (the gate) sits upstream of compute, staleness, and part of comm;
+one systems knob (delta/version-cache) owns the rest of comm independently.
+
+**Key inference — the floor looks structural, not sample-limited.** The grad pool grows across
+iterations yet `var` asymptotes (M-3/M-4). That means more samples *from the same α=0.1-skewed clients*
+hit an irreducible cross-client-disagreement floor → **"collect more" (dynamic K) will not lower it**;
+"weight smarter" (C3) or "accept the floor" (threshold) will. This directly de-prioritizes dynamic-K.
+
+### 5b. Optimization ledger — ordered by maximum gain
+
+Legend — **Risk/Reward**: 🟢 high-reward/low-risk · 🟡 high-reward/medium-risk · 🔴 high-risk-low-reward (avoid/park).
+Flags: every change lands **byte-identical-off** behind the named flag.
+
+| Rank | Lever (flag) | Current | Issue | Prevalence / cost | Upside across metrics | Probable downside | How to fix | Priority / risk |
+|---|---|---|---|---|---|---|---|---|
+| **1** | **Delta / version-cache weight download** (`fluxtune.comm.delta_weights`) | full model re-sent on every (re-)dispatch | model changes 139× but ships ~26k× | **65% of all bytes (~88 GB), ≈99% redundant** (M-9/M-10) | **E4 huge** (−~85 GB down); frees the C-tradeoff for lever 4; **zero learning change** | cache-invalidation bug could serve stale weights → correctness | version-tag each dispatch; client at current version → no-op/ack, else send delta (or gzip). Pure systems. | 🟢 **do first** |
+| **2** | **Variance-gate threshold + real force-commit** (`varGate.threshold`, `varGate.maxItersPerBin`, `varGate.plateauRelDelta`) | `var_threshold=0.3`; force-commit never fires | threshold **below** achievable floor (~0.45) → grind to 18–61 iters | **95.7% of forward-pass compute doesn't commit** (M-1); iters past ~10 wasted (M-4/M-5) | **E3 big** (iters 18→~7 ≈ 2–3× less wasted compute); **revives staleness** (faster model-version → fixes M-7/M-8); trims non-commit re-pulls (helps E4) | committing at the plateau = noisier updates → could worsen M-12 instability or final acc | (a) raise threshold to ~0.45–0.5; (b) wire diminishing-returns force-commit (commit if var drop < `plateauRelDelta` over N iters, or at `maxItersPerBin`). A/B on E1 acc. | 🟡 **do second** (cheap, isolating) |
+| **3** | **Gradient-aware aggregation — C3** (`agg_rate_conf.type=grad_aware`: inverse-variance S1 + alignment-gate S2) | FeLiX scalar rate (staleness×utility), grad-stats discarded | scalar rate can't refuse anti-aligned gradients (H1); best signals (var/SNR) computed then thrown away (H3) | drives M-12 instability; underlies E3 per-unit inefficiency | **E3 quality** (usable direction from fewer samples); **E1 stability** (stop averaging opposing grads); makes each commit count | re-tunes effective LR (Axis E); double-counts the C1 gate if naive; more agg cost | inverse-variance weight `w∝1/var_i` (reuse computed stats) + drop/down-weight cos<0 vs running aggregate; re-normalize + re-tune server LR. Instrument weight↔Δloss corr first. | 🟡 **do third** (real contribution; higher effort) |
+| **4** | **Dynamic C** (`dynamic_kc.enabled`, `EligibleEndsBasedPolicy`) | static C=30 | high concurrency → speculative stale work + redundant re-pulls | contributes to M-9/M-10 and speculative compute | **E4/E3** (fewer in-flight → fewer re-pulls, less stale work) | too-low C slows wall-clock (E1) — the actual win | drive C by eligible-pool / wasted-work signal (**not** staleness — M-8 too low to trigger). Sequence **after** lever 1 (delta-encode removes most of C's comm penalty → re-measure the tradeoff). | 🟡 medium |
+| **5** | **Finer staleness clock** (`agg_rate_conf.staleness_clock`) | `Δmodel_version` (coarse, gated) | 61.7% degenerate (M-7); axis contributes ~0 differentiation | only matters *inside* C3's rate | small alone; multiplies C3 | may reorder commits → sim-parity re-check | Δcommits-since-dispatch or wall/vclock age. **Do only bundled with lever 3**; lever 2 already partly revives staleness for free. | 🟡 low-standalone |
+| **X1** | **Dynamic K to lower the variance floor** (`VarianceBasedPolicy`) | — | floor is **structural non-IID** (5a inference), not sample-count | — | ~none: more samples of the same skewed clients won't cross 0.3 | more compute for no floor movement | — | 🔴 **park** — high-risk-low-reward given the structural floor |
+| **X2** | **StalenessBasedPolicy for C** | — | assumes high staleness to shed | staleness median 1 (M-8) → never triggers at syn_0 | ~none under current availability | — | (revisit only under mobiperf scarcity) | 🔴 **park** for syn_0 |
+
+**Sequencing rationale.** 1 is a free, isolated systems win that also changes the economics of 4 →
+do it first and independently. 2 is the cheapest test of the *entire* wasted-compute thesis (one
+threshold + one escape valve) and its side effect revives the staleness signal 5 depends on → do it
+second and read E1 before committing to 3. 3 is the genuine C3 contribution and the fix for the M-12
+instability, but it's the highest-effort and needs LR re-tuning → third. 4 after 1. 5 only with 3.
+X1/X2 are parked as measured dead-ends.
+
+### 5c. Fleshed-out implementation designs (verified against code 2026-07-07)
+
+Each lever below is **verified against the live code** with anchors, states the exact change + flag
+(byte-identical off, fluxtune-only), the logging/telemetry to prove the fix, and flags open **design
+decisions** (→ ask operator). Confidence tag: **SURE** = implement + validate on a 5-databin run ·
+**MEASURE-FIRST** = add telemetry, short run, then design the fix from the observed curve.
+
+#### Opt-1 — suppress redundant intra-databin weight re-sends (`fluxtune.comm.suppress_redundant_weights`) — **SURE**
+**Verified.** `_distribute_weights_async` ([`fwdllm_aggregator.py:2731`](../../flame/mode/horizontal/syncfl/fwdllm_aggregator.py#L2731)).
+With `inc_model_version_per_data_id=true` the model version is **constant within a databin**, and the
+full payload is **byte-identical across that databin's iterations**: `WEIGHTS =
+get_trainable_param_state_dict()` (params don't change with no commit) and `GRAD_POOL =
+cached_shared_grad_pool_trainable`, which is only recomputed `if self._is_model_updated` (`:2359`,
+false mid-databin). A guard already downgrades a *current* trainer to a tiny VAR=bad "keep training"
+message (`:2843`), but the currency map `_trainer_last_model_version[end]` is written **only on grad
+RETURN** (`:1446`), never at send — so every trainer pulled in to refill concurrency mid-databin reads
+as "stale" and gets the identical full payload again.
+**Measured cost.** 26,274 weight-sends vs 10,049 VAR=bad; **24,570 (93.5%) of weight-sends are at
+iter>0** inside a databin where the payload is identical; ~189 weight-sends/databin against only 100
+trainers ⇒ provable repeat-sends. This is ~88 GB, the E4 headline. **Async path only ⇒ fluxtune-only.**
+**Trainer side is safe.** The trainer caches `self.weights`/`self._model_version` and on VAR=bad "does
+not update weights" ([`fwdllm_trainer.py:304`](../../flame/mode/horizontal/syncfl/fwdllm_trainer.py#L304)),
+i.e. trains on its cached copy — so a trainer that received version M once can be sent VAR=bad thereafter.
+**Change.** When the flag is on and we send full WEIGHTS at the current model_version, mark the end as
+having it (set `_trainer_last_model_version[end]=self._model_version` at send, OR a dedicated
+`_sent_current_version` set cleared on commit). Re-dispatch within the same databin then hits the
+existing VAR=bad path automatically. Off ⇒ current behavior byte-identical.
+**Logging to prove it.** Extend the `[Distribute] Done` line + a counter: `redundant_weights_suppressed`
+(sends converted weights→VAR=bad); expect within-databin weight-sends to collapse toward "≤1 per trainer
+per databin." Re-run the §5a reducer: weight bytes ↓, `agg_eval` acc/loss + var-vs-iter curve **unchanged**.
+**Design decision (D-1):** mark-at-send is self-correcting if a first-send is dropped (trainer returns a
+grad tagged M−1 → normal staleness down-weight), but not belt-and-suspenders. Accept mark-at-send
+(simplest), or add an ack/confirm before downgrading? *Recommend mark-at-send + the suppressed-counter telemetry.*
+
+#### Opt-2 — adaptive variance-plateau force-commit (`varGate.stopping_policy`) — **MEASURE-FIRST**
+**Verified.** The force-commit path **already exists** — `_force_commit_this_cycle` fires when
+`iteration_per_data_id+1 >= self._max_iter_per_data_id` (`:1687`), read from config
+`max_iterations_per_data_id` (`:307`), **default `None` ⇒ never armed** (0.0% in the run; bins grind to 61).
+**Measured.** var decays but asymptotes ~0.45 (median) by itr≈10 vs threshold 0.30 (M-3/M-4); a fixed
+cap would help but you want the stopping rule to **adapt to the variance curve** (more patience early
+where variance reduction is real; commit sooner near convergence where gradients are consistent).
+**Two-step plan.** (a) **Measure-first:** we already emit `var` + `iteration_per_data_id` per `agg_round`,
+so extract the full **per-databin variance-decay curve** and characterize it (initial value, decay rate,
+plateau level, plateau onset) across the run and over training-time — does the plateau level fall as
+accuracy rises? does onset move earlier? (b) **Then implement** `varGate.stopping_policy ∈
+{off, fixed_cap, plateau, adaptive}`: `plateau` = commit if the relative var-drop over the last `N` iters
+< `ε` (patience `N`, tolerance `ε`); `adaptive` = tune `N`/`ε` (or the effective threshold) from the
+observed curve regime (e.g. loosen early, tighten as best-loss improves). Reuses the existing
+`_force_commit_this_cycle` plumbing; the policy just supplies the trigger.
+**Trackable numbers:** iterations-per-databin, var-at-commit, var-drop-rate (last N), Δloss-per-commit,
+plus accuracy — the levers the adaptive rule trades off.
+**Design decisions (D-2):** (i) ship a plain `fixed_cap` (e.g. 12) as a safety floor **now** while the
+adaptive rule is designed, or wait? (ii) should the rule adapt on **wall/compute budget** too (commit
+sooner when behind), or purely on the variance curve? *Recommend: land `fixed_cap=~12` behind the flag
+immediately as a floor, run the curve-characterization in parallel, then design `adaptive`.*
+
+#### Opt-3 — gradient-aware aggregation, C3 (`agg_rate_conf.type=grad_aware`) — **MEASURE-FIRST / design**
+**Verified.** `FedSgdAggregator.aggregate()` ([`FedSgdAggregator.py:192`](aggregator/FedSgdAggregator.py#L192))
+computes `var`, `real_var` (JVP), `snr`, `grads_snr`, `cv` — then uses them **only to gate the commit**;
+the per-update weight is the scalar fedbuff `weight_factor` (staleness×utility,
+[`fedbuff.py:110`](../../flame/optimizer/fedbuff.py#L110)). Confirms H3 (best signals discarded) + H2
+(staleness degenerate, M-7). **The formulation chain to make crystal-clear before coding:**
+1. **Issue:** a scalar rate rescales a gradient's *magnitude*, never its *direction*; anti-aligned JVP
+   estimates are still averaged (H1) — the plausible cause of the M-12 mid-run accuracy regression.
+2. **Numbers it manifests in:** weight-spread entropy (near-uniform ⇒ not differentiating), staleness
+   spread (M-7 ≈ 0), and — the real test — **weight↔realized-Δloss correlation** (does a higher weight
+   predict a larger loss drop?) + **wasted-work fraction** (share of committed forward-pass compute sitting
+   in low-weight / anti-aligned updates).
+3. **Formulation:** S1 inverse-variance `w∝1/var_i` (or SNR) — min-variance combine of noisy estimates;
+   S2 alignment-gate — drop/down-weight `cos(update, running_aggregate)<0`; S3 `|JVP|·SNR`. Re-normalize +
+   re-tune server LR (Axis E — a weight-scale change silently rescales the effective LR).
+4. **Measure after:** the four instrumented quantities above **besides** loss/var/iters/accuracy.
+**Open granularity question:** the computed stats are **per-batch over the pool**, but S1/S2 want
+**per-update** var/alignment — needs per-contribution stats (extra compute) or a per-update proxy.
+**Design decisions (D-3):** (i) prototype **S1 (inverse-variance)** or **S2 (alignment-gate)** first, or
+both composed? (ii) per-update signals (accurate, costs compute) vs per-batch proxy (cheap)? (iii)
+interaction with the C1 variance gate — loosen the gate and move discrimination into the weight, or keep
+the gate and weight on an orthogonal signal (alignment/magnitude) to avoid double-counting? *Recommend:
+instrument weight↔Δloss + weight-entropy on the current rule first (one short run), then prototype S1 as
+the principled baseline.*
+
+#### Opt-4 — dynamic C (`dynamic_kc.enabled=true` + policy) — **MEASURE-FIRST / configure**
+**Verified.** Infra is **fully wired, just disabled**: controller + policies exist
+([`dynamic_kc_controller.py`](../../flame/selector/dynamic_kc_controller.py),
+[`dynamic_kc_policy.py`](../../flame/selector/dynamic_kc_policy.py)); the aggregator builds the controller
+when `dynamic_kc.enabled` (`:417`); `async_oort` consumes pushed `dynamic_c` (`:295`,
+`effective_c=channel_props.get("dynamic_c", self.c)`). So opt-4 = **enable + choose a policy + validate in
+a run**, not new plumbing.
+**Design note.** StalenessBasedPolicy won't trigger (staleness median 1, M-8), so drive C by
+**eligible-pool / wasted-work**, not staleness. **Sequence after opt-1**: delta/suppress removes most of
+C's *communication* penalty, so the C↔wall-clock tradeoff must be **re-measured post-opt-1** before tuning
+C down for byte reasons.
+**Design decisions (D-4):** (i) which policy signal — eligible-pool right-size, or a wasted-work
+(stale-grad fraction) controller? (ii) bounds `c_min/c_max` + `update_every_n_aggs`? (iii) confirm the
+strict "after opt-1" sequencing. *Recommend: enable with `EligibleEndsBasedPolicy`, wide bounds, and
+treat the first run as a measurement of the post-opt-1 tradeoff.*
+
+**Net.** Opt-1 is SURE (implement + validate). Opt-2/3/4 are MEASURE-FIRST: each needs one short
+instrumented run (or reducer pass) to fix the design, per the operator's guidance. Decisions D-1…D-4 gate
+the code.
+
+**Decisions RESOLVED (2026-07-07, operator):**
+- **D-1 → mark-at-send** (self-correcting; add `redundant_weights_suppressed` telemetry). Opt-1 → implement now.
+- **D-2 → fixed cap ~12 now** as a safety floor (flag-gated, fluxtune-only) **+** characterize the variance
+  curve in parallel to design the adaptive plateau rule.
+- **D-3 → instrument the current scalar rule first** (weight-entropy, weight↔Δloss corr, wasted-work), then
+  prototype **S1 inverse-variance**.
+- **D-4 → `EligibleEndsBasedPolicy`, sequenced strictly after Opt-1** (first run measures the post-suppression
+  C↔wall-clock tradeoff).
+- **Build order:** Opt-1 (impl+validate) → Opt-2 fixed-cap + curve reducer → Opt-3 instrumentation → Opt-4 enable.
+
+### 5d. Opt-1 redundancy audit + root cause + fix (all baselines, verified 2026-07-07)
+
+**Per-databin audit (ground truth, `expt_scripts/audit_weight_redundancy.py`).** For each data-bin
+(reconstructed via commit count, robust to `data_id` cycling) we counted, per trainer, how many full
+WEIGHTS payloads it received. A trainer should get the byte-identical model **at most once per
+data-bin** (re-dispatches get the tiny VAR=bad "keep training" message).
+
+| baseline | data-bins | unique trainers/bin | weight-sends/bin | bins w/ a trainer sent weights 2+× | redundant weight-sends | redundant bytes |
+|---|---|---|---|---|---|---|
+| **fwdllm** | 69 | 10 | **100** | **100%** | **90.0%** (6210) | **22.3 GB** |
+| **fwdllm_plus** | 166 | 72 | 19 | 38% | 3.5% (93) | 0.34 GB |
+| **fluxtune** | 140 | 46 | **136** (max 573) | **97%** | **71.1%** (18,673) | **67.6 GB** |
+
+fwdllm's per-peer histogram is literally `{10 sends: 10 trainers}` — the same K=10 selected trainers
+each got the identical model **10×** (once per within-bin iteration). fluxtune's tail reaches **21× to
+one trainer in a single bin**.
+
+**Where the bug was & why we thought it was fixed (corrected 2026-07-07).** The WEIGHTS-vs-VAR=bad guard
+*exists* in both distribute paths: `if var_good_enough: WEIGHTS; elif is_stale: WEIGHTS; else: VAR=bad`.
+An earlier draft of this section blamed the `is_stale` path — **that was wrong.** The telemetry shows
+`staleness == 0` for the active trainers every iteration (they return grads tagged the current version,
+so `_trainer_last_model_version` *is* updated and `is_stale` is False). The real cause: the sync run loop
+is `loop(distribute >> aggregate)`, so **distribute is called once per iteration (~10–12×/data-bin)** and
+each call takes the **unconditional `var_good_enough → WEIGHTS` branch**, re-shipping the byte-identical
+model to the same selected trainers. The `is_stale` check the guard added never even runs for these — it
+sits *after* the `var_good_enough` short-circuit. Verified from the log keyed on the printed
+`model_version`: `{10 sends: 10 trainers}` at model_version 4/5/6, all WEIGHTS-labeled/1.8 MB. So the
+guard that was added was real but **guarded the wrong branch**, which is why it looked done yet never
+suppressed anything on fwdllm/fluxtune. (fwdllm_plus's per-iteration reselect spreads dispatches across
+different trainers, so it rarely re-hits the same one → ~3.5%, incidentally clean.)
+**⚠ Residual unknown:** *why* `var_good_enough` reads True across a data-bin's distributes (agg_round
+reports it False for iters 1–11) is not fully explained by static analysis — the distribute-time value is
+decoupled from the post-aggregate agg_round value. The fix does not depend on resolving this (the sent-set
+guarantees ≤1 payload/trainer/model_version regardless), but it makes the **short validation run
+essential** (confirm redundancy→0, trajectory unchanged, no deadlock).
+
+**The fix (implemented, all baselines).** A send-time set `_weights_sent_this_cycle` (independent of the
+return-driven staleness map), cleared on every `_model_version` advance. A single shared decision
+`_should_send_full_weights(end, is_stale)` drives **both** the sync and async loops (parity = regression
+guard) and **checks the set FIRST, before the `var_good_enough` branch** — so it gates the commit-branch
+re-sends that are the actual redundancy, not just the stale path. When suppression is on, the VAR=bad
+variant is prepared even at `var_good_enough=True` (a commit-branch re-send to an already-served trainer
+downgrades to VAR=bad; the trainer keeps training on its cached current weights → no deadlock).
+Invariant: **≤1 full payload per trainer per model_version**. Flag `suppress_redundant_weights` (default
+**off** = byte-on-wire identical), enabled on **all three** baselines (learning-neutral → keeps E4 fair).
+Counter `redundant_weights_suppressed_total` on each `[Distribute] Done`. **Also fixed a sync telemetry
+mislabel** (size/label keyed off `var_good_enough`, so any `is_stale` WEIGHTS send would be logged as
+VAR=bad → now labeled by the actual payload).
+
+**Tests/checks (so it can't silently regress).**
+- **Unit:** [`tests/mode/test_fwdllm_suppress_redundant_weights.py`](../../tests/mode/test_fwdllm_suppress_redundant_weights.py)
+  (9 cases) — flag-off == legacy; **commit-branch first-send weights / within-cycle repeat VAR=bad** (the
+  fwdllm pattern); stale-branch same; **exactly one weights send per trainer per data-bin** (both the
+  is_stale and var_good_enough repeat patterns); weights resume after the cycle clears on a commit.
+- **Run-level regression:** [`expt_scripts/audit_weight_redundancy.py`](expt_scripts/audit_weight_redundancy.py)
+  streams any run's telemetry → per-databin redundant fraction; `--max-redundant-frac F` exits non-zero
+  over a smoke run (CI-able). Pre-fix baseline numbers above are the reference; post-fix expect ≈0%.
+
+**Validation still pending:** a short run must show `redundant_weights_suppressed_total` climbing, the
+audit fraction dropping to ≈0, and the `var`/accuracy trajectory unchanged (learning-neutral).
+
+## 6. Changelog
+- **2026-07-07 (g) — Opt-1 root cause CORRECTED + fix completed (§5d).** The (f) root cause was wrong:
+  staleness is **0** for active trainers (the return-map IS updated, `is_stale` is False), so the stale
+  path was never the cause. The real cause: the sync loop is `distribute >> aggregate`, so distribute runs
+  ~10–12×/data-bin and every call takes the **unconditional `var_good_enough → WEIGHTS` branch**, which
+  my (f) fix did **not** gate → it would not have fixed fwdllm at all. Corrected: the shared
+  `_should_send_full_weights` now checks the send-set **first**, gating both branches; the VAR=bad payload
+  is prepared even at `var_good_enough` (commit-branch downgrade, no deadlock — trainer keeps training on
+  cached current weights). Tests expanded to 9 (added the var_good_enough repeat pattern; fixed the
+  now-invalid "commit always weights" case). Residual unknown (why var_good_enough reads True across a
+  bin's distributes) documented; **the short validation run is required** to confirm redundancy→0 +
+  unchanged trajectory + no deadlock before this is trusted.
+- **2026-07-07 (f) — Opt-1 redundancy audited across baselines (§5d).** Per-databin audit: **fwdllm 90%
+  redundant (22.3 GB, same 10 trainers ×10/bin), fluxtune 71% (67.6 GB, up to 21×), fwdllm_plus 3.5%**.
+  Added shared `_should_send_full_weights` + `_weights_sent_this_cycle` across sync+async, a sync
+  telemetry-mislabel fix, a unit test, and reusable `audit_weight_redundancy.py`. (Root cause corrected in
+  (g).) Flag `suppress_redundant_weights` default off, enabled on all baselines (learning-neutral).
+- **2026-07-07 (e) — code-verified implementation designs for opts 1–4 (§5c).** Verified each lever
+  against the live code with anchors. **Opt-1 CONFIRMED:** intra-databin weight payload is byte-identical
+  (WEIGHTS unchanged; GRAD_POOL recomputed only `if _is_model_updated`), the VAR=bad guard exists but
+  `_trainer_last_model_version` is written only on grad-return, so 93.5% (24,570) of weight-sends re-ship
+  the identical model mid-databin; trainer caches weights so suppression is safe → **SURE, implement +
+  validate**. **Opt-2:** the `_max_iter_per_data_id` force-commit already exists but was `None` (never
+  armed) — fixed cap trivial, adaptive plateau rule is the design → **MEASURE-FIRST** (characterize the
+  variance-decay curve). **Opt-3:** all trust signals (var/real_var/snr/grads_snr/cv) computed then
+  discarded for weighting; laid out the intuition→numbers→formulation→measurement chain (weight-entropy,
+  weight↔Δloss corr, wasted-work fraction) → design. **Opt-4:** controller/policy fully wired, just
+  disabled → enable+policy+run. Open decisions D-1…D-4 logged for operator. Subtasks in §2f updated.
+- **2026-07-07 (d) — measured bottleneck analysis + optimization ledger (§5).** Ran a full streaming
+  reducer over `run_20260706_185045_fluxtune…` and captured 12 diagnostics (§5a) + a gain-ordered
+  optimization ledger (§5b) with flags. Headline findings: the **variance gate is the hub** — only
+  **4.3%** of aggregation iterations commit, because the achievable variance floor (~0.45) sits **above**
+  the 0.30 threshold and the force-commit escape valve **never fires** (0%); the slow model-version this
+  causes makes staleness **degenerate** (61.7% zero-spread, confirming H2); and **65% of all bytes
+  (~88 GB) re-send an unchanged model** (139 versions, ~26k downloads). Inferred the variance floor is
+  **structural non-IID, not sample-limited** → **parked dynamic-K** (X1) and staleness-based-C (X2) as
+  high-risk-low-reward. Priority order: (1) delta/version-cache comm, (2) threshold + real force-commit,
+  (3) gradient-aware C3, (4) dynamic C, (5) finer staleness clock. Subtasks logged in §2f. **Caveat:**
+  numbers are α=0.1; task M0 re-measures at α=1 before any tuning.
 - **2026-07-07 (c) — reconciliation complete + plots/telemetry audit; `05-evaluation.tex` delivered.**
   Audited paper metrics/plots/baselines vs code (three layers) — §3. Reconciled the paper's "Expected
   plot"/"Metrics reported" lines to code+planned builds (E1 loss companion; E2/E5 → CDF; E3 bars +

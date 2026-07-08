@@ -262,7 +262,9 @@ The metric logic lives in `expt_scripts/plotlib/reducers.py` (`load_run` → `Ru
 
 ### Experiment 3-adjacent — C3 intelligent (gradient-aware) aggregation: design investigation
 > **Status: NOT the intended contribution yet.** The active weighting (above) is a borrowed scalar rate.
-> Fluxtune needs a **gradient-aware** aggregation rule; this section seeds that design (implement later,
+> Fluxtune needs a **gradient-aware** aggregation rule. **Full design starter:**
+> [`docs/aggregation_design.md`](docs/aggregation_design.md) (FedBuff→FeLiX→FluxTune regime, hypothesis,
+> 5-axis design space, candidate schemes S0–S5). This section seeds that design (implement later,
 > then move the feature doc to [`fluxtune_contributions.md`](fluxtune_contributions.md) and delete from here).
 > **Dimensions to evaluate:**
 > 1. **Staleness under iteration-based progression.** Staleness = `agg_model_version − trainer_version`;

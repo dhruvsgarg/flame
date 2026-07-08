@@ -311,6 +311,29 @@ class TopAggregator(AsyncTopAgg):
             logger.info(
                 f"[MaxIterBypass] max_iterations_per_data_id={self._max_iter_per_data_id}"
             )
+
+        # Opt-1 (charter §5c): suppress byte-identical intra-databin weight
+        # re-sends. Within a databin the model_version is constant and the full
+        # WEIGHTS+GRAD_POOL payload is byte-identical across iterations, yet a
+        # trainer pulled in to refill concurrency reads as "stale" (the currency
+        # map _trainer_last_model_version is written only on grad-RETURN) and gets
+        # the identical payload again. When on, we remember which ends were already
+        # sent the current version this cycle and downgrade a re-dispatch to the
+        # existing tiny VAR=bad "keep training" message (the trainer caches its
+        # weights). Async path only ⇒ fluxtune-only; flag OFF ⇒ byte-identical.
+        self._suppress_redundant_weights = bool(
+            getattr(self.config.hyperparameters, "suppress_redundant_weights", False)
+        )
+        # Ends already sent the CURRENT model_version's full payload this data-bin
+        # (cleared on every model_version advance). Separate from
+        # _trainer_last_model_version so staleness accounting stays return-driven.
+        self._weights_sent_this_cycle: set = set()
+        self._redundant_weights_suppressed_total = 0
+        if self._suppress_redundant_weights:
+            logger.info(
+                "[SuppressRedundantWeights] ON — intra-databin identical weight "
+                "re-sends will be downgraded to VAR=bad."
+            )
         self.grad_pool = []
         self.cached_shared_grad_pool_trainable = None
         self.var = None
@@ -1814,6 +1837,13 @@ class TopAggregator(AsyncTopAgg):
             else:
                 self._model_version = self._round
 
+            # Opt-1: the data-bin (and thus the current model_version) just
+            # advanced -> every trainer is genuinely stale for the new version,
+            # so the "already sent this cycle" set must start empty. getattr-guarded
+            # so test doubles that bypass __init__ don't need the attribute.
+            if getattr(self, "_weights_sent_this_cycle", None) is not None:
+                self._weights_sent_this_cycle.clear()
+
             self._log_and_reset_model_version_stats()
 
             if self.data_id == self.total_data_bins:
@@ -2323,9 +2353,15 @@ class TopAggregator(AsyncTopAgg):
     @timer_decorator
     def _prepare_distribution_payload(self, task_to_perform: str, force_weights: bool = False):
         """Build a WEIGHTS payload (always) or a VAR=bad payload (when var fails and force_weights=False)."""
-        if not self.var_good_enough and not force_weights:
+        if not force_weights:
+            # force_weights=False ALWAYS means "build the tiny VAR=bad keep-training
+            # message" (callers only request this variant deliberately). Previously
+            # gated on `not var_good_enough`, which returned WEIGHTS when
+            # var_good_enough=True -> Opt-1 could not downgrade a commit-branch
+            # re-send. The message carries the current model_version, so a trainer
+            # that already cached this version just keeps training on it.
             logger.info(
-                f"[PreparePayload/VAR=bad] var={self.var} > "
+                f"[PreparePayload/VAR=bad] var={self.var} vs "
                 f"thr={self.var_threshold}; payload asks trainer to keep "
                 f"training on current model_version={self._model_version}."
             )
@@ -2556,6 +2592,43 @@ class TopAggregator(AsyncTopAgg):
             time.sleep(poll_s)
             self._check_early_stop_conditions()  # self-terminate at max_runtime_s
 
+    def _should_send_full_weights(self, end, is_stale: bool) -> bool:
+        """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
+
+        Shared by BOTH the sync and async distribute loops so the two paths are
+        guaranteed identical (that parity is the regression guard for the comm
+        redundancy this fixes). Legacy behavior (flag OFF): send full WEIGHTS on
+        a commit (`var_good_enough`) or when the end is stale.
+
+        Opt-1 (charter §5c, flag ON): within a data-bin the model_version is
+        constant and the full WEIGHTS+GRAD_POOL payload is byte-identical across
+        iterations; an end already sent that payload THIS data-bin has it cached
+        (the trainer keeps self.weights and just keeps training on a VAR=bad
+        message), so a re-send is pure redundancy -> downgrade to VAR=bad.
+
+        Why the legacy guard missed this: it only skipped WEIGHTS when an end was
+        NOT stale AND var_good_enough was False. But the redundancy is repeated
+        distribute calls that take the *var_good_enough=True* branch (which sends
+        WEIGHTS unconditionally) -- so the stale check never even ran. The fix is
+        a send-time set (cleared on every model_version advance) checked BEFORE
+        both branches, independent of the return-driven staleness map.
+        """
+        # Checked FIRST so it gates BOTH the commit (`var_good_enough`) branch and
+        # the stale branch: the dominant redundancy is REPEATED distribute calls
+        # within one data-bin (the sync loop is distribute>>aggregate, ~10-12×/bin;
+        # async re-pulls similarly), every one taking the unconditional
+        # var_good_enough->weights path and re-shipping the byte-identical model to
+        # trainers that already hold it. Once we've sent an end the current
+        # model_version's payload this cycle it has it cached -> VAR=bad.
+        if self._suppress_redundant_weights and end in self._weights_sent_this_cycle:
+            return False
+        if self.var_good_enough:
+            # Commit / first distribution of this model_version: send it once.
+            return True
+        # Legacy stale path (kept so flag OFF is byte-identical): a trainer the
+        # return-map still shows on an older version gets the weights.
+        return is_stale
+
     @timer_decorator
     def _distribute_weights_sync(
         self, tag: str, task_to_perform: str = "train"
@@ -2631,7 +2704,10 @@ class TopAggregator(AsyncTopAgg):
 
         payload_without_weights = None
         payload_with_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
-        if not self.var_good_enough:
+        # Opt-1: also need the VAR=bad variant when suppression is on, because a
+        # commit-branch (var_good_enough=True) re-send to an already-served end is
+        # downgraded to VAR=bad.
+        if not self.var_good_enough or self._suppress_redundant_weights:
             payload_without_weights = self._prepare_distribution_payload(task_to_perform, force_weights=False)
 
 
@@ -2653,14 +2729,20 @@ class TopAggregator(AsyncTopAgg):
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
 
-            if self.var_good_enough:
+            # Opt-1: shared decision (identical in the async path). Flag OFF ->
+            # legacy (var_good_enough or is_stale). Flag ON -> suppress a
+            # byte-identical intra-databin re-send to VAR=bad.
+            send_weights = self._should_send_full_weights(end, is_stale)
+            if send_weights:
                 payload = payload_with_weights
-            else:
-                if is_stale:
-                    payload = payload_with_weights
+                if self._suppress_redundant_weights:
+                    self._weights_sent_this_cycle.add(end)
+                if not self.var_good_enough and is_stale:
                     logger.info(f"Trainer {end} hasn't received weights for model_version {self._model_version} (has {trainer_version}). Sending WEIGHTS payload instead of VAR=bad.")
-                else:
-                    payload = payload_without_weights
+            else:
+                payload = payload_without_weights
+                if self._suppress_redundant_weights and is_stale:
+                    self._redundant_weights_suppressed_total += 1
 
             logger.debug(
                 f"Setting channel property {PROP_ROUND_START_TIME} for "
@@ -2672,7 +2754,11 @@ class TopAggregator(AsyncTopAgg):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _round_now)
 
-            if self.var_good_enough:
+            # Label/size by the ACTUAL payload (send_weights), not var_good_enough.
+            # Previously this keyed off var_good_enough, so a var_good_enough=False
+            # is_stale WEIGHTS send was mislabeled/mis-sized as var_bad in the comm
+            # telemetry -> sync weight bytes were undercounted. Now accurate.
+            if send_weights:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
@@ -2802,7 +2888,9 @@ class TopAggregator(AsyncTopAgg):
 
         payload_var_bad = None
         payload_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
-        if not self.var_good_enough:
+        # Opt-1: also need VAR=bad when suppression is on (commit-branch re-sends to
+        # already-served ends downgrade to VAR=bad).
+        if not self.var_good_enough or self._suppress_redundant_weights:
             payload_var_bad = self._prepare_distribution_payload(task_to_perform, force_weights=False)
 
         self._update_state_after_payload_prepared()
@@ -2839,11 +2927,15 @@ class TopAggregator(AsyncTopAgg):
         for end in ends:
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
-
-            if self.var_good_enough or is_stale:
+            # Opt-1: shared decision with the sync path (_should_send_full_weights).
+            # Flag OFF ⇒ (var_good_enough or is_stale) ⇒ byte-identical to legacy.
+            send_weights = self._should_send_full_weights(end, is_stale)
+            if send_weights:
                 payload = payload_weights
                 _pk = "weights"          # WS3-a: kind set here (survives staggered rebuild below)
                 _n_weights_sent += 1
+                if self._suppress_redundant_weights:
+                    self._weights_sent_this_cycle.add(end)
                 if not self.var_good_enough and is_stale:
                     logger.debug(
                         f"[Distribute] Trainer {end} stale "
@@ -2854,6 +2946,11 @@ class TopAggregator(AsyncTopAgg):
                 payload = payload_var_bad
                 _pk = "var_bad"          # WS3-a
                 _n_var_bad_sent += 1
+                # Opt-1: this end read as stale by the return-map but already got
+                # this version's payload this cycle -> a redundant full re-send we
+                # just avoided. (Trainers current by the return-map are not counted.)
+                if self._suppress_redundant_weights and is_stale:
+                    self._redundant_weights_suppressed_total += 1
                 logger.debug(
                     f"[Distribute] Trainer {end} has current v{trainer_version}; "
                     f"sending VAR=bad (keep training)."
@@ -2923,7 +3020,9 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"[Distribute] Done. Sent {_n_weights_sent} WEIGHTS + "
             f"{_n_var_bad_sent} VAR=bad payloads to {len(ends)} trainers "
-            f"(model_version={self._model_version}, data_id={self.data_id})."
+            f"(model_version={self._model_version}, data_id={self.data_id}, "
+            f"iter={self.iteration_per_data_id}, "
+            f"redundant_weights_suppressed_total={self._redundant_weights_suppressed_total})."
         )
 
         ends_in_recv_state = channel.ends(VAL_CH_STATE_RECV)

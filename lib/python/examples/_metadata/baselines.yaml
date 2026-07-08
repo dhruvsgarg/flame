@@ -331,8 +331,17 @@ baselines:
         # latency variance is much higher than the n=10 smoke default.
         stalenessPolicy: exact
         inc_model_version_per_data_id: true
-        max_iterations_per_data_id: 15
+        # Iteration-per-data_id cap left UNBOUNDED (None) for the sync baselines:
+        # the variance-plateau force-commit is a fluxtune optimization (charter
+        # Opt-2) that did not exist in vanilla FwdLLM, so fwdllm/fwdllm_plus run
+        # the original unbounded variance gate (grind until variance passes).
         var_threshold: 0.3
+        # Opt-1 comm-redundancy fix (charter §5c): learning-neutral, enabled on
+        # ALL baselines so E4 bytes are fair. fwdllm re-sent the identical model
+        # to the same K trainers every iteration (~90% redundant, ~22 GB) because
+        # the return-driven staleness guard never marked actively-training clients
+        # current. Set false to revert (byte-on-wire identical off).
+        suppress_redundant_weights: true
         reselect_each_iteration: false
     trainer:
       hyperparameters:
@@ -378,8 +387,14 @@ baselines:
         # into a model_version-53 cycle) happen in the first place.
         stalenessPolicy: round_data_id
         inc_model_version_per_data_id: true
-        max_iterations_per_data_id: 15
+        # Unbounded (None) — the iteration cap is a fluxtune optimization
+        # (charter Opt-2), not part of vanilla FwdLLM_Plus; sync baselines run
+        # the original unbounded variance gate. See fwdllm block above.
         var_threshold: 0.3
+        # Opt-1 comm-redundancy fix (charter §5c), learning-neutral. Already near
+        # clean here (per-iteration reselect keeps the guard current, ~3.5%), but
+        # enabled for consistency so the fix covers all baselines. Set false to revert.
+        suppress_redundant_weights: true
         reselect_each_iteration: true
     trainer:
       hyperparameters:
@@ -473,6 +488,18 @@ baselines:
         stalenessPolicy: none
         inc_model_version_per_data_id: true
         var_threshold: 0.3
+        # --- fluxtune optimizations (charter §5c; flag gated) ---
+        # Opt-1: suppress byte-identical intra-databin weight re-sends (shared
+        # sync+async fix, enabled on all baselines). Within a data-bin the
+        # model_version is constant and the full WEIGHTS+GRAD_POOL payload is
+        # identical across iterations; a trainer that already received it this
+        # cycle is downgraded to the tiny VAR=bad "keep training" message (it
+        # caches its weights). Learning-neutral; here it was 71% redundant / ~68 GB.
+        # Set false to revert (byte-on-wire identical off).
+        suppress_redundant_weights: true
+        # Opt-2 (variance-plateau force-commit cap) is added in a later step after
+        # its curve characterization -- deliberately left unset (unbounded) here so
+        # the Opt-1 validation run isolates the learning-neutral comm change.
     trainer:
       hyperparameters:
         select_perturbation_using_jvp: true
