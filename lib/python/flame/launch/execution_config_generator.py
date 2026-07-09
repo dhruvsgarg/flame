@@ -130,10 +130,9 @@ def create_execution_config(
                 },
                 "battery_threshold": exp_config.trainer.battery_threshold,
                 "time_mode": exp_config.trainer.time_mode,
-                # Effective training-delay config, banked so a run can be
-                # audited post-hoc (previously absent -> a --delays run "looked"
-                # off, simulate_fwdllm.md #12). training_delay_factor is the
-                # trainer override if set, else the trainer_base default applies.
+                # Bank effective training-delay config for post-hoc audit (#12).
+                # training_delay_factor is the trainer override if set, else the
+                # trainer_base default applies.
                 "enable_training_delays": exp_config.trainer.enable_training_delays,
                 "training_delay_factor": (
                     (exp_config.trainer.hyperparameters or {}).get(

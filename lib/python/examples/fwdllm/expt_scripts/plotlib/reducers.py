@@ -194,18 +194,15 @@ def _compute_cutoff(evals, grace_s, loss_rel, mode="peak_acc"):
 
     Two anchors, same "did it actually learn?" gate:
       * ``loss_plateau`` — the last eval where running-best test-loss dropped
-        cumulatively >= ``loss_rel`` since its previous milestone (the stall-guard
-        rule, §2). Loss is the grounded, un-quantized learning signal.
+        cumulatively >= ``loss_rel`` since its previous milestone. Loss is the
+        grounded, un-quantized learning signal.
       * ``peak_acc`` (default) — the first eval attaining the run's global-max
-        accuracy. Anchors the plot to the highest accuracy point, so a post-peak
-        drift (e.g. fwdllm_plus sliding 81%→77% while loss still creeps down) or a
-        round-boundary DIVERGENCE (the fluxtune runs collapse to ~25% chance with
-        exploding loss when round 2 starts) is clipped off. This is the operator's
-        "stop every baseline very close to its highest accuracy" request.
+        accuracy, so a post-peak accuracy drift or a round-boundary divergence is
+        clipped off (stop each baseline near its highest accuracy).
 
     The loss scan is ALSO the learned-at-all detector: a run whose loss never
-    dropped ``loss_rel`` (e.g. fwdllm, flat at chance) returns inf (no cutoff →
-    shown in full so the flat non-learning line stays visible), regardless of mode.
+    dropped ``loss_rel`` (flat at chance) returns inf (no cutoff → shown in full
+    so the flat non-learning line stays visible), regardless of mode.
     Deterministic, so grace_s defaults to 0; grace_s=None disables cutoff entirely.
     """
     if grace_s is None or not evals:
@@ -273,7 +270,7 @@ def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
                     ts_lo = ts if ts_lo is None else min(ts_lo, ts)
                     ts_hi = ts if ts_hi is None else max(ts_hi, ts)
             elif ev == "comm" and e.get("direction") == "trainer_to_agg":
-                # trainer_to_agg (upload) is emitted TRAINER-side only (WS3-a).
+                # trainer_to_agg (upload) is emitted TRAINER-side only.
                 sz = e.get("size_bytes")
                 if sz is not None:
                     rr.up_sizes.append(sz)

@@ -1,12 +1,8 @@
 #!/bin/bash
-# Shared experiment-launch harness for the flame examples.
-#
-# Sourced by each example's driver (async_cifar10 scripts/debug_run.sh,
-# fwdllm expt_scripts/run_sequential.sh) so the genuinely-identical mechanics
-# live in ONE place: robust conda activation, PYTHONPATH pinning, the
-# launch+progress-ticker loop, and post-run log-health assertions. The
-# example-specific parts (config discovery, YAML patching, the per-baseline
-# knob set, and the tier/check spec fed to expt_runner.py) stay in each driver.
+# Shared experiment-launch harness for the flame examples: robust conda activation,
+# PYTHONPATH pinning, the launch+progress-ticker loop, and post-run log-health
+# assertions. Sourced by each driver (async_cifar10 debug_run.sh, fwdllm
+# run_sequential.sh); config discovery / YAML patching / knob sets stay per-driver.
 #
 # Usage (from a driver):
 #   source "<repo>/lib/python/examples/scripts/expt_runner.sh"
@@ -15,10 +11,9 @@
 #   expt_launch label cfg example_dir budget_s n_exps logdir [experiments_dir]
 #   expt_assert_log "$logdir/label.out" label
 #
-# Pre-flight display + gate is done by the Python side (expt_runner.py): a driver
-# builds a `spec` dict of tiers+checks and calls render_and_gate() -- see that
-# file. $EXPT_RUNNER_DIR / $EXPT_RUNNER_PY are exported here so a driver's own
-# python heredoc can `sys.path.insert(0, EXPT_RUNNER_DIR); import expt_runner`.
+# Pre-flight display + gate lives on the Python side (expt_runner.py): a driver
+# builds a `spec` of tiers+checks and calls render_and_gate(). $EXPT_RUNNER_DIR /
+# $EXPT_RUNNER_PY are exported so a driver's python heredoc can import expt_runner.
 
 # Absolute dir of THIS harness (works when sourced), so drivers/python can find
 # the Python renderer next to it regardless of the caller's cwd.
@@ -29,8 +24,7 @@ export EXPT_RUNNER_DIR EXPT_RUNNER_PY
 # --- robust conda activation ------------------------------------------------
 # Env choice: FLAME_CONDA_ENV overrides; else the shell's already-active env
 # (CONDA_DEFAULT_ENV); else the caller-supplied default (arg $1). No hardcoded
-# fallback beyond what the caller passes -- cifar passes dg_flame, fwdllm passes
-# nothing (so it requires an active env, matching its original behavior).
+# fallback -- cifar passes dg_flame, fwdllm passes nothing (requires an active env).
 expt_activate_conda() {
   local default_env="${1:-}"
   local envname="${FLAME_CONDA_ENV:-${CONDA_DEFAULT_ENV:-$default_env}}"
@@ -161,13 +155,11 @@ expt_launch() {
   local run_pid=$!
   set +m
 
-  # Progress ticker. It SELF-TERMINATES the instant the run process is gone, so it
-  # can never outlive the run however the run ends (watcher kill, crash, Ctrl+C).
-  # It is torn down explicitly below BY PID (+ its in-flight `sleep` child), NEVER
-  # by process group: job control does not reliably place a backgrounded subshell
-  # in a fresh group in this launch context, so `kill -<pid>` (a process-group
-  # signal) misses it — and the old `wait "$ticker_pid"` after that missed kill is
-  # exactly what hung the whole harness while the orphaned ticker kept printing.
+  # Progress ticker. SELF-TERMINATES the instant the run process is gone, so it
+  # never outlives the run (watcher kill, crash, Ctrl+C). Torn down below BY PID
+  # (+ its in-flight `sleep` child), NEVER by process group: job control doesn't
+  # reliably place a backgrounded subshell in a fresh group here, so a group
+  # signal would miss it and a following `wait` would hang the harness.
   (
     while kill -0 "$run_pid" 2>/dev/null; do
       sleep 30
@@ -196,11 +188,10 @@ expt_launch() {
     wait "$ticker_pid" 2>/dev/null || true
   }
 
-  # Optional convergence-stop watcher (EXPERIMENTS.md WS2) — ONLY when the driver
-  # set EXPT_TARGET_ACC. Side-car: reads the run's aggregator telemetry and, on
-  # "EXPT_CONVERGE_WINDOW consecutive data bins all >= EXPT_TARGET_ACC", writes
-  # converge.json + kills the run's process group. Absent -> the run is governed
-  # only by its own max_runtime_s / max_data_id caps (default behavior unchanged).
+  # Optional convergence-stop watcher (EXPERIMENTS.md WS2) -- ONLY when the driver
+  # set EXPT_TARGET_ACC. Side-car: on "EXPT_CONVERGE_WINDOW consecutive data bins
+  # all >= EXPT_TARGET_ACC" it writes converge.json + kills the run's process
+  # group. Absent -> the run is governed only by its max_runtime_s/max_data_id caps.
   local watcher_pid="" cj="" sj=""
   EXPT_LAST_CONVERGE_JSON=""; export EXPT_LAST_CONVERGE_JSON
   if [ -n "${EXPT_TARGET_ACC:-}" ]; then
@@ -219,9 +210,9 @@ expt_launch() {
   fi
 
   # Ctrl+C/SIGTERM teardown: the run is in its OWN process group (set -m) so a
-  # terminal SIGINT never reaches it — without this trap it (and the watcher and
-  # ticker) would orphan and keep the GPU pinned. TERM run group + watcher +
-  # ticker, escalate to KILL after a grace, sweep stragglers, exit 130.
+  # terminal SIGINT never reaches it -- without this trap it (and the watcher and
+  # ticker) would orphan and keep the GPU pinned. TERM run group + watcher + ticker,
+  # escalate to KILL after a grace, sweep stragglers, exit 130.
   _expt_interrupt() {
     trap - INT TERM
     echo "" >&2
@@ -269,20 +260,14 @@ expt_launch() {
   return $rc
 }
 
-# expt_assert_run example_dir marker [label] -- post-run health check that scans
-# the RIGHT files (the FL signals do NOT land in the runner .out): agg_round
-# events live in experiments/run_*/telemetry/aggregator_*.jsonl; "stopping run" /
-# SIM_WALL_CEILING / SIM_STARVATION / tracebacks live in the dedicated
-# experiments/run_*/*_aggregator.log. Only files newer than `marker` (touched by
-# expt_launch pre-launch) are scanned, so it attributes signals to THIS run.
-# Prints a one-line verdict and exports EXPT_LAST_HEALTH with the verdict word
-# (COMPLETED / CRASH / NO_AGG_ROUNDS / WALL_CEILING / NO_MARKER) so a driver can
-# fold it into its own summary; returns 0 only if there were agg_rounds, no
-# [SIM_WALL_CEILING], and no crash marker.
-#
-# Vocabulary note: a healthy run is "COMPLETED", NOT "PASS". Completing is a
-# process outcome, not a check result -- PASS/FAIL is reserved for actual
-# checks (e.g. the real<->sim parity battery in scripts.parity.cli).
+# expt_assert_run example_dir marker [label] -- post-run health check. FL signals
+# do NOT land in the runner .out: agg_round events live in
+# experiments/run_*/telemetry/aggregator_*.jsonl; "stopping run" / SIM_WALL_CEILING
+# / SIM_STARVATION / tracebacks live in experiments/run_*/*_aggregator.log. Only
+# files newer than `marker` are scanned, so signals attribute to THIS run. Prints a
+# one-line verdict and exports EXPT_LAST_HEALTH (COMPLETED / CRASH / NO_AGG_ROUNDS /
+# WALL_CEILING / NO_MARKER); returns 0 only for agg_rounds && no wall-ceiling && no
+# crash. A healthy run is "COMPLETED", not "PASS" (PASS/FAIL is for actual checks).
 expt_assert_run() {
   local example_dir="$1" marker="$2" label="${3:-run}"
   local expdir="$example_dir/experiments"
@@ -306,10 +291,9 @@ expt_assert_run() {
   [ "$agg" -eq 0 ]   && status="NO_AGG_ROUNDS"
   [ "$wall" -gt 0 ]  && status="WALL_CEILING"
   [ "$crash" -gt 0 ] && status="CRASH"
-  # Convergence-mode verdict (EXPERIMENTS.md WS2): only when the driver ran with a
-  # target accuracy. A watcher-driven stop (converge.json written -> EXPT_LAST_CONVERGED)
-  # is CONVERGED; a run that instead ran out its safety caps without the window is
-  # DID_NOT_CONVERGE. A crash/wall-ceiling still wins (that's a failure, not a verdict).
+  # Convergence-mode verdict (EXPERIMENTS.md WS2): only with a target accuracy. A
+  # watcher-driven stop is CONVERGED; running out the safety caps is DID_NOT_CONVERGE.
+  # A crash/wall-ceiling still wins (a failure, not a verdict).
   if [ -n "${EXPT_TARGET_ACC:-}" ] && [ "$crash" -eq 0 ] && [ "$wall" -eq 0 ] && [ "$agg" -gt 0 ]; then
     if [ "${EXPT_LAST_CONVERGED:-0}" = "1" ]; then status="CONVERGED"
     elif [ "${EXPT_LAST_STALLED:-0}" = "1" ]; then status="STALLED"
@@ -323,10 +307,9 @@ expt_assert_run() {
 
 # expt_timed_run label runtime_s buffer_s shell_log -- cmd... -- run a command in
 # its OWN process group under a wall-clock timeout, killing the whole tree
-# (SIGTERM grace -> SIGKILL) if it overruns, then sweeping stragglers so no
-# orphan trainers/aggregator survive and GPU memory drains. This is the campaign
-# primitive shared by smoke_suite.sh (and any future fwdllm suite). Emits a 5s
-# elapsed / kill-in ticker to stderr. Returns the cmd's rc, or 124 on timeout.
+# (SIGTERM grace -> SIGKILL) on overrun, then sweeping stragglers so no orphan
+# trainers/aggregator survive and GPU memory drains. The campaign primitive shared
+# by smoke_suite.sh. Emits a 5s elapsed/kill-in ticker. Returns cmd's rc, or 124.
 expt_timed_run() {
   local label="$1" runtime_s="$2" buffer_s="$3" shell_log="$4"; shift 4
   [ "${1:-}" = "--" ] && shift
@@ -373,10 +356,9 @@ expt_timed_run() {
 }
 
 # expt_dispatch_after "hook1,hook2" -- run the requested post-launch hooks. Each
-# hook `foo` is delegated to a shell function `after_foo` the DRIVER defines
-# (e.g. after_parity, after_plot, after_sanity) -- so the mechanism is shared but
-# each example supplies its own parity CLI / plotter / analysis command. Unknown
-# or unsupported hooks warn and are skipped (not fatal).
+# hook `foo` is delegated to a shell function `after_foo` the DRIVER defines (e.g.
+# after_parity, after_plot, after_sanity), so the mechanism is shared but each
+# example supplies its own command. Unknown hooks warn and are skipped (not fatal).
 expt_dispatch_after() {
   local csv="${1:-}"; [ -n "$csv" ] || return 0
   local hook

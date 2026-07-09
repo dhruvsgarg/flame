@@ -259,9 +259,9 @@ def check_aggregation(agg: dict) -> dict:
 
 def check_grad_residence(agg: dict, trainer: dict) -> dict:
     """FwdLLM async residence (R1) + compute-conservation (W1) on the REAL side —
-    the gate blocking the sim mechanism change (§L.3 / PARITY.md principle #6):
-    if real itself overlaps (R1 > ~0), fix real FIRST, never tune sim to it.
-    W1 is reported for context. SKIPs on a non-fwdllm real run (no intervals).
+    the gate blocking the sim mechanism change: if real itself overlaps (R1 > ~0),
+    fix real FIRST, never tune sim to it. W1 is reported for context. SKIPs on a
+    non-fwdllm real run (no intervals).
     """
     cycles = _fwd_cadence_cycles(agg)
     have_intervals = any(e.get("contributor_intervals") for e in cycles)

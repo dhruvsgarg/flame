@@ -203,11 +203,10 @@ def build_step_timing(
 ) -> tuple[str, dict[str, Any]]:
     """Per-function wall duration of one timed compute step (`timer_decorator`).
 
-    The fine-grained companion to `trainer_round`'s coarse phase split: it
-    attributes wall time to the individual forward-grad steps (functional-model
-    setup, perturbation selection, per-batch JVP, delay emulation) so the GPU
-    cost can be decomposed and optimized (P2-4, fluxtune's 20-pass JVP). Keyed by
-    (data_id, iteration) so a step's cost can be tracked across the cadence.
+    Fine-grained companion to `trainer_round`'s coarse phase split: attributes
+    wall time to individual forward-grad steps (functional-model setup,
+    perturbation selection, per-batch JVP, delay emulation) for GPU-cost
+    decomposition. Keyed by (data_id, iteration) to track cost across the cadence.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -236,16 +235,14 @@ def build_comm(
     """One message placed on the wire, for network-cost accounting (Experiment 4).
 
     Emitted by BOTH roles so total bytes / message counts / per-message size
-    distributions are directly comparable across baselines — the point of
-    Experiment 4 (fluxtune sends perturbation seeds/scalars, not full gradients,
-    so real wire size differs from the static model_param_count reconstruction).
+    distributions are comparable across baselines (fluxtune sends perturbation
+    seeds/scalars, not full gradients, so real wire size differs from the static
+    model_param_count reconstruction).
 
-    direction: "agg_to_trainer" (aggregator dispatch) | "trainer_to_agg" (update
-        upload). peer_id: the OTHER end (trainer end id for agg-side; the
-        aggregator for trainer-side, may be None). payload_kind: "weights" /
-        "var_bad" / "gradients" — lets the analysis split dispatch vs update and
-        full-weight vs var-signal messages. size_bytes: serialized message size
-        (the value the emitter already computes for its debug log).
+    direction: "agg_to_trainer" (dispatch) | "trainer_to_agg" (update upload).
+    peer_id: the other end (may be None trainer-side). payload_kind: "weights" /
+    "var_bad" / "gradients", to split dispatch vs update and full-weight vs
+    var-signal. size_bytes: serialized message size.
     """
     fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
     for k, v in (

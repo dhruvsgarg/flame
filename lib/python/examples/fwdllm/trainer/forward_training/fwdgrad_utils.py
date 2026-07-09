@@ -8,17 +8,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# --- forward-pass accounting (EXPERIMENTS.md WS3-b) -------------------------
-# Each trainer runs in its OWN process, so these module-level counters are
-# per-client CUMULATIVE. The three calculate_jvp* helpers below are the only
-# places the functional model is actually evaluated (a "forward pass"):
+# --- forward-pass accounting (WS3-b) ---------------------------------------
+# Each trainer runs in its own process, so these module-level counters are
+# per-client cumulative. The three calculate_jvp* helpers below are the only
+# places the functional model is evaluated (a "forward pass"):
 #   calculate_jvp                      -> 2 passes (loss + terbulence_loss) = 1 scored perturbation
 #   calculate_jvp_before_actual_update -> 1 pass
 #   calculate_jvp_after_actual_update  -> 1 pass
-# FedSgdTrainer reads fwd_pass_counts() into trainer_round telemetry (per-
-# iteration delta + cumulative), giving Experiment 3 a hardware-independent
-# compute denominator immune to the 8-GPU contention confound. Pure counters:
-# no behavior change, zero cost when unread.
+# FedSgdTrainer reads fwd_pass_counts() into trainer_round telemetry, giving
+# Exp 3 a hardware-independent compute denominator immune to GPU-contention.
+# Pure counters: no behavior change, zero cost when unread.
 _FWD_PASSES = 0     # total forward passes (func evaluations) this trainer
 _JVP_EVALS = 0      # total calculate_jvp() calls (= perturbations scored)
 
@@ -95,9 +94,8 @@ def calculate_jvp(func, params, v, trainable_idx=None):
 
     trainable_idx (fluxtune perf-opt, simulate_fwdllm.md §L): when given, only
     those param indices are perturbed; the rest keep v=0 so `p - h*0 = p`
-    EXACTLY -> BIT-IDENTICAL to perturbing every param, but skips copying the
-    ~98.5% frozen backbone twice per perturbation (1.26x, -251MB measured).
-    None => legacy all-param path (byte-identical to before).
+    exactly -> bit-identical to perturbing every param, but skips copying the
+    frozen backbone twice per perturbation. None => legacy all-param path.
     """
     global _FWD_PASSES, _JVP_EVALS
     _FWD_PASSES += 2   # loss + terbulence_loss forward passes below

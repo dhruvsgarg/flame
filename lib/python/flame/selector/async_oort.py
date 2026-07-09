@@ -329,15 +329,11 @@ class AsyncOortSelector(AbstractSelector):
             self.selected_ends[self.requester] = set()
 
         # #1c: the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S) must run on the
-        # SAME clock the trainer commits on. In sim that is the virtual clock
-        # (vclock_now, plumbed via channel_props), NOT physical wall: a slow sim
-        # (fwdllm fluxtune sim_rate 0.26) runs ~90 wall-s while only ~7 vclock-s
-        # elapse, so a wall-keyed 90s timeout evicts a still-outstanding trainer
-        # from all_selected -> re-dispatch -> R1 residence violation. Stash the sim
-        # clock so the dispatch STAMP (process_chosen_candidate_dict/_handle_recv_
-        # state) and the CHECK (_handle_send_state) use it consistently. None in
-        # real -> falls back to time.time() -> byte-identical (async_cifar10's fast
-        # sim has vclock≈wall, so it is unaffected either way).
+        # same clock the trainer commits on -- the virtual clock in sim
+        # (vclock_now via channel_props), physical wall in real. In a slow sim a
+        # wall-keyed timeout evicts a still-outstanding trainer -> re-dispatch ->
+        # R1 residence violation. Stash it so the dispatch STAMP and the CHECK
+        # (_handle_send_state) use it consistently; None in real -> time.time().
         self._sim_now_s = channel_props.get("vclock_now")
 
         # TODO: (DG) Is explicit round tracking required here? round =
@@ -1411,11 +1407,10 @@ class AsyncOortSelector(AbstractSelector):
 
     def _abandon_clock_now(self) -> float:
         """Clock for the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S): the
-        VIRTUAL clock in sim (vclock_now stashed per-select), physical wall in
+        virtual clock in sim (vclock_now stashed per-select), physical wall in
         real. Keeping the STAMP (all_selected[end]) and the CHECK on the same
-        clock makes the 90s timeout mean 90 *virtual* seconds in sim, so a slow
-        sim no longer evicts a still-outstanding trainer from the re-pick guard
-        (#1c). Real / async_cifar10 fast-sim: unchanged (None -> wall / vclock≈wall)."""
+        clock makes the timeout mean virtual seconds in sim, so a slow sim no
+        longer evicts a still-outstanding trainer from the re-pick guard (#1c)."""
         sim_now = getattr(self, "_sim_now_s", None)
         return sim_now if sim_now is not None else time.time()
 
@@ -1599,17 +1594,14 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
 
-        # SIM R1 guard (K-D27): async_oort releases `all_selected` on PHYSICAL
-        # events (the recv-fifo 2s re-select loop, RECVD/NONE cleanup). In a slow
-        # sim (fluxtune wall >> vclock) a grad stays returned-but-uncommitted for a
-        # long VIRTUAL window during which the aggregator still models the trainer
-        # as in flight; a physical prune in that window frees a still-outstanding
-        # trainer -> the aggregator's own select() re-dispatches it -> R1 residence
-        # violation. Additionally exclude the aggregator's virtual in-flight set
-        # (bound live via `_agg_pending_commit_ref` = its `_sim_pending_commit`) so
-        # a trainer is un-re-pickable until its grad COMMITS, regardless of
-        # all_selected churn. Empty (default) in real / async_cifar10 (felix keeps
-        # this ref unset; its wall~=vclock makes the window ~0) -> byte-identical.
+        # SIM R1 guard: async_oort releases `all_selected` on physical events
+        # (recv-fifo re-select loop, RECVD/NONE cleanup). In a slow sim a grad
+        # stays returned-but-uncommitted for a long virtual window while the
+        # aggregator still models the trainer as in flight; a physical prune then
+        # frees a still-outstanding trainer -> select() re-dispatches it -> R1
+        # violation. Also exclude the aggregator's virtual in-flight set (bound
+        # via `_agg_pending_commit_ref`) so a trainer is un-re-pickable until its
+        # grad COMMITS. Empty (default) in real -> unchanged.
         _pending = getattr(self, "_agg_pending_commit_ref", None) or set()
 
         # Check the eligible set first. Out of the ends, how many are

@@ -97,11 +97,10 @@ class MessageType(Enum):
     # shared origin is the single _vclock, already exposed via SIM_SEND_TS.
     AGG_START_TS = 42
 
-    # Pure modeled per-trainer mobile delay D = training_delay_s / factor /
-    # speedup (K-D29), stamped by the trainer in BOTH modes. Unlike
-    # SIM_COMPLETION_TS / TRAINING_BUDGET_S (which fold in the measured GPU time
-    # and so differ run-to-run), D is deterministic from the registry, so the
-    # aggregator can order a cohort's commits by (D, trainer_id) IDENTICALLY in
-    # real and sim — breaking equal-D ties by trainer_id (K-D31, P2-7a). None
-    # when delays are disabled (aggregator then falls back to arrival order).
+    # Modeled per-trainer mobile delay D = training_delay_s / factor / speedup,
+    # stamped by the trainer in BOTH modes. Unlike SIM_COMPLETION_TS /
+    # TRAINING_BUDGET_S (which fold in measured GPU time and differ run-to-run),
+    # D is deterministic from the registry, so the aggregator orders a cohort's
+    # commits by (D, trainer_id) identically in real and sim. None when delays
+    # are disabled (aggregator then falls back to arrival order).
     MODELED_DELAY_S = 43

@@ -82,13 +82,13 @@ BASELINES: dict[str, Style] = {
     # "fluxtune_nojvp": _mk("fluxtune_nojvp", "fluxtune", 1, "--", "regular", 3,
     #                       f"{SYSTEM_LABEL}−JVP", marker="v"),
 
-    # ---- 2×2 opt ablation (N=100, α=1, 2026-07-08 run-set) --------------------
+    # ---- 2×2 opt ablation (N=100, α=1) ---------------------------------------
     # Constant across all four: C1 guided JVP perturbations (trainer-side
-    # select_perturbation_using_jvp=true) + Opt-1 weight-suppression. Varies: Opt-2
-    # var-stop, Opt-3 grad-aware. R1 is the FluxTune BASE (NOT FeLiX — it does
-    # forward-mode LLM perturbation fine-tuning; it only borrows FeLiX's scalar
-    # aggregation rate `type=new`). R4 == the full FluxTune default ("fluxtune" above).
-    # Blue ramp + distinct marker/linestyle so identity survives grayscale/CVD.
+    # select_perturbation_using_jvp=true) + Opt-1 weight-suppression. Varies:
+    # Opt-2 var-stop, Opt-3 grad-aware. R1 is the FluxTune base (forward-mode LLM
+    # perturbation fine-tuning; borrows only FeLiX's scalar aggregation rate
+    # `type=new`); R4 == the full FluxTune default ("fluxtune" above). Blue ramp +
+    # distinct marker/linestyle so identity survives grayscale/CVD.
     "fluxtune_r1_base":      _mk("fluxtune_r1_base",      "fluxtune", 0, ":",  "regular", 10,
                                  f"{SYSTEM_LABEL}-base", marker="o", color=_ABLATION_BLUES[0]),
     "fluxtune_r2_varstop":   _mk("fluxtune_r2_varstop",   "fluxtune", 0, "-.", "regular", 11,

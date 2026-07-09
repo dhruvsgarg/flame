@@ -214,16 +214,14 @@ class TestThroughputParity:
 
 
 class TestIntrinsicSpanAnchor:
-    """#6: the clock-rate rungs anchor REAL on `intrinsic_span_s` (genuine
-    algorithmic time = barrier+eval) instead of raw wall ts, which bundles a
-    fixed inter-round transport artifact the sim (correctly) omits. Same run,
-    with vs without the field, must flip the verdict -- proving the anchor IS the
-    fix and that async_cifar10 (no field) is byte-identical (raw-ts fallback)."""
+    """#6: clock-rate rungs anchor REAL on `intrinsic_span_s` (barrier+eval)
+    instead of raw wall ts (which bundles a transport artifact the sim omits).
+    With vs without the field must flip the verdict; async_cifar10 (no field)
+    stays byte-identical via the raw-ts fallback."""
 
     def _pair(self, with_intrinsic):
-        # 10 committed data_ids. GENUINE work = 20 s/data_id (sim vclock advances
-        # 20/unit). REAL wall carries +15 s/data_id transport artifact (35/unit),
-        # but real's intrinsic_span_s reports the clean 20.
+        # 10 data_ids: 20 s/data_id genuine work; REAL wall adds +15 s/data_id
+        # transport (35/unit), but intrinsic_span_s reports the clean 20.
         real_rounds, sim_rounds = [], []
         for d in range(1, 11):
             re = {"event": "agg_round", "round": 1, "ts": float(d * 35),
@@ -251,8 +249,8 @@ class TestIntrinsicSpanAnchor:
         assert wd["mean_abs_disparity_s"] < 1.0, wd
 
     def test_raw_wall_fallback_fails_and_is_byte_identical(self):
-        # Field absent -> real anchors on raw ts (35/unit) vs sim vclock (20/unit)
-        # -> the #6 gap the anchor exists to remove. Also the async_cifar10 path.
+        # Field absent -> real anchors on raw ts (35/unit) vs sim vclock
+        # (20/unit): the #6 gap. Also the async_cifar10 path.
         real, sim = self._pair(with_intrinsic=False)
         assert not pc.throughput_parity(real, sim, tol_rel=0.05)["ok"]
         assert not pc.per_round_advance_parity(real, sim)["ok"]
@@ -262,10 +260,9 @@ class TestIntrinsicSpanAnchor:
 
 
 class TestSimSpeedup:
-    """sim_speedup [DIAG] asserts the principle-#13 invariant: the sim must run
-    virtual time at least as fast as physical wall (sim_rate >= 1). K7 sim_rate
-    only checks the sane range [0.01,100], so it PASSES a slowdown — this rung is
-    the one that catches it (§H #13)."""
+    """sim_speedup [DIAG] (#13): sim must run virtual time at least as fast as
+    wall (sim_rate >= 1). K7's sane-range [0.01,100] check passes a slowdown;
+    this rung catches it."""
 
     def test_healthy_speedup_passes(self):
         # sim: vclock 0..100 virtual-s in 0..10 wall-s (10x speedup);
@@ -281,8 +278,8 @@ class TestSimSpeedup:
         assert r["wall_speedup"] > 1.0  # sim finished faster than real
 
     def test_slowdown_fails(self):
-        # The 2026-07-04 bug shape: vclock reaches only ~213 while wall burns
-        # ~566 (sim_rate ~0.38 < 1) — a SLOWDOWN, sim is broken (root #13).
+        # Slowdown shape: vclock reaches ~213 while wall burns ~566
+        # (sim_rate ~0.38 < 1) -> sim is broken (#13).
         sim = _agg(agg_rounds=[
             _round(r, ["a"], [0], vclock=float(r * 213.0 / 24),
                    ts=float(r * 566.0 / 24))
@@ -417,8 +414,8 @@ class TestTerminalStateParity:
 
 
 def _fwd_round(data_id, contributing, vclock=None, ts=0.0):
-    """fwdllm-style agg_round: `round` (model_version) static, progress on the
-    committed `data_id` axis (cycle_data_id, §K-D9)."""
+    """fwdllm-style agg_round: `round` static, progress on the committed
+    `data_id` axis (cycle_data_id)."""
     e = {"event": "agg_round", "round": 1, "ts": ts,
          "cycle_data_id": data_id, "var_good_enough": True,
          "contributing_trainers": contributing, "staleness": [0],
@@ -429,10 +426,10 @@ def _fwd_round(data_id, contributing, vclock=None, ts=0.0):
 
 
 class TestProgressAxisRekey:
-    """§H open-root #2 / §F.3: the clock family must measure progress on the axis
-    the run advances. fwdllm keeps `round` at 1 and advances committed `data_id`,
-    so a rung keyed on `round` divides by a counter stuck at 1. The re-key auto-
-    detects the axis; async_cifar10 (round-advancing) stays byte-identical."""
+    """The clock family must measure progress on the axis the run advances.
+    fwdllm keeps `round` at 1 and advances committed `data_id`, so a rung keyed
+    on `round` divides by a stuck counter. The re-key auto-detects the axis;
+    async_cifar10 (round-advancing) stays byte-identical."""
 
     def test_throughput_counts_data_ids_not_static_round(self):
         # 10 committed data_ids, round pinned at 1, matched 10 units / 100s.
@@ -494,13 +491,11 @@ class TestProgressAxisRekey:
         assert r["sim_rounds"] == 10, r
         assert r["ok"], r
 
-    # --- Stage A3: the 4 advance rungs (K3/K4/K3a/K3b) re-key too, via
-    # _per_round_advances. Keyed on `round` they saw <2 units for fwdllm and
-    # SKIPed ("<2 sim rounds"); on data_id they measure real advances. ---
+    # --- The 4 advance rungs re-key too via _per_round_advances: keyed on
+    # `round` they SKIP fwdllm ("<2 rounds"); on data_id they measure advances. ---
 
     def test_advance_rung_measures_on_data_id_axis(self):
-        # Matched 10 s/data_id on both sides -> K3 has advances and PASSes,
-        # instead of SKIP-ing for "<2 rounds" (round pinned at 1).
+        # Matched 10 s/data_id both sides -> advances measured, PASSes (not SKIP).
         real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
                                 for d in range(10)])
         sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d * 10),
@@ -541,8 +536,8 @@ class TestProgressAxisRekey:
 
 
 class TestWallDisparity:
-    """Stage A4 / K-D20 #6: a DIAG rung reporting |real_wall − sim_vclock| per
-    matched progress unit. Never gates; surfaces the residual to drive to ~0."""
+    """#6: a DIAG rung reporting |real_wall - sim_vclock| per matched progress
+    unit. Never gates; surfaces the residual to drive to ~0."""
 
     def test_zero_disparity_when_clocks_match(self):
         # real advances 10 wall-s/data_id, sim 10 vclock-s/data_id -> residual 0.
@@ -597,9 +592,9 @@ class TestWallDisparity:
 
 
 class TestFailsafeRealComputeSim:
-    """Stage D2 / §H #9: a real-compute sim (fwdllm runs the real forward-grad
-    pass in sim mode) has sim wall ≫ vclock by construction, so K5 must compare
-    wall against the RUN wall budget, not the vclock (else it false-fails)."""
+    """A real-compute sim (fwdllm runs the real forward-grad pass in sim mode)
+    has sim wall >> vclock by construction, so K5 must compare wall against the
+    RUN wall budget, not the vclock (else it false-fails)."""
 
     def test_real_compute_sim_skips_without_run_budget(self):
         # data_id axis auto-detects real_compute_sim; wall ≫ vclock but no run
@@ -631,8 +626,8 @@ class TestFailsafeRealComputeSim:
 
 
 class TestFieldCoverageAlias:
-    """§H open-root #3: fwdllm's trainer emits gpu/budget under different names;
-    the coverage matrix must accept either spelling instead of false-FAILing."""
+    """fwdllm's trainer emits gpu/budget under different names; the coverage
+    matrix must accept either spelling instead of false-FAILing."""
 
     def test_fwdllm_field_aliases_count_as_covered(self):
         agg = _agg(agg_rounds=[{"event": "agg_round", "round": 1, "ts": 0.0,
@@ -810,7 +805,7 @@ class TestInflightResidenceEvent:
         assert "residence_staleness" not in f2
 
 
-# ── §F FwdLLM variance-cadence layer (V/DK/G rungs, PARITY.md §F.4) ──────────
+# ── FwdLLM variance-cadence layer (V/DK/G rungs) ──────────
 
 def _cadence(cycle_data_id, cycle_iteration, var, var_threshold,
              var_good_enough, force_commit_planned=False, grad_pool_size=None,
@@ -1033,8 +1028,8 @@ class TestRunAllParityFwdllm:
 
 
 class TestAggRoundCadenceEmission:
-    """The agg_round builder carries the Batch-2 cadence fields through `extra`
-    (the aggregator snapshots them pre-mutation, §K-D9)."""
+    """The agg_round builder carries the cadence fields through `extra` (the
+    aggregator snapshots them pre-mutation)."""
 
     def test_cadence_fields_land_in_event(self):
         from flame.telemetry.events import build_agg_round, EVENT_AGG_ROUND
@@ -1049,7 +1044,7 @@ class TestAggRoundCadenceEmission:
         assert f["grad_pool_size"] == 9 and f["cached_v_size"] == 2
 
 
-# ── FwdLLM async residence rungs R1 / W1 (simulate_fwdllm.md §L.3) ──
+# ── FwdLLM async residence rungs R1 / W1 ──
 
 def _cyc(cycle_data_id, intervals, contributing=None):
     """A committed cadence cycle carrying per-contributor [dispatch, commit]
@@ -1070,7 +1065,7 @@ def _trainers_with_rounds(counts):
 
 class TestR1InflightOverlap:
     """R1 [INV]: per-trainer dispatch->commit intervals must not overlap
-    (one-in-flight residence). The fluxtune 2x-recompute bug violated this."""
+    (one-in-flight residence)."""
 
     def test_non_overlapping_intervals_pass(self):
         # Each trainer's two contributions are strictly sequential (commit before
@@ -1268,11 +1263,11 @@ def _selc(round_, chosen, num_candidates, selector="random", ts=0.0):
 
 
 class TestSelectionDeterminismGate:
-    """P1-5: set/sequence selection rungs ENFORCE when selection is provably
+    """Set/sequence selection rungs ENFORCE when selection is provably
     deterministic (full-cohort K>=pool, or a declared deterministic selector)
-    and gate to a trivial pass otherwise — data-driven from num_chosen/
+    and gate to a trivial pass otherwise -- data-driven from num_chosen/
     num_candidates so it self-splits fwdllm (enforce) vs fluxtune / fwdllm_plus
-    #7 (gate) and self-disables under Phase-2 scarcity."""
+    (gate) and self-disables under scarcity."""
 
     def test_full_cohort_helper(self):
         full = _agg(selection=[_selc(1, ["a", "b", "c"], 3),
@@ -1332,9 +1327,9 @@ def _tr_round(overran, data_id=0, it=0, gpu=1.0, budget=2.0):
 
 
 class TestTimingOverrun:
-    """Ovr: the K-D29 order-determinism tell (P2-6). A high overrun fraction
-    means gpu > modeled D -> arrival order can flip -> cohort_sequence/v2 breaks
-    are a TIMING-MODEL limit, not a sim ordering bug. DIAG (never fails)."""
+    """Ovr: order-determinism tell. A high overrun fraction means gpu > modeled
+    D -> arrival order can flip -> cohort_sequence/v2 breaks are a TIMING-MODEL
+    limit, not a sim ordering bug. DIAG (never fails)."""
 
     def test_no_overrun_verdict(self):
         tr = {"a": {"trainer_round": [_tr_round(False), _tr_round(False)]}}

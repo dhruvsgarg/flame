@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Convergence-stop watcher (EXPERIMENTS.md WS2).
+"""Convergence-stop watcher (EXPERIMENTS.md).
 
 Polls the aggregator telemetry of the run that `expt_launch` just started and
 terminates it the moment the convergence condition is met:
@@ -9,7 +9,7 @@ terminates it the moment the convergence condition is met:
     the last W consecutive data bins are ALL >= target accuracy tau.
 
 Data bins complete in order (data_id = 0,1,2,...) and emit exactly one
-``agg_eval`` per bin at completion (verified), so "W continuous bins all >= tau"
+``agg_eval`` per bin at completion, so "W continuous bins all >= tau"
 is exactly a trailing run of W consecutive-data_id bins each with test-accuracy
 >= tau. We track the trailing streak; a bin below tau resets it.
 

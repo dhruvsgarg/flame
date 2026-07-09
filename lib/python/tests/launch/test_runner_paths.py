@@ -26,10 +26,9 @@ def fake_example_dir(tmp_path):
 
 
 class TestTrainingDelayFan:
-    """Phase 3b (simulate_fwdllm.md #12): the trainer's enable_training_delays
-    is a single source of truth fanned into the AGGREGATOR config too, so both
-    roles agree. Before this, only the trainer bridge set it and the aggregator
-    defaulted to False -- a misleading orphan / real<->sim desync risk."""
+    """#12: the trainer's enable_training_delays is a single source of truth
+    fanned into the AGGREGATOR config too, so both roles agree (previously the
+    aggregator defaulted to False -- a real<->sim desync risk)."""
 
     def _agg_hp(self, fake_example_dir, enable, tr_hp=None, agg_overrides=None):
         runner = ExperimentRunner(fake_example_dir)

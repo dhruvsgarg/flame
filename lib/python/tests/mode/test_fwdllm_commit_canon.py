@@ -1,14 +1,11 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""K-D31 / P2-7a: canonical (D, trainer_id) commit ordering.
+"""Canonical (D, trainer_id) commit ordering.
 
-On the databin1 logical-parity run the sync baselines reached bit-identical
-`var` + cadence + cohort SET, with the SOLE residual a receive-ORDER swap of
-two trainers that share a registry delay (D=6.5): real breaks the sct tie by
-physical arrival, sim by sct-sort. Both land in the same split-half so `var`
-is unchanged, but the EXACT-order `cohort_sequence` rung flags it.
-
-`_canonicalize_cohort_commit_order` reorders THIS cycle's cohort by
+When two trainers share a registry delay (equal D), real breaks the sct tie by
+physical arrival and sim by sct-sort, so the receive ORDER can swap even though
+`var` and the cohort SET match -- and the EXACT-order `cohort_sequence` rung
+flags it. `_canonicalize_cohort_commit_order` reorders THIS cycle's cohort by
 (D, str(end)) so equal-D ties break by trainer_id IDENTICALLY in real and sim.
 These tests pin: (1) two different input orders (real-physical vs sim-sct)
 canonicalize to the SAME sequence; (2) the grad/jvp trailing slice reorders in
@@ -41,8 +38,8 @@ class _CanonAgg:
     canon = TopAggregator._canonicalize_cohort_commit_order
 
 
-# D-values keyed by the last-3-hex token, matching the databin1 registry
-# (trainers 372 & 378 both drew training_delay_s=13.0 -> D=6.5, the tie).
+# D-values keyed by the last-3-hex token; trainers 372 & 378 both drew
+# training_delay_s=13.0 -> D=6.5, the tie.
 _D = {
     "370": 2.0, "375": 2.5, "373": 3.5, "376": 5.0, "379": 5.5,
     "378": 6.5, "372": 6.5, "371": 8.0, "377": 8.5, "374": 9.0,
@@ -124,10 +121,10 @@ class TestNoOps:
 
 class TestVarInvariance:
     def test_tie_swap_stays_within_split_half(self):
-        # the databin1 tie (372/378) sits at indices 5-6 of the 10-cohort; the
-        # split-half boundary is n//2 = 5, so both are in the SECOND half in
-        # BOTH orders -> the reorder cannot move a grad across the boundary ->
-        # calculate_var (mean of first-half vs second-half) is invariant.
+        # the tie (372/378) sits at indices 5-6 of the 10-cohort; the split-half
+        # boundary is n//2 = 5, so both are in the SECOND half in BOTH orders ->
+        # the reorder cannot move a grad across the boundary -> calculate_var
+        # (mean of first-half vs second-half) is invariant.
         n = len(_CANON_ORDER)
         real_order = ["370", "375", "373", "376", "379", "378", "372", "371", "377", "374"]
         first_ids = lambda seq: set(seq[: n // 2])

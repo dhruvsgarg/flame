@@ -3,21 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Audit intra-databin weight-download redundancy from a run's telemetry.
 
-Charter EXPTS_CHARTER §5c Opt-1. Within a data-bin the model_version is constant
-and the full WEIGHTS payload is byte-identical across iterations, so a trainer
-should receive it AT MOST ONCE per data-bin (subsequent dispatches get the tiny
-VAR=bad "keep training" message). This script measures, per data-bin, how many
-full-weight sends each trainer got and reports the redundancy.
+Charter §5c Opt-1: within a data-bin the model_version is constant and the full
+WEIGHTS payload is byte-identical across iterations, so a trainer should receive
+it AT MOST ONCE per bin (later dispatches get the tiny VAR=bad "keep training"
+message). Measures, per data-bin, how many full-weight sends each trainer got.
 
 Robust to the `data_id` cycling footgun (data_id repeats within a round): the
-true data-bin id is reconstructed by counting COMMITS (`agg_round` events with
-`var_good_enough=True`) in stream order and tagging each `comm` weight-send with
-the commit count seen so far -- weight-sends for data-bin N precede commit N.
+true data-bin id is reconstructed by counting COMMITS (`agg_round` with
+`var_good_enough=True`) in stream order; weight-sends for data-bin N precede
+commit N.
 
 Usage:
   python audit_weight_redundancy.py <run_dir_or_agg_jsonl> [--max-redundant-frac F]
-Exit code 1 if the redundant fraction exceeds --max-redundant-frac (default off),
-so this doubles as a regression check in CI over a smoke run.
+Exit 1 if the redundant fraction exceeds --max-redundant-frac (default off), so
+this doubles as a CI regression check over a smoke run.
 """
 import argparse
 import glob

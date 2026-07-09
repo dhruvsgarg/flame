@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Stage C -- real-mode sync-barrier liveness under availability scarcity.
+"""Real-mode sync-barrier liveness under availability scarcity.
 
 `_await_dispatchable_under_scarcity` keeps the cohort == `agg_goal` and
 sleep-to-next-avail (parity-faithful, matches the sim vclock-jump) instead of

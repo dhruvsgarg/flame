@@ -407,13 +407,13 @@ class TestChallenge13SendStateCleanup:
 
 
 class TestPendingCommitExcludedFromSelection:
-    """K-D27: async_oort must exclude the aggregator's VIRTUAL in-flight set
+    """async_oort must exclude the aggregator's VIRTUAL in-flight set
     (`_agg_pending_commit_ref`, bound live to the fwdllm aggregator's
     `_sim_pending_commit`) from selection eligibility -- so a returned-but-
     uncommitted trainer is NEVER re-dispatched even when `all_selected` has been
-    pruned by a physical event (the recv-fifo 2s re-select loop / RECVD-NONE
-    cleanup that a slow sim triggers). This is the fwdllm-side hardening over
-    felix's all_selected-only guard (felix leaves the ref unset -> byte-identical).
+    pruned by a physical event (the recv-fifo re-select loop / RECVD-NONE cleanup
+    a slow sim triggers). This hardens over the all_selected-only guard (an unset
+    ref -> byte-identical).
     """
 
     def test_pending_end_excluded_even_when_all_selected_empty(

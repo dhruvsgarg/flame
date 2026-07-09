@@ -1,12 +1,11 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-1 (charter EXPTS_CHARTER §5c): intra-databin weight-resend suppression.
+"""Opt-1: intra-databin weight-resend suppression.
 
 Within a data-bin the model_version is constant and the full WEIGHTS+GRAD_POOL
-payload is byte-identical across iterations. The telemetry showed the aggregator
-re-sending that identical payload to the same trainers every iteration (~90% of
-fwdllm weight-bytes, ~71% of fluxtune) because the WEIGHTS-vs-VAR=bad guard keyed
-off the return-driven `_trainer_last_model_version` map, which never marks an
+payload is byte-identical across iterations, yet the aggregator re-sent it to the
+same trainers every iteration because the WEIGHTS-vs-VAR=bad guard keyed off the
+return-driven `_trainer_last_model_version` map, which never marks an
 actively-training trainer current -> `is_stale` stays True -> full re-send.
 
 `_should_send_full_weights` is the SHARED decision used by both the sync and the

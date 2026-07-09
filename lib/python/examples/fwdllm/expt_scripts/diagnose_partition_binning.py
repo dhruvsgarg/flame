@@ -1,29 +1,25 @@
 #!/usr/bin/env python
-"""H0 — partition & data-bin diagnostic (fluxtune stability track, contributions §8.2).
+"""H0 — partition & data-bin diagnostic (fluxtune stability track).
 
-READ-ONLY. Confirms/quantifies findings F1-F5 before any training-code change:
-does the data a trainer sees at each `data_id` focus on one class, and does that
-predict the single-class collapses observed in the run telemetry?
+READ-ONLY. Checks whether the data a trainer sees at each `data_id` focuses on one
+class, and whether that predicts the single-class collapses seen in run telemetry.
 
-What it measures, per Dirichlet alpha (100-client distribution):
+Measures, per Dirichlet alpha (100-client distribution):
 
-  Layer A  per-CLIENT class skew (exact, from the partition h5 + labels):
-           dominant-class fraction, #classes present, normalized label entropy.
-           -> "how non-IID is each client" — the alpha=0.1 / 1 / 100 comparison.
+  Layer A  per-CLIENT class skew (from the partition h5 + labels): dominant-class
+           fraction, #classes present, normalized entropy -- "how non-IID is each
+           client" across alpha=0.1 / 1 / 100.
 
-  Layer B  per-BIN narrowness (a data_id = one `train_batch_size`-sample bin, F1):
-           chunk each client's label sequence into bins; per-bin dominant frac /
-           entropy; per-client single-class-bin fraction.
+  Layer B  per-BIN narrowness (a data_id = one `train_batch_size`-sample bin):
+           per-bin dominant frac / entropy; per-client single-class-bin fraction.
            Order source is FAITHFUL (the frozen per-client pickle cache the run
-           actually trained on) when a cache is present, else the raw partition
-           index order (flagged). For alpha=1 both are reported so the accidental
-           thread-completion "shuffle" in read_instance_from_h5 is visible.
+           trained on) when present, else raw partition index order (flagged); for
+           alpha=1 both are reported to expose the read_instance_from_h5 shuffle.
 
   Layer C  per-DATA_ID pooled bias (proxy for what the aggregator sees at commit):
-           pool bin #k across all clients -> pooled dominant frac / entropy, i.e.
-           the class bias of the cohort's gradient at data_id k. Overlaid (alpha=1)
-           against the OBSERVED collapse data_ids from the run's agg_eval telemetry
-           (acc~0.25 & mcc~0). Reports whether low-entropy data_ids predict collapse.
+           pool bin #k across clients -> pooled dominant frac / entropy. Overlaid
+           (alpha=1) against the OBSERVED collapse data_ids from agg_eval telemetry
+           to test whether low-entropy data_ids predict collapse.
 
 Usage:
   python diagnose_partition_binning.py                      # all defaults

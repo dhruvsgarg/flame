@@ -1,25 +1,24 @@
 # FluxTune aggregation (C3) — design starter
 
 **What this is.** A starter design doc for FluxTune's **intelligent (gradient-aware) aggregation**
-contribution (C3). It (1) states what the async-FL aggregation regime looks like *today* — FedBuff →
-FeLiX → current FluxTune — precisely and with code anchors; (2) states the **hypothesis** for why the
-current rule is probably wrong for FluxTune; and (3) opens the **design space** — how to actually weigh
-updates, and the knobs to think about. This is the seed for the C3 investigation tracked in
-[`EXPERIMENTS.md`](../EXPERIMENTS.md) §4 and [`EXPTS_CHARTER.md`](../EXPTS_CHARTER.md) §2d; the companion
+contribution (C3): (1) the async-FL aggregation regime *today* — FedBuff → FeLiX → current FluxTune, with
+code anchors; (2) the **hypothesis** for why the current rule is probably wrong for FluxTune; (3) the
+**design space** for weighing updates. Seed for the C3 investigation in
+[`EXPERIMENTS.md`](../EXPERIMENTS.md) §4 and [`EXPTS_CHARTER.md`](../EXPTS_CHARTER.md) §2d; companion
 efficiency contribution is [`docs/dynamic_kc_design.md`](dynamic_kc_design.md) (C2).
 
-**Status:** design only — nothing here is implemented. Current FluxTune uses the FeLiX rule (below).
-Any change here is a **baseline-affecting** aggregation change → operator sign-off, flag-gated,
-byte-identical off, and must preserve real↔sim parity ([`simulate_fwdllm.md`](../simulate_fwdllm.md)).
+**Status:** design only — nothing here is implemented; current FluxTune uses the FeLiX rule (below).
+Any change here is **baseline-affecting** → operator sign-off, flag-gated, byte-identical off, and must
+preserve real↔sim parity ([`simulate_fwdllm.md`](../simulate_fwdllm.md)).
 
 ---
 
 ## 1. The regime today
 
 All three run through the **FedBuff optimizer** ([`flame/optimizer/fedbuff.py`](../../../flame/optimizer/fedbuff.py)).
-An update is a **delta** buffered until `agg_goal` arrive; each is multiplied by a **scalar rate**, summed,
-then scaled by the server LR and added to the base weights (`do()` → `aggregate_fn(tres, rate)` →
-`scale_add_agg_weights` at `fedbuff.py:181-228`). The three differ only in **how `rate` is computed.**
+An update is a **delta** buffered until `agg_goal` arrive; each is multiplied by a **scalar rate**, summed, then
+scaled by the server LR and added to base weights (`do()` → `aggregate_fn(tres, rate)` → `scale_add_agg_weights`
+at `fedbuff.py:181-228`). The three differ only in **how `rate` is computed.**
 
 | | rate formula | signals used | lineage |
 |---|---|---|---|
@@ -35,8 +34,8 @@ Where, for the FeLiX/FluxTune "new" rate (`fedbuff.py:91-139`):
 - FluxTune config: `scale=0.4, a_exp=0.25, b_exp=0.1` (`_metadata/baselines.yaml:457-461`);
   `stalenessPolicy=none` (down-weight, never *reject*, `baselines.yaml:473`).
 
-**The variance gate (FluxTune only).** Before an update is even eligible, `FedSgdAggregator.aggregate()`
-computes a batch of gradient statistics and commits the data-bin only when variance is under threshold
+**The variance gate (FluxTune only).** Before an update is eligible, `FedSgdAggregator.aggregate()` computes
+a batch of gradient statistics and commits the data-bin only when variance is under threshold
 (`aggregator/FedSgdAggregator.py:194-202, 132`):
 - `calculate_var(grads)`, `calculate_real_var(jvps)`, `calculate_snr(jvps)`,
   `calculate_snr_gradients(grads)`, `calculate_cv(grads)`.
@@ -50,29 +49,26 @@ weighting** — they gate whether the bin commits, but the *rate* that weights e
 
 ## 2. Why this is probably the wrong rule for FluxTune (the hypothesis)
 
-Observed in the N=100 smoke runs (E3/E4): FluxTune spends ~5–6× the forward-pass compute of the oracular
-sync baseline for *less* Δloss per unit — its async concurrency does more *unproductive* work. The
-aggregation rule is one suspect. Three reasons it likely under-differentiates FluxTune's updates:
+Observed in N=100 smoke runs (E3/E4): FluxTune spends ~5–6× the forward-pass compute of the oracular sync
+baseline for *less* Δloss per unit — its async concurrency does more *unproductive* work. The aggregation rule
+is one suspect. Three reasons it likely under-differentiates FluxTune's updates:
 
-**H1 — Weights ≠ gradients.** FedBuff/FeLiX were designed for **weight-averaging** async FL: the buffered
-delta is a *weight update*, and scalar down-weighting it is sensible. FluxTune's update is a **forward-mode
-gradient estimate** (a JVP-scaled direction). A **scalar** rate changes a gradient's *magnitude* but not
-its *direction quality*: two gradient estimates pointing in opposite directions are still **averaged**, not
-filtered — a wasteful or even harmful combination that scalar weighting can't express. Gradients want a
-*direction-aware* combiner, not a magnitude knob.
+**H1 — Weights ≠ gradients.** FedBuff/FeLiX target **weight-averaging** async FL: the buffered delta is a
+*weight update*, so scalar down-weighting is sensible. FluxTune's update is a **forward-mode gradient estimate**
+(a JVP-scaled direction). A **scalar** rate changes *magnitude*, not *direction quality*: two opposite-pointing
+estimates are still **averaged**, not filtered — a wasteful/harmful combination scalar weighting can't express.
+Gradients want a *direction-aware* combiner, not a magnitude knob.
 
-**H2 — Staleness doesn't move fast enough to differentiate.** Staleness `Δv = agg_model_version −
-trainer_version`, and `_model_version` advances **per data-bin completion**, which is itself **gated on the
-variance threshold** (`fwdllm_aggregator.py:1422`, `fedbuff.py:194`). So the model version advances
-**slowly and in lockstep**, and concurrent in-flight updates carry **near-identical `Δv`** → `α(Δv) ≈
-constant` across the buffer → the **staleness axis contributes almost no differentiation**. The rate then
-collapses onto the `β(u)` (Oort-loss) term alone — a single coarse, quantized signal. Net: the "tradeoff"
-is mostly one-dimensional, and even that dimension is weak.
+**H2 — Staleness doesn't move fast enough to differentiate.** `Δv = agg_model_version − trainer_version`, and
+`_model_version` advances **per data-bin completion**, itself **gated on the variance threshold**
+(`fwdllm_aggregator.py:1422`, `fedbuff.py:194`). So version advances **slowly and in lockstep**, concurrent
+in-flight updates carry **near-identical `Δv`** → `α(Δv) ≈ constant` across the buffer → the **staleness axis
+adds almost no differentiation**. The rate collapses onto `β(u)` (Oort-loss) alone — one coarse, quantized
+signal. Net: the "tradeoff" is mostly one-dimensional, and that dimension is weak.
 
-**H3 — The best signals are computed but unused.** The variance/SNR/CV of each update's gradients and JVPs
-already exist (§1) but only drive the binary gate. They are exactly the quantities that say *how
-trustworthy* an estimate is — the natural weighting signal for noisy gradient estimates — and they're
-thrown away.
+**H3 — The best signals are computed but unused.** Each update's gradient/JVP variance/SNR/CV already exist
+(§1) but only drive the binary gate. They are exactly *how trustworthy* an estimate is — the natural weighting
+signal for noisy gradient estimates — and they're thrown away.
 
 ---
 
@@ -105,17 +101,16 @@ Think along five axes; a concrete scheme picks one option per axis.
 soft down-weight (rate). Options: loosen the gate and push the discrimination into the *weight*; or keep a
 hard gate on *direction* (anti-aligned) and soft-weight on *trust*.
 
-**Axis D — the staleness clock (fixes H2).** Replace/augment `Δmodel_version` with a clock that actually
-differentiates concurrent updates:
-- `#commits since dispatch` (how many aggregations happened while this update was in flight),
+**Axis D — the staleness clock (fixes H2).** Replace/augment `Δmodel_version` with a clock that differentiates
+concurrent updates:
+- `#commits since dispatch` (aggregations while this update was in flight),
 - wall-age or vclock-age of the update,
 - `#iterations` since dispatch,
-- or **normalize** `Δv` by the current data-bin progression rate so a slow, variance-gated clock still
-  yields spread. Quantify the staleness *distribution* first (§4) before picking.
+- or **normalize** `Δv` by the current data-bin progression rate so a slow, variance-gated clock still yields
+  spread. Quantify the staleness *distribution* first (§4) before picking.
 
-**Axis E — normalization & LR coupling.** Do the weights sum to 1 / to `agg_goal`? Interaction with the
-server LR (`scale_add`, `fedbuff.py:230+`) — a change in the weight scale silently rescales the effective
-LR, so re-normalize or re-tune LR together.
+**Axis E — normalization & LR coupling.** Do the weights sum to 1 / to `agg_goal`? A change in weight scale
+silently rescales the effective server LR (`scale_add`, `fedbuff.py:230+`), so re-normalize or re-tune LR together.
 
 ---
 
@@ -149,15 +144,15 @@ Before E1/E3 outcomes, instrument the aggregation itself:
 ---
 
 ## 6. Interactions & guardrails
-- **C1 variance gate** — the gate already filters high-variance updates; a variance-based *weight* (S1)
-  risks **double-counting**. Decide: loosen the gate and move discrimination into the weight, or keep the
-  gate for commit-timing and weight on an orthogonal signal (alignment/magnitude).
+- **C1 variance gate** — already filters high-variance updates; a variance-based *weight* (S1) risks
+  **double-counting**. Decide: loosen the gate and move discrimination into the weight, or keep the gate for
+  commit-timing and weight on an orthogonal signal (alignment/magnitude).
 - **C2 dynamic K/C** ([`dynamic_kc_design.md`](dynamic_kc_design.md)) — concurrency `C` sets how many
-  stale/in-flight updates coexist, i.e. how much there is to differentiate. Co-design: high C makes a good
-  aggregation rule matter more; the two together set the wasted-work E3/E4 measure.
-- **Fidelity / sim parity** — any rule change is baseline-affecting: land behind a flag (byte-identical
-  off), get operator sign-off, and re-validate real↔sim parity (variance cadence / commit order are
-  parity-checked — a new weight that reorders commits will move parity).
+  stale/in-flight updates coexist, i.e. how much there is to differentiate. High C makes a good rule matter
+  more; the two together set the wasted-work E3/E4 measure.
+- **Fidelity / sim parity** — any rule change is baseline-affecting: flag (byte-identical off), operator
+  sign-off, re-validate real↔sim parity (variance cadence / commit order are parity-checked — a new weight that
+  reorders commits moves parity).
 - **Server LR coupling** — re-normalize weights or re-tune LR together (Axis E).
 
 ---

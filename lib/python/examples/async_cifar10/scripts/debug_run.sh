@@ -28,9 +28,8 @@ set -u
 EX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"       # .../examples/async_cifar10
 REPO_ROOT="$(cd "$EX/../../../.." && pwd)"                  # flame/
 
-# shared harness: conda activation, launch+ticker, log asserts, preflight bridge.
-# The conda activation, PYTHONPATH pin, and launch/progress loop that used to be
-# inlined here now live in examples/scripts/expt_runner.sh (shared with fwdllm).
+# shared harness: conda activation, PYTHONPATH pin, launch/progress loop, log
+# asserts, preflight bridge -- moved here from inline (shared with fwdllm).
 # shellcheck source=../../scripts/expt_runner.sh
 source "$REPO_ROOT/lib/python/examples/scripts/expt_runner.sh"
 
@@ -319,19 +318,17 @@ print(len(d.get('experiments', [])))
 PY
 }
 
-# Thin wrapper over the shared harness's expt_launch (identical mechanics:
-# 30s progress ticker + run_* dir counting + the START/DONE log lines). Kept as
-# a named function so the two call sites below are unchanged.
+# Thin wrapper over the shared harness's expt_launch, kept as a named function so
+# the two call sites below are unchanged.
 run_node() {
   local label="$1" cfg="$2" budget_s="${3:-0}" n_exps="${4:-1}"
   expt_launch "$label" "$cfg" "$EX" "$budget_s" "$n_exps" "$LOGDIR"
 }
 
 # cifar_preflight <cfg> -- render the tiered hyperparameter table + feasibility
-# checks (shared examples/scripts/expt_runner.py) for the just-generated combined
-# cfg. Returns 2 if a check is BLOCKING. Callers decide what to do with that:
-# by default a block only WARNs and continues (so smoke_suite.sh's non-interactive
-# timeout-wrapped invocations never hang or abort); --strict makes it fatal.
+# checks (shared expt_runner.py) for the generated cfg. Returns 2 if a check is
+# BLOCKING; by default that only warns (so smoke_suite.sh's non-interactive runs
+# never hang), --strict makes it fatal.
 GPUS_VISIBLE="$( (command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l) || echo 0)"
 cifar_preflight() {
   local cfg="$1"
@@ -407,10 +404,8 @@ gate_or_continue() {
 }
 
 # ---- post-launch hooks (--after ...), dispatched by expt_dispatch_after ----
-# after_parity / after_plot absorb what compare_overnight.sh used to do (its
-# per-baseline sim-vs-real parity + cross-baseline streaming plots), but off the
-# maintained scripts.parity.cli engine (compare_overnight used the legacy
-# scripts/parity_check.py).
+# after_parity / after_plot: per-baseline sim-vs-real parity + cross-baseline
+# streaming plots, off the maintained scripts.parity.cli engine.
 after_parity() {
   python -m scripts.parity.cli --batch --experiments-dir experiments \
     --baselines $BASELINES --json-out "$LOGDIR/parity_<baseline>.json"

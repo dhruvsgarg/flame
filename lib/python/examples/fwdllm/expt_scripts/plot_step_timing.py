@@ -5,11 +5,11 @@
 
 Two granularities, both read from a run's ``telemetry/trainer_*.jsonl``:
 
-  * FINE  — the ``step_timing`` events emitted by ``@timer_decorator`` (P2-4):
+  * FINE  — the ``step_timing`` events emitted by ``@timer_decorator``:
     per-function wall (``_make_model_functional``, ``_setup_training_state`` /
     perturbation selection, ``_train_one_batch`` / JVP forward passes,
-    ``_emulate_training_delay``). This is the "where does the GPU time go" view
-    that tells us WHAT to optimize (e.g. fluxtune's 20-pass JVP at 7.57 s).
+    ``_emulate_training_delay``) — the "where does the GPU time go" view that
+    tells us WHAT to optimize.
   * COARSE — the per-round phase fields already on ``trainer_round``
     (``gpu_compute_s``, ``pre_train_s``, ``weights_to_gpu_s``,
     ``weights_to_ram_s``, ``mqtt_fetch_s``, ``post_train_s``). Always present;
@@ -36,8 +36,7 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _DEFAULT_EXPERIMENTS = _HERE.parent / "experiments"
 
 # Same run-dir grammar as run_parity._RUN_RE — the `_n\d+_smoke` anchor makes the
-# baseline token EXACT, so "fwdllm" does not swallow "fwdllm_plus" (a plain
-# substring match does — that collision made the two report identical numbers).
+# baseline token EXACT, so "fwdllm" does not swallow "fwdllm_plus".
 _RUN_RE = re.compile(
     r"^run_(?P<ts>\d{8}_\d{6})_(?P<baseline>.+)_n(?P<n>\d+)_smoke"
     r"(?:_(?P<trace>.+))?_(?P<variant>real|sim)$"

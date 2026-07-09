@@ -352,17 +352,12 @@ def _per_round_last_event(agg_rounds: list) -> dict:
 
 
 def _progress_axis(agg_rounds: list) -> str:
-    """The run's true progress axis -- the shared "progress key" abstraction
-    (simulate_fwdllm.md §H open-root #2 / §F.3 re-key).
-
-    Normal FL advances the FL `round` (model_version). fwdllm holds `round`
-    static (one model, gradients aggregated in place) and advances committed
-    `data_id` (variance passes), so a clock-family rung keyed on `round` divides
-    by a counter stuck at 1 and reads the wrong axis. Auto-detect so ONE helper
-    serves both stacks: use `round` when the run advances it (>1 distinct), else
-    `data_id` when the fwdllm cadence field `cycle_data_id` (§K-D9) is present,
-    else fall back to `round`. Async_cifar10 (round-advancing) -> "round" ->
-    byte-identical; only fwdllm re-keys."""
+    """The run's true progress axis. Normal FL advances FL `round`; fwdllm holds
+    `round` static (one model, grads aggregated in place) and advances committed
+    `data_id`, so a round-keyed clock rung divides by a counter stuck at 1. Use
+    `round` when the run advances it (>1 distinct), else `data_id` when the fwdllm
+    cadence field `cycle_data_id` is present, else `round` -- async_cifar10 stays
+    round-keyed (byte-identical); only fwdllm re-keys."""
     rounds = {e.get("round") for e in agg_rounds if e.get("round") is not None}
     if len(rounds) > 1:
         return "round"
@@ -402,18 +397,16 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
 
 
 def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
-    """Real's GENUINE-time coordinate for the #6 clock-rate family, or None.
+    """Real's genuine-time coordinate for the clock-rate rungs, or None.
 
-    When the aggregator emits ``intrinsic_span_s`` (fwdllm), returns a dict
+    When the aggregator emits ``intrinsic_span_s`` (fwdllm), returns
     {id(agg_round_event): cumulative_intrinsic_s} -- the running sum of per-cycle
     algorithmic spans (barrier + fedavg + eval), the real analog of the sim's
-    vclock. Real's raw wall Δts bundles a ~constant inter-round transport ARTIFACT
-    (mqtt re-fetch / redistribute / drain-tail / sleeps) the sim omits by design
-    (principle #1), so anchoring the clock-rate rungs (K2/K3/K3b/K8/U2 + wall_
-    disparity) on Δts spuriously fails #6; anchoring on this intrinsic clock
-    compares real-genuine vs sim-vclock like for like. Returns None when
-    ``intrinsic_span_s`` is absent (async_cifar10 -> callers fall back to ``ts``
-    -> byte-identical)."""
+    vclock. Real's raw wall Δts bundles a ~constant inter-round transport artifact
+    (mqtt re-fetch / redistribute / drain-tail / sleeps) the sim omits by design,
+    so anchoring on this intrinsic clock compares real-genuine vs sim-vclock like
+    for like. None when ``intrinsic_span_s`` is absent (async_cifar10 -> callers
+    fall back to ``ts``, byte-identical)."""
     evs = [e for e in agg_rounds if e.get("event") == "agg_round"]
     if not any(e.get("intrinsic_span_s") is not None for e in evs):
         return None
@@ -425,26 +418,23 @@ def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
 
 
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
-    """Compute per-progress-unit time advances (Stage A3 re-key).
+    """Per-progress-unit time advances (positive only).
 
     use_vclock=True:  Δvclock_now between consecutive units (sim mode).
     use_vclock=False: real mode -- Δ(intrinsic algorithmic clock) when the
-      aggregator emits ``intrinsic_span_s`` (#6 anchor, see _real_intrinsic_clock),
-      else Δts (wall) -> async_cifar10 byte-identical.
-    Returns list of positive advances.
+      aggregator emits ``intrinsic_span_s`` (see _real_intrinsic_clock), else Δts
+      (wall) -> async_cifar10 byte-identical.
 
-    Keyed on the run's TRUE progress axis (_progress_axis), not raw `round`:
-    fwdllm holds `round` static and advances committed `data_id`, so keying on
-    `round` yields <2 units and an empty list ("<2 sim rounds"). Auto-detect ->
-    async_cifar10 advances `round` -> _per_progress_last_event falls through to
-    _per_round_last_event -> byte-identical; only fwdllm re-keys to data_id.
+    Keyed on the run's true progress axis (_progress_axis), not raw `round`:
+    fwdllm holds `round` static and advances `data_id`, so a round key yields <2
+    units. async_cifar10 advances `round` -> byte-identical; only fwdllm re-keys.
     """
     axis = _progress_axis(agg_rounds)
     by_round = _per_progress_last_event(agg_rounds, axis)
     rounds_sorted = sorted(by_round.keys())
     if len(rounds_sorted) < 2:
         return []
-    # REAL (#6): prefer real's intrinsic algorithmic clock over raw wall ts.
+    # Real: prefer real's intrinsic algorithmic clock over raw wall ts.
     real_coord = None if use_vclock else _real_intrinsic_clock(agg_rounds)
     advances = []
     for i in range(1, len(rounds_sorted)):
@@ -874,16 +864,14 @@ def _by_round_selection(selection_train: list) -> dict:
     return out
 
 
-# Selectors whose per-round SET selection is a deterministic function of
-# (candidate set, seed) INDEPENDENT of the draw.  Currently empty — every
-# shipped selector samples from a join-order-dependent candidate list, so a
-# stochastic SUBSET draw is not per-round set-identical across real/sim.  But
-# set-identity is ALSO attainable without a deterministic selector when the
-# run is FULL-COHORT (K >= candidate pool → everyone selected): that case is
-# detected data-drivenly by `_full_cohort_selection` / `_selection_is_
-# deterministic`, which un-gates the set/sequence rungs for fwdllm (syn_0,
-# K=all) while leaving fluxtune/fwdllm_plus gated.  participation_parity is the
-# enforced selection invariant for the remaining stochastic-subset case.
+# Selectors whose per-round SET selection is deterministic independent of the
+# draw.  Currently empty — every shipped selector samples a join-order-dependent
+# candidate list, so a stochastic SUBSET draw is not set-identical across
+# real/sim.  Set-identity is also attainable when the run is FULL-COHORT
+# (K >= candidate pool), detected data-drivenly by `_full_cohort_selection` /
+# `_selection_is_deterministic`, which un-gates the set/sequence rungs for
+# full-cohort runs while leaving subset selectors gated.  participation_parity
+# is the enforced invariant for the stochastic-subset case.
 DETERMINISTIC_SELECTORS: set = set()
 
 
@@ -910,16 +898,13 @@ def _full_cohort_selection(loaded: dict) -> bool:
     """True iff EVERY selection round chose the whole candidate pool
     (num_chosen == num_candidates, pool > 0).
 
-    When K >= the candidate pool the selected SET is the entire pool — a
-    deterministic function of the pool regardless of the stochastic draw — so
-    the set/sequence selection rungs become exact-enforceable (fwdllm at
-    syn_0, K=all). Under scarcity (K < pool) or ASYMMETRIC eligibility across
-    modes (fwdllm_plus #7: real ~4.9 vs sim ~9.6 eligible → num_chosen <
-    num_candidates in real) some round is not full-cohort → False → the rung
-    stays gated to a trivial pass rather than false-failing a genuinely
-    stochastic/divergent selection. Missing telemetry (either field absent)
-    also returns False — never assert determinism we cannot see. Data-driven,
-    so it self-disables under Phase-2 unavailability with no config change."""
+    When K >= the candidate pool the selected SET is the entire pool —
+    deterministic regardless of the draw — so the set/sequence selection rungs
+    become exact-enforceable. Under scarcity (K < pool) or asymmetric eligibility
+    across modes some round is not full-cohort → False → the rung stays gated
+    rather than false-failing a genuinely stochastic/divergent selection. Missing
+    telemetry also returns False — never assert determinism we cannot see. Data-
+    driven, so it self-disables under Phase-2 unavailability with no config change."""
     train = loaded.get("selection_train") or []
     saw = False
     for e in train:
@@ -938,19 +923,15 @@ def _selection_is_deterministic(real: dict, sim: dict) -> bool:
     than gate to a trivial pass.
 
     True when the selector is declared deterministic (DETERMINISTIC_SELECTORS)
-    OR the run is full-cohort in BOTH modes (_full_cohort_selection). This
-    un-gates fwdllm (syn_0 K=all) while keeping fluxtune (agg_goal=3 < K) and
-    asymmetric-eligibility fwdllm_plus (#7) gated. NOTE: the fwdllm variance-
-    cadence logical rung `cohort_sequence` is ungated-EXACT for ALL fwdllm
-    baselines (receive-order is deterministic BY DESIGN, operator-confirmed) —
-    it is intentionally NOT gated by this helper, so fluxtune's #1d cohort
-    divergence still FAILs there.
+    OR the run is full-cohort in BOTH modes (_full_cohort_selection). NOTE: the
+    variance-cadence rung `cohort_sequence` is ungated-EXACT for ALL fwdllm
+    baselines (receive-order is deterministic by design) and is intentionally NOT
+    gated here.
 
     Fallback: when neither mode carries num_chosen/num_candidates telemetry
-    (synthetic/legacy runs) the data-driven path is unavailable, so we revert to
-    the original selector-name rule — enforce on an unknown/deterministic
-    selector, gate a known stochastic one — to avoid silently WEAKENING a check
-    on telemetry that predates the count fields (principle #8)."""
+    (synthetic/legacy runs) revert to the selector-name rule — enforce on an
+    unknown/deterministic selector, gate a known stochastic one — to avoid
+    silently weakening a check on telemetry that predates the count fields."""
     selector = _selector_name(real, sim)
     if selector and selector in DETERMINISTIC_SELECTORS:
         return True
@@ -1527,13 +1508,11 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
         speed_class_tvd = 0.5 * sum(abs(rcs.get(b, 0) - scs.get(b, 0)) for b in buckets)
 
     selector = _selector_name(real, sim)
-    # NOT un-gated by the full-cohort rule: participation keys on `round`, which
-    # is CONSTANT for fwdllm (progress axis is data_id), so the matched-round
-    # window degenerates to nmatch=1 → a mechanical KS=1.0 that says nothing (the
-    # utility_parity "seen only 1-2 times" artifact). fwdllm's genuine per-cycle
-    # cohort enforcement is cohort_sequence; here the stochastic speed-class TVD
-    # branch stays the right call. Set-based round rungs (selection/aggregation_
-    # sequence) ARE full-cohort-safe (all-K union both sides); count rungs aren't.
+    # NOT un-gated by the full-cohort rule: participation keys on `round`, which is
+    # CONSTANT for fwdllm, so the matched-round window degenerates to nmatch=1 and a
+    # mechanical KS=1.0. fwdllm's per-cycle cohort enforcement is cohort_sequence;
+    # here the stochastic speed-class TVD branch is the right call. Set-based round
+    # rungs are full-cohort-safe (all-K union both sides); count rungs aren't.
     gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
     tvd_tol = 0.15
     if gated and speed_class_tvd is not None:
@@ -1919,14 +1898,12 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
                 real_compute_sim: Optional[bool] = None) -> dict:
     """K5 [INV]: sim wall must not overshoot the budget by > 20%.
 
-    D2 (§H #9): for a REAL-COMPUTE sim (fwdllm runs the real forward-grad GPU
-    pass in sim mode), sim wall ≫ vclock BY CONSTRUCTION -- so the vclock is the
-    wrong budget to compare wall against (K5 would false-fail every fwdllm run,
-    184 s wall vs 78 s vclock). Compare sim wall against the RUN WALL budget
-    (`max_runtime_s`, passed as budget_s) instead; if no run wall budget is
-    available, SKIP rather than falling back to the vclock. Auto-detected via the
-    progress axis when not passed explicitly. A cheap-compute sim (async_cifar10,
-    wall≈vclock) keeps the vclock fallback -> byte-identical."""
+    For a REAL-COMPUTE sim (fwdllm runs the real forward-grad GPU pass in sim
+    mode) sim wall ≫ vclock by construction, so the vclock is the wrong budget --
+    compare sim wall against the RUN WALL budget (`max_runtime_s`, passed as
+    budget_s); if none is available, SKIP rather than falling back to the vclock.
+    Auto-detected via the progress axis when not passed. A cheap-compute sim
+    (async_cifar10, wall≈vclock) keeps the vclock fallback -> byte-identical."""
     rounds = [e for e in sim["agg_rounds"] if e.get("event") == "agg_round"]
     all_evs = sim.get("_all_events", sim["agg_rounds"])  # agg_rounds used as proxy
     if len(rounds) < 2:
@@ -1985,19 +1962,18 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         return {"ok": False, "tier": "EXACT",
                 "note": "K10: no vclock_now in sim agg_round events — cannot compute throughput"}
     final_vclock = max(sim_vclock_vals)
-    # Progress-axis re-key (§H #2): count units on the axis the run advances --
-    # `round` for normal FL, committed `data_id` for fwdllm (else n_rounds==1).
+    # Progress-axis re-key: count units on the axis the run advances -- `round`
+    # for normal FL, committed `data_id` for fwdllm (else n_rounds==1).
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                       _progress_axis(real["agg_rounds"])) else "round"
     sim_by_round = _per_progress_last_event(sim["agg_rounds"], axis)
     n_sim_rounds = len(sim_by_round)
     sim_throughput = n_sim_rounds / final_vclock if final_vclock > 0 else 0.0
 
-    # REAL (#6): denominator is real's GENUINE algorithmic time -- total
-    # intrinsic span (barrier+fedavg+eval) when emitted, else wall ts span
-    # (async_cifar10 byte-identical). Excludes real's inter-round transport
-    # artifact so rounds-per-genuine-second compares like-for-like vs the sim's
-    # rounds-per-vclock-second.
+    # REAL denominator is real's genuine algorithmic time -- total intrinsic span
+    # (barrier+fedavg+eval) when emitted, else wall ts span (async byte-identical).
+    # Excludes real's inter-round transport artifact so rounds-per-genuine-second
+    # compares like-for-like vs the sim's rounds-per-vclock-second.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     if real_coord is not None:
         wall_elapsed = max(real_coord.values()) if real_coord else 0.0
@@ -2083,21 +2059,18 @@ def per_round_advance_parity(real: dict, sim: dict,
 
 
 def wall_disparity(real: dict, sim: dict) -> dict:
-    """wall_disparity [DIAG]: |real_genuine − sim_vclock| per matched progress unit
-    (Stage A4 / K-D20 #6). The recurring sanity metric to drive to ~0 -- surfaces
-    the gap between real's per-unit GENUINE algorithmic time and the sim's per-unit
-    VCLOCK every run, without gating. Real's coordinate is the cumulative intrinsic
-    span (barrier+fedavg+eval) when the aggregator emits ``intrinsic_span_s`` --
-    NOT raw wall, which bundles the inter-round transport artifact the sim omits
-    (principle #1); driving THIS residual to ~0 is the correct #6 target (chasing
-    real's full wall would over-charge the vclock). Falls back to wall ts for async
-    (byte-identical). Both clocks cumulative from the FIRST matched unit. Keyed on
-    the progress axis (data_id for fwdllm, round otherwise). Never fails."""
+    """wall_disparity [DIAG]: |real_genuine − sim_vclock| per matched progress
+    unit -- the sanity metric to drive to ~0, surfaced every run without gating.
+    Real's coordinate is the cumulative intrinsic span (barrier+fedavg+eval) when
+    ``intrinsic_span_s`` is emitted -- NOT raw wall, which bundles the inter-round
+    transport artifact the sim omits (chasing real's full wall would over-charge
+    the vclock). Falls back to wall ts for async (byte-identical). Both clocks
+    cumulative from the first matched unit. Keyed on the progress axis. Never fails."""
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                        _progress_axis(real["agg_rounds"])) else "round"
     real_by = _per_progress_last_event(real["agg_rounds"], axis)
     sim_by = _per_progress_last_event(sim["agg_rounds"], axis)
-    # REAL (#6): genuine algorithmic clock when emitted, else raw wall ts.
+    # Real: genuine algorithmic clock when emitted, else raw wall ts.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     _real_t = ((lambda e: real_coord.get(id(e))) if real_coord is not None
                else (lambda e: e.get("ts")))
@@ -2145,18 +2118,16 @@ def _wall_span_s(agg: dict) -> Optional[float]:
 
 
 def sim_speedup(real: dict, sim: dict, min_rate: float = 0.98) -> dict:
-    """sim_speedup [DIAG]: the sim must be a SPEEDUP, not a slowdown (principle
-    #13 / §H #13). Two reported numbers:
-      - sim_rate    = final_vclock / sim_wall  (virtual-s per wall-s). The
-        operator's invariant is sim_rate >= 1 (vclock advances at least as fast
-        as physical wall). K7 `sim_rate` only checks the sane range [0.01,100],
-        so a 0.37x SLOWDOWN passes it silently -- this rung is the invariant.
+    """sim_speedup [DIAG]: the sim must be a SPEEDUP, not a slowdown. Two numbers:
+      - sim_rate    = final_vclock / sim_wall  (virtual-s per wall-s). Invariant:
+        sim_rate >= 1 (vclock advances at least as fast as wall). K7 `sim_rate`
+        only checks the range [0.01,100], so a slowdown passes it silently --
+        this rung is the invariant.
       - wall_speedup = real_wall / sim_wall   (how many times faster the sim
         finishes the same work than the real run; > 1 is the whole point).
-    DIAG: surfaces every run, does not gate the ladder (a violation is root #13,
-    the speedup-leak work, not a downstream ladder failure). For a real-compute
-    sim (fwdllm) the GPU pass is irreducible wall, so once the transport waits
-    are skipped sim_rate -> (gpu+D)/gpu >= 1."""
+    DIAG: surfaces every run, does not gate the ladder. For a real-compute sim
+    (fwdllm) the GPU pass is irreducible wall, so once the transport waits are
+    skipped sim_rate -> (gpu+D)/gpu >= 1."""
     vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                    if e.get("vclock_now") is not None]
     sim_wall = _wall_span_s(sim)
@@ -2258,9 +2229,9 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
-    # REAL (#6): matched-budget window on real's GENUINE algorithmic clock
-    # (cumulative intrinsic span) when emitted, else raw wall ts (async byte-
-    # identical). _real_time(e) is 0-based cumulative-intrinsic OR ts-real_t0.
+    # REAL: matched-budget window on real's genuine algorithmic clock (cumulative
+    # intrinsic span) when emitted, else raw wall ts (async byte-identical).
+    # _real_time(e) is 0-based cumulative-intrinsic OR ts-real_t0.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts)
     if real_coord is not None:
@@ -2273,10 +2244,10 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     if V <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "matched virtual budget V ≤ 0 — run too short to measure"}
-    # Progress-axis re-key (§H #2): count commits on the axis the run advances.
-    # Normal FL commits once per agg_round event; fwdllm's committed unit is the
-    # `data_id` (a variance-FAIL cycle rolls back, so raw cycle events overcount),
-    # so count DISTINCT committed data_ids within V -- keeping U2 == K8's rollup.
+    # Progress-axis re-key: count commits on the axis the run advances. Normal FL
+    # commits once per agg_round; fwdllm's committed unit is the `data_id` (a
+    # variance-FAIL cycle rolls back, so raw cycle events overcount), so count
+    # DISTINCT committed data_ids within V.
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                       _progress_axis(real["agg_rounds"])) else "round"
     if axis == "round":
@@ -2320,7 +2291,7 @@ def terminal_state_parity(real: dict, sim: dict,
     real_ts_all = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts_all:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
-    # REAL (#6): matched-budget window on real's GENUINE algorithmic clock (see
+    # REAL: matched-budget window on real's genuine algorithmic clock (see
     # total_commits_parity); falls back to wall ts for async (byte-identical).
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts_all)
@@ -2335,8 +2306,8 @@ def terminal_state_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "matched virtual budget V ≤ 0 — run too short to measure"}
 
-    # Progress-axis re-key (§H #2): "rounds at V" is really "progress units at V"
-    # -- FL rounds for normal FL, committed data_ids for fwdllm (round static).
+    # Progress-axis re-key: "rounds at V" is really "progress units at V" -- FL
+    # rounds for normal FL, committed data_ids for fwdllm (round static).
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                       _progress_axis(real["agg_rounds"])) else "round"
     unit_key = "round" if axis == "round" else "cycle_data_id"
@@ -2492,25 +2463,22 @@ def _overrun_stats(trainers: dict) -> tuple:
 
 def timing_overrun(real_trainers: dict, sim_trainers: dict,
                    warn_frac: float = 0.05) -> dict:
-    """Ovr [DIAG]: fraction of trainer rounds where the real GPU pass OVERRAN
-    the modeled mobile-device delay budget (K-D29 remainder-wait model, P2-6).
+    """Ovr [DIAG]: fraction of trainer rounds where the real GPU pass OVERRAN the
+    modeled mobile-device delay budget.
 
-    Precondition-for-parity localizer, NOT a real↔sim diff. Under the K-D29
-    model a trainer's arrival order is deterministic ONLY while gpu_time_s <=
-    the modeled delay D (the GPU hides inside the device wall). When gpu > D the
-    update completes AFTER the vclock passed its sct → the sim can commit it out
-    of order → the deterministic per-trainer arrival order that
-    `cohort_sequence`/`v2_var_trajectory` require is broken. So a cohort/var
-    divergence with a HIGH overrun fraction is a TIMING-MODEL limitation (GPU
-    too slow for the budget — fluxtune's 20-pass JVP at 7.57s vs a ~2-9s D/2
-    budget), fixable by raising `delay_factor` or lowering `perturbation_count`,
-    NOT a sim ordering bug. A near-zero overrun fraction is the precondition for
-    exact cohort/var parity — expect ~0 for fwdllm/fwdllm_plus (GPU ~1s).
+    Precondition-for-parity localizer, NOT a real↔sim diff. A trainer's arrival
+    order is deterministic only while gpu_time_s <= the modeled delay D (the GPU
+    hides inside the device wall). When gpu > D the update completes after the
+    vclock passed its sct → the sim can commit it out of order → the deterministic
+    arrival order that cohort_sequence/v2_var_trajectory require is broken. So a
+    cohort/var divergence with a HIGH overrun fraction is a timing-MODEL limitation
+    (GPU too slow for the budget), fixable by raising `delay_factor` or lowering
+    `perturbation_count`, NOT a sim ordering bug. A near-zero fraction is the
+    precondition for exact cohort/var parity.
 
-    DIAG (never fails the scoreboard); reports per-mode overrun fraction + the
-    earliest (data_id, iteration) an overrun occurs (where order first risks
-    flipping — cross-check against the cohort_sequence first_divergence).
-    SKIPs when `training_overran` is absent (delays disabled / pre-P2-6 run).
+    DIAG (never fails); reports per-mode overrun fraction + the earliest
+    (data_id, iteration) an overrun occurs (cross-check against cohort_sequence
+    first_divergence). SKIPs when `training_overran` is absent (delays disabled).
     """
     rn, ro, rf = _overrun_stats(real_trainers)
     sn, so, sf = _overrun_stats(sim_trainers)
@@ -2608,8 +2576,8 @@ _COVERAGE_SPEC = [
     ("selection.num_eligible",          "sel",           "num_eligible",          "both"),
     ("selection.avail_composition",     "sel",           "avail_composition",     "both"),
     ("selection.num_chosen",            "sel",           "num_chosen",            "both"),
-    # fwdllm's trainer emits the same data under different names (§H #3): its
-    # forward-grad "compute" is real_gpu_time_s and its budget is
+    # fwdllm's trainer emits the same data under different names: its forward-grad
+    # "compute" is real_gpu_time_s and its budget is
     # sim_round_duration_s (gpu + modeled delay). Accept either spelling so the
     # coverage matrix agrees on both examples instead of false-FAILing fwdllm.
     ("trainer_round.gpu_compute_s",     "trainer_round", ("gpu_compute_s", "real_gpu_time_s"),         "both"),
@@ -2630,7 +2598,7 @@ def field_coverage(real_agg: dict, sim_agg: dict,
     def _density(events: list, field) -> Optional[float]:
         # `field` may be a single name or a tuple of accepted aliases (an event
         # counts as covered if ANY alias is present) -- lets one canonical spec
-        # row match a different-but-equivalent field name per example (§H #3).
+        # row match a different-but-equivalent field name per example.
         if not events:
             return None
         fields = field if isinstance(field, tuple) else (field,)
@@ -3867,7 +3835,7 @@ def _iters_per_data_id(cycles: list) -> dict:
 
     Exact for both natural-pass and force-commit paths because each agg-goal
     boundary emits exactly one cadence event tagged with the data_id it worked
-    on (cycle_data_id), pre-advance (§K-D9)."""
+    on (cycle_data_id), pre-advance."""
     out: dict = {}
     for e in cycles:
         d = e.get("cycle_data_id")
@@ -3957,8 +3925,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                            var_rel_tol: float = 1e-3) -> dict:
     """L1 [EXACT]: the ordered per-aggregation logical sequence is IDENTICAL.
 
-    The strongest logical-parity rung (simulate_fwdllm.md §A / PARITY_LOGICAL_
-    TASKS.md P1-1). Unlike `aggregation_sequence_parity` (per-`round`, gated to
+    The strongest logical-parity rung (simulate_fwdllm.md §A). Unlike
+    `aggregation_sequence_parity` (per-`round`, gated to
     WARN for stochastic selectors), this keys on the fwdllm variance-cadence
     *cycle* stream (`_fwd_cadence_cycles`, ordered) and asserts, cycle-by-cycle:
 
@@ -4183,7 +4151,7 @@ def eligible_ends_metric_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> d
     Validate the policy *input* before the policy (CONTROL before MECHANISM): a
     diverging input means fix the metric, not the policy. SKIP unless the
     n_eligible_train/n_eligible_eval counts are emitted — deferred while no
-    baseline enables DynamicKC (§K-D10), not silently dropped.
+    baseline enables DynamicKC, not silently dropped.
     """
     rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
     r_e = [e["n_eligible_train"] for e in rc if e.get("n_eligible_train") is not None]
@@ -4206,7 +4174,7 @@ def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     Gradient values are mode-invariant given identical input + perturbation seed,
     so G1 should be ~0; a FAIL means a perturbation seed/order leaked across
     modes. SKIP unless a per-update `grad_norm` field is emitted — trainer-side
-    per-update emit deferred (§K-D10), logged not silently dropped.
+    per-update emit deferred, logged not silently dropped.
     """
     def _norms(agg):
         out = []
@@ -4267,11 +4235,10 @@ def grad_pool_size_parity(real: dict, sim: dict, ks_tol: float = 0.2,
 # §3.5  FwdLLM async residence rungs (R1 / W1) — simulate_fwdllm.md §L.3
 # ═══════════════════════════════════════════════════════════════════
 #
-# The 2026-07-03 fluxtune smoke showed sim running 2x the forward passes of
-# real: a residence violation on the async grad path (surplus grads dropped +
-# re-dispatched every agg-goal cycle). These two rungs would have localized it
-# instantly. R1 is the finest check (per-trainer interval overlap); W1 is the
-# coarse compute-conservation tell that first flags the wasted recompute.
+# Catch a residence violation on the async grad path (surplus grads dropped +
+# re-dispatched every agg-goal cycle → sim doing ~2x real's forward passes).
+# R1 is the finest check (per-trainer interval overlap); W1 is the coarse
+# compute-conservation tell that first flags the wasted recompute.
 
 _R1_EPS = 1e-6
 
@@ -4283,8 +4250,7 @@ def _overlap_fraction(cycles: list) -> tuple:
     A trainer's contribution i "overlaps" if its dispatch_ts precedes the
     latest commit_ts among that trainer's earlier contributions -- i.e. it was
     re-dispatched while a prior update was still outstanding, the one-in-flight
-    residence violation (PARITY.md §3.resid, "measure overlap from intervals
-    not counters"). 0.0 = strict residence; both modes must be ~0.
+    residence violation. 0.0 = strict residence; both modes must be ~0.
     """
     by_end: dict = {}
     for e in cycles:
@@ -4315,9 +4281,9 @@ def inflight_overlap_parity(real: dict, sim: dict, tol_frac: float = 0.02) -> di
 
     Per-trainer dispatch->commit intervals must NOT overlap (a trainer is
     re-pickable only after its update commits). Real satisfies this by channel
-    construction (~0%); sim must model it (commit-then-carry + slot hold, §L.4
-    step 4). A non-zero sim fraction with real ~0 is the residence bug (2x
-    forward passes). Checked per mode -- both must sit under tol_frac.
+    construction (~0%); sim must model it (commit-then-carry + slot hold). A
+    non-zero sim fraction with real ~0 is the residence bug. Checked per mode --
+    both must sit under tol_frac.
     """
     rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
     r_frac, r_pairs, r_n = _overlap_fraction(rc)
@@ -4368,14 +4334,12 @@ def compute_conservation_parity(real: dict, sim: dict,
     """W1 [DIAG]: compute-conservation — sim must not WASTE forward passes.
 
     `trainer_round` counts forward-pass STARTS, so forward/commit ~= 1 plus an
-    in-flight-at-stop + stale-reject tail. W1 exists to catch the residence bug
-    where sim RE-DISPATCHES dropped grads and thus does far MORE forward passes
-    per commit than real (the 2x-recompute, §L.1). So the check is ASYMMETRIC:
-    only a sim EXCESS over real is a violation. Sim doing FEWER passes than real
-    is not wasted recompute — a live async real system accrues a larger in-flight
-    START tail over wall-time than the clock-gated sim, so real > sim is expected
-    (and amortizes with run length / D>0). Localizes to R1; R1==0 + received==
-    committed is the precise residence signal, W1 is the coarse compute tell.
+    in-flight-at-stop + stale-reject tail. W1 catches the residence bug where sim
+    RE-DISPATCHES dropped grads and thus does far MORE forward passes per commit
+    than real (the 2x-recompute). ASYMMETRIC: only a sim EXCESS over real is a
+    violation -- a live async real system accrues a larger in-flight START tail
+    than the clock-gated sim, so real > sim is expected. Localizes to R1; R1==0 +
+    received==committed is the precise residence signal, W1 the coarse tell.
     """
     r_fwd, s_fwd = _forward_passes(real_trainers), _forward_passes(sim_trainers)
     r_com, s_com = _committed_grads(real), _committed_grads(sim)
@@ -4635,10 +4599,9 @@ CHECK_META: dict = {
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 3' FwdLLM async residence (R1/W1, simulate_fwdllm.md §L.3) ──
-    # R1 is the residence INV the fluxtune 2x-recompute bug violated; W1 is the
-    # compute-conservation DIAG that first flags it and localizes to R1. V1's
-    # cadence divergence is DOWNSTREAM of R1 (a residence violation changes the
-    # contributing set/order), so V1 deps on it -- the dep chain proves it.
+    # R1 is the residence INV; W1 the compute-conservation DIAG that first flags a
+    # violation and localizes to R1. V1's cadence divergence is DOWNSTREAM of R1
+    # (a residence violation changes the contributing set/order), so V1 deps on it.
     "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation",)},
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──

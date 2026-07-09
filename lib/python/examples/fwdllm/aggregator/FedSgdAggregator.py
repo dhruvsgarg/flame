@@ -202,15 +202,13 @@ class FedSGDAggregator(TopAggregator):
         logger.info(f"snr of jvps = {self.snr}")
         logger.info(f"coefficient of variation = {c_of_variation}")
 
-        # Opt-2 (charter §5c/§5e): variance-plateau force-commit. The legacy max-iter
-        # cap may already have armed _force_commit_this_cycle before aggregate() ran;
-        # under the 'plateau' policy we ADDITIONALLY force a commit once the per-bin
-        # variance curve has flattened (relative drop over the last N cycles <
-        # rel_delta) while var is still above threshold -- i.e. more denoising buys
-        # nothing, so commit the denoised estimate instead of grinding for a noise
-        # dip. var_prev_iter_list is the per-bin var history (reset on commit) and
-        # already includes this cycle's var (appended just above). Policy off/absent
-        # => this block never arms a commit => byte-identical.
+        # Opt-2 (charter §5c/§5e): variance-plateau force-commit. Under the
+        # 'plateau' policy, additionally force a commit once the per-bin variance
+        # curve has flattened (relative drop over the last N cycles < rel_delta)
+        # while var is still above threshold -- more denoising buys nothing, so
+        # commit the denoised estimate. var_prev_iter_list is the per-bin var
+        # history (reset on commit), already including this cycle's var. Policy
+        # off/absent => never arms a commit => byte-identical.
         self._force_commit_reason = None
         self._plateau_fired_this_cycle = self._should_force_commit_on_plateau()
         if self._plateau_fired_this_cycle:

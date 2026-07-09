@@ -1,21 +1,16 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Batch 2.5 (simulate_fwdllm.md §L.4 step 4): async grad-path residence +
-commit-then-carry.
+"""Async grad-path residence + commit-then-carry.
 
-The 2026-07-03 fluxtune smoke ran 2x the forward passes of real: a residence
-violation. `_release_sim_slots_at_agg_goal` cleared the reorder buffer + the
-in-flight gate BEFORE `_sim_hold_busy_slots` read them, so it held nothing and
-freed every trainer every agg-goal cycle -> re-dispatch -> recompute; and the
-K-D6 buffer drop discarded the ~7 arrived-but-uncommitted grads (c=10 >> K=3).
-
-The fix (K-D12): for the async path with `sim_inflight_residence` on, HOLD the
-still-busy trainers (surplus buffered ∪ not-yet-arrived in-flight) in their
-slots BEFORE clearing anything, release only the committed subset, and CARRY the
-surplus buffer to the next cycle (never dropped). These tests drive the boundary
-directly and assert (a) surplus carried, (b) busy trainers not re-selected,
-(c) R1 one-in-flight residence holds, and (d) flag-off => byte-identical to the
-Batch-1 drop behavior (sync baselines + async-without-residence unchanged).
+For the async path with `sim_inflight_residence` on, `_release_sim_slots_at_agg_goal`
+HOLDs the still-busy trainers (surplus buffered u not-yet-arrived in-flight) in
+their slots BEFORE clearing anything, releases only the committed subset, and
+CARRIEs the surplus buffer to the next cycle (never dropped) -- otherwise the
+boundary re-dispatches busy trainers (2x forward passes) and drops arrived-but-
+uncommitted grads. These tests drive the boundary directly and assert (a) surplus
+carried, (b) busy trainers not re-selected, (c) R1 one-in-flight residence holds,
+and (d) flag-off => byte-identical to the legacy drop behavior (sync baselines +
+async-without-residence unchanged).
 """
 
 from flame.mode.horizontal.asyncfl.top_aggregator import (
@@ -60,11 +55,9 @@ class TestCommitThenCarryResidenceOn:
         assert agg._sim_inflight_expected == {"E": 50.0}
         # Per-cycle committed marks cleared so a re-contributor isn't skipped.
         assert agg._sim_committed == set()
-        # Felix-aligned virtual-time in-flight (K-D17b): every OUTSTANDING trainer
-        # (carried surplus C,D ∪ still-computing E) holds BOTH its re-pick guard
-        # (all_selected) AND its compute slot (selected_ends) until it commits --
-        # a returned-but-uncommitted trainer is still in flight in virtual time.
-        # The two committed ones (A, B) are released.
+        # Every OUTSTANDING trainer (carried surplus C,D u still-computing E) holds
+        # BOTH its re-pick guard (all_selected) AND its compute slot (selected_ends)
+        # until it commits; the two committed ones (A, B) are released.
         assert set(ch._selector.all_selected) == {"C", "D", "E"}
         assert ch._selector.selected_ends["agg"] == {"C", "D", "E"}
 
@@ -108,21 +101,17 @@ class TestCommitThenCarryResidenceOn:
         # only the committed A is released.
         assert "B" in held and "C" in held and "A" not in held
         assert "B" in agg._sim_pending_commit and "C" in agg._sim_pending_commit
-        # Felix-aligned (K-D17b): both the carried B and still-computing C keep
-        # their compute slot (they're in flight in virtual time until commit);
-        # neither can be re-picked (both in the all_selected guard).
+        # Both the carried B and still-computing C keep their compute slot (in
+        # flight in virtual time until commit); neither can be re-picked.
         assert ch._selector.selected_ends["agg"] == {"B", "C"}
 
 
 class TestReturnPathGuardHeldToCommit:
-    """K-D19 (the R1 regression K-D17b left open): the guard release on grad
-    RETURN. The prior residence tests poked `_release_sim_slots_at_agg_goal` /
-    `_sim_hold_busy_slots` directly and NEVER exercised the per-message return
-    path (`_release_end_on_return`, called from `_process_single_trainer_message`)
-    -- which is exactly why R1=44.7% shipped with `tests/mode` green. The bug:
-    the async accept path called `channel.cleanup_provided_ends(end)` on physical
-    return, tearing the trainer out of `all_selected` while its carried grad had
-    not committed in virtual time -> re-selectable -> re-dispatch-while-in-flight.
+    """The guard release on grad RETURN (`_release_end_on_return`, called from
+    `_process_single_trainer_message`). The async accept path must not call
+    `channel.cleanup_provided_ends(end)` on physical return -- that tears the
+    trainer out of `all_selected` while its carried grad has not committed in
+    virtual time -> re-selectable -> re-dispatch-while-in-flight.
     """
 
     def test_guard_held_on_return_in_sim_residence(self):
@@ -156,9 +145,8 @@ class TestReturnPathGuardHeldToCommit:
 
 
 class TestVirtualInflightSlotHold:
-    """K-D17b (felix-aligned, supersedes K-D16 Option-A): a returned-but-
-    uncommitted trainer is still in flight in VIRTUAL time (its grad commits
-    when the vclock reaches its sct), so it KEEPS its compute slot
+    """A returned-but-uncommitted trainer is still in flight in VIRTUAL time (its
+    grad commits when the vclock reaches its sct), so it KEEPS its compute slot
     (selected_ends, drives `extra`) until COMMIT, not on physical return. Both
     ledgers track the same virtual-time in-flight set until commit."""
 
@@ -215,8 +203,8 @@ class TestVirtualInflightSlotHold:
 
 
 class TestFlagOffByteIdentical:
-    """Residence OFF (default) => the Batch-1 legacy drop, unchanged. Sync
-    baselines never take the carry path, so their boundary is untouched."""
+    """Residence OFF (default) => the legacy drop, unchanged. Sync baselines
+    never take the carry path, so their boundary is untouched."""
 
     def test_async_residence_off_drops_and_releases_all(self):
         agg = _residence_agg(residence=False)
@@ -262,13 +250,12 @@ class TestFlagOffByteIdentical:
 
 
 class TestPendingCommitBridge:
-    """K-D27: the fwdllm aggregator maintains its VIRTUAL in-flight set
-    (`_sim_pending_commit`) and BINDS it to the selector's `_agg_pending_commit_ref`
-    so async_oort's eligibility filter excludes a returned-but-uncommitted trainer
-    regardless of `all_selected` churn. Felix-parallel (asyncfl maintains
-    `_sim_pending_commit` add@dispatch/discard@commit); the reconcile must SHRINK
-    (a committed trainer becomes re-pickable), which the old `|= outstanding`
-    accumulate did not -> it would starve every committed trainer forever.
+    """The fwdllm aggregator maintains its VIRTUAL in-flight set
+    (`_sim_pending_commit`) and BINDS it to the selector's
+    `_agg_pending_commit_ref` so async_oort's eligibility filter excludes a
+    returned-but-uncommitted trainer regardless of `all_selected` churn. The
+    reconcile must SHRINK (a committed trainer becomes re-pickable); a
+    `|= outstanding` accumulate would starve every committed trainer forever.
     """
 
     def test_hold_reconciles_pending_to_outstanding_and_binds_ref(self):
@@ -328,13 +315,13 @@ class TestPendingCommitBridge:
         assert agg._sim_pending_commit == set()
 
     def test_recommitted_trainer_stays_pending_despite_stale_committed(self):
-        """The K-D27 R1 regression: `_sim_committed` is a STALE cross-cycle marker
-        (cleared only at the boundary). A trainer that committed then was re-picked
-        + re-dispatched is back in `_sim_inflight_expected`; the reconcile must NOT
-        drop it from pending just because it lingers in `_sim_committed` -- else it
-        is re-pickable while its NEW dispatch is still in flight -> R1 (the 67.6%
-        overlap the first K-D27 attempt still showed). `outstanding` therefore keys
-        on inflight/buffer membership only, never `- _sim_committed`."""
+        """`_sim_committed` is a STALE cross-cycle marker (cleared only at the
+        boundary). A trainer that committed then was re-picked + re-dispatched is
+        back in `_sim_inflight_expected`; the reconcile must NOT drop it from
+        pending just because it lingers in `_sim_committed` -- else it is
+        re-pickable while its NEW dispatch is still in flight (R1 overlap).
+        `outstanding` therefore keys on inflight/buffer membership only, never
+        `- _sim_committed`."""
         agg = _residence_agg(residence=True)
         ch = _FakeSelChannel(["A", "B"])
         # A committed earlier this cycle (still in the stale marker) AND has been

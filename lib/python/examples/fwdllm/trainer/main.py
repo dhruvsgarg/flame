@@ -52,14 +52,13 @@ def post_complete_message(tc_args):
 if __name__ == "__main__":
     config = load_config_from_argv()
 
-    # --time_mode is a launcher CLI-only arg (not in config JSON), unconditionally
-    # appended by TrainerSpawner.spawn_trainer() to every trainer's argv. It is
-    # threaded into config.hyperparameters (extra-allowed) so FedSGDTrainer reads
-    # it uniformly with the aggregator (which the launcher injects into its own
-    # hyperparameters). "simulated": skip the real emulated-delay sleep and stamp
-    # a modeled completion timestamp the aggregator orders updates by; "real"
-    # (default): unchanged wall-clock behavior. log_level/battery_threshold are
-    # similarly launcher/manual-run CLI-only.
+    # --time_mode is a launcher CLI-only arg (not in config JSON), appended by
+    # TrainerSpawner.spawn_trainer() to every trainer's argv. Threaded into
+    # config.hyperparameters so FedSGDTrainer reads it uniformly with the
+    # aggregator. "simulated": skip the emulated-delay sleep and stamp a modeled
+    # completion timestamp the aggregator orders updates by; "real" (default):
+    # unchanged wall-clock behavior. log_level/battery_threshold are similarly
+    # launcher/manual-run CLI-only.
     _cli_parser = argparse.ArgumentParser(add_help=False)
     _cli_parser.add_argument("--time_mode", default="real")
     _cli_parser.add_argument("--log_level", default="INFO")
@@ -76,13 +75,11 @@ if __name__ == "__main__":
     config.hyperparameters.time_mode = _cli_args.time_mode
     set_seed(config.hyperparameters.manual_seed)
 
-    # Pinning self-report: confirm the CPU/GPU affinity the spawner INTENDED
-    # (spawner.py sets CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer)
-    # actually took effect in THIS child. The trainer trains on torch.device
-    # ("cuda") == cuda:0 of the CVD-masked single-GPU view (FedSgdTrainer:388),
-    # so one visible device here == correct pinning. Emitted as a grep-able
-    # [PIN] line so a post-proc step can verify balanced trainer->(gpu,core)
-    # placement against the hardware, not just the parent's intended table.
+    # Pinning self-report: confirm the CPU/GPU affinity the spawner intended
+    # (CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer) took effect in
+    # this child. The trainer trains on cuda:0 of the CVD-masked single-GPU
+    # view, so one visible device here == correct pinning. Emitted as a grep-able
+    # [PIN] line so post-proc can verify balanced trainer->(gpu,core) placement.
     try:
         _cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
         _cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
@@ -141,10 +138,10 @@ if __name__ == "__main__":
             "var_control": config.hyperparameters.var_control,
             "perturbation_sampling": config.hyperparameters.perturbation_sampling,
             "select_perturbation_using_jvp": config.hyperparameters.select_perturbation_using_jvp,
-            # P2-5: forward-pass count knob (default 10 = historical behavior).
+            # forward-pass count knob (default 10 = historical behavior).
             "perturbation_count": getattr(
                 config.hyperparameters, "perturbation_count", 10),
-            # §L: fluxtune JVP perf-opt (bit-identical). Default False =
+            # fluxtune JVP perf-opt (§L, bit-identical). Default False =
             # byte-identical; enabled only in the fluxtune yamls.
             "jvp_perf_opt": getattr(
                 config.hyperparameters, "jvp_perf_opt", False),

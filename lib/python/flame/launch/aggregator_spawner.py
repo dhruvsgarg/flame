@@ -89,11 +89,9 @@ class AggregatorSpawner:
         # math libs use exactly that many threads (it benefits from a few cores
         # for chunk reassembly / aggregation, unlike a 1-core-pinned trainer).
         env = os.environ.copy()
-        # GPU pin: give the aggregator its own device so its eval pass (a real
-        # forward on the model, ~8s for fwdllm) does not time-slice the GPU a
-        # trainer is pinned to. Without this the aggregator defaults to GPU 0 —
-        # exactly where trainer 1 (and, at 10 trainers/8 GPUs, trainer 9) run —
-        # inflating those trainers' compute over the modeled delay budget.
+        # GPU pin: give the aggregator its own device so its eval forward pass
+        # does not time-slice a trainer's GPU. Without it the aggregator defaults
+        # to GPU 0, inflating that trainer's compute over its delay budget.
         if gpu_id is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             print(f"  ✓ Aggregator pinned to GPU {gpu_id}")
@@ -128,9 +126,9 @@ class AggregatorSpawner:
             return False
         return self.process.poll() is None
 
-    # Detect a startup crash from its traceback so wait_until_ready fails FAST,
-    # instead of the old 5s "alive ⇒ ready" heuristic waving through a crash that
-    # lands at ~5s and then wasting ~86s on trainers that never get an EOT (§L.5).
+    # Detect a startup crash from its traceback so wait_until_ready fails fast,
+    # instead of the old "alive => ready" heuristic waving a crash through and
+    # then wasting the EOT grace on trainers that never get one.
     _CRASH_MARKER = "Traceback (most recent call last)"
 
     def _read_log_tail(self, max_bytes: int = 65536) -> str:
@@ -147,8 +145,8 @@ class AggregatorSpawner:
             return ""
 
     def _print_crash_tail(self, n_lines: int = 25) -> None:
-        """Surface the aggregator log tail so the operator sees the cause without
-        opening the log (§L.5)."""
+        """Surface the aggregator log tail so the operator sees the crash cause
+        without opening the log."""
         tail = self._read_log_tail()
         if not tail:
             return
@@ -162,10 +160,9 @@ class AggregatorSpawner:
         """
         Wait for aggregator to be ready, failing fast on a startup crash.
 
-        Positive signal: process alive for >=5s with no traceback in the log.
-        Negative signals (return False immediately): the process exits during the
-        window, or a traceback appears in the log -- either way the run has
-        failed, so the caller must NOT spawn trainers.
+        Ready: process alive for >=5s with no traceback in the log. Returns False
+        immediately if the process exits during the window or a traceback appears
+        -- the run has failed, so the caller must not spawn trainers.
 
         Args:
             timeout: Maximum time to wait in seconds

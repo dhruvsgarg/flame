@@ -162,10 +162,9 @@ class Trainer(Role, metaclass=ABCMeta):
         self.abort_training = False
         self._stat_utility = 0
 
-        # Per-round phase-timing accumulator (Stage A1) -- the fwdllm-side of the
-        # #6 wall decomposition. Reset each fetch; drained into the trainer_round
-        # telemetry `extra` so the 8 phase rungs become measurable instead of
-        # SKIP. Mirrors the base syncfl trainer's _phase/_phase_times.
+        # Per-round phase-timing accumulator (#6 wall decomposition). Reset each
+        # fetch; drained into the trainer_round telemetry `extra`. Mirrors the
+        # base syncfl trainer's _phase/_phase_times.
         self._phase_times: dict = {}
 
     @contextmanager
@@ -192,7 +191,7 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         self.fetch_success = False
-        # Reset per-round phase accumulator at the round boundary (Stage A1).
+        # Reset per-round phase accumulator at the round boundary.
         self._phase_times = {}
         channel = self.cm.get_by_tag(tag)
         if not channel:
@@ -216,7 +215,7 @@ class Trainer(Role, metaclass=ABCMeta):
         end = channel.one_end(VAL_CH_STATE_RECV)
         _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
-        # agg→trainer delivery + payload transfer (leg i); the first phase term.
+        # agg->trainer delivery + payload transfer (leg i); the first phase term.
         self._phase_times["mqtt_fetch_s"] = time.time() - _recv_start
 
         if not msg:
@@ -232,22 +231,20 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"New message received for trainer_id {self.trainer_id}")
 
-        # Sim-clock stamps (Batch 1): the aggregator stamps SIM_SEND_TS (its
-        # virtual-clock "now" at dispatch) so the trainer can base its modeled
-        # completion sct on it; _wall_recv_ts is the real receipt wall time, sent
-        # back so the aggregator can derive the intrinsic (server-overhead-free)
-        # task duration (WALL_SEND - WALL_RECV). Both are inert in real mode:
-        # SIM_SEND_TS is absent (stays None) and the aggregator ignores WALL_*.
+        # Sim-clock stamps: SIM_SEND_TS is the aggregator's virtual-clock "now" at
+        # dispatch, the base for the trainer's modeled completion sct;
+        # _wall_recv_ts is the real receipt wall time, echoed back so the
+        # aggregator can derive the intrinsic (server-overhead-free) task duration
+        # (WALL_SEND - WALL_RECV). Both inert in real mode (SIM_SEND_TS absent).
         self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)
         self._wall_recv_ts = time.time()
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
 
-        # D1 (§H #8): emit task_recv carrying sim_send_ts so field_coverage's INV
-        # rung + K6 (sim_send_ts correctness) have the field they expect. fwdllm
-        # overrode _fetch_weights and dropped the base trainer's emission; restore
-        # it here. None in real mode (SIM_SEND_TS absent) -> real~=sim comparable.
+        # Emit task_recv carrying sim_send_ts (#8): fwdllm overrode _fetch_weights
+        # and dropped the base trainer's emission; restore it here. None in real
+        # mode (SIM_SEND_TS absent).
         if telemetry.is_enabled():
             try:
                 _avl = getattr(getattr(self, "avl_state", None), "value", None)
@@ -557,9 +554,9 @@ class Trainer(Role, metaclass=ABCMeta):
                 total_bytes = 0
                 logger.info("No gradients exist; sending an empty dictionary.")
 
-            # WS3-a network telemetry: the update this trainer uploads. total_bytes
-            # is the gradient payload the debug log already reports (the substantive
-            # wire cost — fluxtune's whole comm story is that this is small).
+            # Network telemetry: the update this trainer uploads. total_bytes is
+            # the gradient payload the debug log already reports (fluxtune's comm
+            # story is that this is small).
             if telemetry.is_enabled():
                 try:
                     ev, f = build_comm(
@@ -590,21 +587,19 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
-                # Sim-clock stamps (Batch 1): the modeled completion sct the
-                # aggregator's reorder buffer keys on, the additive modeled round
-                # duration (= completion budget, used for the async in-flight
-                # gate), and the real wall send/recv pair the aggregator derives
-                # the intrinsic (server-overhead-free) task duration from. All
-                # None in real mode -> aggregator ignores them (arrival order).
+                # Sim-clock stamps: the modeled completion sct the aggregator's
+                # reorder buffer keys on, the additive modeled round duration
+                # (completion budget for the async in-flight gate), and the real
+                # wall send/recv pair for the intrinsic task duration. All None in
+                # real mode -> aggregator uses arrival order.
                 MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
-                # Pure modeled delay D (K-D31/P2-7a): deterministic from the
-                # registry (unlike SIM_COMPLETION_TS, which folds in GPU jitter),
-                # so the aggregator orders this cohort's commits by (D,
-                # trainer_id) identically in real and sim. Stamped in BOTH modes;
-                # None when delays are off -> aggregator keeps arrival order.
+                # Pure modeled delay D: deterministic from the registry (unlike
+                # SIM_COMPLETION_TS, which folds in GPU jitter), so the aggregator
+                # orders this cohort's commits by (D, trainer_id) identically in
+                # real and sim. Stamped in BOTH modes; None when delays are off.
                 MessageType.MODELED_DELAY_S: getattr(self, "_modeled_delay_s", None),
                 # Echo the dispatch stamp so the aggregator can reconstruct this
-                # contribution's [dispatch, completion] interval for R1 (§L.3).
+                # contribution's [dispatch, completion] interval for R1.
                 MessageType.SIM_SEND_TS: self._sim_send_ts,
                 MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
                 MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
@@ -612,12 +607,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
         else:
-            # D4: fwdllm eval lives on the AGGREGATOR (eval_model on the global
-            # model after a variance pass); this eval message is only a utility
-            # report, not a separately-clocked commit. train_with_data_id runs
-            # immediately before this in the same loop iteration, so its fresh
-            # _sim_completion_ts is a valid (not past-dated) sct to echo, and the
-            # WALL_* pair still lets the aggregator derive the intrinsic duration.
+            # fwdllm eval lives on the aggregator; this eval message is only a
+            # utility report, not a separately-clocked commit. train_with_data_id
+            # ran just before in the same loop iteration, so its fresh
+            # _sim_completion_ts is a valid (not past-dated) sct to echo.
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
@@ -856,13 +849,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        # Per-round MQTT throttle ("don't overwhelm mqtt", :494) chained at the
-        # tail of the trainer loop (compose(): ...>> task_put_grad >> pause_exec).
-        # It is a real-transport artifact with NO sim analog (principle #8): the
-        # sim's inter-round barrier is the blocking recv in _fetch_weights + the
-        # sct reorder buffer, not a wall pause. Charging 1 wall-s/round to the
-        # sim is pure slowdown with zero fidelity value (root #13, Phase 2).
-        # Gate off in sim; real mode byte-identical.
+        # Per-round MQTT throttle chained at the tail of the trainer loop. A
+        # real-transport artifact with no sim analog (#8): the sim's inter-round
+        # barrier is the blocking recv in _fetch_weights + the sct reorder buffer,
+        # so charging 1 wall-s/round to the sim is pure slowdown. Gate off in sim.
         if not getattr(self, "simulated", False):
             time.sleep(1)
         return

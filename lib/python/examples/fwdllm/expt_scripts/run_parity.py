@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Repeatable real<->sim parity checker for the fwdllm baselines.
 
-Discovers the correct, MOST-RECENT real/sim run pair per baseline, shows them for
+Discovers the most-recent real/sim run pair per baseline, shows them for
 confirmation, runs the shared parity battery, and prints one compact cross-
-baseline summary. Built for the after-every-fix loop (simulate_fwdllm.md §H).
+baseline summary.
 
-Two footguns it removes vs calling scripts.parity.cli by hand:
-  - the `*fwdllm*` glob also matches `fwdllm_plus` (and sorted()[-1] can pick the
-    wrong one). Here the baseline is parsed as an exact token from the run-dir
-    name (`run_<ts>_<baseline>_n<N>_smoke[_<trace>]_<real|sim>`), so `fwdllm`
-    never captures `fwdllm_plus`.
-  - it always takes the LATEST pair (by the timestamp in the dir name) and reads
-    agg_goal from each run's own config, so no hand-passed --agg-goal drifts.
+Removes two footguns vs calling scripts.parity.cli by hand:
+  - baseline is parsed as an exact token from the run-dir name
+    (`run_<ts>_<baseline>_n<N>_smoke[_<trace>]_<real|sim>`), so the `*fwdllm*`
+    glob never captures `fwdllm_plus`.
+  - always takes the latest pair and reads agg_goal from each run's own config,
+    so no hand-passed --agg-goal drifts.
 
 Usage:
     python run_parity.py                       # all 3 baselines, latest pairs, confirm

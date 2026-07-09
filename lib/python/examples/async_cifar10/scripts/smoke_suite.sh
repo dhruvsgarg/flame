@@ -55,10 +55,9 @@ EX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"          # async_cifar10/
 LIB_DIR="$(cd "$EX_DIR/../.." && pwd)"           # lib/python/
 DEBUG_RUN="$SCRIPT_DIR/debug_run.sh"
 
-# Shared harness: the timeout + process-group-kill primitive (expt_timed_run)
-# that used to be inlined in _run_baseline now lives here (also used by any
-# future fwdllm campaign). No conda activation here — each debug_run.sh child
-# activates its own env, and step 1 uses `conda run -n`.
+# Shared harness: the timeout + process-group-kill primitive (expt_timed_run),
+# moved here from inline in _run_baseline. No conda activation here -- each
+# debug_run.sh child activates its own env.
 # shellcheck source=../../scripts/expt_runner.sh
 source "$LIB_DIR/examples/scripts/expt_runner.sh"
 
@@ -209,10 +208,9 @@ _run_baseline() {
   local ts_marker="$run_dir/.ts_start"
   touch "$ts_marker"
 
-  # Launch under the shared timeout+process-group-kill primitive: it runs
-  # `env FLAME_LOGDIR=... bash debug_run.sh ...` in its own PGID, SIGTERM→SIGKILL
-  # the whole tree on overrun, then sweeps stragglers and waits KILL_SETTLE_S for
-  # GPU memory to drain. Returns 124 on timeout. (Was ~55 inlined lines here.)
+  # Launch under the shared timeout+process-group-kill primitive: runs the child in
+  # its own PGID, SIGTERM->SIGKILL the whole tree on overrun, sweeps stragglers, then
+  # waits KILL_SETTLE_S for GPU memory to drain. Returns 124 on timeout.
   EXPT_KILL_SETTLE_S="$KILL_SETTLE_S" \
   expt_timed_run "$label" "$runtime_s" "$TIMEOUT_BUFFER_S" "$run_dir/shell.log" -- \
     env FLAME_LOGDIR="$run_dir" bash "$DEBUG_RUN" "$@"

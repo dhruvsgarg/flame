@@ -1,26 +1,23 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Regression for the 2026-07-04 fluxtune sim deadlock (simulate_fwdllm.md §K-D17).
-
-Two independent bugs conspired to freeze the fluxtune async sim after one cohort:
+"""Regression for the fluxtune sim deadlock (two bugs froze the async sim after
+one cohort).
 
   Bug A -- drain gated on channel RECV state, not on the sct reorder buffer.
-    _aggregate_grads_async early-returned ("no ends yet") whenever the channel
-    reported no end in RECV. But _sim_recv_min_grad greedily drains ALL ready
-    channel messages into _sim_buffer on its first call (emptying RECV), so the
-    remaining already-received grads were stranded in the buffer and the loop
-    never popped them: 10 grads received, agg_goal=3 never met. The sim commit
-    path's readiness must key on _sim_buffer / _sim_inflight_expected, not on the
-    real transport's RECV bookkeeping (principle #8: real-transport artifact).
+    _aggregate_grads_async early-returned whenever the channel reported no end in
+    RECV. But _sim_recv_min_grad greedily drains ALL ready channel messages into
+    _sim_buffer on its first call (emptying RECV), so the already-received grads
+    were stranded in the buffer and never popped: agg_goal never met. The sim
+    commit path's readiness must key on _sim_buffer / _sim_inflight_expected, not
+    on the real transport's RECV bookkeeping.
 
   Bug B -- the async_oort re-pick triplet was stamped at DISPATCH.
     Stamping the whole cohort at the current _curr_agg_version made every
-    dispatched trainer match the aggregator's version; since the version only
-    advances at a commit boundary (never reached, see Bug A), async_oort's
-    filter excluded the entire pool (filtered_ends=0) -> no re-dispatch, ever.
-    The triplet is now stamped on grad RETURN, so an in-flight-but-not-returned
-    trainer stays eligible (its compute slot already guards it), and the pool is
-    never frozen before the first commit.
+    dispatched trainer match the aggregator's version; since the version advances
+    only at a commit boundary (never reached, see Bug A), async_oort's filter
+    excluded the entire pool -> no re-dispatch, ever. The triplet is now stamped
+    on grad RETURN, so an in-flight-but-not-returned trainer stays eligible and
+    the pool is never frozen before the first commit.
 """
 
 import torch
@@ -144,7 +141,7 @@ class _RepickAgg:
     stamp lands before it) and telemetry stays disabled by default."""
 
     process = TopAggregator._process_single_trainer_message
-    _release_end_on_return = TopAggregator._release_end_on_return  # K-D19
+    _release_end_on_return = TopAggregator._release_end_on_return
 
     def __init__(self, residence=True, simulated=True, curr_ver=(5, 2, 1)):
         self.simulated = simulated

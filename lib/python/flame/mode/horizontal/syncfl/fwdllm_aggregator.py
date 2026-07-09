@@ -239,27 +239,18 @@ class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
 
-    # Phase 4a (root S1): the sim runs REAL forward-grad GPU + server eval, so
-    # its physical WALL legitimately exceeds the vclock budget by construction
-    # (#6/#13). A wall ceiling = 1× max_runtime_s therefore ALWAYS truncated the
-    # sim before its vclock reached the budget (the 2026-07-04 sign-off void).
-    # The ceiling is decoupled to a GENEROUS multiple of the budget so it is a
-    # true runaway OUTER safety, not the primary stop -- the primary stops are
-    # max_data_id_progress (matched-data_id, 4b) and vclock >= max_runtime_s.
-    # Override with an explicit `sim_wall_ceiling_s` for a tighter outer bound.
+    # The sim runs real forward-grad GPU + server eval, so its physical wall
+    # legitimately exceeds the vclock budget (#6/#13); a 1x wall ceiling would
+    # truncate it before vclock reached the budget. Decoupled to a generous
+    # multiple so it is a runaway OUTER safety, not the primary stop (primary
+    # stops: max_data_id_progress and vclock >= max_runtime_s). Override with an
+    # explicit `sim_wall_ceiling_s` for a tighter bound.
     SIM_WALL_CEILING_FACTOR = 20.0
 
-    # #13 recv-grace floor (fwdllm-scoped override of SyncTopAgg's 2.0). This is
-    # the per-pass recv_fifo window the drain waits for an in-flight grad to
-    # physically arrive. async_cifar10's 2.0s suffices there (weights come back
-    # fast); fwdllm's forward-grad "train" is a REAL GPU pass that can take ~4s,
-    # so a 2s window can close before the grad reassembles and force needless
-    # extra gate passes. 5s covers the slow GPU here.
-    #   TUNABLE: keep this as LOW as possible without compromising correctness --
-    #   too low and a genuinely-in-flight grad is missed within the pass; too high
-    #   and every stuck-end failsafe pass pays the full window. Re-measure the
-    #   real per-trainer GPU wall (fluxtune telemetry) and pull it down toward the
-    #   observed max compute + a small slack once the drain is validated.
+    # Per-pass recv_fifo window the drain waits for an in-flight grad to arrive
+    # (fwdllm override of SyncTopAgg's 2.0). fwdllm's forward-grad pass is a real
+    # GPU pass (~4s), so 2s can close before the grad reassembles.
+    #   TUNABLE: keep as low as possible without missing genuinely-in-flight grads.
     SIM_RECV_GRACE_FLOOR_S = 5.0
 
     def internal_init(self) -> None:
@@ -276,9 +267,9 @@ class TopAggregator(AsyncTopAgg):
         self._updates_received = {}
         self._per_agg_trainer_list = []
         # end -> canonical commit-order key (modeled_delay D, str(end)) for the
-        # current cycle's cohort (K-D31/P2-7a). Populated per contribution in
-        # aggregate_weights; consumed by _canonicalize_cohort_commit_order to
-        # break equal-D ties by trainer_id IDENTICALLY in real and sim.
+        # current cycle's cohort. Populated per contribution in aggregate_weights;
+        # consumed by _canonicalize_cohort_commit_order to break equal-D ties by
+        # trainer_id identically in real and sim.
         self._commit_key_by_end = {}
         self._model_version_unique_trainers = set()
         self._model_version_trainer_stats = {
@@ -312,19 +303,15 @@ class TopAggregator(AsyncTopAgg):
                 f"[MaxIterBypass] max_iterations_per_data_id={self._max_iter_per_data_id}"
             )
 
-        # Opt-2 (charter §5c/§5e): variance-plateau stopping policy. At the paper's
-        # α=1 operating point the achievable variance floor (~0.45) sits ABOVE the
-        # gate (0.30), so a data-bin crosses the gate only on a noise dip and grinds
-        # ~15-34 iterations while the DENOISED estimate has long since plateaued. This
-        # policy commits a bin early once its variance-decay curve flattens
-        # (diminishing returns), committing the denoised estimate instead of a lucky
-        # noise sample. fluxtune-only (set only in the fluxtune config); absent/'off'
-        # => byte-identical (the legacy max-iter cap above still governs).
-        #   * fixed_cap: rely on max_iterations_per_data_id (the cap above) as the ceiling.
-        #   * plateau:   ALSO commit when the relative var drop over the last N cycles
-        #                < rel_delta while var is still above threshold (a fixed_cap
-        #                ceiling still applies if max_iterations_per_data_id is set).
-        # The commit reason (natural/cap/plateau) is recorded for telemetry.
+        # Opt-2 (charter §5c): variance-plateau stopping policy. At α=1 the
+        # variance floor sits above the gate, so a data-bin crosses only on a
+        # noise dip and grinds many iterations while the denoised estimate has
+        # plateaued. This commits early once the variance-decay curve flattens.
+        # fluxtune-only; absent/'off' => legacy max-iter cap governs.
+        #   * fixed_cap: rely on max_iterations_per_data_id as the ceiling.
+        #   * plateau:   ALSO commit when the relative var drop over the last N
+        #                cycles < rel_delta while var is still above threshold.
+        # Commit reason (natural/cap/plateau) is recorded for telemetry.
         self._var_stopping_policy = getattr(
             self.config.hyperparameters, "var_stopping_policy", None
         )
@@ -358,14 +345,12 @@ class TopAggregator(AsyncTopAgg):
             )
 
         # Opt-1 (charter §5c): suppress byte-identical intra-databin weight
-        # re-sends. Within a databin the model_version is constant and the full
-        # WEIGHTS+GRAD_POOL payload is byte-identical across iterations, yet a
-        # trainer pulled in to refill concurrency reads as "stale" (the currency
-        # map _trainer_last_model_version is written only on grad-RETURN) and gets
-        # the identical payload again. When on, we remember which ends were already
-        # sent the current version this cycle and downgrade a re-dispatch to the
-        # existing tiny VAR=bad "keep training" message (the trainer caches its
-        # weights). Async path only ⇒ fluxtune-only; flag OFF ⇒ byte-identical.
+        # re-sends. Within a databin the WEIGHTS+GRAD_POOL payload is identical
+        # across iterations, yet a trainer pulled in to refill concurrency reads
+        # as "stale" (_trainer_last_model_version is written only on grad-RETURN)
+        # and gets the identical payload again. When on, downgrade such a
+        # re-dispatch to the tiny VAR=bad "keep training" message (the trainer
+        # caches its weights). Async path only; flag OFF => byte-identical.
         self._suppress_redundant_weights = bool(
             getattr(self.config.hyperparameters, "suppress_redundant_weights", False)
         )
@@ -389,23 +374,17 @@ class TopAggregator(AsyncTopAgg):
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
 
-        # #15 compute-truthful commit gate (flag-gated; default off = byte-identical).
-        # `_sim_recv_min_grad`'s earlier_stuck gate blocks real wall on
-        # `_sim_inflight_expected` entries stamped at DISPATCH. A trainer whose
-        # weights/VAR=bad payload was sent long ago but has not returned is NOT
-        # actually computing (it is idle-in-recv behind the single-threaded drain);
-        # waiting for it burns the grace floor / 30s failsafe and throttles commits,
-        # which (via hold-to-commit) starves re-dispatch -> concurrency collapses
-        # (sim 1.65 vs real 7.69). When on, the gate only blocks on a trainer still
-        # within its modeled compute window (dispatched recently enough to plausibly
-        # still be computing) -- so a stamped-but-idle phantom no longer defers a
-        # ready commit. Hold-to-commit (K-D17b) is untouched; this only unblocks the
-        # commit path so held trainers are freed promptly (PARITY_LOGICAL_TASKS.md #15).
+        # #15 compute-truthful commit gate (flag-gated; default off). The
+        # earlier_stuck gate in _sim_recv_min_grad blocks on _sim_inflight_expected
+        # entries stamped at DISPATCH. A trainer whose payload was sent long ago
+        # but has not returned is idle-in-recv, not computing; blocking on it burns
+        # the grace/failsafe and starves re-dispatch. When on, the gate only blocks
+        # on a trainer still within its modeled compute window, so a stamped-but-
+        # idle phantom no longer defers a ready commit. Hold-to-commit untouched.
         self._sim_compute_truthful_gate = bool(getattr(
             self.config.hyperparameters, "sim_compute_truthful_gate", False))
         # Wall seconds a dispatched grad may still plausibly be computing before it
-        # is treated as idle/phantom (comfortably above the ~3.6s mean / 5.6s max
-        # observed JVP compute). Only consulted when the gate flag is on.
+        # is treated as idle/phantom. Only consulted when the gate flag is on.
         _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
         self._sim_gate_compute_cap_s = float(_cap) if _cap is not None else 10.0
         # end -> wall time its weights/VAR=bad payload was last sent (sim only).
@@ -431,7 +410,7 @@ class TopAggregator(AsyncTopAgg):
         self._round_cache_activity_ts: dict = {}
 
         # Wire staleness_policy from config into an instance attr; without this
-        # the message handler's getattr fell back to "none" for every run (K-D15).
+        # the message handler's getattr fell back to "none" for every run.
         self.staleness_policy = getattr(
             self.config.hyperparameters, "staleness_policy", None
         ) or "none"
@@ -671,14 +650,11 @@ class TopAggregator(AsyncTopAgg):
         not from the legacy per-trainer json_scripts/trainer_*.json files.
 
         NOTE: the parameter MUST be named `base_dir` to match the caller in
-        ClientAvailability._init_availability (client_availability.py), which
-        invokes self.read_trainer_unavailability(trace=..., base_dir=...). This
-        method shadows the mixin's wrapper of the same name; a mismatched
-        parameter name here raises TypeError at aggregator init (the fwdllm_plus
-        ORACULAR-availability crash). The canonical implementation now lives in
-        flame.availability.trace.read_trainer_unavailability -- this override is
-        a candidate for deletion once mobiperf/syn parity with load_trace is
-        confirmed.
+        ClientAvailability._init_availability, which passes base_dir=...; this
+        method shadows the mixin wrapper, so a mismatched name raises TypeError at
+        aggregator init. Canonical impl now in
+        flame.availability.trace.read_trainer_unavailability; this override is a
+        deletion candidate once mobiperf/syn parity with load_trace is confirmed.
         """
         logger.info(f"Reading trainer unavailability for trace: {trace}")
 
@@ -792,12 +768,12 @@ class TopAggregator(AsyncTopAgg):
                     rate = 1.0
 
             elif self.optimizer.agg_rate_conf["type"] == "grad_aware":
-                # Opt-3 / C3 (charter §5c): gradient-aware aggregation. The "new"
-                # rate rescales an update's MAGNITUDE by staleness×utility but can't
-                # refuse a wrong DIRECTION -> anti-aligned JVP estimates still get
-                # averaged (H1, the M-12 instability). grad_aware weights by direction
-                # (align gate) and optionally reliability (inverse-variance), bounded
-                # ≤ base so the effective LR never inflates. OFF unless type set here.
+                # Opt-3 (charter §5c): gradient-aware aggregation. The "new" rate
+                # rescales magnitude by staleness×utility but can't refuse a wrong
+                # direction, so anti-aligned JVP estimates still get averaged.
+                # grad_aware weights by direction (align gate) and optionally
+                # reliability (inverse-variance), bounded <= base so the effective
+                # LR never inflates. OFF unless type set here.
                 conf = self.optimizer.agg_rate_conf
                 if conf.get("base", "new") == "new":
                     try:
@@ -886,22 +862,19 @@ class TopAggregator(AsyncTopAgg):
             return grad
 
     def _sim_recv_min_grad(self, channel, recv_ends):
-        """Grad-loop analog of asyncfl._sim_recv_min (simulate_fwdllm.md §J.2).
+        """Grad-loop analog of asyncfl._sim_recv_min (§J.2).
 
-        Ingest every ready grad message into the sct-ordered reorder buffer
-        (keyed by SIM_COMPLETION_TS), HOLD the commit while an in-flight trainer
-        is EXPECTED (_sim_inflight_expected) to complete before the buffered
-        minimum, then pop and commit the single smallest-sct message, advancing
-        the virtual clock to it. Returns one (msg, metadata) -- matching the
-        shape of next(channel.recv_fifo(...,1)) -- or (None, ("", now)) when
-        nothing is committable.
+        Ingest every ready grad into the sct-ordered reorder buffer (keyed by
+        SIM_COMPLETION_TS), hold the commit while an in-flight trainer is expected
+        to complete before the buffered minimum, then pop and commit the single
+        smallest-sct message, advancing the virtual clock to it. Returns one
+        (msg, metadata) matching next(channel.recv_fifo(...,1)), or (None, ("",
+        now)) when nothing is committable.
 
-        Purpose-built rather than calling _sim_recv_min verbatim because fwdllm
-        commits GRADIENTS one-per-call and releases concurrency slots on the
-        agg-goal boundary (_release_sim_slots_at_agg_goal), NOT per message, and
-        must survive variance-FAIL rollbacks without stranding or double-
-        committing a grad (§I.5). Slot/selector state is deliberately untouched
-        here -- all of it is cleared at the boundary.
+        Not _sim_recv_min verbatim because fwdllm commits gradients one-per-call
+        and releases slots on the agg-goal boundary (not per message), and must
+        survive variance-FAIL rollbacks without stranding or double-committing a
+        grad (§I.5). Slot/selector state is cleared at the boundary, not here.
         """
         live = [e for e in (recv_ends or []) if channel.has(e)]
         deadline = time.time() + RECV_TIMEOUT_WAIT_S
@@ -915,17 +888,13 @@ class TopAggregator(AsyncTopAgg):
             ]
             _seen = set(_base)
             if getattr(self, "_sim_sct_ordered_drain", False):
-                # #13 step 3 -- direct sct-ordered ingest (felix _sim_recv_min:375-390).
-                # Drain each live in-flight end's rx queue DIRECTLY (no recv_fifo
-                # streamer), taking the FULL live in-flight set. Two wins: (1) the
-                # buffer is a COMPLETE snapshot of every arrived grad -- the
-                # streamer's background task + shared queue can strand a delivered
-                # grad out of the buffer's view (is_rxq_empty true) and let the clock
-                # lap it (past-dated commit); (2) drain_ready sweeps all ready rxqs
-                # non-blocking and returns on the FIRST arrival, so it does NOT burn
-                # the full grace PER not-ready end -- the recv_fifo per-end timeout
-                # that dominated the post-step-2 wall (the 4-10s gaps, #13). No
-                # ready-gating needed here (non-blocking sweep + poll-to-first).
+                # #13: direct sct-ordered ingest. Drain each live in-flight end's
+                # rx queue directly (no recv_fifo streamer) over the full in-flight
+                # set. Two wins: (1) the buffer is a complete snapshot of every
+                # arrived grad -- the streamer's background task/shared queue can
+                # strand a delivered grad and let the clock lap it (past-dated
+                # commit); (2) drain_ready sweeps ready rxqs non-blocking, so it
+                # doesn't burn the full grace per not-ready end.
                 to_probe = _base + [
                     e for e in self._sim_inflight_expected
                     if e not in _seen and channel.has(e)
@@ -938,15 +907,13 @@ class TopAggregator(AsyncTopAgg):
                         _s = float(_s) if _s is not None else self._vclock.now
                         self._sim_buffer.add(_e, _s, (m, md))
             else:
-                # #13 step 2 -- probe-ceiling + ready-gating (felix _sim_recv_min:399-411).
-                # ALSO probe an in-flight-expected end that is NOT already a recv_end only
-                # if it is physically READY (its grad arrived) OR its modeled completion
-                # `exp` is at/before the buffered minimum (+slack). Without this the drain
-                # blocked the FULL grace window every pass on far-future / not-yet-arrived
-                # stragglers -- the dominant inter-burst wall waste (#13, the 4-10s gaps).
-                # Safe against the HOLD gate below: any end that could trigger
-                # `earlier_stuck` (exp < bmin - slack) also satisfies exp <= bmin + slack,
-                # so the gate's stuck end is always in this probe set -- no new deadlock.
+                # #13: probe-ceiling + ready-gating. Probe an in-flight-expected
+                # end that is not already a recv_end only if it is physically ready
+                # or its modeled completion `exp` is at/before the buffered minimum
+                # (+slack); else the drain blocked the full grace window every pass
+                # on far-future stragglers. Safe against the HOLD gate: any end that
+                # could trigger `earlier_stuck` also satisfies exp <= bmin + slack,
+                # so the gate's stuck end is always in this probe set.
                 _bmin = self._sim_buffer.peek_min_ts()
                 _probe_ceiling = (
                     _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
@@ -971,12 +938,11 @@ class TopAggregator(AsyncTopAgg):
             bmin = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
             # #15 compute-truthful gate: only a trainer still within its modeled
-            # compute window can be a live earlier-sct straggler. A trainer whose
-            # last dispatch is older than the compute cap (or was never dispatched)
-            # is idle-in-recv / phantom -- it will not produce a grad until the drain
-            # yields and the aggregator re-dispatches it, so blocking on it deadlocks
-            # to the grace/30s failsafe (PARITY_LOGICAL_TASKS.md #15). Skip it so the
-            # already-buffered commit proceeds and the loop can re-dispatch.
+            # compute window can be a live earlier-sct straggler. One whose last
+            # dispatch is older than the compute cap (or never dispatched) is
+            # idle-in-recv/phantom and won't produce a grad until the drain yields,
+            # so blocking on it deadlocks to the failsafe. Skip it so the buffered
+            # commit proceeds and the loop can re-dispatch.
             _truthful = getattr(self, "_sim_compute_truthful_gate", False)
             _now_wall = time.time()
             _cap = getattr(self, "_sim_gate_compute_cap_s", 10.0)
@@ -1000,14 +966,12 @@ class TopAggregator(AsyncTopAgg):
             if not earlier_stuck:
                 break  # the buffered minimum is the true next completion
             if time.time() >= deadline:
-                # #13 step 1 (felix _sim_recv_min:436-442): the earliest-expected
-                # in-flight trainer never physically arrived within the failsafe
-                # window. WITHOUT this eviction it stays in _sim_inflight_expected
-                # forever, so `earlier_stuck` re-fires the FULL deadline on every
-                # future drain cycle -> the composer freezes 30s/commit ->
-                # pipeline starvation. Treat the straggler as lost: drop it from
-                # the expected set so it can't block future commits, and commit
-                # the buffered min now. Sim-only path (real never enters here).
+                # #13 failsafe: the earliest-expected in-flight trainer never
+                # arrived within the window. Without eviction it stays in
+                # _sim_inflight_expected forever, so `earlier_stuck` re-fires the
+                # full deadline every drain cycle -> pipeline starvation. Treat it
+                # as lost: drop it from the expected set and commit the buffered
+                # min now. Sim-only.
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
                 self._sim_inflight_expected.pop(_stuck_end, None)
                 logger.info(
@@ -1036,21 +1000,16 @@ class TopAggregator(AsyncTopAgg):
         self._advance_sim_clock(_advance_to)
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
-        # #13 step 4 -- freed-slot refill stamp (felix _sim_recv_min:513-520). This
-        # grad commit frees a compute slot; record the just-advanced vclock so the
-        # trainer that REFILLS the slot rides THIS vclock (popped FIFO in
-        # _distribute_weights_async) instead of the round-start frontier. Spreads
-        # each cohort's expected completions across the timeline (matching real's
-        # staggered returns) instead of collapsing them at one frozen `_round_now`,
-        # so the drain gate stops HOLDING for a batch of same-expected stragglers
-        # (the residual 11-12s multi-pass holds after step 3). fwdllm's grad loop is
-        # all-train (every commit frees a slot), so no train/eval discriminator is
-        # needed. Sim-only + flag-gated (real never enters this method).
+        # #13 freed-slot refill stamp: this commit frees a compute slot; record
+        # the just-advanced vclock so the trainer refilling the slot rides THIS
+        # vclock (not the round-start frontier). Spreads each cohort's expected
+        # completions across the timeline (matching real's staggered returns)
+        # instead of collapsing them at one frozen `_round_now`, so the drain gate
+        # stops holding for a batch of same-expected stragglers. Sim-only + gated.
         if getattr(self, "_sim_staggered_redispatch", False):
             self._sim_free_slot_ts.append(self._vclock.now)
-        # K-D27 (felix-parallel, asyncfl:618): the grad committed -> the trainer is
-        # no longer in flight in virtual time -> drop it from pending so it is
-        # re-pickable. (_sim_hold_busy_slots reconciles right after, but be explicit.)
+        # Grad committed -> trainer no longer in flight in virtual time -> drop it
+        # from pending so it is re-pickable (_sim_hold_busy_slots reconciles too).
         self._sim_pending_commit.discard(_end)
         # Learn this end's MODELED budget (contention-free lower bound) so the
         # gate fires on genuine stragglers for not-yet-observed trainers.
@@ -1059,15 +1018,13 @@ class TopAggregator(AsyncTopAgg):
             self._sim_trainer_budget[_end] = float(_b)
             self._sim_budget_min = min(self._sim_budget_min, float(_b))
         # Reassert selected_ends == the virtual-time in-flight set after this
-        # commit (K-D17b): recv_fifo just marked the freshly-buffered ends RECVD,
-        # which strips their slots, but they are still in flight until THEY commit.
-        # felix does this reset per-commit in _sim_recv_min; without it the
-        # in_flight telemetry (sampled at the next distribute) undercounts ~3x.
+        # commit: recv_fifo just marked freshly-buffered ends RECVD (stripping
+        # their slots), but they are still in flight until THEY commit; else the
+        # in_flight telemetry undercounts.
         if getattr(self, "_sim_inflight_residence", False):
             self._sim_hold_busy_slots(channel)
-        # in_flight (virtual, dispatched-not-committed) vs the physically-computing
-        # selected_ends that feeds the in_flight telemetry — kept for concurrency
-        # parity debugging.
+        # in_flight (virtual, dispatched-not-committed) vs physically-computing
+        # selected_ends; kept for concurrency parity debugging.
         _sel = getattr(getattr(channel, "_selector", None), "selected_ends", None)
         if isinstance(_sel, dict):
             _sel_n = sum(len(v) for v in _sel.values())
@@ -1085,19 +1042,15 @@ class TopAggregator(AsyncTopAgg):
         return m, md
 
     def _release_sim_slots_at_agg_goal(self, channel, is_async):
-        """Sim slot release at the agg-goal boundary. Two policies (§L / K-D12/D16):
+        """Sim slot release at the agg-goal boundary. Two policies (§L):
 
-        - async + sim_inflight_residence (fluxtune, c >> agg_goal): COMMIT-THEN-
-          CARRY (K-D12). Hold still-busy trainers BEFORE clearing and CARRY the
-          surplus buffer to the next fedbuff step (never dropped). The overridden
-          `_sim_hold_busy_slots` holds EVERY dispatched-but-not-committed trainer
-          (computing ∪ carried) in BOTH its compute slot (selected_ends) and the
-          re-pick guard (all_selected) until its grad commits — the virtual-time
-          in-flight set, matching felix (K-D17b; supersedes the K-D16 Option-A
-          split that wrongly freed the slot on physical RETURN).
-        - else (sync barriers c ≈ agg_goal, or residence off): LEGACY DROP
-          (K-D5/K-D6) -- no surplus, so clearing is correct and flag-off is
-          byte-identical to Batch 1.
+        - async + sim_inflight_residence (fluxtune, c >> agg_goal): commit-then-
+          carry. Hold still-busy trainers before clearing and carry the surplus
+          buffer to the next fedbuff step. `_sim_hold_busy_slots` holds every
+          dispatched-but-not-committed trainer (computing ∪ carried) in both its
+          compute slot and re-pick guard until its grad commits.
+        - else (sync barriers c ≈ agg_goal, or residence off): legacy drop -- no
+          surplus, so clearing is correct and flag-off is byte-identical.
 
         `_sim_committed` always clears so a variance-FAIL re-contributor on the
         rolled-back data_id isn't skipped.
@@ -1111,36 +1064,28 @@ class TopAggregator(AsyncTopAgg):
         self._sim_committed.clear()
         self._sim_buffer.clear()
         self._sim_inflight_expected.clear()
-        # K-D27: legacy-drop path abandons all in-flight -> nothing is pending.
-        # (async path clears via _sim_hold_busy_slots' reconcile; sync barriers use
-        # the random selector where the ref is inert, but keep the set bounded.)
+        # legacy-drop path abandons all in-flight -> nothing is pending. (async
+        # path clears via _sim_hold_busy_slots' reconcile; sync barriers use the
+        # random selector where the ref is inert, but keep the set bounded.)
         self._sim_pending_commit.clear()
         if is_async:
             self._sim_hold_busy_slots(channel)
 
     def _sim_hold_busy_slots(self, channel) -> None:
-        """Assert `selected_ends` == the VIRTUAL-time in-flight set, i.e. every
+        """Assert `selected_ends` == the virtual-time in-flight set: every
         dispatched-but-not-committed trainer (`_sim_inflight_expected` ∪ buffered
-        surplus), holding BOTH its compute slot (`selected_ends`, drives
-        `extra = c − len(selected_ends)`) AND its re-pick guard (`all_selected`)
-        until its grad COMMITS. This realigns fwdllm with the felix reference
-        (`asyncfl/top_aggregator.py::_sim_hold_busy_slots` / `_sim_recv_min`
-        :606-627,1453) after the K-D16 Option-A deviation.
+        surplus), holding both its compute slot (`selected_ends`, drives
+        `extra = c − len(selected_ends)`) and its re-pick guard (`all_selected`)
+        until its grad commits.
 
-        WHY (K-D17b): a returned-but-uncommitted trainer is still in flight in
-        VIRTUAL time — its grad commits only when the vclock reaches its sct — so
-        its slot is genuinely occupied. Option A freed that slot on physical
-        RETURN (a wall event with no virtual-time meaning): `selected_ends`
-        collapsed to the ~3 physically-computing while ~8 were truly in flight,
-        so the `in_flight` telemetry (`len(selected_ends)`) undercounted 3× and
-        `extra` read false free capacity (measured `_sim_inflight_expected`≈7.8
-        vs `selected_ends`≈2.7 vs real 9.75). Freeing on physical return is the
-        exact "over-selection" hazard felix documents; fwdllm's added guard
-        turned it into an under-count instead. Holding to COMMIT also keeps
-        one-in-flight-per-trainer across the carry boundary + variance-FAIL
-        rollbacks (principle #4). Idempotent — safe to call per-commit
-        (`_sim_recv_min_grad`) and at the boundary. fwdllm-class override only
-        (adds the triplet prune); async_cifar10 (asyncfl) untouched (principle #8).
+        WHY: a returned-but-uncommitted trainer is still in flight in virtual time
+        (its grad commits only when the vclock reaches its sct), so its slot is
+        genuinely occupied. Freeing on physical RETURN collapsed `selected_ends`
+        to the physically-computing few while many were truly in flight, so the
+        in_flight telemetry undercounted and `extra` read false free capacity.
+        Holding to COMMIT also keeps one-in-flight-per-trainer across the carry
+        boundary + variance-FAIL rollbacks. Idempotent -- safe per-commit and at
+        the boundary. fwdllm-class override only (adds the triplet prune).
         """
         sel = getattr(channel, "_selector", None)
         if sel is None:
@@ -1150,24 +1095,21 @@ class TopAggregator(AsyncTopAgg):
         selected_ends = getattr(sel, "selected_ends", None)
 
         buffered = set(self._sim_buffer.pending_ends())          # returned, grad carried
-        # Outstanding = still in flight in virtual time. Membership in
-        # `_sim_inflight_expected` (popped on commit @811) or `_sim_buffer` (popped
-        # on commit @793) IS the "not yet committed" truth. Do NOT subtract
-        # `_sim_committed` (K-D27 fix): it is a STALE, cross-cycle marker cleared
-        # only at the agg-goal boundary, so a trainer that committed and was then
-        # legitimately re-picked + re-dispatched (re-added to `_sim_inflight_expected`)
-        # would be wrongly dropped from `outstanding` -> re-pickable while its NEW
-        # dispatch is still in flight -> R1 residence violation. A trainer that
-        # committed THIS cycle is already absent from both sets, so the subtraction
-        # was redundant for it and harmful for the re-dispatch case.
+        # Outstanding = still in flight in virtual time: membership in
+        # `_sim_inflight_expected` or `_sim_buffer` (both popped on commit) IS the
+        # "not yet committed" truth. Do NOT subtract `_sim_committed`: it is a
+        # stale cross-cycle marker cleared only at the agg-goal boundary, so a
+        # trainer that committed then got re-picked + re-dispatched (re-added to
+        # _sim_inflight_expected) would be wrongly dropped -> re-pickable while its
+        # new dispatch is in flight -> R1 violation. One that committed THIS cycle
+        # is already absent from both sets, so the subtraction was redundant.
         outstanding = set(self._sim_inflight_expected) | buffered
-        # `_sim_pending_commit` is the aggregator's authoritative VIRTUAL in-flight
-        # set; reconcile it to `outstanding` IN PLACE (clear+update, never rebind --
-        # the selector holds a live reference) so a genuinely-committed trainer drops
-        # out (re-pickable) while a dispatched-but-uncommitted one stays. Bind the
-        # reference so async_oort's eligibility filter excludes it (see async_oort
-        # `_pending`) regardless of all_selected churn. `|=` (the old accumulate)
-        # would never shrink -> a committed trainer would be starved forever.
+        # `_sim_pending_commit` is the authoritative virtual in-flight set;
+        # reconcile it to `outstanding` in place (clear+update, never rebind -- the
+        # selector holds a live reference) so a committed trainer drops out
+        # (re-pickable) while a dispatched-but-uncommitted one stays. Bind the ref
+        # so async_oort's eligibility filter (`_pending`) excludes it regardless of
+        # all_selected churn. `|=` would never shrink -> committed trainer starved.
         self._sim_pending_commit.clear()
         self._sim_pending_commit.update(outstanding)
         sel._agg_pending_commit_ref = self._sim_pending_commit
@@ -1280,14 +1222,12 @@ class TopAggregator(AsyncTopAgg):
     @timer_decorator
     def _release_end_on_return(self, channel, end) -> None:
         """Release a returned trainer's compute slot + re-pick guard on grad
-        RETURN -- EXCEPT on the async sim residence path, where the grad is
-        CARRIED and commits later in virtual time. There the guard/slot
-        lifetime is owned solely by `_sim_hold_busy_slots` (held to COMMIT,
-        mirroring felix's agg-goal-boundary release, `asyncfl:1316`); releasing
-        `all_selected` here on the physical RETURN would re-eligible a trainer
-        whose carried grad has NOT yet committed -> re-dispatch-while-in-flight
-        -> R1 residence violation (K-D19: 0% -> 44.7%). Real mode / non-residence:
-        return ~= commit, so release immediately as before (byte-identical).
+        RETURN -- except on the async sim residence path, where the grad is
+        carried and commits later in virtual time. There the guard/slot lifetime
+        is owned by `_sim_hold_busy_slots` (held to COMMIT); releasing
+        `all_selected` on physical RETURN would re-eligible a trainer whose
+        carried grad hasn't committed -> re-dispatch-while-in-flight -> R1
+        violation. Real / non-residence: return ~= commit, release immediately.
         """
         if self.is_async:
             if getattr(self, "simulated", False) and getattr(
@@ -1323,13 +1263,12 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"Received grad with staleness={self._model_version-version}."
                 )
-            # staleness_policy (flame/config.py). REJECT: round_data_id, exact.
-            # ACCEPT: none (no gate); fedbuff (consume + down-weight by V'-V in
-            # aggregate_grads_from_trainers) -- the async default, since its
-            # carried surplus grads (§L) are stale by construction (K-D13).
+            # staleness_policy. REJECT: round_data_id, exact. ACCEPT: none (no
+            # gate); fedbuff (consume + down-weight by V'-V) -- the async default,
+            # since its carried surplus grads (§L) are stale by construction.
             # model_version alone identifies (round, data_id) when
-            # inc_model_version_per_data_id is set, so round_data_id needs no
-            # extra field; exact also checks iteration_per_data_id.
+            # inc_model_version_per_data_id is set, so round_data_id needs no extra
+            # field; exact also checks iteration_per_data_id.
             policy = getattr(self, "staleness_policy", "none")
             stale, stale_reason = False, None
             if policy == "round_data_id":
@@ -1372,7 +1311,7 @@ class TopAggregator(AsyncTopAgg):
             )
             self._agg_goal_cnt += 1
             # Wall of the most-recent accepted grad -> barrier_wait_s / drain_
-            # tail_s in the per-round wall decomposition (Stage A2).
+            # tail_s in the per-round wall decomposition.
             self._last_grad_wall_ts = time.time()
 
             channel.set_end_property(
@@ -1437,12 +1376,11 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
 
-        # Canonical commit-order key (K-D31/P2-7a): the trainer's pure modeled
-        # delay D (deterministic from the registry) + str(end) as the tie-break.
-        # Lets _canonicalize_cohort_commit_order reproduce real's D-ordered
-        # arrival AND break equal-D ties by trainer_id identically in both modes.
-        # None when delays are off / the trainer did not stamp D -> that cycle
-        # falls back to arrival order (byte-identical legacy behavior).
+        # Canonical commit-order key: the trainer's pure modeled delay D
+        # (deterministic from the registry) + str(end) as tie-break. Lets
+        # _canonicalize_cohort_commit_order reproduce real's D-ordered arrival and
+        # break equal-D ties by trainer_id identically in both modes. None when
+        # delays off / D unstamped -> that cycle falls back to arrival order.
         _md = msg.get(MessageType.MODELED_DELAY_S)
         self._commit_key_by_end = getattr(self, "_commit_key_by_end", {})
         self._commit_key_by_end[end] = (
@@ -1450,15 +1388,13 @@ class TopAggregator(AsyncTopAgg):
         )
 
         # Re-pick guard (async_oort triplet filter): record the (model_version,
-        # data_id, iteration) this trainer just CONTRIBUTED at, so it is not
-        # re-selected until the agg version advances (the commit boundary prunes
-        # committed ends in _sim_hold_busy_slots). Stamped on RETURN, not
-        # dispatch (§K-D17): at dispatch the whole cohort matches _curr_agg_version
-        # and, since the version only advances at a commit, that froze the entire
-        # eligible pool before any commit could happen -> re-dispatch deadlock.
-        # The compute slot (selected_ends) already guards an in-flight trainer;
-        # the triplet only needs to cover the return->commit carry window.
-        # Residence-only so the sync baselines keep an empty map (inert).
+        # data_id, iteration) this trainer contributed at so it is not re-selected
+        # until the agg version advances (the commit boundary prunes committed ends
+        # in _sim_hold_busy_slots). Stamped on RETURN, not dispatch: stamping the
+        # whole cohort at dispatch froze the eligible pool before any commit could
+        # advance the version -> re-dispatch deadlock. The compute slot already
+        # guards an in-flight trainer; the triplet only covers the return->commit
+        # carry window. Residence-only (sync baselines keep an empty map).
         if getattr(self, "simulated", False) and getattr(
             self, "_sim_inflight_residence", False
         ):
@@ -1562,9 +1498,9 @@ class TopAggregator(AsyncTopAgg):
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
         # Release the slot/guard on return -- but the async sim residence path
-        # defers that release to COMMIT (K-D19); see _release_end_on_return.
-        # (cleanup_recvd_end() is sync-only, random selector; the async batch
-        # _cleanup_provided_ends path is the only one async selectors implement.)
+        # defers that release to COMMIT; see _release_end_on_return.
+        # (cleanup_recvd_end() is sync-only, random selector; async selectors only
+        # implement the batch _cleanup_provided_ends path.)
         self._release_end_on_return(channel, end)
         return True
 
@@ -1680,30 +1616,24 @@ class TopAggregator(AsyncTopAgg):
         }
 
     def _canonicalize_cohort_commit_order(self):
-        """Reorder THIS cycle's cohort commits to a canonical (D, trainer_id)
-        order — IDENTICALLY in real and sim (K-D31/P2-7a).
+        """Reorder this cycle's cohort commits to a canonical (D, trainer_id)
+        order, identically in real and sim.
 
-        Real receives updates in strict modeled-delay (D) order (device wall =
-        D, K-D29); sim commits in sct order (= D order). The sole residual
-        real↔sim divergence is the tie-break when two trainers share a D (a
-        realistic registry collision, e.g. trainers 3 & 9 both 13.0s → D=6.5):
-        real breaks it by physical arrival, sim by sct-sort. Both tied members
-        land in the SAME split-half so `var` is unchanged, but the EXACT-order
-        `cohort_sequence` rung flags the swap. Here we canonicalize: sort the
-        cohort by (D, str(end)) so equal-D ties break by trainer_id in BOTH
-        modes → identical receive order; `var`/grads stay bit-identical (the
-        aggregated grad is an order-independent sum; the split-half only ever
-        reshuffles WITHIN a half on a tie).
+        Real receives updates in modeled-delay (D) order; sim commits in sct order
+        (= D order). The sole residual divergence is the tie-break when two
+        trainers share a D: real breaks it by physical arrival, sim by sct-sort.
+        Both tied members land in the same split-half so `var` is unchanged, but
+        the exact-order `cohort_sequence` rung flags the swap. Sort by (D, str(end))
+        so equal-D ties break by trainer_id in both modes; var/grads stay
+        bit-identical (the aggregated grad is an order-independent sum).
 
-        Scope = this cycle only. `grad_for_var_check_list` ACCUMULATES across a
-        data_id's iterations (reset on commit) while `_per_agg_trainer_list` is
-        per-cycle, so we reorder just the TRAILING len(cohort) slice of the
-        grad/jvp lists — the sync barrier appends this cohort contiguously at
-        the end, in `_per_agg_trainer_list` order.
+        Scope = this cycle only. `grad_for_var_check_list` accumulates across a
+        data_id's iterations while `_per_agg_trainer_list` is per-cycle, so reorder
+        just the trailing len(cohort) slice (the sync barrier appends this cohort
+        contiguously in `_per_agg_trainer_list` order).
 
-        No-op unless every contributor stamped a modeled delay (delays on) AND
-        a tie actually changes the order → delays-off / legacy runs and the
-        common non-tie case keep arrival order (byte-identical).
+        No-op unless every contributor stamped a modeled delay AND a tie actually
+        changes the order.
         """
         ends = self._per_agg_trainer_list
         n = len(ends)
@@ -1717,9 +1647,8 @@ class TopAggregator(AsyncTopAgg):
             return  # already canonical (the common, non-tie path)
         self._per_agg_trainer_list = [ends[i] for i in perm]
         # Reorder the trailing cohort slice of the accumulating var/jvp lists in
-        # lockstep. Guard on length: only when the slice aligns 1:1 with this
-        # cohort (it does under the sync barrier; a mismatch means a non-grad
-        # message slipped in → leave the lists untouched rather than corrupt).
+        # lockstep. Length guard: only when the slice aligns 1:1 with this cohort
+        # (a mismatch means a non-grad message slipped in -> leave lists untouched).
         for lst in (self.grad_for_var_check_list, self.jvp_for_snr_check_list):
             if len(lst) >= n:
                 tail = lst[-n:]
@@ -1735,12 +1664,10 @@ class TopAggregator(AsyncTopAgg):
             f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation."
         )
 
-        # Canonicalize this cohort's commit order to (D, trainer_id) BEFORE the
-        # telemetry snapshot and aggregate() so the recorded receive order and
-        # the split-half var are computed on the SAME deterministic order in
-        # real and sim (K-D31/P2-7a). Gated on the presence of commit-key state
-        # (populated per contribution in aggregate_weights) → skipped entirely
-        # when delays are off / no keys were stamped (arrival order, unchanged).
+        # Canonicalize this cohort's commit order to (D, trainer_id) before the
+        # telemetry snapshot and aggregate() so the recorded receive order and the
+        # split-half var use the same deterministic order in real and sim. Gated
+        # on commit-key state -> skipped when delays are off (arrival order).
         if getattr(self, "_commit_key_by_end", None):
             self._canonicalize_cohort_commit_order()
 
@@ -1811,11 +1738,10 @@ class TopAggregator(AsyncTopAgg):
                 f"if variance check fails in aggregate()."
             )
 
-        # Per-round wall decomposition (Stage A2, grounds #6 / K-D20): the FedAvg
-        # merge, the dispatch→last-grad barrier wait, and the last-grad→commit
-        # drain tail (a real-transport ARTIFACT the sim's all-k barrier does not
-        # model). eval_s is measured on the pass path below. All wall (real);
-        # the sim advances the vclock instead, so these read ~0 there.
+        # Per-round wall decomposition (#6): the FedAvg merge, the dispatch->last-
+        # grad barrier wait, and the last-grad->commit drain tail (a real-transport
+        # artifact the sim's all-k barrier doesn't model). eval_s measured below.
+        # All wall (real); the sim advances the vclock, so these read ~0 there.
         _agg_start_wall = time.time()
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
@@ -1841,29 +1767,24 @@ class TopAggregator(AsyncTopAgg):
         )
 
         # Snapshot the cycle identity BEFORE the pass/fail branch mutates
-        # data_id/iteration_per_data_id below. The emitted `data_id`/
-        # `iteration_per_data_id` fields are post-mutation (a commit advances
-        # data_id and zeroes iteration, so a commit event carries the NEXT
-        # data_id) -- fine for the analyzer's progress axis but ambiguous for
-        # the variance-cadence rungs (V1). `cycle_data_id`/`cycle_iteration`
-        # unambiguously identify the data_id this cycle worked on and its
-        # 0-based attempt index, so V1 = count(cycles) grouped by cycle_data_id
-        # is exact for both natural-pass and force-commit paths (§K-D9).
+        # data_id/iteration_per_data_id. The emitted `data_id`/`iteration` fields
+        # are post-mutation (a commit advances data_id and zeroes iteration) --
+        # fine for the progress axis but ambiguous for the variance-cadence rungs.
+        # `cycle_data_id`/`cycle_iteration` unambiguously identify the data_id this
+        # cycle worked on and its 0-based attempt index.
         _cycle_data_id = self.data_id
         _cycle_iteration = self.iteration_per_data_id
-        # Pool sizes at the variance gate (before _update_state_after_payload_
-        # prepared clears grad_pool on a commit): grad_pool = realized
-        # contributions this data_id (G2); cached_v = carried aggregated pool
-        # across variance-FAIL rollbacks (V3). See §K-D9. getattr-guarded like
-        # var_threshold so test doubles without the pools still emit.
+        # Pool sizes at the variance gate (before a commit clears grad_pool):
+        # grad_pool = realized contributions this data_id (G2); cached_v = carried
+        # aggregated pool across variance-FAIL rollbacks (V3). getattr-guarded so
+        # test doubles without the pools still emit.
         _grad_pool = getattr(self, "grad_pool", None)
         _grad_pool_size = len(_grad_pool) if _grad_pool is not None else None
         _cached_v = getattr(self, "cached_shared_grad_pool_trainable", None)
         _cached_v_size = len(_cached_v) if _cached_v is not None else 0
-        # Per-contributor [dispatch, commit] intervals for R1/W1 (§L.3): one
-        # entry per end that committed into THIS cycle. History is preserved
-        # because each cycle emits its own list (the per-end dict is overwritten
-        # on a later contribution, but the emitted event already captured it).
+        # Per-contributor [dispatch, commit] intervals for R1/W1: one entry per
+        # end that committed into this cycle. History preserved since each cycle
+        # emits its own list.
         _contrib_map = getattr(self, "_sim_contrib_intervals", None) or {}
         _contributor_intervals = [
             {"end": str(_e), **_contrib_map.get(_e, {"dispatch_ts": None,
@@ -1883,14 +1804,11 @@ class TopAggregator(AsyncTopAgg):
             self.iteration_per_data_id += 1
             _eval_start_wall = time.time()
             result, _, _ = self.eval_model()
-            _eval_s = time.time() - _eval_start_wall  # GENUINE server-eval term (B1)
-            # B1 (K-D20 #6): the server eval is genuine algorithmic time between
-            # committed data_ids that the sim's sct model omits, so the vclock
-            # under-counts by ~eval_s/commit. When enabled, charge the MEASURED
-            # eval wall (sim runs real eval compute, so it ≈ real's) to the
-            # vclock -- consistent with the existing model already putting
-            # real_gpu on the vclock via sct (principle #1: genuine compute, not
-            # transport overhead). Config-gated OFF ⇒ byte-identical.
+            _eval_s = time.time() - _eval_start_wall  # genuine server-eval term
+            # #6: the server eval is genuine algorithmic time between committed
+            # data_ids that the sct model omits, so the vclock under-counts by
+            # ~eval_s/commit. When enabled, charge the measured eval wall to the
+            # vclock (genuine compute, not transport overhead). Config-gated OFF.
             if self.simulated and getattr(
                 self.config.hyperparameters, "sim_model_eval_time", False
             ):
@@ -1928,10 +1846,9 @@ class TopAggregator(AsyncTopAgg):
             else:
                 self._model_version = self._round
 
-            # Opt-1: the data-bin (and thus the current model_version) just
-            # advanced -> every trainer is genuinely stale for the new version,
-            # so the "already sent this cycle" set must start empty. getattr-guarded
-            # so test doubles that bypass __init__ don't need the attribute.
+            # Opt-1: the data-bin (and model_version) just advanced -> every
+            # trainer is genuinely stale, so the "already sent this cycle" set must
+            # start empty. getattr-guarded for test doubles that bypass __init__.
             if getattr(self, "_weights_sent_this_cycle", None) is not None:
                 self._weights_sent_this_cycle.clear()
 
@@ -1966,14 +1883,12 @@ class TopAggregator(AsyncTopAgg):
             self._is_model_updated = False
 
         if telemetry.is_enabled():
-            # Speedup instrumentation (§H issue #13 / principle #13): the sim
-            # must run virtual time FASTER than physical wall (sim_rate >= 1).
-            # fwdllm emitted vclock_now but no paired wall stamp, so the
-            # slowdown (sim_rate~0.37x in the 2026-07-04 runs) was invisible.
-            # Emit wall_elapsed_s in BOTH modes (real needs it for wall_speedup
-            # = real_wall/sim_wall) and sim_rate = vclock/wall in sim only.
-            # agg_start_time_ts is re-anchored past the join wait (syncfl base),
-            # so this excludes the initial ~join stall.
+            # Speedup instrumentation (#13): the sim must run virtual time faster
+            # than wall (sim_rate >= 1). fwdllm emitted vclock_now but no paired
+            # wall stamp, so a slowdown was invisible. Emit wall_elapsed_s in both
+            # modes (real needs it for wall_speedup = real_wall/sim_wall) and
+            # sim_rate = vclock/wall in sim only. agg_start_time_ts is re-anchored
+            # past the join wait, so this excludes the initial join stall.
             _wall_elapsed_s = time.time() - getattr(
                 self, "agg_start_time_ts", time.time()
             )
@@ -1986,7 +1901,7 @@ class TopAggregator(AsyncTopAgg):
                 )
                 # Live speedup log (throttled ~30s). The inherited base
                 # [VCLOCK_PROGRESS] lives in increment_round, which fwdllm's
-                # composer loop bypasses, so it never fired — emit it here.
+                # composer loop bypasses, so emit it here.
                 _last = getattr(self, "_last_vclock_log_wall_ts", 0.0)
                 if time.time() - _last >= 30.0 and _sim_rate is not None:
                     logger.info(
@@ -1997,23 +1912,17 @@ class TopAggregator(AsyncTopAgg):
                     )
                     self._last_vclock_log_wall_ts = time.time()
 
-            # Intrinsic algorithmic span of this cycle (#6 anchor): the GENUINE
+            # Intrinsic algorithmic span of this cycle (#6 anchor): the genuine
             # per-cycle work the sim charges to the vclock -- the barrier (slowest
             # committed trainer's intrinsic compute+delay) plus the server eval
-            # (commit cycles only). Must mirror the sim vclock's COMPOSITION exactly
-            # (barrier sct + eval fold): the FedAvg merge is deliberately EXCLUDED
-            # because the sim does NOT charge it to the vclock -- including it made
-            # real intrinsic overshoot sim by ~fedavg×cycles (wall_disparity 5.5->1.6
-            # once dropped). If fedavg is ever folded into the sim vclock, add it
-            # here too. Emitted in BOTH modes so the clock-rate rungs (K2/K3/K3b/K8/
-            # U2 + wall_disparity) anchor REAL on its intrinsic time instead of raw
-            # wall Δts: real's wall bundles a ~constant inter-round transport ARTIFACT
-            # (mqtt re-fetch/redistribute/drain-tail/sleeps) the sim (correctly,
-            # principle #1) omits, which spuriously fails #6. The barrier uses the
-            # trainer INTRINSIC duration (PROP_CLIENT_TASK_TRAIN_DURATION = WALL_SEND-
-            # WALL_RECV, _cycle_speed_s) not the agg-side barrier_wait_s, which reads
-            # ~0 in real because real trainers pipeline (grads pre-queued at dispatch).
-            # max() = the sync barrier (MAX-of-K sct, principle #12).
+            # (commit cycles only). Mirrors the sim vclock composition exactly:
+            # the FedAvg merge is excluded because the sim does not charge it to
+            # the vclock. Emitted in both modes so the clock-rate rungs anchor real
+            # on intrinsic time instead of raw wall Δts (real's wall bundles a
+            # ~constant inter-round transport artifact the sim omits). The barrier
+            # uses the trainer intrinsic duration (PROP_CLIENT_TASK_TRAIN_DURATION,
+            # _cycle_speed_s), not the agg-side barrier_wait_s (which reads ~0 in
+            # real because trainers pipeline). max() = the sync barrier.
             _barrier_span_s = max(_cycle_speed_s) if _cycle_speed_s else None
             _intrinsic_span_s = (
                 _barrier_span_s + (_eval_s or 0.0)
@@ -2034,7 +1943,7 @@ class TopAggregator(AsyncTopAgg):
                     extra={
                         # Virtual clock at commit (sim only). The parity engine
                         # gates its whole clock/throughput/convergence family on
-                        # this (K10); fwdllm never emitted it (§H finding #4).
+                        # this; fwdllm never emitted it.
                         "vclock_now": (self._vclock.now if self.simulated
                                        and getattr(self, "_vclock", None) else None),
                         "data_id": self.data_id,
@@ -2043,14 +1952,13 @@ class TopAggregator(AsyncTopAgg):
                         "var_threshold": getattr(self, "var_threshold", None),
                         "var_good_enough": self.var_good_enough,
                         "force_commit_planned": _force_commit_planned,
-                        # Opt-2 (§5c/§5e): which stopping policy is active and WHY
-                        # this cycle committed (natural gate / max-iter cap / plateau).
-                        # None on non-commit cycles. Lets the reducer split commits by
-                        # cause and measure the plateau firing rate.
+                        # Opt-2: active stopping policy and why this cycle committed
+                        # (natural gate / max-iter cap / plateau). None on non-commit
+                        # cycles. Lets the reducer split commits by cause.
                         "stopping_policy": getattr(self, "_var_stopping_policy", None),
                         "commit_reason": getattr(self, "_force_commit_reason", None),
-                        # Opt-3 (§5c/C3): active aggregation rate type + running count
-                        # of anti-aligned updates the grad-aware gate down-weighted.
+                        # Opt-3: active aggregation rate type + running count of
+                        # anti-aligned updates the grad-aware gate down-weighted.
                         "agg_rate_type": (self.optimizer.agg_rate_conf.get("type")
                                           if getattr(self, "optimizer", None) and
                                           getattr(self.optimizer, "agg_rate_conf", None)
@@ -2058,29 +1966,27 @@ class TopAggregator(AsyncTopAgg):
                         "grad_aware_gated_total": getattr(
                             self, "_grad_aware_gated_total", 0),
                         "is_async": is_async,
-                        # Variance-cadence rung inputs (Batch 2, §K-D9):
-                        # cycle-relative identity for V1, pool sizes for V3/G2.
+                        # Variance-cadence rung inputs: cycle-relative identity for
+                        # V1, pool sizes for V3/G2.
                         "cycle_data_id": _cycle_data_id,
                         "cycle_iteration": _cycle_iteration,
                         "grad_pool_size": _grad_pool_size,
                         "cached_v_size": _cached_v_size,
-                        # R1/W1 residence rungs (§L.3): per-contributor
-                        # [dispatch_ts, commit_ts] intervals for this cycle.
+                        # R1/W1 residence rungs: per-contributor [dispatch_ts,
+                        # commit_ts] intervals for this cycle.
                         "contributor_intervals": _contributor_intervals,
-                        # Per-round wall decomposition (Stage A2, #6/K-D20):
-                        # barrier wait + drain tail (artifact) + fedavg + eval.
+                        # Per-round wall decomposition (#6): barrier wait + drain
+                        # tail (artifact) + fedavg + eval.
                         "barrier_wait_s": _barrier_wait_s,
                         "drain_tail_s": _drain_tail_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
                         "eval_s": _eval_s,
-                        # #6 anchor: real's GENUINE per-cycle algorithmic time
-                        # (barrier+fedavg+eval), the like-for-like counterpart to
-                        # the sim's Δvclock. Lets the clock-rate rungs exclude
-                        # real's inter-round transport artifact. See computation above.
+                        # #6 anchor: real's genuine per-cycle algorithmic time,
+                        # the like-for-like counterpart to the sim's Δvclock; lets
+                        # the clock-rate rungs exclude real's transport artifact.
                         "intrinsic_span_s": _intrinsic_span_s,
-                        # Speedup metric (§H #13): wall in both modes; sim_rate
-                        # = vclock/wall (sim only, None in real). sim_rate < 1
-                        # means the sim is a SLOWDOWN (broken, principle #13).
+                        # Speedup metric (#13): wall in both modes; sim_rate =
+                        # vclock/wall (sim only). sim_rate < 1 means slowdown.
                         "wall_elapsed_s": _wall_elapsed_s,
                         "sim_rate": _sim_rate,
                     },
@@ -2091,7 +1997,7 @@ class TopAggregator(AsyncTopAgg):
 
         self._updates_in_queue -= self._agg_goal
         self._per_agg_trainer_list = []
-        self._commit_key_by_end = {}  # cohort-scoped (K-D31/P2-7a)
+        self._commit_key_by_end = {}  # cohort-scoped
 
         logger.info(
             f"====== aggregation finished for round {self._round}, "
@@ -2131,10 +2037,9 @@ class TopAggregator(AsyncTopAgg):
         channel.cleanup_recvd_ends()
 
         # Sim rollback-safety: clear this cycle's committed marks + stranded
-        # reorder-buffer entries + in-flight gate, and (async) release held
-        # concurrency slots -- so the next agg-goal cycle of a rolled-back
-        # data_id starts clean (see §I.5/§J.2). Reached by BOTH the variance-
-        # PASS and variance-FAIL branches. Inert in real mode.
+        # reorder-buffer entries + in-flight gate, and (async) release held slots,
+        # so the next agg-goal cycle of a rolled-back data_id starts clean (§I.5).
+        # Reached by both the variance-PASS and -FAIL branches. Inert in real.
         if self.simulated:
             self._release_sim_slots_at_agg_goal(channel, is_async)
 
@@ -2155,7 +2060,7 @@ class TopAggregator(AsyncTopAgg):
         num_min_req = min(num_min_req, len(recv_ends))
         # Real-only: "commit 1 per pass" relies on uncommitted msgs persisting in
         # the queue. The sim barrier drains + drops past first_k, so clamping to 1
-        # strands the cohort -> deadlock. See simulate_fwdllm.md §F #8.
+        # strands the cohort -> deadlock (§F #8).
         if self.ends_not_selected_yet and not self.simulated:
             logger.info(f"We are waiting to clear up queue")
             num_min_req = min(num_min_req, 1)
@@ -2168,13 +2073,12 @@ class TopAggregator(AsyncTopAgg):
         # max_data_id_progress), and the run hangs past its configured
         # budget until manually killed. Same fix as _aggregate_grads_async.
         #
-        # Sim barrier (Batch 1): instead of committing by physical arrival,
-        # _sync_sim_recv_first_k commits the num_min_req trainers with the
-        # SMALLEST modeled sim_completion_ts (the k that would physically finish
-        # first in real), advancing the vclock to the k-th smallest -- immune to
-        # arrival jitter. It returns an ascending-sct list of (msg, metadata) and
-        # stamps PROP_CLIENT_TASK_TRAIN_DURATION per commit; we then feed each
-        # through the SAME per-message path. Real branch byte-identical to before.
+        # Sim barrier: instead of committing by physical arrival,
+        # _sync_sim_recv_first_k commits the num_min_req trainers with the smallest
+        # modeled sim_completion_ts (the k that would finish first in real),
+        # advancing the vclock to the k-th smallest -- immune to arrival jitter. It
+        # returns an ascending-sct list and stamps PROP_CLIENT_TASK_TRAIN_DURATION
+        # per commit; each is fed through the same per-message path. Real unchanged.
         if self.simulated:
             committed = self._sync_sim_recv_first_k(
                 channel, channel.ends(), num_min_req
@@ -2184,8 +2088,8 @@ class TopAggregator(AsyncTopAgg):
                 end, timestamp = metadata
                 if not msg:
                     continue
-                # dispatch-relative completion for the U6 barrier anchor (sim's
-                # analog of WALL_SEND - dispatch) = the modeled round duration.
+                # dispatch-relative completion for the U6 barrier anchor = the
+                # modeled round duration.
                 _barrier_durs.append(
                     msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
                 )
@@ -2196,9 +2100,8 @@ class TopAggregator(AsyncTopAgg):
                         f"proceeding to aggregate."
                     )
                     break
-            # U6 visibility lag on a strict sync barrier: lag_i = max_completion
-            # - completion_i over the committed cohort. Stashed for telemetry /
-            # the U6 parity rung; full emission is deferred (§K-D7).
+            # U6 visibility lag on a strict sync barrier: lag_i = max_completion -
+            # completion_i over the committed cohort. Stashed for the U6 rung.
             self._sync_barrier_lags_s = self._barrier_anchored_lags(_barrier_durs)
             logger.info(
                 f"[SYNC_SIM_BARRIER] round={self._round} committed={len(committed)} "
@@ -2459,12 +2362,11 @@ class TopAggregator(AsyncTopAgg):
     def _prepare_distribution_payload(self, task_to_perform: str, force_weights: bool = False):
         """Build a WEIGHTS payload (always) or a VAR=bad payload (when var fails and force_weights=False)."""
         if not force_weights:
-            # force_weights=False ALWAYS means "build the tiny VAR=bad keep-training
-            # message" (callers only request this variant deliberately). Previously
-            # gated on `not var_good_enough`, which returned WEIGHTS when
-            # var_good_enough=True -> Opt-1 could not downgrade a commit-branch
-            # re-send. The message carries the current model_version, so a trainer
-            # that already cached this version just keeps training on it.
+            # force_weights=False always means "build the tiny VAR=bad keep-
+            # training message". Previously gated on `not var_good_enough`, which
+            # returned WEIGHTS when var_good_enough=True, so Opt-1 could not
+            # downgrade a commit-branch re-send. The message carries the current
+            # model_version, so a trainer that cached it just keeps training.
             logger.info(
                 f"[PreparePayload/VAR=bad] var={self.var} vs "
                 f"thr={self.var_threshold}; payload asks trainer to keep "
@@ -2652,20 +2554,16 @@ class TopAggregator(AsyncTopAgg):
         return new_ends
 
     def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
-        """Real-mode sync-barrier liveness under availability scarcity (Stage C).
+        """Real-mode sync-barrier liveness under availability scarcity.
 
-        With `agg_goal` clients required but a trace (e.g. mobiperf_2st) keeping
-        the eligible pool below `agg_goal`, the plain loop hot-re-dispatches every
-        pass -- burning the wall budget with no progress and ballooning the log
-        (payload-size lines ×∞, the observed 292 MB). Parity-faithful fix: KEEP
-        the cohort == `agg_goal` and WAIT for availability to recover
-        (sleep-to-next-avail, mirroring the trainer's `wait_until_next_avl` loop)
-        rather than spin -- the sim assembles the same full cohort by jumping its
-        vclock past the unavailable window, so cohort size stays identical
-        real↔sim. Self-terminates via `_check_early_stop_conditions` at
-        `max_runtime_s`. Byte-identical when availability tracking is off
-        (`trainer_event_dict is None` ⇒ nobody unavailable ⇒ never waits) and on
-        the sim path (the vclock, not a wall sleep, models the wait).
+        When a trace keeps the eligible pool below `agg_goal`, the plain loop
+        hot-re-dispatches every pass, burning the wall budget with no progress and
+        ballooning the log. Parity-faithful fix: keep the cohort == `agg_goal` and
+        wait for availability to recover (sleep-to-next-avail) instead of spinning
+        -- the sim assembles the same full cohort by jumping its vclock past the
+        unavailable window, so cohort size stays identical. Self-terminates via
+        `_check_early_stop_conditions`. No-op when availability tracking is off or
+        on the sim path (the vclock, not a wall sleep, models the wait).
         """
         if self.simulated or getattr(self, "trainer_event_dict", None) is None:
             return
@@ -2700,31 +2598,22 @@ class TopAggregator(AsyncTopAgg):
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
 
-        Shared by BOTH the sync and async distribute loops so the two paths are
-        guaranteed identical (that parity is the regression guard for the comm
-        redundancy this fixes). Legacy behavior (flag OFF): send full WEIGHTS on
-        a commit (`var_good_enough`) or when the end is stale.
+        Shared by both the sync and async distribute loops so the two paths stay
+        identical. Legacy behavior (flag OFF): send full WEIGHTS on a commit
+        (`var_good_enough`) or when the end is stale.
 
-        Opt-1 (charter §5c, flag ON): within a data-bin the model_version is
-        constant and the full WEIGHTS+GRAD_POOL payload is byte-identical across
-        iterations; an end already sent that payload THIS data-bin has it cached
-        (the trainer keeps self.weights and just keeps training on a VAR=bad
-        message), so a re-send is pure redundancy -> downgrade to VAR=bad.
-
-        Why the legacy guard missed this: it only skipped WEIGHTS when an end was
-        NOT stale AND var_good_enough was False. But the redundancy is repeated
-        distribute calls that take the *var_good_enough=True* branch (which sends
-        WEIGHTS unconditionally) -- so the stale check never even ran. The fix is
-        a send-time set (cleared on every model_version advance) checked BEFORE
-        both branches, independent of the return-driven staleness map.
+        Opt-1 (charter §5c, flag ON): within a data-bin the WEIGHTS+GRAD_POOL
+        payload is byte-identical across iterations; an end already sent it this
+        data-bin has it cached, so a re-send is pure redundancy -> downgrade to
+        VAR=bad. The legacy guard missed this because the redundancy is repeated
+        distribute calls on the var_good_enough=True branch (which sends WEIGHTS
+        unconditionally, so the stale check never ran). Fix: a send-time set
+        (cleared on model_version advance) checked before both branches.
         """
-        # Checked FIRST so it gates BOTH the commit (`var_good_enough`) branch and
-        # the stale branch: the dominant redundancy is REPEATED distribute calls
-        # within one data-bin (the sync loop is distribute>>aggregate, ~10-12×/bin;
-        # async re-pulls similarly), every one taking the unconditional
-        # var_good_enough->weights path and re-shipping the byte-identical model to
-        # trainers that already hold it. Once we've sent an end the current
-        # model_version's payload this cycle it has it cached -> VAR=bad.
+        # Checked FIRST so it gates both the commit branch and the stale branch:
+        # the dominant redundancy is repeated distribute calls within one data-bin,
+        # each re-shipping the byte-identical model to trainers that already hold
+        # it. Once an end got this model_version's payload this cycle -> VAR=bad.
         if self._suppress_redundant_weights and end in self._weights_sent_this_cycle:
             return False
         if self.var_good_enough:
@@ -2735,19 +2624,15 @@ class TopAggregator(AsyncTopAgg):
         return is_stale
 
     def _should_force_commit_on_plateau(self) -> bool:
-        """Opt-2 (charter §5c/§5e) variance-plateau rule -- PURE decision that reads
-        only instance attrs, so it is unit-testable in isolation (the Opt-1
-        `_should_send_full_weights` pattern). Called from FedSGDAggregator.aggregate()
-        once the current cycle's var has been appended to `var_prev_iter_list`.
+        """Opt-2 (charter §5c) variance-plateau rule -- pure decision (reads only
+        instance attrs, unit-testable). Called from FedSGDAggregator.aggregate()
+        once this cycle's var has been appended to `var_prev_iter_list`.
 
         Returns True iff the 'plateau' policy is active AND the per-bin variance
-        curve `self.var_prev_iter_list` (newest last, includes this cycle) has
-        FLATTENED -- the relative drop over the last N cycles is < rel_delta -- while
-        var is still ABOVE the commit threshold. That is the "more denoising buys
-        nothing" signal: at α=1 the variance floor sits above the gate, so a bin
-        otherwise grinds ~15-34 iterations for a noise dip; committing at the plateau
-        ships the denoised estimate instead. Policy off/absent, fewer than N+1
-        samples, or a non-positive baseline => False (=> byte-identical when off).
+        curve has flattened (relative drop over the last N cycles < rel_delta)
+        while var is still above the commit threshold -- the "more denoising buys
+        nothing" signal. Policy off/absent, fewer than N+1 samples, or a
+        non-positive baseline => False.
         """
         if getattr(self, "_var_stopping_policy", None) != "plateau":
             return False
@@ -2762,21 +2647,16 @@ class TopAggregator(AsyncTopAgg):
     @staticmethod
     def _grad_aware_rate(base_rate, cos, var_i, var_ref, *, align_gate=True,
                          inverse_var=False, align_floor=0.0, var_eps=1e-8):
-        """Opt-3 (C3) gradient-aware aggregation weight -- PURE scalar math,
-        unit-tested in isolation. Replaces the scalar staleness×utility rate with a
-        DIRECTION/RELIABILITY-aware weight, bounded so it only ever DOWN-weights
-        (result ≤ base_rate) → it never inflates the effective server LR (charter
-        Axis E), so no LR re-tune is needed to stay stable.
-          * align_gate (S2, primary): down-weight an update whose direction OPPOSES
-            the running aggregate. factor = 1 for cos ≥ align_floor, linearly → 0 at
-            cos = -1. Fixes H1 (averaging anti-aligned JVP estimates → the M-12
-            mid-run instability); the current scalar rate can only rescale magnitude,
-            never refuse a wrong direction.
-          * inverse_var (S1, optional): down-weight an update noisier than the
-            reference (var_ref, e.g. the commit threshold):
-            factor = min(1, var_ref / (var_i + eps)). Min-variance-style combine.
-        cos / var_i == None → that factor is 1 (e.g. the first update of a cycle has
-        no running aggregate to align against).
+        """Opt-3 gradient-aware aggregation weight -- pure scalar math. Replaces
+        the scalar staleness×utility rate with a direction/reliability-aware
+        weight, bounded so it only ever down-weights (result <= base_rate), so it
+        never inflates the effective server LR.
+          * align_gate (primary): down-weight an update whose direction opposes the
+            running aggregate. factor = 1 for cos >= align_floor, linearly -> 0 at
+            cos = -1. Fixes averaging anti-aligned JVP estimates (mid-run instability).
+          * inverse_var (optional): down-weight an update noisier than the reference
+            var_ref: factor = min(1, var_ref / (var_i + eps)).
+        cos / var_i == None => that factor is 1 (e.g. first update of a cycle).
         """
         rate = float(base_rate)
         if align_gate and cos is not None and cos < align_floor:
@@ -2834,9 +2714,9 @@ class TopAggregator(AsyncTopAgg):
         self.weights = global_model_params
 
         # Real-transport pad to let just-distributed messages settle before the
-        # selection read (real-mode MQTT artifact, principle #8). No sim analog:
-        # the sim orders by sct, not physical arrival, so this is pure wall
-        # overhead there (≥28.7 s/run, Stage E) -- skip it. Real unchanged.
+        # selection read (real-mode MQTT artifact, #8). No sim analog: the sim
+        # orders by sct, not physical arrival, so this is pure wall overhead there
+        # -- skip it. Real unchanged.
         if not self.simulated:
             logger.debug(f"Starting busy wait at time {time.time()}")
             time.sleep(0.1)
@@ -2879,21 +2759,19 @@ class TopAggregator(AsyncTopAgg):
 
         payload_without_weights = None
         payload_with_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
-        # Opt-1: also need the VAR=bad variant when suppression is on, because a
-        # commit-branch (var_good_enough=True) re-send to an already-served end is
-        # downgraded to VAR=bad.
+        # Opt-1: also need the VAR=bad variant when suppression is on (a commit-
+        # branch re-send to an already-served end downgrades to VAR=bad).
         if not self.var_good_enough or self._suppress_redundant_weights:
             payload_without_weights = self._prepare_distribution_payload(task_to_perform, force_weights=False)
 
 
         self._update_state_after_payload_prepared()
 
-        # Sim-clock dispatch stamp (Batch 1): in the sync barrier every selected
-        # end dispatches at the same virtual instant, so one _round_now stamp is
-        # injected into each payload variant (the trainer bases its modeled sct
-        # on SIM_SEND_TS) and recorded as a per-end property. Inert in real mode:
-        # SIM_SEND_TS is absent -> the trainer stamps nothing -> the aggregator
-        # falls back to arrival order (byte-identical to today).
+        # Sim-clock dispatch stamp: in the sync barrier every selected end
+        # dispatches at the same virtual instant, so one _round_now stamp is
+        # injected into each payload variant (the trainer bases its modeled sct on
+        # SIM_SEND_TS) and recorded as a per-end property. Inert in real mode
+        # (SIM_SEND_TS absent -> arrival order).
         _round_now = self._vclock.now if self.simulated else None
         if self.simulated:
             for _p in (payload_with_weights, payload_without_weights):
@@ -2929,10 +2807,9 @@ class TopAggregator(AsyncTopAgg):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _round_now)
 
-            # Label/size by the ACTUAL payload (send_weights), not var_good_enough.
-            # Previously this keyed off var_good_enough, so a var_good_enough=False
-            # is_stale WEIGHTS send was mislabeled/mis-sized as var_bad in the comm
-            # telemetry -> sync weight bytes were undercounted. Now accurate.
+            # Label/size by the actual payload (send_weights), not var_good_enough:
+            # keying off the latter mislabeled a var_good_enough=False is_stale
+            # WEIGHTS send as var_bad, undercounting sync weight bytes.
             if send_weights:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
@@ -2966,8 +2843,8 @@ class TopAggregator(AsyncTopAgg):
                     f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
                 )
 
-            # WS3-a network telemetry: one dispatch message onto the wire. Size is
-            # the value already computed for the debug log above; no extra pickling.
+            # Network telemetry: one dispatch message onto the wire. Size reuses
+            # the value already computed for the debug log above.
             try:
                 ev, f = build_comm(
                     direction="agg_to_trainer", size_bytes=_send_bytes, peer_id=str(end),
@@ -2983,9 +2860,9 @@ class TopAggregator(AsyncTopAgg):
             logger.info(f"Sent weights to {end}")
             # self.invoke_gc()
 
-        # Cohort-dispatch wall -> barrier_wait_s anchor (Stage A2). Sync barrier:
-        # all `ends` dispatch in this one pass, so this marks the start of the
-        # dispatch→last-grad window.
+        # Cohort-dispatch wall -> barrier_wait_s anchor. Sync barrier: all `ends`
+        # dispatch in this one pass, marking the start of the dispatch->last-grad
+        # window.
         self._round_dispatch_wall_ts = time.time()
 
     @timer_decorator
@@ -3003,9 +2880,9 @@ class TopAggregator(AsyncTopAgg):
         global_model_params = self.get_global_model_params()
         self.weights = global_model_params
         # Real-transport pad to let just-distributed messages settle before the
-        # selection read (real-mode MQTT artifact, principle #8). No sim analog:
-        # the sim orders by sct, not physical arrival, so this is pure wall
-        # overhead there (≥28.7 s/run, Stage E) -- skip it. Real unchanged.
+        # selection read (real-mode MQTT artifact, #8). No sim analog: the sim
+        # orders by sct, not physical arrival, so this is pure wall overhead there
+        # -- skip it. Real unchanged.
         if not self.simulated:
             logger.debug(f"Starting busy wait at time {time.time()}")
             time.sleep(0.1)
@@ -3063,17 +2940,16 @@ class TopAggregator(AsyncTopAgg):
 
         payload_var_bad = None
         payload_weights = self._prepare_distribution_payload(task_to_perform, force_weights=True)
-        # Opt-1: also need VAR=bad when suppression is on (commit-branch re-sends to
-        # already-served ends downgrade to VAR=bad).
+        # Opt-1: also need VAR=bad when suppression is on (commit-branch re-sends
+        # to already-served ends downgrade to VAR=bad).
         if not self.var_good_enough or self._suppress_redundant_weights:
             payload_var_bad = self._prepare_distribution_payload(task_to_perform, force_weights=False)
 
         self._update_state_after_payload_prepared()
 
-        # WS3-a network telemetry (Experiment 4): serialized size of each payload
-        # variant, computed ONCE per distribute (not per-end) — the async path has
-        # no per-end debug-size log like the sync path, so we pickle the two shared
-        # variants here and reuse per end below. Cheap (~trainable-param bytes, once).
+        # Network telemetry: serialized size of each payload variant, computed once
+        # per distribute (the async path has no per-end debug-size log), reused per
+        # end below.
         try:
             _bytes_weights = len(pickle.dumps(payload_weights)) if payload_weights is not None else 0
             _bytes_var_bad = len(pickle.dumps(payload_var_bad)) if payload_var_bad is not None else 0
@@ -3081,15 +2957,14 @@ class TopAggregator(AsyncTopAgg):
             _bytes_weights = _bytes_var_bad = 0
             logger.debug(f"comm telemetry size calc failed (async): {e}")
 
-        # Sim-clock dispatch stamp (Batch 1): the async path arms the in-flight gate
+        # Sim-clock dispatch stamp: the async path arms the in-flight gate
         # (_sim_inflight_expected[end] = send vclock + a lower-bound budget) so the
-        # reorder-buffer drain can't lap a trainer whose modeled completion is still
-        # in the future. Inert in real mode.
-        #   #13 step 4 (staggered): when on, each end's SEND vclock is popped from
-        # the freed-slot FIFO (_pop_free_slot_ts) instead of the shared round
-        # frontier, so a cohort's expected completions spread across the timeline
-        # (see the commit-side stamp). Off/real ⇒ one shared _round_now injected
-        # into the two payload variants (byte-identical to Batch 1).
+        # reorder-buffer drain can't lap a trainer still expected to complete.
+        # Inert in real mode.
+        #   #13 (staggered): when on, each end's SEND vclock is popped from the
+        # freed-slot FIFO instead of the shared round frontier, spreading a cohort's
+        # expected completions across the timeline. Off/real => one shared
+        # _round_now injected into the two payload variants.
         _round_now = self._vclock.now if self.simulated else None
         _staggered = self.simulated and getattr(self, "_sim_staggered_redispatch", False)
         if self.simulated and not _staggered:
@@ -3107,7 +2982,7 @@ class TopAggregator(AsyncTopAgg):
             send_weights = self._should_send_full_weights(end, is_stale)
             if send_weights:
                 payload = payload_weights
-                _pk = "weights"          # WS3-a: kind set here (survives staggered rebuild below)
+                _pk = "weights"          # kind set here (survives staggered rebuild below)
                 _n_weights_sent += 1
                 if self._suppress_redundant_weights:
                     self._weights_sent_this_cycle.add(end)
@@ -3119,11 +2994,10 @@ class TopAggregator(AsyncTopAgg):
                     )
             else:
                 payload = payload_var_bad
-                _pk = "var_bad"          # WS3-a
+                _pk = "var_bad"
                 _n_var_bad_sent += 1
-                # Opt-1: this end read as stale by the return-map but already got
-                # this version's payload this cycle -> a redundant full re-send we
-                # just avoided. (Trainers current by the return-map are not counted.)
+                # Opt-1: this end read stale but already got this version's payload
+                # this cycle -> a redundant full re-send we just avoided.
                 if self._suppress_redundant_weights and is_stale:
                     self._redundant_weights_suppressed_total += 1
                 logger.debug(
@@ -3139,18 +3013,17 @@ class TopAggregator(AsyncTopAgg):
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
             if self.simulated:
-                # R1 tripwire (K-D19): dispatching a trainer already outstanding
-                # (in flight OR grad carried-but-uncommitted) IS the residence
-                # violation -- surface it at the dispatch instant instead of only
-                # reconstructing it offline from contributor_intervals.
+                # R1 tripwire: dispatching a trainer already outstanding (in flight
+                # or grad carried-but-uncommitted) IS the residence violation --
+                # surface it at dispatch instead of reconstructing it offline.
                 if end in self._sim_inflight_expected or self._sim_buffer.has(end):
                     logger.warning(
                         f"[SIM_R1_DISPATCH] end={end} re-dispatched while still "
                         f"outstanding (vclock={_round_now}) -- R1 residence violation"
                     )
-                # #13 step 4: SEND vclock = the freed-slot stamp (staggered) else the
+                # #13: SEND vclock = the freed-slot stamp (staggered) else the
                 # shared round frontier. _pop_free_slot_ts is FIFO + clamped <= now;
-                # an empty queue (cold start / no held slot) falls back to _round_now.
+                # an empty queue falls back to _round_now.
                 _sst = self._pop_free_slot_ts(_round_now) if _staggered else _round_now
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
                 # Expected completion = SEND vclock + a lower-bound budget
@@ -3163,18 +3036,16 @@ class TopAggregator(AsyncTopAgg):
                 if _staggered and isinstance(payload, dict):
                     payload = dict(payload)
                     payload[MessageType.SIM_SEND_TS] = _sst
-                # K-D27 (felix-parallel, asyncfl:1490): the instant a trainer is
-                # dispatched it is in flight in virtual time -> add to the pending-
-                # commit set so the selector's eligibility filter excludes it until
-                # its grad COMMITS (discarded in _sim_recv_min_grad).
+                # Once dispatched a trainer is in flight in virtual time -> add to
+                # the pending-commit set so the selector's eligibility filter
+                # excludes it until its grad COMMITS (discarded in _sim_recv_min_grad).
                 self._sim_pending_commit.add(end)
-                # NOTE: the async_oort re-pick triplet is stamped on grad RETURN
-                # (in _process_single_trainer_message), NOT here at dispatch --
-                # stamping the whole cohort at the current _curr_agg_version froze
-                # the eligible pool before any commit could advance the version
-                # (re-dispatch deadlock, §K-D17). An in-flight-but-not-returned
-                # trainer is already guarded by its compute slot (selected_ends).
-            # WS3-a: one dispatch message onto the wire (async path).
+                # NOTE: the async_oort re-pick triplet is stamped on grad RETURN,
+                # not here at dispatch -- stamping the whole cohort at the current
+                # _curr_agg_version froze the eligible pool before any commit could
+                # advance the version (re-dispatch deadlock). An in-flight trainer
+                # is already guarded by its compute slot.
+            # One dispatch message onto the wire (async path).
             try:
                 _sz = _bytes_weights if _pk == "weights" else _bytes_var_bad
                 ev, f = build_comm(
@@ -3187,9 +3058,9 @@ class TopAggregator(AsyncTopAgg):
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg async send): {e}")
             channel.send(end, payload)
-            # #15 compute-truthful gate: stamp the wall time this end was actually
-            # dispatched (weights OR VAR=bad), so the drain can tell a live straggler
-            # from an idle-in-recv phantom. Sim-only; inert unless the gate flag is on.
+            # #15 compute-truthful gate: stamp the wall time this end was dispatched
+            # so the drain can tell a live straggler from an idle-in-recv phantom.
+            # Sim-only; inert unless the gate flag is on.
             if self.simulated:
                 self._sim_dispatch_wall[end] = time.time()
         logger.info(
@@ -3239,14 +3110,12 @@ class TopAggregator(AsyncTopAgg):
 
         max_runtime_s = getattr(self.config.hyperparameters, "max_runtime_s", None)
         if max_runtime_s is not None:
-            # Mode-dependent clock (mirrors base syncfl `max_experiment_runtime_s`,
-            # top_aggregator.py:1140): real -> WALL seconds; sim -> VIRTUAL seconds
-            # (`vclock.now`). One budget then means "3600 wall-s of real work" AND
-            # "3600 virtual-s of MODELED work" -- the matched-budget axis
-            # convergence parity needs (real runs 3600s wall; sim runs until its
-            # vclock reaches the SAME 3600s of modeled real-time). Until root #6
-            # (vclock models real wall) lands, the sim vclock under-counts, so the
-            # wall failsafe below will fire first -- which is itself the #6 signal.
+            # Mode-dependent clock (mirrors base syncfl `max_experiment_runtime_s`):
+            # real -> wall seconds; sim -> virtual seconds (`vclock.now`). One budget
+            # then means the same amount of real work AND modeled work -- what the
+            # matched-budget convergence parity needs. Until #6 (vclock models real
+            # wall) lands the sim vclock under-counts, so the wall failsafe below
+            # fires first -- itself the #6 signal.
             if self.simulated and hasattr(self, "_vclock"):
                 elapsed = float(self._vclock.now)
                 clock_label = "sim/vclock"
@@ -3260,11 +3129,10 @@ class TopAggregator(AsyncTopAgg):
                 )
                 self._work_done = True
                 return
-            # Sim wall failsafe (Phase 4a, root S1): the sim does REAL GPU +
-            # server eval, so its WALL legitimately exceeds the vclock budget --
-            # a 1× ceiling truncated every sim before the vclock stop it was
-            # paired with. Decoupled to `max_runtime_s × SIM_WALL_CEILING_FACTOR`
-            # (a runaway OUTER safety), overridable by an explicit
+            # Sim wall failsafe: the sim does real GPU + server eval, so its wall
+            # legitimately exceeds the vclock budget -- a 1x ceiling truncated every
+            # sim before its paired vclock stop. Decoupled to max_runtime_s ×
+            # SIM_WALL_CEILING_FACTOR (a runaway OUTER safety), overridable by
             # `sim_wall_ceiling_s`. Primary stops stay max_data_id_progress /
             # vclock >= max_runtime_s.
             if self.simulated:

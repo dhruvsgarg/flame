@@ -415,9 +415,9 @@ class TestSyntheticTracePerTrainer:
 
 
 class TestExecutionConfigBanksDelays:
-    """Phase 3d (simulate_fwdllm.md #12): the effective training-delay config is
-    banked in the execution config so a run can be audited post-hoc. Previously
-    absent -> a `--delays on` run "looked" off because nothing recorded it."""
+    """#12: the effective training-delay config is banked in the execution config
+    so a run can be audited post-hoc (previously absent -> a `--delays on` run
+    "looked" off because nothing recorded it)."""
 
     def _exp(self, enable, factor=None):
         from flame.launch.experiment_config import ExperimentConfig, TrainerConfig

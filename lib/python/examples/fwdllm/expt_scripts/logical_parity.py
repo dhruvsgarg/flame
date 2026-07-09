@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Time-STRIPPED logical parity diff, real vs sim, up to a data-bin cap.
 
-Separates the two parity concerns (simulate_fwdllm.md principles #14/#15):
-does the sim take the SAME steps in the SAME order as real, IGNORING every
-wall/vclock timestamp? Only once logical parity holds do we chase the time
-dimension (sim_rate). Reads the ALREADY-BANKED aggregator telemetry — no re-run.
+Does the sim take the SAME steps in the SAME order as real, IGNORING every
+wall/vclock timestamp? Logical parity is checked before the time dimension
+(sim_rate). Reads already-banked aggregator telemetry — no re-run.
 
-The authoritative record is the `agg_round` event stream (it carries data_id,
-iteration_per_data_id, the receive-ordered contributing_trainers, and the
-variance decision). We restrict to data_id <= --max-bin (default 1: bin 0 has
-many iterations/aggregations already) and compare, per aggregation cycle:
+The authoritative record is the `agg_round` event stream (data_id,
+iteration_per_data_id, receive-ordered contributing_trainers, variance decision).
+Restricts to data_id <= --max-bin (default 1) and compares, per aggregation cycle:
   - receive SET   : which trainers committed together (async cohort composition)
-  - receive ORDER : the arrival order (only meaningful for async; a sync barrier
-                    commits the whole cohort so order within a set is irrelevant)
+  - receive ORDER : arrival order (only meaningful for async; a sync barrier
+                    commits the whole cohort, so order within a set is irrelevant)
   - cadence tuple : (data_id, iter, agg_goal_count, var_good_enough, force_commit)
 plus iterations-to-clear-bin-0 and the per-cycle variance trajectory.
 

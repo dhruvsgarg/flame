@@ -1,11 +1,10 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Stage A1 -- trainer per-phase wall timing.
+"""Trainer per-phase wall timing.
 
-The fwdllm trainer emitted no per-phase breakdown, so the 8 phase rungs
+The fwdllm trainer emits a per-phase breakdown feeding the 8 phase rungs
 (mqtt_fetch_s / weights_to_ram_s / weights_to_gpu_s / pre_train_s /
-gpu_compute_s / post_train_s / training_budget_s / trainer_phase) SKIPed. This
-covers:
+gpu_compute_s / post_train_s / training_budget_s / trainer_phase). This covers:
 - the `_phase` context manager accumulates into `_phase_times` (fwdllm_trainer),
 - `FedSgdTrainer.train_with_data_id` drains those + the pre/gpu/post/budget/
   phase terms into the emitted `trainer_round` event.
@@ -73,8 +72,8 @@ class _FakeFedSgd:
     + telemetry-emit logic under test runs for real."""
 
     train_with_data_id = FedSgdTrainer.train_with_data_id
-    # train_with_data_id now folds the B2 straggler into the sct (#6/Root B);
-    # no config -> spread 0 -> offset 0 -> phase/duration values preserved.
+    # train_with_data_id folds the B2 straggler into the sct (#6); no config ->
+    # spread 0 -> offset 0 -> phase/duration values preserved.
     _sim_straggler_offset_s = FedSgdTrainer._sim_straggler_offset_s
 
     def __init__(self, phase_times=None, delay_s=1.5):
@@ -103,7 +102,7 @@ class _FakeFedSgd:
         pass
 
     def _emulate_training_delay(self, gpu_time_s=0.0):
-        # K-D29 remainder-wait signature: (modeled_delay, remaining, overran).
+        # remainder-wait signature: (modeled_delay, remaining, overran).
         return self._delay_s, max(0.0, self._delay_s - gpu_time_s), False
 
 
@@ -144,7 +143,7 @@ class TestTrainWithDataIdEmitsPhases:
             telemetry.shutdown()
 
     def test_straggler_in_sct_not_in_training_budget(self, tmp_path):
-        """#6/Root B: the B2 straggler spread is folded into the sct
+        """#6: the B2 straggler spread is folded into the sct
         (sim_round_duration_s) but NOT into the emitted training_budget_s -- so
         training_budget stays a mode-invariant INPUT (T2 passes) while the sync
         barrier still gets its per-trainer dispersion."""

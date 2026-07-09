@@ -1,16 +1,15 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Batch 1 (simulate_fwdllm.md §I.8/§J.3): the async grad-loop sim drive.
+"""The async grad-loop sim drive.
 
-fwdllm_aggregator._aggregate_grads_async committed a grad on WALL arrival; in
-simulated mode it now commits by the modeled sim_completion_ts via
-_sim_recv_min_grad -- an sct-ordered reorder buffer + a one-in-flight gate +
-a virtual-clock advance -- so ordering is immune to physical arrival jitter.
-These tests drive _sim_recv_min_grad directly with synthetic out-of-order grad
-messages (a fake channel), and cover the fwdllm-specific rollback-safety of
-_release_sim_slots_at_agg_goal (a data_id spans many agg-goal cycles; a
-variance-FAIL rolls back to the same data_id and must NOT strand or double-
-commit a grad).
+In simulated mode fwdllm_aggregator._aggregate_grads_async commits a grad by the
+modeled sim_completion_ts via _sim_recv_min_grad -- an sct-ordered reorder buffer
++ a one-in-flight gate + a virtual-clock advance -- so ordering is immune to
+physical arrival jitter. These tests drive _sim_recv_min_grad directly with
+synthetic out-of-order grad messages (a fake channel), and cover the
+fwdllm-specific rollback-safety of _release_sim_slots_at_agg_goal (a data_id
+spans many agg-goal cycles; a variance-FAIL rolls back to the same data_id and
+must NOT strand or double-commit a grad).
 """
 
 import time
@@ -86,9 +85,9 @@ class _FakeGradAgg:
     _sim_end_has_ready_msg = staticmethod(TopAggregator._sim_end_has_ready_msg)
     # #13 step 4 freed-slot FIFO consumer (inherited from asyncfl).
     _pop_free_slot_ts = _AsyncBase._pop_free_slot_ts
-    # fwdllm overrides felix's hold with the Option-A two-lifetime split (K-D16).
+    # fwdllm overrides the hold with the two-lifetime split.
     _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
-    # The return-path guard/slot release (K-D19: defers to COMMIT in sim residence).
+    # The return-path guard/slot release (defers to COMMIT in sim residence).
     _release_end_on_return = TopAggregator._release_end_on_return
     # grace-window class knobs the base method reads off self
     SIM_RECV_GRACE_FLOOR_S = 0.0
@@ -213,10 +212,10 @@ class _RecordingChannel(_FakeGradChannel):
 
 
 class TestProbeCeilingReadyGating:
-    """#13 step 2 (felix _sim_recv_min:399-411): an in-flight end that is NOT a
-    recv_end is probed ONLY if it is physically ready OR its modeled `exp` is at/
-    before the buffered minimum (+slack) -- so the drain stops burning the full
-    grace window on far-future / not-yet-arrived stragglers each pass."""
+    """#13 step 2: an in-flight end that is NOT a recv_end is probed ONLY if it is
+    physically ready OR its modeled `exp` is at/before the buffered minimum
+    (+slack) -- so the drain stops burning the full grace window on far-future /
+    not-yet-arrived stragglers each pass."""
 
     def test_far_future_straggler_is_not_probed(self):
         agg = _FakeGradAgg()
@@ -304,7 +303,7 @@ class TestFreedSlotRefill:
     """#13 step 4: a grad commit stamps the freed-slot vclock into the FIFO; a
     later dispatch pops it (oldest-first, clamped) as the re-dispatched trainer's
     SEND vclock -- spreading expected completions instead of collapsing the cohort
-    at one round frontier (the residual multi-pass gate-holds after step 3)."""
+    at one round frontier."""
 
     def test_commit_stamps_freed_slot_vclock_when_staggered(self):
         agg = _FakeGradAgg()
@@ -358,11 +357,10 @@ class TestFreedSlotRefill:
 
 
 class TestStuckEndEviction:
-    """#13 step 1 (felix _sim_recv_min:436-442): a trainer that is EXPECTED to
-    complete earlier than the buffered minimum but never physically arrives must
-    be evicted from _sim_inflight_expected on the recv failsafe deadline -- else
-    `earlier_stuck` re-fires the full 30s deadline on every future drain cycle
-    and the composer freezes (pipeline starvation, the #13 drain stall)."""
+    """#13 step 1: a trainer EXPECTED to complete earlier than the buffered
+    minimum but never physically arrives must be evicted from
+    _sim_inflight_expected on the recv failsafe deadline -- else `earlier_stuck`
+    re-fires the full 30s deadline every drain cycle and the composer freezes."""
 
     def _immediate_deadline(self, monkeypatch):
         # Fire the recv failsafe on the first pass (no real 30s wait).
@@ -528,14 +526,13 @@ class TestFlagOffNoOp:
 
 
 class TestComputeTruthfulGate:
-    """#15 (PARITY_LOGICAL_TASKS.md): the compute-truthful commit gate
-    (`sim_compute_truthful_gate`, flag-gated, default off) must not block a ready
-    commit on a trainer that is NOT actually computing -- one stamped 'expected'
-    at dispatch but idle-in-recv behind the single-threaded drain (never dispatched
-    within its compute window). That phantom wait is what burns the grace floor /
-    30s failsafe and, via hold-to-commit, starves re-dispatch (sim concurrency 1.65
-    vs real 7.69). The guard stays SELECTIVE: a genuine in-window straggler is still
-    waited for, so sct-commit order is preserved."""
+    """#15: the compute-truthful commit gate (`sim_compute_truthful_gate`,
+    flag-gated, default off) must not block a ready commit on a trainer that is
+    NOT actually computing -- one stamped 'expected' at dispatch but idle-in-recv
+    behind the single-threaded drain. That phantom wait burns the grace floor /
+    30s failsafe and, via hold-to-commit, starves re-dispatch. The guard stays
+    SELECTIVE: a genuine in-window straggler is still waited for, so sct-commit
+    order is preserved."""
 
     def test_idle_phantom_is_skipped_and_ready_grad_commits(self):
         agg = _FakeGradAgg()
@@ -585,8 +582,8 @@ class TestComputeTruthfulGate:
         assert agg._vclock.now == 50.0
 
     def test_flag_off_is_byte_identical(self, monkeypatch):
-        """Flag OFF (default): a phantom still blocks to the failsafe (unchanged
-        K-D28 behavior) and phantom_skip stays 0."""
+        """Flag OFF (default): a phantom still blocks to the failsafe (unchanged)
+        and phantom_skip stays 0."""
         import flame.mode.horizontal.syncfl.fwdllm_aggregator as fa
         monkeypatch.setattr(fa, "RECV_TIMEOUT_WAIT_S", 0.0)
         agg = _FakeGradAgg()  # flag defaults off (never set)

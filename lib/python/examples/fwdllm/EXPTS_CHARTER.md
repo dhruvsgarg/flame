@@ -1,18 +1,16 @@
 # FLUXTUNE evaluation charter (living doc)
 
 **Purpose.** Current state + resolved decisions for the fluxtune eval, reconciling the paper
-(`05-evaluation.tex`) with the code (`EXPERIMENTS.md`, telemetry, plots). Change history lives in git;
-this doc holds only what's *current* and the decisions/rationale a diff wouldn't explain. The run ledger
-(which log feeds which result) is `EXPERIMENTS.md` §10.
+(`05-evaluation.tex`) with the code (`EXPERIMENTS.md`, telemetry, plots). History lives in git; this doc
+holds only what's *current* plus rationale a diff wouldn't explain. Run ledger: `EXPERIMENTS.md` §10.
 **Owner:** dgarg39 · **Branch:** `dg/fwdllm_sim_unavail`
 
 ## Status
 
 Paper reconciliation ✅ delivered. Bottleneck optimizations built — all **flag-gated, byte-identical
-off, fluxtune-only, unit-tested**. Measurements are at the paper's primary **α=1** operating point
-(experiments never go below α=1; ablations go UP to α∈{10,100} — [[fwdllm-alpha-convention]]; the
-`…185045…alpha0p1…` dir name mislabels an α=1 run — **verify α from the loaded-partition log line, not
-the dir name**).
+off, fluxtune-only, unit-tested**. Measurements are at the paper's primary **α=1** point (experiments
+never go below α=1; ablations go UP to α∈{10,100} — [[fwdllm-alpha-convention]]; the `…185045…alpha0p1…`
+dir name mislabels an α=1 run — **verify α from the loaded-partition log line, not the dir name**).
 
 | Opt | Feature | Flag(s) | Status |
 |---|---|---|---|
@@ -33,15 +31,15 @@ the floor (floor is structural non-IID) and staleness-based-C (staleness too low
 ## Four planned full runs
 
 N=100, `target_acc=84%`, parallel — a **2×2 over the two learning-affecting opts** (C1+Opt-1 constant).
-Toggled via `run_sequential.sh` CLI flags (they patch the per-run config_overrides, which WIN over the
-baselines.yaml catalog at launch — validated by dry-run); no per-run config files needed.
+Toggled via `run_sequential.sh` CLI flags (they patch per-run config_overrides, which WIN over the
+baselines.yaml catalog at launch — dry-run validated); no per-run config files needed.
 
 Common: `--only fluxtune --mode real --num-trainers 100 --partition-method niid_label_clients=100_alpha=1
---agg-goal 10 --c 30 --target-acc 0.84 --yes` (agg_goal/C match the n100 reference run — confirm vs last night).
+--agg-goal 10 --c 30 --target-acc 0.84 --yes` (agg_goal/C match the n100 reference run).
 
 **Naming:** R1 is the **FluxTune-base** (C1 guided JVP perturbations + Opt-1, both ON in all four runs),
 NOT FeLiX — it does forward-mode LLM perturbation fine-tuning and merely *borrows* FeLiX's scalar
-aggregation rate (`agg_rate_conf.type=new`, decision N2). FeLiX targets the CNN/speech family and has no
+aggregation rate (`agg_rate_conf.type=new`, decision N2). FeLiX targets the CNN/speech family with no
 perturbation-based fine-tuning (`baselines.yaml` fluxtune spec). `select_perturbation_using_jvp=true` is a
 **trainer-side** flag (the aggregator config's copy reads false and is unused).
 
@@ -57,12 +55,12 @@ read `commit_reason` (natural/cap/plateau) + `grad_aware_gated_total` telemetry;
 align_floor/inverse_var; re-characterize at α∈{10,100}.
 
 **LANDED 2026-07-08** (N=100, α=1 — dir names say `alpha0p1`, MISLABELED; loaded-partition log reads
-`niid_label_clients=100_alpha=1`). Identified by `aggregator_config.json` (`var_stopping_policy` ×
+`niid_label_clients=100_alpha=1`). Runs identified by `aggregator_config.json` (`var_stopping_policy` ×
 `agg_rate_conf.type`); figures via `expt_scripts/figs_ablation.yaml` + blue-ramp styles in
 `plotlib/baselines.py`. R4 = full default, also feeds the baseline comparison (`figs.yaml fluxtune`).
 
 **Results — peak test accuracy (the paper number; every run diverges after → see Issue I-1).**
-Peak is at/near the target and rises with the opt ladder (R4 full ≈ target); no run *sustains* it.
+Peak is at/near target and rises with the opt ladder (R4 full ≈ target); no run *sustains* it.
 
 | Run | var_stopping_policy | agg-rate type | Run dir | **peak acc @ round-1** | gap to 84% |
 |---|---|---|---|---|---|
@@ -78,8 +76,8 @@ target) holds; the peak-accuracy ★ + legend value on every E1 acc plot shows e
 ## Bottleneck (measured, α=1 run `run_20260706_185045_fluxtune_n100…`)
 
 **The variance gate is the hub:** the fixed absolute `var≤0.3` gate sits *below* the achievable variance
-floor (~0.45), so a data-bin commits only on a noise dip and grinds 15→34 iters. The slow model-version
-this causes makes staleness degenerate and drives long non-commit comm stretches.
+floor (~0.45), so a data-bin commits only on a noise dip and grinds 15→34 iters. The resulting slow
+model-version makes staleness degenerate and drives long non-commit comm stretches.
 
 | # | Metric | Measured | Meaning |
 |---|--------|----------|---------|
@@ -98,8 +96,8 @@ smarter" (C3) or "accept the floor" (plateau) will → dynamic-K de-prioritized.
 
 **Status: root-caused, fix in progress (§8 track, next = S1).** All 4 ablation runs learn in round 1
 (peak 82-84%, min loss 0.55-0.66) then oscillate and collapse to ~25% (mcc 0) with loss blow-up (R4
-loss→4.9); force-stopped 2026-07-08 (no clean verdict). Paper uses each run's round-1 peak; E1 plots clipped
-at peak. Not a blocker for the E1 headline.
+loss→4.9); force-stopped 2026-07-08. Paper uses each run's round-1 peak; E1 plots clipped at peak. Not a
+blocker for the E1 headline.
 
 **Root cause (H0 diagnostic — `fluxtune_contributions.md` §8, F1-F15):** an **undamped, high-variance
 forward-gradient optimizer** — each noisy JVP commit applied raw (`FedSgdAggregator.py:322`, no momentum/EMA)
@@ -119,10 +117,10 @@ round 2 destroys the model.
 
 ## Latest figures (for paper embedding)
 
-Two PDF sets, same 7 basenames, regenerated by `make_paper_figs.py` (cutoff `--cutoff-mode peak_acc`
-default → every run clipped at its peak, Issue I-1 tail excluded; E1 acc plots carry a ★ + legend "peak
-X%" per run). Rebuild: `cd expt_scripts && python make_paper_figs.py --manifest <m> [--out-root <r>]`.
-`latest` symlinks to the newest timestamped dir; copy PDFs into Overleaf by basename.
+Two PDF sets, same 7 basenames, from `make_paper_figs.py` (cutoff `--cutoff-mode peak_acc` default →
+every run clipped at its peak, Issue I-1 tail excluded; E1 acc plots carry a ★ + legend "peak X%" per
+run). Rebuild: `cd expt_scripts && python make_paper_figs.py --manifest <m> [--out-root <r>]`. `latest`
+symlinks the newest timestamped dir; copy PDFs into Overleaf by basename.
 
 | Set | Manifest | Dir (`latest` symlink) |
 |---|---|---|
@@ -173,4 +171,4 @@ Figure basenames (both sets): `e1_acc_vs_time.pdf` (time-to-acc, peak ★) · `e
 **P1** substrate honesty — describe what ran, or run the claimed substrate before submission. **P2**
 isolation vs full-system are two conditions — efficiency claims (E2–E4) need C2+C3 on. **P3** no takeaway
 ships ahead of its evidence. **P4** directional source-of-truth — implementation facts flow code→paper,
-narrative/positioning paper→code. **P5** one name per concept.
+narrative paper→code. **P5** one name per concept.

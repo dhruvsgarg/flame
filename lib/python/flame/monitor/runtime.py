@@ -40,13 +40,11 @@ def timer_decorator(func):
                 f"[decorator] Runtime of {func.__name__}: {duration:.6f}s "
                 f"(Round={stage.round_id}, DataId={stage.data_id}, Iter={stage.iteration}, TrainerId={stage.trainer_id})"
             )
-            # Structured, plottable companion to the log line: attribute this
-            # step's wall time to (func, data_id, iteration) so the GPU cost can
-            # be decomposed and optimized (P2-4). A no-op when telemetry is off,
-            # so non-fwdllm runs / unit tests pay nothing. Guarded on `stage`
-            # truthiness so nested helpers whose args[0] is NOT the trainer self
-            # (a torch device has no fwd_llm_stage) never emit a mis-attributed
-            # record. Best-effort: a telemetry hiccup must never break training.
+            # Structured companion to the log line: attribute step wall time to
+            # (func, data_id, iteration) for GPU-cost decomposition. No-op when
+            # telemetry is off. The `stage` guard keeps nested helpers whose
+            # args[0] is not the trainer self from emitting mis-attributed
+            # records. Best-effort: a telemetry hiccup must never break training.
             try:
                 from flame import telemetry
                 if telemetry.is_enabled():

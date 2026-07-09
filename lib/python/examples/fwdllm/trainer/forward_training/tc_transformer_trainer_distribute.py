@@ -205,28 +205,24 @@ class ForwardTextClassificationTrainer:
         if self.args.select_perturbation_using_jvp:
             self.select_perturbation_using_jvp = self.args.select_perturbation_using_jvp
 
-        # Number of candidate perturbations sampled per param (P2-5). Drives the
-        # forward-pass count: the select_perturbation_using_jvp path does 2
-        # forward passes (JVP) PER perturbation, so N perturbations = ~2N passes
-        # → the dominant fluxtune GPU cost. Default 10 (byte-identical to the
-        # historical hardcode); a config knob so the JVP cost can be tuned to
-        # keep GPU << the modeled mobile delay (the remainder-wait invariant).
-        # Real and sim MUST use the same value (they read the same config).
+        # Number of candidate perturbations sampled per param. Drives the
+        # forward-pass count: the select_perturbation_using_jvp path does 2 JVP
+        # passes per perturbation, so N perturbations = ~2N passes (dominant
+        # fluxtune GPU cost). Default 10 (byte-identical to the historical
+        # hardcode); a knob so JVP cost can be tuned to keep GPU << the modeled
+        # mobile delay. Real and sim must use the same value (same config).
         try:
             self.perturbation_count = int(getattr(self.args, "perturbation_count", 10) or 10)
         except (TypeError, ValueError):
             self.perturbation_count = 10
 
         # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
-        # BIT-IDENTICAL to the current grads (validated by scripts/profile_jvp_opt.py):
+        # bit-identical to the current grads:
         #   (a) trainable-only finite difference (skip frozen p-h*0=p);
-        #   (b) skip the 3 diagnostic-only forward passes (loss before/after-update
-        #       logging — never feed grads/telemetry);
-        #   (c) reuse the selected perturbation's JVP already computed in selection.
-        # Config-gated, default OFF (byte-identical); enabled ONLY in the fluxtune
-        # yamls (`jvp_perf_opt: true`). Revertible per-config -> fluxtune can run
-        # the un-optimized path any time. Real and sim MUST match (they read the
-        # same config), so it never breaks real<->sim parity.
+        #   (b) skip the 3 diagnostic-only forward passes (loss logging only);
+        #   (c) reuse the selected perturbation's JVP computed in selection.
+        # Config-gated, default OFF (byte-identical); enabled only in the fluxtune
+        # yamls (`jvp_perf_opt: true`). Real and sim must match (same config).
         self.jvp_perf_opt = bool(getattr(self.args, "jvp_perf_opt", False))
         self._sel_jvp_cache = {}
         logging.info(
@@ -670,10 +666,10 @@ class ForwardTextClassificationTrainer:
         logging.info(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
         # perf-opt: reuse the winner's JVP already computed during selection
-        # (same params + same v_params for best_idx -> bit-identical), saving 2
-        # forward passes. Falls back to compute when the cache is absent (the
-        # cos-sim / sync path never ran the JVP-selection loop) or best_idx used
-        # the carried global-best v_params (the `best_idx == -1` branch).
+        # (same params + v_params for best_idx -> bit-identical), saving 2
+        # passes. Falls back to compute when the cache is absent (cos-sim / sync
+        # path never ran the selection loop) or best_idx used the carried
+        # global-best v_params (the `best_idx == -1` branch).
         if (self.jvp_perf_opt and best_idx != -1
                 and best_idx in getattr(self, "_sel_jvp_cache", {})):
             loss, jvp = self._sel_jvp_cache[best_idx]

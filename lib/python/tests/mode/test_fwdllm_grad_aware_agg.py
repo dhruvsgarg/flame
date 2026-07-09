@@ -1,13 +1,13 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-3 / C3 (charter EXPTS_CHARTER §5c): gradient-aware aggregation.
+"""Opt-3: gradient-aware aggregation.
 
 The default fedbuff `new` rate rescales an update's MAGNITUDE by staleness×utility
 but cannot refuse a wrong DIRECTION, so anti-aligned JVP estimates still get
-averaged (H1 -> the M-12 mid-run instability). The `grad_aware` rate weights by
-direction (alignment gate, S2) and optionally reliability (inverse-variance, S1),
-BOUNDED so the result never exceeds the base rate -> the effective server LR never
-inflates (charter Axis E), so no LR re-tune is needed for stability.
+averaged. The `grad_aware` rate weights by direction (alignment gate) and
+optionally reliability (inverse-variance), BOUNDED so the result never exceeds the
+base rate -> the effective server LR never inflates, so no LR re-tune is needed
+for stability.
 
 `_grad_aware_rate` (pure scalar) and `_cosine_flat` (tensor cosine vs the running
 aggregate) are the testable primitives. These pin:

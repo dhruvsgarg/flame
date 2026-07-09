@@ -72,8 +72,7 @@ class _FakeAggregator:
 
     def __init__(self, contributors, var_good_enough, staleness_map=None,
                  total_data_bins=150):
-        # Batch 1 flag-off regression: real path skips the sim boundary hook
-        # (_release_sim_slots_at_agg_goal), so telemetry is byte-identical.
+        # Real path skips the sim boundary hook, so telemetry is byte-identical.
         self.simulated = False
         self._per_agg_trainer_list = list(contributors)
         self._agg_goal_cnt = len(contributors)
@@ -204,7 +203,7 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
     def test_speedup_fields_emitted(self, tmp_path):
-        """§H #13: agg_round carries wall_elapsed_s in both modes and, in sim,
+        """#13: agg_round carries wall_elapsed_s in both modes and, in sim,
         sim_rate = vclock/wall so the slowdown is observable in telemetry."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
@@ -304,10 +303,10 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
     def test_cadence_fields_snapshot_pre_mutation(self, tmp_path):
-        """Batch-2 variance-cadence inputs (§K-D9): cycle_data_id/cycle_iteration
-        identify the data_id this cycle WORKED on (pre-advance), and the pool
-        sizes are captured at the variance gate. On a variance FAIL data_id does
-        not advance, so cycle_data_id == the emitted (post) data_id == 3."""
+        """Variance-cadence inputs: cycle_data_id/cycle_iteration identify the
+        data_id this cycle WORKED on (pre-advance), and the pool sizes are captured
+        at the variance gate. On a variance FAIL data_id does not advance, so
+        cycle_data_id == the emitted (post) data_id == 3."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
@@ -400,9 +399,9 @@ class TestAggRoundTelemetry:
 
 
 class TestContributorIntervalsEmission:
-    """R1/W1 residence rungs (§L.3) read a per-contributor [dispatch, commit]
-    interval list off each agg_round event. It must land once per contributor,
-    carrying the ts captured in _process_single_trainer_message."""
+    """R1/W1 residence rungs read a per-contributor [dispatch, commit] interval
+    list off each agg_round event. It must land once per contributor, carrying
+    the ts captured in _process_single_trainer_message."""
 
     def test_intervals_emitted_per_contributor(self, tmp_path):
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
@@ -452,7 +451,7 @@ class TestContributorIntervalsEmission:
 
 
 class TestPerRoundWallDecomposition:
-    """Stage A2: agg_round carries the per-round wall breakdown feeding #6 --
+    """agg_round carries the per-round wall breakdown feeding #6 --
     aggregate_fedavg_s + eval_s always; barrier_wait_s/drain_tail_s when the
     dispatch/last-grad wall stamps were captured (else null, rung SKIPs)."""
 
@@ -581,7 +580,7 @@ class _UtilityFakeAggregator:
     trainers is a no-op) since it's irrelevant to the telemetry under test."""
 
     process = TopAggregator._process_single_trainer_message
-    _release_end_on_return = TopAggregator._release_end_on_return  # K-D19
+    _release_end_on_return = TopAggregator._release_end_on_return
 
     def __init__(self, model_version=5, data_id=3, iteration_per_data_id=0,
                  is_async=False):
@@ -707,7 +706,7 @@ class TestUtilityBeliefTelemetry:
 
 
 class TestStalenessPolicy:
-    """staleness_policy gate in _process_single_trainer_message (§L D-c/K-D13).
+    """staleness_policy gate in _process_single_trainer_message.
 
     REJECT policies (round_data_id/exact) drop a stale grad; ACCEPT policies
     (none/fedbuff) consume it -- fedbuff is the async baseline default so its

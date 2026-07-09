@@ -1,16 +1,16 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-2 (charter EXPTS_CHARTER §5c/§5e): variance-plateau stopping policy.
+"""Opt-2: variance-plateau stopping policy.
 
-At the paper's α=1 operating point the achievable variance floor (~0.45) sits
-ABOVE the commit gate (0.30), so a data-bin crosses the gate only on a noise dip
-and grinds ~15-34 iterations while the denoised estimate has long plateaued. The
-'plateau' policy commits a bin early once its per-bin variance curve flattens
-(relative drop over the last N cycles < rel_delta) while var is still above
-threshold -- shipping the denoised estimate instead of a lucky noise sample.
+At the α=1 operating point the achievable variance floor (~0.45) sits ABOVE the
+commit gate (0.30), so a data-bin crosses the gate only on a noise dip and grinds
+many iterations while the denoised estimate has long plateaued. The 'plateau'
+policy commits a bin early once its per-bin variance curve flattens (relative
+drop over the last N cycles < rel_delta) while var is still above threshold --
+shipping the denoised estimate instead of a lucky noise sample.
 
-`_should_force_commit_on_plateau` is the PURE decision (reads only instance attrs,
-newest-var-last history in `var_prev_iter_list`), driven from
+`_should_force_commit_on_plateau` is the PURE decision (reads only instance
+attrs, newest-var-last history in `var_prev_iter_list`), driven from
 FedSGDAggregator.aggregate(). These tests pin:
 (1) policy off / None / fixed_cap never forces a plateau commit (byte-identical off);
 (2) it fires only when the curve has flattened AND var is still above threshold;

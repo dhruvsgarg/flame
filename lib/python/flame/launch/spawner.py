@@ -431,13 +431,11 @@ class TrainerSpawner:
         self._assert_load_balanced()
 
     def _assert_load_balanced(self) -> None:
-        """Post-spawn load-balance check RELATIVE TO available hardware.
+        """Post-spawn load-balance check relative to available hardware.
 
-        Verifies the round-robin placement actually spread work evenly and did
-        not leave hardware idle (an under-provisioned num_gpus is the classic
-        silent contention source: e.g. 10 trainers on num_gpus=2 packs 5/GPU
-        while 6 physical GPUs sit idle). Emits one grep-able [LOAD_BALANCE]
-        verdict; WARNs (never raises) so a run is never blocked by it.
+        Verifies round-robin placement spread work evenly and left no hardware
+        idle (under-provisioned num_gpus is a silent contention source). Emits one
+        grep-able [LOAD_BALANCE] verdict; WARNs, never raises.
         """
         procs = self.processes
         if not procs:

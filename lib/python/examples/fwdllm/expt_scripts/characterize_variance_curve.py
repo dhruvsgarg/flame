@@ -3,31 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Characterize the per-databin variance-decay curve from a run's telemetry.
 
-Charter EXPTS_CHARTER §5c Opt-2 (MEASURE-FIRST). The variance gate is the hub of
-the fluxtune bottleneck (§5a): only ~4.3% of aggregation iterations commit because
-`var` asymptotes to a floor (~0.45) that sits ABOVE the 0.30 threshold, so a bin is
-crossed only by noise dips and grinds to 18-61 iterations. Before designing the
-`stopping_policy` (fixed_cap / plateau / adaptive) we must SEE the actual decay
-curve: how high does var start, how fast does it fall, where does it plateau, and
-does the plateau level fall / onset move earlier as training progresses.
+Charter §5c Opt-2: before designing the variance-gate `stopping_policy`
+(fixed_cap / plateau / adaptive), measure the actual decay curve -- where var
+starts, how fast it falls, where it plateaus, and whether the plateau drops as
+training progresses.
 
-This streams the aggregator telemetry, reconstructs each data-bin (robust to the
+Streams the aggregator telemetry, reconstructs each data-bin (robust to the
 `data_id` cycling footgun via COMMIT counting -- see audit_weight_redundancy.py),
-extracts each bin's (iteration -> var) curve, characterizes it, and runs two
-counterfactual sweeps that directly answer the design questions:
+extracts each bin's (iteration -> var) curve, and runs two counterfactual sweeps:
 
-  * fixed_cap sweep  -- for a cap K, how many iterations/forward-passes are saved,
-    how many bins are affected, and how much WORSE is the var we commit at vs the
-    bin's natural commit var (the accuracy risk of committing early).
-  * plateau sweep    -- for (patience N, tol eps), where would a diminishing-returns
-    rule fire and at what var, vs the fixed cap.
+  * fixed_cap sweep  -- for a cap K: iterations/forward-passes saved, bins
+    affected, and how much worse the committed var is vs the natural commit var
+    (the accuracy risk of committing early).
+  * plateau sweep    -- for (patience N, tol eps): where a diminishing-returns
+    rule fires and at what var, vs the fixed cap.
 
 Usage:
   python characterize_variance_curve.py <run_dir_or_agg_jsonl> [--caps 7,8,10,12,15]
       [--plateau-N 3 --plateau-eps 0.05,0.10,0.15] [--json OUT.json]
 
-No side effects; pure read. Mirrors the streaming/prefilter style of
-audit_weight_redundancy.py so it can run over multi-GB logs.
+Pure read; streaming/prefilter style so it runs over multi-GB logs.
 """
 import argparse
 import glob
@@ -64,14 +59,12 @@ def load_curves(path, max_databins=None):
     """Stream agg_round events -> {databin_id: [(iteration, var, committed), ...]}.
 
     Data-bin id is the running commit count: a bin ends when an agg_round commits
-    (`var_good_enough=True`); every non-commit iteration before it belongs to the
-    current bin. Uses `cycle_iteration` (0-based attempt index this cycle worked on)
-    as the intra-bin iteration axis -- unambiguous, unlike the post-mutation
-    `iteration_per_data_id`. `max_databins` caps analysis to the first N committed
-    bins (for like-for-like truncation across runs of different length).
+    (`var_good_enough=True`). Uses `cycle_iteration` (unambiguous, unlike the
+    post-mutation `iteration_per_data_id`) as the intra-bin axis. `max_databins`
+    caps to the first N committed bins for like-for-like truncation across runs.
 
-    Also returns, per committed bin, the `commit_reason` recorded on the committing
-    cycle (Opt-2 telemetry: natural / cap / plateau; None on legacy runs).
+    Also returns each committed bin's `commit_reason` (Opt-2 telemetry:
+    natural / cap / plateau; None on legacy runs).
     """
     f = _agg_jsonl(path)
     databin = 0

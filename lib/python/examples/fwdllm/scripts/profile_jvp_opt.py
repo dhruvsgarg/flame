@@ -3,17 +3,16 @@
 
 Isolated latency + correctness profiler for the perturbation/JVP compute that
 dominates fluxtune GPU time (`_train_one_batch` in
-`trainer/forward_training/tc_transformer_trainer_distribute.py`). It measures
-the GAIN and validates the numerical fidelity of each optimization stage BEFORE
-we change the real trainer (simulate_fwdllm.md principle #11/#16: prove the
-mechanism first).
+`trainer/forward_training/tc_transformer_trainer_distribute.py`). Measures the
+gain and validates the numerical fidelity of each optimization stage before
+changing the real trainer.
 
-It deliberately REUSES the production code so a validated speedup transfers
-directly: the real model (`expts.initializer.create_model` → DistilBERT-base +
-AdapterHub bottleneck adapters, backbone frozen) and the real JVP math
-(`fwdgrad_utils.calculate_jvp` / `functional_get_loss`). Only the current
-fluxtune/fwdllm config is targeted (distilbert-base-uncased, agnews→4 labels,
-seq 192, batch 8, adapter PEFT, perturbation_count 10) — not generic.
+Deliberately REUSES the production code so a validated speedup transfers directly:
+the real model (`expts.initializer.create_model` → DistilBERT-base + AdapterHub
+bottleneck adapters, backbone frozen) and the real JVP math
+(`fwdgrad_utils.calculate_jvp` / `functional_get_loss`). Targets only the current
+fluxtune/fwdllm config (distilbert-base-uncased, agnews→4 labels, seq 192,
+batch 8, adapter PEFT, perturbation_count 10) — not generic.
 
 STAGES (each vs Stage 0 as the numerical ground truth):
   0 baseline   the real `calculate_jvp` in a Python loop over perturbations

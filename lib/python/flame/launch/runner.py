@@ -340,8 +340,8 @@ class ExperimentRunner:
             agg_rc = getattr(self.aggregator_spawner.process, "returncode", None)
             rc_msg = f"exit={agg_rc}" if agg_rc == 0 else f"exit={agg_rc} ⚠"
             if agg_rc not in (0, None):
-                # On a crash the trainers never get an EOT, so the 30s-per-trainer
-                # grace below is wasted -- terminate them now instead (§L.5 D-d).
+                # On a crash the trainers never get an EOT, so the per-trainer
+                # grace below is wasted -- terminate them now instead.
                 print(f"  aggregator FAILED ({rc_msg}); terminating trainers now "
                       f"(skipping EOT grace).")
                 self.trainer_spawner.terminate_all()
@@ -558,22 +558,16 @@ class ExperimentRunner:
                 },
             ))
 
-        # Training-delay config is a single source of truth: exp.trainer's
-        # flags govern the whole run. Fan them into the AGGREGATOR hyperparameters
-        # too (final, highest-precedence layer) so both roles agree. Previously
-        # only the trainer bridge (spawn config_overrides, see start_experiment)
-        # set training_delay_enabled, leaving the aggregator's trainingDelayEnabled
-        # at its pydantic default (False) -- a misleading orphan for fwdllm (whose
-        # sim D flows from the trainer-reported completion, not this field) and an
-        # actual real<->sim desync risk for examples whose aggregator DOES read it
-        # (async_cifar10). See simulate_fwdllm.md #12 / principle #13.
+        # Single source of truth: exp.trainer's delay flags govern the whole run.
+        # Fan them into the aggregator hyperparameters as the final (highest-
+        # precedence) layer so both roles agree; else the aggregator keeps its
+        # pydantic default (False), a real<->sim desync risk for examples whose
+        # aggregator reads it (async_cifar10). See #12 / #13.
         _delay_fan: dict = {
             "trainingDelayEnabled": bool(exp.trainer.enable_training_delays),
         }
-        # training_delay_factor: if the experiment set it on the trainer, fan the
-        # same value to the aggregator so a launcher knob (e.g. --delay-factor)
-        # reaches both roles from one place instead of the hardcoded per-role
-        # trainer_base default.
+        # If the experiment set training_delay_factor on the trainer, fan the same
+        # value to the aggregator so a launcher knob reaches both roles.
         _tr_hp = exp.trainer.hyperparameters or {}
         if "training_delay_factor" in _tr_hp:
             _delay_fan["trainingDelayFactor"] = _tr_hp["training_delay_factor"]
@@ -584,11 +578,9 @@ class ExperimentRunner:
 
         merged, provenance = merge_with_provenance(layers)
 
-        # Honored-100% tripwire: the delay fan is the final layer, so the merged
-        # aggregator config MUST reflect the requested flag. If a later refactor
-        # reorders layers or a higher-precedence override shadows it, fail loudly
-        # here rather than silently running with a stale/default value (the exact
-        # class of bug behind simulate_fwdllm.md #12).
+        # Tripwire: the delay fan is the final layer, so the merged config must
+        # reflect the requested flag. If a refactor reorders layers or a higher-
+        # precedence override shadows it, fail loudly instead of running stale (#12).
         _eff = merged.get("hyperparameters", {}).get("trainingDelayEnabled")
         _req = bool(exp.trainer.enable_training_delays)
         if _eff is not None and bool(_eff) != _req:
