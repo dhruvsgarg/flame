@@ -33,7 +33,8 @@ import numpy as np
 # ---- defaults resolved from the run's aggregator_config.json (the /coc/scratch h5s) ----
 DEF_PART = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5"
 DEF_DATA = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5"
-DEF_CACHE = "/home/dgarg39/gaurav/flame/lib/python/examples/fwdllm/expts/run_tc_expts/cache_dir"
+# cache lives with the datasets on scratch; override with --cache-dir if elsewhere.
+DEF_CACHE = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/cache_dir"
 DEF_RUN = ("/home/dgarg39/flame/lib/python/examples/fwdllm/experiments/"
            "run_20260708_025543_fluxtune_n100_smoke_syn_0_real")
 CACHE_TMPL = ("distilbert_distilbert-base-uncased_cached_192_ClassificationModel_"

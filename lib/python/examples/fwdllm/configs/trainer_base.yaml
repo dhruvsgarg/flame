@@ -2,8 +2,8 @@
 # Common properties shared across all trainers; trainer-specific values are
 # injected at runtime by flame.launch (see ../../MIGRATING_TO_LAUNCHER.md §9).
 #
-# Transcribed from expts/run_tc_expts/json_scripts/trainer_1.json and
-# aggregator.json (the existing production defaults), not redesigned.
+# Originally transcribed from the legacy MPI/JSON launch configs
+# (expts/run_tc_expts/, since removed), not redesigned.
 
 backend: mqtt
 
@@ -52,8 +52,8 @@ hyperparameters:
   # (trainer.dataset.path_style: true skips that lookup entirely).
   client_idx: 0
   client_num_in_total: 0
-  gpu_mapping_file: gpu_mapping.yaml
-  gpu_mapping_key: mapping_myMap
+  # (gpu_mapping_file/gpu_mapping_key removed with the legacy MPI launch path --
+  #  device pinning is the spawner's job; FedSgdTrainer hard-sets its cuda device.)
   data_loader_num_workers: 5
 
   # --- Model ---

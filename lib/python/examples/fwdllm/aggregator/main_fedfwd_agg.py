@@ -92,8 +92,7 @@ def post_complete_message(tc_args):
 if __name__ == "__main__":
     # --log_to_wandb/--wandb_run_name are CLI-only (not in config JSON), mirroring
     # async_cifar10/aggregator/pytorch/main_fedavg_agg.py's initialize_wandb()
-    # gating pattern. No module-level wandb.init() -- gating here is additive
-    # (the legacy fl_main.py also never called it unconditionally).
+    # gating pattern. No module-level wandb.init() -- gating here is additive.
     _cli_parser = argparse.ArgumentParser(add_help=False)
     _cli_parser.add_argument("--log_to_wandb", action="store_true")
     _cli_parser.add_argument("--wandb_run_name", type=str, default=None)
