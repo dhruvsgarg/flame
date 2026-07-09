@@ -694,6 +694,11 @@ class FedSGDTrainer(Trainer):
                     # _phase_times (populated in fwdllm_trainer._fetch_weights).
                     "pre_train_s": _pre_train_s,
                     "gpu_compute_s": _real_gpu_time_s,
+                    # §J resume step 1: wall-clock span of this GPU pass, for
+                    # measuring overlap against the aggregator's aggregate()
+                    # compute (real-mode only -- see agg_compute_{start,end}_wall).
+                    "gpu_pass_start_wall": _round_start_ts,
+                    "gpu_pass_end_wall": _round_start_ts + _real_gpu_time_s,
                     "post_train_s": _post_train_s,
                     "training_budget_s": _delay_s,
                     # Remainder-wait model: what real actually slept + whether the

@@ -1353,9 +1353,14 @@ class TopAggregator(AsyncTopAgg):
                     _disp = (round_start_time_tup[1].timestamp()
                              if round_start_time_tup is not None else None)
                     _comm = timestamp.timestamp() if hasattr(timestamp, "timestamp") else None
+                # REAL wall-clock (both modes) the drain loop accepted the
+                # grad -- distinct from dispatch_ts/commit_ts (the trainer's
+                # modeled schedule). Surfaces a ready-but-unprocessed grad
+                # (the #15 bug class) at per-contributor granularity.
                 self._sim_contrib_intervals[end] = {
                     "dispatch_ts": float(_disp) if _disp is not None else None,
                     "commit_ts": float(_comm) if _comm is not None else None,
+                    "processing_wall_ts": time.time(),
                 }
         else:
             logger.error(
@@ -1774,6 +1779,10 @@ class TopAggregator(AsyncTopAgg):
         # cycle worked on and its 0-based attempt index.
         _cycle_data_id = self.data_id
         _cycle_iteration = self.iteration_per_data_id
+        # Same pre-mutation snapshot for model_version (bumped below on a
+        # commit): the version this cycle worked ON, readable off agg_round
+        # directly instead of cross-referencing the DK-controller status dict.
+        _cycle_model_version = self._model_version
         # Pool sizes at the variance gate (before a commit clears grad_pool):
         # grad_pool = realized contributions this data_id (G2); cached_v = carried
         # aggregated pool across variance-FAIL rollbacks (V3). getattr-guarded so
@@ -1788,7 +1797,8 @@ class TopAggregator(AsyncTopAgg):
         _contrib_map = getattr(self, "_sim_contrib_intervals", None) or {}
         _contributor_intervals = [
             {"end": str(_e), **_contrib_map.get(_e, {"dispatch_ts": None,
-                                                     "commit_ts": None})}
+                                                     "commit_ts": None,
+                                                     "processing_wall_ts": None})}
             for _e in _cycle_contributors
         ]
 
@@ -1970,6 +1980,7 @@ class TopAggregator(AsyncTopAgg):
                         # V1, pool sizes for V3/G2.
                         "cycle_data_id": _cycle_data_id,
                         "cycle_iteration": _cycle_iteration,
+                        "cycle_model_version": _cycle_model_version,
                         "grad_pool_size": _grad_pool_size,
                         "cached_v_size": _cached_v_size,
                         # R1/W1 residence rungs: per-contributor [dispatch_ts,
@@ -1980,6 +1991,12 @@ class TopAggregator(AsyncTopAgg):
                         "barrier_wait_s": _barrier_wait_s,
                         "drain_tail_s": _drain_tail_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
+                        # §J resume step 1: wall-clock span of the aggregate()
+                        # variance-compute call, for measuring its overlap
+                        # against other trainers' GPU passes (real-mode only --
+                        # sim's own concurrency is what #15 is repairing).
+                        "agg_compute_start_wall": _agg_start_wall,
+                        "agg_compute_end_wall": _agg_start_wall + _aggregate_fedavg_s,
                         "eval_s": _eval_s,
                         # #6 anchor: real's genuine per-cycle algorithmic time,
                         # the like-for-like counterpart to the sim's Δvclock; lets

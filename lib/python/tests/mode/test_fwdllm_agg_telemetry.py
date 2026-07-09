@@ -346,6 +346,47 @@ class TestAggRoundTelemetry:
         finally:
             telemetry.shutdown()
 
+    def test_cycle_model_version_is_pre_advance_on_commit(self, tmp_path):
+        """Aggregation/model-version stage instrumentation: `cycle_model_version`
+        is the SAME pre-mutation snapshot pattern as cycle_data_id -- the
+        version this cycle worked on, not the post-commit bump, so a checker
+        can correlate "this cycle committed" with "next cycle's
+        cycle_model_version == this one + 1" directly off agg_round."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+            assert agg._model_version == 5
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_model_version"] == 5     # pre-bump
+            assert agg._model_version == 6            # bumped by the commit
+
+        finally:
+            telemetry.shutdown()
+
+    def test_cycle_model_version_unchanged_on_fail(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_model_version"] == 5
+            assert agg._model_version == 5
+        finally:
+            telemetry.shutdown()
+
     def test_contributor_list_captured_before_reset(self, tmp_path):
         """_per_agg_trainer_list is cleared at the end of this method --
         agg_round's contributing_trainers must reflect this cycle's
@@ -429,6 +470,36 @@ class TestContributorIntervalsEmission:
         finally:
             telemetry.shutdown()
 
+    def test_processing_wall_ts_flows_through_when_captured(self, tmp_path):
+        """New commit-stage instrumentation: `processing_wall_ts` (the wall
+        moment the aggregator's own drain loop accepted a grad, distinct from
+        the trainer's dispatch/commit schedule) rides through to
+        contributor_intervals whenever _process_single_trainer_message
+        populated it -- lets a checker see a ready-but-unprocessed grad at
+        per-contributor granularity (the #15 phantom-drain-gate bug class)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            agg._sim_contrib_intervals = {
+                "t1": {"dispatch_ts": 1.0, "commit_ts": 6.0, "processing_wall_ts": 5.5},
+                "t2": {"dispatch_ts": 2.0, "commit_ts": 9.0, "processing_wall_ts": 8.9},
+            }
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=5), "t2": timedelta(seconds=7)},
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            ci = {d["end"]: d for d in r["contributor_intervals"]}
+            assert ci["t1"]["processing_wall_ts"] == 5.5
+            assert ci["t2"]["processing_wall_ts"] == 8.9
+        finally:
+            telemetry.shutdown()
+
     def test_intervals_present_even_without_captured_ts(self, tmp_path):
         """When no interval was captured (e.g. a test double / real run with the
         dict unpopulated) the field is still emitted with null ts, so the rung
@@ -445,7 +516,8 @@ class TestContributorIntervalsEmission:
                       (tmp_path / "aggregator.jsonl").read_text().splitlines()]
             r = [e for e in events if e["event"] == "agg_round"][0]
             assert r["contributor_intervals"] == [
-                {"end": "t1", "dispatch_ts": None, "commit_ts": None}]
+                {"end": "t1", "dispatch_ts": None, "commit_ts": None,
+                 "processing_wall_ts": None}]
         finally:
             telemetry.shutdown()
 
@@ -472,6 +544,29 @@ class TestPerRoundWallDecomposition:
             assert r["aggregate_fedavg_s"] >= 0.0
             # eval ran (variance passed) -> eval_s measured, non-negative
             assert r["eval_s"] is not None and r["eval_s"] >= 0.0
+        finally:
+            telemetry.shutdown()
+
+    def test_agg_compute_window_matches_fedavg_span(self, tmp_path):
+        """§J step-1 telemetry: agg_compute_start_wall/end_wall bracket the
+        aggregate() call exactly, so an overlap-measurement script can trust
+        the window (end - start == aggregate_fedavg_s)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["agg_compute_start_wall"] is not None
+            assert r["agg_compute_end_wall"] is not None
+            assert r["agg_compute_end_wall"] >= r["agg_compute_start_wall"]
+            assert abs((r["agg_compute_end_wall"] - r["agg_compute_start_wall"])
+                       - r["aggregate_fedavg_s"]) < 1e-6
         finally:
             telemetry.shutdown()
 

@@ -266,8 +266,13 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
     """Load all trainer_*.jsonl from a telemetry dir.
 
     Returns {short_id: {"task_recv": [...], "trainer_round": [...],
-    "task_send": [...]}}.  task_send (§4.0) carries [wall_recv_ts, wall_send_ts]
-    bracketing the trainer's true busy window for real-concurrency validation.
+    "task_send": [...], "step_timing": [...]}}.  task_send (§4.0) carries
+    [wall_recv_ts, wall_send_ts] bracketing the trainer's true busy window for
+    real-concurrency validation. step_timing is the per-function wall-duration
+    breakdown (`timer_decorator`) inside gpu_compute_s -- functional-model
+    setup, perturbation selection, per-batch JVP, delay emulation -- read by
+    `step_timing_breakdown_parity` to localize WHICH sub-step diverges instead
+    of only the coarse phase total.
     """
     if not telemetry_dir:
         return {}
@@ -277,6 +282,7 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
         short_id = f.stem[-4:]
         task_recv_evs, trainer_round_evs, task_send_evs = [], [], []
         avail_change_evs: list = []
+        step_timing_evs: list = []
         with open(f) as fp:
             for line in fp:
                 line = line.strip()
@@ -297,11 +303,14 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
                     # Trainer availability transitions (A4 duty-cycle). Previously
                     # dropped here, so duty_cycle_parity was permanently SKIP.
                     avail_change_evs.append(e)
+                elif ev == "step_timing":
+                    step_timing_evs.append(e)
         result[short_id] = {
             "task_recv": task_recv_evs,
             "trainer_round": trainer_round_evs,
             "task_send": task_send_evs,
             "avail_change": avail_change_evs,
+            "step_timing": step_timing_evs,
         }
     return result
 
@@ -3767,6 +3776,124 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
     return results
 
 
+# Sim-skippable overhead phases (excludes gpu_compute_s: shared real compute,
+# see step_timing_breakdown_parity; and training_budget_s: a modeled input
+# compared for equality by training_budget_parity/T2, not overhead to shrink).
+_TRAINER_OVERHEAD_PHASES = ("pre_train_s", "weights_to_ram_s",
+                           "weights_to_gpu_s", "post_train_s")
+
+
+def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
+                                 tol_rel: float = 0.25, min_abs_s: float = 0.1) -> dict:
+    """Trainer-side twin of `drain_wall_budget`: ONE-SIDED (`sim <=
+    real*(1+tol_rel)`), never a two-sided KS/mean match -- sim must never cost
+    more wall-clock than real on the dispatch/local-copy phases it should
+    collapse to ~0 (the #15 shape, generalized to the trainer side).
+    `mqtt_fetch_s` is reported but never gates `ok` (apples-to-oranges: real
+    network round-trip vs sim's in-memory cache, per `trainer_phase_split`'s
+    existing DIAG treatment). SKIPs cleanly with no telemetry.
+    """
+    def _vals(trainers: dict, field: str) -> list:
+        out = []
+        for d in trainers.values():
+            for e in d.get("trainer_round", []):
+                v = e.get(field)
+                if v is not None and v >= 0:
+                    out.append(float(v))
+        return out
+
+    def _budget_component(rv, sv):
+        if not rv or not sv:
+            return {"ok": True, "status": "SKIP", "note": "no telemetry for this phase"}
+        rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
+        budget = max(rm * (1 + tol_rel), min_abs_s)
+        return {"ok": sm <= budget, "real_mean_s": round(rm, 4),
+                "sim_mean_s": round(sm, 4), "budget_s": round(budget, 4)}
+
+    components = {f: _budget_component(_vals(real_trainers, f), _vals(sim_trainers, f))
+                  for f in _TRAINER_OVERHEAD_PHASES}
+    # DIAG-only, never gates `ok` (apples-to-oranges, see docstring).
+    components["mqtt_fetch_s"] = {
+        **_budget_component(_vals(real_trainers, "mqtt_fetch_s"),
+                            _vals(sim_trainers, "mqtt_fetch_s")),
+        "gates_ok": False,
+    }
+
+    _gating = [components[f] for f in _TRAINER_OVERHEAD_PHASES]
+    if all(c.get("status") == "SKIP" for c in _gating):
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no trainer overhead-phase telemetry", "components": components}
+    return {
+        "ok": all(c["ok"] for c in _gating),
+        "tier": "EXACT",
+        "tol_rel": tol_rel,
+        "min_abs_s": min_abs_s,
+        "components": components,
+    }
+
+
+def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
+                                 ks_tol: float = 0.25) -> dict:
+    """Fine-grained GPU-compute decomposition: one DISTRIBUTIONAL (KS + mean)
+    check per `step_timing` function name (per-`@timer_decorator` wall
+    duration -- functional-model setup, perturbation selection, per-batch
+    JVP, delay emulation). Unlike the trainer-overhead budget above, these
+    are genuine shared compute (mode-invariant, principle #1) -- the target
+    is a MATCH, not a one-sided bound. Pinpoints WHICH JVP sub-step
+    regresses when `gpu_compute_s`'s coarse total diverges.
+
+    Function names are an OPEN-ENDED set (decorator sites evolve with the
+    code), unlike `trainer_phase_split`'s fixed `_PHASE_FIELDS` -- so this
+    returns ONE rung (`ok` = AND over per-function sub-checks) with the
+    breakdown nested under `by_func`, not one CHECK_META key per function.
+    SKIPs cleanly with no `step_timing` telemetry.
+    """
+    def _collect(trainers: dict) -> dict:
+        out: dict = {}
+        for d in trainers.values():
+            for e in d.get("step_timing", []):
+                func = e.get("func")
+                dur = e.get("duration_s")
+                if func is None or dur is None or dur < 0:
+                    continue
+                out.setdefault(func, []).append(float(dur))
+        return out
+
+    r_by_func, s_by_func = _collect(real_trainers), _collect(sim_trainers)
+    funcs = sorted(set(r_by_func) | set(s_by_func))
+    if not funcs:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no step_timing telemetry (non-fwdllm run or "
+                        "pre-instrumentation logs)"}
+
+    by_func = {}
+    for func in funcs:
+        rv, sv = r_by_func.get(func, []), s_by_func.get(func, [])
+        if not rv or not sv:
+            by_func[func] = {"ok": True, "tier": "DIST", "status": "SKIP",
+                             "note": "no samples in one mode"}
+            continue
+        ks = ks_stat(rv, sv)
+        rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
+        by_func[func] = {
+            "ok": ks <= ks_tol,
+            "tier": "DIST",
+            "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+            "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
+            "n_real": len(rv), "n_sim": len(sv),
+        }
+    return {
+        "ok": all(r["ok"] for r in by_func.values()),
+        "tier": "DIST",
+        "ks_tol": ks_tol,
+        "n_funcs": len(funcs),
+        "worst_func": (max(by_func, key=lambda f: by_func[f].get("ks_stat") or -1.0)
+                      if any(r.get("ks_stat") is not None for r in by_func.values())
+                      else None),
+        "by_func": by_func,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §3.8x  Loss curve  (C2)  — Stage 8
 # ═══════════════════════════════════════════════════════════════════
@@ -3923,31 +4050,30 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
 
 def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                            var_rel_tol: float = 1e-3) -> dict:
-    """L1 [EXACT]: the ordered per-aggregation logical sequence is IDENTICAL.
+    """L1 [EXACT, scoped]: the ordered per-aggregation logical sequence, HARD
+    where achievable and SOFT/scoped where it provably is not (simulate_fwdllm.md
+    §A ROOT — operator decision, #N):
 
-    The strongest logical-parity rung (simulate_fwdllm.md §A). Unlike
-    `aggregation_sequence_parity` (per-`round`, gated to
-    WARN for stochastic selectors), this keys on the fwdllm variance-cadence
-    *cycle* stream (`_fwd_cadence_cycles`, ordered) and asserts, cycle-by-cycle:
+      - SET   : HARD over the ENTIRE run, never bin-capped -- fluxtune's #1d
+        (a genuine divergence) must still fail regardless of data_id.
+      - CADENCE (cycle_data_id/iteration_per_data_id/agg_goal_count/
+        var_good_enough/force_commit_planned) and VAR VALUE (`var_rel_tol`):
+        HARD only through `max_bin` (default 1) -- grads aren't bit-
+        reproducible past ~bin 6 (GPU fp16 jitter amplified by the split-half
+        variance ratio), so exact cadence beyond the wall is an impossible
+        target, not a bug. Beyond the cap: DISTRIBUTIONAL instead, see
+        v1_iter_per_data_id/v2_var_trajectory/v4_force_commit_rate/v5.
+      - RECEIVE-ORDER: reported every capped cycle, gates `ok` only when
+        `is_async` -- sync's fedavg is order-invariant and K-D31 canonicalizes
+        ties, so a nominal reorder with matched SET/CADENCE/VAR is benign.
 
-      - COHORT SET   : same trainers committed together (which is fluxtune's bug)
-      - COHORT ORDER : same receive/commit order — NOT benign; the fwdllm
-        variance is a split-half statistic over the commit-ORDERED grad list, so
-        a reshuffle changes `var` even for an identical set
-      - CADENCE      : (cycle_data_id, iteration_per_data_id, agg_goal_count,
-        var_good_enough, force_commit_planned) identical
-      - VAR VALUE    : per-cycle `var` matches within var_rel_tol (grads are
-        deterministic GIVEN matched order → var must match; a ~1% gap is the
-        RNG-desync tell)
-
-    Real receive-order is deterministic in both modes by design, so exact match
-    is the correct target (NOT gated). Enforced EXACT: any divergence fails.
-    SKIPs cleanly on non-fwdllm runs (no cadence fields → async_cifar10 etc.).
-    `max_bin` restricts to the first-data-bin window.
+    `max_bin` can only narrow the CADENCE/VAR/ORDER window below its bin-1
+    default, never widen it -- SET stays uncapped regardless. SKIPs cleanly
+    on non-fwdllm runs.
     """
-    rc = _fwd_cadence_cycles(real, max_bin)
-    sc = _fwd_cadence_cycles(sim, max_bin)
-    if not rc or not sc:
+    rc_full = _fwd_cadence_cycles(real, None)
+    sc_full = _fwd_cadence_cycles(sim, None)
+    if not rc_full or not sc_full:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
 
@@ -3959,21 +4085,46 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                 e.get("agg_goal_count"), e.get("var_good_enough"),
                 e.get("force_commit_planned"))
 
+    # ---- SET: HARD over the entire compared run, never bin-capped. ----
+    n_full = min(len(rc_full), len(sc_full))
+    set_m = sum(1 for i in range(n_full)
+                if sorted(cohort(rc_full[i])) == sorted(cohort(sc_full[i])))
+    set_ok = (len(rc_full) == len(sc_full) and set_m == n_full)
+    set_divergence = None
+    if not set_ok:
+        _idx = next((i for i in range(n_full)
+                     if sorted(cohort(rc_full[i])) != sorted(cohort(sc_full[i]))),
+                    n_full)  # falls through to a length mismatch past n_full
+        if _idx < n_full:
+            r, s = rc_full[_idx], sc_full[_idx]
+            set_divergence = {
+                "cycle_index": _idx,
+                "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
+                "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
+            }
+
+    # ---- CADENCE / VAR / ORDER: HARD only through the bin-1 wall by default;
+    # an explicit `max_bin` narrows further but never widens past 1. ----
+    _cap = 1 if max_bin is None else max_bin
+    rc = [e for e in rc_full if e.get("cycle_data_id") is not None and e["cycle_data_id"] <= _cap]
+    sc = [e for e in sc_full if e.get("cycle_data_id") is not None and e["cycle_data_id"] <= _cap]
     n = min(len(rc), len(sc))
-    set_m = order_m = cad_m = var_m = 0
+    is_async = any(e.get("is_async") for e in rc_full[:1] + sc_full[:1])
+    order_m = cad_m = var_m = 0
     first_div = None
     for i in range(n):
         r, s = rc[i], sc[i]
         rc_ord, sc_ord = cohort(r), cohort(s)
-        set_ok = sorted(rc_ord) == sorted(sc_ord)
+        set_ok_i = sorted(rc_ord) == sorted(sc_ord)
         order_ok = rc_ord == sc_ord
         cad_ok = cadence(r) == cadence(s)
         rv, sv = r.get("var"), s.get("var")
         var_ok = (rv is None and sv is None) or (
             rv is not None and sv is not None
             and abs(rv - sv) <= var_rel_tol * max(abs(rv), abs(sv), 1e-9))
-        set_m += set_ok; order_m += order_ok; cad_m += cad_ok; var_m += var_ok
-        if first_div is None and not (set_ok and order_ok and cad_ok and var_ok):
+        order_m += order_ok; cad_m += cad_ok; var_m += var_ok
+        _gated_ok = set_ok_i and cad_ok and var_ok and (order_ok if is_async else True)
+        if first_div is None and not _gated_ok:
             first_div = {
                 "cycle_index": i,
                 "real": {"data_id": r.get("cycle_data_id"),
@@ -3984,21 +4135,28 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                         "iter": s.get("iteration_per_data_id"),
                         "cohort": sc_ord, "var": sv,
                         "var_good": s.get("var_good_enough")},
-                "set_ok": set_ok, "order_ok": order_ok,
+                "set_ok": set_ok_i, "order_ok": order_ok,
                 "cadence_ok": cad_ok, "var_ok": var_ok,
             }
-    ok = (len(rc) == len(sc) and set_m == n and order_m == n
-          and cad_m == n and var_m == n)
+    cadence_ok = (len(rc) == len(sc) and cad_m == n)
+    var_ok_all = (len(rc) == len(sc) and var_m == n)
+    order_ok_all = (len(rc) == len(sc) and order_m == n)
+
+    ok = set_ok and cadence_ok and var_ok_all and (order_ok_all if is_async else True)
     return {
         "ok": ok,
         "tier": "EXACT",
-        "cycles_compared": n,
-        "n_real_cycles": len(rc),
-        "n_sim_cycles": len(sc),
-        "set_match_frac": round(set_m / n, 3) if n else None,
+        "cycles_compared": n_full,
+        "n_real_cycles": len(rc_full),
+        "n_sim_cycles": len(sc_full),
+        "set_match_frac": round(set_m / n_full, 3) if n_full else None,
+        "set_divergence": set_divergence,
         "order_match_frac": round(order_m / n, 3) if n else None,
         "cadence_match_frac": round(cad_m / n, 3) if n else None,
         "var_match_frac": round(var_m / n, 3) if n else None,
+        "cadence_var_order_max_bin": _cap,
+        "is_async": bool(is_async),
+        "order_gates_ok": bool(is_async),
         "max_bin": max_bin,
         "first_divergence": first_div,
     }
@@ -4372,6 +4530,120 @@ def compute_conservation_parity(real: dict, sim: dict,
     }
 
 
+def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
+                             min_abs_s: float = 0.5) -> dict:
+    """Commit/ordering-stage invariant: sim must NEVER cost more real wall-
+    clock than real at this stage (generalizes #15's phantom drain-gate
+    stall, previously only visible via debug counters, into a standing
+    rung). Two components, EACH one-sided (`sim <= real*(1+tol_rel)`,
+    floored at `min_abs_s`):
+      - TRANSPORT (`barrier_wait_s`/`drain_tail_s`): real-only wall
+        artifacts the sim should collapse toward zero -- any excess is
+        unmodeled work/blocking.
+      - DRAIN SPREAD: `processing_wall_ts` range across a commit's cohort --
+        how long the drain loop took through an already-ready cohort. Sim
+        spreading wider than real is the #15 shape, at per-cycle granularity.
+    SKIPs cleanly when fields are absent (non-fwdllm runs, single-contributor
+    cohorts, or pre-instrumentation logs).
+    """
+    def _phase_mean(agg, field):
+        vals = [e[field] for e in agg["agg_rounds"]
+                if e.get("event") == "agg_round" and e.get(field) is not None]
+        return (sum(vals) / len(vals)) if vals else None
+
+    def _drain_spreads(agg):
+        out = []
+        for e in agg["agg_rounds"]:
+            if e.get("event") != "agg_round":
+                continue
+            pts = [c.get("processing_wall_ts")
+                   for c in (e.get("contributor_intervals") or [])
+                   if c.get("processing_wall_ts") is not None]
+            if len(pts) >= 2:
+                out.append(max(pts) - min(pts))
+        return out
+
+    def _budget_component(rm, sm):
+        budget = max(rm * (1 + tol_rel), min_abs_s)
+        return {"ok": sm <= budget, "real_mean_s": round(rm, 3),
+                "sim_mean_s": round(sm, 3), "budget_s": round(budget, 3)}
+
+    components: dict = {}
+    for field in ("barrier_wait_s", "drain_tail_s"):
+        rm, sm = _phase_mean(real, field), _phase_mean(sim, field)
+        components[field] = (
+            _budget_component(rm, sm) if (rm is not None and sm is not None)
+            else {"ok": True, "status": "SKIP", "note": f"no {field} in telemetry"})
+
+    r_spread, s_spread = _drain_spreads(real), _drain_spreads(sim)
+    if r_spread and s_spread:
+        rm, sm = sum(r_spread) / len(r_spread), sum(s_spread) / len(s_spread)
+        components["drain_spread"] = {
+            **_budget_component(rm, sm),
+            "n_real_cycles": len(r_spread), "n_sim_cycles": len(s_spread),
+        }
+    else:
+        components["drain_spread"] = {
+            "ok": True, "status": "SKIP",
+            "note": "no cycle with >=2 processing_wall_ts (non-fwdllm run, "
+                    "single-contributor cohorts, or pre-instrumentation telemetry)"}
+
+    if all(c.get("status") == "SKIP" for c in components.values()):
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no drain-wall-budget telemetry", "components": components}
+    return {
+        "ok": all(c["ok"] for c in components.values()),
+        "tier": "EXACT",
+        "tol_rel": tol_rel,
+        "min_abs_s": min_abs_s,
+        "components": components,
+    }
+
+
+def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
+                                    mean_tol_rel: float = 0.35) -> dict:
+    """Aggregation-stage wall-clock EQUALITY check (DIAG, TWO-SIDED) -- the
+    compute-side complement to `drain_wall_budget`'s transport-only budget.
+    `aggregate_fedavg_s`/`eval_s` are genuine shared compute run for real in
+    BOTH modes (principle #1) -- the target is a MATCH (KS + mean-rel), not
+    a one-sided bound; sim being faster OR slower by more than tolerance is
+    equally suspicious. DIAG, not enforced under --strict: prior rungs
+    (`overhead_residual`/K3b) only see these folded into a whole-run
+    residual, which can mask a per-cycle divergence like #15's residual (a)
+    (uncredited `aggregate()` compute). Promote to MECHANISM once proven
+    noise-free on a real run.
+    """
+    def _vals(agg, field):
+        return [e[field] for e in agg["agg_rounds"]
+                if e.get("event") == "agg_round" and e.get(field) is not None]
+
+    components = {}
+    for field in ("aggregate_fedavg_s", "eval_s"):
+        rv, sv = _vals(real, field), _vals(sim, field)
+        if not rv or not sv:
+            components[field] = {"ok": True, "status": "SKIP",
+                                 "note": f"no {field} telemetry"}
+            continue
+        ks = ks_stat(rv, sv)
+        rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
+        mean_rel = abs(rm - sm) / max(abs(rm), abs(sm), 1e-9)
+        components[field] = {
+            "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
+            "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+            "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3),
+            "mean_rel_diff": round(mean_rel, 3), "mean_tol_rel": mean_tol_rel,
+        }
+
+    if all(c.get("status") == "SKIP" for c in components.values()):
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no aggregate()/eval() wall telemetry", "components": components}
+    return {
+        "ok": all(c["ok"] for c in components.values()),
+        "tier": "DIAG",
+        "components": components,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # §4  Consolidated run_all_parity (extended)
 # ═══════════════════════════════════════════════════════════════════
@@ -4456,6 +4728,10 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # ── Stage 4 Dispatch & training ──
     results["training_budget"] = training_budget_parity(real_trainers, sim_trainers)
     results.update(trainer_phase_split(real_trainers, sim_trainers))
+    results["trainer_phase_wall_budget"] = trainer_phase_wall_budget_ok(
+        real_trainers, sim_trainers)
+    results["step_timing_breakdown"] = step_timing_breakdown_parity(
+        real_trainers, sim_trainers)
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
@@ -4476,6 +4752,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["commit_promptness"] = commit_promptness_parity(sim_agg)
     results["aggregation_sequence"] = aggregation_sequence_parity(
         real_agg, sim_agg, max_rounds)
+    results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
+    results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
 
     # ── Stage 6'/3'/7' FwdLLM variance-cadence layer (PARITY.md §F.4) ──
     # Pure functions over the per-cycle agg_round series; SKIP cleanly on
@@ -4580,6 +4858,8 @@ CHECK_META: dict = {
     "phase_mqtt_fetch":        {"stage": 4, "role": "DIAG",      "deps": ()},
     "phase_weights_to_ram":    {"stage": 4, "role": "MECHANISM", "deps": ()},
     "phase_post_train":        {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "trainer_phase_wall_budget": {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "step_timing_breakdown":  {"stage": 4, "role": "DIAG",     "deps": ("phase_gpu_compute",)},
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
@@ -4595,6 +4875,8 @@ CHECK_META: dict = {
     "staleness":               {"stage": 6, "role": "MECHANISM", "deps": ("per_round_advance", "inter_arrival_order", "commit_visibility")},
     "withheld_delivery":       {"stage": 6, "role": "DIAG",     "deps": ("staleness", "abandon_timeout")},
     "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
+    "drain_wall_budget":       {"stage": 6, "role": "MECHANISM", "deps": ("vclock_telemetry", "commit_visibility")},
+    "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},

@@ -1154,13 +1154,15 @@ class TestR1W1Registered:
         assert pc.CHECK_META["w1_compute_conservation"]["deps"] == ("r1_inflight_overlap",)
 
 
-def _lcyc(data_id, iteration, cohort, var, var_good=False, force=False, goal=3):
+def _lcyc(data_id, iteration, cohort, var, var_good=False, force=False, goal=3,
+          is_async=False):
     """One fwdllm variance-cadence cycle event (cohort in receive/commit order)."""
     return {"event": "agg_round", "round": 1,
             "cycle_data_id": data_id, "iteration_per_data_id": iteration,
             "contributing_trainers": list(cohort), "var": var,
             "var_good_enough": var_good, "force_commit_planned": force,
-            "agg_goal_count": goal, "staleness": [0] * len(cohort)}
+            "agg_goal_count": goal, "staleness": [0] * len(cohort),
+            "is_async": is_async}
 
 
 class TestCohortSequence:
@@ -1177,13 +1179,25 @@ class TestCohortSequence:
         assert r["ok"], r
         assert r["order_match_frac"] == 1.0 and r["var_match_frac"] == 1.0
 
-    def test_reordered_cohort_same_set_FAILS(self):
-        # Same SET each cycle, different receive ORDER -> feeds split-half var.
-        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9)])
-        sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9)])
+    def test_reordered_cohort_same_set_is_benign_for_sync(self):
+        # #N: SYNC receive-ORDER is SOFT (fedavg order-invariant, K-D31
+        # canonicalizes ties) -- a same-set/same-var reorder no longer fails,
+        # though order_match_frac still surfaces it for diagnosis.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9, is_async=False)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9, is_async=False)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["set_match_frac"] == 1.0 and r["order_match_frac"] == 0.0
+        assert r["order_gates_ok"] is False
+
+    def test_reordered_cohort_same_set_FAILS_for_async(self):
+        # #N: the same reorder DOES fail when the cycle is ASYNC -- order is
+        # only SOFT for sync.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9, is_async=True)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9, is_async=True)])
         r = pc.cohort_sequence_parity(real, sim)
         assert not r["ok"], r
-        assert r["set_match_frac"] == 1.0 and r["order_match_frac"] == 0.0
+        assert r["order_gates_ok"] is True
         assert r["first_divergence"]["order_ok"] is False
 
     def test_different_cohort_FAILS(self):
@@ -1225,15 +1239,252 @@ class TestCohortSequence:
         assert r.get("status") == "SKIP" and r["ok"]
 
     def test_max_bin_windows_to_first_bin(self):
-        # Cohorts match on bin 0, diverge on bin 1 -> --max-bin 0 passes.
-        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5), _lcyc(1, 1, ["a", "b"], 0.5)])
-        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5), _lcyc(1, 1, ["b", "a"], 0.5)])
+        # Cadence matches on bin 0, diverges on bin 1 (var_good flips) ->
+        # --max-bin 0 passes; the default (cap=1) window still sees bin 1 and fails.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                                _lcyc(1, 1, ["a", "b"], 0.2, var_good=True)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                               _lcyc(1, 1, ["a", "b"], 0.5, var_good=False)])
         assert pc.cohort_sequence_parity(real, sim, max_bin=0)["ok"]
         assert not pc.cohort_sequence_parity(real, sim)["ok"]
+
+    def test_cadence_divergence_beyond_bin1_not_enforced_by_default(self):
+        # #N: cadence/var EXACT is HARD only through bin 1 (float-
+        # nondeterminism wall starts ~bin 7) -- a divergence beyond it does
+        # NOT fail cohort_sequence; that's v1/v2/v4/v5's (DISTRIBUTIONAL) job.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                                _lcyc(7, 2, ["a", "b"], 0.26, var_good=False)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                               _lcyc(7, 2, ["a", "b"], 0.31, var_good=True)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["cadence_var_order_max_bin"] == 1
+
+    def test_set_divergence_beyond_bin1_still_enforced(self):
+        # #N: cohort SET is HARD over the ENTIRE run, uncapped -- a genuine
+        # divergence (fluxtune's #1d) must still fail no matter the data_id.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                                _lcyc(7, 2, ["a", "b"], 0.5)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                               _lcyc(7, 2, ["a", "c"], 0.5)])  # different SET
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        assert r["set_match_frac"] < 1.0
+        assert r["set_divergence"]["cycle_index"] == 1
 
     def test_present_in_run_all_and_meta(self):
         assert "cohort_sequence" in pc.CHECK_META
         assert pc.CHECK_META["cohort_sequence"]["deps"]
+
+
+class TestDrainWallBudget:
+    """New commit-stage invariant: sim must NEVER cost more wall-clock than
+    real at the drain/commit stage -- generalizes the #15 diagnostic (a
+    phantom drain-gate stall, previously only visible via debug counters)
+    into a standing rung. One-sided (sim <= real*(1+tol)), not a two-sided
+    distribution match -- sim being FASTER than real is always healthy."""
+
+    def _cyc(self, barrier=None, drain=None, proc_ts=None):
+        e = {"event": "agg_round", "round": 1}
+        if barrier is not None:
+            e["barrier_wait_s"] = barrier
+        if drain is not None:
+            e["drain_tail_s"] = drain
+        if proc_ts is not None:
+            e["contributor_intervals"] = [
+                {"end": f"t{i}", "processing_wall_ts": t}
+                for i, t in enumerate(proc_ts)
+            ]
+        return e
+
+    def test_matched_wall_passes(self):
+        real = _agg(agg_rounds=[self._cyc(barrier=2.0, drain=1.0, proc_ts=[0.0, 0.5])])
+        sim = _agg(agg_rounds=[self._cyc(barrier=1.9, drain=0.9, proc_ts=[0.0, 0.4])])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert r["ok"], r
+
+    def test_sim_transport_excess_FAILS(self):
+        # drain_tail_s is a real-transport artifact sim should collapse to ~0;
+        # sim taking noticeably MORE than real is a stall, not benign noise.
+        real = _agg(agg_rounds=[self._cyc(drain=0.1)])
+        sim = _agg(agg_rounds=[self._cyc(drain=5.0)])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["drain_tail_s"]["ok"]
+
+    def test_sim_drain_spread_excess_FAILS(self):
+        # #15 shape: sim's drain loop takes far longer to get through an
+        # already-ready cohort than real's did.
+        real = _agg(agg_rounds=[self._cyc(proc_ts=[0.0, 0.3, 0.6])])
+        sim = _agg(agg_rounds=[self._cyc(proc_ts=[0.0, 15.0, 30.0])])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["drain_spread"]["ok"]
+
+    def test_sim_faster_than_real_passes(self):
+        # The whole point of this rung: sim being FASTER than real is
+        # healthy, never a fail.
+        real = _agg(agg_rounds=[self._cyc(barrier=5.0, drain=2.0, proc_ts=[0.0, 4.0])])
+        sim = _agg(agg_rounds=[self._cyc(barrier=0.01, drain=0.0, proc_ts=[0.0, 0.0])])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert r["ok"], r
+
+    def test_skips_without_telemetry(self):
+        real = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
+        sim = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "drain_wall_budget" in pc.CHECK_META
+        assert pc.CHECK_META["drain_wall_budget"]["deps"]
+
+
+def _phase_round(**phases):
+    e = {"event": "trainer_round"}
+    e.update(phases)
+    return e
+
+
+class TestTrainerPhaseWallBudget:
+    """Trainer-compute-stage twin of drain_wall_budget: sim must never cost
+    more real wall-clock than real on the phases it should collapse
+    (dispatch/local-copy overhead), one-sided (sim <= real*(1+tol))."""
+
+    def _tr(self, real_phases, sim_phases):
+        real = {"t1": {"trainer_round": [_phase_round(**real_phases)]}}
+        sim = {"t1": {"trainer_round": [_phase_round(**sim_phases)]}}
+        return real, sim
+
+    def test_matched_wall_passes(self):
+        real, sim = self._tr(
+            {"pre_train_s": 0.2, "post_train_s": 0.1,
+             "weights_to_ram_s": 0.05, "weights_to_gpu_s": 0.05},
+            {"pre_train_s": 0.19, "post_train_s": 0.09,
+             "weights_to_ram_s": 0.04, "weights_to_gpu_s": 0.04},
+        )
+        r = pc.trainer_phase_wall_budget_ok(real, sim)
+        assert r["ok"], r
+
+    def test_sim_overhead_excess_FAILS(self):
+        real, sim = self._tr({"pre_train_s": 0.01}, {"pre_train_s": 3.0})
+        r = pc.trainer_phase_wall_budget_ok(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["pre_train_s"]["ok"]
+
+    def test_sim_faster_than_real_passes(self):
+        real, sim = self._tr({"pre_train_s": 2.0, "post_train_s": 1.0},
+                              {"pre_train_s": 0.0, "post_train_s": 0.0})
+        r = pc.trainer_phase_wall_budget_ok(real, sim)
+        assert r["ok"], r
+
+    def test_mqtt_fetch_reported_but_never_gates(self):
+        # Apples-to-oranges (real network I/O vs sim in-mem cache): surfaced
+        # for diagnosis but a huge mqtt excess alone must never fail `ok`.
+        real, sim = self._tr({"pre_train_s": 0.1, "mqtt_fetch_s": 0.1},
+                              {"pre_train_s": 0.1, "mqtt_fetch_s": 50.0})
+        r = pc.trainer_phase_wall_budget_ok(real, sim)
+        assert r["ok"], r
+        assert r["components"]["mqtt_fetch_s"]["gates_ok"] is False
+        assert r["components"]["mqtt_fetch_s"]["ok"] is False
+
+    def test_skips_without_telemetry(self):
+        real = {"t1": {"trainer_round": [{"event": "trainer_round"}]}}
+        sim = {"t1": {"trainer_round": [{"event": "trainer_round"}]}}
+        r = pc.trainer_phase_wall_budget_ok(real, sim)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "trainer_phase_wall_budget" in pc.CHECK_META
+
+
+class TestStepTimingBreakdown:
+    """Fine-grained per-function GPU-compute decomposition: DISTRIBUTIONAL
+    (KS) match, not a one-sided bound -- genuine shared compute, mode-
+    invariant per principle #1."""
+
+    def _st(self, func, real_durs, sim_durs):
+        real = {"t1": {"step_timing": [
+            {"event": "step_timing", "func": func, "duration_s": d} for d in real_durs]}}
+        sim = {"t1": {"step_timing": [
+            {"event": "step_timing", "func": func, "duration_s": d} for d in sim_durs]}}
+        return real, sim
+
+    def test_matched_distribution_passes(self):
+        real, sim = self._st("jvp_eval", [0.01] * 20, [0.01] * 20)
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert r["ok"], r
+        assert r["by_func"]["jvp_eval"]["ok"]
+
+    def test_diverged_function_FAILS_and_is_named(self):
+        real, sim = self._st("jvp_eval", [0.01] * 10, [0.05] * 10)
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert not r["ok"]
+        assert r["worst_func"] == "jvp_eval"
+        assert not r["by_func"]["jvp_eval"]["ok"]
+
+    def test_skips_without_telemetry(self):
+        real = {"t1": {"step_timing": []}}
+        sim = {"t1": {"step_timing": []}}
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "step_timing_breakdown" in pc.CHECK_META
+
+
+class TestAggregationComputeWall:
+    """Aggregation-stage wall-clock EQUALITY (DIAG, two-sided): unlike
+    drain_wall_budget, aggregate_fedavg_s/eval_s are genuine shared compute --
+    the target is a MATCH, so sim being either faster OR slower fails it."""
+
+    def _cyc(self, fedavg=None, ev=None):
+        e = {"event": "agg_round", "round": 1}
+        if fedavg is not None:
+            e["aggregate_fedavg_s"] = fedavg
+        if ev is not None:
+            e["eval_s"] = ev
+        return e
+
+    def _agg_with_fedavg(self, vals):
+        return _agg(agg_rounds=[self._cyc(fedavg=v) for v in vals])
+
+    def test_matched_wall_passes(self):
+        # Slightly-shifted but overlapping distributions -- realistic jitter,
+        # not degenerate point masses (a constant-per-cycle value would give
+        # KS=1.0 regardless of how close the means are).
+        real = self._agg_with_fedavg([1.28, 1.29, 1.30, 1.31, 1.32])
+        sim = self._agg_with_fedavg([1.29, 1.30, 1.31, 1.32, 1.33])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert r["ok"], r
+
+    def test_sim_slower_FAILS(self):
+        # Two-sided: sim taking noticeably MORE genuine compute time fails,
+        # same as sim taking noticeably LESS would (both are suspicious here).
+        real = self._agg_with_fedavg([1.28, 1.29, 1.30, 1.31, 1.32])
+        sim = self._agg_with_fedavg([30.0, 31.0, 32.0, 33.0, 34.0])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["aggregate_fedavg_s"]["ok"]
+
+    def test_sim_faster_also_FAILS(self):
+        real = self._agg_with_fedavg([1.28, 1.29, 1.30, 1.31, 1.32])
+        sim = self._agg_with_fedavg([0.01, 0.02, 0.03, 0.04, 0.05])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["aggregate_fedavg_s"]["ok"]
+
+    def test_never_hard_fails_is_diag(self):
+        assert pc.CHECK_META["aggregation_compute_wall"]["role"] == "DIAG"
+
+    def test_skips_without_telemetry(self):
+        real = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
+        sim = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_present_in_run_all_and_meta(self):
+        assert "aggregation_compute_wall" in pc.CHECK_META
 
 
 class TestVarTrajectoryMeanGuard:

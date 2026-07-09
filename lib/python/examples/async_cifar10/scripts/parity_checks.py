@@ -106,6 +106,10 @@ from parity.checks import (  # noqa: F401, E402
     _committed_grads,
     inflight_overlap_parity,
     compute_conservation_parity,
+    drain_wall_budget_parity,
+    trainer_phase_wall_budget_ok,
+    step_timing_breakdown_parity,
+    aggregation_compute_wall_parity,
     # overall
     run_all_parity,
     overall_verdict,

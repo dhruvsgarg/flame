@@ -142,6 +142,26 @@ class TestTrainWithDataIdEmitsPhases:
         finally:
             telemetry.shutdown()
 
+    def test_gpu_pass_window_matches_gpu_compute_s(self, tmp_path):
+        """§J step-1 telemetry: gpu_pass_start_wall/end_wall bracket the GPU
+        pass exactly (end - start == gpu_compute_s), so an overlap-measurement
+        script can trust the window against the aggregator's compute span."""
+        telemetry.configure(role="trainer", run_dir=str(tmp_path))
+        try:
+            t = _FakeFedSgd()
+            t.train_with_data_id()
+
+            lines = (tmp_path / "trainer.jsonl").read_text().splitlines()
+            events = [json.loads(l) for l in lines]
+            ev = [e for e in events if e["event"] == "trainer_round"][0]
+            assert ev["gpu_pass_start_wall"] is not None
+            assert ev["gpu_pass_end_wall"] is not None
+            assert ev["gpu_pass_end_wall"] >= ev["gpu_pass_start_wall"]
+            assert abs((ev["gpu_pass_end_wall"] - ev["gpu_pass_start_wall"])
+                       - ev["gpu_compute_s"]) < 1e-6
+        finally:
+            telemetry.shutdown()
+
     def test_straggler_in_sct_not_in_training_budget(self, tmp_path):
         """#6: the B2 straggler spread is folded into the sct
         (sim_round_duration_s) but NOT into the emitted training_budget_s -- so
