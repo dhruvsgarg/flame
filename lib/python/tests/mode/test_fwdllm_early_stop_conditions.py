@@ -30,10 +30,15 @@ class _FakeAggregator:
         max_runtime_s=None,
         agg_start_time_ts=None,
         is_async=False,
+        simulated=False,
+        vclock_now=0.0,
+        sim_wall_ceiling_s=None,
     ):
         self._work_done = False
         self.data_id = data_id
         self.is_async = is_async
+        self.simulated = simulated
+        self._vclock = SimpleNamespace(now=vclock_now)
         self.agg_start_time_ts = (
             agg_start_time_ts if agg_start_time_ts is not None else time.time()
         )
@@ -41,6 +46,7 @@ class _FakeAggregator:
             hyperparameters=SimpleNamespace(
                 max_data_id_progress=max_data_id_progress,
                 max_runtime_s=max_runtime_s,
+                sim_wall_ceiling_s=sim_wall_ceiling_s,
             )
         )
 
@@ -50,6 +56,8 @@ class _FakeAggregator:
     def _distribute_weights_async(self, tag, task_to_perform="train"):
         pass
 
+    # Phase 4a: the ceiling default reads self.SIM_WALL_CEILING_FACTOR.
+    SIM_WALL_CEILING_FACTOR = TopAggregator.SIM_WALL_CEILING_FACTOR
     check = TopAggregator._check_early_stop_conditions
     _check_early_stop_conditions = TopAggregator._check_early_stop_conditions
     distribute = TopAggregator._distribute_weights
@@ -100,6 +108,69 @@ class TestEarlyStopConditions:
             data_id=1,
             max_data_id_progress=10,
             max_runtime_s=1.0,
+            agg_start_time_ts=time.time() - 2.0,
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_sim_max_runtime_uses_vclock_not_wall(self):
+        """SIM mode (root #6 methodology): max_runtime_s is a VIRTUAL-clock
+        budget, not wall. vclock below budget => keep running even though wall
+        has long passed it (the sim runs faster than real)."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=100.0,
+            agg_start_time_ts=time.time(),      # ~0 wall elapsed
+        )
+        agg.check()
+        assert agg._work_done is False          # vclock 100 < budget 3600
+
+    def test_sim_max_runtime_stops_when_vclock_reaches_budget(self):
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=3600.0,
+            agg_start_time_ts=time.time(),
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_sim_wall_below_decoupled_ceiling_keeps_running(self):
+        """Phase 4a (root S1): the default ceiling is now a GENEROUS multiple of
+        the budget (SIM_WALL_CEILING_FACTOR), NOT 1×. A sim whose WALL exceeds
+        the budget but is well under budget×factor must KEEP running -- the sim
+        legitimately uses more wall than vclock (real GPU + eval). This is the
+        S1 truncation the old 1× ceiling caused."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,   # under budget
+            agg_start_time_ts=time.time() - 7200.0,                  # wall 2× budget
+        )
+        agg.check()
+        assert agg._work_done is False   # 7200s < 20× × 3600s ceiling
+
+    def test_sim_wall_ceiling_stops_true_runaway(self):
+        """The outer safety still fires on a genuine runaway: wall beyond
+        budget × SIM_WALL_CEILING_FACTOR stops the sim."""
+        over = 3600.0 * TopAggregator.SIM_WALL_CEILING_FACTOR + 10.0
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,
+            agg_start_time_ts=time.time() - over,
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_explicit_sim_wall_ceiling_overrides_default(self):
+        """An explicit `sim_wall_ceiling_s` is honored verbatim (tighter outer
+        bound) -- not multiplied by the factor."""
+        agg = _FakeAggregator(
+            max_runtime_s=3600.0, simulated=True, vclock_now=80.0,
+            sim_wall_ceiling_s=100.0,
+            agg_start_time_ts=time.time() - 101.0,   # wall > explicit ceiling
+        )
+        agg.check()
+        assert agg._work_done is True
+
+    def test_real_max_runtime_still_uses_wall(self):
+        """Real mode unchanged: wall-clock elapsed drives the cap."""
+        agg = _FakeAggregator(
+            max_runtime_s=1.0, simulated=False,
             agg_start_time_ts=time.time() - 2.0,
         )
         agg.check()

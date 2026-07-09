@@ -331,8 +331,17 @@ baselines:
         # latency variance is much higher than the n=10 smoke default.
         stalenessPolicy: exact
         inc_model_version_per_data_id: true
-        max_iterations_per_data_id: 15
+        # Iteration-per-data_id cap left UNBOUNDED (None) for the sync baselines:
+        # the variance-plateau force-commit is a fluxtune optimization (charter
+        # Opt-2) that did not exist in vanilla FwdLLM, so fwdllm/fwdllm_plus run
+        # the original unbounded variance gate (grind until variance passes).
         var_threshold: 0.3
+        # Opt-1 comm-redundancy fix (charter §5c): learning-neutral, enabled on
+        # ALL baselines so E4 bytes are fair. fwdllm re-sent the identical model
+        # to the same K trainers every iteration (~90% redundant, ~22 GB) because
+        # the return-driven staleness guard never marked actively-training clients
+        # current. Set false to revert (byte-on-wire identical off).
+        suppress_redundant_weights: true
         reselect_each_iteration: false
     trainer:
       hyperparameters:
@@ -378,8 +387,14 @@ baselines:
         # into a model_version-53 cycle) happen in the first place.
         stalenessPolicy: round_data_id
         inc_model_version_per_data_id: true
-        max_iterations_per_data_id: 15
+        # Unbounded (None) — the iteration cap is a fluxtune optimization
+        # (charter Opt-2), not part of vanilla FwdLLM_Plus; sync baselines run
+        # the original unbounded variance gate. See fwdllm block above.
         var_threshold: 0.3
+        # Opt-1 comm-redundancy fix (charter §5c), learning-neutral. Already near
+        # clean here (per-iteration reselect keeps the guard current, ~3.5%), but
+        # enabled for consistency so the fix covers all baselines. Set false to revert.
+        suppress_redundant_weights: true
         reselect_each_iteration: true
     trainer:
       hyperparameters:
@@ -454,9 +469,30 @@ baselines:
           # has no fwdllm/agnews entry. Starting point; retune against
           # fluxtune's live smoke test.
           learning_rate: 0.075
+          # Aggregation rate (per-update weight). DEFAULT for fluxtune is now C3
+          # `grad_aware` (Opt-3, charter §5c) -- fluxtune's OWN aggregation. `type: new`
+          # is the borrowed FeLiX scalar staleness×utility (magnitude only, charter N2)
+          # and is NOT a fluxtune contribution; set it only for the FeLiX-baseline
+          # ablation arm. grad_aware weights by DIRECTION/reliability, bounded ≤ base so
+          # the effective LR never inflates (no LR re-tune):
+          #   base: new           # keep staleness×utility as the base (mobiperf async);
+          #                       #   `neutral` = 1.0 (pure gradient-aware, no staleness)
+          #   align_gate: true    # S2 (primary): down-weight updates whose cos vs the
+          #                       #   running aggregate < align_floor -> 0 at cos=-1
+          #                       #   (fixes H1: averaging anti-aligned JVP estimates)
+          #   align_floor: 0.0    # gate below this cosine (0 = gate only anti-aligned)
+          #   inverse_var: false  # S1 (optional stronger C3): *min(1, var_ref/(var_i+eps))
+          #   var_ref: 0.3        #   reliability reference (defaults to var_threshold)
+          # `grad_aware_gated_total` + `agg_rate_type` emitted on agg_round.
+          # ABLATION: to revert this arm to FeLiX aggregation set `type: new`.
           agg_rate_conf:
-            type: new
-            scale: 0.4
+            type: grad_aware
+            base: new
+            align_gate: true
+            align_floor: 0.0
+            inverse_var: false
+            var_ref: 0.3
+            scale: 0.4        # base=new (staleness×utility) params
             a_exp: 0.25
             b_exp: 0.1
       hyperparameters:
@@ -473,6 +509,42 @@ baselines:
         stalenessPolicy: none
         inc_model_version_per_data_id: true
         var_threshold: 0.3
+        # --- fluxtune optimizations (charter §5c; flag gated) ---
+        # Opt-1: suppress byte-identical intra-databin weight re-sends (shared
+        # sync+async fix, enabled on all baselines). Within a data-bin the
+        # model_version is constant and the full WEIGHTS+GRAD_POOL payload is
+        # identical across iterations; a trainer that already received it this
+        # cycle is downgraded to the tiny VAR=bad "keep training" message (it
+        # caches its weights). Learning-neutral; here it was 71% redundant / ~68 GB.
+        # Set false to revert (byte-on-wire identical off).
+        suppress_redundant_weights: true
+        # Opt-2 — variance-plateau force-commit (charter §5c/§5e; DEFAULT ON for
+        # fluxtune). The plain var<=threshold gate is a FIXED ABSOLUTE bar: as the
+        # model converges, gradients shrink but the perturbation-noise floor doesn't,
+        # so a bin needs ever-more JVP samples to average down to 0.30 (measured
+        # 15->34 iters/bin early->late at α=1) -> 95.7% of aggregation iterations
+        # commit nothing. This policy adds TWO commit triggers on top of var<=thr:
+        #   * plateau (PRIMARY, helps early): commit once the per-bin variance curve
+        #     FLATTENS -- relative var drop over the last `var_plateau_patience` (N)
+        #     iters < `var_plateau_rel_delta` (ε) while var is still above threshold.
+        #     Scale-invariant, so it commits the DENOISED estimate at whatever iter it
+        #     flattens (early bins ~12-17). This is the "more denoising buys nothing" cut.
+        #   * cap (LATE-STAGE BACKSTOP): `max_iterations_per_data_id`. Late in training
+        #     the plateau onset drifts out (~33 iters) -- the model is already stable so
+        #     waiting that long is wasteful; the cap force-commits at 20 first. Sits
+        #     ABOVE the early plateau fire (so plateau stays primary) and BELOW the late
+        #     grind (so it caps the tail). Whichever trigger fires first wins; the
+        #     `commit_reason` field on agg_round telemetry records which (natural/cap/plateau).
+        # Learning is compared against the earlier var<=0.3-only fluxtune run (no A/B).
+        # TO DISABLE (revert to var<=thr only, byte-identical): var_stopping_policy: off.
+        # TO TUNE: lower ε -> plateau fires later/less; raise ε -> earlier/more (ε=0.25
+        # fires ~94% at iter ~11). Lower the cap -> more late-stage forcing (and it
+        # engages on shorter bins, e.g. the smoke). Re-characterize at the more-IID
+        # ablations (α∈{10,100}) where the floor drops and the grind may soften.
+        var_stopping_policy: plateau
+        var_plateau_patience: 3       # N: look-back window for the flatten test
+        var_plateau_rel_delta: 0.15   # ε: commit when rel var-drop over last N < ε
+        max_iterations_per_data_id: 20  # late-stage force-commit ceiling
     trainer:
       hyperparameters:
         select_perturbation_using_jvp: true

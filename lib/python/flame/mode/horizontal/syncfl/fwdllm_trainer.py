@@ -19,6 +19,7 @@ import inspect
 import logging
 import math
 import time
+from contextlib import contextmanager
 
 import torch
 from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
@@ -39,6 +40,8 @@ from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.role import Role
+from flame import telemetry
+from flame.telemetry.events import build_task_recv, build_comm
 from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
@@ -159,6 +162,22 @@ class Trainer(Role, metaclass=ABCMeta):
         self.abort_training = False
         self._stat_utility = 0
 
+        # Per-round phase-timing accumulator (#6 wall decomposition). Reset each
+        # fetch; drained into the trainer_round telemetry `extra`. Mirrors the
+        # base syncfl trainer's _phase/_phase_times.
+        self._phase_times: dict = {}
+
+    @contextmanager
+    def _phase(self, name: str):
+        """Time a named phase and accumulate into self._phase_times."""
+        t0 = time.time()
+        try:
+            yield
+        finally:
+            self._phase_times[name] = self._phase_times.get(name, 0.0) + (
+                time.time() - t0
+            )
+
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
         if tag == TAG_FETCH:
@@ -172,6 +191,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
 
         self.fetch_success = False
+        # Reset per-round phase accumulator at the round boundary.
+        self._phase_times = {}
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info(
@@ -192,7 +213,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
+        # agg->trainer delivery + payload transfer (leg i); the first phase term.
+        self._phase_times["mqtt_fetch_s"] = time.time() - _recv_start
 
         if not msg:
             logger.info(f"NO msg received for trainer_id {self.trainer_id}")
@@ -207,8 +231,34 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.info(f"New message received for trainer_id {self.trainer_id}")
 
+        # Sim-clock stamps: SIM_SEND_TS is the aggregator's virtual-clock "now" at
+        # dispatch, the base for the trainer's modeled completion sct;
+        # _wall_recv_ts is the real receipt wall time, echoed back so the
+        # aggregator can derive the intrinsic (server-overhead-free) task duration
+        # (WALL_SEND - WALL_RECV). Both inert in real mode (SIM_SEND_TS absent).
+        self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)
+        self._wall_recv_ts = time.time()
+
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
+
+        # Emit task_recv carrying sim_send_ts (#8): fwdllm overrode _fetch_weights
+        # and dropped the base trainer's emission; restore it here. None in real
+        # mode (SIM_SEND_TS absent).
+        if telemetry.is_enabled():
+            try:
+                _avl = getattr(getattr(self, "avl_state", None), "value", None)
+                ev, fields = build_task_recv(
+                    round_num=int(self._round),
+                    trainer_id=str(getattr(self, "trainer_id", "")),
+                    time_mode=getattr(self, "time_mode", "real"),
+                    sim_send_ts=(float(self._sim_send_ts)
+                                 if self._sim_send_ts is not None else None),
+                    avl_state=_avl,
+                )
+                telemetry.emit(ev, **fields)
+            except Exception as e:  # telemetry must never break training
+                logger.debug(f"task_recv telemetry emit failed: {e}")
 
         logger.info(
             f"Checking DataID: {self.data_id}| MessageType.DATA_ID in msg: {msg.get(MessageType.DATA_ID)}| IterationPerDataID: {self.iteration_per_data_id}| MessageType.ITERATION_PER_DATA_ID in msg: {msg.get(MessageType.ITERATION_PER_DATA_ID)}"
@@ -290,13 +340,15 @@ class Trainer(Role, metaclass=ABCMeta):
             # Update the model logger.info(f"Weights received:
             # {msg[MessageType.WEIGHTS]}") self.weights =
             # weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            trainable_weights = weights_to_model_device(
-                msg[MessageType.WEIGHTS], self.model
-            )
-            full_state_dict = self.model.state_dict()
-            full_state_dict.update(trainable_weights)
-            self.weights = full_state_dict
-            self._update_model()
+            with self._phase("weights_to_ram_s"):
+                trainable_weights = weights_to_model_device(
+                    msg[MessageType.WEIGHTS], self.model
+                )
+                full_state_dict = self.model.state_dict()
+                full_state_dict.update(trainable_weights)
+                self.weights = full_state_dict
+            with self._phase("weights_to_gpu_s"):
+                self._update_model()
 
             if MessageType.MODEL_VERSION in msg:
                 self._model_version = msg[MessageType.MODEL_VERSION]
@@ -499,7 +551,24 @@ class Trainer(Role, metaclass=ABCMeta):
                 format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
                 logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
             else:
+                total_bytes = 0
                 logger.info("No gradients exist; sending an empty dictionary.")
+
+            # Network telemetry: the update this trainer uploads. total_bytes is
+            # the gradient payload the debug log already reports (fluxtune's comm
+            # story is that this is small).
+            if telemetry.is_enabled():
+                try:
+                    ev, f = build_comm(
+                        direction="trainer_to_agg", size_bytes=total_bytes,
+                        peer_id=str(end), round_num=int(self._round),
+                        data_id=self.data_id, iteration=self.iteration_per_data_id,
+                        payload_kind="gradients", n_tensors=len(grad_dict),
+                        trainer_id=self.trainer_id,
+                    )
+                    telemetry.emit(ev, **f)
+                except Exception as e:
+                    logger.debug(f"comm telemetry emit failed (trainer send): {e}")
 
             logger.debug(f"self.jvp_for_snr_check on trainer before sending message: {self.jvp_for_snr_check}")
 
@@ -518,11 +587,36 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.STAT_UTILITY: self._stat_utility,
                 # - rn FedSgdTrainer has no utility
                 MessageType.TOTAL_DATA_BINS: self.total_data_bins,
+                # Sim-clock stamps: the modeled completion sct the aggregator's
+                # reorder buffer keys on, the additive modeled round duration
+                # (completion budget for the async in-flight gate), and the real
+                # wall send/recv pair for the intrinsic task duration. All None in
+                # real mode -> aggregator uses arrival order.
+                MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
+                # Pure modeled delay D: deterministic from the registry (unlike
+                # SIM_COMPLETION_TS, which folds in GPU jitter), so the aggregator
+                # orders this cohort's commits by (D, trainer_id) identically in
+                # real and sim. Stamped in BOTH modes; None when delays are off.
+                MessageType.MODELED_DELAY_S: getattr(self, "_modeled_delay_s", None),
+                # Echo the dispatch stamp so the aggregator can reconstruct this
+                # contribution's [dispatch, completion] interval for R1.
+                MessageType.SIM_SEND_TS: self._sim_send_ts,
+                MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
+                MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
+                MessageType.WALL_SEND_TS: time.time(),
+                MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
         else:
+            # fwdllm eval lives on the aggregator; this eval message is only a
+            # utility report, not a separately-clocked commit. train_with_data_id
+            # ran just before in the same loop iteration, so its fresh
+            # _sim_completion_ts is a valid (not past-dated) sct to echo.
             msg = {
                 MessageType.MODEL_VERSION: self._model_version,
                 MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.SIM_COMPLETION_TS: self._sim_completion_ts,
+                MessageType.WALL_SEND_TS: time.time(),
+                MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
 
         channel.send(end, msg)
@@ -755,7 +849,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        time.sleep(1)
+        # Per-round MQTT throttle chained at the tail of the trainer loop. A
+        # real-transport artifact with no sim analog (#8): the sim's inter-round
+        # barrier is the blocking recv in _fetch_weights + the sct reorder buffer,
+        # so charging 1 wall-s/round to the sim is pure slowdown. Gate off in sim.
+        if not getattr(self, "simulated", False):
+            time.sleep(1)
         return
 
     def compose(self) -> None:

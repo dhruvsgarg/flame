@@ -36,6 +36,10 @@ class _FakeAggregator:
     machinery stubbed out."""
 
     def __init__(self, round_, rounds, total_data_bins=150, var_good_enough=True):
+        # Batch 1 flag-off regression: real path (time_mode: real). With
+        # simulated=False the new sim boundary hook (_release_sim_slots_at_agg_goal)
+        # is skipped, so _process_aggregation_goal_met behaves byte-identically.
+        self.simulated = False
         self._agg_goal = 2
         self._agg_goal_cnt = 2
         self._per_agg_trainer_list = []

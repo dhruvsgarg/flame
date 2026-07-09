@@ -6,6 +6,7 @@ import io
 import json
 import hashlib
 import os
+import zlib
 import numpy as np
 from datetime import datetime
 import ast
@@ -17,6 +18,9 @@ import math
 
 from flame import telemetry
 from flame.telemetry.events import build_trainer_round
+# Import under the same absolute path tc_transformer_trainer_distribute.py uses,
+# so we read the SAME module-global forward-pass counters (WS3-b), not a copy.
+from examples.fwdllm.trainer.forward_training import fwdgrad_utils
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +184,30 @@ class FedSGDTrainer(Trainer):
             self.config.hyperparameters.training_delay_factor
         )
         self.speedup_factor = 1.0
+
+        # --- Simulated-clock support (config-gated) ---------------------------
+        # time_mode is threaded into hyperparameters from the launcher's
+        # --time_mode CLI arg (see trainer/main.py). "simulated": _emulate_
+        # training_delay() computes the modeled delay but does NOT sleep, and
+        # train_with_data_id() stamps a modeled completion timestamp
+        # (_sim_completion_ts) the aggregator orders updates by. "real"
+        # (default): unchanged wall-clock behavior (flag-off => byte-identical).
+        self.time_mode = getattr(self.config.hyperparameters, "time_mode", "real")
+        self.simulated = self.time_mode == "simulated"
+        _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
+        self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
+        # SIM_SEND_TS is stamped by the aggregator on each dispatch and read in
+        # the base trainer's _fetch_weights; the rest are stamped after training
+        # for _send_grads / telemetry.
+        self._sim_send_ts = None
+        self._sim_completion_ts = None
+        self._sim_round_duration_s = None
+        # Pure modeled delay D for this round: stamped in the grad message
+        # (MODELED_DELAY_S) so the aggregator orders cohort commits by
+        # (D, trainer_id) identically in real and sim. None until first round
+        # completes / when delays disabled.
+        self._modeled_delay_s = None
+        self._wall_recv_ts = None
 
         self.trainer_start_ts = time.time()
         # TODO (ARM): Fix this to read traces better!
@@ -434,6 +462,13 @@ class FedSGDTrainer(Trainer):
                     f"Trainer id {self.trainer_id} is not available to train. Waiting for it to be available"
                 )
                 while self.avl_state != TrainerAvailState.AVL_TRAIN:
+                    # Sim availability is enforced aggregator-side (send-gate /
+                    # vclock-jump to next avail event), never by a trainer sleep:
+                    # sim time can't advance while blocked on time.sleep, so this
+                    # spin would freeze the virtual clock (#13). Sim proceeds and
+                    # lets the agg-side gate withhold; real byte-identical.
+                    if self.simulated:
+                        break
                     time.sleep(1)
                 logger.info(
                     f"Trainer id {self.trainer_id} is back to available to train."
@@ -478,49 +513,138 @@ class FedSGDTrainer(Trainer):
         self.jvp_for_snr_check = self.trainer.model_trainer.jvp_for_snr_check
 
     @timer_decorator
-    def _emulate_training_delay(self):
-        """Returns the seconds actually slept (0.0 if delay emulation is
-        disabled) -- unlike cifar10's trainer, this is a flat additive sleep
-        on top of GPU time, not a budget-minus-actual "sleep to fill" model,
-        so there is no meaningful overrun/remaining_time_s/training_budget_s
-        concept here (see ../../../MIGRATING_TO_LAUNCHER.md §9). The
-        caller adds this to real_gpu_time_s to report sim_round_duration_s."""
-        if self.training_delay_enabled == "True":
-            # Eval is 3X faster than training on CPU
-            # Eval on NPUs is 10-50X is faster than training on CPUs. We could take 20X if we wanted to consider an all-NPU client cohort for Eval (NPUs don't support training)
-            eval_delay = self.training_delay_s / self.training_delay_factor
-            _sleep_s = eval_delay / self.speedup_factor
-            time.sleep(_sleep_s)
-            logger.info(
-                f"Delayed eval time for trainer "
-                f"{self.trainer_id} by {eval_delay}s. Sleeping for {_sleep_s}s."
+    def _emulate_training_delay(self, gpu_time_s: float = 0.0):
+        """Remainder-wait delay model (aligned with async_cifar10). The modeled
+        mobile device takes `_delay_s = training_delay_s / factor / speedup`; our
+        GPU forward pass takes `gpu_time_s`, which should be << the device time.
+
+          - REAL sleeps only the remainder max(0, _delay_s - gpu_time_s) → wall
+            this round ≈ _delay_s, with GPU compute hidden inside it.
+          - SIM skips the sleep (charged to the vclock); the round duration is
+            max(gpu, _delay_s) (see train_with_data_id), NOT gpu + _delay_s. The
+            per-trainer registry delays give the completion spread, so update
+            order = delay order = deterministic and identical real↔sim (enables
+            cohort_sequence parity).
+
+        Overrun: if gpu_time_s > _delay_s the GPU is slower than the modeled
+        device (contention / delay_factor too big) — emulation unfaithful and
+        update order can flip, so we log [TIMING_OVERRUN] and flag it in
+        telemetry. Returns (modeled_delay_s, remaining_s, overran).
+        """
+        # config schema types training_delay_enabled as bool (default False)
+        # but historical launcher yamls pass the string "True"; accept both so
+        # the modeled delay is not silently dropped to 0.
+        _enabled = self.training_delay_enabled in (True, "True", "true")
+        if not _enabled:
+            return 0.0, 0.0, False
+        _delay_s = (self.training_delay_s / self.training_delay_factor) / self.speedup_factor
+        _remaining_s = max(0.0, _delay_s - gpu_time_s)
+        _overran = gpu_time_s > _delay_s
+        if _overran:
+            logger.warning(
+                f"[TIMING_OVERRUN] trainer {self.trainer_id} data_id={self.data_id} "
+                f"iter={self.iteration_per_data_id}: gpu={gpu_time_s:.2f}s > "
+                f"budget={_delay_s:.2f}s (excess={gpu_time_s - _delay_s:.2f}s) — "
+                f"emulation unfaithful, update order may flip. Reduce trainers/GPU "
+                f"or raise training_delay_factor."
             )
-            return _sleep_s
-        return 0.0
+        if self.simulated:
+            logger.info(
+                f"time_mode=simulated: modeled delay for trainer {self.trainer_id} "
+                f"= {_delay_s:.3f}s (not slept; charged to vclock; gpu={gpu_time_s:.3f}s)."
+            )
+        elif _remaining_s > 0:
+            time.sleep(_remaining_s)
+            logger.info(
+                f"Trainer {self.trainer_id} slept remainder {_remaining_s:.3f}s "
+                f"(budget {_delay_s:.3f}s - gpu {gpu_time_s:.3f}s)."
+            )
+        return _delay_s, _remaining_s, _overran
+
+    def _sim_straggler_offset_s(self) -> float:
+        """The modeled delay D is flat across trainers, so the sync barrier's
+        k-th-smallest sct under-spreads vs real's GPU-contention dispersion. In
+        SIM only, add a stable per-trainer offset in [0, simStragglerSpreadS) so
+        the cohort completion spread matches real. Deterministic in trainer_id
+        (crc32, not salted like hash()); spread 0 => byte-identical."""
+        if not self.simulated:
+            return 0.0
+        _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        spread = float(getattr(_hp, "sim_straggler_spread_s", 0.0) or 0.0)
+        if spread <= 0.0:
+            return 0.0
+        frac = (zlib.crc32(str(self.trainer_id).encode()) % 1000) / 1000.0
+        return spread * frac
 
     @timer_decorator
     def train_with_data_id(self):
-        # Create FwdLLMStage for timing/metrics logging
-        self.fwd_llm_stage = FwdLLMStage(
-            self._round, self.data_id, self.iteration_per_data_id, self.trainer_id
-        )
-
         if self.abort_training == True:
             logger.info(
                 f"Aborting training for trainer id: {self.trainer_id} because it has already sent updates for iteration_per_data_id: {self.iteration_per_data_id}"
             )
             return
 
+        # Create FwdLLMStage for timing/metrics logging. Set AFTER the abort
+        # check so an aborted round stays a true no-op (no fwd_llm_stage => the
+        # @timer_decorator emits no step_timing record; see
+        # test_aborted_round_emits_nothing).
+        self.fwd_llm_stage = FwdLLMStage(
+            self._round, self.data_id, self.iteration_per_data_id, self.trainer_id
+        )
+
+        # Phase-timing entry: everything up to the compute loop is pre_train
+        # (avail check, FwdLLMStage setup, loader state).
+        _phase_entry = time.time()
         if not self._check_availability():
             return
 
         _round_start_ts = time.time()
+        _pre_train_s = _round_start_ts - _phase_entry
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
 
-        # emulate delays in training (due to compute resource and/or
-        # dataset size and/or network latency)
-        _delay_s = self._emulate_training_delay()
+        # emulate the mobile-device delay via the remainder-wait model: real
+        # sleeps max(0, delay - gpu); sim skips it. Returns the modeled budget,
+        # the remainder actually waited, and whether the GPU overran the budget.
+        _delay_s, _remaining_s, _overran = self._emulate_training_delay(_real_gpu_time_s)
+        # Stash the pure modeled delay D so _send_grads can stamp it
+        # (MODELED_DELAY_S) for the aggregator's (D, trainer_id) commit ordering.
+        # 0.0 when delays off -> None (no ordering signal, arrival order).
+        self._modeled_delay_s = _delay_s if _delay_s else None
+
+        # post_train phase starts AFTER the modeled delay: real SLEEPS _delay_s
+        # above, so stamping here excludes it -> post_train_s is pure
+        # post-processing, mode-comparable (~0 both modes; sim never slept).
+        _phase_post_start = time.time()
+
+        # Sim-mode stamps: the modeled round duration is the remainder-wait
+        # max(real_gpu, D), matching real mode's sleep-the-remainder semantics
+        # (device wall = D, GPU hidden inside), NOT additive gpu + D. The sct
+        # (when this update commits on the virtual clock) = the aggregator's
+        # dispatch stamp (SIM_SEND_TS, read in _fetch_weights) + that duration +
+        # the optional pre-commit holding leg. _send_grads sends these so the
+        # aggregator can order updates by _sim_completion_ts. In real mode these
+        # stay None and the aggregator falls back to arrival order.
+        # WAN payload-transfer term (up+down): not measurable on localhost, so a
+        # documented knob left at 0 -- do NOT enable without a real WAN
+        # measurement. Byte-identical at 0.
+        _hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        _wan_s = (
+            float(getattr(_hp, "sim_wan_transfer_s", 0.0) or 0.0)
+            if (self.simulated and _hp is not None) else 0.0
+        )
+        # Remainder-wait sct: modeled round wall is max(gpu, delay), NOT gpu +
+        # delay -- the device's compute is hidden inside its delay budget. The
+        # per-trainer registry delays supply the completion spread, so the crc32
+        # straggler offset is redundant (kept flag-gated at 0 in sim yamls);
+        # _wan_s stays a documented knob at 0.
+        self._sim_round_duration_s = (
+            max(_real_gpu_time_s, _delay_s) + self._sim_straggler_offset_s() + _wan_s
+        )
+        if self.simulated:
+            _leg = self.sim_completion_leg_s
+            _base = self._sim_send_ts if self._sim_send_ts is not None else time.time()
+            self._sim_completion_ts = _base + self._sim_round_duration_s + _leg
 
         logger.info(
             f"completed training for trainer id: {self.trainer_id}, data_id = {self.data_id}"
@@ -535,14 +659,29 @@ class FedSGDTrainer(Trainer):
                 _stat_utility = float(self._stat_utility)
             except (TypeError, ValueError):
                 _stat_utility = None
+            # Post-compute overhead (telemetry build); last trainer-side phase
+            # term for the wall decomposition. Modeled delay is excluded via the
+            # _phase_post_start stamp position (after the delay).
+            _post_train_s = time.time() - _phase_post_start
+            # Forward-pass / perturbation accounting (WS3-b). Cumulative counters
+            # live in fwdgrad_utils (per-process = per-client); the delta since the
+            # last trainer_round is this iteration's cost. jvp_evals == scored
+            # perturbations. getattr defaults keep the first iteration correct
+            # without touching __init__.
+            _fp_total, _jvp_total = fwdgrad_utils.fwd_pass_counts()
+            _fp_iter = _fp_total - getattr(self, "_fwd_pass_last", 0)
+            _jvp_iter = _jvp_total - getattr(self, "_jvp_eval_last", 0)
+            self._fwd_pass_last = _fp_total
+            self._jvp_eval_last = _jvp_total
             ev, fields = build_trainer_round(
                 round_num=int(self._round),
                 real_gpu_time_s=_real_gpu_time_s,
-                # real GPU compute + the emulated delay (0 if disabled) --
-                # NOT a budget-vs-actual quantity (fwdllm has no sleep-to-
-                # fill-budget model, unlike async_cifar10's trainer); this is
-                # simply the total wall time this round actually took.
-                sim_round_duration_s=_real_gpu_time_s + _delay_s,
+                # total modeled wall this round: max(real_gpu, D) under the
+                # remainder-wait model (device wall = D, GPU hidden) + the sim
+                # sct-model folds (straggler spread, WAN, both 0 by default).
+                # training_budget_s below carries D separately so the overrun
+                # (gpu > D) is recoverable from telemetry.
+                sim_round_duration_s=self._sim_round_duration_s,
                 avail_state=self.avl_state.value,
                 dataset_size=self.dataset_size,
                 stat_utility=_stat_utility,
@@ -550,6 +689,28 @@ class FedSGDTrainer(Trainer):
                     "data_id": self.data_id,
                     "iteration_per_data_id": self.iteration_per_data_id,
                     "model_version": self._model_version,
+                    # Per-phase wall breakdown: pre/gpu/post are stamped here;
+                    # mqtt_fetch_s + weights_to_{ram,gpu}_s ride in via
+                    # _phase_times (populated in fwdllm_trainer._fetch_weights).
+                    "pre_train_s": _pre_train_s,
+                    "gpu_compute_s": _real_gpu_time_s,
+                    "post_train_s": _post_train_s,
+                    "training_budget_s": _delay_s,
+                    # Remainder-wait model: what real actually slept + whether the
+                    # GPU overran the modeled device budget (an overrun can flip
+                    # update order => cohort_sequence break).
+                    "remaining_time_s": _remaining_s,
+                    "training_overran": _overran,
+                    "trainer_phase": (
+                        f"{self._round}/{self.data_id}/{self.iteration_per_data_id}"
+                    ),
+                    # WS3-b: forward passes / scored perturbations this iteration
+                    # (+ cumulative). Hardware-independent compute unit for Exp 3.
+                    "forward_passes_iter": _fp_iter,
+                    "forward_passes_total": _fp_total,
+                    "perturbations_iter": _jvp_iter,
+                    "perturbations_total": _jvp_total,
+                    **getattr(self, "_phase_times", {}),
                 },
             )
             telemetry.emit(ev, **fields)

@@ -201,6 +201,24 @@ class FedSGDAggregator(TopAggregator):
         logger.info(f"self.var = {self.var}")
         logger.info(f"snr of jvps = {self.snr}")
         logger.info(f"coefficient of variation = {c_of_variation}")
+
+        # Opt-2 (charter §5c/§5e): variance-plateau force-commit. Under the
+        # 'plateau' policy, additionally force a commit once the per-bin variance
+        # curve has flattened (relative drop over the last N cycles < rel_delta)
+        # while var is still above threshold -- more denoising buys nothing, so
+        # commit the denoised estimate. var_prev_iter_list is the per-bin var
+        # history (reset on commit), already including this cycle's var. Policy
+        # off/absent => never arms a commit => byte-identical.
+        self._force_commit_reason = None
+        self._plateau_fired_this_cycle = self._should_force_commit_on_plateau()
+        if self._plateau_fired_this_cycle:
+            self._force_commit_this_cycle = True
+            logger.info(
+                f"[VarPlateau] curve flattened over N="
+                f"{getattr(self, '_var_plateau_patience', 3)} "
+                f"(var={self.var_prev_iter_list[-1]:.4f} > "
+                f"thr={self.var_threshold}); force-committing at plateau."
+            )
         logger.debug(
             f"self.grad_for_var_check_list size: {len(self.grad_for_var_check_list)}"
         )
@@ -314,6 +332,7 @@ class FedSGDAggregator(TopAggregator):
                     f"keeping weight update, clearing cached_v."
                 )
                 self.var_good_enough = True
+                self._force_commit_reason = "natural"
                 # 方差满足要求
                 self.cached_v = []
             elif _force_commit:
@@ -352,9 +371,14 @@ class FedSGDAggregator(TopAggregator):
                 self.last_round_update = [
                     p.clone().detach() for p in weighted_gradient_sum
                 ]
+                self._force_commit_reason = (
+                    "plateau" if getattr(self, "_plateau_fired_this_cycle", False)
+                    else "cap"
+                )
                 logger.info(
                     f"[MaxIterBypass] Variance FAILED (var={self.var} > "
-                    f"thr={self.var_threshold}) but force-commit is set; "
+                    f"thr={self.var_threshold}) but force-commit is set "
+                    f"(reason={self._force_commit_reason}); "
                     f"committing weights anyway, clearing cached_v."
                 )
                 self.var_good_enough = True

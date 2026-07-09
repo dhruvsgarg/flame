@@ -40,6 +40,23 @@ def timer_decorator(func):
                 f"[decorator] Runtime of {func.__name__}: {duration:.6f}s "
                 f"(Round={stage.round_id}, DataId={stage.data_id}, Iter={stage.iteration}, TrainerId={stage.trainer_id})"
             )
+            # Structured companion to the log line: attribute step wall time to
+            # (func, data_id, iteration) for GPU-cost decomposition. No-op when
+            # telemetry is off. The `stage` guard keeps nested helpers whose
+            # args[0] is not the trainer self from emitting mis-attributed
+            # records. Best-effort: a telemetry hiccup must never break training.
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_step_timing
+                    ev, fields = build_step_timing(
+                        func=func.__name__, duration_s=duration,
+                        round_num=stage.round_id, data_id=stage.data_id,
+                        iteration=stage.iteration, trainer_id=stage.trainer_id,
+                    )
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - telemetry must never fault training
+                logger.debug("step_timing telemetry emit failed", exc_info=True)
         else:
             logger.info(
                 f"[decorator] Runtime of {func.__name__}: {duration:.6f}s (no stage info)"

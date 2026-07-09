@@ -28,6 +28,7 @@ class AggregatorSpawner:
         log_to_wandb: bool = False,
         wandb_run_name: Optional[str] = None,
         cpu_cores: Optional[set] = None,
+        gpu_id: Optional[int] = None,
     ) -> subprocess.Popen:
         """Spawn aggregator process.
 
@@ -88,6 +89,12 @@ class AggregatorSpawner:
         # math libs use exactly that many threads (it benefits from a few cores
         # for chunk reassembly / aggregation, unlike a 1-core-pinned trainer).
         env = os.environ.copy()
+        # GPU pin: give the aggregator its own device so its eval forward pass
+        # does not time-slice a trainer's GPU. Without it the aggregator defaults
+        # to GPU 0, inflating that trainer's compute over its delay budget.
+        if gpu_id is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"  ✓ Aggregator pinned to GPU {gpu_id}")
         preexec_fn = None
         if cpu_cores:
             _cores = {int(c) for c in cpu_cores}
@@ -119,12 +126,43 @@ class AggregatorSpawner:
             return False
         return self.process.poll() is None
 
+    # Detect a startup crash from its traceback so wait_until_ready fails fast,
+    # instead of the old "alive => ready" heuristic waving a crash through and
+    # then wasting the EOT grace on trainers that never get one.
+    _CRASH_MARKER = "Traceback (most recent call last)"
+
+    def _read_log_tail(self, max_bytes: int = 65536) -> str:
+        if not self.log_file:
+            return ""
+        p = Path(self.log_file)
+        if not p.exists():
+            return ""
+        try:
+            with open(p, "r", errors="replace") as f:
+                data = f.read()
+            return data[-max_bytes:]
+        except OSError:
+            return ""
+
+    def _print_crash_tail(self, n_lines: int = 25) -> None:
+        """Surface the aggregator log tail so the operator sees the crash cause
+        without opening the log."""
+        tail = self._read_log_tail()
+        if not tail:
+            return
+        lines = tail.rstrip().splitlines()[-n_lines:]
+        print("  ── aggregator log tail ──")
+        for ln in lines:
+            print(f"    {ln}")
+        print("  ─────────────────────────")
+
     def wait_until_ready(self, timeout: int = 30) -> bool:
         """
-        Wait for aggregator to be ready.
+        Wait for aggregator to be ready, failing fast on a startup crash.
 
-        Simple implementation: just wait fixed time and check process is alive.
-        Could be enhanced with log monitoring for "ready" message.
+        Ready: process alive for >=5s with no traceback in the log. Returns False
+        immediately if the process exits during the window or a traceback appears
+        -- the run has failed, so the caller must not spawn trainers.
 
         Args:
             timeout: Maximum time to wait in seconds
@@ -139,14 +177,23 @@ class AggregatorSpawner:
 
         while time.time() - start_time < timeout:
             if not self.is_running():
-                print(f"  ✗ Aggregator process died")
+                print(f"  ✗ Aggregator process died during startup")
+                self._print_crash_tail()
+                return False
+            if self._CRASH_MARKER in self._read_log_tail():
+                print(f"  ✗ Aggregator logged a traceback during startup")
+                self._print_crash_tail()
                 return False
 
             time.sleep(check_interval)
             elapsed = time.time() - start_time
 
-            # Simple heuristic: if process is alive for 5 seconds, assume ready
+            # Alive for 5s AND no startup traceback => assume ready.
             if elapsed >= 5:
+                if self._CRASH_MARKER in self._read_log_tail():
+                    print(f"  ✗ Aggregator logged a traceback during startup")
+                    self._print_crash_tail()
+                    return False
                 print(f"  ✓ Aggregator ready (process alive for {elapsed:.1f}s)")
                 return True
 

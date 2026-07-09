@@ -32,10 +32,11 @@ experiments:
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
-        # Cosmetic here -- fluxtune's 3-tier signal comes from
-        # trainer.client_notify (set in the baseline), not this mode. Kept
-        # consistent with the baseline's mobiperf_3st_50 trace.
-        mode: mobiperf_3st_50
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs. run_sequential.sh's --avail-trace
+        # patches trainer mode + client_notify + trackTrainerAvail together.
+        mode: syn_0
       # FedFwd has no simulated-clock support; always real.
       time_mode: real
       # Skip the registry's 4-18s artificial delay for a fast smoke run.
@@ -45,6 +46,12 @@ experiments:
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
+          # BIT-IDENTICAL to the grads (scripts/profile_jvp_opt.py). Cuts
+          # fluxtune's per-batch forward passes ~37% (25->20) + trainable-only
+          # FD, so GPU drops under the modeled mobile delay. Set true on BOTH
+          # real+sim (must match). Set false to revert to the un-optimized path.
+          jvp_perf_opt: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # Uniform/IID partition for smoke tests -- avoids the niid_label
@@ -62,10 +69,15 @@ experiments:
           id: fluxtune_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
+          # Async fedbuff: accept stale grads + down-weight by (V'-V), not reject
+          # (K-D13). Set identically real+sim; never a parity lever. camelCase
+          # MUST match the base key to override it — snake_case is a dead key
+          # that loses at pydantic resolution (K-D15).
+          stalenessPolicy: fedbuff
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).
-          max_data_id_progress: 10  # stop once data_id reaches 10
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 1800  # ...or after 30 minutes wall time
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
@@ -79,7 +91,7 @@ experiments:
             # the runner fans it into both this kwarg and
             # hyperparameters.aggGoal so they can't drift apart; don't
             # duplicate it here.
-            c: 8
+            c: 10
             minInitialTrainers: 10
 
     execution:

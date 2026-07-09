@@ -63,6 +63,11 @@ class AsyncOortSelector(AbstractSelector):
         """Initailize instance."""
         super().__init__(**kwargs)
 
+        # #1c: the abandon-timeout clock — set per-select() from
+        # channel_props["vclock_now"] (sim) or left None (real -> wall). See
+        # _abandon_clock_now.
+        self._sim_now_s = None
+
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use != MLFramework.PYTORCH:
             raise NotImplementedError(
@@ -322,6 +327,14 @@ class AsyncOortSelector(AbstractSelector):
         self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
         if self.requester not in self.selected_ends:
             self.selected_ends[self.requester] = set()
+
+        # #1c: the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S) must run on the
+        # same clock the trainer commits on -- the virtual clock in sim
+        # (vclock_now via channel_props), physical wall in real. In a slow sim a
+        # wall-keyed timeout evicts a still-outstanding trainer -> re-dispatch ->
+        # R1 residence violation. Stash it so the dispatch STAMP and the CHECK
+        # (_handle_send_state) use it consistently; None in real -> time.time().
+        self._sim_now_s = channel_props.get("vclock_now")
 
         # TODO: (DG) Is explicit round tracking required here? round =
         # channel_props["round"] if "round" in channel_props else 0
@@ -1392,6 +1405,15 @@ class AsyncOortSelector(AbstractSelector):
 
         return candidates, exploit_end_ids
 
+    def _abandon_clock_now(self) -> float:
+        """Clock for the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S): the
+        virtual clock in sim (vclock_now stashed per-select), physical wall in
+        real. Keeping the STAMP (all_selected[end]) and the CHECK on the same
+        clock makes the timeout mean virtual seconds in sim, so a slow sim no
+        longer evicts a still-outstanding trainer from the re-pick guard (#1c)."""
+        sim_now = getattr(self, "_sim_now_s", None)
+        return sim_now if sim_now is not None else time.time()
+
     def _handle_send_state(
         self,
         ends: dict[str, End],
@@ -1425,7 +1447,7 @@ class AsyncOortSelector(AbstractSelector):
         # deadlock this caused).
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
-            current_time_s = time.time()
+            current_time_s = self._abandon_clock_now()  # vclock in sim, wall in real (#1c)
             if end in self.all_selected.keys():
                 # Check again to avoid possible case of race condition
                 # when all_selected has been updated from another
@@ -1572,19 +1594,30 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
 
+        # SIM R1 guard: async_oort releases `all_selected` on physical events
+        # (recv-fifo re-select loop, RECVD/NONE cleanup). In a slow sim a grad
+        # stays returned-but-uncommitted for a long virtual window while the
+        # aggregator still models the trainer as in flight; a physical prune then
+        # frees a still-outstanding trainer -> select() re-dispatches it -> R1
+        # violation. Also exclude the aggregator's virtual in-flight set (bound
+        # via `_agg_pending_commit_ref`) so a trainer is un-re-pickable until its
+        # grad COMMITS. Empty (default) in real -> unchanged.
+        _pending = getattr(self, "_agg_pending_commit_ref", None) or set()
+
         # Check the eligible set first. Out of the ends, how many are
         # not in all_selected? Only those are eligible since the rest
         # have weights already sent to them for either train/eval
         # task.
         count_eligible_set_to_check = [
-            end for end in ends if end not in self.all_selected
+            end for end in ends
+            if end not in self.all_selected and end not in _pending
         ]
         logger.debug(
             f"Before creating filtered_ends. count_eligible_set_to_check: {len(count_eligible_set_to_check)} from total {len(ends)} ends."
         )
 
         for end_id in ends:
-            if end_id not in self.all_selected.keys():
+            if end_id not in self.all_selected.keys() and end_id not in _pending:
                 logger.debug(
                     f"Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}"
                 )
@@ -2010,7 +2043,7 @@ class AsyncOortSelector(AbstractSelector):
 
             for selected_end in selected_ends:
                 # Add to all_selected. {key: end, val: TS epoch (s)}
-                self.all_selected[selected_end] = time.time()
+                self.all_selected[selected_end] = self._abandon_clock_now()  # #1c
             logging.debug(
                 f"self.all_selected {self.all_selected} after combining with "
                 f"selected_ends {selected_ends}"
@@ -2084,7 +2117,7 @@ class AsyncOortSelector(AbstractSelector):
 
         for candidate_end in candidates:
             # Add to all_selected. {key: end, val: TS epoch (s)}
-            self.all_selected[candidate_end] = time.time()
+            self.all_selected[candidate_end] = self._abandon_clock_now()  # #1c
         logging.debug(
             f"self.all_selected {self.all_selected} after combining"
             f" with candidates {candidates}"

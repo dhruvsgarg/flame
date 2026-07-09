@@ -273,6 +273,22 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_unavailability: t.Optional[bool] = Field(
         alias="simUnavailability", default=False
     )
+    # sct-model folds (fwdllm Stage B / K-D20 #6). Default OFF ⇒ byte-identical.
+    # simModelEvalTime (B1): charge the measured server-eval wall to the vclock
+    # after each committed data_id -- the largest GENUINE unmodeled term (~3.34
+    # s/round). simStragglerSpreadS (B2): per-trainer straggler dispersion (s)
+    # added to the modeled delay so the sync barrier's k-th sct reflects real
+    # trainer_speed_s spread (~2.3 s/round). simWanTransferS (B3): WAN payload-
+    # transfer term -- NOT measurable on localhost, documented knob, leave 0.
+    sim_model_eval_time: t.Optional[bool] = Field(
+        alias="simModelEvalTime", default=False
+    )
+    sim_straggler_spread_s: t.Optional[float] = Field(
+        alias="simStragglerSpreadS", default=0.0
+    )
+    sim_wan_transfer_s: t.Optional[float] = Field(
+        alias="simWanTransferS", default=0.0
+    )
     # Per-baseline: aware baselines free stalled slots proactively at the next
     # selection boundary (Stage D); unaware wait for the 90s vclock abandon.
     # Kept for backward compat — new code reads proactive_inflight_evict first.

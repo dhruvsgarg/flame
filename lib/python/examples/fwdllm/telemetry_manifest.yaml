@@ -58,14 +58,17 @@ event_categories:
     # path) unlocks selected_utility_believed_vs_actual*/belief_gap*.
     # agg_observed_s (Part 6, reusing the same PROP_ROUND_DURATION already
     # read for agg_round's trainer_speed_s) unlocks runtime_agg_vs_trainer/
-    # runtime_overhead_*. Deliberately NOT added (Part 6 design decision):
-    # training_budget_s/overran/remaining_time_s/wait_time_s/pre_train_s/
-    # post_train_s -- fwdllm's delay is a flat additive sleep, not cifar10's
-    # budget-minus-actual sleep-to-fill model, so there is no faithful
-    # "overrun"/budget-slack concept to report; budget_slack_cdf/
-    # trainer_late_fraction_hist/trainer_response_lateness_cdf/
-    # trainer_runtime_expected_vs_actual stay not_populated rather than
-    # reporting a fabricated budget signal.
+    # runtime_overhead_*. Per-phase wall breakdown ADDED in Stage A1 for the
+    # #6 wall-decomposition (real vs sim s/round): mqtt_fetch_s/weights_to_ram_s/
+    # weights_to_gpu_s/pre_train_s/gpu_compute_s/post_train_s/training_budget_s/
+    # trainer_phase -- these un-skip the 8 phase rungs. NOTE the earlier Part-6
+    # decision still holds for the DERIVED budget-slack plots: fwdllm's delay is
+    # a flat additive sleep (training_budget_s = _delay_s, the modeled D), not
+    # cifar10's budget-minus-actual sleep-to-fill model, so there is no faithful
+    # "overrun"/slack concept -- overran/remaining_time_s/wait_time_s stay
+    # unemitted and budget_slack_cdf/trainer_late_fraction_hist/
+    # trainer_response_lateness_cdf/trainer_runtime_expected_vs_actual stay
+    # not_populated rather than reporting a fabricated budget signal.
   selection: populated
     # selection, emitted from flame/selector/random.py's select() (P5.5 fix
     # -- RandomSelector never called emit_selection before this session, so

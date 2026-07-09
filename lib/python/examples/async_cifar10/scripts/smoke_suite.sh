@@ -55,6 +55,12 @@ EX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"          # async_cifar10/
 LIB_DIR="$(cd "$EX_DIR/../.." && pwd)"           # lib/python/
 DEBUG_RUN="$SCRIPT_DIR/debug_run.sh"
 
+# Shared harness: the timeout + process-group-kill primitive (expt_timed_run),
+# moved here from inline in _run_baseline. No conda activation here -- each
+# debug_run.sh child activates its own env.
+# shellcheck source=../../scripts/expt_runner.sh
+source "$LIB_DIR/examples/scripts/expt_runner.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 RUNTIME_SYN0_S=900
 RUNTIME_SYN20_S=1800
@@ -202,64 +208,14 @@ _run_baseline() {
   local ts_marker="$run_dir/.ts_start"
   touch "$ts_marker"
 
-  # set -m (job control) forces bash to assign PGID = runner_pid to the
-  # background job regardless of whether the suite is running interactively
-  # or not.  All descendants inherit that PGID (flame's spawner.py uses plain
-  # subprocess.Popen with no start_new_session/os.setsid), so
-  # kill -TERM/-KILL on -$runner_pid reliably reaches the whole process tree.
-  # Rationale: setsid forks when the calling process is already a pg-leader
-  # (interactive terminals do this), making runner_pid point to a dead parent
-  # instead of the actual session leader → kill misses the tree entirely.
-  set -m
-  env FLAME_LOGDIR="$run_dir" bash "$DEBUG_RUN" "$@" \
-    >"$run_dir/shell.log" 2>&1 &
-  local runner_pid=$!
-  set +m
-
-  local deadline=$(( ts_start + wall_timeout ))
-  local timed_out=0
-  local _ela _kill_in _prun _pdone   # ticker temporaries
-  while kill -0 "$runner_pid" 2>/dev/null; do
-    sleep 5
-    _ela=$(( $(date +%s) - ts_start ))
-    _kill_in=$(( deadline - $(date +%s) )); [[ "$_kill_in" -lt 0 ]] && _kill_in=0
-    _prun=0; [[ "$runtime_s" -gt 0 ]] && _prun=$(( _ela * 100 / runtime_s ))
-    [[ "$_prun" -gt 100 ]] && _prun=100
-    _pdone=0; [[ "$TOTAL_RUNS" -gt 0 ]] && _pdone=$(( COMPLETED_RUNS * 100 / TOTAL_RUNS ))
-    printf '\r  %-52s  %4ds/%-4ds(%3d%%)  kill in %4ds  |  %d/%d done(%d%%)   ' \
-      "[$label]" "$_ela" "$runtime_s" "$_prun" "$_kill_in" \
-      "$COMPLETED_RUNS" "$TOTAL_RUNS" "$_pdone" >&2
-    if [[ "$(date +%s)" -ge "$deadline" ]]; then
-      printf '\n' >&2
-      _log "  [$label] TIMEOUT after ${wall_timeout}s — killing process group $runner_pid"
-      # SIGTERM first: lets ExperimentRunner._signal_handler call _cleanup()
-      # (terminate_all trainers + terminate aggregator). 20s grace lets Python
-      # flush open files and release MQTT connections before the hard kill.
-      kill -TERM -"$runner_pid" 2>/dev/null || true
-      sleep 20
-      # SIGKILL for anything that survived (hung GPU op, stuck MQTT recv).
-      kill -KILL -"$runner_pid" 2>/dev/null || true
-      wait "$runner_pid" 2>/dev/null
-      timed_out=1
-      break
-    fi
-  done
-  printf '\n' >&2
-  [[ "$timed_out" == "0" ]] && wait "$runner_pid" 2>/dev/null
+  # Launch under the shared timeout+process-group-kill primitive: runs the child in
+  # its own PGID, SIGTERM->SIGKILL the whole tree on overrun, sweeps stragglers, then
+  # waits KILL_SETTLE_S for GPU memory to drain. Returns 124 on timeout.
+  EXPT_KILL_SETTLE_S="$KILL_SETTLE_S" \
+  expt_timed_run "$label" "$runtime_s" "$TIMEOUT_BUFFER_S" "$run_dir/shell.log" -- \
+    env FLAME_LOGDIR="$run_dir" bash "$DEBUG_RUN" "$@"
   local run_rc=$?
-
-  # ── Post-kill cleanup ─────────────────────────────────────────────────────
-  # When SIGKILL fires, run_experiment_batch's finally block (_sweep_stragglers)
-  # is in the killed group and may not complete. Replicate it here: hard-kill
-  # any surviving trainer/aggregator processes and wait for GPU memory to drain
-  # so the next run starts from a clean slate.
-  if [[ "$timed_out" == "1" ]]; then
-    _log "  [$label] post-kill sweep: clearing straggler trainer/aggregator processes"
-    pkill -9 -f "trainer/pytorch/main.py"  2>/dev/null || true
-    pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
-    _log "  [$label] waiting ${KILL_SETTLE_S}s for GPU memory to drain before next run"
-    sleep "$KILL_SETTLE_S"
-  fi
+  local timed_out=0; [[ "$run_rc" == "124" ]] && timed_out=1
 
   local elapsed=$(( $(date +%s) - ts_start ))
 

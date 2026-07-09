@@ -338,8 +338,10 @@ python -m scripts.parity.cli \
   (real vs sim), overlap-factor bars, GPU-vs-budget, convergence-by-round.
 - Exit code per §3 verdict rule.
 
-`compare_overnight.sh` is rewritten to call this one command per (baseline) pair
-and to drop its separate `compare_parity.py` invocation.
+Post-run parity is now invoked via `debug_run.sh --after parity` (the old
+standalone `compare_overnight.sh` was deleted — its per-baseline sim-vs-real
+parity + cross-baseline plots are absorbed into `--after parity,plot`, on the
+maintained `scripts.parity.cli` engine).
 
 ### 4.2b Multi-baseline invocation (test parity per selector as we converge)
 
@@ -433,7 +435,8 @@ test import path. The `analyze_*.py` scripts are **kept** but demoted to
 4. **Build `report.py` + `cli.py`** single output; fix the convergence
    self-compare bug (C3). Add `--batch` multi-baseline mode (§4.2b).
 5. **Add per-selector test layer** (`tests/mode/test_selector_invariants.py`, §4.2c).
-6. **Rewrite `compare_overnight.sh`** to the single command; demote `analyze_*`
+6. **`compare_overnight.sh` deleted** — folded into `debug_run.sh --after parity,plot`
+   (shared `examples/scripts/expt_runner.sh` dispatcher); demote `analyze_*`
    behind `--diagnostics`.
 7. **Delete** the superseded files (§4.4); update any docs/HANDOFF references.
 8. **Run** the new checker (`--batch`) on felix + refl pairs; paste the FAILing

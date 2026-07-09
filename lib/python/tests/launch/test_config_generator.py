@@ -412,3 +412,39 @@ class TestSyntheticTracePerTrainer:
             cfg_054["hyperparameters"]["avl_events_syn_20"]
             != cfg_005["hyperparameters"]["avl_events_syn_20"]
         )
+
+
+class TestExecutionConfigBanksDelays:
+    """#12: the effective training-delay config is banked in the execution config
+    so a run can be audited post-hoc (previously absent -> a `--delays on` run
+    "looked" off because nothing recorded it)."""
+
+    def _exp(self, enable, factor=None):
+        from flame.launch.experiment_config import ExperimentConfig, TrainerConfig
+        tr_hp = {"training_delay_factor": factor} if factor is not None else None
+        return ExperimentConfig(
+            name="bank_test",
+            trainer=TrainerConfig(
+                enable_training_delays=enable, hyperparameters=tr_hp
+            ),
+        )
+
+    def test_banks_enable_and_factor(self, tmp_path):
+        from flame.launch.execution_config_generator import create_execution_config
+        cfg = create_execution_config(
+            self._exp(enable=True, factor=3),
+            aggregator_config_path=tmp_path / "agg.json",
+        )
+        tr = cfg["experiment"]["trainer"]
+        assert tr["enable_training_delays"] is True
+        assert tr["training_delay_factor"] == 3
+
+    def test_banks_disabled(self, tmp_path):
+        from flame.launch.execution_config_generator import create_execution_config
+        cfg = create_execution_config(
+            self._exp(enable=False),
+            aggregator_config_path=tmp_path / "agg.json",
+        )
+        assert cfg["experiment"]["trainer"]["enable_training_delays"] is False
+        # factor unset -> banked as None (trainer_base default applies)
+        assert cfg["experiment"]["trainer"]["training_delay_factor"] is None

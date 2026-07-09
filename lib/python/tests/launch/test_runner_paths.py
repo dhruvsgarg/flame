@@ -11,6 +11,7 @@ from flame.launch.experiment_config import (
     ExampleConfig,
     ExperimentConfig,
     MetadataPaths,
+    TrainerConfig,
 )
 from flame.launch.runner import ExperimentRunner
 
@@ -22,6 +23,50 @@ def fake_example_dir(tmp_path):
     (ex / "aggregator" / "pytorch").mkdir(parents=True)
     (ex / "configs").mkdir()
     return ex
+
+
+class TestTrainingDelayFan:
+    """#12: the trainer's enable_training_delays is a single source of truth
+    fanned into the AGGREGATOR config too, so both roles agree (previously the
+    aggregator defaulted to False -- a real<->sim desync risk)."""
+
+    def _agg_hp(self, fake_example_dir, enable, tr_hp=None, agg_overrides=None):
+        runner = ExperimentRunner(fake_example_dir)
+        exp = ExperimentConfig(
+            name="x",
+            trainer=TrainerConfig(
+                enable_training_delays=enable, hyperparameters=tr_hp
+            ),
+            aggregator=AggregatorConfig(config_overrides=agg_overrides),
+        )
+        merged, _ = runner._build_aggregator_config(exp, None, None)
+        return merged.get("hyperparameters", {})
+
+    def test_enabled_fans_to_aggregator(self, fake_example_dir):
+        hp = self._agg_hp(fake_example_dir, enable=True)
+        assert hp["trainingDelayEnabled"] is True
+
+    def test_disabled_fans_to_aggregator(self, fake_example_dir):
+        # The key case: without the fan the aggregator would default False
+        # regardless of the request; with it, it reflects the actual value.
+        hp = self._agg_hp(fake_example_dir, enable=False)
+        assert hp["trainingDelayEnabled"] is False
+
+    def test_factor_fans_when_set(self, fake_example_dir):
+        hp = self._agg_hp(
+            fake_example_dir, enable=True,
+            tr_hp={"training_delay_factor": 3},
+        )
+        assert hp["trainingDelayFactor"] == 3
+
+    def test_fan_wins_over_conflicting_config_override(self, fake_example_dir):
+        # The fan is the final, highest-precedence layer: a stale aggregator
+        # config_override cannot shadow the run-wide request.
+        hp = self._agg_hp(
+            fake_example_dir, enable=True,
+            agg_overrides={"hyperparameters": {"trainingDelayEnabled": False}},
+        )
+        assert hp["trainingDelayEnabled"] is True
 
 
 class TestPathResolution:

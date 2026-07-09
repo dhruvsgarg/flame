@@ -52,13 +52,13 @@ def post_complete_message(tc_args):
 if __name__ == "__main__":
     config = load_config_from_argv()
 
-    # --time_mode is a launcher CLI-only arg (not in config JSON), unconditionally
-    # appended by TrainerSpawner.spawn_trainer() to every trainer's argv. FedFwd has
-    # no simulated-clock concept (FedSgdTrainer's _emulate_training_delay() always
-    # sleeps real wall-clock time) -- parsed here only so the launcher's argv
-    # injection doesn't crash with "unrecognized argument"; "simulated" is a
-    # documented no-op for now, deferred future work, not retrofitted in this
-    # migration. log_level is similarly launcher/manual-run CLI-only.
+    # --time_mode is a launcher CLI-only arg (not in config JSON), appended by
+    # TrainerSpawner.spawn_trainer() to every trainer's argv. Threaded into
+    # config.hyperparameters so FedSGDTrainer reads it uniformly with the
+    # aggregator. "simulated": skip the emulated-delay sleep and stamp a modeled
+    # completion timestamp the aggregator orders updates by; "real" (default):
+    # unchanged wall-clock behavior. log_level/battery_threshold are similarly
+    # launcher/manual-run CLI-only.
     _cli_parser = argparse.ArgumentParser(add_help=False)
     _cli_parser.add_argument("--time_mode", default="real")
     _cli_parser.add_argument("--log_level", default="INFO")
@@ -72,12 +72,29 @@ if __name__ == "__main__":
     )
     logging.debug(config)
     telemetry.configure(role="trainer", end_id=str(config.task_id))
-    if _cli_args.time_mode != "real":
-        logging.warning(
-            f"--time_mode={_cli_args.time_mode!r} requested, but FedFwd has no "
-            "simulated-clock support yet; running in real wall-clock mode."
-        )
+    config.hyperparameters.time_mode = _cli_args.time_mode
     set_seed(config.hyperparameters.manual_seed)
+
+    # Pinning self-report: confirm the CPU/GPU affinity the spawner intended
+    # (CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer) took effect in
+    # this child. The trainer trains on cuda:0 of the CVD-masked single-GPU
+    # view, so one visible device here == correct pinning. Emitted as a grep-able
+    # [PIN] line so post-proc can verify balanced trainer->(gpu,core) placement.
+    try:
+        _cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+        _cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
+        _gpu_name, _gpu_dev, _ndev = "<no-cuda>", -1, 0
+        if torch.cuda.is_available():
+            _gpu_dev = torch.cuda.current_device()
+            _gpu_name = torch.cuda.get_device_name(_gpu_dev)
+            _ndev = torch.cuda.device_count()
+        logging.info(
+            f"[PIN] pid={os.getpid()} client_idx={config.hyperparameters.client_idx} "
+            f"CUDA_VISIBLE_DEVICES={_cvd} cuda_device={_gpu_dev} ({_gpu_name}) "
+            f"cuda_device_count={_ndev} cpu_affinity={_cores}"
+        )
+    except Exception as _pin_exc:  # never let self-report break a trainer
+        logging.warning(f"[PIN] self-report failed: {_pin_exc}")
 
     # dataset attributes
     attributes = BaseDataManager.load_attributes(config.hyperparameters.data_file_path)
@@ -121,6 +138,13 @@ if __name__ == "__main__":
             "var_control": config.hyperparameters.var_control,
             "perturbation_sampling": config.hyperparameters.perturbation_sampling,
             "select_perturbation_using_jvp": config.hyperparameters.select_perturbation_using_jvp,
+            # forward-pass count knob (default 10 = historical behavior).
+            "perturbation_count": getattr(
+                config.hyperparameters, "perturbation_count", 10),
+            # fluxtune JVP perf-opt (§L, bit-identical). Default False =
+            # byte-identical; enabled only in the fluxtune yamls.
+            "jvp_perf_opt": getattr(
+                config.hyperparameters, "jvp_perf_opt", False),
         }
     )
     model_args.config["num_labels"] = num_labels

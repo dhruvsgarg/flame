@@ -202,12 +202,28 @@ class ExperimentRunner:
                     },
                 )
 
+            # Dedicated aggregator GPU: prefer a physical GPU the trainer pool
+            # does NOT use (visible > num_gpus → the first idle one); else the
+            # least-loaded trainer GPU (highest index under (tid-1)%num_gpus).
+            _num_gpus = exp.execution.num_gpus
+            try:
+                import torch as _torch
+                _visible = _torch.cuda.device_count()
+            except Exception:
+                _visible = 0
+            if _visible > _num_gpus:
+                _agg_gpu = _num_gpus            # a fully idle physical GPU
+            elif _num_gpus > 0:
+                _agg_gpu = _num_gpus - 1        # least-loaded trainer GPU
+            else:
+                _agg_gpu = None
             self.aggregator_spawner.spawn(
                 paths["aggregator_main"],
                 config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
                 cpu_cores=reserved_cores,
+                gpu_id=_agg_gpu,
             )
             if not self.aggregator_spawner.wait_until_ready(
                 exp.execution.aggregator_warmup_time
@@ -323,8 +339,15 @@ class ExperimentRunner:
                 self.aggregator_spawner.terminate()
             agg_rc = getattr(self.aggregator_spawner.process, "returncode", None)
             rc_msg = f"exit={agg_rc}" if agg_rc == 0 else f"exit={agg_rc} ⚠"
-            print(f"  aggregator done ({rc_msg}), waiting for trainers to exit...")
-            self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
+            if agg_rc not in (0, None):
+                # On a crash the trainers never get an EOT, so the per-trainer
+                # grace below is wasted -- terminate them now instead.
+                print(f"  aggregator FAILED ({rc_msg}); terminating trainers now "
+                      f"(skipping EOT grace).")
+                self.trainer_spawner.terminate_all()
+            else:
+                print(f"  aggregator done ({rc_msg}), waiting for trainers to exit...")
+                self.trainer_spawner.wait_all(timeout_per_trainer=30.0)
             print("\nexperiment completed.")
 
             # Auto post-run analysis: parse the telemetry JSONL and emit plots.
@@ -535,7 +558,39 @@ class ExperimentRunner:
                 },
             ))
 
+        # Single source of truth: exp.trainer's delay flags govern the whole run.
+        # Fan them into the aggregator hyperparameters as the final (highest-
+        # precedence) layer so both roles agree; else the aggregator keeps its
+        # pydantic default (False), a real<->sim desync risk for examples whose
+        # aggregator reads it (async_cifar10). See #12 / #13.
+        _delay_fan: dict = {
+            "trainingDelayEnabled": bool(exp.trainer.enable_training_delays),
+        }
+        # If the experiment set training_delay_factor on the trainer, fan the same
+        # value to the aggregator so a launcher knob reaches both roles.
+        _tr_hp = exp.trainer.hyperparameters or {}
+        if "training_delay_factor" in _tr_hp:
+            _delay_fan["trainingDelayFactor"] = _tr_hp["training_delay_factor"]
+        layers.append((
+            "experiment.trainer.training_delay (fanned to aggregator)",
+            {"hyperparameters": _delay_fan},
+        ))
+
         merged, provenance = merge_with_provenance(layers)
+
+        # Tripwire: the delay fan is the final layer, so the merged config must
+        # reflect the requested flag. If a refactor reorders layers or a higher-
+        # precedence override shadows it, fail loudly instead of running stale (#12).
+        _eff = merged.get("hyperparameters", {}).get("trainingDelayEnabled")
+        _req = bool(exp.trainer.enable_training_delays)
+        if _eff is not None and bool(_eff) != _req:
+            raise ValueError(
+                "training-delay config did not flow to the aggregator: requested "
+                f"enable_training_delays={_req} but merged aggregator "
+                f"trainingDelayEnabled={_eff!r}. Check the config-override layer "
+                "order in _build_aggregator_config (simulate_fwdllm.md #12)."
+            )
+
         return merged, provenance
 
     def _create_experiment_directory(self, exp: ExperimentConfig) -> Path:

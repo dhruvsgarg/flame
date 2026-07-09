@@ -1,0 +1,104 @@
+# FedFwd SIMULATED-clock smoke test: 10 trainers, agnews H5 partitions
+# (client_idx 0-9 of the 100 available niid_label_clients=100_alpha=1
+# partitions). Sim sibling of fwdllm_plus_n10_smoke.yaml -- IDENTICAL except
+# time_mode: simulated and the job id (so run dirs don't collide).
+#
+# fwdllm_plus is SYNC (random selector, fedavg, ORACULAR availability read,
+# per-iteration reselection), so this variant exercises the Batch-1 sync
+# barrier sim drive (_sync_sim_recv_first_k: commit k-smallest-sct, advance the
+# virtual clock to the k-th). Trainers still do real forward-grad compute
+# (gradient VALUES mode-invariant); only the clock/ordering differ.
+#
+# enable_training_delays stays false (as in the real smoke) for direct
+# comparability; modeled-delay-on (D>0) is for later parity runs, enabled in
+# BOTH real reference and sim run together (see simulate_fwdllm.md §K-D8).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n10_smoke_sim.yaml
+
+experiments:
+  - name: fwdllm_plus_n10_smoke_sim
+    description: "FedFwd SIM smoke (10 trainers, fwdllm_plus baseline: sync random+fedavg+ORACULAR, time_mode=simulated). Validates the Batch-1 sync barrier sim drive."
+
+    baseline: fwdllm_plus
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
+        # reads all-available, so the sync barrier assembles the full agg_goal=10
+        # cohort. Switch to a mobiperf_* trace (via --avail-trace) only for the
+        # Phase-2 unavailability runs. Keep trainer + aggregator on the SAME
+        # trace (run_sequential.sh's --avail-trace patches both).
+        mode: syn_0
+      # Batch 1: drive the simulated virtual clock instead of real sleeps.
+      time_mode: simulated
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
+      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # Uniform/IID partition for smoke tests -- avoids the niid_label
+          # baseline default's data-skew confound while validating mechanics.
+          partition_method: uniform
+          # Phase 4c (B2, #6): sim barrier straggler spread to match real's
+          # per-trainer completion dispersion (uniform[0,spread), spread ≈
+          # real-compute-std·√12). Active with --delays on; calibrate to
+          # wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: random
+      tracking_mode: oracular
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fwdllm_plus_n10_smoke_sim
+        hyperparameters:
+          rounds: 50  # short smoke run, not the full 300
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          # Phase 4c (B1, #6): charge the measured server eval_s onto the vclock
+          # so it models real wall (self-calibrating). Delay-independent.
+          sim_model_eval_time: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            # Scaled down from the baseline's n=150-ish defaults (k=5, c=15)
+            # to fit 10 trainers.
+            k: 5
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      # 8, not 1 -- see fluxtune_n10_smoke.yaml's execution.num_gpus comment;
+      # run_sequential.sh's --num-trainers scales trainer count without a
+      # matching GPU bump, and 100 trainers on 1 GPU OOMs almost immediately.
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

@@ -96,3 +96,11 @@ class MessageType(Enum):
     # skew, same class of bug as B2.0.3). Sim mode never sends this -- its
     # shared origin is the single _vclock, already exposed via SIM_SEND_TS.
     AGG_START_TS = 42
+
+    # Modeled per-trainer mobile delay D = training_delay_s / factor / speedup,
+    # stamped by the trainer in BOTH modes. Unlike SIM_COMPLETION_TS /
+    # TRAINING_BUDGET_S (which fold in measured GPU time and differ run-to-run),
+    # D is deterministic from the registry, so the aggregator orders a cohort's
+    # commits by (D, trainer_id) identically in real and sim. None when delays
+    # are disabled (aggregator then falls back to arrival order).
+    MODELED_DELAY_S = 43

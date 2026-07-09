@@ -81,6 +81,12 @@ hyperparameters:
   var_control: true
   perturbation_sampling: true
   select_perturbation_using_jvp: false
+  # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — trainable-only
+  # finite difference + skip diagnostic-only forward passes + reuse the selected
+  # perturbation's JVP. All BIT-IDENTICAL to the grads (validated by
+  # scripts/profile_jvp_opt.py). Default false = byte-identical; the fluxtune
+  # yamls set it true. Must match real<->sim (both read this config).
+  jvp_perf_opt: false
   evaluate_during_training_steps: 100
   frequency_of_the_test: 1
   is_debug_mode: 0

@@ -45,7 +45,7 @@ def test_reads_from_metadata_bundle(tmp_path):
     metadata_dir = _write_metadata(tmp_path)
 
     result = TopAggregator.read_trainer_unavailability(
-        None, trace="mobiperf_2st", metadata_dir=metadata_dir
+        None, trace="mobiperf_2st", base_dir=metadata_dir
     )
 
     assert set(result.keys()) == {"task-aaa", "task-bbb"}
@@ -62,6 +62,6 @@ def test_does_not_read_json_scripts(tmp_path, monkeypatch):
     monkeypatch.setattr(glob_module, "glob", fail_glob)
 
     result = TopAggregator.read_trainer_unavailability(
-        None, trace="mobiperf_2st", metadata_dir=metadata_dir
+        None, trace="mobiperf_2st", base_dir=metadata_dir
     )
     assert len(result) == 2

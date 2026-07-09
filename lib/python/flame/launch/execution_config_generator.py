@@ -130,6 +130,15 @@ def create_execution_config(
                 },
                 "battery_threshold": exp_config.trainer.battery_threshold,
                 "time_mode": exp_config.trainer.time_mode,
+                # Bank effective training-delay config for post-hoc audit (#12).
+                # training_delay_factor is the trainer override if set, else the
+                # trainer_base default applies.
+                "enable_training_delays": exp_config.trainer.enable_training_delays,
+                "training_delay_factor": (
+                    (exp_config.trainer.hyperparameters or {}).get(
+                        "training_delay_factor"
+                    )
+                ),
             },
             "execution": {
                 "num_gpus": exp_config.execution.num_gpus,

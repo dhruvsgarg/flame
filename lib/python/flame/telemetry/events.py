@@ -29,6 +29,8 @@ EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validati
 EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
 EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
+EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
+EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -47,6 +49,8 @@ KNOWN_EVENTS = frozenset(
         EVENT_WITHHELD_DELIVERY,
         EVENT_ABANDON_TIMEOUT,
         EVENT_AGG_BELIEF_CHANGE,
+        EVENT_STEP_TIMING,
+        EVENT_COMM,
     }
 )
 
@@ -186,6 +190,73 @@ def build_trainer_round(
     if extra:
         fields.update(extra)
     return EVENT_TRAINER_ROUND, fields
+
+
+def build_step_timing(
+    *,
+    func: str,
+    duration_s: float,
+    round_num: Optional[int] = None,
+    data_id: Optional[int] = None,
+    iteration: Optional[int] = None,
+    trainer_id: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Per-function wall duration of one timed compute step (`timer_decorator`).
+
+    Fine-grained companion to `trainer_round`'s coarse phase split: attributes
+    wall time to individual forward-grad steps (functional-model setup,
+    perturbation selection, per-batch JVP, delay emulation) for GPU-cost
+    decomposition. Keyed by (data_id, iteration) to track cost across the cadence.
+    """
+    fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
+    for k, v in (
+        ("round", round_num),
+        ("data_id", data_id),
+        ("iteration_per_data_id", iteration),
+        ("trainer_id", trainer_id),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_STEP_TIMING, fields
+
+
+def build_comm(
+    *,
+    direction: str,
+    size_bytes: int,
+    peer_id: Optional[str] = None,
+    round_num: Optional[int] = None,
+    data_id: Optional[int] = None,
+    iteration: Optional[int] = None,
+    payload_kind: Optional[str] = None,
+    n_tensors: Optional[int] = None,
+    trainer_id: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """One message placed on the wire, for network-cost accounting (Experiment 4).
+
+    Emitted by BOTH roles so total bytes / message counts / per-message size
+    distributions are comparable across baselines (fluxtune sends perturbation
+    seeds/scalars, not full gradients, so real wire size differs from the static
+    model_param_count reconstruction).
+
+    direction: "agg_to_trainer" (dispatch) | "trainer_to_agg" (update upload).
+    peer_id: the other end (may be None trainer-side). payload_kind: "weights" /
+    "var_bad" / "gradients", to split dispatch vs update and full-weight vs
+    var-signal. size_bytes: serialized message size.
+    """
+    fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
+    for k, v in (
+        ("peer_id", peer_id),
+        ("round", round_num),
+        ("data_id", data_id),
+        ("iteration_per_data_id", iteration),
+        ("payload_kind", payload_kind),
+        ("n_tensors", n_tensors),
+        ("trainer_id", trainer_id),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_COMM, fields
 
 
 def build_util_disparity(

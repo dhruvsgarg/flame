@@ -13,6 +13,7 @@ when telemetry is enabled, and stays a true no-op (no emit call at all) when
 it isn't.
 """
 
+import time
 from datetime import timedelta
 
 import torch
@@ -71,6 +72,8 @@ class _FakeAggregator:
 
     def __init__(self, contributors, var_good_enough, staleness_map=None,
                  total_data_bins=150):
+        # Real path skips the sim boundary hook, so telemetry is byte-identical.
+        self.simulated = False
         self._per_agg_trainer_list = list(contributors)
         self._agg_goal_cnt = len(contributors)
         self._agg_goal = len(contributors) or 1
@@ -199,6 +202,82 @@ class TestAggRoundTelemetry:
         finally:
             telemetry.shutdown()
 
+    def test_speedup_fields_emitted(self, tmp_path):
+        """#13: agg_round carries wall_elapsed_s in both modes and, in sim,
+        sim_rate = vclock/wall so the slowdown is observable in telemetry."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            # Put the aggregator on the sim path with a virtual clock ahead of
+            # a known wall span.
+            agg.simulated = True
+            agg._vclock = type("V", (), {"now": 120.0})()
+            agg.agg_start_time_ts = time.time() - 60.0  # ~60 wall-s elapsed
+            # The sim boundary hook is exercised elsewhere; no-op it here so this
+            # test isolates the speedup-telemetry emission.
+            agg._release_sim_slots_at_agg_goal = lambda *a, **k: None
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=1)}, utilities={"t1": 0.1}
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["wall_elapsed_s"] > 0
+            # vclock 120 over ~60 wall-s -> sim_rate ~2 (a speedup); must be present
+            assert r["sim_rate"] is not None and r["sim_rate"] > 1.0
+        finally:
+            telemetry.shutdown()
+
+    def test_intrinsic_span_is_barrier_plus_eval_excludes_fedavg(self, tmp_path):
+        """#6 anchor: intrinsic_span_s = the barrier (MAX committed-cohort
+        duration) + eval_s (commit only), EXCLUDING the FedAvg merge -- it must
+        mirror the sim vclock's composition (barrier sct + eval fold) so the
+        clock-rate rungs anchor REAL like-for-like. A variance-FAIL cycle runs no
+        eval, so intrinsic collapses to exactly the barrier -- which also proves
+        max() (not min/sum) and that fedavg is not folded in."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"],
+                                  var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=5),
+                                              "t2": timedelta(seconds=3)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            # barrier = max(5, 3) = 5; no eval on the fail path; fedavg (stubbed
+            # ~0) is excluded regardless -> intrinsic == the barrier.
+            assert r["intrinsic_span_s"] is not None
+            assert abs(r["intrinsic_span_s"] - 5.0) < 0.5, r
+        finally:
+            telemetry.shutdown()
+
+    def test_wall_elapsed_emitted_in_real_mode_sim_rate_none(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            # default fake is real mode (simulated=False)
+            agg.agg_start_time_ts = time.time() - 5.0
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=1)}, utilities={"t1": 0.1}
+            )
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["wall_elapsed_s"] > 0
+            assert r["sim_rate"] is None  # real mode has no virtual clock rate
+        finally:
+            telemetry.shutdown()
+
     def test_staleness_computed_against_pre_cycle_model_version(self, tmp_path):
         """staleness = the model version this cycle aggregated against, minus
         each contributor's last-known trained-on version -- captured BEFORE
@@ -220,6 +299,50 @@ class TestAggRoundTelemetry:
             events = [json.loads(l) for l in lines]
             rounds = [e for e in events if e["event"] == "agg_round"]
             assert rounds[0]["staleness"] == [2]  # 5 - 3, not 6 - 3
+        finally:
+            telemetry.shutdown()
+
+    def test_cadence_fields_snapshot_pre_mutation(self, tmp_path):
+        """Variance-cadence inputs: cycle_data_id/cycle_iteration identify the
+        data_id this cycle WORKED on (pre-advance), and the pool sizes are captured
+        at the variance gate. On a variance FAIL data_id does not advance, so
+        cycle_data_id == the emitted (post) data_id == 3."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_data_id"] == 3 and r["cycle_iteration"] == 0
+            # grad_pool got this cycle's grad appended before the snapshot; the
+            # fake sets no cached_v, so cached_v_size defaults to 0.
+            assert r["grad_pool_size"] == 1 and r["cached_v_size"] == 0
+        finally:
+            telemetry.shutdown()
+
+    def test_cycle_data_id_is_pre_advance_on_commit(self, tmp_path):
+        """On a variance PASS the emitted (post) data_id advances to 4, but
+        cycle_data_id stays 3 -- the data_id this cycle committed. This is the
+        off-by-one V1 relies on: bin cadence cycles by cycle_data_id, not the
+        post-mutation data_id (which would attribute a commit to the next bin)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["cycle_data_id"] == 3      # worked-on data_id
+            assert r["data_id"] == 4            # post-commit advance
         finally:
             telemetry.shutdown()
 
@@ -275,6 +398,146 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
 
+class TestContributorIntervalsEmission:
+    """R1/W1 residence rungs read a per-contributor [dispatch, commit] interval
+    list off each agg_round event. It must land once per contributor, carrying
+    the ts captured in _process_single_trainer_message."""
+
+    def test_intervals_emitted_per_contributor(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            # Simulate the per-contribution capture done in the message handler.
+            agg._sim_contrib_intervals = {
+                "t1": {"dispatch_ts": 1.0, "commit_ts": 6.0},
+                "t2": {"dispatch_ts": 2.0, "commit_ts": 9.0},
+            }
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=5), "t2": timedelta(seconds=7)},
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            ci = {d["end"]: d for d in r["contributor_intervals"]}
+            assert set(ci) == {"t1", "t2"}
+            assert ci["t1"]["dispatch_ts"] == 1.0 and ci["t1"]["commit_ts"] == 6.0
+            assert ci["t2"]["dispatch_ts"] == 2.0 and ci["t2"]["commit_ts"] == 9.0
+        finally:
+            telemetry.shutdown()
+
+    def test_intervals_present_even_without_captured_ts(self, tmp_path):
+        """When no interval was captured (e.g. a test double / real run with the
+        dict unpopulated) the field is still emitted with null ts, so the rung
+        SKIPs cleanly rather than the field being absent."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=5)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["contributor_intervals"] == [
+                {"end": "t1", "dispatch_ts": None, "commit_ts": None}]
+        finally:
+            telemetry.shutdown()
+
+
+class TestPerRoundWallDecomposition:
+    """agg_round carries the per-round wall breakdown feeding #6 --
+    aggregate_fedavg_s + eval_s always; barrier_wait_s/drain_tail_s when the
+    dispatch/last-grad wall stamps were captured (else null, rung SKIPs)."""
+
+    def test_fedavg_and_eval_present_on_pass(self, tmp_path):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            # fedavg wall is measured around aggregate() and is non-negative
+            assert r["aggregate_fedavg_s"] is not None
+            assert r["aggregate_fedavg_s"] >= 0.0
+            # eval ran (variance passed) -> eval_s measured, non-negative
+            assert r["eval_s"] is not None and r["eval_s"] >= 0.0
+        finally:
+            telemetry.shutdown()
+
+    def test_eval_s_null_on_variance_fail(self, tmp_path):
+        """eval_model only runs on the pass path, so eval_s is null on a FAIL."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["eval_s"] is None
+            assert r["aggregate_fedavg_s"] is not None  # aggregate always runs
+        finally:
+            telemetry.shutdown()
+
+    def test_barrier_and_drain_from_wall_stamps(self, tmp_path):
+        """When the dispatch + last-grad wall stamps exist, barrier_wait_s =
+        last_grad - dispatch and drain_tail_s = commit - last_grad."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            # Stamps the barrier collection would have set (dispatch then last
+            # grad, both in the past relative to the commit inside the method).
+            import time as _t
+            now = _t.time()
+            agg._round_dispatch_wall_ts = now - 5.0
+            agg._last_grad_wall_ts = now - 2.0
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert abs(r["barrier_wait_s"] - 3.0) < 0.5  # (now-2) - (now-5)
+            assert r["drain_tail_s"] >= 0.0  # commit is after last grad
+        finally:
+            telemetry.shutdown()
+
+    def test_barrier_drain_null_without_stamps(self, tmp_path):
+        """No wall stamps captured (test double / async path) -> null, not a
+        crash; the rung SKIPs rather than the field being absent."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1"], var_good_enough=False)
+            channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["barrier_wait_s"] is None
+            assert r["drain_tail_s"] is None
+        finally:
+            telemetry.shutdown()
+
+
 class _UtilityFakeChannel:
     """Generic fake for _process_single_trainer_message's channel calls --
     stores per-end properties in a dict, doesn't care about specific PROP_*
@@ -317,6 +580,7 @@ class _UtilityFakeAggregator:
     trainers is a no-op) since it's irrelevant to the telemetry under test."""
 
     process = TopAggregator._process_single_trainer_message
+    _release_end_on_return = TopAggregator._release_end_on_return
 
     def __init__(self, model_version=5, data_id=3, iteration_per_data_id=0,
                  is_async=False):
@@ -439,6 +703,42 @@ class TestUtilityBeliefTelemetry:
         agg.process(channel, _msg(stat_utility=0.5), "t1", timestamp=0)
 
         assert not (tmp_path / "aggregator.jsonl").exists()
+
+
+class TestStalenessPolicy:
+    """staleness_policy gate in _process_single_trainer_message.
+
+    REJECT policies (round_data_id/exact) drop a stale grad; ACCEPT policies
+    (none/fedbuff) consume it -- fedbuff is the async baseline default so its
+    carried surplus grads (commit-then-carry) are accepted + down-weighted by
+    (V'-V) in aggregate_grads_from_trainers, never silently dropped."""
+
+    def _run(self, policy, msg_version, agg_version=5):
+        agg = _UtilityFakeAggregator(model_version=agg_version, is_async=True)
+        agg.staleness_policy = policy
+        channel = _UtilityFakeChannel()
+        agg.process(channel, _msg(model_version=msg_version, stat_utility=0.5),
+                    "t1", timestamp=0)
+        return agg
+
+    def test_fedbuff_accepts_stale_grad(self):
+        # msg trained on v3, agg now at v5 -> stale by 2, but fedbuff ACCEPTS it.
+        agg = self._run("fedbuff", msg_version=3)
+        assert agg._agg_goal_cnt == 1          # grad consumed
+        assert agg._per_agg_trainer_list == ["t1"]
+
+    def test_none_accepts_stale_grad(self):
+        agg = self._run("none", msg_version=3)
+        assert agg._agg_goal_cnt == 1
+
+    def test_round_data_id_rejects_stale_grad(self):
+        agg = self._run("round_data_id", msg_version=3)
+        assert agg._agg_goal_cnt == 0          # dropped
+        assert agg._per_agg_trainer_list == []
+
+    def test_fedbuff_accepts_fresh_grad(self):
+        agg = self._run("fedbuff", msg_version=5)  # not stale
+        assert agg._agg_goal_cnt == 1
 
 
 class TestRoundCacheActivityResetOnContribution:

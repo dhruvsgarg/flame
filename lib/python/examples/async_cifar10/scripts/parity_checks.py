@@ -33,6 +33,9 @@ from parity.checks import (  # noqa: F401, E402
     # selection constants
     DETERMINISTIC_SELECTORS,
     _selector_name,
+    _has_cohort_counts,
+    _full_cohort_selection,
+    _selection_is_deterministic,
     # §3.B selection
     selection_parity,
     # §3.D updates
@@ -52,6 +55,7 @@ from parity.checks import (  # noqa: F401, E402
     # §3.C sim invariants
     sim_send_ts_ok,
     gpu_budget_ok,
+    timing_overrun,
     trainer_phase_parity,
     # Stage 0 / 1 / 2 / 4 / 8 additions (causal ladder)
     field_coverage,
@@ -78,9 +82,30 @@ from parity.checks import (  # noqa: F401, E402
     throughput_parity,
     per_round_advance_parity,
     overlap_factor,
+    wall_disparity,
+    sim_speedup,
     total_commits_parity,
     terminal_state_parity,
     budget_not_cap,
+    # §F fwdllm variance-cadence layer (V/DK/G rungs)
+    _iters_per_data_id,
+    cohort_sequence_parity,
+    iters_per_data_id_parity,
+    var_trajectory_parity,
+    cached_v_pool_parity,
+    force_commit_rate_parity,
+    variance_pass_ratio_parity,
+    agg_goal_trajectory_parity,
+    dynamic_c_trajectory_parity,
+    eligible_ends_metric_parity,
+    grad_norm_parity,
+    grad_pool_size_parity,
+    # fwdllm async residence (R1/W1, simulate_fwdllm.md §L.3)
+    _overlap_fraction,
+    _forward_passes,
+    _committed_grads,
+    inflight_overlap_parity,
+    compute_conservation_parity,
     # overall
     run_all_parity,
     overall_verdict,

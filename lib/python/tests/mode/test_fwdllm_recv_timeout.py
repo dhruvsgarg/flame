@@ -52,6 +52,8 @@ class TestAggregateGradsAsyncBoundedRecv:
         _aggregate_grads_async = TopAggregator._aggregate_grads_async
 
         def __init__(self, channel):
+            # Batch 1 flag-off: real path uses next(recv_fifo(...,1,timeout=...)).
+            self.simulated = False
             self.cm = _FakeChannelManager(channel)
 
     def test_recv_fifo_called_with_recv_timeout_wait_s(self):
@@ -74,6 +76,8 @@ class TestSyncCollectBoundedRecv:
         )
 
         def __init__(self, channel, agg_goal=3):
+            # Batch 1 flag-off: real barrier path (unchanged recv_fifo drain).
+            self.simulated = False
             self._agg_goal = agg_goal
             self.ends_not_selected_yet = False
             self._round = 1

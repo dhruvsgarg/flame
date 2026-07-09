@@ -1,0 +1,134 @@
+# ============================================================================
+# FLUXTUNE vs FWDLLM / FWDLLM_PLUS — machine-readable experiment registry.
+#
+# Consumed by:
+#   * run_sequential.sh      -> launches a run_set's (baseline x condition) matrix
+#   * compare_baselines.py   -> maps each analysis to the run dirs + metric ids it needs
+#
+# Human twin: EXPERIMENTS.md (intent & why). This file is the source of truth for
+# WHAT RUNS and HOW METRICS ARE WIRED. Metric *implementations* live in
+# compare_baselines.py, keyed by the `id`s below -- this file is the contract, not
+# the code. Keep in sync with EXPERIMENTS.md (pre-flight-gate discipline).
+# ============================================================================
+
+version: 1
+
+# ---- run-time defaults (per-condition overridable) -------------------------
+defaults:
+  target_accuracy: 0.84        # tau: convergence-stop accuracy threshold
+  converge_window: 20          # W : consecutive data bins all >= tau  -> stop
+  stop: converge               # converge | data_id | runtime
+  # safety caps (a non-converging run is bounded by these -> DID_NOT_CONVERGE)
+  max_runtime_s: 172800        # 48h wall ceiling — a convergence run needs room to reach tau
+  max_data_id_progress: 9999
+  # stall guard: terminate EARLY (before 48h) if the run is clearly not learning —
+  # no PROGRESS within stall_window_s on the armed signal (stall_on).
+  # -> verdict STALLED (distinct from DID_NOT_CONVERGE). 0 window disables it.
+  stall_window_s: 7200         # 2h with no progress ⇒ stalled
+  stall_min_delta: 0.01        # acc: 1% ABSOLUTE test-accuracy gain counts as progress
+  stall_on: either             # acc | loss | either — 'either' keeps a run alive while EITHER
+                               # accuracy OR test-loss is still improving (a run can plateau in
+                               # accuracy while loss keeps falling ⇒ still learning, don't kill it)
+  loss_min_rel_delta: 0.01     # loss: 1% RELATIVE drop vs running-best counts as progress
+                               # (loss is unbounded, so progress is relative, not absolute)
+
+# ---- baselines (descriptive; substance lives in _metadata/baselines.yaml) ---
+baselines:
+  fwdllm:      { sync: true,  selector: random,     tracking: default,       agg_goal_default: 10 }
+  fwdllm_plus: { sync: true,  selector: random,     tracking: oracular,      agg_goal_default: 10 }
+  fluxtune:    { sync: false, selector: async_oort, tracking: client_notify, agg_goal_default: 3  }
+
+# ---- run-sets: the expensive GPU work, produced ONCE, reused by all analyses -
+run_sets:
+  main:
+    description: >
+      Canonical comparison run-set. Experiment 1 defines it; Experiments 2-5 are
+      pure reducers over these run dirs (no new GPU runs). One run per baseline.
+    baselines: [fwdllm, fwdllm_plus, fluxtune]
+    # Active condition = the real comparison (operator-signed-off 2026-07-06):
+    # N=100, 84% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
+    # mobile-latency delays ON at delay_factor=2. agg_goal MATCHES across all three
+    # baselines (=10); fluxtune's concurrency C=30 (async) while sync baselines C=10.
+    condition:
+      N: 100                      # trainer.num_trainers
+      K: 10                       # selector.kwargs.k (all baselines)
+      C: { sync: 10, async: 30 }  # selector.kwargs.c — fluxtune uses async=30, sync baselines=10
+      # agg_goal is fanned from C.sync -> 10 for EVERY baseline (matched across
+      # baselines, per sign-off). fluxtune therefore uses agg_goal=10 (NOT its
+      # native fedbuff 3) with C=30. A pre-flight check enforces the match.
+      partition_method: niid_label_clients=100_alpha=1     # data heterogeneity alpha=1 (was 0.1)
+      avail_trace: syn_0          # 100% available (Phase 1); -> mobiperf_* at Phase 2
+      delays: on                  # enable_training_delays, matched both sides (K-D8)
+      delay_factor: 2             # divides the yaml base compute-latency delay (full/2) — mobile-latency model
+      target_accuracy: 0.84       # convergence stop threshold
+      converge_window: 20         # W consecutive bins >= target
+    scale_n100:                   # target config, DEFERRED until pipeline proven
+      N: 100
+      K: 10
+      C: { sync: 10, async: 30 }
+      partition_method: niid_label_clients=100_alpha=0.1
+      avail_trace: mobiperf_2st
+      # NOTE: fwdllm_plus sync barrier cannot assemble under mobiperf unavailability
+      # (agg_goal >= available trainers). Needs a policy decision before this runs;
+      # the pre-flight gate will BLOCK it otherwise. See EXPERIMENTS.md sec 1.
+      _blocked_pending: fwdllm_plus_mobiperf_policy
+
+# ---- analyses: every experiment is a view over a run_set --------------------
+# reuse: run_set analyses share the SAME run dirs. `metrics[].id` are implemented
+# in compare_baselines.py. `source` documents telemetry provenance:
+#   emit  = already in telemetry      derive = reducer over existing telemetry
+#   ws2   = convergence watcher        ws3a  = network telemetry (new)
+#   ws3b  = perturbation counter (new)
+analyses:
+  - id: 1_time_to_target
+    takeaway: Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM_Plus.
+    run_set: main
+    reuses: null                 # this analysis DEFINES the run-set
+    metrics:
+      - { id: time_to_target,   source: ws2,    report: [wall_s, vclock_s, rounds, data_bins] }
+      - { id: max_accuracy,     source: derive, report: [accuracy] }
+
+  - id: 2_resource_utilization
+    takeaway: Fluxtune cuts wait time at trainers (primary) and the aggregator (secondary).
+    run_set: main
+    reuses: main                 # NO new runs -- reuse Expt-1 telemetry
+    approach: derived_time_fraction   # operator call: no hardware sampler
+    metrics:
+      - { id: trainer_busy_fraction, source: derive, report: [p50, p90, p99] }
+      - { id: agg_busy_vs_wait,      source: derive, report: [busy_frac, barrier_wait_frac, drain_frac] }
+
+  - id: 3_compute_productivity
+    takeaway: At constrained clients, Fluxtune yields more learning per unit compute.
+    run_set: main
+    reuses: main
+    metrics:
+      - { id: delta_loss,                 source: emit,   report: [first_loss, final_loss, delta] }
+      - { id: productivity_per_gpu_s,     source: derive, report: [delta_loss_per_gpu_s] }
+      - { id: productivity_per_fwd_pass,  source: ws3b,   report: [delta_loss_per_forward_pass] }
+
+  - id: 4_network_data
+    takeaway: Fluxtune's total data overhead is lower despite more messages per round.
+    run_set: main
+    reuses: main                 # requires ws3a telemetry present AT RUN TIME
+    requires_telemetry: [ws3a]
+    metrics:
+      - { id: total_messages,   source: ws3a, report: [agg_side, client_side] }
+      - { id: total_bytes,      source: ws3a, report: [agg_side, client_side] }
+      - { id: msg_size_dist,    source: ws3a, report: [p50, p90, p99, histogram] }
+
+  - id: 5_client_sessions
+    takeaway: Fluxtune's client sessions are much shorter than FwdLLM's.
+    run_set: main
+    reuses: main
+    session_def:                 # active-session semantics (operator-precise)
+      async: dispatch_to_commit  # selected -> next reselection (contributor_intervals)
+      sync:  one_round_span       # round-based reselect: one-round duration
+    metrics:
+      - { id: session_duration,      source: derive, report: [p50, p90, p99, histogram] }
+      - { id: participation_counts,  source: derive, report: [rounds, data_bins, iterations] }
+
+# ---- outputs ----------------------------------------------------------------
+outputs:
+  table_csv: compare_baselines.csv      # one row per (analysis, baseline, metric)
+  overlay_plots: true                   # N-way accuracy/comm/util overlays (extends compare_streaming)
+  run_manifest: run_manifest.json       # analysis -> run dirs + config fingerprint (mix-guard)

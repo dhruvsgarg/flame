@@ -73,6 +73,18 @@ class TestBuilders:
         assert f["staleness"] == [0, 1, 2]
         assert f["agg_goal"] == 3
 
+    def test_step_timing_required_and_optional(self):
+        from flame.telemetry.events import EVENT_STEP_TIMING, build_step_timing
+        ev, f = build_step_timing(
+            func="_train_one_batch", duration_s=1.25,
+            round_num=1, data_id=0, iteration=2, trainer_id="t3")
+        assert ev == EVENT_STEP_TIMING
+        assert f["func"] == "_train_one_batch" and f["duration_s"] == 1.25
+        assert f["data_id"] == 0 and f["iteration_per_data_id"] == 2
+        # optional context omitted when absent
+        _ev2, f2 = build_step_timing(func="x", duration_s=0.1)
+        assert "data_id" not in f2 and "trainer_id" not in f2
+
     def test_util_disparity_ratio_and_fraction(self):
         ev, f = build_util_disparity(
             round_num=1,
@@ -115,6 +127,64 @@ class TestUtilDisparityDirection:
             utility_streamed=util_streamed, utility_full=util_full,
         )
         assert f["utility_ratio"] < 1.0
+
+
+# --- timer_decorator step_timing emission ----------------------------------
+
+
+class TestTimerDecoratorTelemetry:
+    """timer_decorator emits a step_timing record for a genuine trainer step
+    (self has fwd_llm_stage) and stays silent for a nested helper whose first
+    arg is not the trainer (e.g. a torch device) — so no mis-attributed record.
+    """
+
+    def _timed(self):
+        from flame.monitor.runtime import timer_decorator
+
+        @timer_decorator
+        def _train_one_batch(obj, x):
+            return x + 1
+
+        return _train_one_batch
+
+    def test_emits_with_stage(self, tmp_path):
+        from flame.monitor.runtime import FwdLLMStage
+
+        telemetry.configure(role="trainer", end_id="t9", run_dir=str(tmp_path))
+
+        class _Trainer:
+            fwd_llm_stage = FwdLLMStage(1, 0, 2, trainer_id="t9")
+
+        assert self._timed()(_Trainer(), 41) == 42
+        telemetry.shutdown()
+        recs = [r for r in _read(tmp_path / "trainer_t9.jsonl")
+                if r["event"] == "step_timing"]
+        assert len(recs) == 1
+        r = recs[0]
+        assert r["func"] == "_train_one_batch" and r["data_id"] == 0
+        assert r["iteration_per_data_id"] == 2 and "duration_s" in r
+
+    def test_silent_without_stage(self, tmp_path):
+        telemetry.configure(role="trainer", end_id="t0", run_dir=str(tmp_path))
+
+        class _NoStage:  # e.g. a nested helper's args[0] (a device) — no stage
+            pass
+
+        self._timed()(_NoStage(), 1)
+        telemetry.shutdown()
+        recs = [r for r in _read(tmp_path / "trainer_t0.jsonl")
+                if r["event"] == "step_timing"]
+        assert recs == []
+
+    def test_noop_when_telemetry_disabled(self):
+        from flame.monitor.runtime import FwdLLMStage
+
+        telemetry.shutdown()  # unconfigured -> emit is a no-op, must not raise
+
+        class _Trainer:
+            fwd_llm_stage = FwdLLMStage(1, 0, 0)
+
+        assert self._timed()(_Trainer(), 7) == 8
 
 
 # --- selector emission produces a consistent schema ------------------------

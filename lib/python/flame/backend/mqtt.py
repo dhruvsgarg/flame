@@ -194,8 +194,31 @@ class MqttBackend(AbstractBackend):
 
         return notify_topics
 
+    def _wait_for_connect(self, timeout: float = DEFAULT_RUN_ASYNC_WAIT_TIME) -> bool:
+        """Block until the MQTT client reports connected (bounded by timeout).
+
+        connect() is async: if join() wins the race against on_connect,
+        subscribe() targets an unconnected client and notify(JOIN) is dropped by
+        the connection guard, so this end never registers with peers and hangs.
+        Waiting defers subscription+JOIN until the connection is up; returns
+        immediately when on_connect already fired.
+        """
+        deadline = time.time() + timeout
+        while not self._is_connected and time.time() < deadline:
+            time.sleep(0.01)
+        if not self._is_connected:
+            logger.warning(
+                f"join proceeding without a confirmed MQTT connection "
+                f"after {timeout}s; presence notify may be dropped"
+            )
+        return self._is_connected
+
     def join(self, channel: Channel) -> None:
         """Join a channel by subscribing to topics."""
+        # subscribe/announce only after the connection is up, else both can be
+        # silently dropped (startup race)
+        self._wait_for_connect()
+
         for topic in self._topics_for_notify(channel):
             self.subscribe(topic)
 

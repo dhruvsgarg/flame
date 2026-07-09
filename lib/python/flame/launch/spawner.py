@@ -428,6 +428,56 @@ class TrainerSpawner:
             print(f"  {'Trainer':>8}  {'GPU':>4}  {'CPU core':>9}  {'PID':>7}")
             for p in self.processes:
                 print(f"  {p['trainer_id']:>8}  {p['gpu_id']:>4}  {str(p.get('cpu_core', 'N/A')):>9}  {p['process'].pid:>7}")
+        self._assert_load_balanced()
+
+    def _assert_load_balanced(self) -> None:
+        """Post-spawn load-balance check relative to available hardware.
+
+        Verifies round-robin placement spread work evenly and left no hardware
+        idle (under-provisioned num_gpus is a silent contention source). Emits one
+        grep-able [LOAD_BALANCE] verdict; WARNs, never raises.
+        """
+        procs = self.processes
+        if not procs:
+            return
+        # trainers per assigned GPU + per CPU core
+        from collections import Counter
+        gpu_counts = Counter(p["gpu_id"] for p in procs)
+        core_counts = Counter(p.get("cpu_core") for p in procs if p.get("cpu_core") is not None)
+        # visible physical GPUs on the node (independent of num_gpus we chose)
+        try:
+            import torch
+            visible_gpus = torch.cuda.device_count()
+        except Exception:
+            visible_gpus = 0
+
+        issues = []
+        # 1. Even GPU spread: round-robin guarantees max-min <= 1; flag otherwise.
+        if gpu_counts:
+            spread = max(gpu_counts.values()) - min(gpu_counts.values())
+            if spread > 1:
+                issues.append(f"GPU imbalance: per-GPU trainer counts {dict(sorted(gpu_counts.items()))} (spread={spread}>1)")
+        # 2. Under-provisioning: physical GPUs left completely idle.
+        if visible_gpus and self.num_gpus < visible_gpus:
+            issues.append(f"under-provisioned: num_gpus={self.num_gpus} < visible={visible_gpus} "
+                          f"→ {visible_gpus - self.num_gpus} GPU(s) idle; raise execution.num_gpus")
+        if visible_gpus and self.num_gpus > visible_gpus:
+            issues.append(f"over-subscribed: num_gpus={self.num_gpus} > visible={visible_gpus}")
+        # 3. Even CPU-core spread among pinned trainers.
+        if core_counts:
+            cspread = max(core_counts.values()) - min(core_counts.values())
+            if cspread > 1:
+                issues.append(f"CPU imbalance: core reuse spread={cspread}>1")
+
+        per_gpu = ", ".join(f"gpu{g}={n}" for g, n in sorted(gpu_counts.items()))
+        if issues:
+            print(f"  ⚠ [LOAD_BALANCE] WARN ({len(procs)} trainers, num_gpus={self.num_gpus}, "
+                  f"visible={visible_gpus}): {per_gpu}")
+            for it in issues:
+                print(f"      - {it}")
+        else:
+            print(f"  ✓ [LOAD_BALANCE] balanced: {len(procs)} trainers over {self.num_gpus} GPU(s) "
+                  f"(visible={visible_gpus}): {per_gpu}; CPU cores 1/trainer")
 
     def wait_all(self, timeout_per_trainer: float = 30.0):
         """Wait for all trainer processes to complete.

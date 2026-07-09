@@ -44,6 +44,13 @@ Last green (Jun 24): selector+mode+sim+parity **351 pass / 7 skip** (incl. `Test
    A fix that could perturb another baseline → serialize (one baseline per run round).
 4. **Shortest run that exhibits the issue** (table below). Reserve long runs for C1/C2.
 5. **Crisp comments (≤1 sentence); context-free names** (Naming discipline below).
+6. **Telemetry-FIRST; a cluster run is the LAST resort, never the debugger.** Before launching anything to
+   validate/refute a hypothesis, name the exact stored field/log-line that would confirm it and go read the
+   banked telemetry — most roots are already visible there. Ship every new mechanism WITH its telemetry +
+   plot + pytest in the same change (over-instrument: cheap to log, expensive to re-run for), so the next
+   root is catchable from disk. Launch ONLY to observe an emergent quantity no stored telemetry can yield
+   (fresh convergence / concurrency-after-a-change / a longer trajectory), then the shortest length that
+   shows it. (fwdllm restates this as its principle #11.)
 
 ### Run-length budget (state min duration up front, keyed here; never default to 3–4h)
 | validating | min run | why |
