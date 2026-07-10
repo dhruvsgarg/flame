@@ -77,6 +77,46 @@ class TestOortIdempotentWithinRound:
         assert set(r1.keys()) == set(r2.keys())
 
 
+class TestVersionKeySymmetry:
+    """§M Step 1(b): oort mirrors async_oort's optional no-repeat-this-tuple
+    filter, for interface symmetry. Inert unless a caller passes both kwargs --
+    no current caller does (sync's round-scoped `selected_ends` guard already
+    prevents a within-round re-pick)."""
+
+    def test_absent_kwargs_are_noop(self, oort, make_ends, channel_props):
+        ends = make_ends(count=5, prefix="t")
+        result = oort.select(
+            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
+        )
+        assert len(result) == oort.num_of_ends
+
+    def test_matching_version_key_excludes_candidate(self, oort, channel_props, make_ends):
+        ends = make_ends(count=1, prefix="t")
+        end_id = next(iter(ends))
+        result = oort.select(
+            ends,
+            channel_props,
+            trainer_unavail_list=[],
+            task_to_perform="train",
+            agg_version_key=(1, 0),
+            trainer_version_keys={end_id: (1, 0)},
+        )
+        assert result == {}
+
+    def test_mismatched_version_key_still_selects(self, oort, channel_props, make_ends):
+        ends = make_ends(count=1, prefix="t")
+        end_id = next(iter(ends))
+        result = oort.select(
+            ends,
+            channel_props,
+            trainer_unavail_list=[],
+            task_to_perform="train",
+            agg_version_key=(1, 0),
+            trainer_version_keys={end_id: (0, 0)},
+        )
+        assert end_id in result
+
+
 class TestTemporalUncertaintyFidelity:
     """UCB temporal term keys on the agg round of the end's last RECEIVED update
     (PROP_LAST_RETURNED_ROUND, stamped at receipt by the aggregator), reference
@@ -428,7 +468,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=5, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
 
@@ -448,7 +488,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=4, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
         assert result == {}   # nobody eligible -> no re-dispatch-while-in-flight
@@ -464,7 +504,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=5, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
         assert len(result) >= 1

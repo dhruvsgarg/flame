@@ -45,8 +45,8 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
                 channel_props={"round": 1},
                 trainer_unavail_list=[],
                 task_to_perform="train",
-                agg_version_state=(1, 0, 0),
-                trainer_version_states={},
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
             )
 
         assert "stale" not in sel.all_selected
@@ -65,8 +65,8 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
                 channel_props={"round": 1},
                 trainer_unavail_list=[],
                 task_to_perform="train",
-                agg_version_state=(1, 0, 0),
-                trainer_version_states={},
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
             )
 
         assert "fresh" in sel.all_selected

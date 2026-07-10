@@ -99,7 +99,7 @@ class _DistChannel:
     def await_join(self):
         pass
 
-    def ends(self, state, task=None, agg_version_state=None, trainer_version_states=None):
+    def ends(self, state, task=None, agg_version_key=None, trainer_version_keys=None):
         return list(self._send_ends)
 
     def dumps(self, msg):

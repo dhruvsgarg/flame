@@ -242,6 +242,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # directly populate it here since it is only in the optimizer.
         # For now, do it in post-proc script.
 
+    @property
+    def version_key(self) -> tuple[int, int]:
+        """(model_version, iteration): the aggregator's current step identity,
+        shared by staleness checks and the selector no-repeat guard. Plain
+        sync FL has no intra-round iteration axis, so iteration is always 0;
+        fwdllm_aggregator overrides this for its variance-gated cadence."""
+        return (self._round, 0)
+
     def _compute_aggregator_stats(self) -> None:
         for key in self._round_update_stat_keys:
             raw_values = self._round_update_values.get(key, [])

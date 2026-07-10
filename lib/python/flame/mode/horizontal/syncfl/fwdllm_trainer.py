@@ -265,19 +265,28 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         logger.info(f"isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
 
-        if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
+        if (
+            MessageType.MODEL_VERSION in msg
+            and MessageType.DATA_ID in msg
+            and MessageType.ITERATION_PER_DATA_ID in msg
+        ):
+            # version_key match (model_version, iteration), not just (data_id,
+            # iteration): data_id wraps at total_data_bins, so a bare (data_id,
+            # iteration) match can false-positive across model_versions that
+            # recycle the same data_id -> spurious abort, no grad sent. data_id
+            # is redundant here (model_version bumps once per data-bin, so it
+            # already identifies data_id uniquely) -- not compared.
             if (
-                self.data_id is not None
-                and self.data_id == msg[MessageType.DATA_ID]
+                self._model_version == msg[MessageType.MODEL_VERSION]
                 and self.iteration_per_data_id is not None
                 and self.iteration_per_data_id == msg[MessageType.ITERATION_PER_DATA_ID]
             ):
                 self.abort_training = True
                 logger.info(
-                    f"Fetch weights aborted for given model version "
-                    f"{self._model_version} while trainer_id {self.trainer_id} has "
-                    f"already sent updates "
-                    f"upto iteration_per_data_id: {self.iteration_per_data_id}"
+                    f"Fetch weights aborted for version_key "
+                    f"(model_version={self._model_version}, "
+                    f"iteration={self.iteration_per_data_id}) -- trainer_id "
+                    f"{self.trainer_id} already sent updates for it."
                 )
                 # Received old data but still allow aggregator cleanup state to
                 # occur so as to receive the next update
@@ -581,9 +590,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 # Echoes the (data_id, iteration) this update answers, so the
                 # aggregator's staleness_policy="exact" mode (see flame/config.py)
                 # can reject a since-superseded iteration, and the re-pick guard can
-                # record the exact (model_version, data_id, iteration) tuple this
+                # record the exact version_key (model_version, iteration) this
                 # trainer contributed to (so it is excluded from re-selection for
-                # that same tuple).
+                # that same version_key). data_id itself stays a reporting/
+                # progress field, not part of the key.
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),

@@ -324,8 +324,8 @@ class TestCoolingHoldsConcurrency:
             channel_props={"round": 1, "sim_cooling_count": cooling_count},
             trainer_unavail_list=[],
             task_to_perform="train",
-            agg_version_state=(1, 0, 0),
-            trainer_version_states={},
+            agg_version_key=(1, 0, 0),
+            trainer_version_keys={},
         )
 
     def test_full_cooling_holds_all_slots_no_refill(self):
@@ -393,8 +393,8 @@ class TestSendTimeoutReclaimsConcurrencySlot:
             channel_props={"round": 1},
             trainer_unavail_list=[],
             task_to_perform="train",
-            agg_version_state=(1, 0, 0),
-            trainer_version_states={},
+            agg_version_key=(1, 0, 0),
+            trainer_version_keys={},
         )
 
     def test_stale_end_freed_from_both_dicts_and_unblocks_selection(self):

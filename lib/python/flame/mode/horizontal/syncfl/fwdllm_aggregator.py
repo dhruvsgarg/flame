@@ -283,7 +283,7 @@ class TopAggregator(AsyncTopAgg):
         self._per_trainer_staleness_track = {}
         self._track_trainer_version_duration_s = {}
 
-        # Dictionary to store trainer state: Key = trainer_id, Value = model_version, data_id, iteration_id
+        # Dictionary to store trainer state: Key = trainer_id, Value = version_key (model_version, iteration)
         self._trainer_state_dict = {}
 
         # check if distribute_weights was successful
@@ -495,6 +495,14 @@ class TopAggregator(AsyncTopAgg):
         self.trainer_unavail_durations = None
         self._cached_test_data = None
         logger.info("finished init for sync agg")
+
+    @property
+    def version_key(self) -> tuple[int, int]:
+        """(model_version, iteration_per_data_id): fwdllm's step identity.
+        data_id is NOT in the key -- model_version bumps once per completed
+        data-bin, so it already identifies data_id uniquely; data_id stays a
+        reporting/progress field only (§M)."""
+        return (self._model_version, self.iteration_per_data_id)
 
     def pause_execution(self):
         time.sleep(1)
@@ -1116,9 +1124,9 @@ class TopAggregator(AsyncTopAgg):
         # Triplet-guard hygiene: keep each trainer's contributed-tuple stamp until
         # the aggregator ADVANCES PAST that tuple (v != current), NOT until it
         # commits. The old `e in outstanding` filter dropped the stamp the instant a
-        # grad committed, so the trainer was re-picked for the SAME
-        # (model_version, data_id, iteration) it just answered -> abort_training ->
-        # phantom starvation (RC2/RC3). Now a committed trainer stays excluded only
+        # grad committed, so the trainer was re-picked for the SAME version_key
+        # it just answered -> abort_training -> phantom starvation (RC2/RC3).
+        # Now a committed trainer stays excluded only
         # while the agg is still on that tuple and re-enters the pool the moment the
         # tuple advances (its stale stamp != _curr_agg_version in the selector guard).
         _cav = getattr(self, "_curr_agg_version", None)
@@ -1273,9 +1281,9 @@ class TopAggregator(AsyncTopAgg):
             # staleness_policy. REJECT: round_data_id, exact. ACCEPT: none (no
             # gate); fedbuff (consume + down-weight by V'-V) -- the async default,
             # since its carried surplus grads (§L) are stale by construction.
-            # model_version alone identifies (round, data_id) when
-            # inc_model_version_per_data_id is set, so round_data_id needs no extra
-            # field; exact also checks iteration_per_data_id.
+            # model_version alone identifies data_id (bumps once per data-bin),
+            # so round_data_id needs no extra field; exact also checks
+            # iteration_per_data_id.
             policy = getattr(self, "staleness_policy", "none")
             stale, stale_reason = False, None
             if policy == "round_data_id":
@@ -1408,25 +1416,25 @@ class TopAggregator(AsyncTopAgg):
             (float(_md), str(end)) if _md is not None else None
         )
 
-        # Re-pick guard (async_oort triplet filter): record the exact
-        # (model_version, data_id, iteration) this trainer CONTRIBUTED to, so the
-        # selector excludes it from re-selection for that same tuple until the agg
-        # advances past it (async_oort `trainer_version_states` filter). Correctness
-        # invariant: a trainer must never be picked twice for one tuple -> otherwise
-        # it re-arrives, `abort_training` fires (no grad), and in sim it strands in
-        # the in-flight ledger forever (RC2/RC3 phantom starvation). Stamped on
-        # RETURN from the MESSAGE's own tuple (NOT _curr_agg_version, which a
-        # staleness-accepted late grad would mis-stamp; NOT at dispatch, which froze
-        # the pool). BOTH modes (real relied on the trainer abort + 90s timeout; that
-        # left the mix noisier and has no sim analog). Only for grad contributions.
+        # Re-pick guard (async_oort triplet filter): record the exact version_key
+        # (model_version, iteration) this trainer CONTRIBUTED to, so the selector
+        # excludes it from re-selection for that same key until the agg advances
+        # past it (async_oort `trainer_version_keys` filter). Correctness
+        # invariant: a trainer must never be picked twice for one version_key ->
+        # otherwise it re-arrives, `abort_training` fires (no grad), and in sim it
+        # strands in the in-flight ledger forever (RC2/RC3 phantom starvation).
+        # Stamped on RETURN from the MESSAGE's own key (NOT _curr_agg_version,
+        # which a staleness-accepted late grad would mis-stamp; NOT at dispatch,
+        # which froze the pool). BOTH modes (real relied on the trainer abort +
+        # 90s timeout; that left the mix noisier and has no sim analog). Only for
+        # grad contributions.
         if MessageType.GRADIENTS in msg:
-            _tuple = (
+            _key = (
                 msg.get(MessageType.MODEL_VERSION),
-                msg.get(MessageType.DATA_ID),
                 msg.get(MessageType.ITERATION_PER_DATA_ID),
             )
-            if None not in _tuple:
-                self._trainer_state_dict[end] = _tuple
+            if None not in _key:
+                self._trainer_state_dict[end] = _key
 
         if end not in self._updates_received.keys():
             self._updates_received[end] = 1
@@ -1569,7 +1577,7 @@ class TopAggregator(AsyncTopAgg):
         )
 
         logger.info(
-            f"==== Model version incremented to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
+            f"==== version_key advanced to {self._curr_agg_version} with updates from {n_unique} unique trainers. Stats of participating trainers: \n"
             f"p1, p5, p20, p30, p50, p75, p90, p99 of train duration \n{rd_p1:.3f}, {rd_p5:.3f}, {rd_p20:.3f}, {rd_p30:.3f}, {rd_p50:.3f}, {rd_p75:.3f}, {rd_p90:.3f}, {rd_p99:.3f} \n"
             f"p1, p5, p20, p30, p50, p75, p90, p99 of partial stat utilities \n{su_p1:.4f}, {su_p5:.4f}, {su_p20:.4f}, {su_p30:.4f}, {su_p50:.4f}, {su_p75:.4f}, {su_p90:.4f}, {su_p99:.4f}"
         )
@@ -1872,10 +1880,12 @@ class TopAggregator(AsyncTopAgg):
             self.iteration_per_data_id = 0
             self._is_model_updated = True
 
-            if self.config.hyperparameters.inc_model_version_per_data_id:
-                self._model_version += 1
-            else:
-                self._model_version = self._round
+            # §M Step 2: model_version bumps once per completed data-bin,
+            # unconditionally (was gated by the now-purged
+            # inc_model_version_per_data_id flag; every baseline already ran
+            # with it True). version_key = (model_version, iteration) then
+            # uniquely identifies a step without needing data_id in the key.
+            self._model_version += 1
 
             # Opt-1: the data-bin (and model_version) just advanced -> every
             # trainer is genuinely stale, so the "already sent this cycle" set must
@@ -2773,13 +2783,9 @@ class TopAggregator(AsyncTopAgg):
         else:
             channel.set_curr_unavailable_trainers(trainer_unavail_list=[])
 
-        self._curr_agg_version = (
-            self._model_version,
-            self.data_id,
-            self.iteration_per_data_id,
-        )
+        self._curr_agg_version = self.version_key
         logger.debug(
-            f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
+            f"Aggregator version_key (model_version, iteration): {self._curr_agg_version}"
         )
         
         ends = self._select_ends_respecting_reselect_gate(channel, task_to_perform)
@@ -2944,19 +2950,15 @@ class TopAggregator(AsyncTopAgg):
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
         )
 
-        self._curr_agg_version = (
-            self._model_version,
-            self.data_id,
-            self.iteration_per_data_id,
-        )
+        self._curr_agg_version = self.version_key
         logger.debug(
-            f"Aggregator version state (model_version, data_id, iteration_id): {self._curr_agg_version}"
+            f"Aggregator version_key (model_version, iteration): {self._curr_agg_version}"
         )
         ends = channel.ends(
             state=VAL_CH_STATE_SEND,
             task_to_perform=task_to_perform,
-            agg_version_state=self._curr_agg_version,
-            trainer_version_states=self._trainer_state_dict,
+            agg_version_key=self._curr_agg_version,
+            trainer_version_keys=self._trainer_state_dict,
         )
         logger.info(f"ends: {ends}")
 

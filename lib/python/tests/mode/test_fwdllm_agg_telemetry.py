@@ -51,7 +51,6 @@ class _FakeChannel:
 
 
 class _FakeHyperparameters:
-    inc_model_version_per_data_id = True
     rounds = 1000
 
 

@@ -277,15 +277,15 @@ class RandomSelector(AbstractSelector):
                 "requester": channel_props.get(KEY_CH_SELECT_REQUESTER),
             }
             # fwdllm-family aggregators thread (model_version, data_id,
-            # iteration_id) through channel.ends(agg_version_state=...) ->
+            # iteration_id) through channel.ends(agg_version_key=...) ->
             # select()'s kwargs (see fwdllm_aggregator.py). Attaching data_id/
             # iteration_per_data_id here lets analyze_run.py's progress_key()
             # place this event on the same fine-grained axis as trainer_round/
             # agg_round/agg_eval, instead of collapsing onto fwdllm's
             # coarse `round` (which can stay at 1 for an entire run). No-op
-            # (absent from extra) for callers that don't pass agg_version_state
+            # (absent from extra) for callers that don't pass agg_version_key
             # -- e.g. async_cifar10's fedavg baseline also uses this selector.
-            _avs = kwargs.get("agg_version_state")
+            _avs = kwargs.get("agg_version_key")
             if isinstance(_avs, (tuple, list)) and len(_avs) == 3:
                 _extra["data_id"] = _avs[1]
                 _extra["iteration_per_data_id"] = _avs[2]

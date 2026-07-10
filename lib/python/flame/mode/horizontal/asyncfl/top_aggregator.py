@@ -1591,8 +1591,12 @@ class TopAggregator(SyncTopAgg):
         # before selection. No-op unless oracle_utility_injection is enabled.
         self._inject_oracle_utilities(channel, task_to_perform)
 
+        # §M Step 3: route through the shared version_key vocabulary (base
+        # TopAggregator property, (round, 0) -- cifar10 has no intra-round
+        # iteration axis). No trainer_version_keys passed -> the selector's
+        # no-repeat guard stays inert here, same as before this rename.
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
-                            agg_version_state=(self._round, None, None))
+                            agg_version_key=self.version_key)
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return

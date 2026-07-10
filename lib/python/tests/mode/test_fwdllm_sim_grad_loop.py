@@ -108,7 +108,7 @@ class _FakeGradAgg:
         self._sim_staggered_redispatch = False   # #13 step 4 (default off)
         self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
-        self._curr_agg_version = (1, 0, 0)
+        self._curr_agg_version = (1, 0)
 
     def _drain(self, channel, recv_ends, n):
         """Commit n grads, returning the ordered list of committed scts."""

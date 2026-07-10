@@ -195,10 +195,21 @@ class OortSelector(AbstractSelector):
 
         self.pacer(round)
 
+        # version_key symmetry (§M): same no-repeat-this-tuple filter as
+        # async_oort's triplet guard, kept inert here -- no caller currently
+        # passes both kwargs, since sync's round-scoped `selected_ends` guard
+        # above already prevents a within-round re-pick.
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
             if end_id not in self.selected_ends
+            and not (
+                agg_version_key is not None
+                and trainer_version_keys is not None
+                and trainer_version_keys.get(end_id) == agg_version_key
+            )
         }
 
         if len(eligible_ends) == 0:

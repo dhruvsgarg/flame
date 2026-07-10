@@ -281,12 +281,12 @@ class AsyncOortSelector(AbstractSelector):
         """
         logger.debug("calling async oort select")
         # Extract aggregator version and trainer version states for staleness tracking
-        agg_version_state = kwargs.get("agg_version_state")
-        trainer_version_states = kwargs.get("trainer_version_states")
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
         logger.debug(
-            f"Aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
+            f"Aggregator version_key: {agg_version_key}"
         )
-        logger.debug(f"Trainer version states: {trainer_version_states}")
+        logger.debug(f"Trainer version states: {trainer_version_keys}")
 
         if self.enforce_min_start(len(ends)):
             return {}
@@ -361,10 +361,10 @@ class AsyncOortSelector(AbstractSelector):
 
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
             logger.debug(
-                f"Inside send state: aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
+                f"Inside send state: aggregator version_key: {agg_version_key}"
             )
             logger.debug(
-                f"Inside send state: trainer version states: {trainer_version_states}"
+                f"Inside send state: trainer version states: {trainer_version_keys}"
             )
             results = self._handle_send_state(
                 ends=eligible_ends,
@@ -372,8 +372,8 @@ class AsyncOortSelector(AbstractSelector):
                 channel_props=channel_props,
                 trainer_unavail_list=trainer_unavail_list,
                 task_to_perform=task_to_perform,
-                agg_version_state=agg_version_state,
-                trainer_version_states=trainer_version_states,
+                agg_version_key=agg_version_key,
+                trainer_version_keys=trainer_version_keys,
                 connected_ends=ends,  # Challenge 13: full pool for cleanup
             )
 
@@ -1421,16 +1421,16 @@ class AsyncOortSelector(AbstractSelector):
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list = None,
         task_to_perform: str = "train",
-        agg_version_state=None,  # (model_version, data_id, iteration_id)
-        trainer_version_states: dict[str, tuple[int, int, int]] = None,
+        agg_version_key=None,  # aggregator-defined version_key (shape varies by aggregator)
+        trainer_version_keys: dict[str, tuple] = None,
         connected_ends: dict[str, End] = None,
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
         logger.debug(
-            f"Inside handle send state: aggregator version state {agg_version_state}"
+            f"Inside handle send state: aggregator version state {agg_version_key}"
         )
         logger.debug(
-            f"Inside handle send state: trainer version states {trainer_version_states}"
+            f"Inside handle send state: trainer version states {trainer_version_keys}"
         )
 
         # Invalidate previous all_selected entry if you don't get an
@@ -1552,11 +1552,11 @@ class AsyncOortSelector(AbstractSelector):
             logger.debug(f"extra: {extra}, nothing to select")
             return {}
 
-        if agg_version_state is not None and agg_version_state[0] is not None:
-            model_version = agg_version_state[0]
+        if agg_version_key is not None and agg_version_key[0] is not None:
+            model_version = agg_version_key[0]
         else:
             logger.warning(
-                "Passing agg_version_state to select() will soon be made mandatory. Using channel_props['round'] or self.round to determine model_version for now"
+                "Passing agg_version_key to select() will soon be made mandatory. Using channel_props['round'] or self.round to determine model_version for now"
             )
             model_version = (
                 channel_props["round"] if "round" in channel_props else self.round
@@ -1677,27 +1677,25 @@ class AsyncOortSelector(AbstractSelector):
             f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}"
         )
 
-        if agg_version_state is not None and trainer_version_states is not None:
-            curr_model_version, curr_data_id, curr_iteration_id = agg_version_state
-            logger.info(f"Trainer version states: {trainer_version_states}")
+        if agg_version_key is not None and trainer_version_keys is not None:
+            logger.info(f"Trainer version keys: {trainer_version_keys}")
             logger.info(
-                f"Handle send state: aggregator version state {agg_version_state}"
+                f"Handle send state: aggregator version_key {agg_version_key}"
             )
-            # Filter out trainers who already received this same triplet
+            # Filter out trainers who already contributed to this same version_key.
             eligible_filtered_ends = {}
             logger.debug(f"Filtered ends: {filtered_ends.items()}")
             for end_id, end in filtered_ends.items():
-                prev_state = trainer_version_states.get(end_id)
-                logger.debug(f"Prev version state: {prev_state}")
+                prev_key = trainer_version_keys.get(end_id)
+                logger.debug(f"Prev version_key: {prev_key}")
 
-                if prev_state != agg_version_state:
+                if prev_key != agg_version_key:
                     logger.debug(f"Not skipping trainer: {end_id}")
                     eligible_filtered_ends[end_id] = end
                 else:
                     logger.debug(
                         f"Skipping trainer: {end_id} already has same "
-                        f"(model_version={curr_model_version}, "
-                        f"iteration_id={curr_iteration_id}, data_id={curr_data_id})"
+                        f"version_key={agg_version_key}"
                     )
             filtered_ends = eligible_filtered_ends
 

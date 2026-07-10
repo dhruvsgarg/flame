@@ -330,7 +330,6 @@ baselines:
         # availability traces at full (300+) trainer scale, where round-trip
         # latency variance is much higher than the n=10 smoke default.
         stalenessPolicy: exact
-        inc_model_version_per_data_id: true
         # Iteration-per-data_id cap left UNBOUNDED (None) for the sync baselines:
         # the variance-plateau force-commit is a fluxtune optimization (charter
         # Opt-2) that did not exist in vanilla FwdLLM, so fwdllm/fwdllm_plus run
@@ -386,7 +385,6 @@ baselines:
         # let the 21:30 smoke-test crash (a model_version-45 update accepted
         # into a model_version-53 cycle) happen in the first place.
         stalenessPolicy: round_data_id
-        inc_model_version_per_data_id: true
         # Unbounded (None) — the iteration cap is a fluxtune optimization
         # (charter Opt-2), not part of vanilla FwdLLM_Plus; sync baselines run
         # the original unbounded variance gate. See fwdllm block above.
@@ -507,7 +505,6 @@ baselines:
         # rather than rejecting it. Explicit "none" here so the gate's
         # absence is a documented choice, not a default.
         stalenessPolicy: none
-        inc_model_version_per_data_id: true
         var_threshold: 0.3
         # --- fluxtune optimizations (charter §5c; flag gated) ---
         # Opt-1: suppress byte-identical intra-databin weight re-sends (shared
@@ -624,7 +621,6 @@ baselines:
           enabled: "False"
           type: "NONE"
         rejectStaleUpdates: false
-        inc_model_version_per_data_id: true
         # Soft-cap fallback. With adaptive_k_var_tracking, aggregations should
         # converge near target without needing the cap, but it remains as a
         # safety net.

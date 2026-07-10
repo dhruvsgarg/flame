@@ -68,9 +68,7 @@ class _FakeAggregator:
         self._var_pass_count = 0
         self._dynamic_kc_controller = None
         self.config = SimpleNamespace(
-            hyperparameters=SimpleNamespace(
-                inc_model_version_per_data_id=True, rounds=rounds
-            )
+            hyperparameters=SimpleNamespace(rounds=rounds)
         )
 
     def add_local_trained_result(self, *args, **kwargs):

@@ -11,13 +11,13 @@ one cohort).
     commit path's readiness must key on _sim_buffer / _sim_inflight_expected, not
     on the real transport's RECV bookkeeping.
 
-  Bug B -- the async_oort re-pick triplet was stamped at DISPATCH.
+  Bug B -- the async_oort re-pick guard was stamped at DISPATCH.
     Stamping the whole cohort at the current _curr_agg_version made every
     dispatched trainer match the aggregator's version; since the version advances
     only at a commit boundary (never reached, see Bug A), async_oort's filter
-    excluded the entire pool -> no re-dispatch, ever. The triplet is now stamped
-    on grad RETURN, so an in-flight-but-not-returned trainer stays eligible and
-    the pool is never frozen before the first commit.
+    excluded the entire pool -> no re-dispatch, ever. The version_key is now
+    stamped on grad RETURN, so an in-flight-but-not-returned trainer stays
+    eligible and the pool is never frozen before the first commit.
 """
 
 import torch
@@ -143,7 +143,7 @@ class _RepickAgg:
     process = TopAggregator._process_single_trainer_message
     _release_end_on_return = TopAggregator._release_end_on_return
 
-    def __init__(self, residence=True, simulated=True, curr_ver=(5, 2, 1)):
+    def __init__(self, residence=True, simulated=True, curr_ver=(5, 1)):
         self.simulated = simulated
         self._sim_inflight_residence = residence
         self._curr_agg_version = curr_ver
@@ -180,34 +180,35 @@ def _valid_grad_msg(mv=5, data_id=2, iteration=1):
 
 class TestRepickTripletStampedOnReturn:
     def test_returning_trainer_is_stamped_from_the_message_tuple(self):
-        # The stamp is the EXACT (model_version, data_id, iteration) the message
-        # answered -- NOT _curr_agg_version, which a staleness-accepted late grad
-        # would mis-stamp. Prove it by making curr_ver differ from the msg tuple.
-        agg = _RepickAgg(residence=True, curr_ver=(9, 9, 9))
+        # The stamp is the EXACT version_key (model_version, iteration) the
+        # message answered -- NOT _curr_agg_version, which a staleness-accepted
+        # late grad would mis-stamp. Prove it by making curr_ver differ from the
+        # msg's key. data_id is NOT part of the key (§M Step 2).
+        agg = _RepickAgg(residence=True, curr_ver=(9, 9))
         ch = _RepickChannel()
 
         assert agg.process(ch, _valid_grad_msg(5, 2, 1), "t1", timestamp=0) is True
-        assert agg._trainer_state_dict == {"t1": (5, 2, 1)}
+        assert agg._trainer_state_dict == {"t1": (5, 1)}
 
     def test_stamped_in_both_modes_regardless_of_residence(self):
         """The re-pick invariant is a correctness guard, not a sim/residence
         detail: a contributing trainer is stamped in real AND sim, residence
-        on or off, so the selector never re-picks it for the same tuple."""
+        on or off, so the selector never re-picks it for the same version_key."""
         for simulated in (True, False):
             for residence in (True, False):
                 agg = _RepickAgg(residence=residence, simulated=simulated)
                 ch = _RepickChannel()
                 assert agg.process(ch, _valid_grad_msg(5, 2, 1), "t1", 0) is True
-                assert agg._trainer_state_dict == {"t1": (5, 2, 1)}, (
+                assert agg._trainer_state_dict == {"t1": (5, 1)}, (
                     simulated, residence)
 
-    def test_no_stamp_when_tuple_fields_missing(self):
-        """A message lacking data_id/iteration cannot key the guard -> no stamp
-        (defensive: never stamp a partial tuple)."""
+    def test_no_stamp_when_key_fields_missing(self):
+        """A message lacking model_version/iteration cannot key the guard -> no
+        stamp (defensive: never stamp a partial version_key)."""
         agg = _RepickAgg(residence=True)
         ch = _RepickChannel()
         msg = _valid_grad_msg()
-        del msg[MessageType.DATA_ID]
+        del msg[MessageType.ITERATION_PER_DATA_ID]
 
         assert agg.process(ch, msg, "t1", timestamp=0) is True
         assert agg._trainer_state_dict == {}
