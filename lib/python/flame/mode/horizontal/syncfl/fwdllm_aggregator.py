@@ -20,7 +20,7 @@ import gc
 import logging
 import psutil
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
 import sklearn
@@ -1330,13 +1330,22 @@ class TopAggregator(AsyncTopAgg):
             )
             if round_start_time_tup is not None:
                 sent_ts = round_start_time_tup[1]
-                # Client INTRINSIC duration (WALL_SEND - WALL_RECV, §S.dur); falls
-                # back to recv - dispatch (timestamp - sent_ts) when the trainer did
-                # not stamp the client times. Keeps the selector/telemetry duration
-                # server-overhead-free, consistent with the other aggregators.
-                round_duration = real_client_task_train_duration(msg, sent_ts, timestamp)
-                if round_duration is None:
-                    round_duration = timestamp - sent_ts
+                # Selector speed signal (async_oort ranks on PROP_CLIENT_TASK_TRAIN_DURATION).
+                # SIM doesn't sleep the budget, so WALL_SEND-WALL_RECV collapses to raw GPU
+                # (~3-6s) for every trainer, hiding the modeled delay D -> selection flattens,
+                # cohort diverges. Charge the modeled duration (= max(gpu, D)) in sim, matching
+                # asyncfl/oort/syncfl; real anchors on the client stamps (§S.dur).
+                if self.simulated:
+                    _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
+                    round_duration = (
+                        timedelta(seconds=float(_srd))
+                        if _srd is not None
+                        else timestamp - sent_ts
+                    )
+                else:
+                    round_duration = real_client_task_train_duration(msg, sent_ts, timestamp)
+                    if round_duration is None:
+                        round_duration = timestamp - sent_ts
                 channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION, round_duration)
                 logger.info(
                     f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"

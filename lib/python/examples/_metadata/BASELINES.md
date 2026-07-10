@@ -148,6 +148,38 @@ method with strategy. These tables are kept **separate** from the §1 config cat
 | **fedavg** | sync random + FedAvg | different regime (sync) | classic sync lower-bound reference | **✅ compare** (reference) |
 | **fluxtune** | *(ours, LLM forward-mode)* | different substrate (forward-grad LLM) → confounded | — | **❌** — FluxTune is the LLM contribution, not a Felix baseline |
 
+### 3c. Layered contribution framing (2026-07-10) — what each baseline isolates
+
+The paper narrative now separates three layers (paper §3 + [[fluxtune-contribution-framing]]):
+**L0 async execution** (adapts FedBuff, *not claimed*) · **L1 iteration-level control** — the
+reframe that collapses the *control* grain onto FwdLLM's already-fine *execution* grain
+(perturbation=one scalar, databin, iteration); *enabling but insufficient alone* · **L2** the three
+contributions **C1/C2/C3** (the policies the reframe makes expressible). FwdLLM owns the execution
+primitives; FluxTune owns L1+L2. This changes what each baseline *measures*:
+
+- **FwdLLM → FwdLLM_Plus** = add **L1 alone** (per-iteration reselection) under a *held-fixed sync,
+  round-level* policy. Recovers most of FwdLLM's collapse but still trails sharply (~1% util behind
+  the barrier) → the evidence that **L1 is an enabler, not the gain**.
+- **FwdLLM_Plus → FluxTune** = add **L0 + L2**. Confounded: the utilization jump is L0
+  (barrier removal), the effectiveness/accuracy is L2.
+- **FedBuff (async random, round)** isolates **only L0** — the axis we explicitly do *not* claim →
+  **drop as a headline baseline** (the ladder already brackets it).
+- **FedBuff-It (async random, iteration) = FluxTune − C1/C2/C3** holds **L0+L1 fixed** → the *only*
+  clean **L2 attribution floor** (FwdLLM_Plus→FluxTune can't isolate L2 because it also flips
+  sync→async). **Keep — but as the bottom rung of the L1 enable/disable ladder (§eval ablation),
+  not a 4th headline row.**
+- **SPRY** unchanged: discussed gradient-quality upper bound, not run (weight-splitting ⟂ homogeneous
+  deployment).
+- **FeLiX** unchanged: not e2e; cited ancestor for availability tiering + the naive single-discount
+  foil in the C3 ablation.
+
+**Net for the table revisit (next session):** headline e2e set stays the **3-rung ladder** (FwdLLM,
+FwdLLM_Plus, FluxTune); **FedBuff-It moves into the ablation** as the L2 floor; **plain FedBuff
+drops**. §2's 2×2 matrix is descriptive scaffolding, not the eval baseline set — its
+sync↔async / round↔iteration axes are exactly L0/L1 (substrate, not contributions), which is *why*
+the matrix cells don't all earn headline slots. Reconcile §2/§3a against this before wiring
+`baselines.yaml`.
+
 ---
 
 ## 4. Keep this table in sync (proposed generator)
@@ -160,6 +192,9 @@ Rather than hand-maintaining §1, add `expt_scripts/gen_baselines_table.py` (a p
 ---
 
 ## 5. Changelog
+- **2026-07-10** — §3c layered contribution framing (L0 async / L1 iteration-control reframe / L2
+  C1-C3) mapped onto what each baseline isolates; recommend 3-rung headline ladder, FedBuff-It → L2
+  ablation floor, drop plain FedBuff. Mirrors paper edits across 01/02/03/05 `.tex`.
 - **2026-07-09 (b)** — crisp naming (FwdLLM/FedBuff round, FwdLLM-It/FedBuff-It iteration, FluxTune)
   + §3 comparison-fit tables (FluxTune vs Felix; feddance/felix/refl/oort scored).
 - _(init)_ Cross-cutting baseline table + 5-baseline restructure plan (FwdLLM+Iter / fedbuff+round /

@@ -110,8 +110,9 @@ STALL_ON=""            # signal that resets the idle clock: acc | loss | either 
                        # 'either' keeps a run alive if accuracy gains >=stall_min_delta OR test-loss
                        # drops >=loss_min_rel_delta (empty => converge_watch default: either).
 LOSS_MIN_REL_DELTA=""  # RELATIVE test-loss drop vs running-best that counts as progress (default 0.01 = 1%)
-DELAY_FACTOR=""        # training_delay_factor: divides the registry 4-18s delay. Default (trainer_base)
-                       # 10 (=> 0.4-1.8s); pass 1 for the FULL modeled delay. Fans to both roles via runner.py.
+DELAY_FACTOR=""        # training_delay_factor: DIVISOR on the registry 4-18s delay (NOT a multiplier).
+                       # >1 SHORTENS (default 10 => 0.4-1.8s; 1 => full 4-18s); <1 LENGTHENS
+                       # (0.5 => 8-36s, restores GPU-vs-delay headroom). Fans to both roles via runner.py.
 RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
                   # (single source of truth for multi-node runs; CLI flags override)
 ONLY=""
@@ -126,7 +127,7 @@ usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
-  echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-factor F]" >&2
+  echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
@@ -168,7 +169,7 @@ while [[ $# -gt 0 ]]; do
     --stall-on)             case "$2" in acc|loss|either) ;; *) echo "ERROR: --stall-on must be acc|loss|either (got '$2')" >&2; exit 2 ;; esac
                             STALL_ON="$2"; shift 2 ;;
     --loss-min-rel-delta)   LOSS_MIN_REL_DELTA="$2"; shift 2 ;;
-    --delay-factor)         DELAY_FACTOR="$2"; shift 2 ;;
+    --delay-divisor|--delay-factor)  DELAY_FACTOR="$2"; shift 2 ;;
     --run-set)              RUN_SET="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
     --after)                AFTER="$2"; shift 2 ;;
@@ -390,8 +391,9 @@ def patch(exp, run_key, variant, trace):
     h["max_data_id_progress"] = MAX_DATA_ID
     # enable_training_delays: SAME on both sides of a pair (K-D8).
     exp["trainer"]["enable_training_delays"] = delays_on
-    # training_delay_factor (simulate_fwdllm.md #12): divides the registry 4-18s
-    # delay (trainer_base default 10 => 0.4-1.8s). Set it on the TRAINER
+    # training_delay_factor (simulate_fwdllm.md #12): DIVISOR on the registry
+    # 4-18s delay (default 10 => 0.4-1.8s; <1 lengthens, e.g. 0.5 => 8-36s).
+    # Wire key kept as *factor*; trainer reads it as training_delay_divisor. Set
     # hyperparameters; runner.py fans the same value into the aggregator so both
     # roles agree. Only patched when explicitly passed (else the base default).
     if DELAY_FACTOR:

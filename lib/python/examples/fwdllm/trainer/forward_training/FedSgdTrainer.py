@@ -180,7 +180,10 @@ class FedSGDTrainer(Trainer):
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
-        self.training_delay_factor = float(
+        # DIVISOR on the modeled delay (effective = training_delay_s / divisor):
+        # >1 shortens, <1 lengthens. Named `_divisor` so the direction is
+        # unambiguous at use sites; wire key stays `training_delay_factor`.
+        self.training_delay_divisor = float(
             self.config.hyperparameters.training_delay_factor
         )
         self.speedup_factor = 1.0
@@ -515,8 +518,9 @@ class FedSGDTrainer(Trainer):
     @timer_decorator
     def _emulate_training_delay(self, gpu_time_s: float = 0.0):
         """Remainder-wait delay model (aligned with async_cifar10). The modeled
-        mobile device takes `_delay_s = training_delay_s / factor / speedup`; our
-        GPU forward pass takes `gpu_time_s`, which should be << the device time.
+        mobile device takes `_delay_s = training_delay_s / divisor / speedup`
+        (divisor >1 shortens the delay, <1 lengthens it); our GPU forward pass
+        takes `gpu_time_s`, which should be << the device time.
 
           - REAL sleeps only the remainder max(0, _delay_s - gpu_time_s) → wall
             this round ≈ _delay_s, with GPU compute hidden inside it.
@@ -527,9 +531,11 @@ class FedSGDTrainer(Trainer):
             cohort_sequence parity).
 
         Overrun: if gpu_time_s > _delay_s the GPU is slower than the modeled
-        device (contention / delay_factor too big) — emulation unfaithful and
-        update order can flip, so we log [TIMING_OVERRUN] and flag it in
-        telemetry. Returns (modeled_delay_s, remaining_s, overran).
+        device (GPU contention, or the divisor too big so the delay is too
+        short) — emulation unfaithful and update order can flip, so we log
+        [TIMING_OVERRUN] and flag it in telemetry. Fix by lengthening the delay
+        (LOWER training_delay_factor) or reducing trainers/GPU.
+        Returns (modeled_delay_s, remaining_s, overran).
         """
         # config schema types training_delay_enabled as bool (default False)
         # but historical launcher yamls pass the string "True"; accept both so
@@ -537,7 +543,7 @@ class FedSGDTrainer(Trainer):
         _enabled = self.training_delay_enabled in (True, "True", "true")
         if not _enabled:
             return 0.0, 0.0, False
-        _delay_s = (self.training_delay_s / self.training_delay_factor) / self.speedup_factor
+        _delay_s = (self.training_delay_s / self.training_delay_divisor) / self.speedup_factor
         _remaining_s = max(0.0, _delay_s - gpu_time_s)
         _overran = gpu_time_s > _delay_s
         if _overran:
@@ -545,8 +551,8 @@ class FedSGDTrainer(Trainer):
                 f"[TIMING_OVERRUN] trainer {self.trainer_id} data_id={self.data_id} "
                 f"iter={self.iteration_per_data_id}: gpu={gpu_time_s:.2f}s > "
                 f"budget={_delay_s:.2f}s (excess={gpu_time_s - _delay_s:.2f}s) — "
-                f"emulation unfaithful, update order may flip. Reduce trainers/GPU "
-                f"or raise training_delay_factor."
+                f"emulation unfaithful, update order may flip. Lengthen the delay "
+                f"(LOWER training_delay_factor) or reduce trainers/GPU."
             )
         if self.simulated:
             logger.info(

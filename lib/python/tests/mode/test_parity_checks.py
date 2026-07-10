@@ -1432,6 +1432,29 @@ class TestStepTimingBreakdown:
     def test_present_in_run_all_and_meta(self):
         assert "step_timing_breakdown" in pc.CHECK_META
 
+    def test_real_only_funcs_reported_but_never_gate(self):
+        # _emulate_training_delay/pause_execution are commented real-only
+        # sleeps (sim skips them); _fetch_weights/recv_wrapper are the same
+        # MQTT recv phase_mqtt_fetch already treats as diagnostic-only. A
+        # huge, expected real-vs-sim gap here must not fail `ok` alone.
+        for func in pc._STEP_TIMING_REAL_ONLY_FUNCS:
+            real, sim = self._st(func, [10.0] * 10, [0.0001] * 10)
+            r = pc.step_timing_breakdown_parity(real, sim)
+            assert r["ok"], (func, r)
+            assert r["by_func"][func]["gates_ok"] is False
+            assert r["by_func"][func]["ok"] is False
+
+    def test_real_only_func_does_not_mask_a_genuine_divergence(self):
+        real = {"t1": {"step_timing": (
+            [{"event": "step_timing", "func": "pause_execution", "duration_s": d} for d in [1.0] * 10]
+            + [{"event": "step_timing", "func": "jvp_eval", "duration_s": d} for d in [0.01] * 10])}}
+        sim = {"t1": {"step_timing": (
+            [{"event": "step_timing", "func": "pause_execution", "duration_s": d} for d in [0.0] * 10]
+            + [{"event": "step_timing", "func": "jvp_eval", "duration_s": d} for d in [0.05] * 10])}}
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert not r["ok"]
+        assert not r["by_func"]["jvp_eval"]["ok"]
+
 
 class TestAggregationComputeWall:
     """Aggregation-stage wall-clock EQUALITY (DIAG, two-sided): unlike

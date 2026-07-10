@@ -38,10 +38,10 @@ class _FakeTrainer:
     _emulate_training_delay = FedSGDTrainer._emulate_training_delay
 
     def __init__(self, training_delay_enabled, training_delay_s=0.0,
-                 training_delay_factor=1.0, speedup_factor=1.0, simulated=False):
+                 training_delay_divisor=1.0, speedup_factor=1.0, simulated=False):
         self.training_delay_enabled = training_delay_enabled
         self.training_delay_s = training_delay_s
-        self.training_delay_factor = training_delay_factor
+        self.training_delay_divisor = training_delay_divisor
         self.speedup_factor = speedup_factor
         self.simulated = simulated
         self.trainer_id = "t1"
@@ -57,21 +57,21 @@ class TestEmulateTrainingDelayRemainderWait:
     def test_modeled_delay_and_remainder_when_gpu_below_budget(self):
         # delay = 4.0/2.0/1.0 = 2.0; gpu = 0.5 -> remaining = 1.5, no overrun.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0)
+                         training_delay_divisor=2.0, speedup_factor=1.0)
         modeled, remaining, overran = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5 and overran is False
 
     def test_speedup_factor_scales_the_modeled_delay(self):
         # eval_delay = 10/2 = 5; modeled = 5/5 = 1.0; gpu 0.25 -> remaining 0.75.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=10.0,
-                         training_delay_factor=2.0, speedup_factor=5.0)
+                         training_delay_divisor=2.0, speedup_factor=5.0)
         modeled, remaining, overran = t._emulate_training_delay(0.25)
         assert modeled == 1.0 and remaining == 0.75 and overran is False
 
     def test_overrun_when_gpu_exceeds_budget(self):
         # gpu 3.0 > budget 2.0 -> overran, remaining clamped to 0.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0)
+                         training_delay_divisor=2.0, speedup_factor=1.0)
         modeled, remaining, overran = t._emulate_training_delay(3.0)
         assert modeled == 2.0 and remaining == 0.0 and overran is True
 
@@ -81,7 +81,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0,
+                         training_delay_divisor=2.0, speedup_factor=1.0,
                          simulated=False)
         modeled, remaining, _ = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5
@@ -91,7 +91,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=2.0,
-                         training_delay_factor=1.0, speedup_factor=1.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
                          simulated=False)
         t._emulate_training_delay(5.0)  # gpu > budget
         assert slept == []             # nothing to sleep; overran
@@ -100,7 +100,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0,
+                         training_delay_divisor=2.0, speedup_factor=1.0,
                          simulated=True)
         modeled, remaining, _ = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5   # same modeled math as real

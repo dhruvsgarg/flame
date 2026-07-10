@@ -99,6 +99,8 @@ hyperparameters:
   # --- Per-trainer fields injected by the spawner ---
   # training_delay_s: injected at runtime from trainer registry
   training_delay_enabled: "False"
+  # DIVISOR on the registry 4-18s delay (effective = delay / factor): >1 shortens
+  # (10 => 0.4-1.8s), <1 lengthens (0.5 => 8-36s).
   training_delay_factor: "10"
 
   # --- Availability ---

@@ -200,6 +200,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds", default=None
     )
+    # DIVISOR on the modeled delay (effective = training_delay_s / factor): >1
+    # shortens, <1 lengthens. Read at runtime as `training_delay_divisor`; wire
+    # key kept as *factor* for back-compat.
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )

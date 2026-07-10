@@ -108,6 +108,7 @@ from parity.checks import (  # noqa: F401, E402
     compute_conservation_parity,
     drain_wall_budget_parity,
     trainer_phase_wall_budget_ok,
+    _STEP_TIMING_REAL_ONLY_FUNCS,
     step_timing_breakdown_parity,
     aggregation_compute_wall_parity,
     # overall

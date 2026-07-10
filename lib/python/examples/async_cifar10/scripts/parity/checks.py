@@ -3831,16 +3831,24 @@ def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
         "components": components,
     }
 
+# step_timing funcs that are REAL-ONLY by design (modeled sleeps the sim skips,
+# or the MQTT recv `phase_mqtt_fetch` already treats as diagnostic-only) --
+# reported but excluded from the `ok` reduction, same "gates_ok": False pattern
+# as `trainer_phase_wall_budget_ok`'s mqtt_fetch_s. Not a real↔sim divergence.
+_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
+    "_emulate_training_delay", "pause_execution", "_fetch_weights", "recv_wrapper",
+})
+
 
 def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
                                  ks_tol: float = 0.25) -> dict:
     """Fine-grained GPU-compute decomposition: one DISTRIBUTIONAL (KS + mean)
     check per `step_timing` function name (per-`@timer_decorator` wall
     duration -- functional-model setup, perturbation selection, per-batch
-    JVP, delay emulation). Unlike the trainer-overhead budget above, these
-    are genuine shared compute (mode-invariant, principle #1) -- the target
-    is a MATCH, not a one-sided bound. Pinpoints WHICH JVP sub-step
-    regresses when `gpu_compute_s`'s coarse total diverges.
+    JVP). These are genuine shared compute (mode-invariant, principle #1) --
+    the target is a MATCH, not a one-sided bound. Pinpoints WHICH JVP
+    sub-step regresses when `gpu_compute_s`'s coarse total diverges.
+    `_STEP_TIMING_REAL_ONLY_FUNCS` are reported but excluded from gating.
 
     Function names are an OPEN-ENDED set (decorator sites evolve with the
     code), unlike `trainer_phase_split`'s fixed `_PHASE_FIELDS` -- so this
@@ -3875,15 +3883,20 @@ def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
             continue
         ks = ks_stat(rv, sv)
         rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
-        by_func[func] = {
+        entry = {
             "ok": ks <= ks_tol,
             "tier": "DIST",
             "ks_stat": round(ks, 3), "ks_tol": ks_tol,
             "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
             "n_real": len(rv), "n_sim": len(sv),
         }
+        if func in _STEP_TIMING_REAL_ONLY_FUNCS:
+            entry["gates_ok"] = False
+        by_func[func] = entry
+
+    _gating = [r for f, r in by_func.items() if r.get("gates_ok", True)]
     return {
-        "ok": all(r["ok"] for r in by_func.values()),
+        "ok": all(r["ok"] for r in _gating),
         "tier": "DIST",
         "ks_tol": ks_tol,
         "n_funcs": len(funcs),
