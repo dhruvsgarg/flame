@@ -61,33 +61,64 @@ discipline, starvation self-termination, A6/A7/A8/K11 ground-truth rungs).
 
 ## §A  Current status
 
-> ## ⭐⭐ fluxtune slowdown ROOT = **sim selector blind to modeled delay D** (RC1). Supersedes #1d as the driver.
-> **Fix LANDED** (`fwdllm_aggregator.py:1337`; not flag-gated — correctness). **Operator validation run PENDING** (see NEXT).
-> The `--delay-divisor 0.5` headroom run (the old #1d fix) did NOT close parity: fresh pair (real
-> `run_20260710_112701` / sim `run_20260710_113854`) scores **46/14/19**, sim vclock **1050s vs real 560s (~1.9×)**,
-> `cohort_sequence set_match=0.042`.
+> ## ⭐⭐ fluxtune slowdown: RC1 (selector-speed) FIXED & validated at signal level, but the mix DIDN'T move → **RC2 (sim re-dispatch cadence collapses the selection mix) is the residual driver + NEXT problem.**
+> **RC1 fix landed** (`fwdllm_aggregator.py:1337`, not flag-gated — correctness) and **validated**: on the post-fix
+> pair (real `run_20260710_112701` / sim `run_20260710_144812`) sim `trainer_speed` mean is now **22.25s (= D)**, up
+> from 3.84s (GPU) — the selector sees the modeled delay. **But the selection mix is essentially unchanged** (373
+> chosen 2, 370 chosen 13 — same as pre-fix; real: 62, 99), so the run still fails **45/15/19** (`selection_bias`/
+> `participation` still red). RC1 was necessary but **not the dominant driver** — RC2 is.
 >
-> **RC1.** `:1337` set `PROP_CLIENT_TASK_TRAIN_DURATION` (async_oort's speed-penalty input) from
-> `real_client_task_train_duration` (=`WALL_SEND−WALL_RECV`) in BOTH modes. Real sleeps its budget so this = D; sim
-> doesn't sleep so it = raw GPU (~3-6s) for every trainer → Oort can't tell fast from slow → selection flattens →
-> over-selects slow trainers → cohort diverges → ~1.9× slow. Sole aggregator missing the sim-branch (asyncfl:1013 /
-> oort:912 / syncfl:430 have it). Evidence: real chooses fast trainers heavily (chosen 370=99, 373=62), sim starves
-> them (370=13, 373=2) at identical 100% AVL_TRAIN; `selection_bias` shows real `observed_selected=18.56s` (=D) vs sim
-> `3.84s` (=GPU). Why headroom alone didn't help: it makes commit order (sct=D) deterministic, but SELECTION never sees D.
+> **RC2 (open, dominant).** In sim the async **re-dispatch cadence collapses the selection mix onto a subset** of
+> trainers, independent of the (now-correct) speed signal. Evidence (post-fix sim): per-dispatch virtual occupancy is
+> exactly D for every trainer (hold-to-commit correct), yet dispatch counts are wildly uneven and NOT ∝ 1/D as in
+> real — 375 (D=10) cycles **87×**, but 373 (D=14) only **1×** and 370 (D=8) **12×**; real cycles fast trainers
+> most (370=99, 373=62), sim inverts it (slow 374=30 > fast 370=13). 373 is dispatched, commits once, is
+> re-dispatched at round 0, and that update sits `in_pending_commit=True` for the **rest of the run** (361/365
+> selection events) → never re-selectable. So a handful of trainers monopolise the cohort while others starve — the
+> real cause of the cohort-SET divergence and the ~1.9× slowdown. **Mechanism PINNED:** the fast trainer commits, is
+> re-dispatched for an `iteration_per_data_id` it ALREADY answered (before the aggregator advances the iteration) →
+> trainer-side `abort_training` (`FedSgdTrainer.py:587`) sends **no grad**. Its dispatch already put it in
+> `_sim_inflight_expected` (∴ `_sim_pending_commit`; `fwdllm_aggregator.py:3060/3069/1106`) but no commit ever pops
+> it. K-D34's compute-truthful gate (`:952-957`) correctly SKIPS the idle phantom so it doesn't block commits — but
+> the skip means it never becomes `min_stuck`, so it never reaches the deadline-eviction (`:976`) → stuck in the
+> ledger for the whole run. Proof: `SIM_GRAD_STUCK_EVICT=0` (never evicts) vs `phantom_skip=679`; only the FAST
+> trainers stick (373 task_recv=3/rounds=1, 370 14/12; every slow trainer clean) because only they commit fast enough
+> to race the iteration advance. Real has NO virtual ledger → its 90s abandon-timeout re-enables them; sim doesn't.
 >
-> **Fluxtune fails (14).** DIRECT(RC1): `selection_bias` · `selection_detail` · `participation` · `cohort_sequence`.
-> CASCADE: `v1_iter_per_data_id` · `staleness` · `g2_grad_pool_size` · `throughput` · `per_round_advance` ·
-> `overhead_residual` · `terminal_state` · `total_commits` · `convergence`. Noise: `step_timing_breakdown` (small-N KS).
+> **Fluxtune fails (15).** RC2-driven (selection mix): `selection_bias` · `selection_detail` · `participation` ·
+> `cohort_sequence`. CASCADE: `v1_iter_per_data_id` · `v2_var_trajectory` · `staleness` · `g2_grad_pool_size` ·
+> `throughput` · `per_round_advance` · `overhead_residual` · `terminal_state` · `total_commits` · `convergence`.
+> Noise: `step_timing_breakdown` (small-N KS).
 >
-> **fwdllm / fwdllm_plus — NO new root** (53/7/21 & 51/7/21). RC1's telemetry symptom is present (sim `trainer_speed`
-> 1.4s vs real 11.6s) but BENIGN — `random` ignores speed. Their fails are already-explained non-bugs (#N n=10 float
-> jitter; fwdllm_plus eligible-count gap §G#7; length confound).
+> **fwdllm / fwdllm_plus — NO new root** (53/7/21 & 51/7/21). Sync barrier commits the whole cohort — no fast-cycle
+> re-dispatch race, so no phantom starvation. RC1's telemetry symptom was present but BENIGN (`random` ignores speed).
 >
-> **NEXT — operator validation run** (print, don't launch; real reference exists → `--mode sim`):
-> `./run_sequential.sh --only fluxtune --mode sim --delays on --num-gpus 8 --delay-divisor 0.5 --max-runtime-s 1800 --max-data-id 10`
-> then `python run_parity.py --yes --baselines fluxtune`. GATE: `selection_bias`/`participation`/`cohort_sequence`
-> pass-or-improve · `sim_selected_mean`≈real (~9.3s) · v1 real≈sim (~9.5) · `sim_rate`>1. Then re-assess the
-> `staleness` gap + `sim_model_agg_compute_time` fold (likely cascade). Keep `--delay-divisor 0.5` (holds commit order clean).
+> **RC2 is a SYMPTOM — the fundamental bug (RC3) is a same-tuple DOUBLE-PICK.** The invariant "a trainer that has
+> contributed to `(model_version, data_id, iteration)` must be excluded from the eligible set for that tuple" is
+> supposed to be enforced by the selector triplet guard (`async_oort.py:1680-1702`, skips `trainer_version_states[e]
+> == agg_version_state`) fed by the aggregator's `_trainer_state_dict`. **But `fwdllm_aggregator.py:1116-1121` prunes
+> `_trainer_state_dict` to only the still-`outstanding` (in-flight) trainers every cycle** — so the instant a trainer
+> COMMITS `(0,0,0)` its stamp is deleted, the guard sees `None ≠ (0,0,0)`, and it is re-picked for the SAME tuple →
+> `abort_training` → phantom (RC2). The guard thus only ever holds outstanding trainers, who are already excluded by
+> `_sim_pending_commit`, so it is **redundant and enforces nothing.** Also gated `simulated AND _sim_inflight_residence`
+> (no real-mode enforcement) and stamps `_curr_agg_version` at return-time, not the message's answered tuple.
+>
+> **RC3 fix — LANDED (both modes), pending a real+sim re-run.** (1) trainer sends `DATA_ID` in the grad message
+> (`fwdllm_trainer.py`) so the aggregator can key the exact answered tuple; (2) `_process_single_trainer_message`
+> stamps `_trainer_state_dict[end]` from the MESSAGE's `(model_version, data_id, iteration)` for every grad
+> contribution, in BOTH modes (removed the `simulated AND _sim_inflight_residence` gate); (3) `_sim_hold_busy_slots`
+> now prunes the guard by `v == _curr_agg_version` (keep while the agg is still on that tuple), not `e in outstanding`
+> (drop on commit). Net: a trainer is excluded from re-selection for a tuple it already answered until the agg
+> advances past it → no double-pick → no `abort_training` → no phantom (RC2 moot). `tests/mode + tests/selector` =
+> 682 passed (2 stale guard tests rewritten to the new invariant). **OPERATOR DECISION (2026-07-10): NO intermediate
+> RC3-only run — land ALL correct fixes (RC3 + §M Steps 1-3) first, THEN a single consolidated re-baseline.** §M
+> implementation continues in a fresh context. RC3's 3-tuple is representation-only vs §M's `version_key` (same
+> no-repeat behavior), so it needs no rework — Step 2 just simplifies it once `model_version` bumps per data-bin.
+> **NEXT (after §M lands): operator re-run all 3 baselines** (fluxtune real changes — re-baseline; fwdllm/fwdllm_plus
+> behaviorally unchanged by RC3, but §M Step 2 staleness shifts all three): `run_sequential.sh --mode both --delays on
+> --num-gpus 8 --delay-divisor 0.5 --max-runtime-s 1800 --max-data-id 10`, then `run_parity.py --yes`. GATE: no
+> 373-style starvation (task_recv≈trainer_round per trainer), `selection_bias`/`participation`/`cohort_sequence`
+> pass-or-improve, fast trainers dispatched ∝ 1/D, `staleness` rung recovers, `sim_rate` stays >1.
 
 Latest banked pairs (`run_sequential.sh --mode both --delays on`, n=10 smoke config, `run_20260709_1525 → 1601` —
 supersedes the older n=100 pairs, which predate K-D36's per-stage wall-budget rungs and several since-landed fixes):
@@ -107,7 +138,7 @@ scoreboard's SHARED fails (`gpu_budget_real`/`gpu_budget_sim`, `utility`, `v5_va
 |---|---|---|
 | **fwdllm/syn_0** | **53 / 7 / 21** | `experiments/_parity_reports/parity_fwdllm_syn_0_20260709_154002.json` |
 | **fwdllm_plus/syn_0** | **51 / 7 / 21** | `parity_fwdllm_plus_syn_0_20260709_155814.json` |
-| **fluxtune/syn_0** (pre-RC1-fix, `--delay-divisor 0.5`) | **46 / 14 / 19** | `parity_fluxtune_syn_0_20260710_113854.json` — `selection_bias`+`participation` now surface RC1 directly |
+| **fluxtune/syn_0** (post-RC1-fix, `--delay-divisor 0.5`) | **45 / 15 / 19** | `parity_fluxtune_syn_0_20260710_144812.json` — RC1 signal fixed (sim `trainer_speed`→22.25s=D) but mix unchanged → RC2 (§A) |
 
 **Fails, categorized by blast radius (fix the SHARED roots first — principle #14).**
 - **SHARED — all 3:** `per_round_advance` (mean within 1–7%, KS noisy at n=10 — small-N artifact, not a
@@ -174,7 +205,8 @@ var VALUE at every scale — SET/CADENCE HARD-to-bin-1 does hold at both scales.
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
-| **#1e (RC1)** ⭐⭐ (TOP) | **fluxtune sim selector is BLIND to modeled delay D → wrong selection mix → ~1.9× slow.** `fwdllm_aggregator.py:1337` stamps `PROP_CLIENT_TASK_TRAIN_DURATION` (async_oort speed input) from the REAL wall duration in BOTH modes (no `if self.simulated`); in sim the trainer doesn't sleep so it = raw GPU (~3-6s) for all → Oort can't prefer fast trainers → cohort SET diverges (`set_match=0.042`) → selection_bias/participation/v1/staleness/throughput/… cascade. Sole aggregator missing the sim-branch (asyncfl:1013/oort:912/syncfl:430 all have it). | fluxtune (telemetry-shared, benign for sync) | **FIX LANDED** (sim-branch at :1337 → `SIM_CLIENT_TASK_TRAIN_DURATION_S`; not flag-gated — correctness). **Validation run PENDING** (§A NEXT; gate: selection_bias/participation/cohort pass-or-improve, sim_rate>1). |
+| **#1f (RC3)** ✓ FIXED (both modes), pending re-run | **Same-tuple DOUBLE-PICK was the fundamental bug** (RC2's phantom was its symptom). The selector triplet guard (`async_oort.py:1680-1702`) was starved because `fwdllm_aggregator.py` (a) stamped `_trainer_state_dict` only in `simulated AND _sim_inflight_residence`, (b) from `_curr_agg_version` at return not the msg tuple, and (c) `_sim_hold_busy_slots` pruned the stamp on COMMIT (`e in outstanding`) → a committed fast trainer was re-picked for the tuple it just answered → `abort_training` → phantom starvation → mix collapse → ~1.9× slow. | fluxtune (guard now active in both modes; sync baselines unaffected — barrier, no re-dispatch race) | **FIXED:** trainer sends `DATA_ID`; stamp msg-tuple for every grad in BOTH modes; prune by `v == _curr_agg_version` (keep until tuple advances). 682 tests pass. RC2's evict band-aids now moot. **NEXT: operator real+sim re-run** (real reference changes). |
+| **#1e (RC1)** ✓ FIXED (validated, insufficient alone) | **fluxtune sim selector was BLIND to modeled delay D.** `fwdllm_aggregator.py:1337` stamped `PROP_CLIENT_TASK_TRAIN_DURATION` (async_oort speed input) from REAL wall duration in BOTH modes; in sim (no sleep) = raw GPU for all → Oort couldn't prefer fast trainers. **Fix landed** (sim-branch → `SIM_CLIENT_TASK_TRAIN_DURATION_S`; not flag-gated). **Validated:** post-fix sim `trainer_speed`→22.25s (=D, was 3.84s GPU). But the selection mix didn't move (RC2 dominates), so 45/15/19 still fails. | fluxtune (telemetry-shared, benign for sync) | Done — necessary signal fix. Residual is #1f (RC2). |
 | **#1d** (DEMOTED — necessary-not-sufficient; RC1/#1e is the driver) | **fluxtune GPU-vs-D headroom.** With `--delay-divisor 0.5` the commit order (sct=D) is now deterministic, so the old "min delay ≈ GPU → fastest-3 coin-flip" is resolved — yet cohort STILL diverges because selection (RC1) never sees D. Headroom stays a prerequisite (keeps commit order clean) but does NOT close parity alone; the headroom run confirmed this (46/14/19, set_match=0.042). | fluxtune | Fold into #1e: keep `--delay-divisor 0.5`; the real fix is RC1. Trace swap (real LLM-mobile runtimes) remains the principled long-term fix (§J.2). |
 | **#15** (fold DEPRIORITIZED) | Phantom commit-path stall FIXED + P3-validated (K-D34). The `sim_model_agg_compute_time` vclock fold is NOT the residual driver — eval is per-databin (10× over the run), aggregate ~1.3s. Re-evaluate only AFTER #1d headroom lands (it changes cycle counts 139→~95). | fluxtune | Deferred behind #1d. `overlap_fraction=0.80` measured (`run_20260709_152612`) if the fold is revisited. |
 | **#N (bin-7 nondeterminism)** ⭐ | **SYNC exact-cadence parity has a float-nondeterminism wall, onset bin is n-scale-sensitive (not fixed at ~7).** ~1e-3 GPU fp16 grad jitter, amplified by the split-half variance ratio, flips the `var` gate. Not a sim bug. **Checker fix K-D35 validated:** SET HARD/uncapped, CADENCE/VAR/ORDER capped to bin 1 works as designed at n=100 — but at n=10 the var-VALUE tolerance (1e-3) is *still* crossed inside bin 1 (`data_id=1`), confirmed via `timing_overrun` (0% GPU-vs-D overrun in both modes → not an order/timing issue). | fwdllm (fwdllm_plus latent) | P0-2 (2-real-run diff) still open to empirically bound the jitter magnitude vs n. Otherwise no action — DISTRIBUTIONAL target beyond bin 1 already covers it (v1/v2/v4/v5). |
@@ -182,10 +214,11 @@ var VALUE at every scale — SET/CADENCE HARD-to-bin-1 does hold at both scales.
 | **fwdllm `barrier_wait_s` overrun** (minor) | `drain_wall_budget`'s `barrier_wait_s`: sim 2.67s > real 1.43s, fwdllm-only (fwdllm_plus/fluxtune don't show it — sim's cost looks fixed while real's scales with baseline, so only the fastest real baseline gets outrun). ~1.2s/cycle, small next to the 2.6× overall speedup. | fwdllm | Not yet root-caused; low priority next to #15/#1d. |
 
 ### Next roots — ranked (correctness before time; SHARED before per-baseline — principle #14)
-1. **#1e (RC1) fluxtune selector-speed — TOP.** Fix landed (§A); run the operator validation (`--mode sim`,
-   keep `--delay-divisor 0.5`) → gate on selection_bias/cohort + sim_rate>1. #1d headroom stays a prerequisite
-   (deterministic commit order); the principled long-term fix is the LLM-mobile runtime trace (§J.2).
-2. **`sim_model_agg_compute_time` vclock fold — deferred** behind RC1 (re-measure overlap after the fix lands).
+1. **§M uniform `version_key` refactor — TOP (fresh context).** RC3 (#1f) is landed both modes; operator chose to land
+   §M Steps 1-3 too (naming consolidation → model_version-per-data-bin → cifar10 symmetry) BEFORE the next run. Then ONE
+   consolidated re-baseline of all 3 baselines validates RC3 + the staleness correction together (§A gate). RC1 + #1d
+   headroom prerequisites already in place; LLM-mobile runtime trace (§J.2) remains the principled trace fix.
+2. **`sim_model_agg_compute_time` vclock fold — deferred** (re-measure overlap after the mix is fixed).
 3. **fwdllm `barrier_wait_s` overrun (minor).** Root-cause only if it starts moving `sim_rate` materially.
 4. Then C1/C2 convergence (distributional target) at matched `data_id` per baseline → gate to Phase 2.
 
@@ -740,3 +773,61 @@ Combined: **sync −68%, fluxtune −37%**, all bit-identical → should clear t
   re-baselines the trajectory. Excluded per the fidelity bar; available if a re-baseline is accepted.
 - **Forward-mode AD** (exact JVP) — slower (0.5×, needs eager attention; not impl for SDPA) + different math.
 - **`perturbation_count`↓** — the direct lever, but changes the baseline algorithm.
+
+---
+
+## §M  Uniform `version_key` formulation — cross-cutting nomenclature+correctness refactor (PLAN — operator-approved 2026-07-10)
+
+**Why.** version / staleness / no-repeat are named + compared INCONSISTENTLY today: fwdllm trainer dedups on
+`(data_id, iteration)` (`fwdllm_trainer.py:268-299`), the agg staleness gate on `(model_version, iteration)`
+(`:1286-1296`), the RC3 re-pick guard on `(model_version, data_id, iteration)` (`:1417`), while async_cifar10 uses
+a bare scalar `model_version == self._round`. Goal: ONE shared vocabulary across BOTH examples, all
+trainers/aggregators/selectors/optimizers/baselines (`../_metadata/BASELINES.md`).
+
+**Target interface (identical in both examples):**
+- **`model_version`** (scalar, monotonic) = the aggregator's committed model-state counter; bumps ONLY when the model
+  materially advances. Regular FL (cifar10): every round/aggregation. Iterative FFT (fwdllm): every **variance-pass**
+  (data-bin completion). ⇒ `inc_model_version_per_data_id` is then ALWAYS true → **PURGE the flag** (operator-confirmed).
+- **`iteration`** (scalar, resets to 0 on each `model_version` bump) = within-model-version retry index. cifar10 ≡ 0;
+  fwdllm = `iteration_per_data_id`.
+- **`version_key = (model_version, iteration)`** = the SINGLE step-identity. Degenerates to `model_version` in cifar10
+  (iteration≡0). `data_id` is NOT in the key (it is encoded by `model_version` once it bumps per data-bin); it stays a
+  reporting/progress field only.
+- **`staleness = agg.model_version − update.model_version`** (rounds in cifar10, data-bins in fwdllm).
+- **No-repeat invariant:** exclude a trainer from re-selection for a `version_key` if (in-flight for it) OR (already
+  contributed to it) — both keyed on `version_key`. Used identically by trainer (dedup/abort), aggregator (staleness
+  gate + re-pick stamp `_trainer_state_dict[end]=version_key`), selector (exclude ends whose stamped
+  `version_key == agg current version_key`). agg_goal = distinct-trainer commits collected at one `version_key`.
+
+**Stepwise plan (each step lands + tests independently; do NOT merge steps — isolate the re-baseline in Step 2):**
+
+- **Step 0 — DONE (RC3, this session, both modes).** Double-pick guard fixed: trainer sends `DATA_ID`; agg stamps the
+  msg tuple `(model_version, data_id, iteration)` for every grad; `_sim_hold_busy_slots` prunes by `v == _curr_agg_version`
+  (keep until the tuple advances), not `e in outstanding`. Runnable NOW (§A). Steps 1-3 consolidate/rename on top.
+- **Step 1 — naming consolidation (behavior-preserving, + cross-round correctness fix).**
+  (a) add a `version_key` property/helper on the shared aggregator base, use it in both examples;
+  (b) selector: rename `agg_version_state`/`trainer_version_states` → `agg_version_key`/`trainer_version_keys`
+  (async_oort; add the same plumbing to `oort` for symmetry);
+  (c) fwdllm trainer: dedup on the FULL `version_key` (add `model_version` to the current `(data_id, iteration)`
+  check) — fixes the latent cross-round `data_id`-cycling false-abort ([[data-id-cycling-bug]]);
+  (d) relabel misleading logs: `fwdllm_aggregator.py:1572` "Model version incremented to (0,0,12)" → "version_key
+  advanced to (model_version=N, iteration=M)"; the trainer abort log likewise. Tests: `tests/mode -k "fwdllm or
+  parity"`, `tests/selector`, async_cifar10 parity smoke.
+- **Step 2 — `model_version` semantic flip (BEHAVIOR CHANGE; fwdllm only; own re-run).** Bump `model_version` on every
+  variance-pass (data-bin completion); PURGE `inc_model_version_per_data_id` (`config.py:314` + all yamls + the
+  `:1863-1866` branch). `version_key` then simplifies to `(model_version, iteration)` (drop redundant `data_id` from the
+  key). Staleness becomes per-data-bin; `staleness_policy` round_data_id/exact now key correctly. **Blast radius:**
+  changes staleness across every fwdllm run → fedbuff down-weighting + `staleness`/`v*`/telemetry rungs; EXPECTED to fix
+  the `staleness` rung (currently ≈0 because model_version is stuck at 0). Re-baseline all 3 fwdllm baselines (`--mode both`).
+- **Step 3 — async_cifar10 symmetry (naming-only, byte-identical).** Route cifar10's no-repeat through the same
+  `version_key` (iteration≡0); confirm oort/asyncfl/felix read the shared vocabulary. Full `tests/` + async_cifar10
+  parity to prove byte-identical.
+
+**Baseline coverage (BASELINES.md):** fluxtune (async_oort), fwdllm (sync random+fedavg), fwdllm_plus (sync
+random+fedavg, per-iteration reselect) — all via `fwdllm_aggregator`, covered by Steps 1-2. async_cifar10 baselines
+(fedbuff/felix/oort + planned fedbuff+round/+Iter) — Step 3.
+
+**Sequencing (operator decision 2026-07-10):** land ALL fixes — RC3 (Step 0, done) + Steps 1-3 — BEFORE the next run;
+NO intermediate RC3-only run. One consolidated re-baseline of all 3 fwdllm baselines (+ cifar10 byte-identical check)
+after Step 3. RC3's 3-tuple needs no rework — Step 2 simplifies it to `version_key` in place (same behavior).
+Implementation continues in a fresh context; this section is the handoff.

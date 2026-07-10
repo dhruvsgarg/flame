@@ -1113,11 +1113,18 @@ class TopAggregator(AsyncTopAgg):
         self._sim_pending_commit.clear()
         self._sim_pending_commit.update(outstanding)
         sel._agg_pending_commit_ref = self._sim_pending_commit
-        # Prune the (model_version, data_id, iteration) triplet guard to the
-        # still-outstanding set (a trainer whose grad committed is re-pickable).
+        # Triplet-guard hygiene: keep each trainer's contributed-tuple stamp until
+        # the aggregator ADVANCES PAST that tuple (v != current), NOT until it
+        # commits. The old `e in outstanding` filter dropped the stamp the instant a
+        # grad committed, so the trainer was re-picked for the SAME
+        # (model_version, data_id, iteration) it just answered -> abort_training ->
+        # phantom starvation (RC2/RC3). Now a committed trainer stays excluded only
+        # while the agg is still on that tuple and re-enters the pool the moment the
+        # tuple advances (its stale stamp != _curr_agg_version in the selector guard).
+        _cav = getattr(self, "_curr_agg_version", None)
         self._trainer_state_dict = {
             e: v for e, v in getattr(self, "_trainer_state_dict", {}).items()
-            if e in outstanding
+            if v == _cav
         }
         # recv_fifo marked every delivered end RECVD, which the channel would
         # strip from selected_ends; reset the still-buffered (returned-but-
@@ -1401,20 +1408,25 @@ class TopAggregator(AsyncTopAgg):
             (float(_md), str(end)) if _md is not None else None
         )
 
-        # Re-pick guard (async_oort triplet filter): record the (model_version,
-        # data_id, iteration) this trainer contributed at so it is not re-selected
-        # until the agg version advances (the commit boundary prunes committed ends
-        # in _sim_hold_busy_slots). Stamped on RETURN, not dispatch: stamping the
-        # whole cohort at dispatch froze the eligible pool before any commit could
-        # advance the version -> re-dispatch deadlock. The compute slot already
-        # guards an in-flight trainer; the triplet only covers the return->commit
-        # carry window. Residence-only (sync baselines keep an empty map).
-        if getattr(self, "simulated", False) and getattr(
-            self, "_sim_inflight_residence", False
-        ):
-            _agg_ver = getattr(self, "_curr_agg_version", None)
-            if _agg_ver is not None:
-                self._trainer_state_dict[end] = _agg_ver
+        # Re-pick guard (async_oort triplet filter): record the exact
+        # (model_version, data_id, iteration) this trainer CONTRIBUTED to, so the
+        # selector excludes it from re-selection for that same tuple until the agg
+        # advances past it (async_oort `trainer_version_states` filter). Correctness
+        # invariant: a trainer must never be picked twice for one tuple -> otherwise
+        # it re-arrives, `abort_training` fires (no grad), and in sim it strands in
+        # the in-flight ledger forever (RC2/RC3 phantom starvation). Stamped on
+        # RETURN from the MESSAGE's own tuple (NOT _curr_agg_version, which a
+        # staleness-accepted late grad would mis-stamp; NOT at dispatch, which froze
+        # the pool). BOTH modes (real relied on the trainer abort + 90s timeout; that
+        # left the mix noisier and has no sim analog). Only for grad contributions.
+        if MessageType.GRADIENTS in msg:
+            _tuple = (
+                msg.get(MessageType.MODEL_VERSION),
+                msg.get(MessageType.DATA_ID),
+                msg.get(MessageType.ITERATION_PER_DATA_ID),
+            )
+            if None not in _tuple:
+                self._trainer_state_dict[end] = _tuple
 
         if end not in self._updates_received.keys():
             self._updates_received[end] = 1
@@ -1923,10 +1935,11 @@ class TopAggregator(AsyncTopAgg):
                 # composer loop bypasses, so emit it here.
                 _last = getattr(self, "_last_vclock_log_wall_ts", 0.0)
                 if time.time() - _last >= 30.0 and _sim_rate is not None:
+                    _slow = " SLOWDOWN" if _sim_rate < 1.0 else ""
                     logger.info(
                         f"[VCLOCK_PROGRESS] vclock={float(self._vclock.now):.1f}s "
-                        f"wall={_wall_elapsed_s:.1f}s sim_rate={_sim_rate:.3f} "
-                        f"(virtual-s/wall-s; <1 == SLOWDOWN) round={self._round} "
+                        f"wall={_wall_elapsed_s:.1f}s sim_rate={_sim_rate:.3f}{_slow} "
+                        f"(virtual-s/wall-s) round={self._round} "
                         f"data_id={self.data_id}"
                     )
                     self._last_vclock_log_wall_ts = time.time()

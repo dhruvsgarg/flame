@@ -184,12 +184,18 @@ class TestVirtualInflightSlotHold:
         assert ch._selector.selected_ends["agg"] == {"B", "C"}
         assert "A" not in ch._selector.all_selected
 
-    def test_triplet_guard_pruned_to_busy_on_commit(self):
+    def test_triplet_guard_kept_until_tuple_advances_not_on_commit(self):
+        # RC3 fix: a trainer's contributed-tuple stamp survives its COMMIT and is
+        # dropped only when the agg advances PAST that tuple. Dropping it on commit
+        # (the old behavior) let a fast committer be re-picked for the SAME tuple ->
+        # abort_training -> phantom starvation.
         agg = _residence_agg(residence=True)
-        ch = _FakeSelChannel(["A", "B", "C"])
-        # A committed (popped) this cycle; B carried; C computing.
+        agg._curr_agg_version = (1, 0, 0)
+        ch = _FakeSelChannel(["A", "B", "C", "D"])
+        # A committed this cycle; B carried; C computing -- all at the CURRENT
+        # tuple (1,0,0). D contributed to a PAST tuple (1,0,0)-predecessor.
         agg._trainer_state_dict = {
-            "A": (1, 0, 0), "B": (1, 0, 0), "C": (1, 0, 0),
+            "A": (1, 0, 0), "B": (1, 0, 0), "C": (1, 0, 0), "D": (0, 0, 0),
         }
         agg._sim_committed = {"A"}
         agg._sim_buffer.add("B", 20.0, None)
@@ -197,9 +203,24 @@ class TestVirtualInflightSlotHold:
 
         agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
-        # The committed A is dropped from the triplet guard (re-pickable); the
-        # still-outstanding B, C remain so async_oort's filter keeps skipping them.
-        assert set(agg._trainer_state_dict) == {"B", "C"}
+        # A/B/C keep their (1,0,0) stamp (still the current tuple) -> the committed
+        # A is NOT re-pickable for (1,0,0). Only D, stamped at a superseded tuple,
+        # is dropped (re-pickable for the current one).
+        assert set(agg._trainer_state_dict) == {"A", "B", "C"}
+
+    def test_triplet_guard_all_dropped_once_tuple_advances(self):
+        # When the agg has moved to a new tuple, every stale stamp drops -> all
+        # trainers re-enter the pool for the new (model_version, data_id, iteration).
+        agg = _residence_agg(residence=True)
+        agg._curr_agg_version = (1, 0, 1)   # iteration advanced past (1,0,0)
+        ch = _FakeSelChannel(["A", "B"])
+        agg._trainer_state_dict = {"A": (1, 0, 0), "B": (1, 0, 0)}
+        agg._sim_committed = {"A"}
+        agg._sim_inflight_expected = {"B": 30.0}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        assert agg._trainer_state_dict == {}
 
 
 class TestFlagOffByteIdentical:

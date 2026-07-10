@@ -1196,9 +1196,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 _wall_e = time.time() - self.agg_start_time_ts
                 _v = float(self._vclock.now)
                 _sim_rate = _v / _wall_e if _wall_e > 0 else 0.0
+                _slow = " SLOWDOWN" if _sim_rate < 1.0 else ""
                 logger.info(
                     f"[VCLOCK_PROGRESS] vclock={_v:.1f}s wall={_wall_e:.1f}s "
-                    f"sim_rate={_sim_rate:.3f} (virtual-s/wall-s) round={self._round}"
+                    f"sim_rate={_sim_rate:.3f}{_slow} (virtual-s/wall-s) round={self._round}"
                 )
                 self._last_vclock_log_wall_ts = time.time()
 

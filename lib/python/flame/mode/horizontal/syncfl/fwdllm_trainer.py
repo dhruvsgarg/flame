@@ -578,10 +578,13 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.JVP_FOR_SNR_CHECK: self.jvp_for_snr_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
-                # Echoes the iteration this update answers, so the aggregator's
-                # staleness_policy="exact" mode (see flame/config.py) can reject
-                # updates answering a since-superseded iteration of the same
-                # data_id, not just a stale model_version/data_id.
+                # Echoes the (data_id, iteration) this update answers, so the
+                # aggregator's staleness_policy="exact" mode (see flame/config.py)
+                # can reject a since-superseded iteration, and the re-pick guard can
+                # record the exact (model_version, data_id, iteration) tuple this
+                # trainer contributed to (so it is excluded from re-selection for
+                # that same tuple).
+                MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                 MessageType.STAT_UTILITY: self._stat_utility,
