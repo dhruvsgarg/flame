@@ -45,6 +45,24 @@ def abstract_attribute(obj: Callable[[Any], R] = None) -> R:
     return cast(R, _obj)
 
 
+def _is_unfilled_abstract_attribute(instance: Any, name: str) -> bool:
+    """True only for a still-unfilled abstract_attribute placeholder.
+
+    The check must evaluate the instance attribute (a subclass may override an
+    abstract_attribute with a real value), which for a @property invokes its
+    getter. A getter that RAISES cannot be an unfilled placeholder -- those are
+    always plain DummyAttribute instances whose access never raises -- so treat
+    the raise as "implemented" and skip it, rather than letting an unrelated
+    subclass property (e.g. one backed by state set up after __init__) abort
+    instantiation.
+    """
+    try:
+        value = getattr(instance, name)
+    except Exception:
+        return False
+    return getattr(value, "__is_abstract_attribute__", False)
+
+
 class ABCMeta(NativeABCMeta):
     """ABCMeta."""
 
@@ -55,7 +73,7 @@ class ABCMeta(NativeABCMeta):
         abstract_attributes = {
             name
             for name in dir(instance)
-            if getattr(getattr(instance, name), "__is_abstract_attribute__", False)
+            if _is_unfilled_abstract_attribute(instance, name)
         }
 
         if abstract_attributes:
