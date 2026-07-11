@@ -59,6 +59,59 @@ discipline, starvation self-termination, A6/A7/A8/K11 ground-truth rungs).
 
 ---
 
+## §R  ACTIVE FIX TRACKER — busy-trainer residence violation (DELETE once landed + validated)
+**#S1's actual mechanism, not just its symptom.** Golden invariant (`../async_cifar10/PARITY.md`
+§3.resid): a trainer is re-pickable only after its update returns AND commits. **Violated in fwdllm's
+real async (fluxtune) path** — confirmed via telemetry: trainer `...580370` gets two `task_recv` 1s
+apart with no `trainer_round` completing between (`run_20260711_094610`); real queues 1–3 dispatches
+per trainer `recv()` vs sim's clean 1:1 (72/52 vs 54/55). This backlog, drained oldest-first, is why
+real staleness (1.41) never converges toward sim's (0.225) — real is dispatching to busy trainers, not
+"under-modeling" anything.
+
+**Root cause (fwdllm-only).** async_cifar10's base aggregator has no premature release-on-return; felix's
+real path already holds to commit by omission. fwdllm added one: `_release_end_on_return`
+(`fwdllm_aggregator.py:1255`) called `channel.cleanup_provided_ends(end)` on every RETURN unless
+`simulated and _sim_inflight_residence` — false for fluxtune's pooled dynamic-K (a returned grad sits in
+`grad_pool` until `agg_goal` fills). The correct release already exists and already runs
+unconditionally: `channel.cleanup_recvd_ends()` (`:2147`, `_process_aggregation_goal_met`).
+
+**Second, shared finding.** `async_oort.py`'s `SEND_TIMEOUT_WAIT_S=90` abandon (`_handle_send_state:1448`)
+has no liveness check and evicted a genuinely-busy trainer in the banked run — fwdllm's rounds (up to
+~108s incl. connect warmup) exceed a constant tuned for felix's shorter CNN/speech rounds.
+
+**Verified NOT broken (principle #17 audit):** `version_key`/`model_version` increment, dispatch-stamp,
+and trainer-echo are single-site and clean in both examples/modes. The busy-dispatch bug does not
+corrupt version bookkeeping (a trainer's own exact-match abort prevents a duplicate grad) — cost is pure
+dispatch churn, not data corruption.
+
+**Separate, non-blocking finding:** `oort/top_aggregator.py` (refl/feddance/oort/oort_star) never uses
+`version_key` — bare `self._round` throughout, and its async_oort/oort tuple-guard kwarg is never
+actually passed at either dispatch site. Principle #17 violation, defense-in-depth only — track
+separately.
+
+**Fix (landed 2026-07-11):**
+1. `_release_end_on_return` (fwdllm-only): hold to commit whenever `_sim_inflight_residence` is set,
+   in BOTH modes (was sim-only). Both fluxtune yamls now set it true.
+2. `async_oort.py` abandon timeout is now `send_timeout_wait_s`, an **aggregator hyperparameter**
+   (threaded into the selector by `channel_manager.py`, same pattern as `_seed`; getattr-guarded,
+   defaults to 90 = byte-identical elsewhere). Both fluxtune yamls set it to 300.
+3. Tests: `test_guard_held/released_on_return_in_real_*` (`test_fwdllm_sim_grad_residence.py`),
+   `TestAsyncOortSendTimeoutIsConfigurable` (`test_send_timeout_frees_selected_ends.py`),
+   `test_channel_manager_selector_kwargs.py`. Full suite: **1023 passed, 7 skipped, 0 failed**.
+4. Blast radius: Fix 1 touches only `fwdllm_aggregator.py`; Fix 2 touches shared `async_oort.py` +
+   `channel_manager.py` but is additive/default-preserving for every other baseline.
+
+**Status:** code + tests landed, suite green. **VALIDATION PENDING** — needs a fresh real+sim fluxtune
+pair (operator-launched, per this doc's own rule):
+```
+cd lib/python/examples/fwdllm && expt_scripts/run_sequential.sh --only fluxtune --mode both --delays on \
+  --num-gpus 8 --delay-divisor 0.25 --max-runtime-s 900
+```
+Once real's per-bin freshness recovery matches sim's and the `staleness` rung gap closes materially,
+fold a one-line pointer into §G and delete this section.
+
+---
+
 ## §A  Current status
 
 **Last landed:** consolidated re-baseline (all 3 baselines, `run_20260710_1820 → 1955`,

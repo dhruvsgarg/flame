@@ -77,11 +77,16 @@ experiments:
           id: fluxtune_n10_smoke_sim
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
-          # SIM-only: with c=10 >> agg_goal=3, commit-then-carry the surplus
-          # grads + hold busy trainers across the boundary, instead of dropping
-          # + re-dispatching them (the 2x-forward-pass residence bug, K-D12).
-          # Real satisfies this by channel construction, so it's inert there.
+          # With c=10 >> agg_goal=3, commit-then-carry the surplus grads +
+          # hold busy trainers across the boundary (K-D12). NOT sim-only
+          # despite the name -- real needs it too (§R, 2026-07-11: fwdllm's
+          # own async accept path released the guard on RETURN, not commit).
+          # Must match the real yaml.
           sim_inflight_residence: true
+          # 90s default evicted a genuinely-busy trainer (rounds incl.
+          # warmup up to ~108s). Workload knob, not a parity lever; must
+          # match real yaml (§R, 2026-07-11).
+          send_timeout_wait_s: 300
           # #13 step 3: drain each in-flight end's rxq DIRECTLY (channel.drain_ready)
           # instead of the recv_fifo streamer. The streamer blocks the full recv
           # grace PER not-ready end (the 4-10s inter-burst gaps that dominated the

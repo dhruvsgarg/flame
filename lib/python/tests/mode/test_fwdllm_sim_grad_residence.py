@@ -143,6 +143,27 @@ class TestReturnPathGuardHeldToCommit:
         agg._release_end_on_return(ch, "A")
         assert "A" not in ch._selector.all_selected
 
+    def test_guard_held_on_return_in_real_residence(self):
+        """§R (2026-07-11): async + REAL + residence on must ALSO hold to
+        commit -- previously gated on `simulated`, so real always fell
+        through to immediate release regardless of the flag."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" in ch._selector.all_selected
+        assert "A" in ch._selector.selected_ends["agg"]
+
+    def test_guard_released_on_return_in_real_when_residence_off(self):
+        """async + REAL + residence off: legacy immediate release preserved."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" not in ch._selector.all_selected
+
 
 class TestVirtualInflightSlotHold:
     """A returned-but-uncommitted trainer is still in flight in VIRTUAL time (its

@@ -1253,19 +1253,21 @@ class TopAggregator(AsyncTopAgg):
 
     @timer_decorator
     def _release_end_on_return(self, channel, end) -> None:
-        """Release a returned trainer's compute slot + re-pick guard on grad
-        RETURN -- except on the async sim residence path, where the grad is
-        carried and commits later in virtual time. There the guard/slot lifetime
-        is owned by `_sim_hold_busy_slots` (held to COMMIT); releasing
-        `all_selected` on physical RETURN would re-eligible a trainer whose
-        carried grad hasn't committed -> re-dispatch-while-in-flight -> R1
-        violation. Real / non-residence: return ~= commit, release immediately.
+        """Release a returned trainer's slot + re-pick guard on RETURN --
+        except on the async residence path, where fedbuff only CARRIES the
+        grad (return != commit) and the commit-boundary release
+        (`channel.cleanup_recvd_ends()`, `_process_aggregation_goal_met`)
+        owns the guard instead. Releasing here would re-dispatch a trainer
+        whose grad hasn't committed (R1 violation, PARITY.md §3.resid).
+
+        Not gated on `simulated` anymore: real has no equivalent of
+        async_cifar10's built-in exclusion, so it needs this hold too.
+        `_sim_inflight_residence` (default off = legacy immediate release) now
+        applies to both modes; real+sim fluxtune configs must both set it.
         """
         if self.is_async:
-            if getattr(self, "simulated", False) and getattr(
-                self, "_sim_inflight_residence", False
-            ):
-                return  # guard/slot held to COMMIT by _sim_hold_busy_slots
+            if getattr(self, "_sim_inflight_residence", False):
+                return  # guard/slot held to COMMIT (real: cleanup_recvd_ends; sim: _sim_hold_busy_slots)
             channel.cleanup_provided_ends(end)
         else:
             channel.cleanup_recvd_end(end)

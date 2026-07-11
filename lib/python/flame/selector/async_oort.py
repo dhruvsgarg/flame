@@ -168,6 +168,16 @@ class AsyncOortSelector(AbstractSelector):
         # a trainer
         self.track_trainer_timeouts = dict()
 
+        # In-flight abandon timeout (§R, 2026-07-11): a bare 90s evicted a
+        # genuinely-busy (not dead) fwdllm trainer, since forward-grad rounds
+        # can legitimately run longer than the CNN/speech rounds this was
+        # tuned for. Now a workload knob: aggregator hyperparameters.
+        # send_timeout_wait_s (threaded in by channel_manager.py); defaults to
+        # the original constant so other baselines are unaffected.
+        self.send_timeout_wait_s = kwargs.get(
+            "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S
+        )
+
         # Tracks trainers that were selected but left training in
         # between
         self.track_selected_trainers_which_left = dict()
@@ -1445,6 +1455,10 @@ class AsyncOortSelector(AbstractSelector):
         # slot stuck occupied forever (see
         # examples/MIGRATING_TO_LAUNCHER.md's aggregator gotchas for the
         # deadlock this caused).
+        # getattr-guarded: test doubles built via __new__ skip __init__.
+        _send_timeout_wait_s = getattr(
+            self, "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S
+        )
         curr_all_selected_ends = list(self.all_selected.keys())
         for end in curr_all_selected_ends:
             current_time_s = self._abandon_clock_now()  # vclock in sim, wall in real (#1c)
@@ -1455,16 +1469,16 @@ class AsyncOortSelector(AbstractSelector):
                 trainer_weight_send_timestamp_s = self.all_selected[end]
                 if (
                     trainer_weight_send_timestamp_s
-                    < (current_time_s - SEND_TIMEOUT_WAIT_S)
+                    < (current_time_s - _send_timeout_wait_s)
                 ) and (end not in self.ordered_updates_recv_ends):
                     # trainer hasn't returned with an update in
-                    # SEND_TIMEOUT_WAIT_S delete it from
+                    # send_timeout_wait_s delete it from
                     # self.all_selected so that it is eligible to be
                     # sampled again
                     logger.info(
                         f"Removing end {end} from self.all_selected "
                         f"since havent "
-                        f"got its update in {SEND_TIMEOUT_WAIT_S}. "
+                        f"got its update in {_send_timeout_wait_s}. "
                         f"Last weight send timestamp was: {trainer_weight_send_timestamp_s}"
                     )
 
@@ -1484,7 +1498,7 @@ class AsyncOortSelector(AbstractSelector):
                         num_of_timeouts_occured += v
 
                     total_time_spent_timeouts_s = (
-                        num_of_timeouts_occured * SEND_TIMEOUT_WAIT_S
+                        num_of_timeouts_occured * _send_timeout_wait_s
                     )
 
                     logger.debug(

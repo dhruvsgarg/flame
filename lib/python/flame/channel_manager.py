@@ -49,6 +49,21 @@ def custom_excepthook(exc_type, exc_value, exc_traceback):
 sys.excepthook = custom_excepthook
 
 
+def _build_selector_kwargs(hyperparameters, selector_kwargs: dict) -> dict:
+    """Thread aggregator hyperparameters a selector needs into its kwargs
+    (§R, 2026-07-11), same pattern as `_seed`. `send_timeout_wait_s` (async_oort's
+    in-flight abandon timeout) is a workload/comm-latency property, so it
+    belongs on the aggregator, not the selection algorithm. `selector_kwargs`
+    wins on conflict. Pulled out of `ChannelManager.join` to be unit-testable
+    without a live backend.
+    """
+    merged = dict(selector_kwargs)
+    _send_timeout_wait_s = getattr(hyperparameters, "send_timeout_wait_s", None)
+    if _send_timeout_wait_s is not None:
+        merged.setdefault("send_timeout_wait_s", _send_timeout_wait_s)
+    return merged
+
+
 class ChannelManager(object):
     """ChannelManager manages channels and creates a singleton
     instance."""
@@ -157,7 +172,9 @@ class ChannelManager(object):
         selector = selector_provider.get(
             self._config.selector.sort,
             _seed=_seed,
-            **self._config.selector.kwargs,
+            **_build_selector_kwargs(
+                self._config.hyperparameters, self._config.selector.kwargs
+            ),
         )
         logger.info(
             f"Selector created for channel {name}, selector: {selector} "

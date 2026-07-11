@@ -73,6 +73,68 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
         assert "fresh" in sel.selected_ends["agg"]
 
 
+class TestAsyncOortSendTimeoutIsConfigurable:
+    """§R, 2026-07-11: the bare 90s constant evicted a genuinely-busy fwdllm
+    trainer as abandoned. `send_timeout_wait_s` is now configurable (getattr
+    fallback to the original constant, so existing baselines are unaffected)."""
+
+    @staticmethod
+    def _stub_selector(send_timeout_wait_s):
+        from flame.selector.async_oort import AsyncOortSelector
+
+        sel = AsyncOortSelector.__new__(AsyncOortSelector)
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"slow"}}
+        # 100s since dispatch: past the 90s default, within a 300s budget.
+        sel.all_selected = {"slow": time.time() - 100}
+        sel.ordered_updates_recv_ends = []
+        sel.track_trainer_timeouts = {}
+        sel.send_timeout_wait_s = send_timeout_wait_s
+        sel.pacer = _boom
+        return sel
+
+    def test_configured_timeout_holds_a_trainer_the_default_would_evict(
+        self, make_ends
+    ):
+        sel = self._stub_selector(send_timeout_wait_s=300)
+        ends = make_ends(["slow"])
+
+        # concurrency=2 with 1 already selected -> extra=1 regardless of
+        # whether "slow" gets evicted, so execution reaches pacer() either way
+        # (mirrors test_fresh_end_untouched's not-evicted case above).
+        with pytest.raises(_StopAfterAbandon):
+            sel._handle_send_state(
+                ends=ends,
+                concurrency=2,
+                channel_props={"round": 1},
+                trainer_unavail_list=[],
+                task_to_perform="train",
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
+            )
+
+        assert "slow" in sel.all_selected
+        assert "slow" in sel.selected_ends["agg"]
+
+    def test_default_90s_still_evicts_when_unconfigured(self, make_ends):
+        sel = self._stub_selector(send_timeout_wait_s=90)
+        ends = make_ends(["slow"])
+
+        with pytest.raises(_StopAfterAbandon):
+            sel._handle_send_state(
+                ends=ends,
+                concurrency=1,
+                channel_props={"round": 1},
+                trainer_unavail_list=[],
+                task_to_perform="train",
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
+            )
+
+        assert "slow" not in sel.all_selected
+        assert "slow" not in sel.selected_ends["agg"]
+
+
 class TestFedBuffSendTimeoutFreesSelectedEnds:
     @staticmethod
     def _stub_selector():

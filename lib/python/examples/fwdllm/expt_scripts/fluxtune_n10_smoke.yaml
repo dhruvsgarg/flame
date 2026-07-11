@@ -69,6 +69,13 @@ experiments:
           id: fluxtune_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
+          # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
+          # 2026-07-11 -- real used to release early). Must match sim yaml.
+          sim_inflight_residence: true
+          # 90s default evicted a genuinely-busy trainer (rounds incl.
+          # warmup up to ~108s). Workload knob, not a parity lever; must
+          # match sim yaml (§R, 2026-07-11).
+          send_timeout_wait_s: 300
           # Async fedbuff: accept stale grads + down-weight by (V'-V), not reject
           # (K-D13). Set identically real+sim; never a parity lever. camelCase
           # MUST match the base key to override it — snake_case is a dead key
