@@ -87,7 +87,7 @@ experiments:
         # the sct gate (gate_holds=0) and got lapped → past-dated. This excludes every
         # outstanding (dispatched-not-committed) trainer from selection, enforcing the
         # invariant. SIM only. Re-read K3b/K2/U3/U6/K8/U2.
-        simInflightResidence: true
+        inflightResidence: true
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50
@@ -402,7 +402,7 @@ experiments:
         # 'if self.simulated and ...'); validated in run_20260614_152648 (emergent
         # all-green; hold ~52/67 in-flight). Keeps sim's eligible pool from carrying
         # the still-computing tail. SIM block only; no-op/omit in the real block.
-        simInflightResidence: true
+        inflightResidence: true
         # PARITY K3b (Jun 16 HYPOTHESIS): per-commit overhead. The 3h run had K3b
         # per-round residual 0.077 (real advance 1.47 vs sim 1.36 s/round) that
         # compounds over 7937 rounds into a K2 throughput FAIL (rel .075 > .05).
@@ -839,7 +839,7 @@ experiments:
         evalEveryNRounds: 50
         simSctOrderedDrain: true
         simClockJumpClamp: true
-        simInflightResidence: true
+        inflightResidence: true
         avail_select_filter: "False"
         proactive_inflight_evict: "False"
         sim_unavailability: "True"

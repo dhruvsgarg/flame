@@ -63,6 +63,10 @@ experiments:
           id: fwdllm_plus_n10_smoke
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
+          # Hold a returned trainer's re-pick guard to commit, not RETURN
+          # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
+          # but keeps the invariant/config identical across all baselines.
+          inflight_residence: true
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

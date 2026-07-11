@@ -104,7 +104,7 @@ class _FakeGradAgg:
         self._sim_budget_min = 12.0
         self._sim_fill_ema = 0.0
         self._sim_pending_commit = set()
-        self._sim_inflight_residence = False
+        self._inflight_residence = False
         self._sim_staggered_redispatch = False   # #13 step 4 (default off)
         self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
@@ -498,7 +498,7 @@ class TestAsyncBoundaryReleasesSlots:
     def test_async_boundary_frees_every_committed_slot(self):
         agg = _FakeGradAgg()
         agg._sim_pending_commit = set()
-        agg._sim_inflight_residence = False
+        agg._inflight_residence = False
         ch = _FakeSelChannel(["X", "Y"])
         agg._sim_committed = {"X", "Y"}
 

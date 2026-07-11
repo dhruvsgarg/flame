@@ -714,7 +714,7 @@ class TopAggregator(BaseTopAggregator):
         # unavailable list (NOT selected_ends, which would re-dispatch it) keeps sim's pool from
         # carrying the slow tail (refl A2b 12.41->~6.5). Released once vclock >= sct. Default off.
         if self.simulated and getattr(
-            self.config.hyperparameters, "sim_inflight_residence", False
+            self.config.hyperparameters, "inflight_residence", False
         ):
             _buf = getattr(self, "_sim_buffer", None)
             if _buf is not None:

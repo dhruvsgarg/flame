@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""One-in-flight-per-trainer invariant (simInflightResidence) for the felix
+"""One-in-flight-per-trainer invariant (inflightResidence) for the felix
 async stack.
 
 Real keeps a trainer out of selection (VAL_CH_STATE_SEND) from the moment it is
@@ -66,7 +66,7 @@ def _make_hold_agg(buffered, inflight_expected, residence):
     agg = _make_agg()
     agg.simulated = True
     agg._round = 5
-    agg._sim_inflight_residence = residence
+    agg._inflight_residence = residence
     agg._sim_pending_commit = set()
     agg._sim_inflight_expected = dict(inflight_expected)
     # Fake reorder buffer exposing only pending_ends().
@@ -141,7 +141,7 @@ class TestBusyNeverMarkedUnavailable:
     def test_distribute_does_not_mark_inflight_unavailable(self, residence):
         ch = _DistChannel(["e2"])
         agg = _make_dist_agg(ch, staggered=False)
-        agg._sim_inflight_residence = residence
+        agg._inflight_residence = residence
         agg._sim_inflight_expected = {"e1": 150.0, "e3": 160.0}
         agg._distribute_weights("tag", "train")
         assert ch.unavail == []
@@ -149,7 +149,7 @@ class TestBusyNeverMarkedUnavailable:
     def test_distribute_does_not_touch_inflight_entries(self):
         ch = _DistChannel(["e2"])
         agg = _make_dist_agg(ch, staggered=False)
-        agg._sim_inflight_residence = True
+        agg._inflight_residence = True
         agg._sim_inflight_expected = {"e1": 150.0}
         agg._distribute_weights("tag", "train")
         assert agg._sim_inflight_expected["e1"] == 150.0  # only a commit pops it

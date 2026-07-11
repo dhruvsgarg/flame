@@ -122,7 +122,7 @@ def _make_oort_agg(channel, *, simulated):
     _stub_common(agg, channel, simulated=simulated)
     agg.config = types.SimpleNamespace(
         selector=types.SimpleNamespace(kwargs={"aggr_num": 1}),
-        hyperparameters=types.SimpleNamespace(sim_inflight_residence=False),
+        hyperparameters=types.SimpleNamespace(inflight_residence=False),
     )
     return agg
 
@@ -204,7 +204,7 @@ class TestAggregatorBroadcastsOrigin:
         _stub_common(agg, ch, simulated=False)
         agg._vclock = VirtualClock()
         agg._sim_staggered_redispatch = False
-        agg._sim_inflight_residence = False
+        agg._inflight_residence = False
         agg._sim_free_slot_ts = __import__("collections").deque(maxlen=128)
         agg._sim_last_commit_sct = {}
         agg._sim_inflight_expected = {}

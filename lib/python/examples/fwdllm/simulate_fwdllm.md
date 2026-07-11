@@ -75,6 +75,15 @@ real path already holds to commit by omission. fwdllm added one: `_release_end_o
 `grad_pool` until `agg_goal` fills). The correct release already exists and already runs
 unconditionally: `channel.cleanup_recvd_ends()` (`:2147`, `_process_aggregation_goal_met`).
 
+**Follow-up unification (2026-07-11 PM):** the `is_async` branch in `_release_end_on_return` was itself
+confusing — sync already released on RETURN too (same premature-release shape), just harmlessly, since
+sync's `agg_goal == c` (full-cohort barrier) means every return already belongs to that cycle's commit,
+and RandomSelector's own `_cleanup_recvd_end` docstring already warned this "should be triggered only
+after aggregation... meets agg_goal." Collapsed to ONE check, no `is_async` branch: hold to commit
+whenever the flag is on, for sync and async, real and sim alike. Renamed `sim_inflight_residence` →
+`inflight_residence` everywhere (config, code, both examples) — the "sim_" prefix was actively
+misleading once the same flag governs sync, async, real, and sim uniformly.
+
 **Second, shared finding.** `async_oort.py`'s `SEND_TIMEOUT_WAIT_S=90` abandon (`_handle_send_state:1448`)
 has no liveness check and evicted a genuinely-busy trainer in the banked run — fwdllm's rounds (up to
 ~108s incl. connect warmup) exceed a constant tuned for felix's shorter CNN/speech rounds.
@@ -90,16 +99,22 @@ actually passed at either dispatch site. Principle #17 violation, defense-in-dep
 separately.
 
 **Fix (landed 2026-07-11):**
-1. `_release_end_on_return` (fwdllm-only): hold to commit whenever `_sim_inflight_residence` is set,
-   in BOTH modes (was sim-only). Both fluxtune yamls now set it true.
+1. `_release_end_on_return` (fwdllm-only): one unconditional check — hold to commit whenever
+   `_inflight_residence` is set, sync or async, real or sim. All 6 fwdllm baseline yamls (fwdllm,
+   fwdllm_plus, fluxtune × real/sim) now set it true (a confirmed no-op for the two sync baselines).
 2. `async_oort.py` abandon timeout is now `send_timeout_wait_s`, an **aggregator hyperparameter**
    (threaded into the selector by `channel_manager.py`, same pattern as `_seed`; getattr-guarded,
    defaults to 90 = byte-identical elsewhere). Both fluxtune yamls set it to 300.
-3. Tests: `test_guard_held/released_on_return_in_real_*` (`test_fwdllm_sim_grad_residence.py`),
+3. Renamed `sim_inflight_residence`→`inflight_residence` everywhere it's read: `config.py`,
+   `asyncfl/top_aggregator.py`, `oort/top_aggregator.py` (async_cifar10's separate §4.5 sim-only
+   mechanism — untouched behaviorally, name only), `fwdllm_aggregator.py`, every yaml/test/doc
+   reference in both examples.
+4. Tests: `test_guard_held/released_on_return_in_{sync,real}_*` (`test_fwdllm_sim_grad_residence.py`),
    `TestAsyncOortSendTimeoutIsConfigurable` (`test_send_timeout_frees_selected_ends.py`),
-   `test_channel_manager_selector_kwargs.py`. Full suite: **1023 passed, 7 skipped, 0 failed**.
-4. Blast radius: Fix 1 touches only `fwdllm_aggregator.py`; Fix 2 touches shared `async_oort.py` +
-   `channel_manager.py` but is additive/default-preserving for every other baseline.
+   `test_channel_manager_selector_kwargs.py`. Full suite (both examples): **green**.
+5. Blast radius: Fix 1+3 touch `fwdllm_aggregator.py` plus a pure rename in async_cifar10's
+   already-correct, unrelated mechanism; Fix 2 touches shared `async_oort.py` + `channel_manager.py`
+   but is additive/default-preserving for every other baseline.
 
 **Status:** code + tests landed, suite green. **VALIDATION PENDING** — needs a fresh real+sim fluxtune
 pair (operator-launched, per this doc's own rule):

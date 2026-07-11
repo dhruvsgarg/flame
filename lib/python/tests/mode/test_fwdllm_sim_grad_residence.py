@@ -2,15 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Async grad-path residence + commit-then-carry.
 
-For the async path with `sim_inflight_residence` on, `_release_sim_slots_at_agg_goal`
+For the async path with `inflight_residence` on, `_release_sim_slots_at_agg_goal`
 HOLDs the still-busy trainers (surplus buffered u not-yet-arrived in-flight) in
 their slots BEFORE clearing anything, releases only the committed subset, and
 CARRIEs the surplus buffer to the next cycle (never dropped) -- otherwise the
 boundary re-dispatches busy trainers (2x forward passes) and drops arrived-but-
 uncommitted grads. These tests drive the boundary directly and assert (a) surplus
 carried, (b) busy trainers not re-selected, (c) R1 one-in-flight residence holds,
-and (d) flag-off => byte-identical to the legacy drop behavior (sync baselines +
-async-without-residence unchanged).
+and (d) flag-off => byte-identical to the legacy drop behavior.
 """
 
 from flame.mode.horizontal.asyncfl.top_aggregator import (
@@ -30,12 +29,12 @@ from tests.mode.test_fwdllm_sim_grad_loop import (
 def _residence_agg(residence: bool) -> _FakeGradAgg:
     agg = _FakeGradAgg()
     agg._sim_pending_commit = set()
-    agg._sim_inflight_residence = residence
+    agg._inflight_residence = residence
     return agg
 
 
 class TestCommitThenCarryResidenceOn:
-    """async + sim_inflight_residence=True: hold-before-clear + carry surplus."""
+    """async + inflight_residence=True: hold-before-clear + carry surplus."""
 
     def test_surplus_carried_and_busy_held(self):
         agg = _residence_agg(residence=True)
@@ -108,10 +107,12 @@ class TestCommitThenCarryResidenceOn:
 
 class TestReturnPathGuardHeldToCommit:
     """The guard release on grad RETURN (`_release_end_on_return`, called from
-    `_process_single_trainer_message`). The async accept path must not call
-    `channel.cleanup_provided_ends(end)` on physical return -- that tears the
-    trainer out of `all_selected` while its carried grad has not committed in
-    virtual time -> re-selectable -> re-dispatch-while-in-flight.
+    `_process_single_trainer_message`). With `_inflight_residence` on, RETURN
+    must not release `all_selected` -- that tears a trainer out of the guard
+    while its contribution hasn't committed -> re-selectable -> re-dispatch-
+    while-in-flight. One check, no `is_async` branch: a no-op for sync
+    (agg_goal == c, so every return already belongs to that cycle's commit)
+    and for real (which needs the hold too, unlike sim -- §R 2026-07-11).
     """
 
     def test_guard_held_on_return_in_sim_residence(self):
@@ -134,10 +135,21 @@ class TestReturnPathGuardHeldToCommit:
         agg._release_end_on_return(ch, "A")
         assert "A" not in ch._selector.all_selected
 
-    def test_sync_return_uses_recvd_cleanup(self):
-        """sync (random selector, is_async=False): unchanged cleanup_recvd_end
-        path -- releases on return (barrier re-selects the whole cohort)."""
-        agg = _residence_agg(residence=True)   # residence flag is inert when sync
+    def test_guard_held_on_return_in_sync_residence(self):
+        """§R (2026-07-11): sync + residence on ALSO holds now -- one invariant,
+        no is_async special case. Harmless in practice (agg_goal == c for sync,
+        so this return already belongs to the cycle that's about to commit),
+        but must not silently diverge from async's behavior."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" in ch._selector.all_selected
+
+    def test_sync_return_uses_recvd_cleanup_when_residence_off(self):
+        """sync (random selector, is_async=False) WITHOUT residence: unchanged
+        cleanup_recvd_end path -- releases on return, default/legacy."""
+        agg = _residence_agg(residence=False)
         agg.is_async = False
         ch = _FakeSelChannel(["A", "B", "C"])
         agg._release_end_on_return(ch, "A")

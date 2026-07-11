@@ -145,7 +145,7 @@ class _RepickAgg:
 
     def __init__(self, residence=True, simulated=True, curr_ver=(5, 1)):
         self.simulated = simulated
-        self._sim_inflight_residence = residence
+        self._inflight_residence = residence
         self._curr_agg_version = curr_ver
         self._trainer_state_dict = {}
         self._per_agg_trainer_list = []

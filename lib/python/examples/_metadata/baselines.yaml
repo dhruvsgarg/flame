@@ -148,7 +148,7 @@ baselines:
         simCommitOverheadSeconds: 0.074
         # Hold still-computing trainers in their selection slot until vclock>=sct so
         # sim's eligible pool stops carrying the slow tail (A2b 12.41->~6.5). PARITY §4.5.
-        simInflightResidence: True
+        inflightResidence: True
     trainer:
       hyperparameters:
         client_notify:

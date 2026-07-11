@@ -182,8 +182,8 @@ class TopAggregator(SyncTopAgg):
         # One-in-flight-per-trainer invariant (§3.resid, felix async). A trainer with an update
         # still outstanding must NOT be re-selected — real keeps it out of VAL_CH_STATE_SEND
         # until its update returns and is aggregated. Default off ⇒ unchanged selection.
-        _resid = getattr(self.config.hyperparameters, "sim_inflight_residence", False)
-        self._sim_inflight_residence: bool = bool(_resid) if _resid is not None else False
+        _resid = getattr(self.config.hyperparameters, "inflight_residence", False)
+        self._inflight_residence: bool = bool(_resid) if _resid is not None else False
         # FIFO of vclocks at which a train-commit freed a slot; popped oldest-first to stamp
         # the trainer that refills that slot. Bounded (≈ concurrency in steady state; trimmed
         # so a transient imbalance can't make a stamp arbitrarily stale).
@@ -1465,7 +1465,7 @@ class TopAggregator(SyncTopAgg):
         Dropping a busy slot frees a phantom the selector refills with a NEW trainer,
         so in-flight grows toward N each round (the over-selection bug).
 
-        Default holds the already-buffered set; with sim_inflight_residence on it holds
+        Default holds the already-buffered set; with inflight_residence on it holds
         the FULL dispatched-but-not-committed set (_sim_inflight_expected, train+eval),
         so a trainer whose update has not yet drained into the buffer also can't be
         re-selected mid-flight — closing the overlap tail."""
@@ -1473,7 +1473,7 @@ class TopAggregator(SyncTopAgg):
         requester = sel.requester
         pending_in_buffer = set(self._sim_buffer.pending_ends())
         held = pending_in_buffer
-        if self._sim_inflight_residence:
+        if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
 
         # Release trainers no longer busy (committed, or — residence off — dispatched

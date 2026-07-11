@@ -1063,7 +1063,7 @@ def inflight_residence_parity(real: dict, sim: dict,
     the stack emits no `inflight_residence` telemetry (async felix / feddance) or
     when neither mode carries anything (no overcommit → nothing to carry, trivially
     matched).  This is the §4.5-class carry-over rung, distinct from the pool-
-    exclusion `sim_inflight_residence` mechanism (which keeps still-computing
+    exclusion `inflight_residence` mechanism (which keeps still-computing
     trainers out of the *pool* but does not make sim *carry* them in-flight).
     """
     r_ev = real.get("residence", [])

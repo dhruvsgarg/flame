@@ -249,21 +249,20 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
-    # Hold a dispatched trainer in-flight (occupying its concurrency slot, out of the
-    # eligible pool) until its update commits, instead of freeing the slot at instant
-    # physical arrival — so the committed/eligible mix matches real. Sync stack (oort):
-    # adds the still-computing set to the unavailable list (§4.5). Async stack (felix):
-    # widens _sim_hold_busy_slots to the full dispatched-but-not-committed set, held via
-    # selected_ends (a slot), NOT the unavailable list. Default off ⇒ holds only the
-    # already-buffered set.
-    sim_inflight_residence: t.Optional[bool] = Field(
-        alias="simInflightResidence", default=False
+    # Hold a dispatched trainer's slot/re-pick guard until its update commits,
+    # instead of releasing at RETURN (a carried, not-yet-aggregated update
+    # can't be re-dispatched — R1, PARITY.md §3.resid). oort (sync, sim): adds
+    # the still-computing set to the unavailable list (§4.5). asyncfl (felix,
+    # sim): widens `_sim_hold_busy_slots`. fwdllm (real+sim, sync+async, §R):
+    # holds `_release_end_on_return` uniformly. Default off = legacy release.
+    inflight_residence: t.Optional[bool] = Field(
+        alias="inflightResidence", default=False
     )
     # Sim sync-stack: keep a prior-round straggler still computing at round start
     # (sct > vclock_round_start) buffered and carried in-flight until vclock >= sct,
     # instead of popping + stale-rejecting it on instant arrival (which drains sim's
     # in-flight to ~0 while real carries the overcommit). Gates carry/cleanup, whereas
-    # sim_inflight_residence gates pool re-entry.
+    # inflight_residence gates pool re-entry.
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
     )

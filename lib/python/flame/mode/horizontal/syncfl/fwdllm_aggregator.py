@@ -1046,7 +1046,7 @@ class TopAggregator(AsyncTopAgg):
         # commit: recv_fifo just marked freshly-buffered ends RECVD (stripping
         # their slots), but they are still in flight until THEY commit; else the
         # in_flight telemetry undercounts.
-        if getattr(self, "_sim_inflight_residence", False):
+        if getattr(self, "_inflight_residence", False):
             self._sim_hold_busy_slots(channel)
         # in_flight (virtual, dispatched-not-committed) vs physically-computing
         # selected_ends; kept for concurrency parity debugging.
@@ -1069,7 +1069,7 @@ class TopAggregator(AsyncTopAgg):
     def _release_sim_slots_at_agg_goal(self, channel, is_async):
         """Sim slot release at the agg-goal boundary. Two policies (§L):
 
-        - async + sim_inflight_residence (fluxtune, c >> agg_goal): commit-then-
+        - async + inflight_residence (fluxtune, c >> agg_goal): commit-then-
           carry. Hold still-busy trainers before clearing and carry the surplus
           buffer to the next fedbuff step. `_sim_hold_busy_slots` holds every
           dispatched-but-not-committed trainer (computing ∪ carried) in both its
@@ -1082,7 +1082,7 @@ class TopAggregator(AsyncTopAgg):
         """
         if not self.simulated:
             return
-        if is_async and getattr(self, "_sim_inflight_residence", False):
+        if is_async and getattr(self, "_inflight_residence", False):
             self._sim_hold_busy_slots(channel)   # reads buffer/in-flight -> hold before clear
             self._sim_committed.clear()
             return  # keep _sim_buffer / _sim_inflight_expected -> carry surplus
@@ -1254,20 +1254,17 @@ class TopAggregator(AsyncTopAgg):
     @timer_decorator
     def _release_end_on_return(self, channel, end) -> None:
         """Release a returned trainer's slot + re-pick guard on RETURN --
-        except on the async residence path, where fedbuff only CARRIES the
-        grad (return != commit) and the commit-boundary release
-        (`channel.cleanup_recvd_ends()`, `_process_aggregation_goal_met`)
-        owns the guard instead. Releasing here would re-dispatch a trainer
-        whose grad hasn't committed (R1 violation, PARITY.md §3.resid).
-
-        Not gated on `simulated` anymore: real has no equivalent of
-        async_cifar10's built-in exclusion, so it needs this hold too.
-        `_sim_inflight_residence` (default off = legacy immediate release) now
-        applies to both modes; real+sim fluxtune configs must both set it.
+        except when `_inflight_residence` is on, where the commit-boundary
+        release (`channel.cleanup_recvd_ends()`) owns the guard instead.
+        Releasing before commit is an R1 violation (PARITY.md §3.resid)
+        whenever return != commit -- true for fluxtune's pooled fedbuff
+        (c >> agg_goal); a no-op for sync (agg_goal == c) and real (no
+        built-in exclusion like async_cifar10's, so it needs the hold too).
+        One flag, both sync/async, both real/sim; default off = byte-identical.
         """
+        if getattr(self, "_inflight_residence", False):
+            return  # guard/slot held to COMMIT (see channel.cleanup_recvd_ends())
         if self.is_async:
-            if getattr(self, "_sim_inflight_residence", False):
-                return  # guard/slot held to COMMIT (real: cleanup_recvd_ends; sim: _sim_hold_busy_slots)
             channel.cleanup_provided_ends(end)
         else:
             channel.cleanup_recvd_end(end)
