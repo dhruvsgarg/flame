@@ -31,6 +31,7 @@ EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stall
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
+EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
 
 KNOWN_EVENTS = frozenset(
     {
@@ -51,6 +52,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_AGG_BELIEF_CHANGE,
         EVENT_STEP_TIMING,
         EVENT_COMM,
+        EVENT_VERSION_BUMP_CENSUS,
     }
 )
 
@@ -231,6 +233,7 @@ def build_comm(
     payload_kind: Optional[str] = None,
     n_tensors: Optional[int] = None,
     trainer_id: Optional[str] = None,
+    model_version: Optional[int] = None,
 ) -> tuple[str, dict[str, Any]]:
     """One message placed on the wire, for network-cost accounting (Experiment 4).
 
@@ -242,7 +245,9 @@ def build_comm(
     direction: "agg_to_trainer" (dispatch) | "trainer_to_agg" (update upload).
     peer_id: the other end (may be None trainer-side). payload_kind: "weights" /
     "var_bad" / "gradients", to split dispatch vs update and full-weight vs
-    var-signal. size_bytes: serialized message size.
+    var-signal. size_bytes: serialized message size. model_version: the
+    version this message carries (dispatch: what's being sent out; update:
+    what the sender computed against) -- #S1 staleness diagnostic.
     """
     fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
     for k, v in (
@@ -253,10 +258,47 @@ def build_comm(
         ("payload_kind", payload_kind),
         ("n_tensors", n_tensors),
         ("trainer_id", trainer_id),
+        ("model_version", model_version),
     ):
         if v is not None:
             fields[k] = v
     return EVENT_COMM, fields
+
+
+def build_version_bump_census(
+    *,
+    old_model_version: int,
+    new_model_version: int,
+    data_id: int,
+    inflight: dict[str, tuple[int, int]],
+    vclock_now: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """#S1 diagnostic: pool-wide snapshot at the instant model_version bumps.
+
+    inflight: {end_id: dispatch_version_key} for every trainer with an
+    outstanding (dispatched, not-yet-returned) send at this instant --
+    version_key is the shared (model_version, iteration_per_data_id) 2-tuple
+    (§M/K-D39), not a reduction to the bare model_version int, so a
+    real/sim comparison can't be fooled by a matching model_version that
+    hides a differing iteration. These are the trainers about to return
+    grads computed against a now-stale version. Compare real vs sim: how
+    many of the pool are stale at the bump, and at what version_key, tells
+    you whether the two modes enter a new data_id with the same
+    population-level staleness mix.
+    """
+    fields: dict[str, Any] = {
+        "old_model_version": old_model_version,
+        "new_model_version": new_model_version,
+        "data_id": data_id,
+        "n_inflight": len(inflight),
+        "inflight_version_key": {e: list(k) for e, k in inflight.items()},
+        "inflight_staleness": {
+            e: new_model_version - k[0] for e, k in inflight.items()
+        },
+    }
+    if vclock_now is not None:
+        fields["vclock_now"] = vclock_now
+    return EVENT_VERSION_BUMP_CENSUS, fields
 
 
 def build_util_disparity(

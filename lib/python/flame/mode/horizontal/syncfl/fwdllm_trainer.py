@@ -573,7 +573,7 @@ class Trainer(Role, metaclass=ABCMeta):
                         peer_id=str(end), round_num=int(self._round),
                         data_id=self.data_id, iteration=self.iteration_per_data_id,
                         payload_kind="gradients", n_tensors=len(grad_dict),
-                        trainer_id=self.trainer_id,
+                        trainer_id=self.trainer_id, model_version=self._model_version,
                     )
                     telemetry.emit(ev, **f)
                 except Exception as e:

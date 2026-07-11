@@ -73,7 +73,10 @@ from flame.monitor.runtime import FwdLLMStage, timer_decorator
 import math
 
 from flame import telemetry
-from flame.telemetry.events import build_agg_eval, build_agg_round, build_utility_belief, build_comm
+from flame.telemetry.events import (
+    build_agg_eval, build_agg_round, build_utility_belief, build_comm,
+    build_version_bump_census,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -258,6 +261,20 @@ class TopAggregator(AsyncTopAgg):
         super().internal_init()
 
         self._trainer_last_model_version = {}
+        # #S1 diagnostic: end -> full version_key (model_version,
+        # iteration_per_data_id) of this end's last RETURNED contribution --
+        # the same 2-tuple vocabulary version_key uses (§M/K-D39), not a
+        # reduction to the bare model_version int. Kept alongside
+        # _trainer_last_model_version (which staleness's scalar diff needs)
+        # so real/sim comparisons can be checked against the full key, not
+        # just its first component.
+        self._trainer_last_version_key = {}
+        # #S1 diagnostic: end -> version_key this end was DISPATCHED at, for
+        # every outstanding (not-yet-returned) send. Set in the dispatch loop,
+        # cleared on that end's return. Lets a version-bump census (below) count
+        # how many of the pool are still carrying stale-version work at the
+        # instant the aggregator's model_version advances.
+        self._trainer_inflight_dispatch_version = {}
 
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
@@ -1528,6 +1545,18 @@ class TopAggregator(AsyncTopAgg):
 
         version = msg.get(MessageType.MODEL_VERSION, "unknown")
         self._trainer_last_model_version[end] = version
+        # #S1 diagnostic: full version_key of the RETURNED contribution (not
+        # the reduced scalar) -- lets a real/sim comparison verify iteration
+        # never carries hidden staleness info the bare model_version diff
+        # would mask. getattr-guarded: test doubles that bypass internal_init()
+        # only stub the dicts they exercise.
+        if getattr(self, "_trainer_last_version_key", None) is not None:
+            self._trainer_last_version_key[end] = (
+                version, msg.get(MessageType.ITERATION_PER_DATA_ID)
+            )
+        # #S1 diagnostic: this end's dispatch is no longer outstanding.
+        if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
+            self._trainer_inflight_dispatch_version.pop(end, None)
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
@@ -1822,12 +1851,24 @@ class TopAggregator(AsyncTopAgg):
         _cached_v_size = len(_cached_v) if _cached_v is not None else 0
         # Per-contributor [dispatch, commit] intervals for R1/W1: one entry per
         # end that committed into this cycle. History preserved since each cycle
-        # emits its own list.
+        # emits its own list. #S1: explicit (agg_version_at_commit,
+        # dispatch_version) pair per contributor -- direct evidence for staleness
+        # without cross-referencing the separate `staleness` list by position.
+        # version_key fields carry the full (model_version, iteration_per_data_id)
+        # 2-tuple (§M/K-D39) alongside the bare-int reduction the scalar
+        # `staleness` list uses, so a real/sim diff can check whether iteration
+        # ever hides information the bare model_version diff would miss.
         _contrib_map = getattr(self, "_sim_contrib_intervals", None) or {}
+        _version_key_map = getattr(self, "_trainer_last_version_key", None) or {}
+        _agg_version_key_at_commit = (_cycle_model_version, _cycle_iteration)
         _contributor_intervals = [
             {"end": str(_e), **_contrib_map.get(_e, {"dispatch_ts": None,
                                                      "commit_ts": None,
-                                                     "processing_wall_ts": None})}
+                                                     "processing_wall_ts": None}),
+             "dispatch_model_version": self._trainer_last_model_version.get(_e),
+             "agg_model_version_at_commit": _cycle_target_version,
+             "dispatch_version_key": _version_key_map.get(_e),
+             "agg_version_key_at_commit": _agg_version_key_at_commit}
             for _e in _cycle_contributors
         ]
 
@@ -1885,7 +1926,27 @@ class TopAggregator(AsyncTopAgg):
             # inc_model_version_per_data_id flag; every baseline already ran
             # with it True). version_key = (model_version, iteration) then
             # uniquely identifies a step without needing data_id in the key.
+            _old_mv = self._model_version
             self._model_version += 1
+
+            # #S1 diagnostic: snapshot the pool's in-flight staleness mix at the
+            # instant of the bump -- how many trainers are still carrying a
+            # dispatch from the version that just aged out, and by how much.
+            if telemetry.is_enabled():
+                try:
+                    ev, fields = build_version_bump_census(
+                        old_model_version=_old_mv,
+                        new_model_version=self._model_version,
+                        data_id=self.data_id,
+                        inflight=dict(
+                            getattr(self, "_trainer_inflight_dispatch_version", {})
+                        ),
+                        vclock_now=(self._vclock.now if self.simulated
+                                    and getattr(self, "_vclock", None) else None),
+                    )
+                    telemetry.emit(ev, **fields)
+                except Exception as e:  # telemetry must never break training
+                    logger.debug(f"version_bump_census telemetry emit failed: {e}")
 
             # Opt-1: the data-bin (and model_version) just advanced -> every
             # trainer is genuinely stale, so the "already sent this cycle" set must
@@ -2895,11 +2956,17 @@ class TopAggregator(AsyncTopAgg):
                     direction="agg_to_trainer", size_bytes=_send_bytes, peer_id=str(end),
                     round_num=int(self._round), data_id=self.data_id,
                     iteration=self.iteration_per_data_id, payload_kind=_payload_kind,
-                    n_tensors=len(payload),
+                    n_tensors=len(payload), model_version=self._model_version,
                 )
                 telemetry.emit(ev, **f)
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg send): {e}")
+
+            # #S1 diagnostic: this end now carries an outstanding dispatch at
+            # the CURRENT version_key until it returns (cleared in
+            # _process_single_trainer_message on return).
+            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
+                self._trainer_inflight_dispatch_version[end] = self.version_key
 
             channel.send(end, payload)
             logger.info(f"Sent weights to {end}")
@@ -3094,10 +3161,16 @@ class TopAggregator(AsyncTopAgg):
                     round_num=int(self._round), data_id=self.data_id,
                     iteration=self.iteration_per_data_id, payload_kind=_pk,
                     n_tensors=len(payload) if isinstance(payload, dict) else None,
+                    model_version=self._model_version,
                 )
                 telemetry.emit(ev, **f)
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg async send): {e}")
+            # #S1 diagnostic: this end now carries an outstanding dispatch at the
+            # CURRENT version_key until it returns (cleared on return in
+            # _process_single_trainer_message).
+            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
+                self._trainer_inflight_dispatch_version[end] = self.version_key
             channel.send(end, payload)
             # #15 compute-truthful gate: stamp the wall time this end was dispatched
             # so the drain can tell a live straggler from an idle-in-recv phantom.

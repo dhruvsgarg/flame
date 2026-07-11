@@ -67,9 +67,16 @@ sync `sim_rate` 5.6–5.8 (healthy, up from 2.6–2.7), fluxtune `sim_rate` rung
 and logical parity is clean (fwdllm/fwdllm_plus full to bin ≤1; fluxtune cadence 24/24 + first ~8 cohorts identical,
 up from 3/272). No regressions — every sync/fwdllm_plus fail is #N float-nondeterminism, length-confound, or a
 known-artifact bucket.
-**Next (RESUME HERE — see #S1):** fluxtune async cohort-SET divergence is **root-caused to a sim STALENESS
-under-modeling bug** (not headroom, not #N). The `--delay-divisor 0.25` diagnostic (`run_20260710_2242`) proved it.
-Fix = stamp compute-time `version_key` through the sim reorder buffer so staleness matches real; verify at 0.5.
+**Next (RESUME HERE — see #S1):** fluxtune async cohort-SET divergence tracks a real staleness gap (real 1.14 vs
+sim 0.218, confirmed on the `run_20260710_2242` 0.25-divisor pair) — but the original "`tres.version` stamped at
+COMMIT not compute/dispatch" mechanism is **REFUTED**: `asyncfl/top_aggregator.py:1108` is unreachable *through
+fluxtune's subclass* (fwdllm_aggregator.py overrides `_aggregate_weights` entirely — the base method itself is
+live and required for async_cifar10/async_mnist/async_google_speech/async_hier_*/coord_asyncfl; do not touch it),
+and the staleness path fluxtune actually uses
+(`_trainer_last_model_version`, fed from `msg[MODEL_VERSION]`) is already dispatch-time in both modes, unmutated by
+`SimReorderBuffer`. The vclock commit-gate itself is clean (81/81 commits, `commit_ts ≥ dispatch_ts`, monotonic).
+Working hypothesis is now a **population-level phase-alignment effect** (how many of the 10-trainer pool are still
+mid-flight on the old version at the instant of a bump) — see #S1 for the new telemetry added to pin it down.
 
 Latest banked pairs (`run_sequential.sh --mode both --delays on --num-gpus 8 --delay-divisor 0.5
 --max-runtime-s 5400`, n=10 smoke; real runs all hit the 5400s runtime cap):
@@ -137,18 +144,19 @@ iter-for-iter; the divergence tracks staleness/delay, not fp16 jitter). See §H 
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
-| **#S1 fluxtune sim STALENESS under-modeling (async cohort-SET root)** | Sim grads too FRESH: `staleness` rung real 1.14 vs **sim 0.218**. `staleness = self._round − tres.version` ([asyncfl/top_aggregator.py:1108](../../flame/mode/horizontal/asyncfl/top_aggregator.py#L1108)); sim's ≈0 ⇒ `tres.version` is stamped at COMMIT not compute/dispatch, so fedbuff's staleness decay never shrinks sim grads → sim variance systematically HIGHER → sim clears bin 0 in 10 iters vs real's 7 → cadence desyncs → cohort-SET collapses (downstream, NOT a selection bug). Delay-coupled: `v2_var_trajectory` gap 5%→11% as delay 0.5→0.25. This is D3 arriving in Phase 1. | fluxtune (async only) | (1) telemetry+code confirm `tres.version` is commit-time in sim; (2) FLAG-GATED fix: carry compute-time `version_key` (K-D39) through the SimReorderBuffer to commit; (3) verify at `--delay-divisor 0.5` — v2 gap collapses, staleness matches, iters-to-clear re-syncs, cohort-SET recovers. |
+| **#S1 fluxtune sim STALENESS under-modeling (async cohort-SET root)** | Sim grads too FRESH: `staleness` rung real 1.14 vs **sim 0.218** (confirmed on `run_20260710_2242` telemetry: sim's staleness decays to 0 within 2–3 cohorts of a data_id/model_version bump, real's stays elevated — sometimes ratcheting to 2–3 — for the whole bin). **REFUTED**: the original "`tres.version` stamped at COMMIT not compute/dispatch" framing (`asyncfl/top_aggregator.py:1108`) — that code is unreachable *through fluxtune's subclass* (fwdllm_aggregator.py overrides `_aggregate_weights` entirely) but is LIVE/required for async_cifar10 and five other examples — not deletable, not a bug there; the real staleness path fluxtune actually uses (`_trainer_last_model_version`, from `msg[MODEL_VERSION]`) is already dispatch-time in both real and sim, and `SimReorderBuffer` never mutates it. The vclock commit-gate is clean (81/81 commits checked: `commit_ts ≥ dispatch_ts`, vclock monotonic) — no premature commit. Working hypothesis: a **population-level phase-alignment** effect (how many of the 10-trainer pool are still mid-flight on the old version_key at the instant of a bump, and how fast each mode flushes them), not a single miswired variable. | fluxtune (async only) | Telemetry added to pin this down (all keyed on the unified `version_key` 2-tuple, not a bare model_version int — K-D39/§M): (1) per-contributor `dispatch_version_key`/`agg_version_key_at_commit` on every `agg_round.contributor_intervals` entry; (2) a new `version_bump_census` event at every model_version bump, snapshotting which of the 10 trainers still hold an outstanding dispatch and at what `version_key`; (3) `model_version` added to `comm` dispatch/return events. Re-run `run_sequential.sh --mode both --delays on --num-gpus 8 --delay-divisor 0.25 --max-runtime-s 900` (fluxtune only) to gather it. |
 | **fluxtune `sim_rate`<1 (compute-bound floor)** | At 0.5, headroom already adequate (sct D≥8s > JVP gpu ~3.5–5s, `phantom_skip=0`, `STUCK_EVICT=0`) — NOT the K-D38 D≈gpu collision. Residual = compute floor: P=10 JVP (10× sync) + ~8.9s unskippable aggregator eval + agg_goal=3 low GPU parallelism; sim already ~4× faster per commit (advance 79s vs 308s). | fluxtune | Real LLM-mobile trace (Next roots #1). Shrinking divisor (0.25/0.1) pushes the NUMBER >1 by doing fewer data_ids per vclock ceiling — baseline modeling knob (principle #3), not a parity fix. |
 | **#N (var-VALUE nondeterminism wall)** | Float-nondeterminism flips the `var<0.3` gate → cohort SET (async) / var VALUE (sync) diverge past a sensitive bin (onset n-scale-sensitive). Not a sim bug. | fwdllm, fluxtune (fwdllm_plus latent) | DISTRIBUTIONAL target beyond bin 1 already covers it; P0-2 (2-real-run diff) open only to bound jitter magnitude vs n. |
 | **#11** | Real-mode critical-path waste (`sleep(0.1)` MQTT-settle; one-grad-per-poll drain tail) — real-only, zero parity impact. | fwdllm, fwdllm_plus (real) | Deferred to a validated pass — needs a real run to touch (principle #8/#11c). |
 | **fwdllm `barrier_wait_s` overrun** (minor) | sim 2.5s > real 0.017s, fwdllm-only; drain-tail/spread PASS. | fwdllm | Not yet root-caused; low priority next to `sim_rate`'s 5.6× overall speedup. |
 
 ### Next roots — ranked (correctness before time; SHARED before per-baseline — principle #14)
-1. **#S1 fluxtune staleness fix — TOP (RESUME HERE).** Sim under-models grad staleness (0.218 vs real 1.14) → the
-   whole async cohort-SET divergence. Confirm `tres.version` is commit-time in the sim async path, then carry the
-   compute-time `version_key` (K-D39) through the SimReorderBuffer so `self._round − tres.version` matches real.
-   Flag-gated (default off). Verify at `--delay-divisor 0.5`: v2 gap collapses, staleness matches, cohort-SET
-   recovers. Open-issues #S1 has the full chain; diagnostic pair = `run_20260710_2242` (0.25/900s).
+1. **#S1 fluxtune staleness — TOP (RESUME HERE).** Sim under-models grad staleness (0.218 vs real 1.14) → the whole
+   async cohort-SET divergence — confirmed on telemetry, but the commit-time-stamping mechanism first suspected is
+   REFUTED (see #S1). New population-level telemetry landed (`dispatch_version_key`/`agg_version_key_at_commit` per
+   contributor, `version_bump_census` pool snapshot, `model_version` on `comm` events) — all keyed on the unified
+   `version_key` 2-tuple (K-D39/§M), not a bare model_version int. Open-issues #S1 has the full chain; diagnostic
+   pair = `run_20260710_2242` (0.25/900s); re-run needed with the new telemetry to find the fine-grained mechanism.
 2. **LLM-mobile runtime trace swap (principled).** Only after #S1: the papaya/fedbuff 4–18s trace is a modeling
    choice; a real mobile-LLM forward-grad trace would give honest headroom (`sim_rate`>1) AND set the delay regime
    the staleness fix must hold under. Pull fwdllm's codebase (believed to carry per-model/per-phone runtime numbers)
@@ -296,6 +304,17 @@ V1/V2 binned residual flat.
 16. **Do the right thing — no hacks.** Ask as many conceptual questions as it takes to understand the real↔sim
     divergence, but solve it at the root. A hack that moves a number without a correct mechanism is a regression in
     disguise — it will not close parity and it will mask the real bug. When unsure, stop and ask.
+17. **`version_key` is the ONLY version-identity vocabulary — enforce it everywhere, no legacy scalar path.**
+    Pre-K-D39, version/staleness/no-repeat identity was a bare `model_version` int in some places and an inconsistent
+    3-tuple in others; K-D39 unified it to one shared `version_key` property (2-tuple: base `(round, 0)`, fwdllm
+    `(model_version, iteration_per_data_id)`) across trainer + aggregator + selector, both async_cifar10 and fwdllm.
+    Any NEW code that compares/stamps a version must go through `version_key` (or explicitly document why it reduces
+    to one component, e.g. staleness's `model_version`-only diff — iteration isn't a "how many global updates
+    behind" axis, so dropping it there is a deliberate reduction, not a parallel legacy path). Do not add a
+    bare-scalar shortcut "for now" — it silently reintroduces the pre-K-D39 inconsistency and is easy to miss since
+    it type-checks fine. No backward-compatibility shim for the old scalar/3-tuple forms is needed or wanted.
+    #S1's diagnostic telemetry (`dispatch_version_key`/`agg_version_key_at_commit`/`version_bump_census`) audits
+    this directly by carrying the full tuple, not a reduction, end-to-end.
 
 **Open design decisions:** D2 (avail telemetry port — Phase 2); **D3 (variance-cadence × late/stale grads —
 ELEVATED to Phase 1: it IS the #S1 fluxtune root; the sim must reproduce real's grad staleness so the variance

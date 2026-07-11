@@ -516,7 +516,10 @@ class TestContributorIntervalsEmission:
             r = [e for e in events if e["event"] == "agg_round"][0]
             assert r["contributor_intervals"] == [
                 {"end": "t1", "dispatch_ts": None, "commit_ts": None,
-                 "processing_wall_ts": None}]
+                 "processing_wall_ts": None, "dispatch_model_version": None,
+                 "agg_model_version_at_commit": 5,
+                 "dispatch_version_key": None,
+                 "agg_version_key_at_commit": [5, 0]}]
         finally:
             telemetry.shutdown()
 
