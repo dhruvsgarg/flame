@@ -2,13 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Oort selector tests."""
 
+import json
 from datetime import timedelta
 
 import pytest
 
 from flame.selector.oort import OortSelector
 from flame.selector.async_oort import AsyncOortSelector
-from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION
+from flame.selector.properties import (
+    PROP_CLIENT_TASK_TRAIN_DURATION,
+    PROP_STAT_UTILITY,
+)
 
 
 @pytest.fixture
@@ -228,6 +232,82 @@ class TestAsyncRoundPreferredDuration:
         async_oort.round_threshold = 100.0
         pref = async_oort.calculate_round_preferred_duration(ends)
         assert pref.total_seconds() == 99999
+
+
+class TestAsyncOortSystemUtilTelemetry:
+    """AsyncOortSelector never emitted round_preferred_duration_s/round_threshold/
+    sys_util_mean/pref_binds -- sync oort.py had it, async didn't, so a real vs
+    sim divergence in the Oort speed-penalty (fluxtune: sim system_util pinned
+    at 1.0, real varies 0.05-1.0 and binds ~75% of rounds) couldn't be directly
+    observed, only inferred. Guards the ported telemetry (simulate_fwdllm.md
+    open issues, "fluxtune sim Oort speed-penalty never binds")."""
+
+    def test_selection_emits_pref_and_system_util_fields(
+        self, tmp_path, async_oort, make_ends
+    ):
+        from flame import telemetry
+        from flame.channel import (
+            KEY_CH_SELECT_REQUESTER, KEY_CH_STATE, VAL_CH_STATE_SEND,
+        )
+
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            async_oort.round_threshold = 30  # low percentile -> forces binding
+            durations = [8, 10, 14, 20, 22, 26, 28, 30, 32, 36]
+            ends = make_ends([f"t{i}" for i in range(len(durations))])
+            for (eid, e), d in zip(ends.items(), durations):
+                e.set_property(
+                    PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d)
+                )
+                # PROP_STAT_UTILITY is None -> fetch_statistical_utility routes
+                # the end to unexplored_end_ids instead of utility_list, and
+                # calculate_total_utility short-circuits on an empty
+                # utility_list BEFORE it ever recomputes round_preferred_duration
+                # -- must be set so this round takes the scored (exploitation)
+                # path at all.
+                e.set_property(PROP_STAT_UTILITY, 1.0)
+
+            channel_props = {
+                "round": 5,
+                KEY_CH_STATE: VAL_CH_STATE_SEND,
+                KEY_CH_SELECT_REQUESTER: "agg1",
+            }
+            # model_version=5 (non-zero) so this takes the scored path
+            # (calculate_total_utility -> calculate_round_preferred_duration),
+            # not the model_version==0 cold-start random branch.
+            async_oort.select(
+                ends, channel_props, trainer_unavail_list=[],
+                task_to_perform="train", agg_version_key=(5, 0),
+            )
+
+            events = [
+                json.loads(l)
+                for l in (tmp_path / "aggregator.jsonl").read_text().splitlines()
+            ]
+            sels = [e for e in events if e["event"] == "selection"]
+            assert len(sels) == 1
+            s = sels[0]
+
+            # round_preferred_duration_s must be the SAME sorted-percentile
+            # value TestAsyncRoundPreferredDuration already proves the pure
+            # function computes -- confirms the live select() path actually
+            # wires the computed pref into telemetry, not just leaves it None.
+            expected_pref = async_oort.calculate_round_preferred_duration(
+                ends
+            ).total_seconds()
+            assert s["round_preferred_duration_s"] == expected_pref
+            assert s["round_threshold"] == 30
+
+            # With pref well below the max duration (30th percentile of
+            # [8..36] ~= 20s) at least one selected end should be penalized --
+            # if this is ever None/0 again in a live run, sys_util_mean/
+            # pref_binds will catch a "penalty never binds" regression exactly
+            # like fluxtune's currently-open bug.
+            assert s["sys_util_mean"] is not None
+            assert s["pref_binds"] is True
+            assert 0.0 < s["frac_penalized"] <= 1.0
+        finally:
+            telemetry.shutdown()
 
 
 class TestRewardNormalization:
