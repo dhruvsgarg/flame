@@ -38,7 +38,7 @@ class _FakeChannel:
         self._removed = set()
         self._unavail = set()
 
-    def ends(self, state, task_to_perform):
+    def ends(self, state, task_to_perform, agg_version_key=None, data_id=None):
         self.calls += 1
         return self._selections[min(self.calls - 1, len(self._selections) - 1)]
 
@@ -61,8 +61,15 @@ class _FakeAggregator:
         self._round_selected_ends_round = None
         self._round_cache_activity_ts = {}
         self._round = 0
+        self._model_version = 0
+        self.iteration_per_data_id = 0
+        self.data_id = 0
         if agg_goal is not None:
             self._agg_goal = agg_goal
+
+    @property
+    def version_key(self):
+        return (self._model_version, self.iteration_per_data_id)
 
     select = TopAggregator._select_ends_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)

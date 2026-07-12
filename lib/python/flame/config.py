@@ -285,6 +285,15 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_model_eval_time: t.Optional[bool] = Field(
         alias="simModelEvalTime", default=False
     )
+    # simModelAggComputeTime (#15): charge the measured aggregate()-call wall to
+    # the vclock on EVERY agg-goal cycle (pass or fail), not just committed ones
+    # -- aggregate() runs real GPU-side gradient-merge/server-step math every
+    # cycle, mode-invariant cost (~1.4s/cycle), but only eval_s (above) was ever
+    # folded. Uncredited, this compounds over every cycle (more #N-driven
+    # variance-gate retries -> more uncredited wall).
+    sim_model_agg_compute_time: t.Optional[bool] = Field(
+        alias="simModelAggComputeTime", default=False
+    )
     sim_straggler_spread_s: t.Optional[float] = Field(
         alias="simStragglerSpreadS", default=0.0
     )

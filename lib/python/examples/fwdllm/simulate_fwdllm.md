@@ -69,14 +69,23 @@ divergence onset is iter 6 of `data_id=0` — matches the 900s validation smoke 
 pre-fix); `staleness` (U3) now **PASSES for all 3 baselines**. Residual SET drift past iter 6 is the
 expected #N tail (K-D40 already predicted this), not a regression.
 
-**New, not yet root-caused — fwdllm_plus sim `sim_rate` is a SLOWDOWN (0.906)**, a regression from the
-previously-banked 5.77 healthy value; fwdllm (same sync family, per-round reselection) stays healthy at
-5.571 on the identical config. Traced to `selection_detail`: fwdllm_plus's per-iteration reselect picks a
-smaller cohort in sim (mean 1.49) than real (mean 1.91), inflating `per_round_advance` wall time (sim
-137.3s vs real 94.0s, +46%). Distinct from the closed #7 eligible-count-gap (§G) — that rung
-(`eligibility`) now PASSES; this is a new gap specific to the *per-iteration* reselect path. **Next
-(RESUME HERE):** root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real —
-check the sim availability/eligibility filter on each reselect call, not just initial dispatch.
+**fwdllm_plus sim `sim_rate` is a SLOWDOWN (0.906)**, a regression from the previously-banked 5.77 healthy
+value; fwdllm (same sync family, per-round reselection) stays healthy at 5.571 on the identical config.
+Traced to `selection_detail`: fwdllm_plus's per-iteration reselect picks a smaller cohort in sim (mean
+1.49) than real (mean 1.91), inflating `per_round_advance` wall time (sim 137.3s vs real 94.0s, +46%).
+Distinct from the closed #7 eligible-count-gap (§G) — that rung (`eligibility`) now PASSES; this is a new
+gap specific to the *per-iteration* reselect path. **Ruled out (2026-07-12, telemetry-only, banked
+`183954`/`201148` pair):** NOT a selector-filter bug — `num_chosen == num_eligible` on every one of 697
+sim / 338 real SEND-state selection calls (the `random` selector always exhausts whatever's eligible; no
+sampling shortfall). The gap is that sim spends a higher fraction of its (more frequent) reselect calls
+seeing ZERO eligible candidates (76% sim vs 68% real) — i.e. trainers sit "busy" longer relative to how
+often the loop re-polls. **Diagnostic gap CLOSED (K-D42, §G):** the SEND-reselect call site never threaded
+`agg_version_key`/`data_id` through `channel.ends()`, so no selection event could be correlated back to
+its (data_id, iteration) — every investigation had to cross-reference wall timestamps by hand. Fixed; the
+next sim run's selection telemetry carries `data_id`/`iteration_per_data_id` natively, and
+`logical_parity.py`'s new cohort-size axis (§ Logical-parity check) will localize the busy-duration
+divergence directly. **Next (RESUME HERE):** re-run fwdllm_plus sim+real and read the cohort-size axis
+output to find WHERE (which data_id/iteration) the zero-eligible skew onsets.
 
 fluxtune's two structural blockers found on the last full-length run are now CLOSED (§G): the
 `_real_intrinsic_clock` async-cycle-overlap checker artifact (was inflating `total_commits`/
@@ -91,8 +100,27 @@ closes with more samples. `convergence` improved further as a side effect (less-
 accuracy-trajectory match): `avg_accuracy_diff` **0.0739→0.0298**, now clearly passing. The
 `total_commits`/`throughput`/etc. family is unchanged (~17–24% rel_diff, as expected — governed by the
 already-separately-validated intrinsic-clock fix, not this one). fluxtune `sim_rate` at the official
-0.5-divisor/5400s basis is **0.886 (SLOWDOWN, confirmed <1)** — the compute-bound-floor explanation (open
-issues) stands.
+0.5-divisor/5400s basis is **0.886 (SLOWDOWN, confirmed <1)**.
+
+**Compute-bound-floor explanation for `sim_rate<1` REFUTED (2026-07-12, operator challenge + telemetry
+confirmation).** The official runs use `--delay-divisor 0.5` (and a 0.25 diagnostic), i.e. D ≫ trainer JVP
+gpu-seconds by design — a genuine compute floor on the TRAINER side would need D≈gpu, which this basis
+explicitly avoids. Decomposed the banked `182051`/`164858` sim/real pair by `step_timing` function:
+`_process_aggregation_goal_met` (2142.8s sim / 1578.4s real) and its nested `aggregate()` call (1393.9s /
+985.4s) are essentially mode-invariant PER CALL (2.23s/2.21s, 1.45s/1.38s mean) — genuine shared compute,
+not a real-transport artifact — but `sim_send_ts` is anchored purely on `self._vclock.now`, and the vclock
+was only ever explicitly advanced for `eval_s` (line ~1894, itself config-gated). Nothing credited
+`aggregate()`'s own real wall cost. Net: `_process_aggregation_goal_met` minus its nested `eval_model()`
+portion ≈ **1598.4s of sim's 6098s wall (26%) was uncredited real compute** (real: 1137.0s of 5419s,
+21%) — a gap (461s) that alone accounts for the majority of the total sim/real wall gap (679s), and
+compounds with every extra #N-driven variance-gate retry (962 sim cycles vs 715 real for this pair, since
+every cycle pays this cost whether or not the variance gate passes). This IS the `aggregation_compute_wall`
+DIAG rung's own docstring hypothesis (`checks.py`) and Next-roots #5's deferred item, now measured rather
+than assumed. **FIXED (K-D41, §G):** `sim_model_agg_compute_time` config flag (mirrors the existing
+`sim_model_eval_time` pattern) folds the measured `aggregate()` wall into the vclock on every cycle, pass
+or fail; enabled in all 3 sim yamls. Config-gated OFF = byte-identical; pytest-guarded
+(`TestAggComputeOnVclock15`). **Not yet validated by a run** — next sim run should show `sim_rate` closer
+to/above 1 if this was the dominant driver; the residual (if any) would then isolate whatever's left.
 
 **NEW BLOCKER (2026-07-12, unresolved) — real-mode fluxtune runs hanging, 2 consecutive incidents.**
 Both on the same real node (sim node unaffected — 10 concurrent `select()` calls completed clean on sim
@@ -129,8 +157,8 @@ Latest banked pairs (`run_sequential.sh --mode both --delays on --num-gpus 8 --d
 | baseline | sim `sim_rate` | sim wall / real wall | verdict |
 |---|---|---|---|
 | **fwdllm** (sync) | **5.57** ✓ | 969s / ~5422s | healthy; 5.6× wall speedup |
-| **fwdllm_plus** (sync) | **0.91** ✗ **NEW REGRESSION** | 5931s / ~5455s | was 5.77 healthy — sim now SLOWER than real wall; root = per-iteration reselect cohort-size gap (open issues, top priority) |
-| **fluxtune** (async) | **0.89** ✗ (confirmed <1) | 6098s / ~5419s | compute-bound floor confirmed at official 0.5/5400s basis (open issues); cohort-SET divergence onset iter 6 matches #S1 post-fix validation exactly |
+| **fwdllm_plus** (sync) | **0.91** ✗ **NEW REGRESSION** | 5931s / ~5455s | was 5.77 healthy — sim now SLOWER than real wall; NOT a selector bug (chosen==eligible always, §A); root = busy-duration/poll-cadence divergence, diagnostic gap closed (K-D42), awaiting re-run |
+| **fluxtune** (async) | **0.89** ✗ (confirmed <1) | 6098s / ~5419s | compute-floor explanation REFUTED (§A) — root = uncredited `aggregate()` wall on the vclock; FIXED (K-D41), awaiting re-run; cohort-SET divergence onset iter 6 matches #S1 post-fix validation exactly |
 
 ### Parity scoreboard (checker on the pairs above; `expt_scripts/run_parity.py --yes`)
 
@@ -174,10 +202,24 @@ same aggregations/rollbacks — differing ONLY in wall-clock. **Scope to the fir
 ### Logical-parity check (TIME-STRIPPED, all available bins) — CURRENT REFERENCE
 Tool: `expt_scripts/logical_parity.py [--max-bin N]` — diffs the `agg_round` event stream (data_id, iteration,
 receive-ordered contributors, variance decision) real vs sim with every timestamp removed. Real receive-order is
-DETERMINISTIC in both real and sim by design (operator-confirmed) → exact match is the correct target.
+DETERMINISTIC in both real and sim by design (operator-confirmed) → exact match is the correct target. `--max-bin`
+already generalizes to a sweep (e.g. `--max-bin 15`) to see WHERE a divergence onsets/grows/plateaus, not just
+whether bin ≤1 passes — no code change needed for that, just a wider invocation on a longer run.
+
+**Cohort-SIZE axis added (2026-07-12).** The receive-SET/cadence checks above answer "did the sim commit the
+same trainers in the same cadence" — they do NOT check per-selection-call cohort *size* (num_eligible/num_chosen).
+A selector that always exhausts its eligible pool (fwdllm's `random`) can pass every receive-SET/cadence check
+at bin ≤1 while still diverging on how MANY trainers were eligible at each reselect call — which is exactly what
+happened: fwdllm_plus's bin ≤1 run showed **LOGICAL PARITY** below even though the `sim_rate` regression (§A) is
+real and was only caught later by the aggregate `selection_detail` rung after full-length telemetry archaeology.
+The finest-grained check available MISSED a live regression because its axis (SET/cadence) wasn't the one that
+regressed (SIZE). `logical_parity.py` now also diffs `selection` events per (data_id, iteration) — see
+`_selection_trace`/`_cmp_cohort_size` — using the data_id/iteration telemetry K-D42 (§G) just wired onto the
+SEND-reselect call path. SKIPs cleanly for baselines with no per-iteration reselect concept (fluxtune).
 
 Default scope is bin ≤1 (STRATEGY's first-data-bin target). Numbers below from the `run_20260711_1820`→`2011`
-full-length (~5400s, 0.5-divisor) sim pairs — `expt_scripts/logical_parity.py`.
+full-length (~5400s, 0.5-divisor) sim pairs — `expt_scripts/logical_parity.py`. (Predate K-D42; the cohort-size
+axis has no data for these older runs — re-run to populate it.)
 
 | baseline | receive-SET | cadence | verdict |
 |---|---|---|---|
@@ -203,10 +245,10 @@ refuted "async #N" framing.
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
 | **fluxtune real-mode MQTT hang — 2 consecutive incidents, unresolved** | See §A "NEW BLOCKER" for full diagnostic detail. Not caused by either landed fix (confirmed 3 ways). Leading hypothesis: node-level resource/broker-session state, given task_id/trainer client IDs are identical across every run (not randomized), and both hangs happened within ~30 min on the same node. | fluxtune (real only) | **TOP priority — RESUME HERE.** Check live process/GPU state (`ps`, `nvidia-smi`) on the real node for leftover processes from hang #1 before relaunching hang #2's attempt; if clean, relaunch real ALONE (not alongside any other run on that node) and confirm it clears join within ~11s (healthy baseline) before declaring it fixed. **Blocks all further fluxtune validation.** |
-| **fwdllm_plus `sim_rate` SLOWDOWN (0.906) — NEW regression** | First full-length run where sim is SLOWER than real wall for this baseline (was 5.77 healthy on the prior 0.5/5400s basis; fwdllm, same sync family, stays 5.571 healthy on the identical config). `per_round_advance`: sim 137.3s vs real 94.0s (+46%). `selection_detail`: sim's per-iteration reselect picks a smaller cohort (mean 1.49) than real (mean 1.91), `rel_diff_chosen`=0.218 vs tol 0.05. Distinct from the closed #7 eligible-count-gap (§G) — `eligibility` itself now PASSES; this is a new gap specific to the *per-iteration* reselect path (fwdllm reselects per-round only, so it can't surface this). | fwdllm_plus (sync) | Parked behind the real-run hang above (may need fresh real runs on the same infra). Root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real: check the sim availability/eligibility filter on each reselect call (not just initial dispatch) for a stale or under-refreshed candidate pool. |
+| **fwdllm_plus `sim_rate` SLOWDOWN (0.906) — NEW regression** | First full-length run where sim is SLOWER than real wall for this baseline (was 5.77 healthy on the prior 0.5/5400s basis; fwdllm, same sync family, stays 5.571 healthy on the identical config). `per_round_advance`: sim 137.3s vs real 94.0s (+46%). `selection_detail`: sim's per-iteration reselect picks a smaller cohort (mean 1.49) than real (mean 1.91), `rel_diff_chosen`=0.218 vs tol 0.05. **Ruled out:** a selector/eligibility-filter bug — `num_chosen==num_eligible` on every SEND-state call both modes (697 sim / 338 real); sim just sees zero-eligible 76% of calls vs real's 68%. Diagnostic gap (no data_id/iteration on selection telemetry for this call path) CLOSED, K-D42. | fwdllm_plus (sync) | Parked behind the real-run hang above (may need fresh real runs on the same infra). Re-run with the K-D42 telemetry fix live, then read `logical_parity.py`'s new cohort-size axis to localize WHERE the busy-duration/poll-cadence divergence onsets. |
 | **fluxtune `preferred_duration` residual gap (0.214 vs 0.2 tol)** | Live-validated fix (§A) closed 95% of the gap (0.812→0.214) but hasn't crossed the tolerance line yet — plausibly small-N noise at 900s (only 60 real / ~220 sim binding-eligible rounds). | fluxtune | Re-check at full 5400s length once a clean same-session real+sim pair is available (blocked on the MQTT hang above). |
 | **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` residual gap** | Checker artifact FIXED (§G) — was `_real_intrinsic_clock` cumulative-summing overlapping async cycles, confirmed on the 900s smoke: `total_commits` `rel_diff` 0.857→0.167, `throughput` 0.814→0.235, `overhead_residual`/`per_round_advance` ~0.81→~0.20 (all from the SAME single fix, reconfirmed identical on a second independent sim run). Still fails the 5% tol at this small sample (n_real_commits=5), but the magnitude now matches the ~19% gap hand-derived from the full 5400s run. | fluxtune (async only) | Likely small-N noise at 900s (principle: re-check at full 5400s length); if the ~19% residual persists at length, that's a genuine (much smaller) sim/real commit-rate gap worth a fresh look, not a checker bug. |
-| **fluxtune `sim_rate`<1 (compute-bound floor)** | **Confirmed at the official 0.5-divisor/5400s basis: 0.886, still <1** (resolves the prior "re-check at 0.5/5400s" pending note; the 0.25/900s smoke's 1.77 was a diagnostic-divisor artifact, not comparable). Headroom already adequate (sct D≥8s > JVP gpu ~3.5–5s) — NOT the K-D38 D≈gpu collision. Residual = compute floor: P=10 JVP (10× sync) + ~8.9s unskippable aggregator eval + agg_goal=3 low GPU parallelism. | fluxtune | Real LLM-mobile trace (Next roots #2). Shrinking divisor (0.25/0.1) pushes the NUMBER >1 by doing fewer data_ids per vclock ceiling — baseline modeling knob (principle #3), not a parity fix. |
+| **fluxtune `sim_rate`<1 — FIXED, awaiting validation run** | Confirmed at the official 0.5-divisor/5400s basis: 0.886. **Compute-bound-floor framing REFUTED** (§A, 2026-07-12): D≫gpu by construction at this basis, so a trainer-side compute floor can't be the driver. Root = `aggregate()`'s genuine per-cycle real wall (~1.4s/cycle × 962 cycles) never credited to the vclock (only `eval_s` was). Fixed via `sim_model_agg_compute_time` fold (K-D41, §G), enabled in all 3 sim yamls. | fluxtune | Re-run to confirm `sim_rate` moves toward/above 1; if a residual remains, decompose further with the same `step_timing`-by-function method (telemetry-only, no new mechanism needed to look). |
 | **fluxtune `step_timing_breakdown` residual `_force_cuda_memory_cleanup`** (minor) | `train_with_data_id`'s wrapper-exemption fix (§G) closed the dominant gap; this KS=0.394 vs 0.25 tol residual remains, but real/sim means differ by only 0.01s (0.20 vs 0.19s) — looks like small-N distribution-shape noise (K-D37 class), not a genuine divergence. | fluxtune | Not yet root-caused; low priority — re-check if it starts moving means, not just KS. |
 | **#N (var-VALUE nondeterminism wall)** | Float-nondeterminism flips the `var<0.3` gate → cohort SET (async) / var VALUE (sync) diverge past a sensitive bin (onset n-scale-sensitive). Not a sim bug. | fwdllm, fluxtune (fwdllm_plus latent) | DISTRIBUTIONAL target beyond bin 1 already covers it; P0-2 (2-real-run diff) open only to bound jitter magnitude vs n. |
 | **#11** | Real-mode critical-path waste (`sleep(0.1)` MQTT-settle; one-grad-per-poll drain tail) — real-only, zero parity impact. | fwdllm, fwdllm_plus (real) | Deferred to a validated pass — needs a real run to touch (principle #8/#11c). |
@@ -227,17 +269,20 @@ fluxtune without a working real run.
    confirm the `total_commits` family at full 5400s length.** The current validation is a mixed-timestamp
    pairing (good enough to prove the fixes work, not to close the residual ~0.014 `preferred_duration` gap
    or check whether the ~19% `total_commits` residual holds/shrinks at length).
-3. **fwdllm_plus `sim_rate` SLOWDOWN regression.** New at the full-length re-baseline (open issues);
-   root-cause the per-iteration reselect cohort-size gap — a previously-healthy baseline regressing is a
-   correctness signal, not a throughput nit (principle #14). May also need fresh real runs on the same
-   infra as #1 above, in which case resolve #1 first.
+3. **fwdllm_plus `sim_rate` SLOWDOWN regression + fluxtune `sim_rate`<1 — both have CODE FIXES landed,
+   NEITHER validated by a run yet.** fluxtune: `sim_model_agg_compute_time` vclock fold (K-D41) — the
+   compute-bound-floor framing was refuted (§A), root was uncredited `aggregate()` wall. fwdllm_plus: the
+   selection-telemetry data_id/iteration gap is closed (K-D42) so the busy-duration divergence is now
+   localizable; the mechanism itself isn't fixed yet, needs the re-run's `logical_parity.py` cohort-size
+   axis output first. May need fresh real runs on the same infra as #1 above, in which case resolve #1
+   first. A previously-healthy baseline regressing is a correctness signal, not a throughput nit
+   (principle #14).
 4. **LLM-mobile runtime trace swap (principled).** The papaya/fedbuff 4–18s trace is a modeling choice; a real
    mobile-LLM forward-grad trace would give honest headroom (`sim_rate`>1) AND set the delay regime the
    staleness fix must hold under. Pull fwdllm's codebase (believed to carry per-model/per-phone runtime numbers)
    and replace the delay distribution. Divisor tuning (0.25/0.1) is NOT this — it's a diagnostic knob (principle #3).
-5. **`sim_model_agg_compute_time` vclock fold — deferred** (re-measure overlap now that the re-baseline landed; #15).
-6. **fwdllm `barrier_wait_s` overrun (minor).** Root-cause only if it starts moving `sim_rate` materially.
-7. Then C1/C2 convergence (distributional target) at matched `data_id` per baseline → gate to Phase 2.
+5. **fwdllm `barrier_wait_s` overrun (minor).** Root-cause only if it starts moving `sim_rate` materially.
+6. Then C1/C2 convergence (distributional target) at matched `data_id` per baseline → gate to Phase 2.
 
 ### SKIP audit (19–21 skips; ~17 legit)
 Legit at Phase-1 syn_0 + `random` selector: 7 availability ground-truth rungs + 4 delivery/withheld (Phase-2
@@ -397,6 +442,40 @@ cost, K-D3). D1/D3/D6 resolved (§K) — D3 ("sim must reproduce real's grad sta
 ---
 
 ## §G  Fixes landed (what worked — ≤20-word problem + ≤20-word fix; do not redo)
+- **K-D43 G1 grad-norm rung permanently SKIPping — no `grad_norm` telemetry existed.** Assumed to need
+  trainer-side message-schema changes; on inspection, the aggregator already receives each contributor's
+  raw gradient (`trainer_grad`, dict name→tensor) in `aggregate_grads_from_trainers` before the fedavg
+  merge — no trainer-side change needed. Fix: `_flat_grad_norm` (mirrors `_cosine_flat`'s style) computes
+  the pre-rate-scaling L2 norm there; accumulated per-cycle in `self._cycle_grad_norms` (same lifecycle as
+  `_per_agg_trainer_list`: init, append per-contribution, reset every cycle in `_process_aggregation_goal_met`);
+  snapshotted and emitted as `agg_round.grad_norm` (a list). Turns G1 from a permanent SKIP into an actual
+  check once a run lands. Guards: `test_fwdllm_grad_aware_agg.py` (pure-function primitives),
+  `test_fwdllm_agg_telemetry.py::test_grad_norm_emitted_and_resets_next_cycle`. Not yet run-validated.
+- **#15 fluxtune `sim_rate<1` — `aggregate()`'s real per-cycle wall never credited to the vclock (K-D41).**
+  Compute-bound-floor framing refuted (D≫gpu at the official 0.5-divisor basis, ruling out a trainer-side
+  floor). `_process_aggregation_goal_met`/`aggregate()` cost ~2.2s/1.4s per cycle, mode-invariant, but only
+  `eval_s` was ever folded into the vclock (`sim_send_ts` anchors on `self._vclock.now`). Measured
+  uncredited residual ≈1598s of sim's 6098s wall (26%) on the banked pair — bigger than the whole sim/real
+  wall gap. Fix: `sim_model_agg_compute_time` config flag (mirrors `sim_model_eval_time`) folds the measured
+  `aggregate()` wall into the vclock every cycle, pass or fail; default OFF = byte-identical, enabled in all
+  3 sim yamls. Guard `tests/mode/test_fwdllm_sct_model.py::TestAggComputeOnVclock15`. Not yet run-validated.
+  **Diagnostic added:** `aggregation_compute_wall_parity` (checks.py) now also reports
+  `vclock_fold_diagnostic` — cumulative `aggregate_fedavg_s` as a fraction of total wall, both modes
+  (`{real,sim}_total_aggregate_fedavg_s` / `{real,sim}_total_wall_s` / `{real,sim}_uncredited_fraction`) —
+  so the next run shows the fold's coverage as one number instead of per-cycle means. Read
+  `sim_uncredited_fraction` on a FLAG-OFF run to size the gap before landing; on a flag-ON run it's no
+  longer "uncredited" (the fold already spent it) — the fold-worked signal is `sim_rate` itself moving, not
+  this fraction shrinking (folding credits the vclock, it doesn't change wall). Guard
+  `tests/mode/test_parity_checks.py::TestVclockFoldDiagnostic`.
+- **K-D42 fwdllm_plus reselect-telemetry gap — SEND-reselect call never threaded `agg_version_key`/`data_id`.**
+  `_select_ends_respecting_reselect_gate`'s `channel.ends()` call (unlike the async distribute path) omitted
+  both kwargs, so no selection event could be placed on the (data_id, iteration) axis — blocked localizing
+  the fwdllm_plus `sim_rate` regression below the aggregate `selection_detail` rung. Also fixed a dead
+  extraction bug in `random.py`: it sniffed a `len(agg_version_key)==3` tuple `(model_version, data_id,
+  iteration)`, a shape no caller has produced since K-D39 unified `version_key` to the 2-tuple
+  `(model_version, iteration)` — the check silently never fired. Fix: thread `data_id` as its own
+  `channel.ends()` kwarg (data_id is deliberately outside `version_key`, §M) and fix `random.py` to parse
+  the real 2-tuple. Guards `tests/selector/test_random_selection_telemetry.py`. Not yet run-validated.
 - **`_real_intrinsic_clock` async-cycle-overlap checker artifact (`total_commits`/`terminal_state`/
   `throughput`/`overhead_residual`/`per_round_advance`).** Cumulative-summed each cycle's own
   `intrinsic_span_s` as if cycles ran sequentially — correct for sync (one round in flight), but
@@ -633,6 +712,17 @@ cost, K-D3). D1/D3/D6 resolved (§K) — D3 ("sim must reproduce real's grad sta
   abandon timeout became the configurable `send_timeout_wait_s` (default 90 = byte-identical, fluxtune sets
   300 — its rounds run up to ~108s incl. connect warmup, past the old constant tuned for felix's shorter
   CNN/speech rounds). Validated 2026-07-11 (§G, §A) — `staleness` rung passes, iters-to-clear-bin-0 exact.
+- **K-D41** — fluxtune `sim_rate<1` REVISED root (supersedes K-D38's compute-floor framing at the official
+  0.5-divisor basis): `aggregate()`'s genuine per-cycle real wall was never folded into the vclock (only
+  `eval_s` was). Fix: `sim_model_agg_compute_time` flag, same pattern as `sim_model_eval_time`. Not yet
+  run-validated.
+- **K-D42** — fwdllm_plus SEND-reselect call omitted `agg_version_key`/`data_id` from `channel.ends()`,
+  and `random.py`'s extraction sniffed a 3-tuple shape dead since K-D39's 2-tuple `version_key`
+  unification (silently never fired for any real caller). Fix: thread `data_id` as its own kwarg through
+  `channel.ends()`; `random.py` reads the correct 2-tuple. Unblocks localizing the fwdllm_plus `sim_rate`
+  regression via `logical_parity.py`'s new cohort-size axis. Not yet run-validated.
+- **K-D43** — G1 grad-norm rung wired (§G above); no trainer-side change needed, contrary to the initial
+  read. Not yet run-validated.
 
 *Retired/superseded anchors (kept only as pointers): K-D6 (→K-D12), K-D7/K-D8/K-D10/K-D16/K-D18/K-D19/K-D20/K-D23
 — landed scaffolding or corrections, folded into §G/§H; see git history for detail.*

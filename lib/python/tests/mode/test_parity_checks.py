@@ -1684,3 +1684,56 @@ class TestTimingOverrun:
         tr = {"a": {"trainer_round": [_tr_round(False)]}}
         res = pc.run_all_parity(_agg(), _agg(), tr, tr)
         assert "timing_overrun" in res
+
+
+def _agg_wall_round(agg_s, eval_s, wall_elapsed_s):
+    return {"event": "agg_round", "aggregate_fedavg_s": agg_s,
+            "eval_s": eval_s, "wall_elapsed_s": wall_elapsed_s}
+
+
+class TestVclockFoldDiagnostic:
+    """K-D41: `aggregation_compute_wall_parity` reports the CUMULATIVE
+    `aggregate_fedavg_s` as a fraction of total wall, both modes -- the direct
+    measurement of how much real compute this rung's per-cycle check covers,
+    at a glance instead of only per-cycle means. DIAG tier (never gates the
+    scoreboard verdict under --strict), but `ok` is still a real per-cycle
+    equality read -- these tests don't assert on it, only on the new dict."""
+
+    def test_reports_cumulative_totals_and_fractions(self):
+        # sim: 3 cycles of 2.0s aggregate() each, wall ends at 100s -> 6/100.
+        real = _agg(agg_rounds=[
+            _agg_wall_round(1.5, 8.0, 30.0),
+            _agg_wall_round(1.5, 8.0, 60.0),
+            _agg_wall_round(1.5, 8.0, 90.0),
+        ])
+        sim = _agg(agg_rounds=[
+            _agg_wall_round(2.0, 8.0, 33.0),
+            _agg_wall_round(2.0, 8.0, 66.0),
+            _agg_wall_round(2.0, 8.0, 100.0),
+        ])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        diag = r["vclock_fold_diagnostic"]
+        assert diag["sim_total_aggregate_fedavg_s"] == pytest.approx(6.0)
+        assert diag["real_total_aggregate_fedavg_s"] == pytest.approx(4.5)
+        assert diag["sim_total_wall_s"] == pytest.approx(100.0)
+        assert diag["real_total_wall_s"] == pytest.approx(90.0)
+        assert diag["sim_uncredited_fraction"] == pytest.approx(0.06)
+        assert diag["real_uncredited_fraction"] == pytest.approx(0.05)
+
+    def test_absent_when_wall_telemetry_missing(self):
+        # aggregate_fedavg_s present but no wall_elapsed_s -> fraction is None,
+        # not a crash or a fabricated 0.
+        real = _agg(agg_rounds=[
+            {"event": "agg_round", "aggregate_fedavg_s": 1.0, "eval_s": 1.0}])
+        sim = _agg(agg_rounds=[
+            {"event": "agg_round", "aggregate_fedavg_s": 1.0, "eval_s": 1.0}])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        diag = r["vclock_fold_diagnostic"]
+        assert diag["sim_uncredited_fraction"] is None
+        assert diag["real_uncredited_fraction"] is None
+        assert diag["sim_total_aggregate_fedavg_s"] == pytest.approx(1.0)
+
+    def test_skip_status_has_no_fold_diagnostic_key(self):
+        r = pc.aggregation_compute_wall_parity(_agg(), _agg())
+        assert r.get("status") == "SKIP"
+        assert "vclock_fold_diagnostic" not in r

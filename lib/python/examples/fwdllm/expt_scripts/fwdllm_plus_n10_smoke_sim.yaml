@@ -86,6 +86,10 @@ experiments:
           # Phase 4c (B1, #6): charge the measured server eval_s onto the vclock
           # so it models real wall (self-calibrating). Delay-independent.
           sim_model_eval_time: true
+          # #15: also charge the measured aggregate()-call wall (every cycle,
+          # not just committed ones) -- was the dominant uncredited real-wall
+          # driver of sim_rate<1, not a trainer-side compute floor.
+          sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform

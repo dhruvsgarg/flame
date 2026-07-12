@@ -4385,8 +4385,10 @@ def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
 
     Gradient values are mode-invariant given identical input + perturbation seed,
     so G1 should be ~0; a FAIL means a perturbation seed/order leaked across
-    modes. SKIP unless a per-update `grad_norm` field is emitted — trainer-side
-    per-update emit deferred, logged not silently dropped.
+    modes. Emitted aggregator-side (`agg_round.grad_norm`, a per-cycle list) --
+    the raw pre-rate-scaling L2 norm of each contributor's gradient, computed in
+    `aggregate_grads_from_trainers` before the fedavg merge (fwdllm K-D43,
+    landed 2026-07-12). SKIP only for non-fwdllm baselines / pre-fix runs.
     """
     def _norms(agg):
         out = []
@@ -4666,6 +4668,18 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
     residual, which can mask a per-cycle divergence like #15's residual (a)
     (uncredited `aggregate()` compute). Promote to MECHANISM once proven
     noise-free on a real run.
+
+    Also reports `vclock_fold_diagnostic` (K-D41): the CUMULATIVE
+    `aggregate_fedavg_s` total as a fraction of total wall, both modes. This is
+    the direct measurement `sim_model_agg_compute_time` (§15) either fixed or
+    didn't -- `sim_uncredited_fraction` is only meaningful when the fold flag
+    is OFF (it's the fraction of sim wall this rung's per-cycle EQUALITY check
+    shows was genuine compute with no vclock credit); with the flag ON, sim's
+    OWN `sim_rate` moving toward/above 1 is the fold-worked signal, not this
+    fraction shrinking (folding credits the vclock, it doesn't change wall).
+    Kept two-sided/symmetric (real's fraction is a reference point, not a
+    target -- real has no vclock to under-credit) so a future non-fwdllm
+    caller isn't assuming a fwdllm-specific vclock exists.
     """
     def _vals(agg, field):
         return [e[field] for e in agg["agg_rounds"]
@@ -4691,10 +4705,47 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
     if all(c.get("status") == "SKIP" for c in components.values()):
         return {"ok": True, "tier": "DIAG", "status": "SKIP",
                 "note": "no aggregate()/eval() wall telemetry", "components": components}
+
+    fold_diag = _vclock_fold_diagnostic(real, sim)
     return {
         "ok": all(c["ok"] for c in components.values()),
         "tier": "DIAG",
         "components": components,
+        "vclock_fold_diagnostic": fold_diag,
+    }
+
+
+def _vclock_fold_diagnostic(real: dict, sim: dict) -> dict:
+    """K-D41: cumulative `aggregate_fedavg_s` as a fraction of total wall, both
+    modes -- how much real-compute wall this rung's per-cycle EQUALITY check
+    covers, made visible as a run-level number instead of only per-cycle means.
+    `wall_elapsed_s` is cumulative-since-run-start on `agg_round` (not a
+    per-cycle delta); take the max observed as this run's total wall."""
+    def _total(agg, field):
+        rows = [e for e in agg.get("agg_rounds", []) if e.get("event") == "agg_round"]
+        vals = [e[field] for e in rows if e.get(field) is not None]
+        return sum(vals) if vals else None
+
+    def _wall_total(agg):
+        rows = [e for e in agg.get("agg_rounds", []) if e.get("event") == "agg_round"]
+        waits = [e["wall_elapsed_s"] for e in rows if e.get("wall_elapsed_s") is not None]
+        return max(waits) if waits else None
+
+    r_agg_total = _total(real, "aggregate_fedavg_s")
+    s_agg_total = _total(sim, "aggregate_fedavg_s")
+    r_wall = _wall_total(real)
+    s_wall = _wall_total(sim)
+
+    def _frac(total, wall):
+        return round(total / wall, 3) if (total is not None and wall) else None
+
+    return {
+        "real_total_aggregate_fedavg_s": round(r_agg_total, 1) if r_agg_total is not None else None,
+        "sim_total_aggregate_fedavg_s": round(s_agg_total, 1) if s_agg_total is not None else None,
+        "real_total_wall_s": round(r_wall, 1) if r_wall is not None else None,
+        "sim_total_wall_s": round(s_wall, 1) if s_wall is not None else None,
+        "real_uncredited_fraction": _frac(r_agg_total, r_wall),
+        "sim_uncredited_fraction": _frac(s_agg_total, s_wall),
     }
 
 

@@ -43,6 +43,7 @@ class _FakeAggregator:
         self._agg_goal = 2
         self._agg_goal_cnt = 2
         self._per_agg_trainer_list = []
+        self._cycle_grad_norms = []
         self._model_version_unique_trainers = set()
         self._model_version_trainer_stats = {
             "train_duration": [],

@@ -191,12 +191,18 @@ class Channel(object):
         task_to_perform: str = "train",
         agg_version_key: tuple = None,  # (model_version, iteration) -- shared vocabulary (§M)
         trainer_version_keys: dict[str, tuple] = None,
+        data_id: int = None,
     ) -> list[str]:
         """Return a list of end ids.
 
         Args:
             agg_version_key: Aggregator version_key
             trainer_version_keys: Map of trainer_id to their version_key
+            data_id: fwdllm's committed-data-bin progress axis. Deliberately NOT
+                part of version_key (§M) -- version_key's model_version already
+                identifies it 1:1, but callers that want it on selection
+                telemetry (progress_key() plotting, logical_parity.py's cohort-
+                size axis) must pass it explicitly.
         """
         logger.debug(
             f"ends() for channel name: {self._name}, "
@@ -225,6 +231,7 @@ class Channel(object):
                     task_to_perform=task_to_perform,
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
+                    data_id=data_id,
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
@@ -237,6 +244,7 @@ class Channel(object):
                     task_to_perform=task_to_perform,
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
+                    data_id=data_id,
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"

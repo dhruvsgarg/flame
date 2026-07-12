@@ -283,6 +283,11 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = []
+        # G1: per-contributor raw (pre-rate-scaling) gradient L2 norm this cycle
+        # -- gradient VALUES are mode-invariant given identical input+perturbation
+        # seed (principle #1), so this is a DIRECT measurement of that claim
+        # instead of inferring it from downstream cadence/variance symptoms (#N).
+        self._cycle_grad_norms = []
         # end -> canonical commit-order key (modeled_delay D, str(end)) for the
         # current cycle's cohort. Populated per contribution in aggregate_weights;
         # consumed by _canonicalize_cohort_commit_order to break equal-D ties by
@@ -760,6 +765,13 @@ class TopAggregator(AsyncTopAgg):
         # {len(self.params)}") self.grad.to(DeviceType.CPU)
         # trainer_grad.to(DeviceType.CPU)
         np = self.model.named_parameters()
+
+        # G1: raw (pre-rate-scaling) grad norm, trainable params only -- a fresh
+        # named_parameters() call so it doesn't exhaust the `np` generator the
+        # merge loop below still needs.
+        self._cycle_grad_norms.append(
+            self._flat_grad_norm(trainer_grad, self.model.named_parameters())
+        )
 
         # rate = scale * alpha(staleness) + (1 - scale) * beta(stat_utility)
         # alpha: polynomial decay in staleness; beta: polynomial_upshift
@@ -1737,6 +1749,7 @@ class TopAggregator(AsyncTopAgg):
         # after self._per_agg_trainer_list is cleared and self._model_version
         # may have advanced -- see build_agg_round call below).
         _cycle_contributors = list(self._per_agg_trainer_list)
+        _cycle_grad_norm_list = list(self._cycle_grad_norms)  # G1
         _cycle_target_version = self._model_version
         _cycle_speed_s = []
         _cycle_stat_utility = []
@@ -1807,6 +1820,17 @@ class TopAggregator(AsyncTopAgg):
         _agg_start_wall = time.time()
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
+        # #15: aggregate() is genuine real GPU-side gradient-merge/server-step
+        # compute, run for real in sim (principle #1), on EVERY cycle -- pass or
+        # fail. Only eval_s (below, committed cycles only) was ever folded into
+        # the vclock; this cycle's aggregate() cost was not, so it was pure
+        # uncredited real wall time (compounds over #N-driven retries). Fold it
+        # the same way eval_s already is: config-gated OFF (byte-identical),
+        # sim-only.
+        if self.simulated and getattr(
+            self.config.hyperparameters, "sim_model_agg_compute_time", False
+        ):
+            self._vclock.advance(self._vclock.now + _aggregate_fedavg_s)
         _disp = getattr(self, "_round_dispatch_wall_ts", None)
         _lastg = getattr(self, "_last_grad_wall_ts", None)
         _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
@@ -2075,6 +2099,9 @@ class TopAggregator(AsyncTopAgg):
                         "cycle_model_version": _cycle_model_version,
                         "grad_pool_size": _grad_pool_size,
                         "cached_v_size": _cached_v_size,
+                        # G1: per-contributor raw grad L2 norm this cycle (parity
+                        # target: mode-invariant given identical input+seed).
+                        "grad_norm": _cycle_grad_norm_list,
                         # R1/W1 residence rungs: per-contributor [dispatch_ts,
                         # commit_ts] intervals for this cycle.
                         "contributor_intervals": _contributor_intervals,
@@ -2106,6 +2133,7 @@ class TopAggregator(AsyncTopAgg):
 
         self._updates_in_queue -= self._agg_goal
         self._per_agg_trainer_list = []
+        self._cycle_grad_norms = []
         self._commit_key_by_end = {}  # cohort-scoped
 
         logger.info(
@@ -2642,7 +2670,16 @@ class TopAggregator(AsyncTopAgg):
                 self._rearm_recv_eligibility(channel, ends)
                 return ends
 
-        new_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        # Thread version identity onto the SEND-side selection event so it's
+        # placeable on the (data_id, iteration_per_data_id) axis -- was
+        # missing on this call site (unlike the async distribute path below),
+        # which left every fwdllm_plus reselect-granularity investigation
+        # unable to correlate a selection call back to its cycle without
+        # cross-referencing wall timestamps.
+        new_ends = channel.ends(
+            VAL_CH_STATE_SEND, task_to_perform,
+            agg_version_key=self.version_key, data_id=self.data_id,
+        )
         if not self._reselect_each_iteration and new_ends:
             merged = list(self._round_selected_ends or [])
             for end in new_ends:
@@ -2792,6 +2829,18 @@ class TopAggregator(AsyncTopAgg):
         if nt <= 0.0 or ng <= 0.0:
             return None
         return dot / (math.sqrt(nt) * math.sqrt(ng))
+
+    @staticmethod
+    def _flat_grad_norm(grad_named, named_params):
+        """L2 norm of a trainer's gradient (dict name→tensor), flattened over all
+        trainable params (G1). Mode-invariance target: given identical input +
+        perturbation seed, this should match real vs sim to float-noise (#N)."""
+        sq = 0.0
+        for name, _p in named_params:
+            if name in grad_named:
+                t = grad_named[name]
+                sq += float((t * t).sum())
+        return math.sqrt(sq) if sq > 0.0 else 0.0
 
     @timer_decorator
     def _distribute_weights_sync(
@@ -3025,6 +3074,7 @@ class TopAggregator(AsyncTopAgg):
             task_to_perform=task_to_perform,
             agg_version_key=self._curr_agg_version,
             trainer_version_keys=self._trainer_state_dict,
+            data_id=self.data_id,
         )
         logger.info(f"ends: {ends}")
 

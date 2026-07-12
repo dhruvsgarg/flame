@@ -134,12 +134,18 @@ class TestRandomSelectorEmitsSelectionTelemetry:
 
 
 class TestRandomSelectorAggVersionStatePassthrough:
-    """fwdllm_aggregator.py threads (model_version, data_id, iteration_id)
-    through channel.ends(agg_version_key=...) -> select()'s **kwargs (see
-    ../../examples/MIGRATING_TO_LAUNCHER.md §9). Attaching data_id/
-    iteration_per_data_id to the emitted selection event lets analyze_run.py's
+    """fwdllm_aggregator.py threads version_key=(model_version,
+    iteration_per_data_id) through channel.ends(agg_version_key=...), plus
+    data_id as its own kwarg (data_id is deliberately NOT part of version_key,
+    §M) -> select()'s **kwargs (see ../../examples/MIGRATING_TO_LAUNCHER.md
+    §9). Attaching both to the emitted selection event lets analyze_run.py's
     progress_key() place it on the same fine-grained axis as trainer_round/
     agg_round/agg_eval, instead of collapsing onto fwdllm's coarse `round`.
+
+    Was previously smuggling (model_version, data_id, iteration_id) as a
+    3-tuple inside agg_version_key -- dead code post-K-D39, which unified
+    version_key to the 2-tuple (model_version, iteration) everywhere, so the
+    `len == 3` sniff never fired for any real caller.
     """
 
     def test_agg_version_key_attaches_data_id_and_iteration(self, tmp_path, make_ends):
@@ -157,7 +163,8 @@ class TestRandomSelectorAggVersionStatePassthrough:
 
             sel.select(
                 ends, channel_props, trainer_unavail_list=[], task_to_perform="train",
-                agg_version_key=(7, 42, 3),  # (model_version, data_id, iteration_id)
+                agg_version_key=(7, 3),  # (model_version, iteration_per_data_id)
+                data_id=42,
             )
 
             events = [
@@ -173,8 +180,8 @@ class TestRandomSelectorAggVersionStatePassthrough:
 
     def test_no_agg_version_key_omits_data_id(self, tmp_path, make_ends):
         """async_cifar10's fedavg baseline also uses RandomSelector but never
-        passes agg_version_key -- must not crash, and must not fabricate
-        data_id/iteration_per_data_id fields."""
+        passes agg_version_key/data_id -- must not crash, and must not
+        fabricate data_id/iteration_per_data_id fields."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             sel = _make_selector()

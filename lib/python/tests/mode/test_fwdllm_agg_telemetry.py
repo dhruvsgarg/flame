@@ -74,6 +74,7 @@ class _FakeAggregator:
         # Real path skips the sim boundary hook, so telemetry is byte-identical.
         self.simulated = False
         self._per_agg_trainer_list = list(contributors)
+        self._cycle_grad_norms = []  # G1: populated by the real caller per-contribution
         self._agg_goal_cnt = len(contributors)
         self._agg_goal = len(contributors) or 1
         self._model_version_unique_trainers = set()
@@ -198,6 +199,31 @@ class TestAggRoundTelemetry:
             assert sorted(r["contributing_trainers"]) == ["t1", "t2"]
             assert sorted(r["trainer_speed_s"]) == [5.0, 7.0]
             assert sorted(r["stat_utility"]) == [1.0, 2.0]
+        finally:
+            telemetry.shutdown()
+
+    def test_grad_norm_emitted_and_resets_next_cycle(self, tmp_path):
+        """G1: per-cycle grad norms accumulated by aggregate_grads_from_trainers
+        (simulated here directly, since this fake doesn't exercise the message-
+        processing path) land on agg_round as `grad_norm`, and the accumulator
+        is empty again for the next cycle."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            agg._cycle_grad_norms = [1.5, 2.5]
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=5), "t2": timedelta(seconds=7)},
+                utilities={"t1": 1.0, "t2": 2.0},
+            )
+
+            agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["grad_norm"] == [1.5, 2.5]
+            assert agg._cycle_grad_norms == []  # reset for the next cycle
         finally:
             telemetry.shutdown()
 

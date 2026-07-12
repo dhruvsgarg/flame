@@ -102,3 +102,48 @@ class TestEvalOnVclockB1:
 
     def test_flag_on_charges_eval_wall(self):
         assert self._run(flag=True) > 100.0  # vclock advanced by measured eval_s
+
+
+class TestAggComputeOnVclock15:
+    """#15 mechanism: the aggregator advances the vclock by the measured
+    aggregate()-call wall only when simModelAggComputeTime is set (byte-
+    identical off). Unlike B1 (eval_s), this fires on EVERY cycle -- pass or
+    fail -- since aggregate() itself always runs."""
+
+    def _run(self, flag, var_good_enough=True):
+        from tests.mode.test_fwdllm_agg_telemetry import (
+            _FakeAggregator, _FakeChannel,
+        )
+        from datetime import timedelta
+        import time as _t
+
+        agg = _FakeAggregator(contributors=["t1"], var_good_enough=var_good_enough)
+        agg.simulated = True
+        agg._release_sim_slots_at_agg_goal = lambda *a, **k: None
+        agg._vclock = SimpleNamespace(
+            now=100.0,
+            advance=lambda ts: setattr(agg._vclock, "now", max(agg._vclock.now, ts)),
+        )
+        agg.config.hyperparameters.sim_model_agg_compute_time = flag
+        agg.config.hyperparameters.sim_model_eval_time = False  # isolate #15 from B1
+        orig_aggregate = agg.aggregate
+
+        def _slow_aggregate(round_num):
+            _t.sleep(0.02)
+            return orig_aggregate(round_num)
+
+        agg.aggregate = _slow_aggregate
+        channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
+        agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+        return agg._vclock.now
+
+    def test_flag_off_does_not_advance_vclock(self):
+        assert self._run(flag=False) == 100.0  # byte-identical: vclock untouched
+
+    def test_flag_on_charges_aggregate_wall(self):
+        assert self._run(flag=True) > 100.0  # vclock advanced by measured aggregate_s
+
+    def test_flag_on_charges_aggregate_wall_even_on_variance_fail(self):
+        # aggregate() runs regardless of the variance-gate outcome, so the fold
+        # must too -- this is what distinguishes #15 from the committed-only B1.
+        assert self._run(flag=True, var_good_enough=False) > 100.0
