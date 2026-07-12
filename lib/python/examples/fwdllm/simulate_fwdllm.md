@@ -81,14 +81,47 @@ check the sim availability/eligibility filter on each reselect call, not just in
 fluxtune's two structural blockers found on the last full-length run are now CLOSED (§G): the
 `_real_intrinsic_clock` async-cycle-overlap checker artifact (was inflating `total_commits`/
 `terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` to 76–86% rel_diff; now falls back
-to raw wall for async, validated down to ~17–24% on a 900s smoke, consistent with the ~19% hand-derived
-from the full run) and the Oort speed-penalty singleton-population bug (`preferred_duration`; was real
-81.7%/sim 0.5% binding, root-caused to `calculate_round_preferred_duration` scoring async's
-one-trainer-at-a-time dispatch batch instead of the full registry). **Neither fix has been observed on a
-live run yet** — both were validated against already-banked (pre-fix) telemetry re-derivation + synthetic
-unit tests; a fresh smoke is the next step (Next roots #1). fluxtune `sim_rate` at the official
+to raw wall for async) and the Oort speed-penalty singleton-population bug (`preferred_duration`;
+`calculate_round_preferred_duration` was scoring async's one-trainer-at-a-time dispatch batch instead of
+the full registry). **Both now LIVE-VALIDATED** (2026-07-12, `run_20260712_000706` sim vs the last-good
+real `run_20260711_231105` — mixed-timestamp pairing, real run itself unaffected by either fix so this is
+a valid check): `preferred_duration` gap `frac_diff` **0.812→0.214** (sim binding 0%→60.3%, real steady at
+81.7%; median pref sim now 20.0s vs real 16.4s, was `null`) — just 0.014 over the 0.2 tol, plausibly
+closes with more samples. `convergence` improved further as a side effect (less-speed-biased sim helps
+accuracy-trajectory match): `avg_accuracy_diff` **0.0739→0.0298**, now clearly passing. The
+`total_commits`/`throughput`/etc. family is unchanged (~17–24% rel_diff, as expected — governed by the
+already-separately-validated intrinsic-clock fix, not this one). fluxtune `sim_rate` at the official
 0.5-divisor/5400s basis is **0.886 (SLOWDOWN, confirmed <1)** — the compute-bound-floor explanation (open
 issues) stands.
+
+**NEW BLOCKER (2026-07-12, unresolved) — real-mode fluxtune runs hanging, 2 consecutive incidents.**
+Both on the same real node (sim node unaffected — 10 concurrent `select()` calls completed clean on sim
+in the same window). **Not caused by either fix above** — confirmed three ways: (a) sim exercises the
+exact same `calculate_total_utility`/`connected_ends` code path 245×/run with no issue; (b) hang #1 died
+at MQTT channel-*join*, before `select()` is ever reached; (c) hang #2's `select()` call completed and
+returned a valid 10-trainer result — the hang was downstream, in `channel.py`'s RECV_FIFO
+receive-multiplexing, waiting on all 10 trainers simultaneously after they'd gone silent right after their
+own join. Two different hang points, same node:
+- **Hang #1** (`run_20260712_000659`): aggregator logs exactly one `"waiting for join"` (`channel.py:848`)
+  and never resolves it — zero `agg_round` telemetry, zero trainers ever joined. MQTT keepalive (300s)
+  times out and disconnects at wall+451s. A HEALTHY run resolves the same line to `"at least one peer
+  joined"` within ~11s.
+- **Hang #2** (`run_20260712_003818`): join + `select()` succeed, dispatch reaches all 10 trainers
+  (RECV_FIFO active_tasks=10), but every trainer's OWN log goes silent within ~20s of finishing its own
+  join (last activity spread 00:38:58–00:39:17, staggered ~2s apart — looks like sequential per-trainer
+  startup) — none ever logs `_fetch_weights`/`train_with_data_id`/anything past init. The aggregator
+  itself sits idle for ~2 minutes (00:38:45→00:41:16) before even attempting its first dispatch, unusually
+  slow vs the sub-second gap in healthy runs.
+- **Ruled out:** real+sim broker contention (operator confirmed they run on separate nodes). **Leading
+  hypothesis, not yet confirmed:** node-level resource/broker state issue — the aggregator's MQTT
+  `task_id` (`49d06b...742`) and all 10 trainer client IDs are IDENTICAL across every fluxtune real run
+  going back to 2026-07-10 (not randomized per run), so a prior run's process/session on the same node
+  not fully tearing down could plausibly starve or collide with a new one. Both hangs happened within the
+  same ~30 min window on the same node, which argues against a rare one-off race and toward something
+  node-state-specific. **Not yet checked:** live process/GPU state on the real node (`nvidia-smi`, `ps`)
+  for leftover processes from hang #1 that might still be holding resources when hang #2's processes
+  started. **BLOCKS all further fluxtune (and by extension fwdllm_plus, if it needs fresh real runs)
+  validation work** — resume here first.
 
 Latest banked pairs (`run_sequential.sh --mode both --delays on --num-gpus 8 --delay-divisor 0.5
 --max-runtime-s 5400`, n=10 smoke; real runs all hit the 5400s runtime cap):
@@ -169,9 +202,10 @@ refuted "async #N" framing.
 ### Open issues (OPEN only — closed items live in §G/§H)
 | # | issue | baseline(s) | next step |
 |---|---|---|---|
-| **fwdllm_plus `sim_rate` SLOWDOWN (0.906) — NEW regression** | First full-length run where sim is SLOWER than real wall for this baseline (was 5.77 healthy on the prior 0.5/5400s basis; fwdllm, same sync family, stays 5.571 healthy on the identical config). `per_round_advance`: sim 137.3s vs real 94.0s (+46%). `selection_detail`: sim's per-iteration reselect picks a smaller cohort (mean 1.49) than real (mean 1.91), `rel_diff_chosen`=0.218 vs tol 0.05. Distinct from the closed #7 eligible-count-gap (§G) — `eligibility` itself now PASSES; this is a new gap specific to the *per-iteration* reselect path (fwdllm reselects per-round only, so it can't surface this). | fwdllm_plus (sync) | **TOP priority — RESUME HERE.** Root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real: check the sim availability/eligibility filter on each reselect call (not just initial dispatch) for a stale or under-refreshed candidate pool. |
-| **fluxtune `convergence` (now an honest residual)** | Checker bug fixed (§G) surfaced the real number: `avg_accuracy_diff` 0.0739 (was a fluke single-eval 0.1509 — see §G). Now compares all 50 matched `data_id` checkpoints, still > the 0.05 tol. | fluxtune | Distributional target beyond bin 1 (STRATEGY) already covers curve-level drift; re-check now that the `preferred_duration` selector gap is closed (§G) — a systematically less speed-selective sim plausibly explained part of this; needs a fresh run to confirm. |
-| **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` residual gap** | Checker artifact FIXED (§G) — was `_real_intrinsic_clock` cumulative-summing overlapping async cycles, confirmed on the 900s smoke: `total_commits` `rel_diff` 0.857→0.167, `throughput` 0.814→0.235, `overhead_residual`/`per_round_advance` ~0.81→~0.20 (all from the SAME single fix). Still fails the 5% tol at this small sample (n_real_commits=5), but the magnitude now matches the ~19% gap hand-derived from the full 5400s run. | fluxtune (async only) | Likely small-N noise at 900s (principle: re-check at full 5400s length); if the ~19% residual persists at length, that's a genuine (much smaller) sim/real commit-rate gap worth a fresh look, not a checker bug. |
+| **fluxtune real-mode MQTT hang — 2 consecutive incidents, unresolved** | See §A "NEW BLOCKER" for full diagnostic detail. Not caused by either landed fix (confirmed 3 ways). Leading hypothesis: node-level resource/broker-session state, given task_id/trainer client IDs are identical across every run (not randomized), and both hangs happened within ~30 min on the same node. | fluxtune (real only) | **TOP priority — RESUME HERE.** Check live process/GPU state (`ps`, `nvidia-smi`) on the real node for leftover processes from hang #1 before relaunching hang #2's attempt; if clean, relaunch real ALONE (not alongside any other run on that node) and confirm it clears join within ~11s (healthy baseline) before declaring it fixed. **Blocks all further fluxtune validation.** |
+| **fwdllm_plus `sim_rate` SLOWDOWN (0.906) — NEW regression** | First full-length run where sim is SLOWER than real wall for this baseline (was 5.77 healthy on the prior 0.5/5400s basis; fwdllm, same sync family, stays 5.571 healthy on the identical config). `per_round_advance`: sim 137.3s vs real 94.0s (+46%). `selection_detail`: sim's per-iteration reselect picks a smaller cohort (mean 1.49) than real (mean 1.91), `rel_diff_chosen`=0.218 vs tol 0.05. Distinct from the closed #7 eligible-count-gap (§G) — `eligibility` itself now PASSES; this is a new gap specific to the *per-iteration* reselect path (fwdllm reselects per-round only, so it can't surface this). | fwdllm_plus (sync) | Parked behind the real-run hang above (may need fresh real runs on the same infra). Root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real: check the sim availability/eligibility filter on each reselect call (not just initial dispatch) for a stale or under-refreshed candidate pool. |
+| **fluxtune `preferred_duration` residual gap (0.214 vs 0.2 tol)** | Live-validated fix (§A) closed 95% of the gap (0.812→0.214) but hasn't crossed the tolerance line yet — plausibly small-N noise at 900s (only 60 real / ~220 sim binding-eligible rounds). | fluxtune | Re-check at full 5400s length once a clean same-session real+sim pair is available (blocked on the MQTT hang above). |
+| **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` residual gap** | Checker artifact FIXED (§G) — was `_real_intrinsic_clock` cumulative-summing overlapping async cycles, confirmed on the 900s smoke: `total_commits` `rel_diff` 0.857→0.167, `throughput` 0.814→0.235, `overhead_residual`/`per_round_advance` ~0.81→~0.20 (all from the SAME single fix, reconfirmed identical on a second independent sim run). Still fails the 5% tol at this small sample (n_real_commits=5), but the magnitude now matches the ~19% gap hand-derived from the full 5400s run. | fluxtune (async only) | Likely small-N noise at 900s (principle: re-check at full 5400s length); if the ~19% residual persists at length, that's a genuine (much smaller) sim/real commit-rate gap worth a fresh look, not a checker bug. |
 | **fluxtune `sim_rate`<1 (compute-bound floor)** | **Confirmed at the official 0.5-divisor/5400s basis: 0.886, still <1** (resolves the prior "re-check at 0.5/5400s" pending note; the 0.25/900s smoke's 1.77 was a diagnostic-divisor artifact, not comparable). Headroom already adequate (sct D≥8s > JVP gpu ~3.5–5s) — NOT the K-D38 D≈gpu collision. Residual = compute floor: P=10 JVP (10× sync) + ~8.9s unskippable aggregator eval + agg_goal=3 low GPU parallelism. | fluxtune | Real LLM-mobile trace (Next roots #2). Shrinking divisor (0.25/0.1) pushes the NUMBER >1 by doing fewer data_ids per vclock ceiling — baseline modeling knob (principle #3), not a parity fix. |
 | **fluxtune `step_timing_breakdown` residual `_force_cuda_memory_cleanup`** (minor) | `train_with_data_id`'s wrapper-exemption fix (§G) closed the dominant gap; this KS=0.394 vs 0.25 tol residual remains, but real/sim means differ by only 0.01s (0.20 vs 0.19s) — looks like small-N distribution-shape noise (K-D37 class), not a genuine divergence. | fluxtune | Not yet root-caused; low priority — re-check if it starts moving means, not just KS. |
 | **#N (var-VALUE nondeterminism wall)** | Float-nondeterminism flips the `var<0.3` gate → cohort SET (async) / var VALUE (sync) diverge past a sensitive bin (onset n-scale-sensitive). Not a sim bug. | fwdllm, fluxtune (fwdllm_plus latent) | DISTRIBUTIONAL target beyond bin 1 already covers it; P0-2 (2-real-run diff) open only to bound jitter magnitude vs n. |
@@ -180,25 +214,30 @@ refuted "async #N" framing.
 
 ### Next roots — ranked (correctness before time; SHARED before per-baseline — principle #14)
 **Focus: fluxtune first (operator directive).** `preferred_duration` and the `_real_intrinsic_clock`
-checker artifact are both closed (§G). Reordered below; fwdllm_plus's regression is real but parked until
-fluxtune's blockers close.
-1. **Fresh fluxtune smoke to validate both landed fixes live — TOP (RESUME HERE).** Neither the
-   `calculate_total_utility` population-scope fix nor the `_real_intrinsic_clock` async fallback has been
-   observed on a run generated WITH the fix (all analysis above re-derived their effect against pre-fix
-   telemetry / synthetic tests). Run the same 0.25-divisor/900s smoke (command in prior open-issue history)
-   and confirm: `preferred_duration` binding rates converge (was real 81.7%/sim 0.5%); `total_commits`/
-   `throughput`/etc. residual gap holds near ~19% (or better) at full 5400s length, not just this small-N
-   900s window.
-2. **fwdllm_plus `sim_rate` SLOWDOWN regression.** New at the full-length re-baseline (open issues);
+checker artifact are both code-fixed and live-validated (§A/§G) via a mixed-timestamp pairing
+(`preferred_duration` gap 0.812→0.214, `convergence` 0.0739→0.0298). A NEW operational blocker (real-mode
+MQTT hang, §A/open issues) now sits ahead of everything else — nothing further can be validated on
+fluxtune without a working real run.
+1. **Real-mode MQTT hang — TOP (RESUME HERE, picking up 2026-07-13).** 2 consecutive hangs same node,
+   different hang points (join-never-resolves vs dispatch-then-receive-never-resolves) — see §A "NEW
+   BLOCKER" for the full diagnostic trail. Not caused by either landed fix (ruled out 3 ways). Check live
+   process/GPU state on the real node for leftovers from hang #1 before relaunching; relaunch real ALONE
+   (no concurrent run on that node) and confirm join resolves within ~11s.
+2. **Once real is healthy again — clean same-session real+sim pair to fully close `preferred_duration` and
+   confirm the `total_commits` family at full 5400s length.** The current validation is a mixed-timestamp
+   pairing (good enough to prove the fixes work, not to close the residual ~0.014 `preferred_duration` gap
+   or check whether the ~19% `total_commits` residual holds/shrinks at length).
+3. **fwdllm_plus `sim_rate` SLOWDOWN regression.** New at the full-length re-baseline (open issues);
    root-cause the per-iteration reselect cohort-size gap — a previously-healthy baseline regressing is a
-   correctness signal, not a throughput nit (principle #14). Picked back up once fluxtune's blockers close.
-3. **LLM-mobile runtime trace swap (principled).** The papaya/fedbuff 4–18s trace is a modeling choice; a real
+   correctness signal, not a throughput nit (principle #14). May also need fresh real runs on the same
+   infra as #1 above, in which case resolve #1 first.
+4. **LLM-mobile runtime trace swap (principled).** The papaya/fedbuff 4–18s trace is a modeling choice; a real
    mobile-LLM forward-grad trace would give honest headroom (`sim_rate`>1) AND set the delay regime the
    staleness fix must hold under. Pull fwdllm's codebase (believed to carry per-model/per-phone runtime numbers)
    and replace the delay distribution. Divisor tuning (0.25/0.1) is NOT this — it's a diagnostic knob (principle #3).
-4. **`sim_model_agg_compute_time` vclock fold — deferred** (re-measure overlap now that the re-baseline landed; #15).
-5. **fwdllm `barrier_wait_s` overrun (minor).** Root-cause only if it starts moving `sim_rate` materially.
-6. Then C1/C2 convergence (distributional target) at matched `data_id` per baseline → gate to Phase 2.
+5. **`sim_model_agg_compute_time` vclock fold — deferred** (re-measure overlap now that the re-baseline landed; #15).
+6. **fwdllm `barrier_wait_s` overrun (minor).** Root-cause only if it starts moving `sim_rate` materially.
+7. Then C1/C2 convergence (distributional target) at matched `data_id` per baseline → gate to Phase 2.
 
 ### SKIP audit (19–21 skips; ~17 legit)
 Legit at Phase-1 syn_0 + `random` selector: 7 availability ground-truth rungs + 4 delivery/withheld (Phase-2
