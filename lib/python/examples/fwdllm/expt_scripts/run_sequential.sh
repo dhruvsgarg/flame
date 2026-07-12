@@ -869,9 +869,14 @@ while IFS=$'\t' read -r name cfg variant budget; do
   # of truth for the summary, NOT the launcher exit code -- which is 0 even when the
   # aggregator subprocess crashed (run_experiment swallows the child's non-zero exit).
   expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
-  if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ] || [ "${EXPT_LAST_HEALTH:-}" = "STALLED" ]; then
-    # Watcher kills the run's process group -> rc is the SIGKILL code (expected),
-    # NOT a failure. Report the clean verdict (CONVERGED / STALLED) without exit noise.
+  if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ] || [ "${EXPT_LAST_HEALTH:-}" = "STALLED" ] \
+     || [ "${EXPT_LAST_HEALTH:-}" = "TIMEOUT_KILLED" ]; then
+    # Watcher/backstop-watchdog kills the run's process group -> rc is the
+    # SIGKILL code (expected), NOT a launcher failure. Report the clean verdict
+    # (CONVERGED / STALLED / TIMEOUT_KILLED) without exit noise. TIMEOUT_KILLED
+    # means the run never self-stopped at its budget (a hang) and the backstop
+    # watchdog (expt_launch) force-killed it so this sequence could continue --
+    # see simulate_fwdllm.md §A for the documented real-mode MQTT hangs this guards.
     RESULT[$name]="${EXPT_LAST_HEALTH}"
   elif [ "$rc" -ne 0 ]; then
     # Launcher itself failed: surface that, but keep the health word if the
