@@ -208,8 +208,7 @@ class TestAggregatorBroadcastsOrigin:
         agg._sim_free_slot_ts = __import__("collections").deque(maxlen=128)
         agg._sim_last_commit_sct = {}
         agg._sim_inflight_expected = {}
-        agg._sim_trainer_budget = {}
-        agg._sim_budget_min = 12.0
+        agg._sim_known_delay_s = {}
         agg._sim_redispatch_gap_s = 0.0
         agg._sim_cooldown_until = {}
         agg._real_distribute_settle_s = 0.0

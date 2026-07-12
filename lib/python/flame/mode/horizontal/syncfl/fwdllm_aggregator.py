@@ -48,6 +48,7 @@ from flame.mode.horizontal.asyncfl.top_aggregator import (
     RECV_TIMEOUT_WAIT_S,
     TopAggregator as AsyncTopAgg,
     _SIM_GATE_MAX_PASSES,
+    _SIM_GATE_POLL_TICK_S,
     _SIM_ORDER_SLACK_S,
 )
 from flame.mode.message import MessageType
@@ -250,12 +251,6 @@ class TopAggregator(AsyncTopAgg):
     # explicit `sim_wall_ceiling_s` for a tighter bound.
     SIM_WALL_CEILING_FACTOR = 20.0
 
-    # Per-pass recv_fifo window the drain waits for an in-flight grad to arrive
-    # (fwdllm override of SyncTopAgg's 2.0). fwdllm's forward-grad pass is a real
-    # GPU pass (~4s), so 2s can close before the grad reassembles.
-    #   TUNABLE: keep as low as possible without missing genuinely-in-flight grads.
-    SIM_RECV_GRACE_FLOOR_S = 5.0
-
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         super().internal_init()
@@ -430,6 +425,11 @@ class TopAggregator(AsyncTopAgg):
         # _prune_departed_from_round_cache also evict a member that's stuck
         # but not formally departed (see ROUND_CACHE_STUCK_TIMEOUT_S).
         self._round_cache_activity_ts: dict = {}
+        # §M: reselect_each_iteration=True's selection cached per version_key
+        # (mirrors the False branch's cache) -- fixes fwdllm_plus's
+        # 11-13-calls-per-iteration real/sim call-count mismatch (§A).
+        self._reselect_true_cache_key = None
+        self._reselect_true_cache_ends = None
 
         # Wire staleness_policy from config into an instance attr; without this
         # the message handler's getattr fell back to "none" for every run.
@@ -916,7 +916,6 @@ class TopAggregator(AsyncTopAgg):
         live = [e for e in (recv_ends or []) if channel.has(e)]
         deadline = time.time() + RECV_TIMEOUT_WAIT_S
         for _pass in range(_SIM_GATE_MAX_PASSES):
-            grace = self._sim_recv_grace_s()
             # Base probe: the live recv_ends (always drained), minus anything
             # already buffered or committed this cycle.
             _base = [
@@ -938,8 +937,15 @@ class TopAggregator(AsyncTopAgg):
                     and not self._sim_buffer.has(e) and e not in self._sim_committed
                 ]
                 if to_probe:
-                    for m, md in channel.drain_ready(to_probe, timeout=grace):
+                    # §M: exact bound when known; else a poll tick (drain_ready
+                    # can't block on timeout=None) -- the outer pass loop retries.
+                    _timeout = self._sim_recv_timeout_s(to_probe)
+                    for m, md in channel.drain_ready(
+                        to_probe,
+                        timeout=(_timeout if _timeout is not None else _SIM_GATE_POLL_TICK_S),
+                    ):
                         _e = md[0]
+                        self._note_sim_known_delay(_e, m)
                         _s = m.get(MessageType.SIM_COMPLETION_TS)
                         _s = float(_s) if _s is not None else self._vclock.now
                         self._sim_buffer.add(_e, _s, (m, md))
@@ -962,12 +968,15 @@ class TopAggregator(AsyncTopAgg):
                     and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
                 ]
                 if to_probe:
+                    # §M: exact bound when known; None to genuinely block.
+                    _timeout = self._sim_recv_timeout_s(to_probe)
                     for m, md in channel.recv_fifo(
-                        to_probe, first_k=len(to_probe), timeout=grace
+                        to_probe, first_k=len(to_probe), timeout=_timeout
                     ):
-                        if m is None:  # no more ready (grace expired or set drained)
+                        if m is None:  # no more ready (bound expired or set drained)
                             break
                         _e = md[0]
+                        self._note_sim_known_delay(_e, m)
                         _s = m.get(MessageType.SIM_COMPLETION_TS)
                         _s = float(_s) if _s is not None else self._vclock.now
                         self._sim_buffer.add(_e, _s, (m, md))
@@ -1048,12 +1057,8 @@ class TopAggregator(AsyncTopAgg):
         # Grad committed -> trainer no longer in flight in virtual time -> drop it
         # from pending so it is re-pickable (_sim_hold_busy_slots reconciles too).
         self._sim_pending_commit.discard(_end)
-        # Learn this end's MODELED budget (contention-free lower bound) so the
-        # gate fires on genuine stragglers for not-yet-observed trainers.
-        _b = m.get(MessageType.TRAINING_BUDGET_S) if isinstance(m, dict) else None
-        if _b is not None:
-            self._sim_trainer_budget[_end] = float(_b)
-            self._sim_budget_min = min(self._sim_budget_min, float(_b))
+        # §M: MODELED_DELAY_S was already learned into _sim_known_delay_s
+        # at ingest time above.
         # Reassert selected_ends == the virtual-time in-flight set after this
         # commit: recv_fifo just marked freshly-buffered ends RECVD (stripping
         # their slots), but they are still in flight until THEY commit; else the
@@ -2645,16 +2650,30 @@ class TopAggregator(AsyncTopAgg):
         """Return the SEND-state-selected ends, honoring
         `self._reselect_each_iteration`.
 
-        True (default): re-invoke the selector every call. False: accumulate
-        selections into a per-round cache, re-invoking the selector each
-        call until the cache reaches `self._agg_goal` (trainers join the
-        channel asynchronously, so one early call may only see a few of
-        them); then reuse the cache until `self._round` advances.
+        True (default): cached per `self.version_key` (§M) -- repeated calls
+        within the SAME (model_version, iteration) reuse one channel.ends()
+        result; a version_key change invalidates and re-fetches. False:
+        accumulate selections into a per-round cache, re-invoking the
+        selector each call until the cache reaches `self._agg_goal`
+        (trainers join asynchronously, so one early call may only see a
+        few); then reuse until `self._round` advances.
         """
         if self._round_selected_ends_round != self._round:
             self._round_selected_ends = None
             self._round_selected_ends_round = self._round
             self._round_cache_activity_ts = {}
+
+        if self._reselect_each_iteration:
+            if (self._reselect_true_cache_ends is not None
+                    and self._reselect_true_cache_key == self.version_key):
+                ends = self._reselect_true_cache_ends
+                logger.info(
+                    f"[ReselectGate] reselect_each_iteration=True; reusing "
+                    f"cached selection ends={ends} for version_key="
+                    f"{self.version_key}"
+                )
+                self._rearm_recv_eligibility(channel, ends)
+                return ends
 
         if not self._reselect_each_iteration:
             self._prune_departed_from_round_cache(channel)
@@ -2697,6 +2716,12 @@ class TopAggregator(AsyncTopAgg):
             )
             self._rearm_recv_eligibility(channel, merged)
             return merged
+        if self._reselect_each_iteration and new_ends:
+            # §M: cache for this version_key. Empty results are NOT cached --
+            # a transient "no eligible trainers yet" must not stick.
+            self._reselect_true_cache_key = self.version_key
+            self._reselect_true_cache_ends = new_ends
+            self._rearm_recv_eligibility(channel, new_ends)
         return new_ends
 
     def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
@@ -3183,11 +3208,11 @@ class TopAggregator(AsyncTopAgg):
                 # an empty queue falls back to _round_now.
                 _sst = self._pop_free_slot_ts(_round_now) if _staggered else _round_now
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
-                # Expected completion = SEND vclock + a lower-bound budget
-                # (this end's own last-observed TRAINING_BUDGET_S, else the
-                # running min) so the gate never laps a not-yet-committed trainer.
-                _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
-                self._sim_inflight_expected[end] = _sst + _budget
+                # §M: expected completion = SEND vclock + this end's own
+                # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
+                _delay = self._sim_known_delay_s.get(end)
+                if _delay is not None:
+                    self._sim_inflight_expected[end] = _sst + _delay
                 # Staggered: this end's payload must carry its OWN SIM_SEND_TS, so
                 # rebuild a shallow copy (weights shared by ref; small vs GPU cost).
                 if _staggered and isinstance(payload, dict):

@@ -76,7 +76,7 @@ class FakeChannel:
                 yield (
                     {MessageType.WEIGHTS: f"w_{end_id}",
                      MessageType.SIM_COMPLETION_TS: sct,
-                     MessageType.TRAINING_BUDGET_S: sct},
+                     MessageType.MODELED_DELAY_S: sct},  # §M: canonical delay field
                     (end_id, None),
                 )
             else:
@@ -114,10 +114,7 @@ def _make_agg():
     agg._sim_pending_commit = set()
     # Virtual-completion gate state (real __init__ sets these; __new__ bypasses).
     agg._sim_inflight_expected = {}
-    agg._sim_trainer_budget = {}
-    agg._sim_budget_min = 12.0
-    agg._sim_budget_running_mean = 12.0
-    agg._sim_budget_n = 0
+    agg._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
     return agg
 
 
@@ -572,25 +569,19 @@ class TestClockJumpClamp:
 
 
 class TestExpectedCompletionLowerBound:
-    """The gate's expected completion must be a LOWER BOUND on sct, so the clock
-    never laps a not-yet-seen trainer (the past-dating seed). The unseen-trainer
-    default is the running MINIMUM observed budget, not the mean (which overshoots
-    fast trainers: gate_holds=0 over a full felix run, 74% commits past-dated)."""
+    """§M: expected completion comes from the shared per-trainer delay cache
+    (self._sim_known_delay_s) -- an exact per-trainer value, no cross-trainer
+    estimate. An unseen trainer gets NO cache entry, no guessed lower bound."""
 
-    def test_budget_min_tracks_minimum_below_mean(self):
+    def test_known_delay_cache_holds_each_trainers_own_exact_value(self):
         agg = _make_agg()
-        # commit a fast (2s) and slow (25s) trainer; min must follow the fastest.
         channel = FakeChannel({"fast", "slow"}, [("fast", 2.0), ("slow", 25.0)])
         _drain(agg, channel)
-        assert agg._sim_budget_min == 2.0
-        assert agg._sim_budget_min < agg._sim_budget_running_mean  # min, not mean
+        assert agg._sim_known_delay_s == {"fast": 2.0, "slow": 25.0}
 
-    def test_unseen_default_is_lower_bound_not_mean(self):
-        # After observing a fast trainer, an UNSEEN trainer dispatched now must get
-        # expected = send + min (a true lower bound), never the larger mean — else
-        # the clock laps the unseen trainer when it actually finishes earlier.
+    def test_unseen_trainer_has_no_cache_entry_no_fallback(self):
         agg = _make_agg()
         _drain(agg, FakeChannel({"fast"}, [("fast", 2.0)]))
-        unseen_budget = agg._sim_trainer_budget.get("NEW", agg._sim_budget_min)
-        assert unseen_budget == agg._sim_budget_min == 2.0
-        assert unseen_budget <= agg._sim_budget_running_mean
+        assert "fast" in agg._sim_known_delay_s
+        assert "NEW" not in agg._sim_known_delay_s
+        assert agg._sim_known_delay_s.get("NEW") is None

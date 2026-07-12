@@ -96,6 +96,7 @@ def _bare(cls):
     a._sim_buffer = SimReorderBuffer()
     a.trainer_event_dict = None
     a.pending_withheld = {}
+    a._sim_known_delay_s = {}
     return a
 
 
@@ -138,17 +139,49 @@ def test_oort_single_set_drain():
     assert agg._vclock.now == 25.0
 
 
-# ── grace is the dead-end ceiling, not a fixed 0.5s pacing knob ─────────────
+# ── §M shared per-trainer delay cache (replaces the grace EMA below) ───────
 
-def test_grace_is_adaptive_floor_not_half_second():
+def test_note_sim_known_delay_populates_from_message():
     agg = _bare(SyncAgg)
-    # default (no observed fill yet) → floor, which is well above the old 0.5s
-    assert agg._sim_recv_grace_s() == AsyncAgg.SIM_RECV_GRACE_FLOOR_S
-    assert AsyncAgg.SIM_RECV_GRACE_FLOOR_S >= 1.0
-    # grows with observed full-drain latency (adapts to contention)
-    agg._note_sim_fill(0.8, drained_all=True)
-    assert agg._sim_recv_grace_s() >= 0.8
-    # a non-complete drain must NOT poison the EMA
-    before = agg._sim_recv_grace_s()
-    agg._note_sim_fill(99.0, drained_all=False)
-    assert agg._sim_recv_grace_s() == before
+    assert agg._sim_known_delay_s == {}
+    agg._note_sim_known_delay("t1", {MessageType.MODELED_DELAY_S: 12.5})
+    assert agg._sim_known_delay_s == {"t1": 12.5}
+    # a later message for the same end is a harmless overwrite, not a decay/EMA
+    agg._note_sim_known_delay("t1", {MessageType.MODELED_DELAY_S: 12.5})
+    assert agg._sim_known_delay_s == {"t1": 12.5}
+
+
+def test_note_sim_known_delay_ignores_none_and_missing():
+    agg = _bare(SyncAgg)
+    # None (training_delay_enabled=False) must stay distinguishable from
+    # "not yet observed" -- do not cache it.
+    agg._note_sim_known_delay("t2", {MessageType.MODELED_DELAY_S: None})
+    assert "t2" not in agg._sim_known_delay_s
+    # a message with no MODELED_DELAY_S key at all
+    agg._note_sim_known_delay("t3", {MessageType.WEIGHTS: "w"})
+    assert "t3" not in agg._sim_known_delay_s
+
+
+def test_sim_recv_timeout_s_none_when_any_end_unknown():
+    agg = _bare(SyncAgg)
+    agg._sim_known_delay_s = {"t1": 10.0}
+    # t2 has never been observed -> no bound for the whole cohort
+    assert agg._sim_recv_timeout_s(["t1", "t2"]) is None
+    assert agg._sim_recv_timeout_s([]) is None
+
+
+def test_sim_recv_timeout_s_exact_bound_when_all_known():
+    agg = _bare(SyncAgg)
+    agg._sim_known_delay_s = {"t1": 10.0, "t2": 25.0}
+    assert agg._sim_recv_timeout_s(["t1", "t2"]) == 25.0 + agg._SIM_RECV_MARGIN_S
+
+
+def test_sync_barrier_zero_progress_when_all_delays_known_upfront():
+    # §A regression target: 829.6s/1237s burned on zero-progress barrier
+    # calls (EMA-lock undershoot). All delays known -> one sufficient call.
+    agg = _bare(SyncAgg)
+    agg._sim_known_delay_s = {e: d for e, d in SCTS.items()}
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=len(SCTS))
+    assert len(ch.recv_calls) == 1  # single barrier call
+    assert len(out) == len(SCTS)  # drained the whole cohort, no shortfall

@@ -130,8 +130,7 @@ def _make_dist_agg(channel, *, staggered, simulated=True, free_slots=()):
     agg._sim_free_slot_ts = deque(free_slots, maxlen=128)
     agg._sim_last_commit_sct = {}
     agg._sim_inflight_expected = {}
-    agg._sim_trainer_budget = {}
-    agg._sim_budget_min = 12.0
+    agg._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
     agg._sim_redispatch_gap_s = 0.0
     agg._sim_cooldown_until = {}
     agg._real_distribute_settle_s = 0.0
@@ -161,13 +160,27 @@ class TestDistributeStagger:
         ends = ["e1", "e2", "e3"]
         ch = _DistChannel(ends)
         agg = _make_dist_agg(ch, staggered=True, free_slots=[91.0, 95.0, 98.0])
+        # §M: gate-expected completion is dispatch stamp + that end's OWN
+        # cached MODELED_DELAY_S (distinct per end, no cross-trainer fallback).
+        agg._sim_known_delay_s = {"e1": 12.0, "e2": 6.0, "e3": 20.0}
         agg._distribute_weights("tag", "train")
         assert _sent_ts(ch) == [91.0, 95.0, 98.0]          # distinct, spread
         # gate-expected completion uses each end's own staggered stamp.
         assert agg._sim_inflight_expected["e1"] == pytest.approx(91.0 + 12.0)
-        assert agg._sim_inflight_expected["e3"] == pytest.approx(98.0 + 12.0)
+        assert agg._sim_inflight_expected["e3"] == pytest.approx(98.0 + 20.0)
         # the per-end payload carries that end's stamp.
         assert ch.sent["e2"][MessageType.SIM_SEND_TS] == 95.0
+
+    def test_train_staggered_unseen_trainer_gets_no_gate_entry(self):
+        # §M: no hardcoded seed, no cross-trainer fallback -- a trainer whose
+        # MODELED_DELAY_S has never been observed gets NO _sim_inflight_expected
+        # entry at all (the barrier waits on it genuinely instead of guessing).
+        ends = ["e1", "e2", "e3"]
+        ch = _DistChannel(ends)
+        agg = _make_dist_agg(ch, staggered=True, free_slots=[91.0, 95.0, 98.0])
+        assert agg._sim_known_delay_s == {}
+        agg._distribute_weights("tag", "train")
+        assert agg._sim_inflight_expected == {}
 
     def test_train_staggered_falls_back_to_now_when_queue_drains(self):
         ends = ["e1", "e2", "e3"]

@@ -460,9 +460,13 @@ class Trainer(Role, metaclass=ABCMeta):
                 msg.pop(MessageType.WEIGHTS)
             )
 
+        # §M: MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays
+        # are off, distinct from a legitimate zero delay.
         _budget = getattr(self, "_training_budget_s", None)
         if _budget is not None:
-            msg[MessageType.TRAINING_BUDGET_S] = float(_budget)
+            msg[MessageType.MODELED_DELAY_S] = (
+                float(_budget) if getattr(self, "training_delay_enabled", False) else None
+            )
 
         # Modeled round compute: max(real_gpu_time, training_delay_s). Stamped
         # unconditionally (real + sim) so the aggregator can decompose the

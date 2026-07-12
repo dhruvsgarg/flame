@@ -75,6 +75,11 @@ _SIM_GATE_MAX_PASSES = 64
 # only marginally earlier (absorbs budget-estimate noise).
 _SIM_ORDER_SLACK_S = 2.0
 
+# §M: poll cadence for a probe set with an unknown-delay end (drain_ready
+# can't block on timeout=None like recv_fifo can) -- the outer per-pass loop,
+# not this constant, is what actually waits until the delay is observed.
+_SIM_GATE_POLL_TICK_S = 0.25
+
 
 class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
@@ -123,20 +128,13 @@ class TopAggregator(SyncTopAgg):
         # past-dating bucket and emits the withheld_delivery rung with the true delay.
         self._sim_withheld_delivering: dict = {}
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
-        # Virtual-completion gate: the aggregator's record of each in-flight trainer's
-        # EXPECTED completion = dispatch vclock + its MODELED budget. Lets _sim_recv_min hold
-        # the clock at the earliest expected completion so it can't race past an update that
-        # virtually completed but whose message isn't drained yet. The budget is learned from
-        # the contention-free TRAINING_BUDGET_S (not SIM_CLIENT_TASK_TRAIN_DURATION_S, which
-        # GPU contention inflates): it's a true LOWER BOUND on sct, so clamping never overshoots.
+        # Virtual-completion gate: EXPECTED completion = dispatch vclock + the
+        # trainer's MODELED delay. Lets _sim_recv_min hold the clock at the
+        # earliest expected completion so it can't race past an update that
+        # virtually completed but isn't drained yet. §M: delay comes from the
+        # shared self._sim_known_delay_s cache -- no fallback; an unseen
+        # trainer has no gate entry (see _distribute_weights).
         self._sim_inflight_expected: dict = {}   # end -> expected sim_completion_ts
-        self._sim_trainer_budget: dict = {}      # end -> last observed TRAINING_BUDGET_S
-        # Unseen-trainer floor for the gate's expected completion: a running MINIMUM,
-        # so expected stays a true lower bound on sct and the clock never laps a
-        # not-yet-seen (often fast) trainer (the past-dating seed). Mean would overshoot.
-        self._sim_budget_min: float = 12.0
-        self._sim_budget_running_mean: float = 12.0
-        self._sim_budget_n: int = 0
 
         # Past-dating source attribution: which seed produced each past-dated commit
         # (sct < vclock by > slack), so a pacing fix can target the dominant one. Sources:
@@ -324,12 +322,10 @@ class TopAggregator(SyncTopAgg):
             self._sim_inflight_expected = {}
             self._sim_withheld_payload = {}
             self._sim_withheld_delivering = {}
-            self._sim_trainer_budget = {}
-            self._sim_budget_running_mean = 12.0
-            self._sim_budget_n = 0
-            self._sim_budget_min = 12.0
             self._sim_pastdated_by_source = {}
             self._sim_commit_count = {}
+        if not hasattr(self, "_sim_known_delay_s"):  # bare-init guard (tests)
+            self._sim_known_delay_s = {}
         barrier_t0 = time.time()
         deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
         drained_all = True
@@ -344,6 +340,7 @@ class TopAggregator(SyncTopAgg):
             # Buffer one received update into the sct-ordered reorder buffer,
             # keyed by its actual sender + sct.
             actual_end = metadata[0]
+            self._note_sim_known_delay(actual_end, msg)
             sct = msg.get(MessageType.SIM_COMPLETION_TS)
             if sct is None:
                 sct = self._vclock.now
@@ -363,7 +360,6 @@ class TopAggregator(SyncTopAgg):
             # alone misses ends that entered RECV after it, which is what let the
             # gate spin on an earliest-expected straggler it never probed and then
             # commit past it (past-dated, staleness drift).
-            grace = self._sim_recv_grace_s()
             live_inflight = [
                 e for e in set(recv_ends) | set(self._sim_inflight_expected)
                 if channel.has(e)
@@ -382,7 +378,13 @@ class TopAggregator(SyncTopAgg):
                 # only on the genuinely-not-yet-arrived earlier-sct straggler.
                 if live_inflight:
                     probed = max(probed, len(live_inflight))
-                    for msg, metadata in channel.drain_ready(live_inflight, timeout=grace):
+                    # §M: exact bound when known; else a poll tick (drain_ready
+                    # can't block on timeout=None) -- the outer pass loop retries.
+                    _timeout = self._sim_recv_timeout_s(live_inflight)
+                    for msg, metadata in channel.drain_ready(
+                        live_inflight,
+                        timeout=(_timeout if _timeout is not None else self._SIM_RECV_MARGIN_S),
+                    ):
                         _ingest(msg, metadata)
                     drained_all = all(
                         self._sim_buffer.has(e) or e in self._sim_committed
@@ -394,8 +396,8 @@ class TopAggregator(SyncTopAgg):
                 # `exp` so a slow trainer whose message already arrived buffers as a
                 # FUTURE instead of being drained-in late and committed past-dated —
                 # OR its modeled `exp` is at/before the buffered minimum (+slack), so
-                # the gate can still wait (recv_fifo grace) for an expected-soon
-                # straggler whose fragments are mid-reassembly.
+                # the gate can still wait for an expected-soon straggler whose
+                # fragments are mid-reassembly.
                 _bmin = self._sim_buffer.peek_min_ts()
                 _probe_ceiling = (
                     _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
@@ -412,10 +414,12 @@ class TopAggregator(SyncTopAgg):
                 _pending_ends = to_probe
                 if to_probe:
                     probed = max(probed, len(to_probe))
+                    # §M: exact bound when known; None to genuinely block.
+                    _timeout = self._sim_recv_timeout_s(to_probe)
                     for msg, metadata in channel.recv_fifo(
-                        to_probe, first_k=len(to_probe), timeout=grace
+                        to_probe, first_k=len(to_probe), timeout=_timeout
                     ):
-                        if msg is None:  # no more ready (grace expired or set drained)
+                        if msg is None:  # no more ready (bound expired or set drained)
                             break
                         _ingest(msg, metadata)
                     drained_all = all(self._sim_buffer.has(e) for e in to_probe)
@@ -445,7 +449,6 @@ class TopAggregator(SyncTopAgg):
             # Loop to keep draining/waiting for that earlier-expected stuck trainer.
             self._sim_gate_holds = getattr(self, "_sim_gate_holds", 0) + 1
         barrier_wait = time.time() - barrier_t0
-        self._note_sim_fill(barrier_wait, drained_all)
 
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit. First re-inject
@@ -518,21 +521,9 @@ class TopAggregator(SyncTopAgg):
                 if not hasattr(self, "_sim_free_slot_ts"):
                     self._sim_free_slot_ts = deque(maxlen=128)
                 self._sim_free_slot_ts.append(self._vclock.now)
-        # Gate bookkeeping: this trainer is no longer in flight; learn its MODELED
-        # budget (running mean refines the default for trainers not yet observed).
-        # learn from TRAINING_BUDGET_S (contention-free modeled delay), NOT
-        # SIM_CLIENT_TASK_TRAIN_DURATION_S (= max(gpu, budget), contention-inflated). The modeled
-        # budget is the stable lower bound the gate needs so it fires on genuine
-        # stragglers instead of being pushed into the future by a GPU spike.
+        # Gate bookkeeping: trainer no longer in flight. §M: its MODELED_DELAY_S
+        # was already learned into _sim_known_delay_s by _ingest above.
         self._sim_inflight_expected.pop(_end, None)
-        _budget = m.get(MessageType.TRAINING_BUDGET_S) if isinstance(m, dict) else None
-        if _budget is None and isinstance(m, dict):  # fallback for older messages
-            _budget = m.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
-        if _budget is not None:
-            self._sim_trainer_budget[_end] = float(_budget)
-            self._sim_budget_n += 1
-            self._sim_budget_running_mean += (float(_budget) - self._sim_budget_running_mean) / self._sim_budget_n
-            self._sim_budget_min = min(self._sim_budget_min, float(_budget))
         _commit_gap = self._vclock.now - sct
         # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
@@ -600,7 +591,7 @@ class TopAggregator(SyncTopAgg):
                 f"pastdated_gap_cum={getattr(self, '_sim_pastdated_gap_cum', 0.0):.0f} "
                 f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.0f} "
                 f"pastdated_by_source=[{_pd_src}] "
-                f"budget_mean={getattr(self, '_sim_budget_running_mean', 0.0):.1f} "
+                f"known_delay_n={len(self._sim_known_delay_s)} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
         # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
@@ -921,7 +912,8 @@ class TopAggregator(SyncTopAgg):
                     f"process_s={_process}"
                 )
 
-                _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+                # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+                _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
                 if _budget_s > 0:
                     if self.simulated:
                         # sim overrun: modeled compute exceeded budget (GPU contention).
@@ -1669,10 +1661,11 @@ class TopAggregator(SyncTopAgg):
             if self.simulated:
                 _sst = _end_send_ts[end]
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
-                # Expected completion = dispatch vclock + a lower-bound budget (own
-                # observed, else the running min), so the gate never laps this trainer.
-                _budget = self._sim_trainer_budget.get(end, self._sim_budget_min)
-                self._sim_inflight_expected[end] = _sst + _budget
+                # §M: expected completion = dispatch vclock + this end's own
+                # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
+                _delay = self._sim_known_delay_s.get(end)
+                if _delay is not None:
+                    self._sim_inflight_expected[end] = _sst + _delay
                 if _staggered:
                     _m = dict(base_msg)
                     _m[MessageType.SIM_SEND_TS] = _sst

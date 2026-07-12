@@ -82,7 +82,7 @@ class MessageType(Enum):
     SIM_SEND_TS = 34        # virtual clock T_v at weight distribution
     SIM_COMPLETION_TS = 35  # sim_send_ts + max(gpu, D); reorder buffer commits by this
     SIM_CLIENT_TASK_TRAIN_DURATION_S = 36  # max(gpu_time, D) = client task-train duration; sim analog of real WALL_SEND_TS - dispatch (excludes aggregator read-wait), feeds OORT speed utility
-    TRAINING_BUDGET_S = 37   # trainer's configured total task budget (training_delay_s)
+    # 37 retired (§M): was TRAINING_BUDGET_S, superseded by MODELED_DELAY_S (43).
     WALL_SEND_TS = 38        # wall-clock unix timestamp (float) when trainer calls channel.send() (right after compute) — used to measure real client task-train duration
     WALL_RECV_TS = 39        # wall-clock unix timestamp (float) when trainer's channel.recv() returns (weights received from agg)
     CLIENT_TASK_TRAIN_COMPUTE_S = 40     # modeled compute duration in seconds: max(real_gpu_time, training_delay_s); stamped by trainer unconditionally (real and sim)
@@ -98,9 +98,9 @@ class MessageType(Enum):
     AGG_START_TS = 42
 
     # Modeled per-trainer mobile delay D = training_delay_s / factor / speedup,
-    # stamped by the trainer in BOTH modes. Unlike SIM_COMPLETION_TS /
-    # TRAINING_BUDGET_S (which fold in measured GPU time and differ run-to-run),
-    # D is deterministic from the registry, so the aggregator orders a cohort's
-    # commits by (D, trainer_id) identically in real and sim. None when delays
-    # are disabled (aggregator then falls back to arrival order).
+    # stamped by the trainer in BOTH modes. Unlike SIM_COMPLETION_TS (which
+    # folds in measured GPU time and differs run-to-run), D is deterministic
+    # from the registry, so the aggregator orders a cohort's commits by (D,
+    # trainer_id) identically in real and sim. None when delays are disabled
+    # (aggregator then falls back to arrival order).
     MODELED_DELAY_S = 43

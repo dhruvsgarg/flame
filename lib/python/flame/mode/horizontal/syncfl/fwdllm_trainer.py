@@ -615,7 +615,6 @@ class Trainer(Role, metaclass=ABCMeta):
                 # contribution's [dispatch, completion] interval for R1.
                 MessageType.SIM_SEND_TS: self._sim_send_ts,
                 MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
-                MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
                 MessageType.WALL_SEND_TS: time.time(),
                 MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }

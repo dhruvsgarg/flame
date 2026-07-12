@@ -228,6 +228,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
 
+        # §M: shared per-trainer delay cache (end -> MODELED_DELAY_S). No
+        # cross-trainer fallback -- an unseen end has no entry.
+        self._sim_known_delay_s: dict = {}
+
         self._updates_recevied = {}
 
         self._agg_training_stats = {}
@@ -350,20 +354,30 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_overhead_cum = getattr(self, "_sim_overhead_cum", 0.0) + max(0.0, overhead)
         self._sim_sct_adv_cum = getattr(self, "_sim_sct_adv_cum", 0.0) + max(0.0, from_sct)
 
-    # Recv-barrier dead-end ceiling: max(floor, factor * EMA of full-drain wall).
-    # Bounds the wait for a non-responding end only; never paces responders.
-    SIM_RECV_GRACE_FLOOR_S = 2.0
-    SIM_RECV_GRACE_FACTOR = 4.0
+    # §M: replaces the old reactive-EMA grace ceiling with exact per-trainer
+    # knowledge. `_note_sim_known_delay` is the write site; `_sim_recv_timeout_s`
+    # is the read side used by the recv/barrier call sites below.
+    _SIM_RECV_MARGIN_S = 0.5
 
-    def _sim_recv_grace_s(self) -> float:
-        return max(self.SIM_RECV_GRACE_FLOOR_S,
-                   self.SIM_RECV_GRACE_FACTOR * getattr(self, "_sim_fill_ema", 0.0))
-
-    def _note_sim_fill(self, barrier_wait: float, drained_all: bool) -> None:
-        if not drained_all:
+    def _note_sim_known_delay(self, end, msg) -> None:
+        """Cache `end`'s MODELED_DELAY_S on first observation (constant per
+        trainer_id, so no decay/EMA needed). None (delays disabled) is left
+        uncached, distinct from "not yet observed"."""
+        if not isinstance(msg, dict):
             return
-        prev = getattr(self, "_sim_fill_ema", 0.0)
-        self._sim_fill_ema = (0.7 * prev + 0.3 * barrier_wait) if prev else barrier_wait
+        delay = msg.get(MessageType.MODELED_DELAY_S)
+        if delay is not None:
+            self._sim_known_delay_s[end] = float(delay)
+
+    def _sim_recv_timeout_s(self, ends) -> float:
+        """Real-wall-clock recv_fifo timeout for `ends`. None (genuinely
+        block) if any end hasn't reported MODELED_DELAY_S yet; otherwise the
+        max known delay + margin -- a safe real-time bound since compute is
+        fidelity-guaranteed << the modeled delay. No fallback for unseen ends."""
+        cache = self._sim_known_delay_s
+        if not ends or any(e not in cache for e in ends):
+            return None
+        return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
 
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST
@@ -394,18 +408,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
-            grace = self._sim_recv_grace_s()
-            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=grace):
-                if not msg:  # no more ready (grace expired or set drained)
+            # §M: exact per-end bound, or None to genuinely block.
+            timeout = self._sim_recv_timeout_s(ends)
+            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
+                if not msg:  # no more ready (bound expired or set drained)
                     break
                 end = md[0]
+                self._note_sim_known_delay(end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
             drained_all = all(buf.has(e) for e in ends)
         barrier_wait = time.time() - barrier_t0
         if ends:
-            self._note_sim_fill(barrier_wait, drained_all)
             logger.info(
                 f"[SIM_BARRIER] round={getattr(self, '_round', -1)} probed={len(ends)} "
                 f"first_k={first_k} barrier_wait_s={barrier_wait:.3f} "
@@ -649,7 +664,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     f"queue_wait_s={_queue_wait} "
                     f"process_s={_process}"
                 )
-                _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+                # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+                _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
                 if _budget_s > 0:
                     if self.simulated:
                         _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)

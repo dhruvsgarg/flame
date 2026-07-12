@@ -40,7 +40,7 @@ class _FakeGradChannel:
     def add_msg(self, end, sct, budget=None, release_at=0):
         m = {MessageType.SIM_COMPLETION_TS: sct}
         if budget is not None:
-            m[MessageType.TRAINING_BUDGET_S] = budget
+            m[MessageType.MODELED_DELAY_S] = budget
         self._ends_set.add(end)
         self._msgs[end] = m
         self._release_at[end] = release_at
@@ -80,7 +80,10 @@ class _FakeGradAgg:
     _sim_recv_min_grad = TopAggregator._sim_recv_min_grad
     _release_sim_slots_at_agg_goal = TopAggregator._release_sim_slots_at_agg_goal
     _advance_sim_clock = _SyncBase._advance_sim_clock
-    _sim_recv_grace_s = _SyncBase._sim_recv_grace_s
+    # §M: shared per-trainer delay cache primitives (syncfl.TopAggregator).
+    _sim_recv_timeout_s = _SyncBase._sim_recv_timeout_s
+    _note_sim_known_delay = _SyncBase._note_sim_known_delay
+    _SIM_RECV_MARGIN_S = _SyncBase._SIM_RECV_MARGIN_S
     # #13 step 2 ready-gating helper (inherited by the real fwdllm agg from asyncfl).
     _sim_end_has_ready_msg = staticmethod(TopAggregator._sim_end_has_ready_msg)
     # #13 step 4 freed-slot FIFO consumer (inherited from asyncfl).
@@ -89,9 +92,6 @@ class _FakeGradAgg:
     _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
     # The return-path guard/slot release (defers to COMMIT in sim residence).
     _release_end_on_return = TopAggregator._release_end_on_return
-    # grace-window class knobs the base method reads off self
-    SIM_RECV_GRACE_FLOOR_S = 0.0
-    SIM_RECV_GRACE_FACTOR = 0.0
 
     def __init__(self):
         self.simulated = True
@@ -100,9 +100,7 @@ class _FakeGradAgg:
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed = set()
         self._sim_inflight_expected = {}
-        self._sim_trainer_budget = {}
-        self._sim_budget_min = 12.0
-        self._sim_fill_ema = 0.0
+        self._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
         self._sim_pending_commit = set()
         self._inflight_residence = False
         self._sim_staggered_redispatch = False   # #13 step 4 (default off)
@@ -156,8 +154,8 @@ class TestSctOrderedCommit:
 
         agg._drain(ch, ["A", "B"], 2)
 
-        assert agg._sim_trainer_budget == {"A": 8.0, "B": 5.0}
-        assert agg._sim_budget_min == 5.0  # min(12.0, 8.0, 5.0)
+        # §M: each trainer's own exact MODELED_DELAY_S, no cross-trainer min.
+        assert agg._sim_known_delay_s == {"A": 8.0, "B": 5.0}
 
 
 class TestInFlightGate:
@@ -342,7 +340,7 @@ class TestFreedSlotRefill:
         round frontier (which would give the same expected for both)."""
         agg = _FakeGradAgg()
         agg._sim_staggered_redispatch = True
-        agg._sim_budget_min = 4.0
+        _budget = 4.0  # a hypothetical known per-trainer delay for this check
         for e, s in [("A", 10.0), ("B", 25.0)]:
             agg._sim_inflight_expected = {e: s}
             ch = _FakeGradChannel([])
@@ -352,8 +350,8 @@ class TestFreedSlotRefill:
 
         sst1 = agg._pop_free_slot_ts(100.0)
         sst2 = agg._pop_free_slot_ts(100.0)
-        exp1 = sst1 + agg._sim_budget_min
-        exp2 = sst2 + agg._sim_budget_min
+        exp1 = sst1 + _budget
+        exp2 = sst2 + _budget
         assert (exp1, exp2) == (14.0, 29.0)   # spread, not (round_now+budget)×2
 
 

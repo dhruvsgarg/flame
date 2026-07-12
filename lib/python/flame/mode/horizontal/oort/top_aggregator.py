@@ -88,20 +88,21 @@ class TopAggregator(BaseTopAggregator):
         barrier_t0 = time.time()
         drained_all = True
         if to_probe:
-            grace = self._sim_recv_grace_s()
+            # §M: exact per-end bound, or None to genuinely block.
+            timeout = self._sim_recv_timeout_s(to_probe)
             for msg, md in channel.recv_fifo(
-                to_probe, first_k=len(to_probe), timeout=grace
+                to_probe, first_k=len(to_probe), timeout=timeout
             ):
-                if not msg:  # no more ready (grace expired or set drained)
+                if not msg:  # no more ready (bound expired or set drained)
                     break
                 actual_end = md[0]
+                self._note_sim_known_delay(actual_end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(actual_end, sct, (msg, md))
             drained_all = all(buf.has(e) for e in to_probe)
         barrier_wait = time.time() - barrier_t0
         if to_probe:
-            self._note_sim_fill(barrier_wait, drained_all)
             logger.info(
                 f"[SIM_BARRIER] round={getattr(self, '_round', -1)} probed={len(to_probe)} "
                 f"barrier_wait_s={barrier_wait:.3f} buf_depth={len(buf)}"
@@ -999,7 +1000,8 @@ class TopAggregator(BaseTopAggregator):
                 f"queue_wait_s={_queue_wait} "
                 f"process_s={_process}"
             )
-            _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+            # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+            _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
             if _budget_s > 0:
                 if self.simulated:
                     # sim overrun: virtual round duration > budget.

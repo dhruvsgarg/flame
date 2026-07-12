@@ -4601,6 +4601,11 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
         spreading wider than real is the #15 shape, at per-cycle granularity.
     SKIPs cleanly when fields are absent (non-fwdllm runs, single-contributor
     cohorts, or pre-instrumentation logs).
+
+    §M NOTE: `barrier_wait_s`'s tol_rel/min_abs_s were tuned against the now-
+    deleted reactive-EMA grace ceiling; §M's exact-bound replacement changes
+    its real-vs-sim character, so this tolerance may need re-deriving from a
+    fresh live run. Flagged, not re-derived here.
     """
     def _phase_mean(agg, field):
         vals = [e[field] for e in agg["agg_rounds"]

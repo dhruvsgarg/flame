@@ -97,6 +97,7 @@ def _make_agg():
     agg._sim_buffer = SimReorderBuffer()
     agg.trainer_event_dict = None
     agg.pending_withheld = {}
+    agg._sim_known_delay_s = {}
     return agg
 
 
