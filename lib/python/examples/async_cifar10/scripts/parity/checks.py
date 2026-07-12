@@ -408,16 +408,31 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
 def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     """Real's genuine-time coordinate for the clock-rate rungs, or None.
 
-    When the aggregator emits ``intrinsic_span_s`` (fwdllm), returns
-    {id(agg_round_event): cumulative_intrinsic_s} -- the running sum of per-cycle
-    algorithmic spans (barrier + fedavg + eval), the real analog of the sim's
-    vclock. Real's raw wall Δts bundles a ~constant inter-round transport artifact
-    (mqtt re-fetch / redistribute / drain-tail / sleeps) the sim omits by design,
-    so anchoring on this intrinsic clock compares real-genuine vs sim-vclock like
-    for like. None when ``intrinsic_span_s`` is absent (async_cifar10 -> callers
+    When the aggregator emits ``intrinsic_span_s`` (fwdllm) on a SYNC baseline,
+    returns {id(agg_round_event): cumulative_intrinsic_s} -- the running sum of
+    per-cycle algorithmic spans (barrier + fedavg + eval), the real analog of
+    the sim's vclock. Real's raw wall Δts bundles a ~constant inter-round
+    transport artifact (mqtt re-fetch / redistribute / drain-tail / sleeps) the
+    sim omits by design, so anchoring on this intrinsic clock compares
+    real-genuine vs sim-vclock like for like. Sync cycles run strictly
+    serially (one round in flight), so the cumulative sum correctly excludes
+    just that inter-round gap.
+
+    None for async baselines (fluxtune, ``is_async``): async cycles OVERLAP in
+    real wall-time (multiple cohorts commit concurrently), so summing each
+    cycle's own intrinsic_span_s as if sequential races far ahead of raw wall
+    (confirmed ~3.8-4x on fluxtune real logs -- 20764.7s cumulative vs 5372s
+    raw at a 5400s run's end). There is no async equivalent of sync's
+    inter-round dead time to exclude -- concurrent cycles ARE the genuine
+    progress, not overhead -- so callers fall back to raw wall ``ts``, same as
+    async_cifar10 (which never emits intrinsic_span_s in the first place).
+
+    None when ``intrinsic_span_s`` is absent entirely (async_cifar10 -> callers
     fall back to ``ts``, byte-identical)."""
     evs = [e for e in agg_rounds if e.get("event") == "agg_round"]
     if not any(e.get("intrinsic_span_s") is not None for e in evs):
+        return None
+    if any(e.get("is_async") for e in evs):
         return None
     coord, run = {}, 0.0
     for e in evs:

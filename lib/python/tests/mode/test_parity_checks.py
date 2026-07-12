@@ -259,6 +259,57 @@ class TestIntrinsicSpanAnchor:
         assert wd["max_abs_disparity_s"] > 100.0, wd  # 15 s/unit artifact, cumulative
 
 
+class TestIntrinsicSpanAsyncOverlap:
+    """§Next-roots (simulate_fwdllm.md): fluxtune's async cycles OVERLAP in
+    real wall-time (multiple cohorts commit concurrently, unlike sync's one
+    round in flight), so cumulative-summing each cycle's own intrinsic_span_s
+    as if sequential races far ahead of raw wall -- confirmed ~3.8-4x on live
+    fluxtune logs (20764.7s cumulative vs 5372s raw at a 5400s run's end).
+    `is_async` must force the raw-wall fallback (same as async_cifar10, which
+    never emits intrinsic_span_s), not the sync cumulative-sum anchor."""
+
+    def _pair(self, is_async):
+        # 100 commits, each a genuine 80s barrier+eval span, but real cycles
+        # OVERLAP ~4x in wall time (dispatched to ~4 concurrent trainers) so
+        # raw wall only advances 20s/commit -- matching sim's vclock 1:1.
+        # (100, not 10: keeps a matched-V boundary rounding edge to <=1%,
+        # well under the 5% tol, instead of dominating a 10-commit sample.)
+        real_rounds, sim_rounds = [], []
+        for d in range(1, 101):
+            real_rounds.append({
+                "event": "agg_round", "round": 1, "ts": float(d * 20),
+                "data_id": d, "cycle_data_id": d,
+                "contributing_trainers": ["a"], "staleness": [0],
+                "agg_goal_count": 1, "intrinsic_span_s": 80.0,
+                "is_async": is_async,
+            })
+            sim_rounds.append({
+                "event": "agg_round", "round": 1, "ts": float(d),
+                "vclock_now": float(d * 20), "data_id": d,
+                "cycle_data_id": d, "contributing_trainers": ["a"],
+                "staleness": [0], "agg_goal_count": 1,
+                "intrinsic_span_s": 80.0, "is_async": is_async,
+            })
+        return _agg(agg_rounds=real_rounds), _agg(agg_rounds=sim_rounds)
+
+    def test_async_falls_back_to_raw_wall(self):
+        real, sim = self._pair(is_async=True)
+        # raw-wall-anchored real (20s/commit) matches sim's vclock (20s/commit)
+        r = pc.total_commits_parity(real, sim, tol_rel=0.05)
+        assert r["ok"], r
+        t = pc.throughput_parity(real, sim, tol_rel=0.05)
+        assert t["ok"], t
+
+    def test_sync_still_uses_cumulative_intrinsic_sum(self):
+        # Same synthetic overlap, but is_async=False: cycles aren't supposed
+        # to overlap for sync in the first place, so the cumulative sum
+        # (which races to 80s/commit vs sim's 20s/commit vclock) correctly
+        # flags this as a real divergence rather than silently masking it.
+        real, sim = self._pair(is_async=False)
+        r = pc.total_commits_parity(real, sim, tol_rel=0.05)
+        assert not r["ok"], r
+
+
 class TestSimSpeedup:
     """sim_speedup [DIAG] (#13): sim must run virtual time at least as fast as
     wall (sim_rate >= 1). K7's sane-range [0.01,100] check passes a slowdown;

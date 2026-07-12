@@ -78,13 +78,17 @@ smaller cohort in sim (mean 1.49) than real (mean 1.91), inflating `per_round_ad
 (RESUME HERE):** root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real —
 check the sim availability/eligibility filter on each reselect call, not just initial dispatch.
 
-fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`convergence` still hard-fail
-at full length — confirmed as the same `_real_intrinsic_clock` (`../async_cifar10/scripts/parity/checks.py:408`)
-async-cycle-overlap checker artifact seen in the 900s smoke: `real_wall_elapsed_s` 20764.7 vs raw wall
-5419s ≈ 3.83× race-ahead (was ~4× at 900s). Not a real regression; still open (see open issues).
-fluxtune `sim_rate` at the official 0.5-divisor/5400s basis is **0.886 (SLOWDOWN, confirmed <1)** —
-resolves the prior "re-check at 0.5/5400s" pending note; the compute-bound-floor explanation (open
-issues) stands (the 0.25/900s smoke's 1.77 was a diagnostic-divisor artifact, not comparable).
+fluxtune's two structural blockers found on the last full-length run are now CLOSED (§G): the
+`_real_intrinsic_clock` async-cycle-overlap checker artifact (was inflating `total_commits`/
+`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` to 76–86% rel_diff; now falls back
+to raw wall for async, validated down to ~17–24% on a 900s smoke, consistent with the ~19% hand-derived
+from the full run) and the Oort speed-penalty singleton-population bug (`preferred_duration`; was real
+81.7%/sim 0.5% binding, root-caused to `calculate_round_preferred_duration` scoring async's
+one-trainer-at-a-time dispatch batch instead of the full registry). **Neither fix has been observed on a
+live run yet** — both were validated against already-banked (pre-fix) telemetry re-derivation + synthetic
+unit tests; a fresh smoke is the next step (Next roots #1). fluxtune `sim_rate` at the official
+0.5-divisor/5400s basis is **0.886 (SLOWDOWN, confirmed <1)** — the compute-bound-floor explanation (open
+issues) stands.
 
 Latest banked pairs (`run_sequential.sh --mode both --delays on --num-gpus 8 --delay-divisor 0.5
 --max-runtime-s 5400`, n=10 smoke; real runs all hit the 5400s runtime cap):
@@ -167,7 +171,7 @@ refuted "async #N" framing.
 |---|---|---|---|
 | **fwdllm_plus `sim_rate` SLOWDOWN (0.906) — NEW regression** | First full-length run where sim is SLOWER than real wall for this baseline (was 5.77 healthy on the prior 0.5/5400s basis; fwdllm, same sync family, stays 5.571 healthy on the identical config). `per_round_advance`: sim 137.3s vs real 94.0s (+46%). `selection_detail`: sim's per-iteration reselect picks a smaller cohort (mean 1.49) than real (mean 1.91), `rel_diff_chosen`=0.218 vs tol 0.05. Distinct from the closed #7 eligible-count-gap (§G) — `eligibility` itself now PASSES; this is a new gap specific to the *per-iteration* reselect path (fwdllm reselects per-round only, so it can't surface this). | fwdllm_plus (sync) | **TOP priority — RESUME HERE.** Root-cause why sim's oracular per-iteration reselect under-fills the cohort vs real: check the sim availability/eligibility filter on each reselect call (not just initial dispatch) for a stale or under-refreshed candidate pool. |
 | **fluxtune `convergence` (now an honest residual)** | Checker bug fixed (§G) surfaced the real number: `avg_accuracy_diff` 0.0739 (was a fluke single-eval 0.1509 — see §G). Now compares all 50 matched `data_id` checkpoints, still > the 0.05 tol. | fluxtune | Distributional target beyond bin 1 (STRATEGY) already covers curve-level drift; re-check now that the `preferred_duration` selector gap is closed (§G) — a systematically less speed-selective sim plausibly explained part of this; needs a fresh run to confirm. |
-| **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` async-clock artifact** | Confirmed at full length (was 900s smoke only): `real_wall_elapsed_s` 20764.7 vs raw wall 5419s ≈ 3.83× race-ahead (was ~4× at 900s). Traced to `_real_intrinsic_clock` (`../async_cifar10/scripts/parity/checks.py:408`) cumulative-summing per-cycle `intrinsic_span_s` as if sequential — correct for sync, but fluxtune's async cycles overlap in real wall-time, so the coordinate races ahead of raw wall and crosses the matched-V budget early (15 real commits counted vs 63 sim). Re-deriving with raw wall instead: real did 51 commits over its full run, sim did 63 — a real but much smaller (~19%) residual, not the reported 76%. No longer drags down `convergence` (re-keyed off this path, §G). Likely a checker blind spot for async concurrency, not a real regression. | fluxtune (async only) | Root-cause whether `_real_intrinsic_clock` should dedupe overlapping cycles for async, or whether U2/K8 should fall back to raw wall for async baselines. |
+| **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` residual gap** | Checker artifact FIXED (§G) — was `_real_intrinsic_clock` cumulative-summing overlapping async cycles, confirmed on the 900s smoke: `total_commits` `rel_diff` 0.857→0.167, `throughput` 0.814→0.235, `overhead_residual`/`per_round_advance` ~0.81→~0.20 (all from the SAME single fix). Still fails the 5% tol at this small sample (n_real_commits=5), but the magnitude now matches the ~19% gap hand-derived from the full 5400s run. | fluxtune (async only) | Likely small-N noise at 900s (principle: re-check at full 5400s length); if the ~19% residual persists at length, that's a genuine (much smaller) sim/real commit-rate gap worth a fresh look, not a checker bug. |
 | **fluxtune `sim_rate`<1 (compute-bound floor)** | **Confirmed at the official 0.5-divisor/5400s basis: 0.886, still <1** (resolves the prior "re-check at 0.5/5400s" pending note; the 0.25/900s smoke's 1.77 was a diagnostic-divisor artifact, not comparable). Headroom already adequate (sct D≥8s > JVP gpu ~3.5–5s) — NOT the K-D38 D≈gpu collision. Residual = compute floor: P=10 JVP (10× sync) + ~8.9s unskippable aggregator eval + agg_goal=3 low GPU parallelism. | fluxtune | Real LLM-mobile trace (Next roots #2). Shrinking divisor (0.25/0.1) pushes the NUMBER >1 by doing fewer data_ids per vclock ceiling — baseline modeling knob (principle #3), not a parity fix. |
 | **fluxtune `step_timing_breakdown` residual `_force_cuda_memory_cleanup`** (minor) | `train_with_data_id`'s wrapper-exemption fix (§G) closed the dominant gap; this KS=0.394 vs 0.25 tol residual remains, but real/sim means differ by only 0.01s (0.20 vs 0.19s) — looks like small-N distribution-shape noise (K-D37 class), not a genuine divergence. | fluxtune | Not yet root-caused; low priority — re-check if it starts moving means, not just KS. |
 | **#N (var-VALUE nondeterminism wall)** | Float-nondeterminism flips the `var<0.3` gate → cohort SET (async) / var VALUE (sync) diverge past a sensitive bin (onset n-scale-sensitive). Not a sim bug. | fwdllm, fluxtune (fwdllm_plus latent) | DISTRIBUTIONAL target beyond bin 1 already covers it; P0-2 (2-real-run diff) open only to bound jitter magnitude vs n. |
@@ -175,12 +179,16 @@ refuted "async #N" framing.
 | **fwdllm `barrier_wait_s` overrun** (minor) | sim 2.515s > real 0.018s, fwdllm-only; drain-tail/spread PASS. | fwdllm | Not yet root-caused; low priority next to `sim_rate`'s 5.6× overall speedup. |
 
 ### Next roots — ranked (correctness before time; SHARED before per-baseline — principle #14)
-**Focus: fluxtune first (operator directive).** Reordered below; fwdllm_plus's regression is real but parked
-until fluxtune's blockers close.
-1. **fluxtune `total_commits`/`terminal_state`/`throughput`/`overhead_residual`/`per_round_advance` async-clock
-   artifact — TOP (RESUME HERE).** `preferred_duration` is closed (§G). Root-cause whether `_real_intrinsic_clock`
-   needs an async-aware (overlap-dedup) coordinate, or whether these rungs should fall back to raw wall for
-   async baselines — fully diagnosable offline against already-banked telemetry, no new run needed to start.
+**Focus: fluxtune first (operator directive).** `preferred_duration` and the `_real_intrinsic_clock`
+checker artifact are both closed (§G). Reordered below; fwdllm_plus's regression is real but parked until
+fluxtune's blockers close.
+1. **Fresh fluxtune smoke to validate both landed fixes live — TOP (RESUME HERE).** Neither the
+   `calculate_total_utility` population-scope fix nor the `_real_intrinsic_clock` async fallback has been
+   observed on a run generated WITH the fix (all analysis above re-derived their effect against pre-fix
+   telemetry / synthetic tests). Run the same 0.25-divisor/900s smoke (command in prior open-issue history)
+   and confirm: `preferred_duration` binding rates converge (was real 81.7%/sim 0.5%); `total_commits`/
+   `throughput`/etc. residual gap holds near ~19% (or better) at full 5400s length, not just this small-N
+   900s window.
 2. **fwdllm_plus `sim_rate` SLOWDOWN regression.** New at the full-length re-baseline (open issues);
    root-cause the per-iteration reselect cohort-size gap — a previously-healthy baseline regressing is a
    correctness signal, not a throughput nit (principle #14). Picked back up once fluxtune's blockers close.
@@ -350,6 +358,18 @@ cost, K-D3). D1/D3/D6 resolved (§K) — D3 ("sim must reproduce real's grad sta
 ---
 
 ## §G  Fixes landed (what worked — ≤20-word problem + ≤20-word fix; do not redo)
+- **`_real_intrinsic_clock` async-cycle-overlap checker artifact (`total_commits`/`terminal_state`/
+  `throughput`/`overhead_residual`/`per_round_advance`).** Cumulative-summed each cycle's own
+  `intrinsic_span_s` as if cycles ran sequentially — correct for sync (one round in flight), but
+  fluxtune's async cycles OVERLAP in real wall-time (multiple cohorts commit concurrently), so the
+  coordinate raced ~3.8–4× ahead of raw wall, truncating the matched-V comparison window to real's first
+  ~25% of actual progress. Fix: `_real_intrinsic_clock` returns `None` for `is_async` baselines, falling
+  back to raw wall `ts` (same fallback already used for async_cifar10, which never emits
+  `intrinsic_span_s`) — no invented overlap-dedup logic, just the same fallback path the code already
+  had. Regression-guarded (`tests/mode/test_parity_checks.py::TestIntrinsicSpanAsyncOverlap`, confirmed
+  to fail pre-fix). Validated on the 900s smoke: `total_commits` `rel_diff` 0.857→0.167, `throughput`
+  0.814→0.235 — dramatically smaller, matching the ~19% gap independently hand-derived from the full
+  5400s run's raw-wall commit counts (§A). Full suite green.
 - **fluxtune sim Oort speed-penalty never binds — `calculate_round_preferred_duration` scored a
   transient SINGLETON population, not the reference's full client pool.** Root-caused via the landed
   `round_preferred_duration_s`/`sys_util_mean` telemetry read against a fresh 0.25-divisor/900s smoke:
