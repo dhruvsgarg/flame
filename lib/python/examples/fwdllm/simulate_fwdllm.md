@@ -409,6 +409,15 @@ cost, K-D3). D1/D3/D6 resolved (§K) — D3 ("sim must reproduce real's grad sta
 ---
 
 ## §H  Dead-ends & corrections — do NOT retry
+- **"fluxtune sim Oort speed-penalty never binds because `filtered_ends` is diluted with never-yet-returned
+  trainers, which default to the `calculate_round_preferred_duration` 60s HACK placeholder and inflate `pref`
+  above every real duration."** REFUTED by direct computation (`round_threshold=10`, N=10 → percentile index=1,
+  the 2nd-smallest sorted entry): since real durations (8–36s) always sort below the 60s placeholder, `pref`
+  only lands on a placeholder when **fewer than 2 of 10 candidates have EVER returned a grad** — a cold-start-only
+  edge case, not something that persists across a full run. Doesn't explain `system_util`≡1.0 across all 2845 sim
+  samples. *Lesson:* the 60s-default HACK is real and worth knowing about, but check the actual `filtered_ends`
+  population size/composition (or just read the new `round_preferred_duration_s` telemetry) before assuming
+  dilution explains a SUSTAINED non-binding pattern — the arithmetic doesn't support it past the first ~2 commits.
 - **"fluxtune's async cohort-SET divergence is an #N nondeterminism wall / a GPU-vs-D headroom collision, closed by
   more delay headroom."** REFUTED by the `run_20260710_2242` `--delay-divisor 0.25` diagnostic. With D≫gpu (sct
   104–144s vs gpu 3.77s) the SET still diverges at the same iter (~8), so headroom is not the cause; and the
