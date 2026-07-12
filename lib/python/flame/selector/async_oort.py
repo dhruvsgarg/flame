@@ -438,6 +438,10 @@ class AsyncOortSelector(AbstractSelector):
                 }
                 for eid in ends
             }
+            # Emit round_preferred_duration (the per-round percentile that drives
+            # the system_util speed penalty) so a divergence localizes to target
+            # vs input -- mirrors oort.py's (sync) equivalent emission.
+            _pref = getattr(self, "round_preferred_duration", None)
             self.emit_selection(
                 channel_props.get("round", 0),
                 task_to_perform,
@@ -451,6 +455,14 @@ class AsyncOortSelector(AbstractSelector):
                     "requester": self.requester,
                     "vclock_now": channel_props.get("vclock_now"),
                     "exploration_factor": self.exploration_factor,
+                    "round_preferred_duration_s": _pref.total_seconds()
+                    if hasattr(_pref, "total_seconds") else _pref,
+                    # pacer state: the percentile that sets pref (read pref divergence directly).
+                    "round_threshold": getattr(self, "round_threshold", None),
+                    "alpha": getattr(self, "alpha", None),
+                    # per-round speed-penalty summary over this round's selected
+                    # ends (see _system_util_summary).
+                    **self._system_util_summary(results.keys()),
                 },
             )
 
@@ -538,6 +550,31 @@ class AsyncOortSelector(AbstractSelector):
         )
 
         return selected_ends
+
+    def _system_util_summary(self, selected_ids) -> dict:
+        """Per-round speed-penalty summary over selected ends, for telemetry.
+
+        When `pref` is non-binding the system_util penalty never fires and the
+        selector ignores speed; logging this makes that visible without recompute.
+        Mirrors oort.py's (sync) equivalent, keyed on this round's actually-
+        selected ends (`results.keys()` at the call site) rather than
+        `self.selected_ends`, which async accumulates per-requester across
+        rounds, not per-round.
+        """
+        audit = getattr(self, "_audit_components", None) or {}
+        sel = [
+            audit[e]["system_util"]
+            for e in selected_ids
+            if e in audit and audit[e].get("system_util") is not None
+        ]
+        if not sel:
+            return {"sys_util_mean": None, "frac_penalized": None, "pref_binds": None}
+        penalized = sum(1 for su in sel if su < 1.0)
+        return {
+            "sys_util_mean": sum(sel) / len(sel),
+            "frac_penalized": penalized / len(sel),
+            "pref_binds": penalized > 0,
+        }
 
     def sample_by_speed(
         self, unexplored_end_ids: list[str], num_of_ends: int

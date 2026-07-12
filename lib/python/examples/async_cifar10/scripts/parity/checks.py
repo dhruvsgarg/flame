@@ -1785,10 +1785,25 @@ def _mark_low_confidence_if_short(res: dict, budget_s: Optional[float]) -> dict:
     return res
 
 
+def _eval_progress_axis(agg_evals: list) -> str:
+    """The eval curve's true progress key -- `data_id` when the run advances it
+    (fwdllm's progress axis, #2 / `_progress_axis`), else FL `round`
+    (async_cifar10, byte-identical). fwdllm holds `round` static for the whole
+    run (one model, grads aggregated in place), so keying eval curves by
+    `round` alone collapses every eval in the run onto ONE dict entry --
+    comparing real's LAST checkpoint against sim's LAST checkpoint at
+    mismatched amounts of training (e.g. fluxtune real data_id=49 vs sim
+    data_id=61), not a matched-progress pair. Mirrors the fix already applied
+    to total_commits/terminal_state/throughput."""
+    return "data_id" if any(e.get("data_id") is not None for e in agg_evals) else "round"
+
+
 def convergence_parity(real: dict, sim: dict,
                         acc_tol: float = 0.05,
                         budget_s: Optional[float] = None) -> dict:
-    """C1/C2: Accuracy and loss curves aligned by FL round.
+    """C1/C2: Accuracy and loss curves aligned by progress unit (see
+    _eval_progress_axis -- `data_id` for fwdllm, FL `round` byte-identical
+    fallback for async_cifar10).
 
     C3 fix: the original compare_parity.py had a self-compare bug where
     sc was assigned from real["agg_evals"] before being overwritten with
@@ -1798,8 +1813,9 @@ def convergence_parity(real: dict, sim: dict,
     haven't diverged yet); a genuine FAIL still surfaces.
     """
     def curve(agg_evals):
-        return {e["round"]: {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
-                for e in agg_evals}
+        axis = _eval_progress_axis(agg_evals)
+        return {e[axis]: {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
+                for e in agg_evals if e.get(axis) is not None}
 
     rc = curve(real["agg_evals"])
     sc = curve(sim["agg_evals"])  # fix: no intermediate real assignment
@@ -3835,8 +3851,16 @@ def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
 # or the MQTT recv `phase_mqtt_fetch` already treats as diagnostic-only) --
 # reported but excluded from the `ok` reduction, same "gates_ok": False pattern
 # as `trainer_phase_wall_budget_ok`'s mqtt_fetch_s. Not a real↔sim divergence.
+# `train_with_data_id` is a WRAPPER @timer_decorator around
+# `_emulate_training_delay` (exempted) + `_perform_training` (genuine, matched
+# compute) -- its own divergence is structurally just the nested real-only
+# sleep bubbling up, not an independent measurement, so it inherits the same
+# exemption (fluxtune: real 19.16s = 15.52s delay + 3.63s perform_training,
+# sim 3.615s = 0.0s delay + 3.615s perform_training -- perform_training alone
+# already matches).
 _STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
     "_emulate_training_delay", "pause_execution", "_fetch_weights", "recv_wrapper",
+    "train_with_data_id",
 })
 
 
@@ -3913,12 +3937,14 @@ def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
 
 def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
                             budget_s: Optional[float] = None) -> dict:
-    """C2 [DIST]: loss curve by FL round, asserted independently of accuracy.
+    """C2 [DIST]: loss curve by progress unit (see _eval_progress_axis),
+    asserted independently of accuracy.
 
     Horizon guard (see convergence_parity): sub-2h PASS → LOW_CONF; FAIL stands.
     """
     def _curve(evs):
-        return {e["round"]: e.get("test-loss") for e in evs}
+        axis = _eval_progress_axis(evs)
+        return {e[axis]: e.get("test-loss") for e in evs if e.get(axis) is not None}
 
     rc, sc = _curve(real["agg_evals"]), _curve(sim["agg_evals"])
     rounds = sorted(set(rc) & set(sc))
