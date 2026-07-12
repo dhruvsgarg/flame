@@ -1868,8 +1868,27 @@ class AsyncOortSelector(AbstractSelector):
                 f"Invoking calculate_total_utility() with utility_list: "
                 f"{utility_list}, filtered_ends: {filtered_ends}, round: {model_version}"
             )
+            # calculate_round_preferred_duration (inside calculate_total_utility)
+            # must see the FULL registered client population, not this call's
+            # transient filtered_ends -- reference Oort computes the percentile
+            # from client_list = ALL tracked arms (third_party/Oort/oort/oort.py
+            # getTopK:267-273), independent of which clients are feasible for
+            # THIS dispatch. Async's filtered_ends is almost always a SINGLETON
+            # (fluxtune telemetry: 236/244 SEND calls had len(filtered_ends)==1,
+            # since async dispatches one freed trainer at a time, unlike sync's
+            # per-round batch of the whole pool) -- on a singleton the percentile
+            # trivially returns that one candidate's own duration, so the speed
+            # penalty can never bind (confirmed: sim system_util pinned ~1.0 all
+            # run even though real per-trainer durations vary 8-72s; real's
+            # SEND calls happen to batch ~3 at a time via MQTT polling jitter,
+            # which is itself incidental, not the reference's intended
+            # population). Passing the full `connected_ends` here is safe: it's
+            # only used for ends[id] lookups on ids already in utility_list (a
+            # subset) plus this percentile calc, restoring the reference's
+            # population-level scope regardless of per-call batch size.
+            _duration_pool = connected_ends if connected_ends is not None else ends
             utility_list = self.calculate_total_utility(
-                utility_list, filtered_ends, model_version
+                utility_list, _duration_pool, model_version
             )
 
             logger.debug(f"After calculate_total_utility, utility_list: {utility_list}")

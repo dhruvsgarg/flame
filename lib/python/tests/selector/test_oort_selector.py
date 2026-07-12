@@ -309,6 +309,74 @@ class TestAsyncOortSystemUtilTelemetry:
         finally:
             telemetry.shutdown()
 
+    def test_singleton_filtered_ends_still_uses_full_pool_for_pref(
+        self, tmp_path, async_oort, make_ends
+    ):
+        """Root cause of the fluxtune bug: async dispatches one freed trainer
+        per SEND call (fluxtune telemetry: 236/244 calls had
+        len(filtered_ends)==1), so calculate_round_preferred_duration used to
+        see a POPULATION OF ONE -- the percentile trivially returns that one
+        candidate's own duration, so it can never exceed pref (system_util
+        pinned at 1.0 all run, confirmed in banked telemetry). Reference Oort
+        computes the percentile from ALL tracked clients
+        (third_party/Oort/oort/oort.py getTopK:267-273), not just this
+        round's feasible subset. Fix: calculate_total_utility's duration
+        population is now the full `connected_ends`, not `filtered_ends`.
+
+        Here only ONE of ten registered ends is eligible this round (the rest
+        are in `trainer_unavail_list`) -- the slowest one (36s). Pre-fix this
+        singleton would trivially set its own pref, never binding. Post-fix,
+        pref must reflect the full 10-trainer spread (8-36s), so the 36s
+        straggler -- the only one actually up for selection -- gets
+        penalized.
+        """
+        from flame import telemetry
+        from flame.channel import (
+            KEY_CH_SELECT_REQUESTER, KEY_CH_STATE, VAL_CH_STATE_SEND,
+        )
+
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            async_oort.round_threshold = 10.0  # the real default
+            durations = [8, 10, 14, 20, 22, 26, 28, 30, 32, 36]
+            ends = make_ends([f"t{i}" for i in range(len(durations))])
+            for (eid, e), d in zip(ends.items(), durations):
+                e.set_property(
+                    PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d)
+                )
+                e.set_property(PROP_STAT_UTILITY, 1.0)
+
+            # Only the slowest trainer (t9, 36s) is eligible this round --
+            # mirrors async's one-at-a-time dispatch cadence.
+            unavail = [f"t{i}" for i in range(9)]
+
+            channel_props = {
+                "round": 5,
+                KEY_CH_STATE: VAL_CH_STATE_SEND,
+                KEY_CH_SELECT_REQUESTER: "agg1",
+            }
+            async_oort.select(
+                ends, channel_props, trainer_unavail_list=unavail,
+                task_to_perform="train", agg_version_key=(5, 0),
+            )
+
+            events = [
+                json.loads(l)
+                for l in (tmp_path / "aggregator.jsonl").read_text().splitlines()
+            ]
+            sels = [e for e in events if e["event"] == "selection"]
+            assert len(sels) == 1
+            s = sels[0]
+
+            # Pre-fix this would be 36.0 (the singleton's own duration,
+            # self-referentially always <= itself). Post-fix it's the 10th
+            # percentile of the FULL 10-trainer pool.
+            assert s["round_preferred_duration_s"] < 36.0
+            t9_util = (s.get("per_trainer") or {}).get("t9", {}).get("system_util")
+            assert t9_util is not None and t9_util < 1.0
+        finally:
+            telemetry.shutdown()
+
 
 class TestRewardNormalization:
     """Guards PARITY D2 (Jun-16): the statistical reward must be normalized+clipped
