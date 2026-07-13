@@ -8,11 +8,13 @@
 # state_avl_event_ts when this fires.
 #
 # max_runtime_s trimmed to 480s (8 min) -- long enough to clear the ~5-minute
-# anomaly window and capture the debug lines, short enough not to need a
-# manual kill if the same busy-spin recurs (though the underlying deadlock
-# fix is NOT yet landed, so it still might hang past 480s if select() never
-# recovers -- kill it once the [DEBUG_AVL_POP] lines for the second wave are
-# visible in the log, no need to wait out the full budget).
+# anomaly window and capture the debug lines. The underlying deadlock fix is
+# NOT yet landed, so if it recurs the vclock freezes and max_runtime_s's
+# PRIMARY (vclock-gated, in sim mode) check will never trip on its own --
+# confirmed in run_20260713_103707, which spun 12+ real minutes past its
+# budget. sim_wall_ceiling_s is set to 600s below (vs the 9600s default
+# 20x-factor backstop) so THIS run self-terminates reliably instead of
+# needing a manual kill.
 #
 # After: grep '\[DEBUG_AVL_SYN0\]\|\[DEBUG_AVL_POP\]' on the trainer log.
 #
@@ -67,6 +69,17 @@ experiments:
           sim_staggered_redispatch: false
           sim_compute_truthful_gate: true
           sim_gate_compute_cap_s: 10.0
+          # Reliable auto-terminate: max_runtime_s's PRIMARY check is
+          # vclock-gated in sim mode, and the deadlock this run is diagnosing
+          # freezes the vclock -- so if it recurs, max_runtime_s alone will
+          # NOT stop the run (confirmed: run_20260713_103707 spun for 12+ real
+          # minutes past its budget). The wall-clock failsafe backstop
+          # defaults to max_runtime_s x 20 (SIM_WALL_CEILING_FACTOR,
+          # fwdllm_aggregator.py:252) = 9600s here -- useless as a bound for
+          # an 8-minute diagnostic. Override tight: 600s real wall (480s
+          # budget + 120s slack for legitimate startup/compute), so a
+          # recurrence self-terminates instead of needing a manual kill.
+          sim_wall_ceiling_s: 600
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
           max_runtime_s: 480
