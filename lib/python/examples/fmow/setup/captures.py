@@ -15,8 +15,8 @@ def latlon_to_ecef(lat_deg: np.ndarray, lon_deg: np.ndarray) -> np.ndarray:
     return np.stack([x, y, z], axis=1)
 
 def schedule_image_capture(config: dict) -> None:
-    fmow_root = config.root_dir / config.dataset.root_dir
-    leo_dir = config.root_dir / config.satellites.leo_dir
+    fmow_root = Path(config.dataset.root_dir)
+    leo_dir = Path(config.satellites.leo_dir)
     radius_km = config.capture.radius
     out_path = leo_dir / "captures.npz"
 

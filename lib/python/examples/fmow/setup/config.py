@@ -4,13 +4,13 @@ import yaml
 
 @dataclass
 class DatasetConfig:
-    root_dir: str = "data/fmow"
+    root_dir: str = "lib/python/examples/fmow/data/fmow"
     num_classes: int = 62
     image_size: int = 224
 
 @dataclass
 class SatellitesConfig:
-    leo_dir: str = "metadata/leo"
+    leo_dir: str = "lib/python/examples/fmow/metadata/leo"
 
 @dataclass
 class CaptureConfig:

@@ -1,10 +1,10 @@
 dataset:
-  root_dir: data/fmow
+  root_dir: lib/python/examples/fmow/data/fmow
   num_classes: 62
   image_size: 224
 
 satellites:
-  leo_dir: metadata/leo
+  leo_dir: lib/python/examples/fmow/metadata/leo
 
 capture:
   radius: 15.0 # Radius in KM for a satellite to capture an image

@@ -44,6 +44,7 @@ hyperparameters:
   use_oort_loss_fn: "True"
   training_delay_enabled: "True"
   satellite_coordinates_path: "lib/python/examples/_metadata/leo/geodetic.npz"
+  fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
   # training_delay_s: injected at runtime from trainer registry
   # avl_events_*: injected at runtime from availability traces
   client_notify:

@@ -1,0 +1,1046 @@
+# Copyright 2022 Cisco Systems, Inc. and its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you
+# may not use this file except in compliance with the License. You may
+# obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+"""FMoW horizontal FL trainer for PyTorch."""
+
+import argparse
+import ast
+import calendar
+import gc
+import hashlib
+import logging
+import os
+import sys
+import threading
+import time
+import math
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.utils.data as data_utils
+
+from torchvision import transforms
+from flame.config import Config, TrainerAvailState
+from flame.mode.horizontal.trainer import Trainer
+from flame import telemetry
+from flame.telemetry.events import (
+    build_avail_change,
+    build_trainer_round,
+    build_util_disparity,
+)
+from memory_profiler import MemoryProfiler
+
+from collections import deque
+from pathlib import Path
+
+# FMoW imports
+from model import build_model
+from config import load_config
+from fmow_dataset import FMoWDataset
+
+logger = logging.getLogger(__name__)
+
+
+def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
+    """Per-client streaming schedule (onset, span), deterministic in trainer_id.
+
+    Used for staggered data streaming so different clients' data arrives in
+    different sim-time windows. Mirrored EXACTLY in
+    scripts/analysis/oracle_misselection.py:stagger_params -- if you change the
+    derivation here, change it there too or the offline oracle will reconstruct
+    the wrong visible prefixes.
+
+        onset_s = onset_max_s * u1
+        span_s  = base_span_s * (1 + rate_jitter * (2*u2 - 1))   (>= base_span/4)
+
+    where u1, u2 in [0,1) come from disjoint 32-bit slices of
+    sha256(f"{trainer_id}:stagger").
+    """
+    h = hashlib.sha256(f"{trainer_id}:stagger".encode()).hexdigest()
+    u1 = int(h[0:8], 16) / 0xFFFFFFFF
+    u2 = int(h[8:16], 16) / 0xFFFFFFFF
+    onset_s = onset_max_s * u1
+    span_s = base_span_s * (1.0 + rate_jitter * (2.0 * u2 - 1.0))
+    return onset_s, max(base_span_s / 4.0, span_s)
+
+
+class PyTorchFMoWTrainer(Trainer):
+    """PyTorch CIFAR-10 Trainer."""
+
+    def __init__(self, config: Config, battery_threshold, time_mode="simulated") -> None:
+        """Initialize a class instance."""
+        self.config = config
+        self.dataset_size = 0
+        self.model = None
+        # Oort requires its loss function to have 'reduction'
+        # parameter
+        self.loss_fn = torch.nn.CrossEntropyLoss
+
+        self.device = None
+        self.train_loader = None
+
+        self.learning_rate = self.config.hyperparameters.learning_rate
+        self.epochs = self.config.hyperparameters.epochs
+        self.batch_size = self.config.hyperparameters.batch_size or 16
+        self.trainer_id = self.config.task_id
+
+        self.lr_decay_enabled = getattr(self.config.hyperparameters, 'lr_decay_enabled', False)
+        self.lr_decay_factor = getattr(self.config.hyperparameters, 'lr_decay_factor', 0.98)
+        self.lr_decay_epoch = getattr(self.config.hyperparameters, 'lr_decay_epoch', 10)
+        self.min_learning_rate = getattr(self.config.hyperparameters, 'min_learning_rate', 1e-4)
+
+        self.criterion = None
+
+        self.task_to_perform = "train"
+
+        self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
+        self.trainer_start_ts = time.time()
+
+        if "enabled" in self.config.hyperparameters.heartbeats:
+            self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
+        else:
+            self.heartbeats_enabled = False
+
+        if "frequency_s" in self.config.hyperparameters.heartbeats:
+            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
+                "frequency_s"
+            ]
+        else:
+            self.heartbeats_second_freq = 99999
+
+        if self.heartbeats_enabled is True:
+            self.timestamp_next_heartbeat_s = (
+                self.trainer_start_ts + self.heartbeats_second_freq
+            )
+        else:
+            self.timestamp_next_heartbeat_s = calendar.timegm(
+                time.strptime("Dec 31, 2030 @ 23:59:59 UTC", "%b %d, %Y @ %H:%M:%S UTC")
+            )
+
+        self.client_notify = self.config.hyperparameters.client_notify
+
+        # Normalize to bool: may arrive as Python bool or string "True"/"False".
+        _tde = self.config.hyperparameters.training_delay_enabled
+        self.training_delay_enabled = (
+            _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
+        )
+        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+
+        # Add satellite coordinates
+        self.satellite_index = int(self.config.hyperparameters.satellite_index)
+        coords_path = self.config.hyperparameters.satellite_coordinates_path
+        if (coords_path):
+             self.coords = np.load(coords_path)["coords"]
+
+        # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
+        # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
+        # cycle was short and advance under-charged. sct = send_ts + max(gpu, D) + leg; staleness
+        # (= cycle/advance) is invariant to it, only advance/throughput change.
+        _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
+        self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
+
+        self.time_mode = str(time_mode)
+        self.simulated = self.time_mode == "simulated"
+        self._sim_send_ts = None  # set by aggregator stamp on each task (sim mode)
+        # Aggregator's trace-read origin (agg_start_time_ts), broadcast on every
+        # dispatch in real mode -- see AGG_START_TS in trainer.py:_fetch_weights.
+        # None until the first message arrives; _sim_now() falls back to
+        # trainer_start_ts until then (Batch 3 T3.0).
+        self._agg_start_origin = None
+
+        # Use the battery_threshold to determine the
+        # avl_events_3_state config. Default to 50 if not provided
+        self.event_battery_threshold = battery_threshold
+        logger.info(
+            f"Trainer id {self.trainer_id} has battery threshold set to {self.event_battery_threshold}"
+        )
+
+        def parse_trace(value):
+            if isinstance(value, list):
+                return value  # Already parsed (from JSON config)
+            else:
+                # String format (from file config) - validate it's a safe list literal
+                try:
+                    parsed = ast.literal_eval(value)
+                    if not isinstance(parsed, list):
+                        raise ValueError(f"Expected list, got {type(parsed)}")
+                    return parsed
+                except (ValueError, SyntaxError) as e:
+                    raise ValueError(f"Invalid trace format: {e}")
+
+        if self.event_battery_threshold == 50:
+            self.avl_events_3_state = parse_trace(
+                self.config.hyperparameters.avl_events_mobiperf_3st_50
+            )
+        elif self.event_battery_threshold == 75:
+            self.avl_events_3_state = parse_trace(
+                self.config.hyperparameters.avl_events_mobiperf_3st_75
+            )
+
+        self.avl_events_mobiperf_2st = parse_trace(
+            self.config.hyperparameters.avl_events_mobiperf_2st
+        )
+
+        # Storing synthetic avail traces
+        self.avl_events_syn_0 = parse_trace(
+            self.config.hyperparameters.avl_events_syn_0
+        )
+
+        self.avl_events_syn_20 = parse_trace(
+            self.config.hyperparameters.avl_events_syn_20
+        )
+
+        self.avl_events_syn_50 = parse_trace(
+            self.config.hyperparameters.avl_events_syn_50
+        )
+
+        if self.client_notify["trace"] == "mobiperf_3st":
+            self.state_avl_event_ts = self.avl_events_3_state
+            logger.info(
+                f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
+            )
+        elif self.client_notify["trace"] == "mobiperf_2st":
+            self.state_avl_event_ts = self.avl_events_mobiperf_2st
+            logger.info(
+                f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}."
+            )
+        elif self.client_notify["trace"] == "syn_0":
+            self.state_avl_event_ts = self.avl_events_syn_0
+            logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
+        elif self.client_notify["trace"] == "syn_20":
+            self.state_avl_event_ts = self.avl_events_syn_20
+            logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
+        elif self.client_notify["trace"] == "syn_50":
+            self.state_avl_event_ts = self.avl_events_syn_50
+            logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
+        else:
+            logger.info(
+                f"No avl_events set for trainer id {self.trainer_id} since state not specified."
+            )
+
+        # Startup signature: a shared trace_hash across many trainer_ids in the
+        # same run's logs means trace assignment isn't individualized.
+        if hasattr(self, "state_avl_event_ts"):
+            events = self.state_avl_event_ts
+            trace_hash = hashlib.md5(repr(events).encode()).hexdigest()[:8]
+            logger.info(
+                f"[AVAIL_TRACE] trainer_id={self.trainer_id} "
+                f"trace={self.client_notify['trace']!r} n_events={len(events)} "
+                f"first_events={events[:2]} trace_hash={trace_hash}"
+            )
+
+        self.avl_state = TrainerAvailState.AVL_TRAIN
+
+        # flag to decide whether the trainer upon unavailability will wait or exit
+        self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
+
+        ds_cfg = getattr(self.config.hyperparameters, "data_streaming", None) or {}
+        self.data_streaming_enabled = str(ds_cfg.get("enabled", "False")) == "True"
+        self.data_streaming_full_after_s = float(
+            ds_cfg.get("full_data_available_after_s", 0)
+        )
+        # Optional staggered streaming: each client gets its OWN onset (start
+        # delay) and span (time to fill), derived deterministically from its
+        # trainer_id so the offline oracle can reconstruct the exact schedule.
+        # Uniform streaming is the special case onset=0, span=full_after_s.
+        stg = ds_cfg.get("stagger", {}) or {}
+        self.stream_stagger_enabled = str(stg.get("enabled", "False")) == "True"
+        self.stream_onset_max_s = float(stg.get("onset_max_s", 0.0))
+        self.stream_rate_jitter = float(stg.get("rate_jitter", 0.0))
+        self.stream_min_visible = int(stg.get("min_visible", 1) or 1)
+        # Defaults (overwritten per-client in load_data once trainer_id-seeded):
+        self._stream_onset_s = 0.0
+        self._stream_span_s = self.data_streaming_full_after_s
+        logger.info(
+            f"Trainer {self.trainer_id}: data streaming "
+            f"{'ENABLED' if self.data_streaming_enabled else 'DISABLED'} "
+            f"(full_data_available_after_s={self.data_streaming_full_after_s}, "
+            f"stagger={'ON' if self.stream_stagger_enabled else 'off'})"
+        )
+
+        uc_cfg = getattr(self.config.hyperparameters, "util_counterfactual", None) or {}
+        self.util_cf_enabled = str(uc_cfg.get("enabled", "False")) == "True"
+        self.util_cf_every_n = int(uc_cfg.get("every_n_rounds", 1) or 1)
+        _ss = uc_cfg.get("sample_size", 256)
+        self.util_cf_sample_size = int(_ss) if _ss not in (None, "None", "") else None
+        self._pool_tensor_cache = None  # lazily materialized full-pool tensors
+        logger.info(
+            f"Trainer {self.trainer_id}: util counterfactual "
+            f"{'ENABLED' if self.util_cf_enabled else 'DISABLED'} "
+            f"(every_n_rounds={self.util_cf_every_n}, sample_size={self.util_cf_sample_size})"
+        )
+
+        # Initialize memory profiler. Off by default: its per-round heap walks
+        # (gc.collect + 3x gc.get_objects() with a per-object torch.is_tensor
+        # check) dominate per-round wall time at high trainer-per-host
+        # concurrency. Enable only when chasing a leak via the
+        # `memory_profiling_enabled: "True"` hyperparameter.
+        _mp = getattr(self.config.hyperparameters, "memory_profiling_enabled", False)
+        self.memory_profiling_enabled = (
+            _mp if isinstance(_mp, bool) else str(_mp).strip().lower() == "true"
+        )
+        self.memory_profiler = MemoryProfiler(
+            trainer_id=str(self.trainer_id),
+            log_interval_rounds=5,  # Detailed logs every 5 rounds
+            enabled=self.memory_profiling_enabled,
+        )
+        logger.info(
+            f"Trainer {self.trainer_id}: Memory profiler "
+            f"{'ENABLED' if self.memory_profiling_enabled else 'DISABLED (default)'}"
+        )
+
+    def check_and_sleep(self):
+        """Induce transient unavailability"""
+        pass
+
+    def _sim_now(self) -> float:
+        """Wall-elapsed since the aggregator's trace-read origin (real) or
+        last-task sim_send_ts (simulated).
+
+        Real mode anchors to `_agg_start_origin` (broadcast by the aggregator)
+        rather than this trainer's own `trainer_start_ts`, so every trainer's
+        trace lookups share the aggregator's exact origin -- a local
+        per-trainer origin would reintroduce a join-ramp-style skew (same
+        class of bug as B2.0.3). Falls back to `trainer_start_ts` only until
+        the first dispatch arrives.
+        """
+        if self.simulated:
+            return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
+        origin = self._agg_start_origin if self._agg_start_origin is not None else self.trainer_start_ts
+        return time.time() - origin
+
+    def _refresh_avl_state(self) -> None:
+        """Advance availability state to the current point in the trace, both
+        modes -- pop every due transition, not just the next one, so a
+        trainer that's been busy computing catches up on all of them, not
+        just the first. One code path for both modes: `_sim_now()` already
+        dispatches on `self.simulated` internally, so this needs no mode gate
+        of its own.
+        """
+        guard = 0
+        while (
+            self.state_avl_event_ts
+            and self._sim_now() >= self.state_avl_event_ts[0][0]
+            and guard < 100000
+        ):
+            self.check_and_update_state_avl()
+            guard += 1
+
+    def check_and_update_state_avl(self):
+        if hasattr(self, "cm") and self.cm is not None:
+            if len(self.state_avl_event_ts) > 0:
+                # event timestamps are in sim-seconds since start; compare to
+                # the current sim-time (no speedup_factor in either mode).
+                sim_elapsed = self._sim_now()
+                if sim_elapsed >= self.state_avl_event_ts[0][0]:
+                    due_ts, state_to_set = self.state_avl_event_ts.pop(0)
+                    old_status = self.avl_state.value
+                    try:
+                        self.avl_state = TrainerAvailState(state_to_set)
+                    except ValueError:
+                        logger.error(
+                            f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
+                        )
+                        return
+                    new_status = self.avl_state.value
+                    logger.info(
+                        f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
+                    )
+                    if telemetry.is_enabled():
+                        # sim_now = the transition's own scheduled trace-time
+                        # (due_ts), not self._sim_now() at processing time --
+                        # correct regardless of catch-up delay, fixing sim
+                        # mode's frozen-clock-during-idle gap at the source.
+                        ev, fields = build_avail_change(
+                            round_num=int(getattr(self, "_round", 0)),
+                            old_state=str(old_status),
+                            new_state=str(new_status),
+                            sim_now=due_ts,
+                        )
+                        telemetry.emit(ev, **fields)
+                    if self.client_notify["enabled"] == "True":
+                        self._perform_channel_state_update(
+                            tag="upload",
+                            state=self.avl_state,
+                            timestamp=str(time.time()),
+                        )
+            else:
+                logger.debug(
+                    f"No availability events pending for trainer {self.trainer_id}"
+                )
+        else:
+            logger.info(
+                f"Channel manager not set yet for trainer {self.trainer_id}. "
+                f"Skipping avail status update. "
+                f"Sleep for 20s before checking again."
+            )
+            time.sleep(20)
+
+    def initialize(self) -> None:
+        """Initialize role."""
+        self.memory_profiler.log_component_memory("initialize", "BEFORE")
+
+        # Honour single-thread pinning set by the spawner via OMP_NUM_THREADS=1.
+        if os.environ.get("OMP_NUM_THREADS") == "1":
+            torch.set_num_threads(1)
+            logger.info(f"Trainer {self.trainer_id}: torch.set_num_threads(1) (cpu_pinning active)")
+
+        # Report actual post-fork placement so pinning can be verified from logs.
+        try:
+            _cpu_cores = sorted(os.sched_getaffinity(0))
+        except AttributeError:
+            _cpu_cores = []
+        _gpu_env = os.environ.get("CUDA_VISIBLE_DEVICES", "unset")
+        logger.info(
+            f"[PLACEMENT] trainer={self.trainer_id} "
+            f"gpu={_gpu_env} cpu_cores={_cpu_cores}"
+        )
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load FMoW model
+        self.fmow_cfg = load_config(self.config.hyperparameters.fmow_config_path)
+        self.model = build_model(self.fmow_cfg.dataset.num_classes).to(self.device)
+        
+        # Log model memory usage
+        model_info = self.memory_profiler.analyze_model_memory(self.model)
+        logger.info(
+            f"Task_id: {self.trainer_id} Model initialized: "
+            f"{model_info['total_params']} params, "
+            f"{model_info['param_memory_mb']:.1f} MB"
+        )
+        
+        self.memory_profiler.log_component_memory("initialize", "AFTER")
+        
+        logger.debug(
+            f"Task_id: {self.trainer_id} initialize completed at timestamp: "
+            f"{time.time()}"
+        )
+
+    def load_data(self) -> None:
+        ### TODO
+        """Load data."""
+        self.memory_profiler.log_component_memory("load_data", "BEFORE")
+
+        captures = np.load(Path(self.fmow_cfg.satellites.leo_dir) / "captures.npz")
+        offsets = captures["offsets"]
+        start, end = int(offsets[self.satellite_index]), int(offsets[self.satellite_index+1])
+        self.capture_events = captures["events"][start:end]
+        self.capture_idx = 0
+        self.image_buffer = deque() # For future storage capacity
+
+        self.fmow_dataset = FMoWDataset(self.fmow_cfg.dataset.root_dir)
+        self.fmow_dataset.set_transform(self.fmow_cfg.dataset.image_size)
+
+        self._admit_captured_images()
+        self._rebuild_train_loader()
+        gc.collect()
+
+        # Log DataLoader memory info
+        dataloader_info = self.memory_profiler.get_dataloader_memory(self.train_loader)
+        logger.info(
+            f"Task_id: {self.trainer_id} DataLoader created: "
+            f"dataset_size={dataloader_info['dataset_size']}, "
+            f"batch_size={dataloader_info['batch_size']}, "
+            f"num_workers={dataloader_info['num_workers']}"
+        )
+        
+        self.memory_profiler.log_component_memory("load_data", "AFTER")
+
+        logger.debug(
+            f"Task_id: {self.trainer_id} load_data completed at timestamp: "
+            f"{time.time()}"
+        )
+
+    def _admit_captured_images(self) -> None:
+        now = self._sim_now()
+        events = self.capture_events
+        while self.capture_idx < len(events) and events[self.capture_idx][0] <= now:
+            self.image_buffer.append(int(events[self.capture_idx][1]))
+            self.capture_idx += 1
+    
+    def _rebuild_train_loader(self) -> None:
+        indices = list(self.image_buffer)
+        subset = data_utils.Subset(self.fmow_dataset, indices)
+        self.train_loader = torch.utils.data.DataLoader(
+            subset, batch_size=self.batch_size, shuffle=True, drop_last=False, num_workers=0
+        )
+
+    
+    def train(self) -> None:
+        logger.info(f"Entered train method for {self.trainer_id}")
+        # Per-phase timing: time from train() entry to the start of the GPU
+        # compute loop (setup/avail/loader-rebuild overhead). Reported in
+        # [TRAIN_CYCLE] + telemetry so the breakdown is first-class.
+        _phase_train_entry = time.time()
+
+        # Log memory before training round (no-op unless profiling enabled)
+        self.memory_profiler.log_memory_before_round()
+
+        # NOTE: we deliberately do NOT call torch.cuda.empty_cache()/gc.collect()
+        # per round here. With many trainers co-located on one GPU, empty_cache
+        # forces a CUDA sync and frees the caching allocator's blocks, so the
+        # next round re-allocates from the driver (serialized across processes)
+        # — it inflates per-round time instead of helping. The allocator reuses
+        # freed blocks within a process on its own.
+
+        if self.task_to_perform != "train":
+            logger.info(f"Trainer {self.trainer_id} is not required to train")
+            return
+        # telemetry: measure time spent waiting on availability (vs. computing)
+        _wait_time_s = 0.0
+        # Refresh availability from the trace at this task's current time
+        # (both modes) before deciding.
+        self._refresh_avl_state()
+        # [SEND_GATE] compute-completes / gate-the-send model (UNAVAILABILITY_DESIGN
+        # §8.3): training always runs to completion regardless of avl_state — a
+        # trainer dispatched while AVL_* that goes UN_AVL (or AVL_EVAL) mid-flight is
+        # NOT skipped here. The upload is gated instead, in _send_weights, where the
+        # completed result is held and delivered once the trainer is AVL_* again.
+        if self.avl_state != TrainerAvailState.AVL_TRAIN:
+            logger.info(
+                f"Trainer {self.trainer_id} training while avl_state="
+                f"{self.avl_state.value} (compute always completes; the send-time "
+                f"gate withholds the upload if still UN_AVL)."
+            )
+
+        logger.info(f"Trainer {self.trainer_id} available to train")
+
+        # Refresh which images satellite has captured as of "now"
+        self._admit_captured_images()
+        self._rebuild_train_loader()
+        logger.info(
+            f"Trainer {self.trainer_id} (satellite {self.satellite_index}): "
+            f"{len(self.image_buffer)}/{len(self.capture_events)} images captured"
+        )
+
+        """Train a model."""
+        self.criterion = torch.nn.CrossEntropyLoss()
+        
+        # Apply learning rate decay if enabled (REFL uses this, Oort doesn't)
+        current_lr = self.learning_rate
+        if self.lr_decay_enabled and hasattr(self, '_round') and self._round > 1:
+            num_decays = (self._round - 1) // self.lr_decay_epoch
+            current_lr = max(
+                self.learning_rate * (self.lr_decay_factor ** num_decays),
+                self.min_learning_rate
+            )
+            logger.info(
+                f"Trainer {self.trainer_id} Round {self._round}: LR decayed to {current_lr:.6f} "
+                f"(base_lr={self.learning_rate}, num_decays={num_decays})"
+            )
+        else:
+            logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
+        
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=current_lr)
+
+        # reset stat utility for OORT
+        self.reset_stat_utility()
+
+        num_batches = len(self.train_loader)
+        dataset_size = len(self.train_loader.dataset)
+        _D = self.training_delay_s if self.training_delay_enabled else 0.0
+        if self.simulated:
+            _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
+        else:
+            _expected_wallclock_hint = f"~max(gpu,D={_D:.1f}s) wall-clock; sleep=max(0,D-gpu)"
+        logger.info(
+            f"[TRAIN_START] Trainer {self.trainer_id} starting training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"num_batches={num_batches}, batch_size={self.batch_size}, epochs={self.epochs}, "
+            f"time_mode={self.time_mode}, expected_cycle_time={_expected_wallclock_hint}"
+        )
+        _cycle_start = time.time()
+
+        # Find current location
+        elapsed_s = self._sim_now()
+        timestep = min(int(elapsed_s), self.coords.shape[0]-1)
+        lat = self.coords[timestep, self.satellite_index, 0]
+        lon = self.coords[timestep, self.satellite_index, 1]
+        logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
+
+        total_batches_processed = 0
+        final_loss = None
+        self._grad_norm_epoch1 = None
+        # Reset per-round local training accuracy (FedDance's A_m reads this via
+        # MessageType.LOCAL_ACCURACY; harmless for other selectors). Also
+        # initializes the accumulators, so no init_oort_variables dependency.
+        self.reset_local_accuracy()
+        _gpu_start = time.time()
+        # Setup/avail/loader-rebuild overhead before the compute loop.
+        _pre_train_s = _gpu_start - _phase_train_entry
+        for epoch in range(1, self.epochs + 1):
+            epoch_batches, epoch_loss = self._train_epoch(epoch)
+            total_batches_processed += epoch_batches
+            if epoch_loss is not None:
+                final_loss = epoch_loss
+        # real GPU/compute time for this round, excluding any simulated delay
+        _real_gpu_time_s = time.time() - _gpu_start
+        # Post-compute overhead (cleanup, delta-l2, telemetry) starts here.
+        _phase_post_start = time.time()
+
+        # Log training completion summary
+        loss_str = f"{final_loss:.6f}" if final_loss is not None else "N/A"
+        logger.info(
+            f"[TRAIN_COMPLETE] Trainer {self.trainer_id} completed training with "
+            f"model_version={self._round}, dataset_size={dataset_size}, "
+            f"total_batches_processed={total_batches_processed}, final_loss={loss_str}"
+        )
+
+        # save dataset size so that the info can be shared with
+        # aggregator
+        self.dataset_size = len(self.train_loader.dataset)
+        
+        # Drop grads (cheap, frees their memory for reuse within this process).
+        # We intentionally skip empty_cache()/gc.collect() here — see the note
+        # at the top of train(): they hurt under co-located concurrency.
+        if hasattr(self, 'optimizer') and self.optimizer is not None:
+            self.optimizer.zero_grad(set_to_none=True)
+
+        # Log memory after training round (no-op unless profiling enabled)
+        self.memory_profiler.log_memory_after_round()
+
+        _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
+        _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
+        _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
+        self._training_budget_s = _modeled_delay_s
+
+        if _overran:
+            logger.warning(
+                f"[TIMING_OVERRUN] Trainer {self.trainer_id} round={self._round} "
+                f"exceeded budget: gpu={_real_gpu_time_s:.2f}s > budget={_modeled_delay_s:.2f}s "
+                f"(excess={_real_gpu_time_s - _modeled_delay_s:.2f}s). "
+                f"Reduce trainers-per-GPU or add GPUs."
+            )
+
+        # max(gpu, D): no contention → D; overrun → gpu > D (OORT sees trainer as slow).
+        sim_round_duration = _real_gpu_time_s + _remaining_time  # = max(gpu, D)
+
+        self._sim_round_duration = sim_round_duration
+
+        # §3i: sct (when the update COMMITS) = send_ts + compute + post-compute leg. The leg is
+        # added ONLY here, NOT to _sim_round_duration — so trainer_speed_s, OORT utility, the gate
+        # predictor and P3/T2 controls keep pure compute; only the vclock (which advances to sct)
+        # sees the real cycle time.
+        _leg = self.sim_completion_leg_s if self.simulated else 0.0
+        self._sim_completion_ts = (
+            (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+            + sim_round_duration
+            + _leg
+        )
+
+        # ||trained - received global||: update magnitude this round. At this
+        # point self.weights still holds the received global (the later
+        # _send_weights tasklet runs _update_weights); the model holds the
+        # trained weights. Float params only (skip int buffers). Non-fatal.
+        # Telemetry-only: skip entirely when telemetry is off, and accumulate
+        # the squared-diff on-device so we sync once (not once per parameter).
+        delta_weight_l2 = None
+        if telemetry.is_enabled():
+            try:
+                ref = getattr(self, "weights", None)
+                if ref is not None:
+                    _sq = None
+                    for k, v in self.model.state_dict().items():
+                        if k in ref and torch.is_floating_point(v):
+                            d = v.detach().float() - ref[k].detach().float().to(v.device)
+                            s = torch.sum(d * d)
+                            _sq = s if _sq is None else _sq + s
+                    if _sq is not None:
+                        delta_weight_l2 = math.sqrt(float(_sq.item()))
+            except Exception as e:
+                logger.debug(f"delta_weight_l2 compute failed: {e}")
+
+        # Post-compute overhead so far (cleanup + delta-l2), before the modeled
+        # sleep. Together with _pre_train_s and _real_gpu_time_s this is the
+        # full trainer-side breakdown of where a round's wall time goes.
+        _post_train_s = time.time() - _phase_post_start
+
+        if telemetry.is_enabled():
+            visible = len(self.image_buffer)
+            ev, fields = build_trainer_round(
+                round_num=int(getattr(self, "_round", 0)),
+                real_gpu_time_s=_real_gpu_time_s,
+                sim_round_duration_s=sim_round_duration,
+                wait_time_s=_wait_time_s,
+                avail_state=self.avl_state.value,
+                visible_samples=int(visible),
+                total_samples=int(len(self.capture_events)),
+                dataset_size=int(dataset_size),
+                stat_utility=float(self._stat_utility)
+                if isinstance(self._stat_utility, (int, float))
+                else float(getattr(self._stat_utility, "item", lambda: 0.0)()),
+                final_loss=final_loss,
+                delta_weight_l2=delta_weight_l2,
+                extra={
+                    "sim_completion_ts": self._sim_completion_ts,
+                    "sim_send_ts": float(self._sim_send_ts) if self._sim_send_ts is not None else None,
+                    "time_mode": self.time_mode,
+                    "training_budget_s": _modeled_delay_s,
+                    "remaining_time_s": _remaining_time,
+                    "overran": _overran,
+                    "grad_norm_epoch1": self._grad_norm_epoch1,
+                    "task_to_perform": getattr(self, "task_to_perform", None),
+                    "lr": current_lr,
+                    "pre_train_s": _pre_train_s,
+                    "gpu_compute_s": _real_gpu_time_s,
+                    "sleep_s": _remaining_time,
+                    "post_train_s": _post_train_s,
+                    **getattr(self, "_phase_times", {}),
+                    "lat": lat,
+                    "lon": lon
+                },
+            )
+            telemetry.emit(ev, **fields)
+
+        if not self.simulated and _remaining_time > 0:
+            time.sleep(_remaining_time)
+
+        _cycle_elapsed = time.time() - _cycle_start
+        if self.simulated:
+            logger.info(
+                f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
+                f"time_mode=simulated: wall={_cycle_elapsed:.2f}s "
+                f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
+                f"virtual_advance={sim_round_duration:.2f}s "
+                f"{'OVERRUN' if _overran else 'OK'} "
+                f"sct={self._sim_completion_ts:.2f}"
+            )
+        else:
+            logger.info(
+                f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
+                f"time_mode=real: wall={_cycle_elapsed:.2f}s "
+                f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
+                f"sleep={_remaining_time:.2f}s total={sim_round_duration:.1f}s "
+                f"{'OVERRUN' if _overran else 'OK'}"
+            )
+
+    def _train_epoch(self, epoch):
+        self.model.train()
+        
+        # Log memory for first epoch to track per-batch memory
+        if epoch == 1:
+            self.memory_profiler.log_component_memory(f"epoch_{epoch}", "START")
+
+        batches_processed = 0
+        last_loss = None
+        # Accumulate per-step gradient L2 on epoch 1 (telemetry: relate update
+        # magnitude to amount of unlocked data under streaming).
+        _grad_norm_accum = 0.0
+        _grad_norm_batches = 0
+
+        for batch_idx, (data, target) in enumerate(self.train_loader):
+            data, target = data.to(self.device), target.to(self.device)
+            self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
+            output = self.model(data)
+
+            if self.use_oort_loss_fn == "False":
+                # Loss function to use with Fedbuff
+                loss = F.cross_entropy(output, target)
+            elif self.use_oort_loss_fn == "True":
+                # Calculate statistical utility of a trainer while
+                # calculating loss
+                loss = self.oort_loss(output, target, epoch, batch_idx)
+
+            # accumulate per-round local training accuracy (FedDance A_m signal)
+            self.update_local_accuracy(output, target)
+
+            loss.backward()
+
+            # Epoch-1 gradient L2 (telemetry only): one fused GPU reduction and
+            # a single .item() sync per batch, instead of a .item() per param
+            # (which forced ~12 GPU->CPU syncs/batch on the shared-GPU queue).
+            if epoch == 1 and telemetry.is_enabled():
+                _gsq = None
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        s = p.grad.detach().pow(2).sum()
+                        _gsq = s if _gsq is None else _gsq + s
+                if _gsq is not None:
+                    _grad_norm_accum += float(_gsq.sqrt().item())
+                    _grad_norm_batches += 1
+
+            self.optimizer.step()
+            batches_processed += 1
+
+            # Detach tensors to break computation graph and free memory
+            # Log every batch for small trainers, every 100 for large trainers
+            num_batches = len(self.train_loader)
+            should_log = (num_batches <= 10) or (batch_idx % 100 == 0)
+            if should_log:
+                done = batch_idx * len(data)
+                total = len(self.train_loader.dataset)
+                percent = 100.0 * batch_idx / len(self.train_loader)
+                # Use .item() and detach to avoid keeping computation graph
+                loss_val = loss.detach().item()
+                last_loss = loss_val
+                logger.info(
+                    f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]" 
+                    f"\tloss: {loss_val:.6f}"
+                )
+            
+            # Drop references so the graph/activations can be freed; the
+            # caching allocator reuses the blocks for the next batch without
+            # an explicit (and, under co-location, costly) empty_cache().
+            del output, data, target, loss
+
+        # normalize statistical utility of a trainer based on the size
+        # of the dataset
+        self.normalize_stat_utility(epoch)
+
+        if epoch == 1:
+            self._grad_norm_epoch1 = (
+                _grad_norm_accum / _grad_norm_batches
+                if _grad_norm_batches
+                else None
+            )
+
+        # Log memory after first epoch (no-op unless profiling enabled)
+        if epoch == 1:
+            self.memory_profiler.log_component_memory(f"epoch_{epoch}", "END")
+
+        return batches_processed, last_loss
+
+    def evaluate(self) -> None:
+        """Evaluate a model."""
+        # Implement only forward pass evaluate if the trainer is available to train or to evaluate
+        # Evaluate after train is written in the train_epoch method itself
+
+        # Evaluate will be skipped if one of these two is satisfied:
+        # 1. task_to_perform is train
+        # 2. switch to check for three_state_avl is off
+        # Availability no longer gates the eval task-start (§8.3 compute-completes
+        # model, mirrors train()) — only the send-time gate withholds the upload.
+        if self.task_to_perform != "eval" or self.client_notify["trace"] == "two_state":
+            logger.warning(
+                f"Evaluate (forward pass) will not be run for trainer id {self.trainer_id}. task_to_perform = {self.task_to_perform} and trainer avl_state = {self.avl_state.value} and wait_until_next_avl = {self.wait_until_next_avl}"
+            )
+            return
+
+        # Refresh availability at this task's current time (both modes).
+        self._refresh_avl_state()
+        if self.avl_state == TrainerAvailState.UN_AVL:
+            logger.info(
+                f"Trainer {self.trainer_id} evaluating while avl_state=UN_AVL "
+                f"(compute always completes; the send-time gate withholds the upload)."
+            )
+
+        logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
+        _eval_gpu_t0 = time.time()
+        for epoch in range(1, self.epochs + 1):
+            for batch_idx, (data, target) in enumerate(self.train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                output = self.model(data)
+
+                if self.use_oort_loss_fn == "False":
+                    # Loss function to use with Fedbuff
+                    loss = F.cross_entropy(output, target)
+                elif self.use_oort_loss_fn == "True":
+                    # Calculate statistical utility of a trainer while
+                    # calculating loss
+                    loss = self.oort_loss(output, target, epoch, batch_idx)
+                if batch_idx % 100 == 0:
+                    done = batch_idx * len(data)
+                    total = len(self.train_loader.dataset)
+                    percent = 100.0 * batch_idx / len(self.train_loader)
+                    logger.info(
+                        f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                        f"\tloss: {loss.item():.6f}"
+                    )
+
+            # normalize statistical utility of a trainer based on the size
+            # of the dataset
+            self.normalize_stat_utility(epoch)
+        _real_eval_gpu_s = time.time() - _eval_gpu_t0
+        # Eval is ~20x faster than training (NPUs don't support training), so the
+        # modeled eval delay is training_delay_s/20.
+        _modeled_eval_delay_s = (
+            self.training_delay_s / 20.0 if self.training_delay_enabled else 0.0
+        )
+        if self.simulated:
+            # Stamp THIS eval's own completion ts (= send_ts + max(gpu, D_eval)).
+            # Without it the send path reuses the last TRAIN round's _sim_completion_ts,
+            # so every eval commits with a stale, long-past sct -> the virtual clock has
+            # already lapped it -> past-dated commit that poisons the reorder-buffer key.
+            _eval_dur = max(_real_eval_gpu_s, _modeled_eval_delay_s)
+            self._sim_round_duration = _eval_dur
+            self._sim_completion_ts = (
+                (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+                + _eval_dur
+            )
+        elif self.training_delay_enabled:
+            eval_delay = math.floor(self.training_delay_s / 20.0)
+            time.sleep(eval_delay)
+            logger.debug(
+                f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
+            )
+
+    def initiate_heartbeat(self) -> None:
+        while True:
+            # dup_check_and_sleep operates on a copy to avoid mutating state on the heartbeat thread
+            time.sleep(self.heartbeats_second_freq)
+            self.dup_check_and_sleep()
+            logger.debug("Initiating send heartbeat to aggregator")
+            self.send_heartbeat_to_agg()
+
+    def notify_trainer_avail(self) -> None:
+        while True:
+            time.sleep(1)  # Will check every 1 second
+            self.check_and_update_state_avl()
+
+
+def main():
+    import argparse
+    import json
+    import signal
+    import atexit
+
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="./config.json",
+        help="Path to config JSON file",
+        required=False,
+    )
+    parser.add_argument(
+        "--config-json",
+        type=str,
+        help="Config as JSON string (alternative to --config file)",
+        required=False,
+    )
+
+    # Add a parser argument to get battery threshold (either 50 or 75)
+    parser.add_argument(
+        "--battery_threshold",
+        type=int,
+        choices=[50, 75],
+        default=50,
+        help="Battery threshold for the trainer 3-state events (either 50 or 75)",
+        required=False,
+    )
+
+    # Simulation time mode (replaces the removed speedup_factor).
+    parser.add_argument(
+        "--time_mode",
+        type=str,
+        choices=["real", "simulated"],
+        default="simulated",
+        help="'real': sleep modeled delays at true pace. 'simulated': skip "
+        "sleeps; aggregator orders updates by a virtual clock.",
+        required=False,
+    )
+
+    args = parser.parse_args()
+    
+    # Early startup logging - print to ensure it appears even if logger not configured yet
+    print(f"[TRAINER STARTUP] Process started, PID: {os.getpid()}")
+
+    # Handle config loading: either from file or JSON string
+    if args.config_json:
+        # Load config from JSON string (new programmatic spawning mode)
+        config_dict = json.loads(args.config_json)
+        print(f"[TRAINER STARTUP] Loaded config from JSON string")
+        # Create a temporary config file or pass dict directly
+        # For now, write to temp file for compatibility with Config class
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_dict, f)
+            temp_config_path = f.name
+
+        try:
+            config = Config(temp_config_path)
+        finally:
+            # Clean up temp file even if Config() fails
+            os.unlink(temp_config_path)
+    elif args.config:
+        # Load config from file (legacy mode)
+        config = Config(args.config)
+        print(f"[TRAINER STARTUP] Loaded config from file: {args.config}")
+    else:
+        raise ValueError("Must provide either --config or --config-json")
+
+    print(f"[TRAINER STARTUP] Creating trainer object...")
+    t = PyTorchFMoWTrainer(config, args.battery_threshold, args.time_mode)
+
+    # Structured telemetry (no-op unless $FLAME_TELEMETRY_DIR is set by the
+    # launcher). One JSONL file per trainer process.
+    telemetry.configure(role="trainer", end_id=str(t.trainer_id))
+    
+    print(f"[TRAINER STARTUP] Trainer created - ID: {t.trainer_id}, Job: {t.config.job.job_id}")
+    logger.info(f"========== TRAINER STARTED: ID={t.trainer_id}, PID={os.getpid()} ==========")
+    
+    print(
+        f"# Trainer id: {t.trainer_id}, time_mode: {t.time_mode}, "
+        f"has heartbeats_enabled: {t.heartbeats_enabled}, "
+        f"has client_notify: {t.client_notify['enabled']}, "
+        f"training_delay_enabled: {t.training_delay_enabled}, "
+        f"training_delay_s: {t.training_delay_s}"
+    )
+
+    # Register exit handler to generate memory report
+    def cleanup_and_report():
+        """Generate memory profiling report on exit."""
+        try:
+            report = t.memory_profiler.generate_report()
+            logger.info(f"\n{report}")
+            print(f"\n{report}")
+        except Exception as e:
+            logger.error(f"Error generating memory report: {e}")
+    
+    atexit.register(cleanup_and_report)
+    
+    # Handle SIGTERM gracefully
+    def signal_handler(signum, frame):
+        logger.info(f"Trainer {t.trainer_id} received signal {signum}, generating report...")
+        cleanup_and_report()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    if t.heartbeats_enabled == "True":
+        logger.info(
+            f"Will initiate thread to send heartbeats for " f"trainer {t.trainer_id}"
+        )
+        heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
+        heartbeat_thread.daemon = True
+        heartbeat_thread.start()
+    elif t.client_notify["trace"] is not None:
+        logger.info(
+            f"Will initiate thread to update state of " f"trainer {t.trainer_id}"
+        )
+        if t.client_notify["enabled"] == "True":
+            logger.info(f"Will send avail notifications for trainer {t.trainer_id}")
+        # Note that even though trainer sends notifications, only
+        # async_oort will use it. Other selectors will not use it so
+        # it can remain enabled.
+        avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
+        avail_notify_thread.daemon = True
+        avail_notify_thread.start()
+
+    print(f"[TRAINER STARTUP] Starting compose and run for trainer {t.trainer_id}...")
+    logger.info(f"Trainer {t.trainer_id} initiating compose() and run() - will now connect to aggregator")
+    t.compose()
+    t.run()
+
+
+if __name__ == "__main__":
+    main()
