@@ -1,47 +1,20 @@
-# A/B pair for sim_sct_ordered_drain, both legs in one file so one invocation
-# runs them back-to-back (flame.launch.run_experiment's ExperimentBatch runs
-# every `experiments:` list entry sequentially, sweeping stragglers between
-# runs). Leg 1 = drain_ready (matches the 2026-07-13 baseline config, but with
-# the new pastdated-commit instrumentation the banked baseline run predates --
-# re-run it here rather than compare against the old log). Leg 2 = the A/B
-# lever: sim_sct_ordered_drain: false (legacy channel.recv_fifo ingestion,
-# the same primitive felix's asyncfl._sim_recv_min uses by default). Both legs
-# otherwise identical: enable_training_delays: true, training_delay_factor:
-# 0.5, max_runtime_s: 1200 -- matching run_sequential.sh --delays on
-# --delay-divisor 0.5 --max-runtime-s 1200.
+# A/B for sim_sct_ordered_drain: leg 1 = drain_ready (true), leg 2 = legacy
+# recv_fifo (false, felix's default). Both legs: 10 trainers, 600s cap.
+# Compare: sim_rate, buf_depth/recv_wrapper wall, pastdated_n/gap_max in
+# [SIM_GRAD_RECV], any [SIM_GRAD_STUCK_EVICT]. Sim-only -- pair against a
+# fresh real run (same config) for an actual real<->sim parity read.
 #
-# Purpose: settle whether sim_sct_ordered_drain (drain_ready) is load-bearing
-# for fluxtune, or whether it's dead weight felix never needed either. Compare
-# the two legs' run dirs on:
-#   - sim_rate (does leg 2 recover close to fwdllm/fwdllm_plus's ~5.7x?)
-#   - buf_depth / recv_wrapper wall (does the commit backlog persist in leg 2
-#     -- it should, since the bottleneck is one-grad-per-composer-tick
-#     throughput, not the drain primitive; if buf_depth/recv_wrapper look the
-#     SAME in both legs, that confirms the primitive isn't the bottleneck)
-#   - pastdated_n / pastdated_gap_max in the [SIM_GRAD_RECV] log field -- a
-#     materially higher count in leg 2 (drain_ready OFF) than leg 1 would be
-#     the correctness case FOR keeping sim_sct_ordered_drain (recv_fifo's
-#     streamer really is stranding/lapping messages under fluxtune's per-grad
-#     probe frequency); no difference means it isn't earning its keep here
-#   - any [SIM_GRAD_STUCK_EVICT] evictions in either leg
-#
-# Wall time: ~20-25 min per leg (max_runtime_s=1200 + ~20s aggregator warmup +
-# ~20s spawn stagger for 10 trainers + process start/teardown) -> ~45-50 min
-# total for both legs sequentially.
-#
-# Run (runs BOTH legs, one after another):
+# Run (both legs, sequentially):
 #   python -m flame.launch.run_experiment \
 #       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_sim_no_sct_drain.yaml
 
 experiments:
   - name: fluxtune_n10_smoke_sim_sct_drain_true
-    description: "FedFwd SIM smoke, sim_sct_ordered_drain=true re-baseline WITH pastdated-commit instrumentation (leg 1/2 of the drain A/B; 10 trainers, fluxtune baseline)."
+    description: "fluxtune SIM, sim_sct_ordered_drain=true (drain A/B leg 1/2), 10 trainers."
 
     baseline: fluxtune
 
     example:
-      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
-      # ExampleConfig default (trainer/pytorch/main.py).
       trainer_main: trainer/main.py
 
     trainer:
@@ -49,21 +22,14 @@ experiments:
       start_id: 1
       dataset:
         name: agnews
-        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
-        # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
         mode: syn_0
       time_mode: simulated
       enable_training_delays: true
-      # NOTE: TrainerConfig has no top-level training_delay_factor field --
-      # only enable_training_delays. This must live under trainer.hyperparameters
-      # (runner.py:571 reads exp.trainer.hyperparameters, NOT
-      # trainer.config_overrides.hyperparameters, to fan it to the
-      # aggregator). Putting it directly under trainer: (as an earlier version
-      # of this file did) is silently dropped -- confirmed via
-      # run_20260713_103707's execution_config.yaml showing
-      # training_delay_factor: null despite this yaml setting 0.5.
+      # training_delay_factor must live under trainer.hyperparameters, not
+      # trainer.config_overrides.hyperparameters (runner.py fans the former
+      # to the aggregator; the latter is silently dropped).
       hyperparameters:
         training_delay_factor: 0.5
       client_idx_modulo: 100
@@ -88,14 +54,13 @@ experiments:
           rounds: 50
           inflight_residence: true
           send_timeout_wait_s: 300
-          # Leg 1: drain_ready ON (matches the 07-13 baseline).
-          sim_sct_ordered_drain: true
+          sim_sct_ordered_drain: true  # leg 1: drain_ready ON
           sim_staggered_redispatch: false
           sim_compute_truthful_gate: true
           sim_gate_compute_cap_s: 10.0
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
-          max_runtime_s: 1200
+          max_runtime_s: 600
           sim_model_eval_time: true
           sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
@@ -114,13 +79,11 @@ experiments:
         enabled: false
 
   - name: fluxtune_n10_smoke_sim_no_sct_drain
-    description: "FedFwd SIM smoke, sim_sct_ordered_drain=false (leg 2/2 of the drain A/B; 10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated)."
+    description: "fluxtune SIM, sim_sct_ordered_drain=false (drain A/B leg 2/2), 10 trainers."
 
     baseline: fluxtune
 
     example:
-      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
-      # ExampleConfig default (trainer/pytorch/main.py).
       trainer_main: trainer/main.py
 
     trainer:
@@ -128,21 +91,14 @@ experiments:
       start_id: 1
       dataset:
         name: agnews
-        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
-        # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
         mode: syn_0
       time_mode: simulated
       enable_training_delays: true
-      # NOTE: TrainerConfig has no top-level training_delay_factor field --
-      # only enable_training_delays. This must live under trainer.hyperparameters
-      # (runner.py:571 reads exp.trainer.hyperparameters, NOT
-      # trainer.config_overrides.hyperparameters, to fan it to the
-      # aggregator). Putting it directly under trainer: (as an earlier version
-      # of this file did) is silently dropped -- confirmed via
-      # run_20260713_103707's execution_config.yaml showing
-      # training_delay_factor: null despite this yaml setting 0.5.
+      # training_delay_factor must live under trainer.hyperparameters, not
+      # trainer.config_overrides.hyperparameters (runner.py fans the former
+      # to the aggregator; the latter is silently dropped).
       hyperparameters:
         training_delay_factor: 0.5
       client_idx_modulo: 100
@@ -167,19 +123,13 @@ experiments:
           rounds: 50
           inflight_residence: true
           send_timeout_wait_s: 300
-          # Leg 2: THE A/B LEVER, drain_ready OFF -- legacy channel.recv_fifo
-          # ingestion instead, the same primitive felix's asyncfl._sim_recv_min
-          # uses (felix never sets this flag at all). If commit_gap/pastdated
-          # telemetry stays clean here (vs leg 1), drain_ready isn't earning
-          # its keep on this workload and the streamer-stranding risk it
-          # guards against (per its docstring) isn't actually firing.
-          sim_sct_ordered_drain: false
+          sim_sct_ordered_drain: false  # leg 2: legacy recv_fifo (felix's default)
           sim_staggered_redispatch: false
           sim_compute_truthful_gate: true
           sim_gate_compute_cap_s: 10.0
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
-          max_runtime_s: 1200
+          max_runtime_s: 600
           sim_model_eval_time: true
           sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5

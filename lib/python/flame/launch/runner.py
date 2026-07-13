@@ -274,15 +274,9 @@ class ExperimentRunner:
             # existing dotted-key override mechanism. The baseline.trainer dict
             # and exp.trainer.config_overrides dict are deep-merged first; then
             # the dotted-key overrides (job.id, etc.) are applied last.
-            baseline_trainer = (baseline_entry or {}).get("trainer") or {}
-            exp_trainer_overrides = exp.trainer.config_overrides or {}
-            if baseline_trainer or exp_trainer_overrides:
-                merged_t, t_prov = merge_with_provenance([
-                    (f"baseline:{exp.baseline}", baseline_trainer),
-                    ("experiment.trainer.config_overrides", exp_trainer_overrides),
-                ])
-                config_gen.set_baseline_overrides(merged_t)
-                print(format_provenance("trainer", t_prov))
+            merged_t, t_prov = self._build_trainer_baseline_overrides(exp, baseline_entry)
+            config_gen.set_baseline_overrides(merged_t)
+            print(format_provenance("trainer", t_prov))
 
             # client_idx_modulo wraps N trainers onto M data partitions for
             # path-style datasets (e.g. fwdllm's H5 partitions) -- each
@@ -503,6 +497,44 @@ class ExperimentRunner:
                 f"selector resolved differently than intended."
             )
 
+    def _build_trainer_baseline_overrides(
+        self,
+        exp: ExperimentConfig,
+        baseline_entry: Optional[dict],
+    ) -> tuple[dict, dict]:
+        """Merge baseline.trainer + experiment.trainer.config_overrides, then
+        fan exp.trainer.availability.mode into hyperparameters.client_notify.trace
+        as the final (highest-precedence) layer.
+
+        Single source of truth: exp.trainer.availability.mode only selects
+        which avl_events_* DATA a trainer loads -- it does NOT by itself decide
+        which trace check_and_update_state_avl() actually replays (that's
+        hyperparameters.client_notify.trace, a separate field a baseline can
+        hardcode, e.g. fluxtune's 3-tier mobiperf_3st_50 in baselines.yaml).
+        Left alone, a baseline default silently wins over an experiment's
+        syn_0 intent even though the data loaded IS clean syn_0 -- a real run
+        traced this to a trainer replaying a full mobiperf trace under a
+        nominal "syn_0, 100% availability" config (simulate_fwdllm.md §A,
+        2026-07-13). Same pattern as the training-delay fan in
+        _build_aggregator_config (#12); the aggregator-side analog
+        (trackTrainerAvail.trace) is fanned there.
+
+        Returns (merged_dict, provenance) -- provenance maps each leaf path to
+        the layer name that contributed it.
+        """
+        avail_fan = {
+            "hyperparameters": {
+                "client_notify": {"trace": exp.trainer.availability.mode}
+            }
+        }
+        baseline_trainer = (baseline_entry or {}).get("trainer") or {}
+        exp_trainer_overrides = exp.trainer.config_overrides or {}
+        return merge_with_provenance([
+            (f"baseline:{exp.baseline}", baseline_trainer),
+            ("experiment.trainer.config_overrides", exp_trainer_overrides),
+            ("experiment.trainer.availability (fanned to client_notify)", avail_fan),
+        ])
+
     def _build_aggregator_config(
         self,
         exp: ExperimentConfig,
@@ -574,6 +606,17 @@ class ExperimentRunner:
         layers.append((
             "experiment.trainer.training_delay (fanned to aggregator)",
             {"hyperparameters": _delay_fan},
+        ))
+
+        # Same single-source-of-truth fan as the trainer-side client_notify.trace
+        # fix above (run_experiment(), "experiment.trainer.availability (fanned
+        # to client_notify)") -- trackTrainerAvail.trace is the aggregator-side
+        # analog (used by ORACULAR/HEARTBEAT tracking, e.g. fwdllm_plus) and is
+        # equally prone to a baseline default winning over the experiment's
+        # intended availability.mode.
+        layers.append((
+            "experiment.trainer.availability (fanned to trackTrainerAvail)",
+            {"hyperparameters": {"trackTrainerAvail": {"trace": exp.trainer.availability.mode}}},
         ))
 
         merged, provenance = merge_with_provenance(layers)

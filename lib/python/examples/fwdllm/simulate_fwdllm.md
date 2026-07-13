@@ -23,7 +23,15 @@ commit cadence; **`data_id`** progress axis; one-message-per-call grad loop; rol
 > bottleneck, not its symptom — verify claims against code, not against what a docstring/comment says it does;
 > (c) design fixes from first principles at the root, no hack that moves a number without a correct mechanism;
 > (d) **never launch an experiment run directly** — print the exact command and let the operator run it. Code
-> edits, telemetry reads of already-banked logs, and pytest are fine unattended.
+> edits, telemetry reads of already-banked logs, and pytest are fine unattended; (e) **always use conda env
+> `dg_flame`** for any python/pytest/analyze_run.py invocation in this repo — running in the wrong env (e.g.
+> `base`) silently skips deps (`sortedcontainers`, etc.) and produces misleading collection errors, not a real
+> signal; (f) **new debugging telemetry ships with its plot in the same change** — a `build_*`/`emit()` field
+> added without a reader in `scripts/analysis/analyze_run.py` is dark data (2026-07-13 audit found several
+> rounds' worth of already-emitted phase/residence/comm telemetry with zero plots). Reuse the existing plot
+> style for that data's shape (binned_line over progress for a per-round series, cdf_multi for a distribution,
+> bar_plot for a per-category summary — see `scripts/analysis/plot_helpers.py`); only introduce a new plot
+> shape if the telemetry is a genuinely new kind of quantity nothing existing already renders.
 
 **Prerequisites:** [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) — parity methodology (ladder,
 roles/tiers/gating, run-length budget, landed sim mechanisms); fwdllm's rung catalog is PARITY.md §F.

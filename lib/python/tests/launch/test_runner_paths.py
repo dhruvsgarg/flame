@@ -8,6 +8,7 @@ import pytest
 
 from flame.launch.experiment_config import (
     AggregatorConfig,
+    AvailabilityConfig,
     ExampleConfig,
     ExperimentConfig,
     MetadataPaths,
@@ -67,6 +68,72 @@ class TestTrainingDelayFan:
             agg_overrides={"hyperparameters": {"trainingDelayEnabled": False}},
         )
         assert hp["trainingDelayEnabled"] is True
+
+
+class TestAvailabilityTraceFan:
+    """exp.trainer.availability.mode is a single source of truth fanned into
+    hyperparameters.client_notify.trace (trainer side, _build_trainer_baseline_
+    overrides) and hyperparameters.trackTrainerAvail.trace (aggregator side,
+    _build_aggregator_config) -- otherwise a baseline's own hardcoded trace
+    (e.g. fluxtune's mobiperf_3st_50 in baselines.yaml) silently wins over an
+    experiment's intended mode, even though the mode still correctly selects
+    which avl_events_* DATA gets loaded. Root-caused 2026-07-13 (simulate_
+    fwdllm.md §A): a nominal syn_0 (100%-availability) run had every trainer
+    replaying a full mobiperf trace because nothing synced client_notify.trace
+    to availability.mode."""
+
+    def _trainer_hp(self, fake_example_dir, mode, baseline_entry=None):
+        runner = ExperimentRunner(fake_example_dir)
+        exp = ExperimentConfig(
+            name="x",
+            trainer=TrainerConfig(availability=AvailabilityConfig(mode=mode)),
+        )
+        merged, _ = runner._build_trainer_baseline_overrides(exp, baseline_entry)
+        return merged.get("hyperparameters", {})
+
+    def _agg_hp(self, fake_example_dir, mode, baseline_entry=None):
+        runner = ExperimentRunner(fake_example_dir)
+        exp = ExperimentConfig(
+            name="x",
+            trainer=TrainerConfig(availability=AvailabilityConfig(mode=mode)),
+        )
+        merged, _ = runner._build_aggregator_config(exp, None, baseline_entry)
+        return merged.get("hyperparameters", {})
+
+    def test_trainer_client_notify_trace_matches_mode(self, fake_example_dir):
+        hp = self._trainer_hp(fake_example_dir, mode="syn_0")
+        assert hp["client_notify"]["trace"] == "syn_0"
+
+    def test_trainer_fan_wins_over_baseline_default(self, fake_example_dir):
+        # The regression case: a baseline (like fluxtune) hardcoding its own
+        # client_notify.trace must not shadow the experiment's chosen mode.
+        baseline_entry = {
+            "trainer": {
+                "hyperparameters": {
+                    "client_notify": {"enabled": "True", "trace": "mobiperf_3st_50"}
+                }
+            }
+        }
+        hp = self._trainer_hp(fake_example_dir, mode="syn_0", baseline_entry=baseline_entry)
+        assert hp["client_notify"]["trace"] == "syn_0"
+        # enabled survives -- the fan only overrides .trace, not sibling keys.
+        assert hp["client_notify"]["enabled"] == "True"
+
+    def test_aggregator_track_trainer_avail_trace_matches_mode(self, fake_example_dir):
+        hp = self._agg_hp(fake_example_dir, mode="mobiperf_2st")
+        assert hp["trackTrainerAvail"]["trace"] == "mobiperf_2st"
+
+    def test_aggregator_fan_wins_over_baseline_default(self, fake_example_dir):
+        baseline_entry = {
+            "aggregator": {
+                "hyperparameters": {
+                    "trackTrainerAvail": {"enabled": "True", "trace": "mobiperf_3st_50"}
+                }
+            }
+        }
+        hp = self._agg_hp(fake_example_dir, mode="syn_0", baseline_entry=baseline_entry)
+        assert hp["trackTrainerAvail"]["trace"] == "syn_0"
+        assert hp["trackTrainerAvail"]["enabled"] == "True"
 
 
 class TestPathResolution:

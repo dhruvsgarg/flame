@@ -24,6 +24,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import glob
 import json
@@ -50,6 +51,7 @@ try:
         EVENT_AGG_EVAL,
         EVENT_AGG_ROUND,
         EVENT_AVAIL_CHANGE,
+        EVENT_INFLIGHT_RESIDENCE,
         EVENT_SELECTION,
         EVENT_STEP_TIMING,
         EVENT_TASK_SEND,
@@ -70,6 +72,7 @@ except Exception:  # pragma: no cover
     EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"
     EVENT_TASK_SEND = "task_send"
     EVENT_WITHHELD_DELIVERY = "withheld_delivery"
+    EVENT_INFLIGHT_RESIDENCE = "inflight_residence"
 
 # Batch 3 T3.2 (UNAVAILABILITY_DESIGN.md): the A6 trainer_trace_fidelity ground-
 # truth lookups live under the async_cifar10 example's parity checker package
@@ -1955,6 +1958,133 @@ def phase_vclock_plots(records, out, stamp, tdir):
     return saved
 
 
+# trainer_round's per-phase wall breakdown (syncfl/trainer.py's _phase() +
+# hand-stamped mqtt_fetch_s/mqtt_send_s) -- flat top-level keys merged in via
+# `**self._phase_times` at the trainer_round emit call site.
+_TRAINER_PHASE_KEYS = (
+    "mqtt_fetch_s", "weights_to_ram_s", "weights_to_gpu_s",
+    "send_gate_wait_s", "weights_from_gpu_s", "post_cpu_s", "mqtt_send_s",
+)
+# agg_round's per-cycle wall decomposition (fwdllm_aggregator.py's #6 anchor:
+# barrier + drain-tail artifact + fedavg compute + eval).
+_AGG_ROUND_PHASE_KEYS = (
+    "barrier_wait_s", "drain_tail_s", "aggregate_fedavg_s", "eval_s",
+)
+
+
+def phase_wall_vclock_plots(records, out, stamp, tdir):
+    """Round-level wall-clock phase decomposition for BOTH roles -- the
+    general-cycle companion to phase_vclock_plots' forward-grad-step view
+    above (which only covers step_timing/FedSgdTrainer's inner JVP loop).
+    Reads trainer_round's _phase_times (mqtt_fetch_s, weights_to_{ram,gpu}_s,
+    weights_from_gpu_s, post_cpu_s, mqtt_send_s, send_gate_wait_s) and
+    agg_round's per-cycle wall decomposition (barrier_wait_s, drain_tail_s,
+    aggregate_fedavg_s, eval_s, intrinsic_span_s, wall_elapsed_s, sim_rate).
+    Both have existed in telemetry with no plot reading them (2026-07
+    telemetry/plots audit) -- this is the direct answer to "is the phase-wise
+    vclock-vs-wall telemetry actually rendered anywhere".
+
+    Deliberately does NOT derive a vclock/wall "ratio" from either role's
+    `phase_vclock_s` field, unlike phase_vclock_plots' step_timing-based bar:
+    step_timing.vclock_s is stamped as a true per-step DELTA, but
+    trainer_round/agg_round's phase_vclock_s is a vclock_now SNAPSHOT taken
+    at phase-END with no matching phase-START stamp -- there is no clean,
+    correct way to turn a snapshot into a per-phase rate without inventing an
+    assumption about phase ordering. Plotting a fabricated ratio here would
+    be exactly the kind of "hack that moves a number without a correct
+    mechanism" this project's principles rule out, so this only plots the
+    wall side plus the aggregator's own already-correct sim_rate/
+    intrinsic_span_s fields (computed once, correctly, at the emit site).
+    """
+    d = _sub(out, "system"); saved = []
+
+    # ---- trainer-side phase wall breakdown ----
+    tr = by_event(records, EVENT_TRAINER_ROUND)
+    phase_series = defaultdict(lambda: ([], []))
+    for r in tr:
+        rd = progress_key(r)
+        for key in _TRAINER_PHASE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                xs, ys = phase_series[key]
+                xs.append(rd); ys.append(float(v))
+    if phase_series:
+        p = ph.binned_line(
+            {k: v for k, v in sorted(phase_series.items())},
+            PROGRESS_AXIS_LABEL, "wall seconds",
+            "Trainer per-phase wall-clock breakdown (mean/bin)",
+            d, "trainer_phase_wall_breakdown.pdf", stamp=stamp,
+            nbins=150, reducer="mean")
+        if p: saved.append(p)
+    else:
+        p = ph.no_data_plot(
+            "Trainer per-phase wall-clock breakdown", d,
+            "trainer_phase_wall_breakdown.pdf",
+            note="no _phase_times fields on trainer_round for this run",
+            stamp=stamp)
+        if p: saved.append(p)
+
+    # ---- aggregator-side per-cycle wall decomposition ----
+    ar = by_event(records, EVENT_AGG_ROUND)
+    agg_series = defaultdict(lambda: ([], []))
+    for r in ar:
+        rd = progress_key(r)
+        for key in _AGG_ROUND_PHASE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                xs, ys = agg_series[key]
+                xs.append(rd); ys.append(float(v))
+    if agg_series:
+        p = ph.binned_line(
+            {k: v for k, v in sorted(agg_series.items())},
+            PROGRESS_AXIS_LABEL, "wall seconds",
+            "Aggregator per-cycle wall decomposition (mean/bin)",
+            d, "agg_round_wall_breakdown.pdf", stamp=stamp,
+            nbins=150, reducer="mean")
+        if p: saved.append(p)
+    else:
+        p = ph.no_data_plot(
+            "Aggregator per-cycle wall decomposition", d,
+            "agg_round_wall_breakdown.pdf",
+            note="no barrier_wait_s/drain_tail_s/aggregate_fedavg_s/eval_s on agg_round for this run",
+            stamp=stamp)
+        if p: saved.append(p)
+
+    # ---- intrinsic_span_s (transport-artifact-excluded) vs full wall_elapsed_s ----
+    ix, iv, wv = [], [], []
+    for r in ar:
+        i_s, w_s = r.get("intrinsic_span_s"), r.get("wall_elapsed_s")
+        if i_s is not None and w_s is not None:
+            rd = progress_key(r)
+            ix.append(rd); iv.append(float(i_s)); wv.append(float(w_s))
+    if ix:
+        p = ph.binned_line(
+            {"intrinsic_span_s": (ix, iv), "wall_elapsed_s": (ix, wv)},
+            PROGRESS_AXIS_LABEL, "seconds",
+            "Per-cycle intrinsic (transport-excluded) span vs full wall span (mean/bin)",
+            d, "agg_intrinsic_vs_wall.pdf", stamp=stamp, nbins=150, reducer="mean")
+        if p: saved.append(p)
+
+    # ---- sim_rate, direct from telemetry (cross-check vs sim_speedup_plots'
+    # vclock_now/wall reconstruction -- this is the aggregator's own
+    # already-computed value, not re-derived here) ----
+    sx, sv = [], []
+    for r in ar:
+        sr = r.get("sim_rate")
+        if sr is not None:
+            sx.append(progress_key(r)); sv.append(float(sr))
+    if sx:
+        p = ph.binned_line(
+            {"sim_rate (telemetry)": (sx, sv)},
+            PROGRESS_AXIS_LABEL, "vclock-s / wall-s",
+            "Per-cycle sim_rate, direct from telemetry (>=1 = speedup, <1 = slowdown)",
+            d, "agg_sim_rate_over_progress.pdf", stamp=stamp,
+            nbins=150, reducer="mean", target=1.0)
+        if p: saved.append(p)
+
+    return saved
+
+
 def system_plots(records, out, stamp, tdir):
     d = _sub(out, "system"); saved = []
     xs, ys = comm_vs_accuracy_series(records)
@@ -2849,14 +2979,44 @@ def aggregation_plots(records, out, stamp, tdir):
                         "commit_gap_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # 4) update residence time: rounds an update waited in the buffer before
-    # committing — ties staleness to the buffer mechanic.
-    resid = [int(r["residence_rounds"]) for r in ar
-             if r.get("residence_rounds") is not None]
+    # 4) update residence time: rounds an update stayed in-flight (selected but
+    # not yet cleaned) before commit -- ties staleness to the in-flight
+    # mechanic. FIXED 2026-07 (telemetry/plots audit): this used to read
+    # `residence_rounds` off EVENT_AGG_ROUND, a key that event never carries
+    # (it only exists on EVENT_INFLIGHT_RESIDENCE / build_inflight_residence,
+    # oort sync's per-round in-flight drain accounting) -- so this silently
+    # produced nothing every run, defeating the event's own stated purpose of
+    # localizing the real~15.6-vs-sim~13 in-flight residence gap.
+    ir = by_event(records, EVENT_INFLIGHT_RESIDENCE)
+    resid, carried = [], []
+    resid_fresh, resid_stale = [], []
+    for r in ir:
+        rr = r.get("residence_rounds") or []
+        resid.extend(int(v) for v in rr)
+        carried.extend(int(v) for v in (r.get("carried_over_ages") or []))
+        rf = r.get("residence_was_fresh") or []
+        for age, fresh in zip(rr, rf):
+            (resid_fresh if fresh else resid_stale).append(int(age))
     if resid:
-        p = ph.cdf_plot(resid, "residence (rounds in buffer)",
+        p = ph.cdf_plot(resid, "residence (rounds in-flight before cleaned)",
                         f"Update residence-time CDF (n={len(resid)})", d,
                         "residence_rounds_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if resid_fresh or resid_stale:
+        # Decomposes the residence-distribution SHAPE gap (real peaks at
+        # residence=3, sim flatter) by commit class: does sim under-hold the
+        # fresh-committed body, or the stale-carryover tail?
+        p = ph.cdf_multi(
+            {f"fresh-committed (n={len(resid_fresh)})": sorted(resid_fresh),
+             f"stale-rejected (n={len(resid_stale)})": sorted(resid_stale)},
+            "residence (rounds in-flight before cleaned)",
+            "Residence-time CDF by commit class", d,
+            "residence_rounds_cdf_by_class.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if carried:
+        p = ph.cdf_plot(carried, "age (rounds still in-flight after cleanup)",
+                        f"Carried-over in-flight age CDF (n={len(carried)})", d,
+                        "carried_over_ages_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
     return saved
 
@@ -2904,6 +3064,27 @@ def write_summary(records, out, tdir, manifest=None, saved_paths=None):
     return path
 
 
+_PLOT_GROUPS = (
+    perf_plots, sanity_plots, selection_plots, insights_plots,
+    system_plots, sim_speedup_plots, phase_vclock_plots, phase_wall_vclock_plots,
+    mqtt_delivery_plots,
+    availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
+    send_gate_wait_plots, commit_promptness_plots,
+    selection_why_plots, aggregation_plots,
+)
+
+
+def _run_plot_group(fn, records, out_dir, stamp, telemetry_dir):
+    """Top-level (picklable, for ProcessPoolExecutor) dispatch of one plot
+    group. Converts a failure into (name, [], error) instead of propagating,
+    matching the previous serial loop's per-group try/except isolation --
+    one group's crash must never take down the rest."""
+    try:
+        return fn.__name__, fn(records, out_dir, stamp, telemetry_dir), None
+    except Exception as e:
+        return fn.__name__, [], str(e)
+
+
 def analyze(telemetry_dir, out_dir=None):
     manifest = configure_from_manifest(telemetry_dir)
     records = load_events(telemetry_dir)
@@ -2915,21 +3096,30 @@ def analyze(telemetry_dir, out_dir=None):
         return []
     stamp = ph.config_stamp(run_dir)
     saved = []
-    for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
-               system_plots, sim_speedup_plots, phase_vclock_plots,
-               mqtt_delivery_plots,
-               availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
-               send_gate_wait_plots, commit_promptness_plots,
-               selection_why_plots, aggregation_plots):
-        try:
-            saved.extend(fn(records, out_dir, stamp, telemetry_dir))
-        except Exception as e:
-            print("  (%s failed: %s)" % (fn.__name__, e))
+    # Every group in _PLOT_GROUPS is a pure function over the same already-
+    # materialized `records` list, writing to its own disjoint plots/<subdir>/
+    # path -- naturally parallelizable (PLOTTING.md §0.5's deferred item).
+    # matplotlib's Agg backend (set at plot_helpers import time, inherited by
+    # fork) is fork-safe. resource_plots (log/CSV-based, not `records`-based)
+    # and write_summary (aggregates `saved` from every group) have real
+    # ordering dependencies and stay outside the pool.
+    max_workers = min(len(_PLOT_GROUPS), os.cpu_count() or 4)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futures = [
+            ex.submit(_run_plot_group, fn, records, out_dir, stamp, telemetry_dir)
+            for fn in _PLOT_GROUPS
+        ]
+        for fut in concurrent.futures.as_completed(futures):
+            name, paths, err = fut.result()
+            saved.extend(paths)
+            if err:
+                print("  (%s failed: %s)" % (name, err))
     try:
         saved.extend(resource_plots(out_dir, stamp, run_dir))
     except Exception as e:
         print("  (resource_plots failed: %s)" % e)
     saved.append(write_summary(records, out_dir, telemetry_dir, manifest=manifest, saved_paths=saved))
+    saved.sort()
     print("wrote %d artifact(s) under %s" % (len(saved), out_dir))
     for p in saved:
         print("  %s" % p)

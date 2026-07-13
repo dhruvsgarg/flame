@@ -69,10 +69,12 @@ staleness-over-rounds, queue-depth). Rendering 4000+ vertices per line as PDF is
 slow and unreadable. Adopt a shared `binned_line` helper (§1) that reduces to
 ~200 x-bins with a chosen reducer (mean / p50 / p99) *before* handing to mpl.
 
-### 0.5 Parallelize the five plot groups
-`analyze()` ([:1824](../../../scripts/analysis/analyze_run.py#L1824)) runs the groups
-serially. They are independent and mostly IO/CPU bound → run under a
-`ProcessPoolExecutor` (matplotlib Agg is fork-safe). Lower priority than 0.1–0.2.
+### 0.5 Parallelize the plot groups  ✓ DONE (2026-07-13)
+`analyze()`'s `_PLOT_GROUPS` tuple now runs under a `ProcessPoolExecutor`
+(`_run_plot_group` dispatches each group by reference; matplotlib's Agg backend,
+set at `plot_helpers` import time, is fork-safe). `resource_plots` (log/CSV-based,
+not `records`-based) and `write_summary` (aggregates every group's `saved` paths)
+stay outside the pool — they have real ordering dependencies the other groups don't.
 
 ### 0.6 Target
 A felix sim run analysis should drop from "minutes" to well under a minute, with
@@ -372,8 +374,9 @@ exists per PARITY §3a.
   (+CDF), `send_recv_lag_over_rounds`.
 - ✓ CDF companion for per-round vclock advance (`sim_vclock_advance_cdf`); sim-delay
   CDF already existed (`trainer_time_breakdown_cdf`).
-- ◻ Deferred: §0.2 streamed JSONL, §0.3 checkpoint cache, §0.5 parallel groups,
-  `--quick`. (The single-pass log parser was the dominant win; these are follow-ups.)
+- ✓ §0.5 parallel groups (2026-07-13, see §0.5).
+- ◻ Deferred: §0.2 streamed JSONL, §0.3 checkpoint cache, `--quick`. (The
+  single-pass log parser was the dominant win; these are follow-ups.)
 
 **Phase 2 — correctness/legibility on existing plots.  ✓ DONE (core)**
 - ✓ Fairness now explicitly train+eval, with a train-only comparison curve; dropped
@@ -404,6 +407,42 @@ exists per PARITY §3a.
   CDF + churn rate (gated to dynamic traces; static → explicit no-data note).
 - ◻ Deferred: factor→selection Spearman-over-time, utility heatmap (trainer×round-bin),
   cross-baseline overlays via `compare_streaming`.
+
+**Phase 5 — telemetry/plots coverage audit (2026-07-13).  ✓ DONE (core), some gaps deferred**
+A full sweep of every `flame.telemetry.events` builder against `analyze_run.py`'s plot
+functions found several fields that had been emitted (in some cases for a long time)
+with no reader anywhere. Fixed this pass:
+- **BUG**: `aggregation_plots`' "residence-time CDF" (marked ✓ in Phase 3 above) was
+  reading `residence_rounds` off `EVENT_AGG_ROUND`, a key that event never carries —
+  `residence_rounds`/`carried_over_ages`/`residence_staleness`/`residence_was_fresh`
+  only exist on `EVENT_INFLIGHT_RESIDENCE` (`build_inflight_residence`, oort-sync's
+  per-round in-flight drain accounting). The plot silently produced nothing, every
+  run, defeating the event's own purpose (localizing the real~15.6-vs-sim~13
+  residence gap). Fixed to read the right event; added a by-commit-class CDF
+  (fresh-committed vs stale-rejected) and a carried-over-age CDF using the other
+  previously-unread fields on the same event.
+- **NEW** `phase_wall_vclock_plots` (`plots/system/`): `trainer_round`'s per-phase
+  wall breakdown (`_phase_times`: `mqtt_fetch_s`, `weights_to_{ram,gpu}_s`,
+  `weights_from_gpu_s`, `post_cpu_s`, `mqtt_send_s`, `send_gate_wait_s`) and
+  `agg_round`'s per-cycle wall decomposition (`barrier_wait_s`, `drain_tail_s`,
+  `aggregate_fedavg_s`, `eval_s`, `intrinsic_span_s`, `wall_elapsed_s`, `sim_rate`) —
+  both existed in telemetry with zero plots before this. Deliberately does NOT derive
+  a vclock/wall "ratio" from either role's `phase_vclock_s` field the way the
+  existing `phase_vclock_ratio.pdf` (step_timing-based) does: `phase_vclock_s` is a
+  `vclock_now` SNAPSHOT at phase-end with no phase-start stamp, so there's no correct
+  way to turn it into a per-phase rate without inventing an assumption — plots the
+  wall side plus the aggregator's own already-correct `sim_rate`/`intrinsic_span_s`
+  instead.
+- ◻ Still deferred (identified, not yet plotted — lower priority than the above):
+  `EVENT_COMM` (real per-message wire-size accounting — `analyze_run.py`'s comm
+  plots still use the static `MODEL_PARAM_COUNT` reconstruction `EVENT_COMM` was
+  built to replace, fluxtune-relevant since it sends scalars/seeds not full grads);
+  `EVENT_VERSION_BUMP_CENSUS` (#S1 pool-wide staleness-at-bump snapshot);
+  `EVENT_DISPATCH` (felix redispatch-stagger validation); `EVENT_ABANDON_TIMEOUT`;
+  `EVENT_TASK_RECV` (paired with the already-read `task_send`, would give a JSONL-
+  native agg→trainer delivery latency instead of the log-derived `[LAG_DECOMP]`
+  version); `agg_belief_change.source` (mechanism field, forward-looking, only
+  `trace_read` emitted today).
 
 **Phase 4 — pruning.  ◻ TODO**
 - Cut to the ~8 parity-relevant figures for the parity loop (PARITY §4/#6) behind
