@@ -1,0 +1,88 @@
+# Short diagnostic-only run to resolve the syn_0 UN_AVL mystery (see
+# simulate_fwdllm.md / commit 427eeac1): trace data + loader are confirmed
+# clean (single [0, AVL_TRAIN] entry, checksum-verified), yet every trainer in
+# run_20260713_103707 pushed a SECOND transition to UN_AVL/AVL_EVAL ~5 real
+# minutes in, deadlocking fluxtune's async selection. FedSgdTrainer.py now has
+# two temporary debug log lines ([DEBUG_AVL_SYN0] at init, [DEBUG_AVL_POP]
+# before each queue pop) that will show exactly what's in
+# state_avl_event_ts when this fires.
+#
+# max_runtime_s trimmed to 480s (8 min) -- long enough to clear the ~5-minute
+# anomaly window and capture the debug lines, short enough not to need a
+# manual kill if the same busy-spin recurs (though the underlying deadlock
+# fix is NOT yet landed, so it still might hang past 480s if select() never
+# recovers -- kill it once the [DEBUG_AVL_POP] lines for the second wave are
+# visible in the log, no need to wait out the full budget).
+#
+# After: grep '\[DEBUG_AVL_SYN0\]\|\[DEBUG_AVL_POP\]' on the trainer log.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_sim_avl_debug.yaml
+
+experiments:
+  - name: fluxtune_n10_smoke_sim_avl_debug
+    description: "Short diagnostic run to root-cause the syn_0 spurious UN_AVL transition (10 trainers, fluxtune baseline, sim_sct_ordered_drain=true matching the run that showed the bug)."
+
+    baseline: fluxtune
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        path_style: true
+      availability:
+        mode: syn_0
+      time_mode: simulated
+      enable_training_delays: true
+      hyperparameters:
+        training_delay_factor: 0.5
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          jvp_perf_opt: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+          sim_straggler_spread_s: 0.0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 3
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fluxtune_n10_smoke_sim_avl_debug
+        hyperparameters:
+          rounds: 50
+          inflight_residence: true
+          send_timeout_wait_s: 300
+          sim_sct_ordered_drain: true
+          sim_staggered_redispatch: false
+          sim_compute_truthful_gate: true
+          sim_gate_compute_cap_s: 10.0
+          stalenessPolicy: fedbuff
+          max_data_id_progress: 9999
+          max_runtime_s: 480
+          sim_model_eval_time: true
+          sim_model_agg_compute_time: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false
