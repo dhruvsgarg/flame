@@ -1044,8 +1044,38 @@ class TopAggregator(AsyncTopAgg):
             else max(_now, min(sct, _min_future + _SIM_ORDER_SLACK_S))
         )
         self._advance_sim_clock(_advance_to)
+        # Past-dated-commit tracking (ported from asyncfl._sim_recv_min, §J.2 --
+        # fwdllm's grad loop never had this: it pops _sim_buffer directly instead
+        # of going through _sim_pop_committable, so it inherited none of felix's
+        # gap/source bookkeeping). A "past-dated" commit is one the clock already
+        # lapped (sct < vclock by more than the gate slack) -- the signal that
+        # would show whether skipping the streamer (sim_sct_ordered_drain) is
+        # actually preventing anything, or is dead weight. No withheld-delivery
+        # case here (fwdllm's grad loop has no availability-withhold path).
+        _was_recommit = _end in self._sim_committed
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
+        _commit_gap = self._vclock.now - sct
+        if _commit_gap > _SIM_ORDER_SLACK_S:
+            self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
+            self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
+            self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
+            _mv = m.get(MessageType.MODEL_VERSION) if isinstance(m, dict) else None
+            _cur_round = getattr(self, "_round", -1)
+            _round_lag = (_cur_round - int(_mv)) if _mv is not None else None
+            if _cur_round <= 1:
+                _src = "round1"
+            elif _was_recommit:
+                _src = "redispatch"
+            elif _round_lag is not None and _round_lag <= 1:
+                _src = "fresh"
+            else:
+                _src = "straggler"
+            if not hasattr(self, "_sim_pastdated_by_source"):
+                self._sim_pastdated_by_source = {}
+            _agg = self._sim_pastdated_by_source.setdefault(_src, [0, 0.0])
+            _agg[0] += 1
+            _agg[1] += _commit_gap
         # #13 freed-slot refill stamp: this commit frees a compute slot; record
         # the just-advanced vclock so the trainer refilling the slot rides THIS
         # vclock (not the round-start frontier). Spreads each cohort's expected
@@ -1079,7 +1109,10 @@ class TopAggregator(AsyncTopAgg):
             f"end={str(_end)[-4:]} sct={sct:.1f} T_v={self._vclock.now:.1f} "
             f"buf_depth={len(self._sim_buffer)} "
             f"inflight_exp={len(self._sim_inflight_expected)} sel_ends={_sel_n} "
-            f"phantom_skip={getattr(self, '_sim_gate_phantom_skip', 0)}"
+            f"phantom_skip={getattr(self, '_sim_gate_phantom_skip', 0)} "
+            f"commit_gap_s={_commit_gap:.1f} "
+            f"pastdated_n={getattr(self, '_sim_pastdated_commits', 0)} "
+            f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.1f}"
         )
         return m, md
 
