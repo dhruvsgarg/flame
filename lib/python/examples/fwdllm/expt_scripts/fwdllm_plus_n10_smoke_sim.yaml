@@ -95,9 +95,12 @@ experiments:
           partition_method: uniform
         selector:
           kwargs:
-            # Scaled down from the baseline's n=150-ish defaults (k=5, c=15)
-            # to fit 10 trainers.
-            k: 5
+            # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/
+            # async_random) -- `_cleanup_recvd_ends` used to cap cleanup at a
+            # stale n~150-scale `k=5` batch size, which permanently orphaned
+            # trainers from this full-cohort (agg_goal==c==10) pool every
+            # round and, combined with the §M reselect-gate cache, caused a
+            # livelock (simulate_fwdllm.md §A). Fixed: cleanup now drains all.
             c: 10
             minInitialTrainers: 10
 

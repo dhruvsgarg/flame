@@ -1821,7 +1821,10 @@ class TopAggregator(AsyncTopAgg):
         # Per-round wall decomposition (#6): the FedAvg merge, the dispatch->last-
         # grad barrier wait, and the last-grad->commit drain tail (a real-transport
         # artifact the sim's all-k barrier doesn't model). eval_s measured below.
-        # All wall (real); the sim advances the vclock, so these read ~0 there.
+        # All wall (real); the sim advances the vclock, so these read ~0 there
+        # UNLESS the fold flags below are on -- _aggregate_fedavg_vclock_s /
+        # _eval_vclock_s (§N follow-up) make that measurable instead of asserted.
+        _agg_vclock_start = getattr(self, "vclock_now", None)
         _agg_start_wall = time.time()
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
@@ -1836,11 +1839,18 @@ class TopAggregator(AsyncTopAgg):
             self.config.hyperparameters, "sim_model_agg_compute_time", False
         ):
             self._vclock.advance(self._vclock.now + _aggregate_fedavg_s)
+        _agg_vclock_end = getattr(self, "vclock_now", None)
+        _aggregate_fedavg_vclock_s = (
+            _agg_vclock_end - _agg_vclock_start
+            if _agg_vclock_start is not None and _agg_vclock_end is not None
+            else None
+        )
         _disp = getattr(self, "_round_dispatch_wall_ts", None)
         _lastg = getattr(self, "_last_grad_wall_ts", None)
         _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         _eval_s = None  # set below only when the variance gate passes (eval runs)
+        _eval_vclock_s = None
 
         _var_thr = getattr(self, "var_threshold", None)
         _ratio = (
@@ -1910,6 +1920,7 @@ class TopAggregator(AsyncTopAgg):
                 f"Variance check {_pass_kind}. Evaluating model and advancing data_id."
             )
             self.iteration_per_data_id += 1
+            _eval_vclock_start = getattr(self, "vclock_now", None)
             _eval_start_wall = time.time()
             result, _, _ = self.eval_model()
             _eval_s = time.time() - _eval_start_wall  # genuine server-eval term
@@ -1921,6 +1932,12 @@ class TopAggregator(AsyncTopAgg):
                 self.config.hyperparameters, "sim_model_eval_time", False
             ):
                 self._vclock.advance(self._vclock.now + _eval_s)
+            _eval_vclock_end = getattr(self, "vclock_now", None)
+            _eval_vclock_s = (
+                _eval_vclock_end - _eval_vclock_start
+                if _eval_vclock_start is not None and _eval_vclock_end is not None
+                else None
+            )
             logger.info(
                 f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}"
             )
@@ -1969,8 +1986,7 @@ class TopAggregator(AsyncTopAgg):
                         inflight=dict(
                             getattr(self, "_trainer_inflight_dispatch_version", {})
                         ),
-                        vclock_now=(self._vclock.now if self.simulated
-                                    and getattr(self, "_vclock", None) else None),
+                        vclock_now=getattr(self, "vclock_now", None),
                     )
                     telemetry.emit(ev, **fields)
                 except Exception as e:  # telemetry must never break training
@@ -2075,8 +2091,7 @@ class TopAggregator(AsyncTopAgg):
                         # Virtual clock at commit (sim only). The parity engine
                         # gates its whole clock/throughput/convergence family on
                         # this; fwdllm never emitted it.
-                        "vclock_now": (self._vclock.now if self.simulated
-                                       and getattr(self, "_vclock", None) else None),
+                        "vclock_now": getattr(self, "vclock_now", None),
                         "data_id": self.data_id,
                         "iteration_per_data_id": self.iteration_per_data_id,
                         "var": self.var,
@@ -2122,6 +2137,15 @@ class TopAggregator(AsyncTopAgg):
                         "agg_compute_start_wall": _agg_start_wall,
                         "agg_compute_end_wall": _agg_start_wall + _aggregate_fedavg_s,
                         "eval_s": _eval_s,
+                        # Sim-mode-only vclock delta for the two hand-timed terms
+                        # above (§N follow-up) -- same nested-dict convention as
+                        # the trainer's phase_vclock_s, so a real vs sim comparison
+                        # of aggregate_fedavg_s/eval_s can check whether the vclock
+                        # actually credited what the fold flags above claim to.
+                        "phase_vclock_s": {
+                            "aggregate_fedavg_s": _aggregate_fedavg_vclock_s,
+                            "eval_s": _eval_vclock_s,
+                        },
                         # #6 anchor: real's genuine per-cycle algorithmic time,
                         # the like-for-like counterpart to the sim's Δvclock; lets
                         # the clock-rate rungs exclude real's transport artifact.
@@ -2951,7 +2975,7 @@ class TopAggregator(AsyncTopAgg):
         # injected into each payload variant (the trainer bases its modeled sct on
         # SIM_SEND_TS) and recorded as a per-end property. Inert in real mode
         # (SIM_SEND_TS absent -> arrival order).
-        _round_now = self._vclock.now if self.simulated else None
+        _round_now = getattr(self, "vclock_now", None)
         if self.simulated:
             for _p in (payload_with_weights, payload_without_weights):
                 if _p is not None:
@@ -3147,7 +3171,7 @@ class TopAggregator(AsyncTopAgg):
         # freed-slot FIFO instead of the shared round frontier, spreading a cohort's
         # expected completions across the timeline. Off/real => one shared
         # _round_now injected into the two payload variants.
-        _round_now = self._vclock.now if self.simulated else None
+        _round_now = getattr(self, "vclock_now", None)
         _staggered = self.simulated and getattr(self, "_sim_staggered_redispatch", False)
         if self.simulated and not _staggered:
             for _p in (payload_weights, payload_var_bad):

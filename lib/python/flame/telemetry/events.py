@@ -202,6 +202,8 @@ def build_step_timing(
     data_id: Optional[int] = None,
     iteration: Optional[int] = None,
     trainer_id: Optional[str] = None,
+    vclock_s: Optional[float] = None,
+    vclock_now_s: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Per-function wall duration of one timed compute step (`timer_decorator`).
 
@@ -209,6 +211,13 @@ def build_step_timing(
     wall time to individual forward-grad steps (functional-model setup,
     perturbation selection, per-batch JVP, delay emulation) for GPU-cost
     decomposition. Keyed by (data_id, iteration) to track cost across the cadence.
+
+    `vclock_s`/`vclock_now_s` are sim-mode-only (simulate_fwdllm.md §N) --
+    absent (not a mislabeled 0.0) in real mode, since real mode has no virtual
+    clock. `vclock_s` is this step's vclock delta (meaningful on the
+    aggregator, where the clock ticks live; usually 0 on a trainer, which only
+    has a last-known snapshot -- see Trainer.vclock_now). `vclock_now_s` is
+    the cumulative pointer as of this step's end, for cross-step alignment.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -216,6 +225,8 @@ def build_step_timing(
         ("data_id", data_id),
         ("iteration_per_data_id", iteration),
         ("trainer_id", trainer_id),
+        ("vclock_s", vclock_s),
+        ("vclock_now_s", vclock_now_s),
     ):
         if v is not None:
             fields[k] = v

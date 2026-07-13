@@ -527,7 +527,7 @@ class TopAggregator(BaseTopAggregator):
                 contributing_trainers=contrib,
                 agg_observed_s=agg_obs or None,
                 extra={
-                    "vclock_now": self._vclock.now if self.simulated else None,
+                    "vclock_now": getattr(self, "vclock_now", None),
                     "update_visibility_lag_s": vis_lag,
                 },
             )
@@ -834,7 +834,7 @@ class TopAggregator(BaseTopAggregator):
         )
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = self._vclock.now if self.simulated else None
+        _sim_send_ts = getattr(self, "vclock_now", None)
         msg = {
             MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,

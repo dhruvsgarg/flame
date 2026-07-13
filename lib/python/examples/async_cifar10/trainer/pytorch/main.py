@@ -920,6 +920,10 @@ class PyTorchCifar10Trainer(Trainer):
                     "sleep_s": _remaining_time,
                     "post_train_s": _post_train_s,
                     **getattr(self, "_phase_times", {}),
+                    # Sim-mode-only vclock snapshot per _phase_times key
+                    # (simulate_fwdllm.md §N); nested so an empty/absent dict
+                    # in real mode doesn't require per-key None-checks.
+                    "phase_vclock_s": getattr(self, "_phase_vclock_s", {}),
                     "lat": lat,
                     "lon": lon
                 },

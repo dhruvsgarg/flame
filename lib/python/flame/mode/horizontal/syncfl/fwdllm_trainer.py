@@ -166,10 +166,31 @@ class Trainer(Role, metaclass=ABCMeta):
         # fetch; drained into the trainer_round telemetry `extra`. Mirrors the
         # base syncfl trainer's _phase/_phase_times.
         self._phase_times: dict = {}
+        # Companion: vclock reading (sim only) as of each phase's END -- see
+        # vclock_now's docstring. Not a duration (trainers don't own a live
+        # clock), a snapshot for cross-phase/cross-process alignment.
+        self._phase_vclock_s: dict = {}
+
+    @property
+    def vclock_now(self) -> float | None:
+        """Last known virtual-clock reading, sim mode only -- `None` in real
+        mode. NOT a live tick: trainers are a separate process from the
+        aggregator with no access to its clock, so this is the most recent
+        SIM_SEND_TS/SIM_COMPLETION_TS the aggregator stamped on a message,
+        held until the next one arrives. Fine for cross-phase/cross-process
+        alignment; do not use it to measure elapsed time within one phase
+        (simulate_fwdllm.md §N).
+        """
+        if not getattr(self, "simulated", False):
+            return None
+        return getattr(self, "_sim_send_ts", None)
 
     @contextmanager
     def _phase(self, name: str):
-        """Time a named phase and accumulate into self._phase_times."""
+        """Time a named phase (wall-clock) and accumulate into
+        self._phase_times; also snapshot vclock_now (sim only, else None)
+        into self._phase_vclock_s -- see its class-level comment for why
+        that's a snapshot, not a duration."""
         t0 = time.time()
         try:
             yield
@@ -177,6 +198,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._phase_times[name] = self._phase_times.get(name, 0.0) + (
                 time.time() - t0
             )
+            self._phase_vclock_s[name] = getattr(self, "vclock_now", None)
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -193,6 +215,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = False
         # Reset per-round phase accumulator at the round boundary.
         self._phase_times = {}
+        self._phase_vclock_s = {}
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info(
@@ -213,6 +236,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        # vclock BEFORE this wait -- the trainer's last known stamp going in
+        # (self._sim_send_ts isn't updated until the new message arrives,
+        # below), so the delta below genuinely measures "how much vclock
+        # moved while this trainer waited" (§N follow-up), not a same-instant
+        # snapshot like most other phases.
+        _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
         # agg->trainer delivery + payload transfer (leg i); the first phase term.
@@ -238,6 +267,12 @@ class Trainer(Role, metaclass=ABCMeta):
         # (WALL_SEND - WALL_RECV). Both inert in real mode (SIM_SEND_TS absent).
         self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)
         self._wall_recv_ts = time.time()
+        _mqtt_vclock_end = getattr(self, "vclock_now", None)
+        self._phase_vclock_s["mqtt_fetch_s"] = (
+            _mqtt_vclock_end - _mqtt_vclock_start
+            if _mqtt_vclock_start is not None and _mqtt_vclock_end is not None
+            else None
+        )
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]

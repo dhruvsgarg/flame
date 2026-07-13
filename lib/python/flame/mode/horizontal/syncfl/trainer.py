@@ -139,15 +139,43 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # Per-round phase timing accumulator; reset at each round boundary in _fetch_weights.
         self._phase_times: dict = {}
+        # Companion: vclock reading (sim only) as of each phase's END. Not a
+        # duration -- trainers don't own a live clock (see vclock_now below),
+        # so this is a snapshot for cross-phase/cross-process alignment, not
+        # an in-phase delta.
+        self._phase_vclock_s: dict = {}
+        # Set by concrete subclasses (fwdllm's FedSgdTrainer, async_cifar10's
+        # main.py) whenever a fresh aggregator message carries SIM_SEND_TS /
+        # SIM_COMPLETION_TS. Absent here in the shared base -- vclock_now
+        # reads it via getattr so a subclass that hasn't set it yet, or a
+        # real-mode run where it's never set, both cleanly read None.
+
+    @property
+    def vclock_now(self) -> float | None:
+        """Last known virtual-clock reading, sim mode only -- `None` in real
+        mode. NOT a live tick: trainers are a separate process from the
+        aggregator with no access to its clock, so this is the most recent
+        SIM_SEND_TS/SIM_COMPLETION_TS the aggregator stamped on a message,
+        held until the next one arrives. Fine for cross-phase/cross-process
+        alignment; do not use it to measure elapsed time within one phase
+        (simulate_fwdllm.md §N).
+        """
+        if not getattr(self, "simulated", False):
+            return None
+        return getattr(self, "_sim_send_ts", None)
 
     @contextmanager
     def _phase(self, name: str):
-        """Time a named phase and accumulate into self._phase_times."""
+        """Time a named phase (wall-clock) and accumulate into
+        self._phase_times; also snapshot vclock_now (sim only, else None)
+        into self._phase_vclock_s -- see its class-level comment for why
+        that's a snapshot, not a duration."""
         t0 = time.time()
         try:
             yield
         finally:
             self._phase_times[name] = self._phase_times.get(name, 0.0) + (time.time() - t0)
+            self._phase_vclock_s[name] = getattr(self, "vclock_now", None)
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -162,6 +190,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # Reset per-round phase accumulator at the round boundary.
         self._phase_times = {}
+        self._phase_vclock_s = {}
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
@@ -184,6 +213,11 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        # vclock BEFORE this wait -- self._sim_send_ts isn't updated until the
+        # new message arrives (below), so the delta captured there genuinely
+        # measures "how much vclock moved while this trainer waited" (§N
+        # follow-up), not a same-instant snapshot like most other phases.
+        _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_wall_start = time.time()
         msg, _ = channel.recv(end)
         # Stamp as early as possible so the aggregator can measure
@@ -255,6 +289,12 @@ class Trainer(Role, metaclass=ABCMeta):
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
         if MessageType.SIM_SEND_TS in msg:
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
+        _mqtt_vclock_end = getattr(self, "vclock_now", None)
+        self._phase_vclock_s["mqtt_fetch_s"] = (
+            _mqtt_vclock_end - _mqtt_vclock_start
+            if _mqtt_vclock_start is not None and _mqtt_vclock_end is not None
+            else None
+        )
 
         # Cache the aggregator's trace-read origin (real mode only) so this
         # trainer's own wall-clock availability lookups share the exact

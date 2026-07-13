@@ -4755,6 +4755,127 @@ def _vclock_fold_diagnostic(real: dict, sim: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# §3.9x  Phase vclock bottleneck signal (simulate_fwdllm.md §N)  — Stage 6.5
+# ═══════════════════════════════════════════════════════════════════
+
+# Trainer phases carrying phase_vclock_s (both self._phase()'s named blocks
+# and the hand-timed pre_train_s/gpu_compute_s/post_train_s/mqtt_fetch_s --
+# simulate_fwdllm.md §N follow-up closed the gap where those had no vclock
+# capture). mqtt_fetch_s is included despite trainer_phase_wall_budget_ok's
+# "apples to oranges" exemption (real fetch conflates network transit with
+# genuine wait-for-aggregator-readiness) -- it's DIAG here, not gating, and
+# was the actual fluxtune bottleneck this rung exists to catch.
+_TRAINER_VCLOCK_PHASES = (
+    "pre_train_s", "gpu_compute_s", "post_train_s", "mqtt_fetch_s",
+    "weights_to_ram_s", "weights_to_gpu_s", "weights_from_gpu_s",
+    "post_cpu_s", "send_gate_wait_s", "mqtt_send_s",
+)
+# Aggregator phases carrying phase_vclock_s (fwdllm_aggregator.py's hand-timed
+# aggregate()/eval() terms).
+_AGG_VCLOCK_PHASES = ("aggregate_fedavg_s", "eval_s")
+
+
+def _phase_bottleneck(real_wall: float, sim_wall: float, sim_vclock: Optional[float],
+                      tol_rel: float, min_gap_s: float) -> dict:
+    """One phase's real-vs-sim wall gap, cross-checked against whether sim's
+    OWN vclock credited it. Flagged only when BOTH hold:
+      1. sim costs meaningfully more wall than real (`wall_gap_s` exceeds the
+         tolerance) -- the same divergence step_timing_breakdown/trainer_phase
+         already report distributionally.
+      2. sim's vclock delta for that phase covers LESS THAN HALF that gap --
+         i.e. the extra wall is a genuine unmodeled drain, not (already)
+         reflected in the sim's own reported speedup.
+    A real<->sim difference that the vclock DOES credit is not a bottleneck
+    for this check's purpose (it's causing a possibly-intentional sim_rate
+    change, not silently eating wall no metric explains) -- that's still
+    visible in the underlying DIST/DIAG rungs this doesn't replace.
+    """
+    gap = sim_wall - real_wall
+    divergent = gap > max(real_wall * tol_rel, min_gap_s)
+    if not divergent:
+        return {"bottleneck": False, "real_mean_s": round(real_wall, 3),
+                "sim_mean_s": round(sim_wall, 3), "wall_gap_s": round(gap, 3)}
+    vclock_credit = sim_vclock if sim_vclock is not None else 0.0
+    return {
+        "bottleneck": vclock_credit < gap * 0.5,
+        "real_mean_s": round(real_wall, 3),
+        "sim_mean_s": round(sim_wall, 3),
+        "wall_gap_s": round(gap, 3),
+        "sim_vclock_mean_s": round(vclock_credit, 3) if sim_vclock is not None else None,
+        "vclock_credited_fraction": round(vclock_credit / gap, 3) if gap > 0 else None,
+    }
+
+
+def phase_vclock_bottlenecks(real_agg: dict, sim_agg: dict,
+                             real_trainers: dict, sim_trainers: dict,
+                             tol_rel: float = 0.25, min_gap_s: float = 0.5) -> dict:
+    """Consolidated bottleneck signal (simulate_fwdllm.md §N follow-up): one
+    flag per phase instead of manually cross-referencing step_timing_breakdown
+    (real vs sim wall) against sim_speedup_plots/VCLOCK_PROGRESS (does sim's
+    OWN vclock keep pace) by hand. `bottleneck_phases` is the single list to
+    check -- a phase lands there only if sim costs real wall beyond real's own
+    cost AND its own vclock doesn't credit that excess.
+
+    Sources: `trainer_round.phase_vclock_s` (trainer phases) and
+    `agg_round.phase_vclock_s` (aggregate_fedavg_s/eval_s). SKIPs cleanly on a
+    real-only pair or pre-§N telemetry (phase_vclock_s absent).
+    """
+    def _trainer_vals(trainers: dict, field: str, vclock: bool = False) -> list:
+        out = []
+        for d in trainers.values():
+            for e in d.get("trainer_round", []):
+                v = (e.get("phase_vclock_s") or {}).get(field) if vclock else e.get(field)
+                if v is not None and (vclock or v >= 0):
+                    out.append(float(v))
+        return out
+
+    def _agg_vals(agg: dict, field: str, vclock: bool = False) -> list:
+        out = []
+        for e in agg.get("agg_rounds", []):
+            if e.get("event") != "agg_round":
+                continue
+            v = (e.get("phase_vclock_s") or {}).get(field) if vclock else e.get(field)
+            if v is not None and (vclock or v >= 0):
+                out.append(float(v))
+        return out
+
+    by_phase = {}
+    for field in _TRAINER_VCLOCK_PHASES:
+        rv = _trainer_vals(real_trainers, field)
+        sv = _trainer_vals(sim_trainers, field)
+        svc = _trainer_vals(sim_trainers, field, vclock=True)
+        if not rv or not sv:
+            continue
+        by_phase[field] = _phase_bottleneck(
+            sum(rv) / len(rv), sum(sv) / len(sv),
+            sum(svc) / len(svc) if svc else None, tol_rel, min_gap_s)
+
+    for field in _AGG_VCLOCK_PHASES:
+        rv = _agg_vals(real_agg, field)
+        sv = _agg_vals(sim_agg, field)
+        svc = _agg_vals(sim_agg, field, vclock=True)
+        if not rv or not sv:
+            continue
+        by_phase[field] = _phase_bottleneck(
+            sum(rv) / len(rv), sum(sv) / len(sv),
+            sum(svc) / len(svc) if svc else None, tol_rel, min_gap_s)
+
+    if not by_phase:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no phase_vclock_s telemetry (real-only pair, or pre-§N logs)"}
+
+    flagged = sorted(f for f, e in by_phase.items() if e["bottleneck"])
+    return {
+        "ok": not flagged,
+        "tier": "DIAG",
+        "tol_rel": tol_rel,
+        "min_gap_s": min_gap_s,
+        "bottleneck_phases": flagged,
+        "by_phase": by_phase,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # §4  Consolidated run_all_parity (extended)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -4864,6 +4985,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, max_rounds)
     results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
     results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
+    results["phase_vclock_bottlenecks"] = phase_vclock_bottlenecks(
+        real_agg, sim_agg, real_trainers, sim_trainers)
 
     # ── Stage 6'/3'/7' FwdLLM variance-cadence layer (PARITY.md §F.4) ──
     # Pure functions over the per-cycle agg_round series; SKIP cleanly on

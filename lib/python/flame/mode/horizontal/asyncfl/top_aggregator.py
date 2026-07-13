@@ -799,7 +799,7 @@ class TopAggregator(SyncTopAgg):
                     extra={
                         "task_to_perform": "eval",
                         "sim_completion_ts_recv": float(_sct_eval) if _sct_eval is not None else None,
-                        "vclock_now": self._vclock.now if self.simulated else None,
+                        "vclock_now": getattr(self, "vclock_now", None),
                         "commit_gap_s": _commit_gap_eval,
                         "update_ready_ts": _ready_e,
                         "update_committed_ts": _committed_e,
@@ -1140,7 +1140,7 @@ class TopAggregator(SyncTopAgg):
                     extra={
                         "task_to_perform": "train",
                         "sim_completion_ts_recv": float(_sct_recv) if _sct_recv is not None else None,
-                        "vclock_now": self._vclock.now if self.simulated else None,
+                        "vclock_now": getattr(self, "vclock_now", None),
                         "commit_gap_s": _commit_gap_s,
                         "update_ready_ts": _ready_ts,
                         "update_committed_ts": _committed_ts,
@@ -1612,7 +1612,7 @@ class TopAggregator(SyncTopAgg):
                     )
             _send_ends.append(end)
 
-        _round_now = self._vclock.now if self.simulated else None
+        _round_now = getattr(self, "vclock_now", None)
         # Event-driven re-dispatch: stagger each TRAIN dispatch by the vclock at
         # which its slot freed (a prior commit), so the round-boundary cohort no
         # longer collapses to one frozen frontier. Off / eval / real ⇒ one shared

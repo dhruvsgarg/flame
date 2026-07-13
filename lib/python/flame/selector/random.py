@@ -55,18 +55,18 @@ class RandomSelector(AbstractSelector):
                 "is_async param isn't specified in config. Defaulting to sync version"
             )
             self.is_async = False
-        try:
-            self.k = kwargs["k"]
-        except KeyError:
-            raise KeyError("k is not specified in config")
 
         try:
             self.c = kwargs["c"]
         except KeyError:
             raise KeyError("c is not specified in config")
 
-        if self.k < 0:
-            self.k = 1
+        # NOTE: no `k` here -- `c` (concurrency) alone drives selection AND
+        # cleanup sizing, matching oort/async_oort/fedbuff/async_random, none
+        # of which have a `k` concept. A legacy `k` kwarg cap on
+        # _cleanup_recvd_ends caused a starve-to-livelock bug (simulate_fwdllm.md
+        # §A); `k`, if still present in a config, is now an inert leftover
+        # (accepted by AbstractSelector's generic setattr, read by nothing).
 
         self.round = 0
 
@@ -172,12 +172,10 @@ class RandomSelector(AbstractSelector):
         if self.enforce_min_start(len(ends)):
             return {}
 
-        k = min(len(ends), self.k)
-        if k == 0:
+        if len(ends) == 0:
             logger.debug("ends is empty")
             return {}
 
-        logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
         trainers_in_use_cnt = len(set(self.selected_ends))
         required_trainers = min(len(ends), self.c - trainers_in_use_cnt)
@@ -191,7 +189,6 @@ class RandomSelector(AbstractSelector):
 
         logger.info(f"trainer_unavail_list : {trainer_unavail_list}")
 
-        logger.debug(f"new k = {k}")
         if "round" in channel_props:
             round = channel_props["round"]
         else:
@@ -335,7 +332,12 @@ class RandomSelector(AbstractSelector):
 
         selected_ends = self.selected_ends
 
-        num_ends_to_remove = min(len(self.ordered_updates_recv_ends), self.k)
+        # Drain all received ends (no k-capped batch size, matching
+        # async_oort's _cleanup_recvd_ends -- "min(N, agg_goal) deadlocks
+        # when K changes dynamically"). A cap here permanently orphans the
+        # excess per cycle (committed but never freed), starving the pool
+        # every round until it deadlocks (simulate_fwdllm.md §A).
+        num_ends_to_remove = len(self.ordered_updates_recv_ends)
         logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
         if num_ends_to_remove != 0:
             ends_to_remove = self.ordered_updates_recv_ends[:num_ends_to_remove]

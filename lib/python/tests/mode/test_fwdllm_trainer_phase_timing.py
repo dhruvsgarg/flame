@@ -47,6 +47,7 @@ class _PhaseHost:
 
     def __init__(self):
         self._phase_times = {}
+        self._phase_vclock_s = {}
 
 
 class TestPhaseContextManager:

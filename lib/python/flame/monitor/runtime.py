@@ -27,18 +27,34 @@ def timer_decorator(func):
 
     def wrapper(*args, **kwargs):
         logger.debug("Inside timer_decorator wrapper")
-        self = args[0]  # TopAggregator
+        self = args[0]  # TopAggregator or Trainer -- both expose vclock_now
 
+        # vclock_now is a property on both base classes (simulate_fwdllm.md §N):
+        # None in real mode (there is no virtual clock there), a float in sim
+        # mode. getattr is defensive only for a `self` that's neither (e.g. a
+        # free function wrapped by mistake) -- not a mode branch, there is
+        # exactly one such branch and it lives inside the property itself.
+        vclock_start = getattr(self, "vclock_now", None)
         start = time.time()
         result = func(*args, **kwargs)
         end = time.time()
+        vclock_end = getattr(self, "vclock_now", None)
         duration = end - start
+        # Meaningful delta on the aggregator (vclock ticks live there);
+        # usually 0 on a trainer (vclock_now is a snapshot between messages,
+        # see Trainer.vclock_now) -- both are correct, not a bug.
+        vclock_delta = (
+            vclock_end - vclock_start
+            if vclock_start is not None and vclock_end is not None
+            else None
+        )
 
         stage = getattr(self, "fwd_llm_stage", None)
         if stage:
             logger.info(
                 f"[decorator] Runtime of {func.__name__}: {duration:.6f}s "
                 f"(Round={stage.round_id}, DataId={stage.data_id}, Iter={stage.iteration}, TrainerId={stage.trainer_id})"
+                + (f" vclock={vclock_delta:.3f}s" if vclock_delta is not None else "")
             )
             # Structured companion to the log line: attribute step wall time to
             # (func, data_id, iteration) for GPU-cost decomposition. No-op when
@@ -53,6 +69,7 @@ def timer_decorator(func):
                         func=func.__name__, duration_s=duration,
                         round_num=stage.round_id, data_id=stage.data_id,
                         iteration=stage.iteration, trainer_id=stage.trainer_id,
+                        vclock_s=vclock_delta, vclock_now_s=vclock_end,
                     )
                     telemetry.emit(ev, **fields)
             except Exception:  # pragma: no cover - telemetry must never fault training

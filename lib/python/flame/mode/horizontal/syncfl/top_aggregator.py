@@ -254,6 +254,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         fwdllm_aggregator overrides this for its variance-gated cadence."""
         return (self._round, 0)
 
+    @property
+    def vclock_now(self) -> float | None:
+        """Virtual-clock reading, sim mode only -- `None` in real mode.
+
+        There is no virtual clock in real mode (nothing is virtualized;
+        wall-clock IS the clock), so this stays `None` there rather than
+        aliasing wall-clock under the `vclock` name -- that would make any
+        vclock-vs-wall-clock speedup comparison vacuous (simulate_fwdllm.md
+        §N). Centralizes the `self.simulated` check so callers (telemetry,
+        phase timers, log lines) never need to write it themselves.
+        """
+        return self._vclock.now if self.simulated else None
+
     def _compute_aggregator_stats(self) -> None:
         for key in self._round_update_stat_keys:
             raw_values = self._round_update_values.get(key, [])
@@ -805,7 +818,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 contributing_trainers=list(self.cache),  # diskcache iterates keys
                 agg_observed_s=agg_obs or None,
                 extra={
-                    "vclock_now": self._vclock.now if self.simulated else None,
+                    "vclock_now": getattr(self, "vclock_now", None),
                     "update_visibility_lag_s": list(
                         self._round_update_values.get("update_visibility_lag_s", [])
                     ),
@@ -1069,7 +1082,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = self._vclock.now if self.simulated else None
+        _sim_send_ts = getattr(self, "vclock_now", None)
         msg = {
             MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,

@@ -51,6 +51,7 @@ try:
         EVENT_AGG_ROUND,
         EVENT_AVAIL_CHANGE,
         EVENT_SELECTION,
+        EVENT_STEP_TIMING,
         EVENT_TASK_SEND,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
@@ -62,6 +63,7 @@ except Exception:  # pragma: no cover
     EVENT_AGG_EVAL = "agg_eval"
     EVENT_AGG_ROUND = "agg_round"
     EVENT_TRAINER_ROUND = "trainer_round"
+    EVENT_STEP_TIMING = "step_timing"
     EVENT_UTIL_DISPARITY = "util_disparity"
     EVENT_AVAIL_CHANGE = "avail_change"
     EVENT_UTILITY_BELIEF = "utility_belief"
@@ -1873,6 +1875,86 @@ def sim_speedup_plots(records, out, stamp, tdir):
     return saved
 
 
+# Warm-up window excluded from the flag check below: trainers/aggregator are
+# still coming online in the first few seconds of wall time, so vclock
+# legitimately lags wall there even in a healthy sim (simulate_fwdllm.md §N /
+# principle #13's "initially vclock is behind wall as trainers come online").
+_PHASE_VCLOCK_WARMUP_S = 5.0
+
+
+def phase_vclock_plots(records, out, stamp, tdir):
+    """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained,
+    every-example/every-mode companion to sim_speedup_plots' round-level view
+    (simulate_fwdllm.md §N). `vclock_s`/`vclock_now_s` are sim-only (absent,
+    not 0.0, in real mode -- see build_step_timing's docstring), so this is a
+    no-op plot on a real run, same convention as sim_speedup_plots.
+
+    Flags (printed, not just plotted) any function whose mean vclock delta is
+    LESS than its mean wall duration post-warmup -- the sim is not skipping a
+    real wait there, i.e. a candidate bottleneck. This generalizes the by-hand
+    VCLOCK_PROGRESS delta check done manually before this telemetry existed.
+    """
+    d = _sub(out, "system")
+    st = by_event(records, EVENT_STEP_TIMING)
+    is_sim = any(r.get("vclock_s") is not None for r in st)
+
+    if not is_sim:
+        p = ph.no_data_plot(
+            "Per-phase vclock/wall ratio (real run: N/A)", d,
+            "phase_vclock_ratio.pdf",
+            note="vclock_s is sim-only; real mode has no virtual clock",
+            stamp=stamp,
+        )
+        return [p] if p else []
+
+    all_ts = [r["ts"] for r in st if r.get("ts") is not None]
+    t0 = min(all_ts) if all_ts else 0.0
+
+    by_func = defaultdict(lambda: {"wall": [], "vclock": []})
+    for r in st:
+        vc = r.get("vclock_s")
+        if vc is None or r.get("ts") is None:
+            continue
+        if r["ts"] - t0 < _PHASE_VCLOCK_WARMUP_S:
+            continue
+        func = r.get("func")
+        dur = r.get("duration_s")
+        if func is None or dur is None:
+            continue
+        by_func[func]["wall"].append(dur)
+        by_func[func]["vclock"].append(vc)
+
+    funcs = sorted(f for f, v in by_func.items() if v["wall"])
+    if not funcs:
+        return []
+
+    ratios, flagged = [], []
+    for f in funcs:
+        mean_wall = sum(by_func[f]["wall"]) / len(by_func[f]["wall"])
+        mean_vclock = sum(by_func[f]["vclock"]) / len(by_func[f]["vclock"])
+        ratio = mean_vclock / mean_wall if mean_wall > 0 else float("nan")
+        ratios.append(ratio)
+        if ratio < 1.0:
+            flagged.append((f, mean_wall, mean_vclock, ratio))
+
+    saved = []
+    p = ph.bar_plot(
+        funcs, ratios, "mean vclock_s / mean wall duration_s",
+        "Per-phase sim speedup (>1 = sim skips real wait there; "
+        "<1 = a wall-bound bottleneck, post-warmup)",
+        d, "phase_vclock_ratio.pdf", stamp=stamp)
+    if p:
+        saved.append(p)
+
+    if flagged:
+        print(f"  [phase_vclock_plots] {len(flagged)} phase(s) NOT leading wall-clock "
+              f"(post-{_PHASE_VCLOCK_WARMUP_S:.0f}s warmup) -- candidate bottlenecks:")
+        for f, w, v, r in sorted(flagged, key=lambda t: t[3]):
+            print(f"    {f}: mean_wall={w:.3f}s mean_vclock={v:.3f}s ratio={r:.3f}")
+
+    return saved
+
+
 def system_plots(records, out, stamp, tdir):
     d = _sub(out, "system"); saved = []
     xs, ys = comm_vs_accuracy_series(records)
@@ -2834,7 +2916,8 @@ def analyze(telemetry_dir, out_dir=None):
     stamp = ph.config_stamp(run_dir)
     saved = []
     for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
-               system_plots, sim_speedup_plots, mqtt_delivery_plots,
+               system_plots, sim_speedup_plots, phase_vclock_plots,
+               mqtt_delivery_plots,
                availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
                send_gate_wait_plots, commit_promptness_plots,
                selection_why_plots, aggregation_plots):

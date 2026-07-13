@@ -60,6 +60,7 @@ def _make_trainer():
     t.trainer_id = "trainer-under-test"
     t._round = 5
     t._phase_times = {}
+    t._phase_vclock_s = {}
     t.task_to_perform = "eval"  # skips the torch/cloudpickle weight-send path
     t._stat_utility = 0.5
     t._local_accuracy = 0.0

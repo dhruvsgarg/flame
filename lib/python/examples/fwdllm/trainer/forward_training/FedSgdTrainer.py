@@ -600,14 +600,23 @@ class FedSGDTrainer(Trainer):
 
         # Phase-timing entry: everything up to the compute loop is pre_train
         # (avail check, FwdLLMStage setup, loader state).
+        # These 3 are hand-timed (not via self._phase()), so vclock capture is
+        # explicit here too -- reuses the same _phase_vclock_s dict _phase()
+        # writes into, so phase_vclock_s in telemetry covers both (§N follow-up:
+        # gpu_compute_s/pre_train_s/post_train_s were flagged out of scope,
+        # now closed).
+        if not hasattr(self, "_phase_vclock_s"):
+            self._phase_vclock_s = {}
         _phase_entry = time.time()
         if not self._check_availability():
             return
 
         _round_start_ts = time.time()
         _pre_train_s = _round_start_ts - _phase_entry
+        self._phase_vclock_s["pre_train_s"] = getattr(self, "vclock_now", None)
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
+        self._phase_vclock_s["gpu_compute_s"] = getattr(self, "vclock_now", None)
 
         # emulate the mobile-device delay via the remainder-wait model: real
         # sleeps max(0, delay - gpu); sim skips it. Returns the modeled budget,
@@ -669,6 +678,7 @@ class FedSGDTrainer(Trainer):
             # term for the wall decomposition. Modeled delay is excluded via the
             # _phase_post_start stamp position (after the delay).
             _post_train_s = time.time() - _phase_post_start
+            self._phase_vclock_s["post_train_s"] = getattr(self, "vclock_now", None)
             # Forward-pass / perturbation accounting (WS3-b). Cumulative counters
             # live in fwdgrad_utils (per-process = per-client); the delta since the
             # last trainer_round is this iteration's cost. jvp_evals == scored
@@ -722,6 +732,12 @@ class FedSGDTrainer(Trainer):
                     "perturbations_iter": _jvp_iter,
                     "perturbations_total": _jvp_total,
                     **getattr(self, "_phase_times", {}),
+                    # Sim-mode-only vclock snapshot per _phase_times key (§N);
+                    # nested (not flattened like _phase_times) so an empty/absent
+                    # dict in real mode doesn't require per-key None-checks.
+                    # gpu_compute_s/pre_train_s/etc. above are hand-timed, not
+                    # via _phase() -- out of scope for this pass (§N subtask 3).
+                    "phase_vclock_s": getattr(self, "_phase_vclock_s", {}),
                 },
             )
             telemetry.emit(ev, **fields)
