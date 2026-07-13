@@ -1,0 +1,79 @@
+# Base trainer configuration template
+# Common properties shared across all trainers
+# Trainer-specific values will be injected at runtime
+
+backend: mqtt
+
+brokers:
+  - host: localhost
+    sort: mqtt
+  - host: localhost:10104
+    sort: p2p
+
+groupAssociation:
+  param-channel: default
+
+channels:
+  - description: Model update is sent from trainer to aggregator and vice-versa
+    groupBy:
+      type: tag
+      value:
+        - default
+    name: param-channel
+    pair:
+      - trainer
+      - aggregator
+    funcTags:
+      aggregator:
+        - distribute
+        - aggregate
+      trainer:
+        - fetch
+        - upload
+
+hyperparameters:
+  batchSize: 16
+  learningRate: 0.0001
+  lrDecayEnabled: false  # Disable by default, enable for REFL experiments
+  lrDecayFactor: 0.98  # REFL default
+  lrDecayEpoch: 10  # Apply decay every N rounds (REFL default)
+  minLearningRate: 0.0001  # Minimum LR floor
+  rounds: 5
+  # trainer_indices_list: injected at runtime from metadata
+  epochs: 1
+  use_oort_loss_fn: "True"
+  training_delay_enabled: "True"
+  satellite_coordinates_path: "lib/python/examples/_metadata/leo/geodetic.npz"
+  # training_delay_s: injected at runtime from trainer registry
+  # avl_events_*: injected at runtime from availability traces
+  client_notify:
+    enabled: "False"
+    trace: syn_0
+  wait_until_next_avl: "True"
+
+baseModel:
+  name: ""
+  version: 1
+
+job:
+  id: "622a358619ab59012eabeefb"
+  name: fmow
+
+registry:
+  sort: dummy
+  uri: ""
+
+selector:
+  sort: default
+  kwargs:
+    c: 20
+    aggGoal: 1
+
+optimizer:
+  sort: fedavg
+  kwargs: {}
+
+maxRunTime: 300
+
+realm: default/us
+role: trainer
