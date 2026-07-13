@@ -1,32 +1,41 @@
-# A/B sibling of fluxtune_n10_smoke_sim.yaml -- IDENTICAL except
-# sim_sct_ordered_drain: false (legacy channel.recv_fifo ingestion, same
-# primitive felix's asyncfl._sim_recv_min uses by default) and the job id (so
-# run dirs don't collide). delays match the 2026-07-13 baseline run
-# (enable_training_delays: true, training_delay_factor: 0.5, max_runtime_s:
-# 1200) so this is a direct A/B against run_20260713_005918_fluxtune_n10_smoke_syn_0_sim.
+# A/B pair for sim_sct_ordered_drain, both legs in one file so one invocation
+# runs them back-to-back (flame.launch.run_experiment's ExperimentBatch runs
+# every `experiments:` list entry sequentially, sweeping stragglers between
+# runs). Leg 1 = drain_ready (matches the 2026-07-13 baseline config, but with
+# the new pastdated-commit instrumentation the banked baseline run predates --
+# re-run it here rather than compare against the old log). Leg 2 = the A/B
+# lever: sim_sct_ordered_drain: false (legacy channel.recv_fifo ingestion,
+# the same primitive felix's asyncfl._sim_recv_min uses by default). Both legs
+# otherwise identical: enable_training_delays: true, training_delay_factor:
+# 0.5, max_runtime_s: 1200 -- matching run_sequential.sh --delays on
+# --delay-divisor 0.5 --max-runtime-s 1200.
 #
 # Purpose: settle whether sim_sct_ordered_drain (drain_ready) is load-bearing
 # for fluxtune, or whether it's dead weight felix never needed either. Compare
-# against the baseline run on:
-#   - sim_rate (does it recover close to fwdllm/fwdllm_plus's ~5.7x?)
-#   - buf_depth / recv_wrapper wall (does the commit backlog persist -- it
-#     should, since the bottleneck is one-grad-per-composer-tick throughput,
-#     not the drain primitive; if buf_depth/recv_wrapper look the SAME here,
-#     that confirms the primitive isn't the bottleneck)
-#   - pastdated_n / pastdated_gap_max in the new [SIM_GRAD_RECV] log field
-#     (newly wired -- absent from the baseline run's log, which predates this
-#     instrumentation; re-run the baseline too if you want a matched pair)
-#   - any [SIM_GRAD_STUCK_EVICT] evictions or a visibly higher pastdated_n
-#     here than the drain_ready run would indicate recv_fifo's streamer really
-#     is stranding/lapping messages under fluxtune's per-grad probe frequency
+# the two legs' run dirs on:
+#   - sim_rate (does leg 2 recover close to fwdllm/fwdllm_plus's ~5.7x?)
+#   - buf_depth / recv_wrapper wall (does the commit backlog persist in leg 2
+#     -- it should, since the bottleneck is one-grad-per-composer-tick
+#     throughput, not the drain primitive; if buf_depth/recv_wrapper look the
+#     SAME in both legs, that confirms the primitive isn't the bottleneck)
+#   - pastdated_n / pastdated_gap_max in the [SIM_GRAD_RECV] log field -- a
+#     materially higher count in leg 2 (drain_ready OFF) than leg 1 would be
+#     the correctness case FOR keeping sim_sct_ordered_drain (recv_fifo's
+#     streamer really is stranding/lapping messages under fluxtune's per-grad
+#     probe frequency); no difference means it isn't earning its keep here
+#   - any [SIM_GRAD_STUCK_EVICT] evictions in either leg
 #
-# Run:
+# Wall time: ~20-25 min per leg (max_runtime_s=1200 + ~20s aggregator warmup +
+# ~20s spawn stagger for 10 trainers + process start/teardown) -> ~45-50 min
+# total for both legs sequentially.
+#
+# Run (runs BOTH legs, one after another):
 #   python -m flame.launch.run_experiment \
 #       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_sim_no_sct_drain.yaml
 
 experiments:
-  - name: fluxtune_n10_smoke_sim_no_sct_drain
-    description: "FedFwd SIM smoke, sim_sct_ordered_drain=false A/B sibling (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated)."
+  - name: fluxtune_n10_smoke_sim_sct_drain_true
+    description: "FedFwd SIM smoke, sim_sct_ordered_drain=true re-baseline WITH pastdated-commit instrumentation (leg 1/2 of the drain A/B; 10 trainers, fluxtune baseline)."
 
     baseline: fluxtune
 
@@ -46,9 +55,76 @@ experiments:
       availability:
         mode: syn_0
       time_mode: simulated
-      # Matched to the 2026-07-13 baseline run (run_sequential.sh --delays on
-      # --delay-divisor 0.5), not this yaml family's own "delays off" default --
-      # this A/B must be apples-to-apples against run_20260713_005918.
+      enable_training_delays: true
+      training_delay_factor: 0.5
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          jvp_perf_opt: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+          sim_straggler_spread_s: 0.0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 3
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fluxtune_n10_smoke_sim_sct_drain_true
+        hyperparameters:
+          rounds: 50
+          inflight_residence: true
+          send_timeout_wait_s: 300
+          # Leg 1: drain_ready ON (matches the 07-13 baseline).
+          sim_sct_ordered_drain: true
+          sim_staggered_redispatch: false
+          sim_compute_truthful_gate: true
+          sim_gate_compute_cap_s: 10.0
+          stalenessPolicy: fedbuff
+          max_data_id_progress: 9999
+          max_runtime_s: 1200
+          sim_model_eval_time: true
+          sim_model_agg_compute_time: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false
+
+  - name: fluxtune_n10_smoke_sim_no_sct_drain
+    description: "FedFwd SIM smoke, sim_sct_ordered_drain=false (leg 2/2 of the drain A/B; 10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated)."
+
+    baseline: fluxtune
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        mode: syn_0
+      time_mode: simulated
       enable_training_delays: true
       training_delay_factor: 0.5
       client_idx_modulo: 100
@@ -73,21 +149,18 @@ experiments:
           rounds: 50
           inflight_residence: true
           send_timeout_wait_s: 300
-          # THE A/B LEVER: legacy channel.recv_fifo ingestion instead of
-          # drain_ready -- the same primitive felix's asyncfl._sim_recv_min
+          # Leg 2: THE A/B LEVER, drain_ready OFF -- legacy channel.recv_fifo
+          # ingestion instead, the same primitive felix's asyncfl._sim_recv_min
           # uses (felix never sets this flag at all). If commit_gap/pastdated
-          # telemetry stays clean here, drain_ready isn't earning its keep on
-          # this workload and the streamer-stranding risk it guards against
-          # (per its docstring) isn't actually firing.
+          # telemetry stays clean here (vs leg 1), drain_ready isn't earning
+          # its keep on this workload and the streamer-stranding risk it
+          # guards against (per its docstring) isn't actually firing.
           sim_sct_ordered_drain: false
           sim_staggered_redispatch: false
           sim_compute_truthful_gate: true
           sim_gate_compute_cap_s: 10.0
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
-          # Matched to the 2026-07-13 baseline run's actual budget
-          # (run_sequential.sh --max-runtime-s 1200), not this yaml family's
-          # own 1800s default.
           max_runtime_s: 1200
           sim_model_eval_time: true
           sim_model_agg_compute_time: true
