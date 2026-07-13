@@ -218,6 +218,18 @@ class FedSGDTrainer(Trainer):
         self.avl_events_syn_0 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_0
         )
+        # DEBUG (2026-07-13): syn_0 is documented "always available" (a single
+        # [0, AVL_TRAIN] entry) but a live run showed every trainer firing a
+        # SECOND transition (to UN_AVL/AVL_EVAL) ~5 real-wall-clock minutes in,
+        # which deadlocked fluxtune's async selection. The trace file + loader
+        # were checked and are clean (single entry) as of this commit -- this
+        # logs what THIS process actually received, to catch a runtime
+        # mutation/aliasing bug the static file check can't see. Remove once
+        # root-caused.
+        logger.info(
+            f"[DEBUG_AVL_SYN0] trainer {self.trainer_id}: "
+            f"len={len(self.avl_events_syn_0)} content={self.avl_events_syn_0!r}"
+        )
 
         self.avl_events_syn_20 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_20
@@ -785,6 +797,15 @@ class FedSGDTrainer(Trainer):
             if len(self.state_avl_event_ts) > 0:
                 next_event_ts = self.trainer_start_ts + (self.state_avl_event_ts[0][0])
                 if time.time() >= next_event_ts:
+                    # DEBUG (2026-07-13): see [DEBUG_AVL_SYN0] above -- logs the
+                    # full queue right before each pop, so a run shows exactly
+                    # what was left to fire and where a spurious 2nd entry (or
+                    # a same-object-aliasing mutation) came from. Remove once
+                    # root-caused.
+                    logger.info(
+                        f"[DEBUG_AVL_POP] trainer {self.trainer_id}: "
+                        f"popping from queue={list(self.state_avl_event_ts)!r}"
+                    )
                     state_to_set = self.state_avl_event_ts.pop(0)[1]
                     old_status = self.avl_state.value
                     try:

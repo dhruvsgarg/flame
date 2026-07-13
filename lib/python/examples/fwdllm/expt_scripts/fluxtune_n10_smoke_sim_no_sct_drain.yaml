@@ -56,7 +56,16 @@ experiments:
         mode: syn_0
       time_mode: simulated
       enable_training_delays: true
-      training_delay_factor: 0.5
+      # NOTE: TrainerConfig has no top-level training_delay_factor field --
+      # only enable_training_delays. This must live under trainer.hyperparameters
+      # (runner.py:571 reads exp.trainer.hyperparameters, NOT
+      # trainer.config_overrides.hyperparameters, to fan it to the
+      # aggregator). Putting it directly under trainer: (as an earlier version
+      # of this file did) is silently dropped -- confirmed via
+      # run_20260713_103707's execution_config.yaml showing
+      # training_delay_factor: null despite this yaml setting 0.5.
+      hyperparameters:
+        training_delay_factor: 0.5
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
@@ -126,7 +135,16 @@ experiments:
         mode: syn_0
       time_mode: simulated
       enable_training_delays: true
-      training_delay_factor: 0.5
+      # NOTE: TrainerConfig has no top-level training_delay_factor field --
+      # only enable_training_delays. This must live under trainer.hyperparameters
+      # (runner.py:571 reads exp.trainer.hyperparameters, NOT
+      # trainer.config_overrides.hyperparameters, to fan it to the
+      # aggregator). Putting it directly under trainer: (as an earlier version
+      # of this file did) is silently dropped -- confirmed via
+      # run_20260713_103707's execution_config.yaml showing
+      # training_delay_factor: null despite this yaml setting 0.5.
+      hyperparameters:
+        training_delay_factor: 0.5
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
