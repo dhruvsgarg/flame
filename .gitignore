@@ -11,6 +11,9 @@
 # Third party
 */third_party/*
 
+# FwdLLM AE (artifact-evaluation) bundle — vendored data dump, not source
+third_party/ae/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~

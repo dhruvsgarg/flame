@@ -346,3 +346,82 @@ felix's default `recv_fifo` path doesn't (§A/§B.1#8).
 `_sim_recv_min`/`_sim_pop_committable` path which fluxtune's grad loop never went through) — folded into the
 `[SIM_GRAD_RECV]` log line. Purpose: make the pending `sim_sct_ordered_drain` A/B (§A) legible on the
 correctness dimension, not just `sim_rate`.
+
+---
+
+## §O  NPU-calibrated `training_delay_factor` per baseline
+
+**Problem.** `lib/python/examples/_metadata/trainer_registry.yaml`'s `training_delay_s` (4–19s, Papaya/FedBuff
+mobile-CNN traces) is one shared constant scaled by one shared `training_delay_factor` (0.5, all three
+baselines) — a CNN training-round budget, not calibrated to fwdllm's actual forward-grad JVP cost, and (§L)
+fluxtune and fwdllm/fwdllm_plus don't cost the same: fluxtune's `perturbation_count`=10 selection is 20
+fwd-pass-units/data-bin vs fwdllm/fwdllm_plus's 5 (1 JVP + 3 diagnostic passes) — **~4×, not the ~10× the raw
+`perturbation_count` alone would suggest**. One shared divisor can't be right for both.
+
+**Ground data.**
+- Real per-sample forward-grad JVP cost for distilbert, measured on the FwdLLM paper's reference NPU device
+  (`third_party/ae/fig15/b&c-energy&network.ipynb`, `train_time_dict_dict["distilbert"]["ours"] = 0.3085584`
+  s/sample) — matches our config exactly (`use_adapter: false`, `fl_algorithm: FedFwd`,
+  `configs/aggregator_base.json:38-40`).
+- Per-baseline fwd-pass-unit counts: §L's clean single-trainer profile (`scripts/profile_jvp_opt.py`, A40) —
+  fwdllm/fwdllm_plus 5 units, fluxtune(opt) 20 units — cross-validated against the banked 07-12/07-13 real runs'
+  `forward_passes_iter`/`perturbations_iter` telemetry (`FedSgdTrainer.py:740-745`): both agree exactly
+  (fwdllm/plus 5/1 constant, fluxtune 20/10 constant across all iterations in both runs). A static trace of the
+  `select_perturbation_using_jvp=False` code path suggested 1 JVP for all three baselines — **this is wrong,
+  discard it; the telemetry+profile agreement is ground truth.**
+- 100-trainer registry stats (`trainer_id` 1–100, the pool `client_idx_modulo` draws from): mean=12.51s,
+  median=11.0s, stdev=8.49s, range=[2,47]s. By `speed_class`: fast (n=16) mean 3.00s [2,4]; medium (n=22) mean
+  6.32s [5,8]; slow (n=19) mean 10.53s [9,12]; very_slow (n=43) mean 20.09s [13,47].
+
+**Reference-device target cost per data bin** (`= fwd_pass_units × per-sample-JVP-time × batch_size / 2`,
+batch_size=8; `/2` because 1 JVP = 2 fwd-pass-units by `fwdgrad_utils`' own counting convention):
+```
+1 fwd-pass-unit (NPU) = 0.3085584 × 8 / 2 = 1.2342 s
+fwdllm / fwdllm_plus:  5 units × 1.2342  = 6.171 s / data bin
+fluxtune:              20 units × 1.2342 = 24.685 s / data bin
+```
+
+**`training_delay_factor` (÷ on `training_delay_s`, `FedSgdTrainer.py:546`, config-only, no code change).**
+Anchor: `divisor = registry_mean / target_cost`, uniform across all 100 trainers (preserves the Papaya/FedBuff
+relative fast:medium:slow:very_slow spread; only re-anchors the absolute magnitude). A flat **+1.5s buffer**
+(midpoint of the 1–2s asked for) is added to each baseline's target cost before deriving the divisor, so the
+gap between modeled delay and real GPU compute doesn't run to zero:
+
+```
+fwdllm / fwdllm_plus:  target 6.171+1.5=7.671s → divisor = 12.51/7.671 ≈ 1.63
+fluxtune:               target 24.685+1.5=26.185s → divisor = 12.51/26.185 ≈ 0.48
+```
+
+| | old (shared) | new fwdllm/fwdllm_plus | new fluxtune |
+|---|---|---|---|
+| `training_delay_factor` | 0.5 | **1.63** | **0.48** |
+| registry-mean delay | 25.02s | 7.67s | 26.06s |
+| fast-class delay | 6.00s | 1.84s | 6.25s |
+
+**Fast-class headroom (the binding constraint — smallest budget, so checked explicitly, not just the mean).**
+Real observed GPU compute (07-12/13 banked runs, this dev GPU, not the NPU): fwdllm/plus mean 1.215s max
+1.712s; fluxtune mean 3.630s max 5.618s.
+```
+fwdllm/plus fast-class: 3.00/1.63 = 1.840s vs observed max 1.712s → margin +0.13s (THIN — watch first)
+fluxtune fast-class:    3.00/0.48 = 6.250s vs observed max 5.618s → margin +0.63s (comfortable)
+```
+fwdllm/fwdllm_plus's fast class is the one to watch for `[TIMING_OVERRUN]` (`FedSgdTrainer.py:549-556`) —
+re-tighten (raise the divisor slightly) or accept per that warning's own guidance if it fires.
+
+**Caveats (unchanged from the derivation discussion):** the NPU number is a single benchmark point from one
+unnamed device, not a distribution; per-sample × batch_size is an upper-bound linear approximation (NPU
+batching may parallelize part of this in reality); this recalibrates delay *magnitude* only — it does not
+give LLM-specific heterogeneity *shape* (no data exists on whether cheap phones degrade disproportionately more
+on transformer ops than CNN ops).
+
+**Action — update configs to use these, not the old shared divisor.** `run_sequential.sh`'s `--delay-divisor`
+is a single value per invocation (§ "Usage"), so the three baselines now need **separate invocations**, not one
+shared `--delay-divisor 0.5 --delays on` run across all of them:
+```
+run_sequential.sh --only fluxtune               --delays on --delay-divisor 0.48
+run_sequential.sh --only fwdllm,fwdllm_plus      --delays on --delay-divisor 1.63
+```
+Any future parity/smoke run that passes `--delay-divisor` must use the baseline-appropriate value above, not
+the old 0.5 default. **Not yet validated** — next run after landing should read `training_overran`/
+`remaining_time_s` from telemetry (per baseline, per speed_class) before trusting the calibration, per the
+fast-class margin flagged above.
