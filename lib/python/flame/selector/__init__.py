@@ -67,8 +67,20 @@ class AbstractSelector(ABC):
         if _seed is not None:
             logger.info(
                 f"[SELECTOR_SEED] {type(self).__name__} dedicated RNGs seeded "
-                f"with seed={_seed}"
+                f"with seed={_seed} fingerprint={self.rng_fingerprint()}"
             )
+
+    def rng_fingerprint(self) -> str:
+        """Short hex digest of both dedicated RNGs' internal state.
+
+        For determinism audits: two same-seed runs whose fingerprint differs
+        at the same call site proves something consumed extra draws between
+        construction and that point (simulate_fwdllm.md, RNG-selection
+        investigation) -- diff the fingerprint sequence to localize where.
+        """
+        py_state = repr(self._pyrng.getstate()).encode()
+        np_state = repr(self._rng.get_state()).encode()
+        return hashlib.sha256(py_state + np_state).hexdigest()[:12]
 
     def enforce_min_start(self, ends_count: int) -> bool:
         """Return True if selection should wait due to min-start threshold."""

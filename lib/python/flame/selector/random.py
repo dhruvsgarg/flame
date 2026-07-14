@@ -249,9 +249,25 @@ class RandomSelector(AbstractSelector):
                 )
                 return {}
 
-            selected_candidates = set(
-                self._pyrng.sample(sorted(avl_candidates), required_trainers)
+            logger.info(
+                f"[RNG_FINGERPRINT] before sample: {self.rng_fingerprint()} "
+                f"candidates={sorted(avl_candidates)} required_trainers={required_trainers}"
             )
+            # NOTE: sampled (the .sample() return) is the deterministic,
+            # seed-reproducible draw -- log it explicitly, ordered, before the
+            # set() conversion below. `set`/`dict` iteration order for str
+            # keys is per-process randomized (PYTHONHASHSEED, default random
+            # since Python 3.3): comparing `selected_candidates`'/the emitted
+            # dict's printed ORDER across two separate process launches will
+            # look nondeterministic even when `sampled` (and therefore the
+            # actual selection decision) is byte-identical. Diff `sampled`,
+            # not the post-set-conversion log line, when auditing determinism.
+            sampled = self._pyrng.sample(sorted(avl_candidates), required_trainers)
+            logger.info(
+                f"[RNG_FINGERPRINT] after sample: {self.rng_fingerprint()} "
+                f"sampled(ordered)={sampled}"
+            )
+            selected_candidates = set(sampled)
             logger.info(f"new selected ends: {selected_candidates}")
 
             self.selected_ends = set(self.selected_ends).union(selected_candidates)

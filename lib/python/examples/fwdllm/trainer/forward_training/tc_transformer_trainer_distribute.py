@@ -45,6 +45,14 @@ def _calculate_hash(tensor):
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
 
 
+def _torch_rng_fingerprint(generator: "torch.Generator") -> str:
+    """Short hex digest of a torch.Generator's internal state, for
+    determinism audits: two same-seed (same client_idx) runs whose
+    fingerprint differs at the same call site proves the perturbation RNG
+    consumed a different number of draws before that point."""
+    return _calculate_hash(generator.get_state())[:12]
+
+
 def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
     """Calculate a rolling hash for a tensor for logging."""
     if hash_str is None:
@@ -362,8 +370,8 @@ class ForwardTextClassificationTrainer:
 
             v_buffer = {}
             all_perturbations_hash = ""
-            selected_perturbation_hash = ""
             index = 0
+            rng_before = _torch_rng_fingerprint(self.torch_rng)
             for k, v in self.model.named_parameters():
                 if self.grad is not None and v.requires_grad:
                     self.total_rng_iter += 1
@@ -387,6 +395,12 @@ class ForwardTextClassificationTrainer:
 
                     del candidate_v, target_grad, cos_sim, sorted_indices, shape
                 index += 1
+            logging.info(
+                f"[RNG_FINGERPRINT] client_idx={self.args.client_idx} "
+                f"data_id={logging_state.get('data_id')} "
+                f"torch_rng before={rng_before} after={_torch_rng_fingerprint(self.torch_rng)} "
+                f"all_perturbations_hash={all_perturbations_hash}"
+            )
             return v_buffer
 
         self.log_memory("after_fmodel_setup", device)
@@ -431,8 +445,8 @@ class ForwardTextClassificationTrainer:
                 # v_all_pert = []
                 v_buffer = {}
                 all_perturbations_hash = ""
-                selected_perturbation_hash = ""
                 index = 0
+                rng_before = _torch_rng_fingerprint(self.torch_rng)
                 for k, v in self.model.named_parameters():
                     if v.requires_grad:
                         self.total_rng_iter += 1
@@ -461,6 +475,13 @@ class ForwardTextClassificationTrainer:
                             del candidate_v, shape
                     index += 1
 
+                logging.info(
+                    f"[RNG_FINGERPRINT] client_idx={self.args.client_idx} "
+                    f"data_id={logging_state.get('data_id')} iteration={logging_state.get('iteration')} "
+                    f"torch_rng before={rng_before} after={_torch_rng_fingerprint(self.torch_rng)} "
+                    f"all_perturbations_hash={all_perturbations_hash}"
+                )
+
                 if not self.select_perturbation_using_jvp:
                     return v_buffer, 0 # we add only the best cos sim values here
                 
@@ -488,7 +509,14 @@ class ForwardTextClassificationTrainer:
                     best_idx = -1
                     logging.info(f"Databin best jvp so far: {self.databin_best_jvp_val} - best this iteration: {abs(sorted_jvps[-1])}")
                 else:
-                    best_idx = np.random.choice([sorted_indices[-1], sorted_indices[-2]])
+                    # Draw from the client's dedicated, client_idx-seeded
+                    # torch_rng -- NOT np.random.choice (process-global,
+                    # unseeded on the trainer side; would silently break
+                    # real<->real / real<->sim reproducibility the moment
+                    # select_perturbation_using_jvp=True is exercised).
+                    pair = [sorted_indices[-1], sorted_indices[-2]]
+                    pick = int(torch.randint(0, 2, (1,), generator=self.torch_rng).item())
+                    best_idx = pair[pick]
                     self.databin_best_jvp_val = abs(sorted_jvps[-1])
                     logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[sorted_indices[-1]]} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
   
