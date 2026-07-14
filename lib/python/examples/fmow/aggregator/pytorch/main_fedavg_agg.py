@@ -29,9 +29,6 @@ from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.top_aggregator import TopAggregator
 
-import sys as _sys, os as _os
-_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-
 from pathlib import Path
 import torch.utils.data as data_utils
 

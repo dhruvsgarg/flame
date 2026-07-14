@@ -66,9 +66,6 @@ registry:
 
 selector:
   sort: default
-  kwargs:
-    c: 20
-    aggGoal: 1
 
 optimizer:
   sort: fedavg

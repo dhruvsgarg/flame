@@ -79,7 +79,7 @@ def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
 
 
 class PyTorchFMoWTrainer(Trainer):
-    """PyTorch CIFAR-10 Trainer."""
+    """PyTorch FMoW Trainer."""
 
     def __init__(self, config: Config, battery_threshold, time_mode="simulated") -> None:
         """Initialize a class instance."""
@@ -477,7 +477,7 @@ class PyTorchFMoWTrainer(Trainer):
         indices = list(self.image_buffer)
         subset = data_utils.Subset(self.fmow_dataset, indices)
         self.train_loader = torch.utils.data.DataLoader(
-            subset, batch_size=self.batch_size, shuffle=True, drop_last=False, num_workers=0
+            subset, batch_size=self.batch_size, shuffle=len(indices) > 0, drop_last=False, num_workers=0
         )
 
     
@@ -583,11 +583,16 @@ class PyTorchFMoWTrainer(Trainer):
         _gpu_start = time.time()
         # Setup/avail/loader-rebuild overhead before the compute loop.
         _pre_train_s = _gpu_start - _phase_train_entry
-        for epoch in range(1, self.epochs + 1):
-            epoch_batches, epoch_loss = self._train_epoch(epoch)
-            total_batches_processed += epoch_batches
-            if epoch_loss is not None:
-                final_loss = epoch_loss
+        if len(self.train_loader.dataset) == 0:
+            logger.info(
+                f"Trainer {self.trainer_id}: no captured images available this round, skipping training."
+            )
+        else:
+            for epoch in range(1, self.epochs + 1):
+                epoch_batches, epoch_loss = self._train_epoch(epoch)
+                total_batches_processed += epoch_batches
+                if epoch_loss is not None:
+                    final_loss = epoch_loss
         # real GPU/compute time for this round, excluding any simulated delay
         _real_gpu_time_s = time.time() - _gpu_start
         # Post-compute overhead (cleanup, delta-l2, telemetry) starts here.
