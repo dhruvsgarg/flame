@@ -276,21 +276,33 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="simUnavailability", default=False
     )
     # sct-model folds (fwdllm Stage B / K-D20 #6). Default OFF ⇒ byte-identical.
-    # simModelEvalTime (B1): charge the measured server-eval wall to the vclock
-    # after each committed data_id -- the largest GENUINE unmodeled term (~3.34
-    # s/round). simStragglerSpreadS (B2): per-trainer straggler dispersion (s)
-    # added to the modeled delay so the sync barrier's k-th sct reflects real
-    # trainer_speed_s spread (~2.3 s/round). simWanTransferS (B3): WAN payload-
-    # transfer term -- NOT measurable on localhost, documented knob, leave 0.
-    sim_model_eval_time: t.Optional[bool] = Field(
-        alias="simModelEvalTime", default=False
-    )
     # simModelAggComputeTime (#15): charge the measured aggregate()-call wall to
-    # the vclock on EVERY agg-goal cycle (pass or fail), not just committed ones
-    # -- aggregate() runs real GPU-side gradient-merge/server-step math every
-    # cycle, mode-invariant cost (~1.4s/cycle), but only eval_s (above) was ever
-    # folded. Uncredited, this compounds over every cycle (more #N-driven
-    # variance-gate retries -> more uncredited wall).
+    # the vclock on EVERY agg-goal cycle (pass or fail) -- aggregate() runs real
+    # GPU-side gradient-merge/server-step math every cycle, mode-invariant cost
+    # (~1.4s/cycle), synchronously (it produces the model trainers need
+    # immediately and is never backgrounded). simStragglerSpreadS (B2):
+    # per-trainer straggler dispersion (s) added to the modeled delay so the
+    # sync barrier's k-th sct reflects real trainer_speed_s spread (~2.3
+    # s/round). simWanTransferS (B3): WAN payload-transfer term -- NOT
+    # measurable on localhost, documented knob, leave 0.
+    #
+    # simModelEvalTime (B1, REMOVED §6 Part 6, simulate_fwdllm.md §G):
+    # used to charge the measured server-eval wall to the vclock the same way,
+    # because fwdllm's eval_model() ran SYNCHRONOUSLY, inline, on the critical
+    # path in both modes. Removed once eval_model() was backgrounded on a daemon
+    # thread (mirroring async_cifar10/main_asyncfl_agg.py's evaluate()) -- the
+    # asymmetry the fold corrected for (real paid the wall, sim skipped it "for
+    # free") no longer exists once both modes background it symmetrically.
+    #
+    # Cross-reference: this backgrounded-vs-synchronous distinction is WHY
+    # main_asyncfl_agg.py's evaluate() never needed an equivalent fold -- it's a
+    # property of it being backgrounded, not a structural guarantee. If
+    # aggregate() above (or any future aggregator's eval/aggregate step) ever
+    # becomes synchronous and non-trivial in cost without being backgrounded, it
+    # needs a sim_model_*_compute_time-style fold or sim mode will silently
+    # under-count that wall time, the same way fwdllm's pre-Part-6 eval did. The
+    # axis that matters is synchronous/blocking vs. backgrounded -- not
+    # centralized vs. decentralized eval.
     sim_model_agg_compute_time: t.Optional[bool] = Field(
         alias="simModelAggComputeTime", default=False
     )

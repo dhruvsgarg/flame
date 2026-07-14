@@ -84,6 +84,11 @@ class _FakeGradAgg:
     _sim_recv_timeout_s = _SyncBase._sim_recv_timeout_s
     _note_sim_known_delay = _SyncBase._note_sim_known_delay
     _SIM_RECV_MARGIN_S = _SyncBase._SIM_RECV_MARGIN_S
+    # §6 Part 3 (simulate_fwdllm.md §G): shared safe-fast-path check.
+    _sim_gate_is_safe = _SyncBase._sim_gate_is_safe
+    _SIM_GATE_FAST_PROBE_TIMEOUT_S = _SyncBase._SIM_GATE_FAST_PROBE_TIMEOUT_S
+    # §6 Part 4 (simulate_fwdllm.md §G): shared visibility-lag primitive.
+    _update_visibility_lag = _SyncBase._update_visibility_lag
     # #13 step 2 ready-gating helper (inherited by the real fwdllm agg from asyncfl).
     _sim_end_has_ready_msg = staticmethod(TopAggregator._sim_end_has_ready_msg)
     # #13 step 4 freed-slot FIFO consumer (inherited from asyncfl).
@@ -107,6 +112,11 @@ class _FakeGradAgg:
         self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
         self._curr_agg_version = (1, 0)
+        # §4 (simulate_fwdllm.md §G): progress axis _sim_recv_min_grad
+        # now stamps ingested grads with, and carried-surplus classification
+        # reads back at pop time.
+        self.data_id = 0
+        self._sim_enqueue_data_id = {}
 
     def _drain(self, channel, recv_ends, n):
         """Commit n grads, returning the ordered list of committed scts."""
@@ -158,6 +168,24 @@ class TestSctOrderedCommit:
         assert agg._sim_known_delay_s == {"A": 8.0, "B": 5.0}
 
 
+class TestVisibilityLagTelemetry:
+    """§6 Part 4 (simulate_fwdllm.md §G): _sim_recv_min_grad now also
+    calls the shared _update_visibility_lag alongside the pre-existing ad hoc
+    _commit_gap computation. Pure refactor/addition -- must not change the
+    committed number, only add the standardized field triplet."""
+
+    def test_visibility_lag_matches_commit_gap_bit_for_bit(self):
+        agg = _FakeGradAgg()
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=30.0)
+
+        agg._sim_recv_min_grad(ch, ["A"])
+
+        assert agg._sim_last_update_visibility_lag_s == agg._sim_last_commit_gap_s
+        assert agg._sim_last_update_ready_ts == 30.0
+        assert agg._sim_last_update_committed_ts == agg._vclock.now
+
+
 class TestInFlightGate:
     def test_holds_commit_for_an_earlier_expected_straggler(self):
         """A (sct=100) arrives first physically; B (sct=50) is EXPECTED to
@@ -187,14 +215,18 @@ class _RecordingChannel(_FakeGradChannel):
         super().__init__(ends)
         self.probe_calls = []          # recv_fifo end-id lists
         self.drain_calls = []          # drain_ready end-id lists
+        self.probe_timeouts = []       # recv_fifo timeout values, call-aligned
+        self.drain_timeouts = []       # drain_ready timeout values, call-aligned
         self._ready = set(ready)
 
     def recv_fifo(self, end_ids, first_k=None, timeout=None):
         self.probe_calls.append(list(end_ids))
+        self.probe_timeouts.append(timeout)
         yield from super().recv_fifo(end_ids, first_k=first_k, timeout=timeout)
 
     def drain_ready(self, end_ids, timeout=None):
         self.drain_calls.append(list(end_ids))
+        self.drain_timeouts.append(timeout)
         return super().drain_ready(end_ids, timeout=timeout)
 
     # Mirrors channel._ends[e].is_rxq_empty() as read by _sim_end_has_ready_msg.
@@ -254,6 +286,82 @@ class TestProbeCeilingReadyGating:
 
         agg._sim_recv_min_grad(ch, [])
         assert any("READY" in call for call in ch.probe_calls)
+
+
+class TestSafeFastPathTiming:
+    """§6 Part 3 (simulate_fwdllm.md §G), option 2: when the gate is
+    ALREADY provably safe from in-memory state alone (bmin known, no in-flight
+    end's known delay puts it earlier than bmin - slack), the probe call this
+    pass must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead of the
+    full per-trainer `_sim_recv_timeout_s` bound -- this is the actual fix for
+    Bug A's measured multi-second blocking waits (mean 2.09s, p90 4.1s, max
+    12.4s, §3.1). The eager-probe behavior itself (this straggler still gets
+    handed to recv_fifo/drain_ready) is unchanged and covered by
+    TestProbeCeilingReadyGating above; this class asserts the TIMEOUT VALUE
+    used, which those tests don't check."""
+
+    def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
+        agg = _FakeGradAgg()
+        # READY's delay is already cached (as if a prior message from it was
+        # already observed this run) and its exp (1000) is nowhere near bmin
+        # (10) -> not stuck -> the gate is provably safe pre-ingest. It is
+        # still probed because its message has physically arrived (readiness
+        # overrides exp, per TestProbeCeilingReadyGating), but since nothing
+        # need be waited on, the call must use the tiny fast-path timeout.
+        agg._sim_known_delay_s["READY"] = 3.0
+        agg._sim_inflight_expected = {"READY": 1000.0}
+        ch = _RecordingChannel([], ready={"READY"})
+        ch.add_msg("READY", sct=1000.0, release_at=0)
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("READY" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] == agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
+        # sanity: the fast-path bound really is tiny relative to the full bound
+        # this pass would otherwise have used (known delay 3.0 + margin 0.5).
+        assert ch.probe_timeouts[0] < agg._sim_recv_timeout_s(["READY"])
+
+    def test_unknown_delay_end_in_mix_forces_full_bound_not_fast_path(self):
+        """Even with an otherwise-safe gate, ANY end in the probe set whose
+        delay isn't cached yet must keep today's fully-conservative behavior
+        (`_sim_recv_timeout_s` returns None -> genuinely block) -- the fast
+        path must never fire on an uncertain end."""
+        agg = _FakeGradAgg()
+        # UNKNOWN has never been observed before (no _sim_known_delay_s entry)
+        # and is physically ready, so it's probed same as the test above --
+        # but its delay is uncached, so the fast path must NOT engage.
+        agg._sim_inflight_expected = {"UNKNOWN": 1000.0}
+        ch = _RecordingChannel([], ready={"UNKNOWN"})
+        ch.add_msg("UNKNOWN", sct=1000.0, release_at=0)
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("UNKNOWN" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] is None  # genuinely blocking, unchanged
+
+    def test_earlier_stuck_end_forces_full_bound_not_fast_path(self):
+        """A genuinely stuck straggler (known delay, expected BEFORE the
+        buffered minimum) must keep using the full computed bound -- the gate
+        is not safe, so the fast path must not engage."""
+        agg = _FakeGradAgg()
+        # STUCK's known delay puts its exp (5) well before bmin(10) - slack ->
+        # earlier_stuck -> the gate is NOT safe, must wait the full bound.
+        agg._sim_known_delay_s["STUCK"] = 1.0
+        agg._sim_inflight_expected = {"STUCK": 5.0}
+        ch = _RecordingChannel([])
+        ch.add_msg("STUCK", sct=5.0, budget=1.0, release_at=1)  # arrives on 2nd probe
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("STUCK" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] == agg._sim_recv_timeout_s(["STUCK"])
+        assert ch.probe_timeouts[0] != agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
 
 
 class TestSctOrderedDrain:

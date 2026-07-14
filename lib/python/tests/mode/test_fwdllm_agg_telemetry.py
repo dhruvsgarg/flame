@@ -55,7 +55,13 @@ class _FakeHyperparameters:
 
 
 class _FakeConfig:
-    hyperparameters = _FakeHyperparameters()
+    def __init__(self):
+        # A fresh instance per _FakeConfig -- a shared class-level singleton
+        # here let a test's `agg.config.hyperparameters.some_flag = True`
+        # (e.g. TestEvalNoLongerFoldsVclock in test_fwdllm_sct_model.py) leak
+        # into every other test's _FakeAggregator that runs later in the same
+        # pytest session, since they'd all reference the SAME object.
+        self.hyperparameters = _FakeHyperparameters()
 
 
 class _FakeAggregator:
@@ -68,6 +74,9 @@ class _FakeAggregator:
     """
 
     _process_aggregation_goal_met = TopAggregator._process_aggregation_goal_met
+    # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now snapshotted
+    # + backgrounded via the shared _eval_snapshot_model, not called inline.
+    _eval_snapshot_model = TopAggregator._eval_snapshot_model
 
     def __init__(self, contributors, var_good_enough, staleness_map=None,
                  total_data_bins=150):
@@ -116,11 +125,23 @@ class _FakeAggregator:
     def add_local_trained_result(self, *a, **k):
         pass
 
-    def eval_model(self):
+    def eval_model(self, model=None):
         return dict(self._eval_result), None, []
 
     def _log_and_reset_model_version_stats(self):
         pass
+
+
+def _wait_eval_done(agg, timeout=2.0):
+    """§6 Part 6 (simulate_fwdllm.md §G): eval_model() now runs on a
+    daemon thread launched by _process_aggregation_goal_met, which returns
+    without waiting for it. Tests asserting on the resulting agg_eval event's
+    CONTENT must wait for that thread to finish (via the same _eval_inflight
+    flag _eval_snapshot_model/the eval job's finally clear) before reading the
+    telemetry file, or they race the background thread."""
+    deadline = time.time() + timeout
+    while getattr(agg, "_eval_inflight", False) and time.time() < deadline:
+        time.sleep(0.005)
 
 
 class TestAggEvalTelemetry:
@@ -134,6 +155,7 @@ class TestAggEvalTelemetry:
             )
 
             agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+            _wait_eval_done(agg)  # eval now runs on a background daemon thread
 
             lines = (tmp_path / "aggregator.jsonl").read_text().splitlines()
             import json
@@ -254,6 +276,42 @@ class TestAggRoundTelemetry:
             assert r["wall_elapsed_s"] > 0
             # vclock 120 over ~60 wall-s -> sim_rate ~2 (a speedup); must be present
             assert r["sim_rate"] is not None and r["sim_rate"] > 1.0
+        finally:
+            telemetry.shutdown()
+
+    def test_sync_barrier_lags_surfaced_as_visibility_lag(self, tmp_path):
+        """§6 Part 4 (simulate_fwdllm.md §G), point 2: the barrier-
+        anchored lag list computed in sync_collect_and_accumulate_grads
+        (_sync_barrier_lags_s, sim mode) previously reached only a text log
+        line, never the structured agg_round event -- the same "computed but
+        never surfaced" gap commit_gap_s/buf_depth had for fluxtune before
+        this plan's Part 2. is_async=False (the sync path's own call) must
+        read it into update_visibility_lag_s as a list; the per-item
+        update_ready_ts/update_committed_ts pair has no meaning for a batched
+        barrier commit and must stay None."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
+            agg.simulated = True
+            agg._vclock = type("V", (), {"now": 120.0})()
+            agg.agg_start_time_ts = time.time() - 60.0
+            agg._release_sim_slots_at_agg_goal = lambda *a, **k: None
+            agg._sync_barrier_lags_s = [0.0, 2.0]
+            channel = _FakeChannel(
+                durations={"t1": timedelta(seconds=1)}, utilities={"t1": 0.1}
+            )
+
+            agg._process_aggregation_goal_met(
+                tag="aggregate", channel=channel, is_async=False
+            )
+
+            import json
+            events = [json.loads(l) for l in
+                      (tmp_path / "aggregator.jsonl").read_text().splitlines()]
+            r = [e for e in events if e["event"] == "agg_round"][0]
+            assert r["update_visibility_lag_s"] == [0.0, 2.0]
+            assert r["update_ready_ts"] is None
+            assert r["update_committed_ts"] is None
         finally:
             telemetry.shutdown()
 
@@ -552,16 +610,22 @@ class TestContributorIntervalsEmission:
 
 class TestPerRoundWallDecomposition:
     """agg_round carries the per-round wall breakdown feeding #6 --
-    aggregate_fedavg_s + eval_s always; barrier_wait_s/drain_tail_s when the
-    dispatch/last-grad wall stamps were captured (else null, rung SKIPs)."""
+    aggregate_fedavg_s always; barrier_wait_s/drain_tail_s when the
+    dispatch/last-grad wall stamps were captured (else null, rung SKIPs).
+    eval_s is permanently null as of §6 Part 6
+    (simulate_fwdllm.md §G): eval_model() is backgrounded on a daemon
+    thread, so there is no more synchronous eval duration on this critical
+    path to measure here in either mode (see TestEvalNoLongerFoldsVclock in
+    test_fwdllm_sct_model.py for the fold-removal regression guard)."""
 
-    def test_fedavg_and_eval_present_on_pass(self, tmp_path):
+    def test_fedavg_present_eval_s_always_null(self, tmp_path):
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
             channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
 
             agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+            _wait_eval_done(agg)
 
             import json
             events = [json.loads(l) for l in
@@ -570,8 +634,9 @@ class TestPerRoundWallDecomposition:
             # fedavg wall is measured around aggregate() and is non-negative
             assert r["aggregate_fedavg_s"] is not None
             assert r["aggregate_fedavg_s"] >= 0.0
-            # eval ran (variance passed) -> eval_s measured, non-negative
-            assert r["eval_s"] is not None and r["eval_s"] >= 0.0
+            # eval is backgrounded (§6 Part 6) -> never measured synchronously
+            # here, even on a variance pass.
+            assert r["eval_s"] is None
         finally:
             telemetry.shutdown()
 

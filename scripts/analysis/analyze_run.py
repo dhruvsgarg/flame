@@ -2979,6 +2979,44 @@ def aggregation_plots(records, out, stamp, tdir):
                         "commit_gap_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
+    # 3b) past-dating occurrence + degree over time (run-cumulative counters,
+    # sim only): a healthy sim's commits land at/near their sct, so these
+    # should stay flat near zero. A rising pastdated_commits count = the sim
+    # is chronically committing after the fact, not just occasionally; a
+    # rising pastdated_gap_max = the worst-case lateness is still growing.
+    # carried_surplus_commits (§4.4/§10, simulate_fwdllm.md §G): a
+    # separate, run-cumulative counter for surplus grads deliberately carried
+    # across a data_id boundary (`_release_sim_slots_at_agg_goal`, c >>
+    # agg_goal fedbuff designs) and popped under the new boundary's already-
+    # advanced vclock. Expected to step up once per data_id boundary for the
+    # entire life of the run -- this is healthy async carry, NOT a pacing
+    # anomaly. Plotted alongside pastdated_commits (same file) so a healthy
+    # run reads as pastdated_commits flat-at-0 + carried_surplus_commits
+    # stepping up on its own expected cadence, not conflated into one alarm.
+    cs_y = []
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd < 1 or r.get("carried_surplus_commits") is None:
+            continue
+        cs_y.append((rd, float(r["carried_surplus_commits"])))
+    if pc_x:
+        _series = {
+            "pastdated_commits (cumulative)": (pc_x, pc_y),
+            "pastdated_gap_max_s (cumulative worst-case)": (pc_x, pgm_y),
+        }
+        if cs_y:
+            _series["carried_surplus_commits (cumulative, expected cadence)"] = (
+                [x for x, _ in cs_y], [y for _, y in cs_y]
+            )
+        p = ph.line_plot(
+            _series,
+            "round", "count / seconds",
+            "Past-dated + carried-surplus commit occurrence over time "
+            "(pastdated flat-at-0 = healthy; carried_surplus stepping up "
+            "once/data_id-boundary is expected, not an anomaly)",
+            d, "pastdated_commits_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+
     # 4) update residence time: rounds an update stayed in-flight (selected but
     # not yet cleaned) before commit -- ties staleness to the in-flight
     # mechanic. FIXED 2026-07 (telemetry/plots audit): this used to read

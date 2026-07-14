@@ -179,6 +179,16 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         # Off the critical path: snapshot weights now, run the test-set forward
         # pass in a daemon thread so the aggregator keeps committing/dispatching
         # (the synchronous eval penalised async — more rounds -> more pauses).
+        #
+        # Cross-reference (§11/§6 Parts 5-6, fwdllm's simulate_fwdllm.md §G):
+        # this backgrounding is WHY this example needs no sim_model_*_compute_time-
+        # style vclock fold (flame/config.py) the way fwdllm's eval_model() did
+        # before it was ALSO backgrounded (§6 Part 6, removing its own
+        # now-dead sim_model_eval_time fold) — needing no fold is a property of
+        # being backgrounded, not a structural guarantee. If this ever becomes
+        # synchronous/non-trivial in cost, or a future aggregator's eval/aggregate
+        # step is, it needs the equivalent fold or sim mode will silently
+        # under-count that wall time.
         eval_model = self._eval_snapshot_model()
         if eval_model is None:
             return  # prior async eval still running

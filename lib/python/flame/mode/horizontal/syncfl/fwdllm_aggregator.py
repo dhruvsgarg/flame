@@ -19,6 +19,7 @@
 import gc
 import logging
 import psutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -310,6 +311,16 @@ class TopAggregator(AsyncTopAgg):
         self.total_data_bins = 150
         self._is_model_updated = False
         self._model_version = 0
+
+        # §4.2/§4.3 (simulate_fwdllm.md §G): end -> data_id it entered
+        # the sct reorder buffer under. Mirrors asyncfl's `_sim_enqueue_round`
+        # (asyncfl/top_aggregator.py:130), adapted to fwdllm's progress axis
+        # (data_id, not round -- fwdllm's `_round` only bumps once per full
+        # 150-data_id lap, so a round-keyed classifier never fires here). Lets
+        # `_sim_recv_min_grad` tell a genuine carried-surplus commit (buffered
+        # under the PRIOR data_id, popped after the boundary advanced) apart
+        # from an actual pacing anomaly.
+        self._sim_enqueue_data_id: dict = {}
 
         # Force-advance data_id after this many failed variance checks; None = disabled.
         self._max_iter_per_data_id = getattr(
@@ -923,6 +934,20 @@ class TopAggregator(AsyncTopAgg):
                 if not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
             _seen = set(_base)
+            # §6 Part 3 (simulate_fwdllm.md §G), option 2: derive gate
+            # safety from CURRENT in-memory state, before this pass's ingest
+            # call. Deliberately does NOT apply the compute-truthful phantom-skip
+            # filter (below, in the post-ingest Gate) -- that would let this
+            # pre-check treat more ends as non-stuck than the post-ingest gate
+            # does, which could fast-path a pass the real gate would still HOLD.
+            # Omitting it only makes this check MORE conservative (a superset of
+            # candidate stuck ends), never less -- safe, just occasionally misses
+            # an optimization on phantom-skip cases.
+            _pre_bmin = self._sim_buffer.peek_min_ts()
+            _pre_inflight = [
+                (e, exp) for e, exp in self._sim_inflight_expected.items()
+                if not self._sim_buffer.has(e) and e not in self._sim_committed
+            ]
             if getattr(self, "_sim_sct_ordered_drain", False):
                 # #13: direct sct-ordered ingest. Drain each live in-flight end's
                 # rx queue directly (no recv_fifo streamer) over the full in-flight
@@ -940,15 +965,25 @@ class TopAggregator(AsyncTopAgg):
                     # §M: exact bound when known; else a poll tick (drain_ready
                     # can't block on timeout=None) -- the outer pass loop retries.
                     _timeout = self._sim_recv_timeout_s(to_probe)
+                    _fast_safe = _timeout is not None and self._sim_gate_is_safe(
+                        _pre_bmin, _pre_inflight
+                    )
+                    _probe_timeout = (
+                        self._SIM_GATE_FAST_PROBE_TIMEOUT_S if _fast_safe
+                        else (_timeout if _timeout is not None else _SIM_GATE_POLL_TICK_S)
+                    )
                     for m, md in channel.drain_ready(
                         to_probe,
-                        timeout=(_timeout if _timeout is not None else _SIM_GATE_POLL_TICK_S),
+                        timeout=_probe_timeout,
                     ):
                         _e = md[0]
                         self._note_sim_known_delay(_e, m)
                         _s = m.get(MessageType.SIM_COMPLETION_TS)
                         _s = float(_s) if _s is not None else self._vclock.now
                         self._sim_buffer.add(_e, _s, (m, md))
+                        if not hasattr(self, "_sim_enqueue_data_id"):
+                            self._sim_enqueue_data_id = {}
+                        self._sim_enqueue_data_id.setdefault(_e, self.data_id)
             else:
                 # #13: probe-ceiling + ready-gating. Probe an in-flight-expected
                 # end that is not already a recv_end only if it is physically ready
@@ -970,8 +1005,14 @@ class TopAggregator(AsyncTopAgg):
                 if to_probe:
                     # §M: exact bound when known; None to genuinely block.
                     _timeout = self._sim_recv_timeout_s(to_probe)
+                    _fast_safe = _timeout is not None and self._sim_gate_is_safe(
+                        _pre_bmin, _pre_inflight
+                    )
+                    _probe_timeout = (
+                        self._SIM_GATE_FAST_PROBE_TIMEOUT_S if _fast_safe else _timeout
+                    )
                     for m, md in channel.recv_fifo(
-                        to_probe, first_k=len(to_probe), timeout=_timeout
+                        to_probe, first_k=len(to_probe), timeout=_probe_timeout
                     ):
                         if m is None:  # no more ready (bound expired or set drained)
                             break
@@ -980,6 +1021,9 @@ class TopAggregator(AsyncTopAgg):
                         _s = m.get(MessageType.SIM_COMPLETION_TS)
                         _s = float(_s) if _s is not None else self._vclock.now
                         self._sim_buffer.add(_e, _s, (m, md))
+                        if not hasattr(self, "_sim_enqueue_data_id"):
+                            self._sim_enqueue_data_id = {}
+                        self._sim_enqueue_data_id.setdefault(_e, self.data_id)
             # Gate: earliest expected completion among un-buffered in-flight ends.
             bmin = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
@@ -1056,14 +1100,36 @@ class TopAggregator(AsyncTopAgg):
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
         _commit_gap = self._vclock.now - sct
+        # §6 Part 4 (simulate_fwdllm.md §G): the shared, already-
+        # existing visibility-lag primitive (syncfl/top_aggregator.py), never
+        # previously called anywhere in fwdllm -- same number as _commit_gap
+        # above (confirmed: both are vclock.now - sct in sim mode), but emits
+        # the standardized update_ready_ts/update_committed_ts/
+        # update_visibility_lag_s field triplet matching felix's own schema
+        # (asyncfl/top_aggregator.py's train/eval call sites) instead of a
+        # fwdllm-only ad hoc field name.
+        _vis_ready_ts, _vis_committed_ts, _vis_lag_s = self._update_visibility_lag(
+            sct, md[1] if isinstance(md, tuple) and len(md) > 1 else None
+        )
+        # §4.1-4.4 (simulate_fwdllm.md §G): an item enqueued under a
+        # PRIOR data_id and only now popped is carried surplus (deliberately
+        # preserved across the agg-goal boundary by
+        # `_release_sim_slots_at_agg_goal`, §L) -- expected staleness, not a
+        # scheduling failure. Pruned here (not just read) to keep the dict
+        # bounded to in-flight ends only.
+        _enqueued_data_id = getattr(
+            self, "_sim_enqueue_data_id", {}
+        ).pop(_end, None)
+        _is_carried_surplus = (
+            _enqueued_data_id is not None and _enqueued_data_id != self.data_id
+        )
         if _commit_gap > _SIM_ORDER_SLACK_S:
-            self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
-            self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
-            self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
             _mv = m.get(MessageType.MODEL_VERSION) if isinstance(m, dict) else None
             _cur_round = getattr(self, "_round", -1)
             _round_lag = (_cur_round - int(_mv)) if _mv is not None else None
-            if _cur_round <= 1:
+            if _is_carried_surplus:
+                _src = "carried_surplus"
+            elif _cur_round <= 1:
                 _src = "round1"
             elif _was_recommit:
                 _src = "redispatch"
@@ -1071,6 +1137,19 @@ class TopAggregator(AsyncTopAgg):
                 _src = "fresh"
             else:
                 _src = "straggler"
+            if _src == "carried_surplus":
+                # Expected steady-state of any c >> agg_goal fedbuff design
+                # (§10) -- tracked for visibility, excluded from the primary
+                # (should-be-~0) pastdated counters below.
+                self._sim_carried_surplus_commits = getattr(
+                    self, "_sim_carried_surplus_commits", 0) + 1
+                self._sim_carried_surplus_gap_max = max(
+                    getattr(self, "_sim_carried_surplus_gap_max", 0.0), _commit_gap
+                )
+            else:
+                self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
+                self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
+                self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
             if not hasattr(self, "_sim_pastdated_by_source"):
                 self._sim_pastdated_by_source = {}
             _agg = self._sim_pastdated_by_source.setdefault(_src, [0, 0.0])
@@ -1112,8 +1191,21 @@ class TopAggregator(AsyncTopAgg):
             f"phantom_skip={getattr(self, '_sim_gate_phantom_skip', 0)} "
             f"commit_gap_s={_commit_gap:.1f} "
             f"pastdated_n={getattr(self, '_sim_pastdated_commits', 0)} "
-            f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.1f}"
+            f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.1f} "
+            f"carried_surplus_n={getattr(self, '_sim_carried_surplus_commits', 0)}"
         )
+        # Telemetry bridge: the fields above only ever reached this text log
+        # line, never the structured agg_round JSONL event, so the analyzer's
+        # buffer_health_over_rounds.pdf/commit_gap_cdf.pdf (built to read
+        # exactly commit_gap_s/buf_depth off agg_round) silently rendered
+        # nothing for fluxtune. Stash the per-commit snapshot here; the
+        # agg_round emit site (end of _aggregate_grads_async's commit branch)
+        # reads it back via getattr since this call's locals don't reach there.
+        self._sim_last_commit_gap_s = _commit_gap
+        self._sim_last_buf_depth = len(self._sim_buffer)
+        self._sim_last_update_ready_ts = _vis_ready_ts
+        self._sim_last_update_committed_ts = _vis_committed_ts
+        self._sim_last_update_visibility_lag_s = _vis_lag_s
         return m, md
 
     def _release_sim_slots_at_agg_goal(self, channel, is_async):
@@ -1853,10 +1945,15 @@ class TopAggregator(AsyncTopAgg):
 
         # Per-round wall decomposition (#6): the FedAvg merge, the dispatch->last-
         # grad barrier wait, and the last-grad->commit drain tail (a real-transport
-        # artifact the sim's all-k barrier doesn't model). eval_s measured below.
-        # All wall (real); the sim advances the vclock, so these read ~0 there
-        # UNLESS the fold flags below are on -- _aggregate_fedavg_vclock_s /
-        # _eval_vclock_s (§N follow-up) make that measurable instead of asserted.
+        # artifact the sim's all-k barrier doesn't model). All wall (real); the
+        # sim advances the vclock, so these read ~0 there UNLESS the fold flag
+        # below is on -- _aggregate_fedavg_vclock_s (§N follow-up) makes that
+        # measurable instead of asserted. eval_s/_eval_vclock_s (below) stay None
+        # permanently as of §6 Part 6 (simulate_fwdllm.md §G): eval_model()
+        # is now backgrounded on a daemon thread (like felix's evaluate()) rather
+        # than measured synchronously here, so there is no more synchronous eval
+        # duration on this critical path to charge to the vclock in either mode --
+        # the asymmetry sim_model_eval_time corrected for no longer exists.
         _agg_vclock_start = getattr(self, "vclock_now", None)
         _agg_start_wall = time.time()
         self.aggregate(self._round)
@@ -1882,8 +1979,8 @@ class TopAggregator(AsyncTopAgg):
         _lastg = getattr(self, "_last_grad_wall_ts", None)
         _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
-        _eval_s = None  # set below only when the variance gate passes (eval runs)
-        _eval_vclock_s = None
+        _eval_s = None  # permanently None (§6 Part 6): eval is now backgrounded,
+        _eval_vclock_s = None  # never measured synchronously on this path anymore.
 
         _var_thr = getattr(self, "var_threshold", None)
         _ratio = (
@@ -1953,48 +2050,80 @@ class TopAggregator(AsyncTopAgg):
                 f"Variance check {_pass_kind}. Evaluating model and advancing data_id."
             )
             self.iteration_per_data_id += 1
-            _eval_vclock_start = getattr(self, "vclock_now", None)
-            _eval_start_wall = time.time()
-            result, _, _ = self.eval_model()
-            _eval_s = time.time() - _eval_start_wall  # genuine server-eval term
-            # #6: the server eval is genuine algorithmic time between committed
-            # data_ids that the sct model omits, so the vclock under-counts by
-            # ~eval_s/commit. When enabled, charge the measured eval wall to the
-            # vclock (genuine compute, not transport overhead). Config-gated OFF.
-            if self.simulated and getattr(
-                self.config.hyperparameters, "sim_model_eval_time", False
-            ):
-                self._vclock.advance(self._vclock.now + _eval_s)
-            _eval_vclock_end = getattr(self, "vclock_now", None)
-            _eval_vclock_s = (
-                _eval_vclock_end - _eval_vclock_start
-                if _eval_vclock_start is not None and _eval_vclock_end is not None
-                else None
-            )
-            logger.info(
-                f"Round {self._round}, Data ID {self.data_id} Eval Loss: {result['eval_loss']}"
-            )
-            if telemetry.is_enabled():
-                try:
-                    ev, fields = build_agg_eval(
-                        round_num=self._round,
-                        metrics={
-                            "test-loss": result.get("eval_loss"),
-                            "test-accuracy": result.get("acc"),
-                            "mcc": result.get("mcc"),
-                            # fwdllm's round is coarse (advances only once all
-                            # total_data_bins data_ids finish) -- data_id/
-                            # iteration_per_data_id let the analyzer's
-                            # progress_key() (scripts/analysis/analyze_run.py)
-                            # place this eval on a meaningful x-axis instead of
-                            # collapsing every eval in a round onto one point.
-                            "data_id": self.data_id,
-                            "iteration_per_data_id": self.iteration_per_data_id,
-                        },
-                    )
-                    telemetry.emit(ev, **fields)
-                except Exception as e:  # telemetry must never break training
-                    logger.debug(f"agg_eval telemetry emit failed: {e}")
+            # §6 Part 6 (simulate_fwdllm.md §G): eval_model() used to run
+            # synchronously, inline, here -- on the critical path in BOTH real and
+            # sim mode (the reason sim_model_eval_time's vclock fold existed: real
+            # paid this wall cost every commit, sim didn't, without the fold).
+            # Mirrors felix's own evaluate() pattern (main_asyncfl_agg.py):
+            # snapshot now (cheap, main thread), run the actual test-set pass in a
+            # daemon thread so the aggregator's dispatch/commit loop never waits on
+            # it -- in EITHER mode, symmetrically, so the asymmetry the fold
+            # corrected for no longer exists (removed below, not left inert).
+            # aggregate() itself is NOT backgrounded here or anywhere -- it
+            # produces the model trainers need immediately and must stay
+            # synchronous.
+            #
+            # Snapshot the cycle identity BEFORE launching: the thread may still
+            # be running once self.data_id/self._round/self.iteration_per_data_id
+            # have moved on to a LATER cycle in the main thread, so the emit
+            # closure must report what THIS cycle worked on, not whatever those
+            # attributes read at emit time (same "pre-mutation snapshot" reasoning
+            # as _cycle_data_id/_cycle_iteration above, kept as separate locals
+            # here since _cycle_iteration is pre- the += 1 two lines up and the
+            # telemetry contract below is post-, matching the old synchronous
+            # numbers exactly).
+            _eval_round_id = self._round
+            _eval_data_id = self.data_id
+            _eval_iteration = self.iteration_per_data_id
+            _eval_model_snapshot = self._eval_snapshot_model()
+            if _eval_model_snapshot is None:
+                logger.debug(
+                    "prior async fwdllm eval still running; skipping this cycle's eval"
+                )
+            else:
+                def _fwdllm_eval_job(
+                    _model=_eval_model_snapshot, _round_id=_eval_round_id,
+                    _data_id=_eval_data_id, _iteration=_eval_iteration,
+                ):
+                    try:
+                        _wall0 = time.time()
+                        result, _, _ = self.eval_model(model=_model)
+                        _wall_s = time.time() - _wall0  # diagnostic only, not folded
+                        logger.info(
+                            f"Round {_round_id}, Data ID {_data_id} "
+                            f"Eval Loss: {result['eval_loss']}"
+                        )
+                        if telemetry.is_enabled():
+                            ev, fields = build_agg_eval(
+                                round_num=_round_id,
+                                metrics={
+                                    "test-loss": result.get("eval_loss"),
+                                    "test-accuracy": result.get("acc"),
+                                    "mcc": result.get("mcc"),
+                                    # fwdllm's round is coarse (advances only once
+                                    # all total_data_bins data_ids finish) --
+                                    # data_id/iteration_per_data_id let the
+                                    # analyzer's progress_key()
+                                    # (scripts/analysis/analyze_run.py) place this
+                                    # eval on a meaningful x-axis instead of
+                                    # collapsing every eval in a round onto one
+                                    # point.
+                                    "data_id": _data_id,
+                                    "iteration_per_data_id": _iteration,
+                                    # Diagnostic-only wall duration of the
+                                    # backgrounded eval -- NOT folded into the
+                                    # vclock (that asymmetry no longer exists now
+                                    # that both modes background it symmetrically).
+                                    "eval_wall_s": _wall_s,
+                                },
+                            )
+                            telemetry.emit(ev, **fields)
+                    except Exception as e:  # eval must never break training
+                        logger.warning(f"[FWDLLM_EVAL] failed (non-fatal): {e}")
+                    finally:
+                        self._eval_inflight = False
+
+                threading.Thread(target=_fwdllm_eval_job, daemon=True).start()
             self.data_id += 1
             self.iteration_per_data_id = 0
             self._is_model_updated = True
@@ -2094,15 +2223,20 @@ class TopAggregator(AsyncTopAgg):
 
             # Intrinsic algorithmic span of this cycle (#6 anchor): the genuine
             # per-cycle work the sim charges to the vclock -- the barrier (slowest
-            # committed trainer's intrinsic compute+delay) plus the server eval
-            # (commit cycles only). Mirrors the sim vclock composition exactly:
-            # the FedAvg merge is excluded because the sim does not charge it to
-            # the vclock. Emitted in both modes so the clock-rate rungs anchor real
-            # on intrinsic time instead of raw wall Δts (real's wall bundles a
-            # ~constant inter-round transport artifact the sim omits). The barrier
-            # uses the trainer intrinsic duration (PROP_CLIENT_TASK_TRAIN_DURATION,
-            # _cycle_speed_s), not the agg-side barrier_wait_s (which reads ~0 in
-            # real because trainers pipeline). max() = the sync barrier.
+            # committed trainer's intrinsic compute+delay). Mirrors the sim vclock
+            # composition exactly: the FedAvg merge is excluded because the sim
+            # does not charge it to the vclock. `+ (_eval_s or 0.0)` is a no-op as
+            # of §6 Part 6 (simulate_fwdllm.md §G) -- eval is now
+            # backgrounded off the critical path in both modes, so _eval_s stays
+            # permanently None (kept as `(_eval_s or 0.0)` rather than deleted so
+            # this doesn't silently break if a future change reintroduces a
+            # synchronous eval measurement here). Emitted in both modes so the
+            # clock-rate rungs anchor real on intrinsic time instead of raw wall
+            # Δts (real's wall bundles a ~constant inter-round transport artifact
+            # the sim omits). The barrier uses the trainer intrinsic duration
+            # (PROP_CLIENT_TASK_TRAIN_DURATION, _cycle_speed_s), not the agg-side
+            # barrier_wait_s (which reads ~0 in real because trainers pipeline).
+            # max() = the sync barrier.
             _barrier_span_s = max(_cycle_speed_s) if _cycle_speed_s else None
             _intrinsic_span_s = (
                 _barrier_span_s + (_eval_s or 0.0)
@@ -2163,6 +2297,86 @@ class TopAggregator(AsyncTopAgg):
                         "barrier_wait_s": _barrier_wait_s,
                         "drain_tail_s": _drain_tail_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
+                        # Reorder-buffer health (sim only): last commit's
+                        # vclock-vs-sct gap and post-pop buffer depth, plus the
+                        # run-cumulative past-dating counters. A healthy sim
+                        # commits at/near its sct (commit_gap_s ~ 0, buf_depth
+                        # trending to 0 between arrival bursts) and never
+                        # accumulates pastdated_commits. Feeds
+                        # plots/aggregation/{buffer_health_over_rounds,
+                        # commit_gap_cdf}.pdf and pastdated_commits_over_rounds.pdf.
+                        "commit_gap_s": (
+                            getattr(self, "_sim_last_commit_gap_s", None)
+                            if self.simulated else None
+                        ),
+                        "buf_depth": (
+                            getattr(self, "_sim_last_buf_depth", None)
+                            if self.simulated else None
+                        ),
+                        # §6 Part 4 (simulate_fwdllm.md §G): standardized
+                        # visibility-lag triplet, matching felix's own agg_round
+                        # schema (asyncfl/top_aggregator.py train/eval call sites)
+                        # and the field name the shared analyzer already reads
+                        # (scripts/analysis/analyze_run.py's
+                        # commit_visibility_lag_cdf.pdf). Two distinct sources,
+                        # gated on is_async since this dict is shared by both:
+                        # - async (fluxtune): per-commit scalar stashed in
+                        #   _sim_recv_min_grad (same number as commit_gap_s above,
+                        #   both are vclock.now - sct -- see that stash site).
+                        # - sync (fwdllm/fwdllm_plus): the barrier-anchored LIST
+                        #   already computed in sync_collect_and_accumulate_grads
+                        #   (_sync_barrier_lags_s) but never surfaced past its own
+                        #   text log line before this -- same "computed, never
+                        #   reached agg_round" gap commit_gap_s/buf_depth had for
+                        #   fluxtune pre-this-plan. update_ready_ts/committed_ts
+                        #   have no per-item meaning for a batched barrier commit,
+                        #   so they stay None for sync (list has no single pair).
+                        # Real mode: async has no equivalent stash (pre-existing
+                        # gap, same as commit_gap_s/buf_depth); sync's real-mode
+                        # lag-anchor is an OPEN question (§9 Q5, unresolved) --
+                        # left None rather than guessed at.
+                        "update_ready_ts": (
+                            getattr(self, "_sim_last_update_ready_ts", None)
+                            if self.simulated and is_async else None
+                        ),
+                        "update_committed_ts": (
+                            getattr(self, "_sim_last_update_committed_ts", None)
+                            if self.simulated and is_async else None
+                        ),
+                        "update_visibility_lag_s": (
+                            (
+                                getattr(self, "_sim_last_update_visibility_lag_s", None)
+                                if is_async
+                                else getattr(self, "_sync_barrier_lags_s", None)
+                            )
+                            if self.simulated else None
+                        ),
+                        "pastdated_commits": (
+                            getattr(self, "_sim_pastdated_commits", 0)
+                            if self.simulated else None
+                        ),
+                        "pastdated_gap_cum": (
+                            getattr(self, "_sim_pastdated_gap_cum", 0.0)
+                            if self.simulated else None
+                        ),
+                        "pastdated_gap_max": (
+                            getattr(self, "_sim_pastdated_gap_max", 0.0)
+                            if self.simulated else None
+                        ),
+                        # §4.4/§10 (simulate_fwdllm.md §G): carried-
+                        # surplus commits, tracked separately from the primary
+                        # pastdated_* counters above. Expected to step up once
+                        # per data_id boundary for the life of any c >> agg_goal
+                        # run -- non-alarming by design, NOT a correctness signal
+                        # (unlike pastdated_commits, which should read ~0).
+                        "carried_surplus_commits": (
+                            getattr(self, "_sim_carried_surplus_commits", 0)
+                            if self.simulated else None
+                        ),
+                        "carried_surplus_gap_max": (
+                            getattr(self, "_sim_carried_surplus_gap_max", 0.0)
+                            if self.simulated else None
+                        ),
                         # §J resume step 1: wall-clock span of the aggregate()
                         # variance-compute call, for measuring its overlap
                         # against other trainers' GPU passes (real-mode only --
@@ -2362,9 +2576,17 @@ class TopAggregator(AsyncTopAgg):
         gc.collect()
 
     @timer_decorator
-    def eval_model(self, epoch=0, global_step=0, device=None):
+    def eval_model(self, epoch=0, global_step=0, device=None, model=None):
+        """model: the model to evaluate (default self.model, so any other
+        existing caller stays byte-identical). §6 Part 6
+        (simulate_fwdllm.md §G): eval_model() is called from a
+        background daemon thread against an isolated snapshot -- it must
+        never touch self.model directly, or it races the main thread's
+        concurrent aggregate()/next-cycle training on the SAME live model."""
         if not device:
             device = self.device
+        if model is None:
+            model = self.model
 
         logger.info(f"device inside eval_model() is set to: {device}")
         self.log_memory("start eval_model", self.device)
@@ -2375,12 +2597,19 @@ class TopAggregator(AsyncTopAgg):
         num_eval_steps = 0
         test_sample_len = len(self.test_global.dataset)
 
-        # Move model to device before performing the eval
-        self.model.to(device)
-        self.model.eval()
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+        # Move model to device before performing the eval. NOTE: the
+        # fc.make_functional_with_buffers(self.model) call this line used to
+        # also do here was removed -- it deep-copies internally (confirmed via
+        # torch._functorch.make_functional.FunctionalModuleWithBuffers._create_from,
+        # so it never mutated self.model) and its (fmodel, params, buffers)
+        # output was never read anywhere else in this function; it only served
+        # to overwrite self.fmodel/self.params/self.buffers, the SAME
+        # attributes the main training path assigns right before
+        # self.aggregate() -- a race once this runs on a background thread
+        # concurrently with the next cycle's training. Dead code + race
+        # source, not a needed side effect.
+        model.to(device)
+        model.eval()
 
         # One-time GPU data transfer for caching test data
         if not hasattr(self, "_cached_test_data") or self._cached_test_data is None:
@@ -2415,7 +2644,7 @@ class TopAggregator(AsyncTopAgg):
                 x = input_ids_all[batch_start_idx:batch_end_idx]
                 labels = labels_all[batch_start_idx:batch_end_idx]
 
-                output = self.model(x)
+                output = model(x)
                 if hasattr(output, "logits"):
                     logits = output.logits
                 elif isinstance(output, (tuple, list)):
@@ -2436,7 +2665,7 @@ class TopAggregator(AsyncTopAgg):
         out_label_ids = out_label_ids_gpu.cpu().numpy()
 
         logger.info(
-            f"# of batches: {num_eval_steps} with (batch_size, seq_len): {input_ids_all.shape}. test_sample_len: {test_sample_len}, preds.shape: {preds.shape}, location of model: {next(self.model.parameters()).device}"
+            f"# of batches: {num_eval_steps} with (batch_size, seq_len): {input_ids_all.shape}. test_sample_len: {test_sample_len}, preds.shape: {preds.shape}, location of model: {next(model.parameters()).device}"
         )
 
         model_outputs = preds

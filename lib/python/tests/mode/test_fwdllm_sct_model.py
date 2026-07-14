@@ -2,8 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage B -- sct-model folds (K-D20 #6), all config-gated OFF => byte-identical.
 
-B1  eval_s onto the vclock (aggregator): after a committed data_id's eval,
-    advance the vclock by the measured eval wall when simModelEvalTime is set.
+B1  (REMOVED, §6 Part 6, simulate_fwdllm.md §G) used to advance the
+    vclock by the measured eval wall when simModelEvalTime was set, after a
+    committed data_id's synchronous eval. Removed once eval_model() was
+    backgrounded on a daemon thread (mirroring async_cifar10's evaluate()) --
+    the asymmetry the fold corrected for (real paid the synchronous eval wall,
+    sim didn't) no longer exists once neither mode pays it on the critical
+    path. TestEvalNoLongerFoldsVclock below is the regression guard: eval must
+    never advance the vclock again, regardless of any legacy config.
 B2  per-trainer straggler spread (trainer): a stable offset in [0, spread) added
     to the modeled delay in SIM only.
 B3  WAN transfer knob: documented, default 0 (verified inert here).
@@ -63,14 +69,19 @@ class TestStragglerSpreadB2:
         assert len(offs) > 1
 
 
-class TestEvalOnVclockB1:
-    """B1 mechanism: the aggregator advances the vclock by the measured eval
-    wall only when simModelEvalTime is set (byte-identical off)."""
+class TestEvalNoLongerFoldsVclock:
+    """§6 Part 6 (simulate_fwdllm.md §G) regression guard: eval_model()
+    is now backgrounded on a daemon thread (mirroring async_cifar10's
+    evaluate()), so it must NEVER advance the vclock, regardless of how slow the
+    (backgrounded) eval actually is or what any legacy config says -- the
+    sim_model_eval_time fold this class used to test was removed because the
+    asymmetry it corrected for (real paid the synchronous eval wall, sim didn't)
+    no longer exists once neither mode pays it on the critical path."""
 
-    def _run(self, flag):
+    def _run(self, legacy_flag_value=None):
         from flame import telemetry
         from tests.mode.test_fwdllm_agg_telemetry import (
-            _FakeAggregator, _FakeChannel,
+            _FakeAggregator, _FakeChannel, _wait_eval_done,
         )
         from datetime import timedelta
 
@@ -82,26 +93,35 @@ class TestEvalOnVclockB1:
             now=100.0,
             advance=lambda ts: setattr(agg._vclock, "now", max(agg._vclock.now, ts)),
         )
-        agg.config.hyperparameters.sim_model_eval_time = flag
-        # eval_model in the fake returns instantly, so measured eval_s ~ 0; force
-        # a nonzero measured eval by making eval_model sleep a hair.
+        # The field no longer exists in config.py; a stray/legacy value on the
+        # hyperparameters object (e.g. from an un-migrated yaml) must still be
+        # inert -- nothing in the aggregator reads this attribute anymore.
+        if legacy_flag_value is not None:
+            agg.config.hyperparameters.sim_model_eval_time = legacy_flag_value
+        # eval_model in the fake returns instantly; force a nonzero measured
+        # eval wall to prove a slow (backgrounded) eval still can't reach the
+        # vclock -- if it ever did, this would have caught it immediately.
         import time as _t
         orig_eval = agg.eval_model
 
-        def _slow_eval():
+        def _slow_eval(model=None):
             _t.sleep(0.02)
-            return orig_eval()
+            return orig_eval(model=model)
 
         agg.eval_model = _slow_eval
         channel = _FakeChannel(durations={"t1": timedelta(seconds=2)})
         agg._process_aggregation_goal_met(tag="aggregate", channel=channel)
+        _wait_eval_done(agg)
         return agg._vclock.now
 
-    def test_flag_off_does_not_advance_vclock(self):
-        assert self._run(flag=False) == 100.0  # byte-identical: vclock untouched
+    def test_no_legacy_flag_vclock_untouched(self):
+        assert self._run() == 100.0
 
-    def test_flag_on_charges_eval_wall(self):
-        assert self._run(flag=True) > 100.0  # vclock advanced by measured eval_s
+    def test_stray_legacy_flag_true_still_inert(self):
+        assert self._run(legacy_flag_value=True) == 100.0
+
+    def test_stray_legacy_flag_false_still_inert(self):
+        assert self._run(legacy_flag_value=False) == 100.0
 
 
 class TestAggComputeOnVclock15:

@@ -49,6 +49,7 @@ class FakeChannel:
     def __init__(self, inflight, arrival_order):
         self._inflight = set(inflight)
         self._queue = list(arrival_order)  # list of (end_id, sct)
+        self.probe_timeouts = []           # recv_fifo timeout values, call-aligned
         # An end's rxq is "non-empty" iff it has a message still queued — models
         # physical arrival (§3j drains ready in-flight ends regardless of exp).
         self._ends = {
@@ -67,6 +68,7 @@ class FakeChannel:
         # is in end_ids (FIFO across the set) in a single call, then signal "no
         # more ready" with (None, ...). The barrier drain relies on this set-wide
         # behavior; yielding one-at-a-time would misrepresent the real API.
+        self.probe_timeouts.append(timeout)
         ids = set(end_ids)
         i = 0
         while i < len(self._queue):
@@ -507,6 +509,66 @@ class TestGateProbesLiveInflight:
         assert end == "A"                      # earliest still commits first
         assert agg._sim_buffer.has("SLOW")     # SLOW was DRAINED, not lapped
         assert agg._sim_buffer.peek_min_ts() == 5.0  # buffered as a future
+
+
+class TestSafeFastPathTiming:
+    """§6 Part 3 (simulate_fwdllm.md §G), option 2: when the gate is
+    ALREADY provably safe from in-memory state alone (buffered min known, no
+    in-flight end's KNOWN delay puts it earlier than bmin - slack), the probe
+    call this pass must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound
+    instead of the full per-trainer `_sim_recv_timeout_s` bound. The eager-probe
+    behavior itself (a ready/near-ceiling straggler still gets handed to
+    recv_fifo) is unchanged -- covered by TestGateProbesLiveInflight above; this
+    class asserts the TIMEOUT VALUE used, which those tests don't check."""
+
+    def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
+        # Mirrors test_drains_ready_inflight_above_ceiling, plus a pre-cached
+        # known delay for SLOW so the fast path can engage: SLOW's exp (999) is
+        # nowhere near bmin(2) -> not stuck -> gate is safe; SLOW is still
+        # probed via rxq readiness (its message has arrived).
+        agg = _make_agg()
+        agg._sim_known_delay_s["SLOW"] = 3.0
+        agg._sim_inflight_expected = {"SLOW": 999.0}
+        agg._sim_buffer.add(
+            "A", 2.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 2.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"SLOW"}, arrival_order=[("SLOW", 5.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] == agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
+        assert channel.probe_timeouts[0] < agg._sim_recv_timeout_s(["SLOW"])
+
+    def test_unknown_delay_end_in_mix_forces_full_bound_not_fast_path(self):
+        """SLOW's delay is uncached -> _sim_recv_timeout_s returns None -> the
+        fast path must not engage even though the gate is otherwise safe."""
+        agg = _make_agg()
+        agg._sim_inflight_expected = {"SLOW": 999.0}
+        agg._sim_buffer.add(
+            "A", 2.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 2.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"SLOW"}, arrival_order=[("SLOW", 5.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] is None  # genuinely blocking, unchanged
+
+    def test_earlier_stuck_end_forces_full_bound_not_fast_path(self):
+        """T is expected to complete BEFORE the already-buffered minimum ->
+        earlier_stuck -> the gate is NOT safe, must keep using the full
+        computed bound."""
+        agg = _make_agg()
+        agg._sim_known_delay_s["T"] = 1.0
+        agg._sim_inflight_expected = {"T": 1.0}
+        agg._sim_buffer.add(
+            "A", 10.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 10.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"T"}, arrival_order=[("T", 1.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] == agg._sim_recv_timeout_s(["T"])
+        assert channel.probe_timeouts[0] != agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
 
 
 class TestClockJumpClamp:

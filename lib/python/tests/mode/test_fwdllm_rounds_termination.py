@@ -78,13 +78,19 @@ class _FakeAggregator:
     def aggregate(self, round_id):
         pass
 
-    def eval_model(self):
+    def eval_model(self, model=None):
         return {"eval_loss": 0.0}, None, None
 
     def _log_and_reset_model_version_stats(self):
         pass
 
     process = TopAggregator._process_aggregation_goal_met
+    # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now
+    # snapshotted + backgrounded via the shared _eval_snapshot_model. With
+    # self.model = None here, the snapshot gracefully fails (caught inside
+    # _eval_snapshot_model) and returns None, so no eval thread launches --
+    # fine, this fixture only exercises the round-rollover/work_done logic.
+    _eval_snapshot_model = TopAggregator._eval_snapshot_model
 
 
 @patch(

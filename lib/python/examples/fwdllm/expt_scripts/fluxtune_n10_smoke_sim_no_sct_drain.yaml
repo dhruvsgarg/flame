@@ -61,7 +61,6 @@ experiments:
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
           max_runtime_s: 600
-          sim_model_eval_time: true
           sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
@@ -130,7 +129,6 @@ experiments:
           stalenessPolicy: fedbuff
           max_data_id_progress: 9999
           max_runtime_s: 600
-          sim_model_eval_time: true
           sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5

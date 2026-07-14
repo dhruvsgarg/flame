@@ -93,6 +93,14 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
 _NETWORK_SLACK_S = 2.0
 
+# Gate slack: don't hold a commit for an in-flight trainer expected to complete
+# only marginally earlier than the buffered minimum (absorbs budget-estimate
+# noise). Shared home for `_sim_gate_is_safe` below (§6 Part 3,
+# simulate_fwdllm.md §G) and asyncfl's/fwdllm's own `earlier_stuck`
+# gates, which import this constant (asyncfl/top_aggregator.py re-exports it
+# for that reason -- keep this the single source of truth, not a duplicate).
+_SIM_ORDER_SLACK_S = 2.0
+
 # Startup join barrier: how long to wait for the trainer cohort to join before
 # the first selection (see _await_min_trainers). Bounded so a crashed/slow
 # trainer can't deadlock startup.
@@ -372,6 +380,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     # is the read side used by the recv/barrier call sites below.
     _SIM_RECV_MARGIN_S = 0.5
 
+    # §6 Part 3 (simulate_fwdllm.md §G), option 2: when
+    # `_sim_gate_is_safe` has already proven the buffered minimum is committable
+    # from in-memory state alone, the ingest call this pass only needs to catch
+    # anything that is ALREADY sitting in a queue (or lands within a couple of
+    # asyncio scheduling ticks) -- not wait out the full per-trainer delay bound.
+    # Non-zero (not 0) because `channel.recv_fifo`'s real-mode timeout races an
+    # asyncio future across threads (`concurrent.futures.Future.result(0)` can
+    # spuriously time out before the background loop even runs the coroutine);
+    # this gives it one scheduling window while staying orders of magnitude
+    # below the multi-second blocking waits it replaces (measured mean 2.09s,
+    # p90 4.1s, max 12.4s -- §3.1 of the plan doc).
+    _SIM_GATE_FAST_PROBE_TIMEOUT_S = 0.01
+
     def _note_sim_known_delay(self, end, msg) -> None:
         """Cache `end`'s MODELED_DELAY_S on first observation (constant per
         trainer_id, so no decay/EMA needed). None (delays disabled) is left
@@ -391,6 +412,38 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if not ends or any(e not in cache for e in ends):
             return None
         return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
+
+    def _sim_gate_is_safe(self, bmin, inflight_items) -> bool:
+        """True iff the buffered minimum `bmin` is provably safe to commit
+        right now, using only already-known state (the deterministic delay
+        cache) -- zero real-time wait needed (§6 Part 3,
+        simulate_fwdllm.md §G).
+
+        `inflight_items` is an iterable of (end, exp) for not-yet-buffered,
+        not-yet-committed in-flight ends the caller has already filtered
+        (baseline-specific: phantom-skip for fwdllm, none for felix). `exp`
+        must be `None` for an end whose delay isn't cached yet (mirrors
+        `_sim_recv_timeout_s`'s None-if-unseen convention) -- such an end
+        forces the conservative False, since its true completion can't be
+        reasoned about without ingesting it.
+
+        Returns False (conservative -- caller must fall through to the
+        unchanged blocking ingest-then-recheck path) if `bmin` is None, or
+        any item's `exp` is None. Otherwise True iff no known in-flight end
+        is expected to complete before `bmin` (mirrors the `earlier_stuck`
+        check both `_sim_recv_min` and `_sim_recv_min_grad` already compute
+        AFTER their blocking ingest call -- this is the identical computation,
+        just made available BEFORE it so a provably-safe pass can skip the
+        real-time wait entirely)."""
+        if bmin is None:
+            return False
+        min_stuck = None
+        for _end, exp in inflight_items:
+            if exp is None:
+                return False
+            if min_stuck is None or exp < min_stuck:
+                min_stuck = exp
+        return min_stuck is None or not (min_stuck + _SIM_ORDER_SLACK_S < bmin)
 
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST

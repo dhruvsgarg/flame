@@ -50,7 +50,7 @@ fwdllm inherits via its aggregator class chain.
 |---|---|---|
 | **fwdllm** (sync) | **5.71×** | Healthy. Only fail: `per_round_advance` (K3, 3.9% mean gap) — minor, not investigated this pass. |
 | **fwdllm_plus** (sync) | **5.69×** | The 07-12 livelock (see old §G) is CONFIRMED FIXED — real progress throughout, no stall. Residual: `throughput`/`terminal_state`/`total_commits` all fail ~13% (sim completes more rounds than real at matched budget); `overhead_residual` fails (sim advances *faster* than real per round, i.e. sim under-counts overhead real pays). Root not yet isolated — **next baseline after fluxtune**. |
-| **fluxtune** (async) | **0.97×** ← OPEN, active investigation | No speedup at all — sim wall-clock ≈ the vclock it produces. Root below. |
+| **fluxtune** (async) | **0.97× at last measurement — fix LANDED, not yet re-validated by a run** | Root: reactive gate blocked real wall unnecessarily (below). Fix landed 2026-07-13 (session 3); the A/B run below is now also the validation run for it — re-run before treating this row as closed. |
 
 ### fluxtune: verified root (code-checked, not docstring-trusted)
 
@@ -89,30 +89,58 @@ diverges from felix's default: felix never sets this flag, uses `recv_fifo` unco
 stated justification (`recv_fifo`'s background streamer can strand a message under heavy async churn) is
 plausible for fluxtune specifically — it re-probes the same end every composer tick (~600×/run) vs felix's
 per-round cadence — but there's no direct evidence in the current (drain_ready-ON) run that stranding would
-actually occur without it. **Can't be settled by more code reading — needs the A/B run below.**
+actually occur without it. Config default kept `true` for both baselines (maintainability) pending the re-run
+below — this is a config choice, not settled by evidence for fluxtune specifically.
 
-### Next step: A/B run (ready to launch, not yet run)
+**Root cause, fully isolated (session 3, 2026-07-13) — the reactive gate, not the drain primitive.** Both
+`_sim_recv_min`/`_sim_recv_min_grad` re-derive `earlier_stuck` AFTER an unconditional blocking ingest call,
+every pass, even when the buffered minimum is already provably safe to commit from in-memory state alone (the
+deterministic per-trainer delay cache, §M). Measured: commit-to-commit wall delta when something was already
+buffered-and-ready — mean 2.09s, p90 4.1s, max 12.4s, on 99% of commits. **Fixed**: `_sim_gate_is_safe`
+(shared, `syncfl/top_aggregator.py`) checks safety BEFORE the ingest call; when safe, the call still happens
+(preserves eager-drain of a physically-ready/near-ceiling straggler) but with a near-zero timeout
+(`_SIM_GATE_FAST_PROBE_TIMEOUT_S=0.01`) instead of the full per-trainer bound. Landed on both felix's
+`_sim_recv_min` and fwdllm's `_sim_recv_min_grad`; 1072 tests pass. **Not yet validated by a live run** (no
+broker in the dev environment) — this is what the A/B run below now also validates.
+
+### Next step: A/B run (ready to launch, not yet run — now doubles as the Bug-A-fix validation run)
 
 `fluxtune_n10_smoke_sim_no_sct_drain.yaml` — identical to `fluxtune_n10_smoke_sim.yaml` except
 `sim_sct_ordered_drain: false` (legacy `recv_fifo` path, matching felix's default), delays/runtime matched to
-the 07-13 baseline (`enable_training_delays: true`, `training_delay_factor: 0.5`, `max_runtime_s: 1200`).
+the 07-13 baseline (`enable_training_delays: true`, `training_delay_factor: 0.5`, `max_runtime_s: 1800`).
 
 ```
 python -m flame.launch.run_experiment \
     lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_sim_no_sct_drain.yaml
 ```
 
-Read after: `sim_rate` (does it recover toward ~5.7×?), `buf_depth`/`recv_wrapper` wall (prediction: **stays
-the same** — the bottleneck is one-grad-per-tick throughput, not the drain primitive; if so, that's the
-answer), `pastdated_n`/`pastdated_gap_max` in `[SIM_GRAD_RECV]` (a materially higher count here than a
-re-run of the drain_ready-ON baseline would mean `recv_fifo`'s streamer really does strand/lap messages under
-fluxtune's probe frequency — the correctness case FOR keeping `sim_sct_ordered_drain`). Re-run the baseline
-too (same instrumentation is new) for a matched pair.
+Read after (both legs, drain ON and OFF): **`sim_rate`** (now expected to recover materially above 0.97×,
+toward fwdllm's ~5.7× — this is the actual prediction the reactive-gate fix makes, superseding the older
+"stays the same" prediction below that assumed the drain primitive was irrelevant); **`buf_depth`** (expected
+to trend toward 0 between arrival bursts instead of sitting at 7-8/10); **`pastdated_commits`** (corrected,
+carried-surplus-excluded counter — expected near 0); **`carried_surplus_commits`** (expected: the MAJORITY
+commit source, stepping once per data_id boundary — §F #17, this is healthy, not a regression);
+`pastdated_n`/`pastdated_gap_max` in `[SIM_GRAD_RECV]` still answers the drain-primitive question (a
+materially higher count with the flag OFF means `recv_fifo`'s streamer really does strand/lap messages under
+fluxtune's probe frequency). Re-run the baseline (`sim_sct_ordered_drain: true`) too for a matched pair — same
+instrumentation is new on both legs.
 
 ### After fluxtune closes
 One baseline at a time: fluxtune → fwdllm_plus's `overhead_residual`/throughput gap → fwdllm's minor
 `per_round_advance` residual → felix (async_cifar10) 46/46 re-confirmation (deferred twice, do this before
 trusting felix numbers again) → C1/C2 convergence at matched `data_id` → gate to Phase 2 (unavailability).
+
+### Open follow-up: real-mode sync visibility-lag anchor (not yet decided)
+
+`update_visibility_lag_s` is now populated for fwdllm/fwdllm_plus's sync path in SIM mode (surfaces the
+pre-existing `_barrier_anchored_lags` computation in `sync_collect_and_accumulate_grads`, previously computed
+but never reaching structured telemetry — same gap `commit_gap_s` had for fluxtune, §G). **REAL mode has no
+equivalent wiring at all** — `sync_collect_and_accumulate_grads`'s real branch never computed a `_barrier_durs`
+list the way its sim branch (or the base class's own `_aggregate_weights`) does. Undecided: whether streaming
+per-message `_update_visibility_lag` or barrier-anchored `_barrier_anchored_lags` (adapted to fwdllm's
+variance-gated dynamic-K cadence, not a fixed round) is the right anchor — needs deciding by reading how
+`sync_collect_and_accumulate_grads`'s collection loop actually shapes arrival vs. commit for fwdllm's dynamic-K.
+Left `None` deliberately rather than guessed at.
 
 ---
 
@@ -140,6 +168,7 @@ rollback/`cached_v` at each `_agg_goal` boundary; `total_data_bins=150`; force-c
 | 8 | Async drain primitive | `_sim_recv_min` (+`recv_fifo` default) | `_sim_recv_min_grad` (+opt-in `drain_ready` via `sim_sct_ordered_drain`) | fluxtune's higher per-grad probe frequency vs felix's per-round — **necessity of the opt-in is the open §A question** |
 | 9 | `time_mode` default | `"simulated"` | `"real"` (getattr fallback) | fwdllm's whole config corpus is `real`; a `simulated` default risks half-activating an unbuilt path |
 | 10 | Availability tracking (v1) | all `trace_read` | mixed: fwdllm unaware, fwdllm_plus `oracular`, fluxtune `client_notify` | baselines carry different models; first-class `client_notify` deferred to Phase 2 |
+| 11 | Aggregator-side eval | backgrounded (daemon thread, off critical path, `eval_every_n_rounds`) since inception | now ALSO backgrounded (was synchronous, needed `sim_model_eval_time`'s vclock fold; §G Part 6) | the axis that matters is synchronous/blocking vs. backgrounded, not centralized vs. decentralized — cifar was only ever exempt from a fold by implementation choice, not a structural guarantee (§F #1/#10) |
 
 ---
 
@@ -230,6 +259,13 @@ K8/U2 within bar; V1/V2 binned residual flat.
 16. **Don't blame GPU/resource contention at n=10** — checked and refuted once already; won't apply until
     ≥100-trainer scale. Any unexplained real-wall gap should be assumed closeable by measurement (a wall-clock
     + vclock phase timer around the suspect stage), not guessing.
+17. **A bounded rotating in-flight cohort settling at `c − agg_goal` surplus is the correct steady state for
+    a `c ≫ agg_goal` fedbuff pool, not a backlog to eliminate.** Total concurrency is held constant by
+    construction: a boundary that closes on `agg_goal` commits frees exactly `agg_goal` slots and dispatches
+    exactly `agg_goal` replacements, so surplus fixed-points around `c − agg_goal` (matches fluxtune's own
+    measured `buf_depth` sitting at 7-8/10 for `c=10, agg_goal=3`, exactly). `carried_surplus_commits` will be
+    the MAJORITY commit-source bucket in steady state (~70% at fluxtune's ratio) — don't drive it toward 0;
+    only `pastdated_commits` (genuine scheduling anomalies, distinct bucket) should read ~0.
 
 ---
 
@@ -238,6 +274,50 @@ K8/U2 within bar; V1/V2 binned residual flat.
 *(Collapsed from the former §G/§H/§K. Superseded hypothesis chains keep only the final correct answer + a
 one-word lesson; pure scaffolding/telemetry-only entries dropped — git has that record. Full history:
 `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.)*
+
+**Reactive gate blocked real wall unnecessarily (Bug A, session 3, 07-13) — FIXED, not yet run-validated.**
+`_sim_recv_min`/`_sim_recv_min_grad` re-derived `earlier_stuck` AFTER an unconditional blocking ingest call,
+every pass, even when the buffered minimum was already provably safe from in-memory state (the deterministic
+per-trainer delay cache, §M) — mean 2.09s/p90 4.1s/max 12.4s wasted per commit, 99% of commits, the root of
+fluxtune's `sim_rate<1` (§A). Fix: `_sim_gate_is_safe` (shared, `syncfl/top_aggregator.py`) checks safety
+BEFORE the ingest call; when safe, the call still happens (preserves eager-drain of a physically-ready/
+near-ceiling straggler — narrowing to "skip the call outright" broke pre-existing tests guarding that
+behavior) but with a near-zero timeout instead of the full per-trainer bound. Shared by both felix and
+fluxtune. *Lesson:* an optimization that only reasons about ONE of a gate's two justifications (here:
+`earlier_stuck` HOLD, vs. the separate "eager-drain a ready/near-ceiling straggler" reason) will break tests
+guarding the other one — read every existing test on the touched function before narrowing its behavior.
+
+**Carried-surplus commits 100% misclassified as "round1" (Bug B, session 3, 07-13) — FIXED.** felix's
+round-axis past-dated-source classifier was copy-pasted into fwdllm without re-keying to fwdllm's actual
+progress axis (`data_id`, not `round` — `round` only advances once per 150-`data_id` lap, never reached in any
+smoke run). Every past-dated commit at a data_id boundary (the carried-surplus case, deliberate by design for
+`c ≫ agg_goal` — see §F #17) fell into the `_cur_round <= 1` "round1" bucket, hiding the real mechanism. Fix:
+`_sim_enqueue_data_id` stamp at ingest time detects a carried-over item; bucketed `carried_surplus` and
+excluded from the primary `pastdated_commits`/`gap_cum`/`gap_max` (which should read ~0) — tracked separately,
+non-alarming. *Lesson:* a classifier ported between two baselines that share code but not a progress axis is a
+straight bug, not a design choice — re-verify axis, not just shape, when reusing across baselines.
+
+**fwdllm's `eval_model()` backgrounded; a real race fixed first (Part 6, session 3, 07-13).** `eval_model()`
+ran synchronously, inline, on every data_id boundary — stalling both aggregation dispatch and trainer idle
+time, and requiring `sim_model_eval_time`'s vclock fold (real paid the wall, sim didn't). Backgrounding it
+naively would have raced: `eval_model()` reassigned `self.fmodel/self.params/self.buffers` via
+`fc.make_functional_with_buffers(self.model)` — the SAME attributes the main training path assigns right
+before `self.aggregate()` on every cycle — a call whose (fmodel, params, buffers) OUTPUT was never read
+anywhere in `eval_model()`'s own body (confirmed by reading
+`torch._functorch.make_functional.FunctionalModuleWithBuffers._create_from`: it deep-copies internally, never
+mutates the model passed in — the assignment only existed to clobber shared state). Fix: deleted that dead
+assignment, added a `model=` param (default `self.model`), and backgrounded `eval_model()` on a daemon thread
+mirroring async_cifar10's `evaluate()` — reusing the already-shared `_eval_snapshot_model()`/eval-inflight
+guard, no new snapshot machinery needed. `sim_model_eval_time` removed entirely (field, both call sites, all 5
+smoke yamls) — the asymmetry it corrected for no longer exists once neither mode pays eval on the critical
+path. *Lesson:* "backgrounding" isn't just wrapping a call in a thread — grep every attribute the backgrounded
+function writes for a second writer on the main path first.
+
+**Shared agg/eval vclock-fold scope correction.** `sim_model_agg_compute_time` (and the now-removed
+`sim_model_eval_time`) live in shared `_process_aggregation_goal_met`, active in ALL THREE fwdllm-family
+baselines' configs, not fluxtune-specific. Worth revisiting fwdllm's own `per_round_advance` (K3) residual
+(§A) against this now that eval no longer contributes to `intrinsic_span_s` at all (Part 6) — unconfirmed
+follow-up lead, not yet investigated.
 
 **fwdllm_plus livelock (was the leading §A item pre-07-13) — FIXED, validated 07-13.** `RandomSelector`
 freed only `min(N, k=5)` of a full `c=10` cohort per cleanup call — a stale absolute batch-size knob from the

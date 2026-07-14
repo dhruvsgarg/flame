@@ -34,6 +34,7 @@ from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
     TAG_HEARTBEAT,
+    _SIM_ORDER_SLACK_S,
 )
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
 from flame.mode.message import MessageType
@@ -72,8 +73,10 @@ RECV_TIMEOUT_WAIT_S = 30
 # RECV_TIMEOUT_WAIT_S deadline and this pass cap so it never spins.
 _SIM_GATE_MAX_PASSES = 64
 # Gate slack: don't hold the commit for an in-flight trainer expected to complete
-# only marginally earlier (absorbs budget-estimate noise).
-_SIM_ORDER_SLACK_S = 2.0
+# only marginally earlier (absorbs budget-estimate noise). Shared home is now
+# syncfl/top_aggregator.py (§6 Part 3, simulate_fwdllm.md §G) -- kept
+# as a re-export here since asyncfl/fwdllm_aggregator.py both import it as
+# `_SIM_ORDER_SLACK_S` from this module.
 
 # §M: poll cadence for a probe set with an unknown-delay end (drain_ready
 # can't block on timeout=None like recv_fifo can) -- the outer per-pass loop,
@@ -368,6 +371,20 @@ class TopAggregator(SyncTopAgg):
             # ends still pending ingestion this pass — drives the "nothing left to
             # commit and nothing in flight" loop-exit below (per ingestion path).
             _pending_ends = live_inflight
+            # §6 Part 3 (simulate_fwdllm.md §G), option 2: derive gate
+            # safety from CURRENT in-memory state, before this pass's ingest call.
+            # `_sim_gate_is_safe` mirrors the `earlier_stuck` check below exactly,
+            # just computed early. Still probing (rather than skipping outright)
+            # preserves the "eager-drain a physically-ready / near-ceiling
+            # straggler" behavior the ceiling-extension below exists for
+            # (TestGateProbesLiveInflight, test_async_sim_ordering.py) — only the
+            # BLOCKING wait shrinks, from the full per-trainer delay bound down to
+            # one scheduling window.
+            _pre_bmin = self._sim_buffer.peek_min_ts()
+            _pre_inflight = [
+                (e, exp) for e, exp in self._sim_inflight_expected.items()
+                if not self._sim_buffer.has(e) and e not in self._sim_committed
+            ]
             if getattr(self, "_sim_sct_ordered_drain", False):
                 # sct-faithful ingestion: drain each live in-flight end's rx queue
                 # DIRECTLY (no recv_fifo streamer), so the buffer is a COMPLETE
@@ -381,9 +398,16 @@ class TopAggregator(SyncTopAgg):
                     # §M: exact bound when known; else a poll tick (drain_ready
                     # can't block on timeout=None) -- the outer pass loop retries.
                     _timeout = self._sim_recv_timeout_s(live_inflight)
+                    _fast_safe = _timeout is not None and self._sim_gate_is_safe(
+                        _pre_bmin, _pre_inflight
+                    )
+                    _probe_timeout = (
+                        self._SIM_GATE_FAST_PROBE_TIMEOUT_S if _fast_safe
+                        else (_timeout if _timeout is not None else self._SIM_RECV_MARGIN_S)
+                    )
                     for msg, metadata in channel.drain_ready(
                         live_inflight,
-                        timeout=(_timeout if _timeout is not None else self._SIM_RECV_MARGIN_S),
+                        timeout=_probe_timeout,
                     ):
                         _ingest(msg, metadata)
                     drained_all = all(
@@ -416,8 +440,14 @@ class TopAggregator(SyncTopAgg):
                     probed = max(probed, len(to_probe))
                     # §M: exact bound when known; None to genuinely block.
                     _timeout = self._sim_recv_timeout_s(to_probe)
+                    _fast_safe = _timeout is not None and self._sim_gate_is_safe(
+                        _pre_bmin, _pre_inflight
+                    )
+                    _probe_timeout = (
+                        self._SIM_GATE_FAST_PROBE_TIMEOUT_S if _fast_safe else _timeout
+                    )
                     for msg, metadata in channel.recv_fifo(
-                        to_probe, first_k=len(to_probe), timeout=_timeout
+                        to_probe, first_k=len(to_probe), timeout=_probe_timeout
                     ):
                         if msg is None:  # no more ready (bound expired or set drained)
                             break
