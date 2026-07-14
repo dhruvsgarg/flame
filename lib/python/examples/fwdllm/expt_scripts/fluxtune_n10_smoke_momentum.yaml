@@ -1,20 +1,20 @@
-# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
-# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
-# (FedFwd has no simulated-clock support yet).
-#
-# Uses the `fluxtune` baseline (async, async_oort selector, fedbuff with an
-# explicit learning_rate, 3-tier client_notify, fixed K/C i.e.
-# selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
-# Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
-# for full real/sim parity coverage across the taxonomy.
+# MOMENTUM sibling of fluxtune_n10_smoke.yaml -- IDENTICAL except
+# `hyperparameters.server_momentum: 0.9` and the job id. 30min (1800s) S1 A/B
+# leg (fluxtune_contributions.md §8.2, simulate_fwdllm.md §A): the 8min
+# `_short_momentum` pair only reached the early-cold-start window (data_id
+# ~0-15) and, in that window, momentum showed MORE frequent exact
+# acc=0.25/mcc=0.0 collapses than the without-momentum leg, not fewer -- the
+# opposite of S1's hypothesis. This 30min pair reaches deeper into the run
+# (closer to fluxtune's 150-bin lap) to see whether that reverses or
+# compounds. Pair with fluxtune_n10_smoke.yaml (momentum=0, "without").
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_momentum.yaml
 
 experiments:
-  - name: fluxtune_n10_smoke
-    description: "FedFwd smoke (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
+  - name: fluxtune_n10_smoke_momentum
+    description: "FedFwd smoke (10 trainers, fluxtune baseline, 30min budget), server_momentum=0.9 -- S1 with/without A/B leg."
 
     baseline: fluxtune
 
@@ -66,9 +66,10 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fluxtune_n10_smoke
+          id: fluxtune_n10_smoke_momentum
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fluxtune_n10_smoke_momentum.yaml)
+          server_momentum: 0.9
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fluxtune_n10_smoke.yaml)
           rounds: 50  # short smoke run, not the full 300
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.

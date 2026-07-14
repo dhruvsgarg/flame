@@ -1,20 +1,22 @@
-# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
-# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
-# (FedFwd has no simulated-clock support yet).
-#
-# Uses the `fluxtune` baseline (async, async_oort selector, fedbuff with an
-# explicit learning_rate, 3-tier client_notify, fixed K/C i.e.
-# selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
-# Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
-# for full real/sim parity coverage across the taxonomy.
+# MOMENTUM sibling of fluxtune_n100_smoke_4h.yaml -- IDENTICAL except
+# `hyperparameters.server_momentum: 0.9` and the job id. 4h, N=100/C=30/K=10
+# S1 A/B leg (fluxtune_contributions.md §8.2, simulate_fwdllm.md §A): the
+# 8min/30min n10 pairs only reached windows short of a full 150-data_id lap,
+# and in both, momentum showed MORE/EARLIER exact acc=0.25/mcc=0.0 collapses
+# than without -- the opposite of S1's hypothesis. N=100/C=30 (3x the n10
+# pairs' concurrency) plus 4h should reach the round/lap boundary, showing
+# which leg's loss spikes vs stays steady there. Pair with
+# fluxtune_n100_smoke_4h.yaml (momentum=0, "without"). NOTE: partition_method
+# is left at `uniform` (unchanged from the n10 smoke convention) -- see
+# fluxtune_n100_smoke_4h.yaml's header for why.
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n100_smoke_4h_momentum.yaml
 
 experiments:
-  - name: fluxtune_n10_smoke
-    description: "FedFwd smoke (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
+  - name: fluxtune_n100_smoke_4h_momentum
+    description: "FedFwd smoke (100 trainers, fluxtune baseline, C=30/K=10, 4h budget), server_momentum=0.9 -- S1 with/without A/B leg."
 
     baseline: fluxtune
 
@@ -24,7 +26,7 @@ experiments:
       trainer_main: trainer/main.py
 
     trainer:
-      num_trainers: 10
+      num_trainers: 100
       start_id: 1
       dataset:
         name: agnews
@@ -41,8 +43,8 @@ experiments:
       time_mode: real
       # Skip the registry's 4-18s artificial delay for a fast smoke run.
       enable_training_delays: false
-      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
-      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      # client_idx = (trainer_id - 1) % 100 -- at N=100 this covers all 100 H5
+      # partitions exactly once (no wrap-around, unlike the n10 smoke scale).
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
@@ -62,13 +64,14 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
-      agg_goal: 3
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
-          id: fluxtune_n10_smoke
+          id: fluxtune_n100_smoke_4h_momentum
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fluxtune_n10_smoke_momentum.yaml)
+          server_momentum: 0.9
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fluxtune_n100_smoke_4h.yaml)
           rounds: 50  # short smoke run, not the full 300
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.
@@ -86,29 +89,20 @@ experiments:
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 14400  # ...or after 4 hours wall time (4h S1 A/B variant)
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform
         selector:
           kwargs:
-            # Scaled down from the baseline's n=150-ish defaults
-            # (c=15, aggGoal=5, minInitialTrainers=15) to fit 10 trainers.
-            # minInitialTrainers=10 = wait for all 10 smoke trainers to join.
-            # aggGoal is set once via the top-level `agg_goal: 3` above --
-            # the runner fans it into both this kwarg and
-            # hyperparameters.aggGoal so they can't drift apart; don't
-            # duplicate it here.
-            c: 10
-            minInitialTrainers: 10
+            # N=100/C=30/K=10 -- matches fluxtune_n100_smoke_4h.yaml (the
+            # without-momentum leg). minInitialTrainers=c=30, same convention.
+            c: 30
+            minInitialTrainers: 30
 
     execution:
-      # 8, not 1, even though this YAML's own default is 10 trainers --
-      # run_sequential.sh's --num-trainers commonly scales this up to 100+
-      # without a matching GPU bump (it has no num_gpus override of its
-      # own), and cramming 100 trainer processes onto 1 GPU OOMs almost
-      # immediately (see fluxtune_n10_smoke run 20260629_221116). Spreading
-      # across 8 GPUs even at the 10-trainer default is harmless headroom.
+      # 8 GPUs for 100 trainer processes -- cramming 100 trainers onto 1 GPU
+      # OOMs almost immediately (see fluxtune_n10_smoke run 20260629_221116).
       num_gpus: 8
       sleep_between_spawns: 2.0
       aggregator_warmup_time: 20

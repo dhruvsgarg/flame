@@ -1,21 +1,21 @@
-# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
-# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
-# (FedFwd has no simulated-clock support yet).
-#
-# Uses the `fwdllm_plus` baseline (sync, random selector, fedavg, ORACULAR
-# availability read from _metadata, per-iteration reselection). Sibling of
-# fwdllm_n10_smoke.yaml/fluxtune_n10_smoke.yaml; run all three for full
-# real/sim parity coverage across the taxonomy.
+# MOMENTUM sibling of fwdllm_n10_smoke.yaml -- IDENTICAL except
+# `hyperparameters.server_momentum: 0.9` and the job id. 30min (1800s) S1 A/B
+# leg (fluxtune_contributions.md §8.3 caveat: fwdllm's own telemetry shows the
+# same early acc=0.25/mcc=0 collapse signature fluxtune has -- S1 isn't
+# claimed fluxtune-only until this is checked). The 8min `_short_momentum`
+# pair only reached data_id ~0-9 and showed the collapse landing EARLIER
+# under momentum (data_id 5-7) than without (data_id 9,11,12), not later --
+# this 30min pair reaches further to see if that direction holds.
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n10_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke_momentum.yaml
 
 experiments:
-  - name: fwdllm_plus_n10_smoke
-    description: "FedFwd smoke (10 trainers, fwdllm_plus baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
+  - name: fwdllm_n10_smoke_momentum
+    description: "FedFwd smoke (10 trainers, fwdllm baseline, 30min budget), server_momentum=0.9 -- S1 with/without A/B leg."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -31,11 +31,6 @@ experiments:
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
-        # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
-        # reads all-available, so the sync barrier assembles the full agg_goal=10
-        # cohort. Switch to a mobiperf_* trace (via --avail-trace) only for the
-        # Phase-2 unavailability runs. Keep trainer + aggregator on the SAME
-        # trace (run_sequential.sh's --avail-trace patches both).
         mode: syn_0
       # FedFwd has no simulated-clock support; always real.
       time_mode: real
@@ -48,21 +43,26 @@ experiments:
         hyperparameters:
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
+          # Uniform/IID partition for smoke tests -- the niid_label baseline
+          # default adds a data-skew confound we don't want while validating
+          # the launcher mechanics.
           partition_method: uniform
+          client_notify:
+            trace: syn_0
 
     aggregator:
       config_template: configs/aggregator_base.json
       selector: random
-      tracking_mode: oracular
+      tracking_mode: default
+      # Matches selector.kwargs.c below -- every selected trainer is required.
       agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n10_smoke
+          id: fwdllm_n10_smoke_momentum
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_plus_n10_smoke_momentum.yaml)
+          server_momentum: 0.9
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_n10_smoke.yaml)
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
