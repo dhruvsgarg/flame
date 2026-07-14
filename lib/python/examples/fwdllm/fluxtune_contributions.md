@@ -235,7 +235,7 @@ Two independent levers. Each item is tagged **cross-baseline hygiene** (applied 
 
 | ID | Contribution | Why (finding) | Code — how | Sanity check to pass | Status |
 |---|---|---|---|---|---|
-| S1 | **Server-side optimizer with momentum / EMA of the global model** (a damping / restoring force) | F8: undamped direct SGD → random walk on the loss surface | `FedSgdAggregator.py:322-324` add a server momentum buffer or global-weight EMA | loss envelope becomes monotone; peak is *sustained*, not transient | TODO |
+| S1 | **Server-side optimizer with momentum / EMA of the global model** (a damping / restoring force) | F8: undamped direct SGD → random walk on the loss surface | `FedSgdAggregator.py` `_server_update_step` (heavy-ball momentum, `hyperparameters.server_momentum`, default 0.0 = byte-identical); shared across all 3 baselines, enabled only in fluxtune's yaml (07-14). Short (8min) A/B pair: `fluxtune_n10_smoke_{,sim_}short_momentum.yaml` vs the existing `_short.yaml` (momentum=0) | loss envelope becomes monotone; peak is *sustained*, not transient | **A/B** (code landed + tests pass, both legs runnable; not yet run — awaiting operator) |
 | S2 | **Variance-gate recalibration** — commit on the *plateau*, not on a noise dip; align threshold to the achievable floor | F6,F7: gate commits the noisiest updates | `var_threshold` + plateau policy (extends charter **Opt-2**) | mean it-at-commit rises; early-commit collapse (F6) gone | TODO (Opt-2 partial) |
 | S3 | **Aggregation-rate tempering** — cap rate ≤ 1; retune grad-aware to damp, not amplify | F9 + charter: R4 (full grad-aware) diverged *worst* | `fedbuff.py` beta upshift; grad_aware `align_floor`/`inverse_var` (retunes charter **Opt-3**) | R4 no longer the worst diverger; per-commit step magnitude bounded | TODO |
 
@@ -250,6 +250,16 @@ Two independent levers. Each item is tagged **cross-baseline hygiene** (applied 
   stabilize forward-mode async FL are genuine contributions the sync baselines don't need.
 - **Not claimable (H1-H3):** shuffle / bin-size / bin-order are correctness fixes any FL should have; applied to
   all three baselines so E1 stays fair (P1). Reported as fixed, not as wins.
+- **Caveat on "sync baselines don't need it" (07-14, unverified, flag now available to test):** a quick check of
+  the banked `fwdllm_n10_smoke_sim` telemetry (sync/fedavg) shows the SAME exact acc=0.25/mcc=0.000 collapse
+  signature early in round 1 (`data_id` 6-14) that F4 documents for fluxtune — `_server_update_step`'s undamped
+  update (F8) is shared code, so this isn't surprising. It did NOT recur at the same position in round 2 in that
+  short run, unlike fluxtune's F5 position-lock, but that run only has 2 rounds to check — not enough to
+  distinguish "ordinary cold-start noise" from "the same random-walk instability, just less severe" (fedavg
+  pools a full `c=10` cohort every commit with no fedbuff rate-amplification, F9's mechanism, which plausibly
+  makes it structurally less exposed, not immune). `server_momentum` is flag-gated per-baseline specifically so
+  this can be tested on fwdllm/fwdllm_plus too if a longer run reproduces a persistent collapse — don't assume
+  S1 stays fluxtune-only until that's checked.
 
 ### 8.4 Design Q&A
 - **Bin vs. classical-FL round?** FedAvg updates from the *whole* local set (batch washed out pre-aggregation);

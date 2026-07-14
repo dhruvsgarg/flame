@@ -1,0 +1,118 @@
+# Seeded sibling of fwdllm_n10_smoke.yaml -- IDENTICAL except
+# hyperparameters.seed: 1234 and the job id (so run dirs don't collide).
+#
+# simulate_fwdllm.md §A next-session-plan item 5: real->real and real->sim were
+# NEITHER reproducible -- no fwdllm yaml passed a seed. `hyperparameters.seed`
+# is threaded two places already (no code change needed here, just config):
+#   - flame/mode/horizontal/syncfl/top_aggregator.py `internal_init` seeds the
+#     process-global np.random/random/torch RNGs (model init).
+#   - flame/channel_manager.py `join` threads the SAME seed into the selector's
+#     OWN dedicated `_rng`/`_pyrng` (§R, 2026-07-11) -- `RandomSelector` draws
+#     exclusively from `self._pyrng.sample` (verified by reading the code, not
+#     the stale top_aggregator.py comment that still says "selector draws from
+#     process-global RNGs").
+# The JVP perturbation draw is independently seeded per-trainer already
+# (`tc_transformer_trainer_distribute.py`: `self.torch_rng.manual_seed(self.
+# args.client_idx)`) -- deterministic PROVIDED the same client_idx draws
+# perturbations in the same call-order both times, which requires selection
+# itself to be reproducible (the selector seed above) for real<->sim, and nothing
+# else (no source of nondeterminism between two REAL runs) for real<->real.
+#
+# GPU kernel nondeterminism (cuDNN algorithm choice, atomic-add reduction order
+# in fp16 backward/fwd-grad ops) is a separate, harder floor NOT addressed by
+# either seed above -- measure the residual real<->real gap with this config
+# before assuming exact match is reachable.
+#
+# Run real<->real (reproducibility floor) or pair with the _sim_seeded sibling
+# (real<->sim, same seed) for a from-scratch determinism check:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke_seeded.yaml
+
+experiments:
+  - name: fwdllm_n10_smoke_seeded
+    description: "FedFwd smoke (10 trainers, fwdllm baseline: sync random+fedavg), hyperparameters.seed=1234 for real<->real / real<->sim reproducibility."
+
+    baseline: fwdllm
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        mode: syn_0
+      # FedFwd has no simulated-clock support; always real.
+      time_mode: real
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
+      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # Uniform/IID partition for smoke tests -- the niid_label baseline
+          # default adds a data-skew confound we don't want while validating
+          # the launcher mechanics.
+          partition_method: uniform
+          client_notify:
+            trace: syn_0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: random
+      tracking_mode: default
+      # Matches selector.kwargs.c below -- every selected trainer is required.
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fwdllm_n10_smoke_seeded
+        hyperparameters:
+          # Deterministic seeding for real<->real / real<->sim parity (see
+          # header). Matches async_cifar10's `*_parity_seeded_{real,sim}.yaml`
+          # convention (`hyperparameters.seed: 1234`) for cross-example
+          # consistency -- not itself a parity lever, just a fixed anchor.
+          seed: 1234
+          rounds: 50  # short smoke run, not the full 300
+          # Hold a returned trainer's re-pick guard to commit, not RETURN
+          # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
+          # but keeps the invariant/config identical across all baselines.
+          inflight_residence: true
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/
+            # async_random) -- `_cleanup_recvd_ends` used to cap cleanup at a
+            # stale n~150-scale `k=5` batch size, which permanently orphaned
+            # trainers from this full-cohort (agg_goal==c==10) pool every
+            # round and, combined with the §M reselect-gate cache, caused a
+            # livelock (simulate_fwdllm.md §A). Fixed: cleanup now drains all.
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      # 8, not 1 -- see fluxtune_n10_smoke.yaml's execution.num_gpus comment;
+      # run_sequential.sh's --num-trainers scales trainer count without a
+      # matching GPU bump, and 100 trainers on 1 GPU OOMs almost immediately.
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

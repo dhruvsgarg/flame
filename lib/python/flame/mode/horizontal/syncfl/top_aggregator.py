@@ -128,12 +128,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
-        # Optional deterministic seeding for real/sim parity. The selector runs
-        # in this (the aggregator) process and draws from the process-global
-        # np.random / random RNGs, so seeding here makes selection reproducible
-        # across runs/modes (given identical decision-point ordering). Also
-        # seeds torch for reproducible model init. seed=None (default) preserves
-        # the legacy unseeded behaviour.
+        # Optional deterministic seeding. Seeds process-global np.random/random/
+        # torch (model init etc). The selector does NOT draw from these -- it has
+        # its own dedicated `_rng`/`_pyrng` (flame/selector/__init__.py), seeded
+        # separately by ChannelManager.join threading this same seed into the
+        # selector's `_seed` kwarg. seed=None (default) leaves both paths unseeded.
         _seed = getattr(self.config.hyperparameters, "seed", None)
         if _seed is not None:
             import random as _random

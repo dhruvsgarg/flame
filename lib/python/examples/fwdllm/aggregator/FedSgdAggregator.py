@@ -128,6 +128,14 @@ class FedSGDAggregator(TopAggregator):
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
+        # Server-side momentum damping (S1, fluxtune_contributions.md §8.2), applied
+        # at the undamped direct-SGD step (F8). 0.0 (default) = byte-identical.
+        # Shared across all 3 baselines; gated per baseline via this config key.
+        self.server_momentum = float(
+            getattr(self.config.hyperparameters, "server_momentum", 0.0) or 0.0
+        )
+        self._server_momentum_buf = {}
+
     def var_within_epsilon(self):
         if self.var < self.var_threshold:
             logger.info("Var under threshold, aggregate now")
@@ -187,6 +195,20 @@ class FedSGDAggregator(TopAggregator):
         for idx in range(self.worker_num):
             self.flag_client_model_uploaded_dict[idx] = False
         return True
+
+    def _server_update_step(self, param_idx: int, raw_update: "torch.Tensor") -> "torch.Tensor":
+        """Heavy-ball momentum on one parameter's raw update (S1). momentum=0.0
+        returns `raw_update` unchanged (byte-identical); else `buf <- momentum*buf
+        + raw_update`, one buffer per `param_idx`, lazily created."""
+        if not self.server_momentum:
+            return raw_update
+        buf = self._server_momentum_buf.get(param_idx)
+        if buf is None:
+            buf = raw_update.clone()
+        else:
+            buf = buf.mul(self.server_momentum).add_(raw_update)
+        self._server_momentum_buf[param_idx] = buf
+        return buf
 
     @timer_decorator
     def aggregate(self, current_round):
@@ -318,7 +340,9 @@ class FedSGDAggregator(TopAggregator):
                         else:
                             weighted_gradient_sum[id] += local_model_params[id]
                     next(old_param).detach().to("cpu").sub_(
-                        learning_rate * weighted_gradient_sum[id] / training_num
+                        self._server_update_step(
+                            id, learning_rate * weighted_gradient_sum[id] / training_num
+                        )
                     )
                 format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
                 logger.debug(
@@ -361,7 +385,9 @@ class FedSGDAggregator(TopAggregator):
                         else:
                             weighted_gradient_sum[id] += local_model_params[id]
                     next(old_param).detach().to("cpu").sub_(
-                        learning_rate * weighted_gradient_sum[id] / training_num
+                        self._server_update_step(
+                            id, learning_rate * weighted_gradient_sum[id] / training_num
+                        )
                     )
                 format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
                 logger.debug(

@@ -1,0 +1,111 @@
+# Seeded SIMULATED-clock sibling of fwdllm_n10_smoke_sim.yaml -- IDENTICAL
+# except hyperparameters.seed: 1234 and the job id (so run dirs don't collide).
+# Pairs with fwdllm_n10_smoke_seeded.yaml (same seed) for a from-scratch
+# real<->sim reproducibility check (simulate_fwdllm.md §A next-session-plan
+# item 5) -- see that file's header for what the seed does and does not cover.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke_sim_seeded.yaml
+
+experiments:
+  - name: fwdllm_n10_smoke_sim_seeded
+    description: "FedFwd SIM smoke (10 trainers, fwdllm baseline: sync random+fedavg, time_mode=simulated), hyperparameters.seed=1234 for real<->sim reproducibility."
+
+    baseline: fwdllm
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        mode: syn_0
+      # Batch 1: drive the simulated virtual clock instead of real sleeps.
+      time_mode: simulated
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
+      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # Uniform/IID partition for smoke tests -- the niid_label baseline
+          # default adds a data-skew confound we don't want while validating
+          # the launcher mechanics.
+          partition_method: uniform
+          # Phase 4c (B2, #6): widen the sim barrier's k-th-smallest sct to
+          # match real's per-trainer completion dispersion (banked real compute
+          # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
+          # active with --delays on (convergence run); inert at D=0. Calibrate
+          # to wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
+          client_notify:
+            trace: syn_0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: random
+      tracking_mode: default
+      # Matches selector.kwargs.c below -- every selected trainer is required.
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fwdllm_n10_smoke_sim_seeded
+        hyperparameters:
+          # Deterministic seeding for real<->real / real<->sim parity -- see
+          # fwdllm_n10_smoke_seeded.yaml's header. MUST match the real sibling.
+          seed: 1234
+          rounds: 50  # short smoke run, not the full 300
+          # Hold a returned trainer's re-pick guard to commit, not RETURN
+          # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
+          # but keeps the invariant/config identical across all baselines.
+          inflight_residence: true
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          # Phase 4c (B1, #6, REMOVED §6 Part 6): sim_model_eval_time used to
+          # charge the MEASURED server eval_s (~13s/data_id -- the syn_0 wall
+          # dominator) onto the vclock -- removed once eval_model() was
+          # backgrounded (no longer a synchronous critical-path cost in either
+          # mode to fold). See simulate_fwdllm.md §G.
+          # #15: also charge the measured aggregate()-call wall (every cycle,
+          # not just committed ones) -- was the dominant uncredited real-wall
+          # driver of sim_rate<1, not a trainer-side compute floor.
+          sim_model_agg_compute_time: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/
+            # async_random) -- `_cleanup_recvd_ends` used to cap cleanup at a
+            # stale n~150-scale `k=5` batch size, which permanently orphaned
+            # trainers from this full-cohort (agg_goal==c==10) pool every
+            # round and, combined with the §M reselect-gate cache, caused a
+            # livelock (simulate_fwdllm.md §A). Fixed: cleanup now drains all.
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      # 8, not 1 -- see fluxtune_n10_smoke.yaml's execution.num_gpus comment;
+      # run_sequential.sh's --num-trainers scales trainer count without a
+      # matching GPU bump, and 100 trainers on 1 GPU OOMs almost immediately.
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

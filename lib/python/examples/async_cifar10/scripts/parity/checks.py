@@ -209,6 +209,7 @@ def load_agg_jsonl(path: str) -> dict:
     withheld_deliveries: list = []
     abandon_timeouts: list = []
     agg_belief_changes: list = []
+    step_timing: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -238,6 +239,13 @@ def load_agg_jsonl(path: str) -> dict:
                 agg_evals.append(e)
             elif ev == "inflight_residence":
                 residence.append(e)
+            elif ev == "step_timing":
+                # `timer_decorator` on TopAggregator/fwdllm_aggregator methods
+                # (simulate_fwdllm.md §A session-6: sync_collect_and_accumulate_grads/
+                # _aggregate_grads_sync/_distribute_weights_sync) — aggregator-side
+                # wall-duration-per-function, previously parsed nowhere on this side
+                # (only load_trainer_jsonl_dir's step_timing bucket fed a check).
+                step_timing.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
@@ -259,6 +267,7 @@ def load_agg_jsonl(path: str) -> dict:
         # Batch 3 T3.3: aggregator belief-tracking (commit checkpoint only —
         # the selection checkpoint is already in selection_train.per_trainer.avl_state).
         "agg_belief_changes": agg_belief_changes,
+        "step_timing": step_timing,
     }
 
 
@@ -328,7 +337,8 @@ def load_run_dir(run_dir: str) -> tuple:
         agg_data = load_agg_jsonl(agg_files[0])
     else:
         merged: dict = {"selection_train": [], "agg_rounds": [],
-                        "eval_commits": [], "agg_evals": [], "residence": []}
+                        "eval_commits": [], "agg_evals": [], "residence": [],
+                        "step_timing": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -3925,6 +3935,52 @@ _STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
 })
 
 
+def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
+                          real_only_funcs: frozenset = frozenset()) -> dict:
+    """Shared DIST (KS + mean) per-function comparator behind both
+    `step_timing_breakdown_parity` (trainer-side) and
+    `agg_step_timing_breakdown_parity` (aggregator-side) -- same tier/shape,
+    only the `func -> [duration_s, ...]` collection differs (per-trainer
+    nested dict vs a flat aggregator event list)."""
+    funcs = sorted(set(r_by_func) | set(s_by_func))
+    if not funcs:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no step_timing telemetry (non-fwdllm run or "
+                        "pre-instrumentation logs)"}
+
+    by_func = {}
+    for func in funcs:
+        rv, sv = r_by_func.get(func, []), s_by_func.get(func, [])
+        if not rv or not sv:
+            by_func[func] = {"ok": True, "tier": "DIST", "status": "SKIP",
+                             "note": "no samples in one mode"}
+            continue
+        ks = ks_stat(rv, sv)
+        rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
+        entry = {
+            "ok": ks <= ks_tol,
+            "tier": "DIST",
+            "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+            "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
+            "n_real": len(rv), "n_sim": len(sv),
+        }
+        if func in real_only_funcs:
+            entry["gates_ok"] = False
+        by_func[func] = entry
+
+    _gating = [r for f, r in by_func.items() if r.get("gates_ok", True)]
+    return {
+        "ok": all(r["ok"] for r in _gating),
+        "tier": "DIST",
+        "ks_tol": ks_tol,
+        "n_funcs": len(funcs),
+        "worst_func": (max(by_func, key=lambda f: by_func[f].get("ks_stat") or -1.0)
+                      if any(r.get("ks_stat") is not None for r in by_func.values())
+                      else None),
+        "by_func": by_func,
+    }
+
+
 def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
                                  ks_tol: float = 0.25) -> dict:
     """Fine-grained GPU-compute decomposition: one DISTRIBUTIONAL (KS + mean)
@@ -3953,43 +4009,42 @@ def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_trainers), _collect(sim_trainers)
-    funcs = sorted(set(r_by_func) | set(s_by_func))
-    if not funcs:
-        return {"ok": True, "tier": "DIST", "status": "SKIP",
-                "note": "no step_timing telemetry (non-fwdllm run or "
-                        "pre-instrumentation logs)"}
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                 _STEP_TIMING_REAL_ONLY_FUNCS)
 
-    by_func = {}
-    for func in funcs:
-        rv, sv = r_by_func.get(func, []), s_by_func.get(func, [])
-        if not rv or not sv:
-            by_func[func] = {"ok": True, "tier": "DIST", "status": "SKIP",
-                             "note": "no samples in one mode"}
-            continue
-        ks = ks_stat(rv, sv)
-        rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
-        entry = {
-            "ok": ks <= ks_tol,
-            "tier": "DIST",
-            "ks_stat": round(ks, 3), "ks_tol": ks_tol,
-            "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
-            "n_real": len(rv), "n_sim": len(sv),
-        }
-        if func in _STEP_TIMING_REAL_ONLY_FUNCS:
-            entry["gates_ok"] = False
-        by_func[func] = entry
 
-    _gating = [r for f, r in by_func.items() if r.get("gates_ok", True)]
-    return {
-        "ok": all(r["ok"] for r in _gating),
-        "tier": "DIST",
-        "ks_tol": ks_tol,
-        "n_funcs": len(funcs),
-        "worst_func": (max(by_func, key=lambda f: by_func[f].get("ks_stat") or -1.0)
-                      if any(r.get("ks_stat") is not None for r in by_func.values())
-                      else None),
-        "by_func": by_func,
-    }
+def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
+                                     ks_tol: float = 0.25) -> dict:
+    """Aggregator-side analog of `step_timing_breakdown_parity`: same
+    DIST (KS + mean) per-`@timer_decorator`-function check, but over the
+    aggregator's OWN `step_timing` events (`sync_collect_and_accumulate_grads`
+    / `_aggregate_grads_sync` / `_distribute_weights_sync`, ...) instead of the
+    trainers'. Landed simulate_fwdllm.md §A session-6: this telemetry was
+    already emitted (`timer_decorator` fires on any `self` with a
+    `fwd_llm_stage`, aggregator or trainer) but `load_agg_jsonl` never parsed
+    `event=step_timing` lines and no check read them -- the ~10s/cycle
+    `sync_collect_and_accumulate_grads` gap between real (called once per
+    individual trainer message, real-only `num_min_req=1` clamp) and sim
+    (bulk-drains the cohort in one call) was only visible via manual
+    telemetry archaeology. No real-only exemption set here (unlike the
+    trainer-side rung): every currently-decorated aggregator function is
+    architecturally expected to run comparably on both sides, so the whole
+    point is for a genuine gap like `sync_collect_and_accumulate_grads`'s to
+    FAIL, not to be pre-exempted the way real-transport-only trainer phases
+    are.
+    """
+    def _collect(agg: dict) -> dict:
+        out: dict = {}
+        for e in agg.get("step_timing", []):
+            func = e.get("func")
+            dur = e.get("duration_s")
+            if func is None or dur is None or dur < 0:
+                continue
+            out.setdefault(func, []).append(float(dur))
+        return out
+
+    r_by_func, s_by_func = _collect(real_agg), _collect(sim_agg)
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -5039,6 +5094,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, max_rounds)
     results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
     results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
+    results["agg_step_timing_breakdown"] = agg_step_timing_breakdown_parity(real_agg, sim_agg)
     results["phase_vclock_bottlenecks"] = phase_vclock_bottlenecks(
         real_agg, sim_agg, real_trainers, sim_trainers)
 
@@ -5164,6 +5220,7 @@ CHECK_META: dict = {
     "commit_promptness":       {"stage": 6, "role": "CONTROL",  "deps": ("withheld_delivery",)},
     "drain_wall_budget":       {"stage": 6, "role": "MECHANISM", "deps": ("vclock_telemetry", "commit_visibility")},
     "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
+    "agg_step_timing_breakdown": {"stage": 6, "role": "DIAG",    "deps": ("aggregation_compute_wall",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},

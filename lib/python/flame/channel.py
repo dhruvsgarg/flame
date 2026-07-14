@@ -677,7 +677,10 @@ class Channel(object):
                         f"[RECV_FIFO] Cannot receive message from end_id {end_id} - end not in channel"
                     )
                     return
-                logger.info(
+                # Downgraded INFO->DEBUG (simulate_fwdllm.md §G, 07-14): fired per
+                # end per lap under fwdllm's real-only num_min_req=1 clamp, ~10x/
+                # cycle, unread by any check/plot (425k lines/112MB in one run).
+                logger.debug(
                     f"[RECV_FIFO] channel {self._name} awaiting get() on end_id {end_id} in self.ends"
                 )
                 try:
@@ -689,7 +692,7 @@ class Channel(object):
                     if payload:
                         # ignore timestamp for measuring bytes received
                         self.mc.accumulate("bytes", "recv", len(payload[0]))
-                        logger.info(
+                        logger.debug(
                             f"[RECV_FIFO] Received payload from end_id {end_id}, size={len(payload[0])} bytes"
                         )
                     else:
@@ -697,7 +700,7 @@ class Channel(object):
                             f"[RECV_FIFO] Got empty/None payload from end_id {end_id}"
                         )
                 except asyncio.TimeoutError:
-                    logger.info(
+                    logger.debug(
                         f"[RECV_FIFO] timeout ({timeout}s) waiting on end_id {end_id}; "
                         f"releasing active task so it can be re-selected"
                     )
@@ -708,7 +711,7 @@ class Channel(object):
                     )
                     payload = None
 
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] _get_inner() yielding for end_id: {end_id}, payload={'present' if payload else 'None'}"
                 )
                 yield end_id, payload
@@ -717,7 +720,7 @@ class Channel(object):
                 # message, timed out, hit an error, or were cancelled. This is
                 # what prevents the permanent active_tasks leak.
                 self._active_recv_fifo_tasks.discard(end_id)
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] active task released for {end_id}, "
                     f"active_tasks={len(self._active_recv_fifo_tasks)}"
                 )
@@ -744,7 +747,7 @@ class Channel(object):
 
             runs.append(_get_inner(end_id))
             self._active_recv_fifo_tasks.add(end_id)
-            logger.info(
+            logger.debug(
                 f"[RECV_FIFO] active task added for {end_id}, total runs: {len(runs)}"
             )
 
@@ -752,7 +755,7 @@ class Channel(object):
             logger.warning(
                 f"[RECV_FIFO] Skipped {len(skipped_ends)} ends: {skipped_ends[:10]}..."
             )  # Show first 10
-        logger.info(
+        logger.debug(
             f"[RECV_FIFO] Starting merge stream with {len(runs)} tasks, active_tasks={len(self._active_recv_fifo_tasks)}"
         )
 
@@ -766,17 +769,17 @@ class Channel(object):
                 # would consume a first_k slot ahead of a real update. The
                 # caller's own timeout bounds how long it waits on the rx queue.
                 if payload is None:
-                    logger.info(
+                    logger.debug(
                         f"[RECV_FIFO] no message from {end_id}; not enqueuing"
                     )
                     continue
                 msg_count += 1
                 await self._rx_queue.put(result)
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
                 )
 
-        logger.info(
+        logger.debug(
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"
         )
 

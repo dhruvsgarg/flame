@@ -623,6 +623,67 @@ def test_eval_commits_partitioned_at_load():
     assert eval_commit_timeliness(agg)["eval_n"] == 2
 
 
+def test_load_agg_jsonl_captures_step_timing():
+    """Regression for simulate_fwdllm.md §A session-6: the aggregator's own
+    `step_timing` (`timer_decorator` on TopAggregator/fwdllm_aggregator
+    methods) was emitted to `aggregator_*.jsonl` but `load_agg_jsonl` had no
+    branch for it, so it was silently dropped -- the ~10s/cycle
+    `sync_collect_and_accumulate_grads` gap was invisible to every check."""
+    import json
+    import tempfile
+    from parity.checks import load_agg_jsonl
+
+    recs = [
+        {"event": "agg_round", "round": 1, "agg_goal_count": 1, "ts": 1.0,
+         "vclock_now": 10.0, "task_to_perform": "train", "staleness": [0]},
+        {"event": "step_timing", "func": "sync_collect_and_accumulate_grads",
+         "duration_s": 1.69, "round": 1, "data_id": 0, "iteration": 0},
+        {"event": "step_timing", "func": "sync_collect_and_accumulate_grads",
+         "duration_s": 1.72, "round": 1, "data_id": 0, "iteration": 0},
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fp:
+        for r in recs:
+            fp.write(json.dumps(r) + "\n")
+        path = fp.name
+    agg = load_agg_jsonl(path)
+    assert len(agg["step_timing"]) == 2, agg["step_timing"]
+    assert {e["func"] for e in agg["step_timing"]} == {"sync_collect_and_accumulate_grads"}
+
+
+def test_agg_step_timing_breakdown_parity():
+    """Aggregator-side analog of `step_timing_breakdown_parity`: matched
+    per-function distributions PASS; a genuine per-call cost gap (the
+    real-only `num_min_req=1` clamp calling `sync_collect_and_accumulate_grads`
+    once per message vs sim's bulk-drain-per-cycle) FAILs and is pinpointed
+    as `worst_func`, unlike the trainer-side rung this has NO real-only
+    exemption set -- the gap is exactly what this check exists to surface."""
+    from parity.checks import agg_step_timing_breakdown_parity
+
+    def _agg(func_durations: dict) -> dict:
+        return {"step_timing": [
+            {"func": f, "duration_s": d}
+            for f, durs in func_durations.items() for d in durs
+        ]}
+
+    # Matched: both sides see the same per-function cost distribution -> PASS.
+    matched = {"_aggregate_grads_sync": [0.51] * 20, "_distribute_weights_sync": [0.37] * 20}
+    res = agg_step_timing_breakdown_parity(_agg(matched), _agg(matched))
+    assert res["ok"], res
+
+    # Genuine divergence: real pays 10x per-message calls at ~1.69s each,
+    # sim bulk-drains once per cycle at ~3.48s -- distinct distributions, not
+    # exempted, so this must FAIL and name the divergent function.
+    real = {"sync_collect_and_accumulate_grads": [1.69] * 3350}
+    sim = {"sync_collect_and_accumulate_grads": [3.48] * 620}
+    res_bad = agg_step_timing_breakdown_parity(_agg(real), _agg(sim))
+    assert not res_bad["ok"], res_bad
+    assert res_bad["worst_func"] == "sync_collect_and_accumulate_grads"
+
+    # No step_timing telemetry on either side -> clean SKIP, not a crash.
+    res_skip = agg_step_timing_breakdown_parity({"step_timing": []}, {"step_timing": []})
+    assert res_skip["ok"] and res_skip.get("status") == "SKIP"
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
