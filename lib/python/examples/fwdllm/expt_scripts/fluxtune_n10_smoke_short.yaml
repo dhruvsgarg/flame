@@ -1,0 +1,119 @@
+# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
+# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
+# (FedFwd has no simulated-clock support yet).
+#
+# SHORT variant of fluxtune_n10_smoke.yaml -- IDENTICAL except max_runtime_s
+# (480s / 8min instead of 1800s / 30min) and the job id (so run dirs don't
+# collide). For a quick real-vs-sim perf comparison after a sim-side change
+# (e.g. the §6 Part 3 safe-fast-path gate fix, simulate_fwdllm.md §G) without
+# waiting a full 30 minutes -- pair with fluxtune_n10_smoke_sim_short.yaml.
+#
+# Uses the `fluxtune` baseline (async, async_oort selector, fedbuff with an
+# explicit learning_rate, 3-tier client_notify, fixed K/C i.e.
+# selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke_short.yaml
+
+experiments:
+  - name: fluxtune_n10_smoke_short
+    description: "FedFwd SHORT smoke (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, 8min budget). Quick real-vs-sim perf comparison."
+
+    baseline: fluxtune
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs. run_sequential.sh's --avail-trace
+        # patches trainer mode + client_notify + trackTrainerAvail together.
+        mode: syn_0
+      # FedFwd has no simulated-clock support; always real.
+      time_mode: real
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
+      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
+          # BIT-IDENTICAL to the grads (scripts/profile_jvp_opt.py). Cuts
+          # fluxtune's per-batch forward passes ~37% (25->20) + trainable-only
+          # FD, so GPU drops under the modeled mobile delay. Set true on BOTH
+          # real+sim (must match). Set false to revert to the un-optimized path.
+          jvp_perf_opt: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # Uniform/IID partition for smoke tests -- avoids the niid_label
+          # baseline default's data-skew confound while validating mechanics.
+          partition_method: uniform
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 3
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fluxtune_n10_smoke_short
+        hyperparameters:
+          rounds: 50  # short smoke run, not the full 300
+          # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
+          # 2026-07-11 -- real used to release early). Must match sim yaml.
+          inflight_residence: true
+          # 90s default evicted a genuinely-busy trainer (rounds incl.
+          # warmup up to ~108s). Workload knob, not a parity lever; must
+          # match sim yaml (§R, 2026-07-11).
+          send_timeout_wait_s: 300
+          # Async fedbuff: accept stale grads + down-weight by (V'-V), not reject
+          # (K-D13). Set identically real+sim; never a parity lever. camelCase
+          # MUST match the base key to override it — snake_case is a dead key
+          # that loses at pydantic resolution (K-D15).
+          stalenessPolicy: fedbuff
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 480  # ...or after 8 minutes wall time (SHORT variant)
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: uniform
+        selector:
+          kwargs:
+            # Scaled down from the baseline's n=150-ish defaults
+            # (c=15, aggGoal=5, minInitialTrainers=15) to fit 10 trainers.
+            # minInitialTrainers=10 = wait for all 10 smoke trainers to join.
+            # aggGoal is set once via the top-level `agg_goal: 3` above --
+            # the runner fans it into both this kwarg and
+            # hyperparameters.aggGoal so they can't drift apart; don't
+            # duplicate it here.
+            c: 10
+            minInitialTrainers: 10
+
+    execution:
+      # 8, not 1, even though this YAML's own default is 10 trainers --
+      # run_sequential.sh's --num-trainers commonly scales this up to 100+
+      # without a matching GPU bump (it has no num_gpus override of its
+      # own), and cramming 100 trainer processes onto 1 GPU OOMs almost
+      # immediately (see fluxtune_n10_smoke run 20260629_221116). Spreading
+      # across 8 GPUs even at the 10-trainer default is harmless headroom.
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false
