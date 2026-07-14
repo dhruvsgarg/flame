@@ -120,8 +120,10 @@ fixed (§G).
 
 Do this before any 7200s commitment. **Real only** — the momentum question is "does it stabilize training",
 not real<->sim parity, so sim adds nothing here (the `_sim_short[.yaml]`/`_sim_short_momentum.yaml` siblings
-still exist for later parity work, just not part of this A/B). 6 real configs total (3 baselines ×
-without/with momentum=0.9), split across 2 nodes by treatment group:
+still exist for later parity work, just not part of this A/B). All 12 short/momentum yamls (real+sim, all 3
+baselines, both legs) now carry `hyperparameters.seed: 1234` — same seed on both A/B legs, so selector/model-init
+RNG is controlled and momentum is the only thing that can differ between them; no separate seeded run needed.
+6 real configs total (3 baselines × without/with momentum=0.9), split across 2 nodes by treatment group:
 
 ```
 bash lib/python/examples/fwdllm/expt_scripts/run_momentum_ab_without.sh   # node A: momentum=0, all 3 baselines
@@ -441,12 +443,13 @@ F1-F15). No new fix; check that doc before re-opening fluxtune stability questio
 **Server-momentum (S1) landed, flag-gated, not yet run (07-14).** F8's undamped direct-SGD update is shared
 code across all 3 baselines (confirmed via log grep), so no baseline should be structurally disadvantaged by a
 fluxtune-only fix without justification. Fix: `_server_update_step` (heavy-ball momentum,
-`hyperparameters.server_momentum`, default 0.0 = byte-identical) in `FedSgdAggregator.aggregate()`; enabled only
-in fluxtune's yaml for now — 4 fresh unit tests + 2 short (8min) A/B yaml pairs
-(`fluxtune_n10_smoke_{,sim_}short_momentum.yaml`, momentum=0.9, vs the existing momentum=0 `_short.yaml` pair).
-fwdllm's own telemetry shows the same collapse signature early in round 1 (not yet confirmed position-locked
-like fluxtune's) — fluxtune-only is NOT settled; enabling it there too is one config change away if a longer
-run shows the same recurring pattern. 262 tests pass (`tests/mode -k fwdllm`).
+`hyperparameters.server_momentum`, default 0.0 = byte-identical) in `FedSgdAggregator.aggregate()` — 5 unit
+tests. Short (8min) real-only A/B pairs for **all 3 baselines** (`{fluxtune,fwdllm,fwdllm_plus}_n10_smoke_
+short[_momentum].yaml`, momentum=0.9 vs 0), all 12 short/sim/momentum yamls now seeded (`seed: 1234`, same both
+legs, no separate seeded run needed) — plus 2 node-split launcher scripts
+(`run_momentum_ab_{without,with}.sh`). fwdllm's own telemetry shows the same collapse signature early in round
+1 (not yet confirmed position-locked like fluxtune's) — fluxtune-only is NOT settled; the A/B pairs exist for
+all 3 baselines specifically so this is testable, not assumed. 262 tests pass (`tests/mode -k fwdllm`).
 
 **Reactive gate blocked real wall (Bug A, 07-13) — FIXED, VALIDATED 07-14.** Gate re-checked `earlier_stuck`
 after an unconditional blocking call even when already safe. Fix: `_sim_gate_is_safe` checks first, near-zero

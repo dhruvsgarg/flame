@@ -42,6 +42,7 @@ experiments:
         job:
           id: fwdllm_plus_n10_smoke_short
         hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs)
           rounds: 50
           inflight_residence: true
           max_data_id_progress: 9999

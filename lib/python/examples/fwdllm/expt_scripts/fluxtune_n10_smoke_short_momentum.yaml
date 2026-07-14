@@ -71,6 +71,7 @@ experiments:
           # yet tuned for this workload -- the point of this run is a first
           # A/B read, not a final setting.
           server_momentum: 0.9
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs)
           rounds: 50  # short smoke run, not the full 300
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.

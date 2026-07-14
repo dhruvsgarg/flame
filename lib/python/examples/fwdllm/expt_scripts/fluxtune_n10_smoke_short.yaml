@@ -72,6 +72,7 @@ experiments:
         job:
           id: fluxtune_n10_smoke_short
         hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs)
           rounds: 50  # short smoke run, not the full 300
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.
