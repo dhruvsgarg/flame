@@ -364,12 +364,23 @@ def _progress_axis(agg_rounds: list) -> str:
     """The run's true progress axis. Normal FL advances FL `round`; fwdllm holds
     `round` static (one model, grads aggregated in place) and advances committed
     `data_id`, so a round-keyed clock rung divides by a counter stuck at 1. Use
-    `round` when the run advances it (>1 distinct), else `data_id` when the fwdllm
-    cadence field `cycle_data_id` is present, else `round` -- async_cifar10 stays
-    round-keyed (byte-identical); only fwdllm re-keys."""
-    rounds = {e.get("round") for e in agg_rounds if e.get("round") is not None}
-    if len(rounds) > 1:
-        return "round"
+    `data_id` whenever the fwdllm cadence field `cycle_data_id` is present at all,
+    else `round` -- async_cifar10 stays round-keyed (byte-identical); only fwdllm
+    re-keys.
+
+    MUST decide the same way regardless of how far `round` itself got on this
+    particular side. The prior heuristic ("`round` if >1 distinct value seen")
+    picked axes INDEPENDENTLY per side (this fn is always called on one side's
+    events at a time) -- on a long enough run the fast side (sim) can complete a
+    full `total_data_bins`-length lap and tick `round` from 1->2 while the slow
+    side (real) never does, so sim got keyed on `round` (few, huge "advances"
+    bundling many commits) while real stayed keyed on `data_id` (many, small
+    advances) -- comparing incommensurate units (confirmed 2026-07-14, fwdllm/
+    fwdllm_plus 7200s runs: sim distinct rounds={1,2}, real={1}). Presence of
+    `cycle_data_id` is a per-baseline telemetry-schema property (true for both
+    real and sim in an fwdllm run, false for both in async_cifar10/felix), so
+    keying on it whenever present is decidable identically on both sides -- no
+    inter-side comparison needed, and no divergence possible."""
     if any(e.get("cycle_data_id") is not None for e in agg_rounds):
         return "data_id"
     return "round"
@@ -379,7 +390,19 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
     """{progress_unit -> last event on that unit (by ts)} on the given axis.
     Mirrors _per_round_last_event but keyed on the run's true progress axis
     (`round` or fwdllm's `cycle_data_id`), so the clock family measures
-    progress-per-time on the axis the run actually advances."""
+    progress-per-time on the axis the run actually advances.
+
+    `data_id` keys on `(round, cycle_data_id)`, not raw `cycle_data_id` alone:
+    `cycle_data_id` wraps mod `total_data_bins` every lap (a fresh pass over the
+    dataset bumps `round` and restarts data_id at 0), so a run long enough to
+    complete >=2 laps has multiple events sharing the same raw data_id value --
+    keying on the value alone silently collapses a lap-2 (more-trained) event
+    onto the same key as a lap-1 one and, once sorted by that raw value, produces
+    an out-of-time-order (even negative) "advance" (confirmed 2026-07-14: manual
+    single-key rebuild on the 7200s fwdllm sim run gave mean -0.55s). `round` is
+    itself monotonic non-decreasing and `cycle_data_id` is monotonic within a
+    round, so the composite tuple sorts in true chronological order with no need
+    to know `total_data_bins`."""
     if axis == "round":
         return _per_round_last_event(agg_rounds)
     out: dict = {}
@@ -387,8 +410,9 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
         k = e.get("cycle_data_id")
         if k is None:
             continue
-        if k not in out or e.get("ts", 0) > out[k].get("ts", 0):
-            out[k] = e
+        key = (e.get("round") or 0, k)
+        if key not in out or e.get("ts", 0) > out[key].get("ts", 0):
+            out[key] = e
     return out
 
 
@@ -1826,11 +1850,27 @@ def convergence_parity(real: dict, sim: dict,
 
     Horizon guard: on a sub-2h run a PASS is downgraded to LOW_CONF (the curves
     haven't diverged yet); a genuine FAIL still surfaces.
+
+    `data_id`-axis keys on `(round, data_id)`, not raw `data_id` alone: `data_id`
+    wraps mod `total_data_bins` every lap, so a run long enough for the fast side
+    to complete >=2 laps has multiple evals sharing a raw `data_id` value across
+    laps -- keying on the value alone lets a lap-2 (more-trained) eval silently
+    overwrite a lap-1 one in the dict comprehension, so the set-intersection with
+    the other side's (single-lap) keys compares MISMATCHED amounts of training
+    at the same nominal `data_id` (confirmed 2026-07-14: fwdllm/fwdllm_plus 7200s
+    sim evals hit round={1,2}, tail data_id values 2-6 belong to lap 2, not lap
+    1 -- real, capped at round=1, has only the lap-1 checkpoint at those ids).
+    The composite key naturally excludes sim's lap-2 evals from the intersection
+    (real never has a `(2, *)` key), comparing only genuinely matched progress.
     """
     def curve(agg_evals):
         axis = _eval_progress_axis(agg_evals)
-        return {e[axis]: {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
-                for e in agg_evals if e.get(axis) is not None}
+        if axis == "data_id":
+            return {(e.get("round") or 0, e["data_id"]):
+                     {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
+                    for e in agg_evals if e.get("data_id") is not None}
+        return {e["round"]: {"acc": e.get("test-accuracy"), "loss": e.get("test-loss")}
+                for e in agg_evals if e.get("round") is not None}
 
     rc = curve(real["agg_evals"])
     sc = curve(sim["agg_evals"])  # fix: no intermediate real assignment
@@ -2129,7 +2169,9 @@ def wall_disparity(real: dict, sim: dict) -> dict:
         sim_vclock = sim_by[k]["vclock_now"] - v0
         resid = abs(real_genuine - sim_vclock)
         residuals.append(resid)
-        per_unit[k] = round(resid, 2)
+        # JSON-safe key: axis=="data_id" keys on (round, data_id) tuples (§ lap
+        # disambiguation, _per_progress_last_event) which dict/json keys can't be.
+        per_unit[f"{k[0]}:{k[1]}" if isinstance(k, tuple) else k] = round(resid, 2)
     mean_resid = sum(residuals) / len(residuals)
     return {
         "ok": True,  # DIAG: informational, never gates the ladder
@@ -2350,7 +2392,11 @@ def terminal_state_parity(real: dict, sim: dict,
     # rounds for normal FL, committed data_ids for fwdllm (round static).
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                       _progress_axis(real["agg_rounds"])) else "round"
-    unit_key = "round" if axis == "round" else "cycle_data_id"
+    # data_id axis keys on (round, cycle_data_id) tuples (lap disambiguation,
+    # _per_progress_last_event) -- the per-event unit must be built the same way
+    # to test membership against sim_rounds_at_V/real_rounds_at_V below.
+    _unit = ((lambda e: e.get("round")) if axis == "round"
+             else (lambda e: (e.get("round") or 0, e.get("cycle_data_id"))))
     sim_by_round = _per_progress_last_event(sim["agg_rounds"], axis)
     real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
 
@@ -2362,7 +2408,7 @@ def terminal_state_parity(real: dict, sim: dict,
     def _trainers(agg_rounds, unit_set):
         ts = set()
         for e in agg_rounds:
-            if e.get(unit_key) in unit_set:
+            if _unit(e) in unit_set:
                 ts.update(e.get("contributing_trainers", []))
         return ts
 
@@ -3956,10 +4002,18 @@ def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
     asserted independently of accuracy.
 
     Horizon guard (see convergence_parity): sub-2h PASS → LOW_CONF; FAIL stands.
+
+    `data_id`-axis keys on `(round, data_id)`, not raw `data_id` alone -- same
+    lap-wraparound exposure as convergence_parity's curve(); see that
+    docstring. Mirrors its fix so C1/C2 can't silently disagree on which
+    checkpoints are "matched".
     """
     def _curve(evs):
         axis = _eval_progress_axis(evs)
-        return {e[axis]: e.get("test-loss") for e in evs if e.get(axis) is not None}
+        if axis == "data_id":
+            return {(e.get("round") or 0, e["data_id"]): e.get("test-loss")
+                    for e in evs if e.get("data_id") is not None}
+        return {e["round"]: e.get("test-loss") for e in evs if e.get("round") is not None}
 
     rc, sc = _curve(real["agg_evals"]), _curve(sim["agg_evals"])
     rounds = sorted(set(rc) & set(sc))

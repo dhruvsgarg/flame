@@ -29,15 +29,25 @@ from pathlib import Path
 
 
 def _find_run_dirs(experiments_dir: str, baseline_tag: str) -> tuple:
-    """Return (real_dir, sim_dir) by looking for latest real/sim pair matching baseline_tag."""
-    pattern_real = os.path.join(experiments_dir, f"*{baseline_tag}*real*")
-    pattern_sim = os.path.join(experiments_dir, f"*{baseline_tag}*sim*")
+    """Return (real_dir, sim_dir) by looking for latest real/sim pair matching baseline_tag.
+
+    Anchored on `_{tag}_n<digits>_` -- the exact run-name shape the launchers emit
+    (`parts = [run_key, f"n{n}", "smoke", ...]` in run_sequential.sh, same shape for
+    async_cifar10's launcher). A bare `*{tag}*` substring match is unsafe whenever one
+    baseline's tag is a strict prefix of another's (`fwdllm` vs `fwdllm_plus`) --
+    `*fwdllm*real*` also matches `..._fwdllm_plus_..._real`, and `sorted()[-1]` would
+    silently pick the fwdllm_plus pair for the `fwdllm` tag whenever both baselines'
+    run dirs coexist in the same experiments dir (both examples' baselines follow
+    this shape, so the anchor is not fwdllm-specific).
+    """
+    pattern_real = os.path.join(experiments_dir, f"*_{baseline_tag}_n[0-9]*real*")
+    pattern_sim = os.path.join(experiments_dir, f"*_{baseline_tag}_n[0-9]*sim*")
     reals = sorted(glob.glob(pattern_real))
     sims = sorted(glob.glob(pattern_sim))
     if not reals:
-        raise FileNotFoundError(f"No real run dir matching *{baseline_tag}*real* in {experiments_dir}")
+        raise FileNotFoundError(f"No real run dir matching *_{baseline_tag}_n<N>_*real* in {experiments_dir}")
     if not sims:
-        raise FileNotFoundError(f"No sim run dir matching *{baseline_tag}*sim* in {experiments_dir}")
+        raise FileNotFoundError(f"No sim run dir matching *_{baseline_tag}_n<N>_*sim* in {experiments_dir}")
     return reals[-1], sims[-1]
 
 

@@ -464,10 +464,11 @@ class TestTerminalStateParity:
         assert not r["ok"], r
 
 
-def _fwd_round(data_id, contributing, vclock=None, ts=0.0):
-    """fwdllm-style agg_round: `round` static, progress on the committed
-    `data_id` axis (cycle_data_id)."""
-    e = {"event": "agg_round", "round": 1, "ts": ts,
+def _fwd_round(data_id, contributing, vclock=None, ts=0.0, round_=1):
+    """fwdllm-style agg_round: `round` static (by default), progress on the
+    committed `data_id` axis (cycle_data_id). `round_` lets a caller simulate a
+    run long enough to complete a lap over `total_data_bins` and tick `round`."""
+    e = {"event": "agg_round", "round": round_, "ts": ts,
          "cycle_data_id": data_id, "var_good_enough": True,
          "contributing_trainers": contributing, "staleness": [0],
          "agg_goal_count": 1}
@@ -584,6 +585,67 @@ class TestProgressAxisRekey:
                                           ts=float(d)) for d in range(5)])
         r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
         assert r["sim_mean_advance_s"] == 4.0, r
+
+    def test_axis_and_lap_disambiguation_when_only_sim_completes_a_lap(self):
+        """Regression, 2026-07-14 7200s fwdllm/fwdllm_plus runs: on a long enough
+        run the fast side (sim) can complete a full total_data_bins-length lap
+        (`round` ticks 1->2, `cycle_data_id` wraps back to 0) while the slow side
+        (real) never leaves round=1. The old axis heuristic picked per-side
+        ("round" if >1 distinct value seen on THAT side), so sim got keyed on
+        `round` (one giant "advance" bundling ~10 commits) while real stayed on
+        `data_id` (9 small ones) -- incommensurate units, both a spurious FAIL
+        and a fabricated overhead_residual. Both sides must key on `data_id`
+        whenever it's present at all, and the (round, data_id) composite key
+        must keep sim's two laps distinct instead of colliding on raw value."""
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
+                                for d in range(10)])
+        sim_events = (
+            [_fwd_round(d, ["a"], vclock=float(d * 10), ts=float(d), round_=1)
+             for d in range(10)]
+            + [_fwd_round(d, ["a"], vclock=float((d + 10) * 10), ts=float(d + 10),
+                          round_=2)
+               for d in range(10)]
+        )
+        sim = _agg(agg_rounds=sim_events)
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert r["n_real_rounds"] == 9, r
+        assert r["n_sim_rounds"] == 19, r
+        assert r["ok"], r
+        assert r["sim_mean_advance_s"] == pytest.approx(10.0), r
+        assert r["real_mean_advance_s"] == pytest.approx(10.0), r
+
+
+class TestConvergenceLapDisambiguation:
+    """convergence_parity (C1/C2) has the same raw-data_id-collision exposure as
+    the advance rungs (TestProgressAxisRekey): 2026-07-14 fwdllm/fwdllm_plus 7200s
+    runs showed sim eval events spanning round={1,2} while real stayed at
+    round=1. Keying the eval curve on raw `data_id` alone lets a sim lap-2
+    (more-trained) checkpoint silently overwrite lap-1's entry at the same
+    nominal data_id, so the real<->sim comparison at that key mismatches training
+    amount. The (round, data_id) composite key excludes sim's lap-2 evals from
+    the real/sim key intersection (real has no `(2, *)` key), comparing only
+    genuinely matched progress."""
+
+    def test_sim_lap2_eval_does_not_leak_into_lap1_comparison(self):
+        real = _agg(agg_evals=[
+            {"event": "agg_eval", "round": 1, "data_id": d,
+             "test-accuracy": 0.5 + d * 0.01, "test-loss": 0.1}
+            for d in range(10)
+        ])
+        sim = _agg(agg_evals=(
+            [{"event": "agg_eval", "round": 1, "data_id": d,
+              "test-accuracy": 0.5 + d * 0.01, "test-loss": 0.1}
+             for d in range(10)]
+            # lap 2: same nominal data_id values, much further trained -- must
+            # NOT be compared against real's lap-1 checkpoints at those ids.
+            + [{"event": "agg_eval", "round": 2, "data_id": d,
+                "test-accuracy": 0.99, "test-loss": 0.01}
+               for d in range(10)]
+        ))
+        r = pc.convergence_parity(real, sim, acc_tol=0.05)
+        assert r["ok"], r
+        assert r["avg_accuracy_diff"] == pytest.approx(0.0), r
+        assert r["eval_rounds_compared"] == 10, r
 
 
 class TestWallDisparity:
