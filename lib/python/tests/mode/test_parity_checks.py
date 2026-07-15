@@ -1176,58 +1176,79 @@ def _trainers_with_rounds(counts):
             for sid, n in counts.items()}
 
 
-def _dispatch(peer, ts, payload_kind="weights"):
+def _dispatch(peer, ts, payload_kind="weights", version_key=(0, 0)):
+    mv, it = version_key
     return {"event": "comm", "direction": "agg_to_trainer", "peer_id": peer,
-            "ts": ts, "payload_kind": payload_kind}
+            "ts": ts, "payload_kind": payload_kind,
+            "model_version": mv, "iteration_per_data_id": it}
 
 
 def _agg_comm(dispatches, resolves=None):
-    """`dispatches` = list of (peer, ts) or (peer, ts, payload_kind) ->
-    comm_dispatch. `resolves` = list of (peer, ts) -> agg_rounds entries
-    whose contributor_intervals name that peer (the variance-gate evaluation
-    that actually consumes the trainer's outstanding contribution). Always
-    tags is_async=True (R1 is async-only, see inflight_overlap_parity) even
-    with no resolves, via a marker round with no contributor."""
+    """`dispatches` = list of (peer, ts), (peer, ts, payload_kind), or
+    (peer, ts, payload_kind, version_key) -> comm_dispatch, each tagged with
+    its own `version_key` = (model_version, iteration_per_data_id) (defaults
+    to (0, 0) if omitted). `resolves` = list of (peer, ts) or
+    (peer, ts, version_key) -> agg_rounds entries whose contributor_intervals
+    name that peer via `dispatch_version_key` (see `_dispatch_resolve_overlap`,
+    2026-07-15: R1 is scoped to version_key, not "any unresolved dispatch" --
+    a resolve only clears the SAME version_key it names). Always tags
+    is_async=True (R1 is async-only, see inflight_overlap_parity) even with no
+    resolves, via a marker round with no contributor."""
     d = _agg()
     d["comm_dispatch"] = [_dispatch(*args) for args in dispatches]
-    d["agg_rounds"] = [{"event": "agg_round", "ts": 0.0, "is_async": True}] + [
-        {"event": "agg_round", "ts": ts, "is_async": True,
-         "contributor_intervals": [{"end": peer}]}
-        for (peer, ts) in (resolves or [])
-    ]
+    resolve_rounds = []
+    for r in (resolves or []):
+        peer, ts = r[0], r[1]
+        vk = r[2] if len(r) > 2 else (0, 0)
+        resolve_rounds.append({
+            "event": "agg_round", "ts": ts, "is_async": True,
+            "contributor_intervals": [{"end": peer, "dispatch_version_key": list(vk)}],
+        })
+    d["agg_rounds"] = [{"event": "agg_round", "ts": 0.0, "is_async": True}] + resolve_rounds
     return d
 
 
 class TestR1InflightOverlap:
-    """R1 [INV]: no trainer may have two simultaneously-UNRESOLVED dispatches
-    (a DISPATCH before the trainer's prior dispatch was RESOLVED by a
-    variance-gate evaluation). NOT the trainer's own reply landing: confirmed
-    2026-07-15 by tracing one trainer's full dispatch/reply/eval timeline
-    end-to-end that real always orders eval-before-next-dispatch (clean by
-    channel construction -- real's network latency means the async
-    variance-gate evaluation has usually already run by the time a reply
-    lands) while sim's near-zero-latency control path can dispatch again
-    before that evaluation catches up -- a genuine sim-only race. `var_bad`
-    ("keep training, submit a new round of perturbations") counts as a real
-    dispatch too, not a passive ping -- confirmed by the same trace."""
+    """R1 [INV]: no trainer may have the SAME version_key
+    (model_version, iteration_per_data_id) outstanding twice -- a DISPATCH
+    for a version_key while an EARLIER dispatch for that EXACT version_key
+    hasn't yet been RESOLVED by a variance-gate evaluation naming it via
+    `dispatch_version_key`. Redefined 2026-07-15 from an earlier "any
+    unresolved dispatch" definition (dispatch->ANY resolve, ignoring
+    version_key) which wrongly flagged fluxtune's FedBuff carried-surplus
+    pattern: a trainer's stale grad (staleness_policy=fedbuff) is legitimately
+    consumed -- down-weighted, principle #17 -- by a LATER cycle's evaluation
+    while the trainer is handed genuinely NEW work (a different version_key)
+    in parallel. Confirmed live: 0/882 violating instances under the old
+    definition were same-version_key; real and sim carry near-identical
+    staleness distributions (~62% >=1 each). The version_key-scoped
+    definition subsumes the still-earlier REPLY-based rejection too:
+    `var_bad` resampling naturally gets a fresh `iteration_per_data_id`, so
+    it's correctly never flagged without needing a special-case exemption."""
 
     def test_dispatch_after_resolve_passes(self):
-        # A and B are each re-dispatched a 2nd time, but only AFTER a
-        # variance-gate evaluation resolved their 1st contribution.
+        # A and B are each re-dispatched a 2nd time (a NEW version_key), but
+        # only AFTER a variance-gate evaluation resolved their 1st.
         agg = _agg_comm(
-            dispatches=[("A", 0.0), ("B", 0.0), ("A", 6.0), ("B", 6.0)],
-            resolves=[("A", 5.0), ("B", 5.0)],
+            dispatches=[("A", 0.0, "weights", (0, 0)), ("B", 0.0, "weights", (0, 0)),
+                        ("A", 6.0, "weights", (1, 0)), ("B", 6.0, "weights", (1, 0))],
+            resolves=[("A", 5.0, (0, 0)), ("B", 5.0, (0, 0))],
         )
         r = pc.inflight_overlap_parity(agg, agg)
         assert r["ok"]
         assert r["real_overlap_frac"] == 0.0 and r["sim_overlap_frac"] == 0.0
 
     def test_sim_overlap_fails_with_clean_real(self):
-        # Real: A's 2nd dispatch (6.0) is after the eval resolving the 1st (5.0) -> clean.
-        real_agg = _agg_comm(dispatches=[("A", 0.0), ("A", 6.0)], resolves=[("A", 5.0)])
-        # Sim: A re-dispatched at 2.0 BEFORE the eval resolving its 1st
-        # dispatch (5.0) ran -> overlap = the genuine residence violation.
-        sim_agg = _agg_comm(dispatches=[("A", 0.0), ("A", 2.0)], resolves=[("A", 5.0)])
+        # Real: A's 2nd dispatch (6.0, SAME version_key (0,0)) comes after
+        # the eval resolving the 1st (5.0) -> clean.
+        real_agg = _agg_comm(dispatches=[("A", 0.0, "weights", (0, 0)),
+                                          ("A", 6.0, "weights", (0, 0))],
+                              resolves=[("A", 5.0, (0, 0))])
+        # Sim: A re-dispatched at 2.0 for the SAME version_key (0,0) BEFORE
+        # the eval resolving it (5.0) ran -> overlap = genuine duplicate work.
+        sim_agg = _agg_comm(dispatches=[("A", 0.0, "weights", (0, 0)),
+                                         ("A", 2.0, "weights", (0, 0))],
+                             resolves=[("A", 5.0, (0, 0))])
         r = pc.inflight_overlap_parity(real_agg, sim_agg)
         assert not r["ok"]
         assert r["real_overlap_frac"] == 0.0
@@ -1239,14 +1260,32 @@ class TestR1InflightOverlap:
         r = pc.inflight_overlap_parity(agg, agg)
         assert r.get("status") == "SKIP" and r["ok"]
 
-    def test_var_bad_is_a_real_dispatch(self):
+    def test_var_bad_same_version_key_is_a_real_violation(self):
         # var_bad IS new work ("keep training, submit a new round of
         # perturbations against the current model"), not a passive ping --
-        # two of them with no intervening resolve is a genuine violation.
-        agg = _agg_comm(dispatches=[("A", 0.0, "var_bad"), ("A", 2.0, "var_bad")])
+        # two of them for the SAME version_key with no intervening resolve
+        # is a genuine violation (duplicate work on the same iteration).
+        agg = _agg_comm(dispatches=[("A", 0.0, "var_bad", (0, 0)),
+                                     ("A", 2.0, "var_bad", (0, 0))])
         r = pc.inflight_overlap_parity(agg, agg)
         assert not r["ok"]
         assert r["sim_overlap_frac"] > 0.0
+
+    def test_fedbuff_carried_surplus_new_version_key_is_not_a_violation(self):
+        # The 2026-07-15 root cause this rung was redefined for: a trainer's
+        # stale grad (dispatched at version_key (56, 12)) hasn't been
+        # resolved yet when the trainer is handed genuinely NEW work for the
+        # CURRENT cycle (57, 10) -- FedBuff legitimately consumes the stale
+        # grad later (down-weighted by staleness), it is NOT duplicate work,
+        # so this must NOT be flagged even with zero intervening resolves.
+        agg = _agg_comm(
+            dispatches=[("A", 0.0, "weights", (56, 12)),
+                        ("A", 41.7, "weights", (57, 10))],
+            resolves=[("A", 44.2, (56, 12))],
+        )
+        r = pc.inflight_overlap_parity(agg, agg)
+        assert r["ok"]
+        assert r["real_overlap_frac"] == 0.0 and r["sim_overlap_frac"] == 0.0
 
 
 class TestW1ComputeConservation:

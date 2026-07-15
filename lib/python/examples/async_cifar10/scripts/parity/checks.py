@@ -4616,60 +4616,72 @@ def _overlap_fraction(cycles: list) -> tuple:
 
 
 def _dispatch_resolve_overlap(agg: dict) -> tuple:
-    """(overlap_frac, n_dispatches, n_trainers) over per-trainer DISPATCH/RESOLVE
-    timelines.
+    """(overlap_frac, n_dispatches, n_trainers) over per-trainer, PER-VERSION_KEY
+    DISPATCH/RESOLVE timelines.
 
-    DISPATCH = a `comm` `agg_to_trainer` message, EITHER `payload_kind`
-    ("weights" = new round; "var_bad" = keep training, submit a NEW round of
-    perturbations against the current model -- also genuine new work, not a
-    passive ping: confirmed 2026-07-15 by tracing one trainer's full
-    dispatch/reply/eval timeline end to end). RESOLVE = an `agg_round`
-    (variance-gate evaluation, pass OR fail) that lists this trainer in
-    `contributor_intervals` -- the event that actually consumes/evaluates the
-    trainer's outstanding contribution, whether or not the fail branch later
-    reuses the grad from `cached_v`. A dispatch "overlaps" if it lands before
-    the trainer's prior dispatch has been RESOLVED this way.
+    DISPATCH = a `comm` `agg_to_trainer` message, tagged with its own
+    `version_key` = `(model_version, iteration_per_data_id)` (principle #14 --
+    the only version-identity vocabulary). RESOLVE = an `agg_round`
+    (variance-gate evaluation) whose `contributor_intervals` entry for this
+    trainer carries `dispatch_version_key` -- the SAME tuple identifying which
+    outstanding dispatch it consumed. A dispatch "overlaps" if the trainer
+    already has an UNRESOLVED dispatch for that EXACT SAME version_key --
+    i.e. genuine duplicate work, the aggregator asking a trainer to redo
+    something it's already computing/computed. A dispatch for a DIFFERENT
+    version_key while an older one is still unresolved is NOT an overlap: in
+    fluxtune's FedBuff design (`staleness_policy=fedbuff`), a late/stale grad
+    is legitimately consumed (down-weighted by `rate=1/sqrt(1+staleness)`,
+    principle #17's carried-surplus commits) while the freed trainer is handed
+    genuinely NEW work for the CURRENT cycle in parallel -- confirmed
+    2026-07-15 by tracing one instance end to end (trainer dispatched at
+    version_key (56,12), its late grad folded staleness=1 into evaluating
+    cycle (57,10), which is exactly the NEW version_key it was redispatched
+    for) and by an exhaustive check (0/882 violating instances on a live
+    fluxtune run were same-version_key; real and sim carry near-identical
+    staleness distributions, ~62% >=1 each -- FedBuff tolerating staleness
+    symmetrically, not sim racing ahead algorithmically).
 
-    Deliberately NOT the trainer's own `trainer_to_agg` reply: confirmed
-    2026-07-15 (one full end-to-end trace, real vs sim) that REAL always
-    orders RESOLVE before its next DISPATCH for a trainer (clean by channel
-    construction -- the aggregator's per-message reply handler in async_oort's
-    `_handle_send_state` re-dispatches synchronously, but real's network
-    latency means the async variance-gate evaluation has usually already run
-    by the time a reply lands), while SIM's near-zero-latency control path can
-    dispatch again before that evaluation has caught up -- a genuine sim-only
-    race, not the reply/re-sampling design pattern earlier (wrongly) assumed
-    here. 0.0 = no trainer ever had two simultaneously-unresolved dispatches.
+    An EARLIER version of this rung (dispatch -> ANY resolve, no version_key
+    match) wrongly flagged this FedBuff carried-surplus pattern as a
+    residence violation (dispatch->RESOLVE, 07-15) -- superseded by this
+    version_key-scoped definition, which subsumes that fix's intent (still
+    correctly ignores `var_bad` legitimate resampling, now via a differing
+    `iteration_per_data_id` rather than via not checking at all) while no
+    longer flagging FedBuff's intended stale-accept-and-downweight behavior.
+    0.0 = no trainer ever had the SAME version_key outstanding twice.
     """
     by_end: dict = {}
     for e in agg.get("comm_dispatch", []):
         peer = e.get("peer_id")
         if peer is None:
             continue
-        by_end.setdefault(peer, []).append(("dispatch", float(e["ts"])))
+        vk = (e.get("model_version"), e.get("iteration_per_data_id"))
+        by_end.setdefault(peer, []).append(("dispatch", float(e["ts"]), vk))
     for e in agg.get("agg_rounds", []):
         for iv in (e.get("contributor_intervals") or []):
             end = iv.get("end")
             if end is None:
                 continue
-            by_end.setdefault(end, []).append(("resolve", float(e["ts"])))
+            dvk = iv.get("dispatch_version_key")
+            vk = tuple(dvk) if dvk is not None else None
+            by_end.setdefault(end, []).append(("resolve", float(e["ts"]), vk))
 
     n_dispatches = 0
     n_overlap = 0
     n_trainers = 0
     for events in by_end.values():
         events.sort(key=lambda x: x[1])
-        outstanding = False
+        outstanding: set = set()
         saw_dispatch = False
-        for kind, _ts in events:
+        for kind, _ts, vk in events:
             if kind == "dispatch":
                 saw_dispatch = True
                 n_dispatches += 1
-                if outstanding:
+                if vk in outstanding:
                     n_overlap += 1
-                outstanding = True
+                outstanding.add(vk)
             else:  # resolve
-                outstanding = False
+                outstanding.discard(vk)
         if saw_dispatch:
             n_trainers += 1
     frac = (n_overlap / n_dispatches) if n_dispatches else 0.0
@@ -4682,14 +4694,15 @@ def _is_async_run(agg: dict) -> bool:
 
 def inflight_overlap_parity(real_agg: dict, sim_agg: dict,
                             tol_frac: float = 0.02) -> dict:
-    """R1 [INV]: no trainer ever has two simultaneously-UNRESOLVED dispatches.
+    """R1 [INV]: no trainer ever has the SAME version_key outstanding twice.
 
-    ASYNC baselines (fluxtune) only. Per-trainer DISPATCH->RESOLVE timelines,
-    where RESOLVE is the variance-gate evaluation (agg_round) that consumes
-    the trainer's outstanding contribution -- NOT its own reply arriving (see
-    `_dispatch_resolve_overlap` for why: confirmed 2026-07-15 that using the
-    reply as the release signal masks a genuine sim-only race). Real
-    satisfies this by construction (~0%); sim must too. Checked per mode --
+    ASYNC baselines (fluxtune) only. Per-trainer, per-`version_key`
+    DISPATCH->RESOLVE timelines (see `_dispatch_resolve_overlap` for the
+    2026-07-15 version_key-scoped redefinition and why the broader
+    any-unresolved-dispatch definition wrongly flagged FedBuff's intended
+    stale-accept-and-downweight behavior). Real and sim should both read ~0%
+    -- neither mode should ever ask a trainer to redo the exact same unit of
+    work while an earlier copy of it is still outstanding. Checked per mode --
     both under tol_frac.
 
     SYNC baselines (fwdllm/fwdllm_plus) SKIP: R1 is specifically about the
@@ -4720,9 +4733,11 @@ def inflight_overlap_parity(real_agg: dict, sim_agg: dict,
         "n_real_trainers": r_trainers,
         "n_sim_trainers": s_trainers,
         "interpretation": (
-            f"real {r_frac:.1%} / sim {s_frac:.1%} of dispatches land while "
-            f"the same trainer's prior dispatch hasn't yet been resolved by a "
-            f"variance-gate evaluation; >0 = a genuine residence violation."
+            f"real {r_frac:.1%} / sim {s_frac:.1%} of dispatches ask a trainer "
+            f"to redo the SAME (model_version, iteration_per_data_id) it "
+            f"already has an unresolved dispatch for; >0 = genuine duplicate "
+            f"work, a residence violation (a stale-but-different version_key "
+            f"redispatch, e.g. FedBuff carried-surplus, is NOT flagged here)."
         ),
     }
 
