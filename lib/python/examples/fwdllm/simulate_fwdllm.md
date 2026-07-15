@@ -42,46 +42,36 @@ check it BEFORE opening a new stability investigation here (§G, 07-14 session 7
 
 ---
 
-## §A  Current status — 2026-07-14, 7200s baseline-calibrated runs (all 3, one scoreboard)
+## §A  Current status — 2026-07-14, gated on a fresh 3h re-run post-RNG-fix
 
-**Basis:** 7200s real+sim pairs, per-baseline `training_delay_factor` from §O
-(`--delays on --num-gpus 8`; fluxtune `--delay-divisor 0.48`, fwdllm/fwdllm_plus
-`--delay-divisor 1.63`) — `run_20260714_002901` through `run_20260714_052349`.
-Parity reports: `experiments/_parity_reports/parity_{fwdllm,fwdllm_plus,fluxtune}
-_syn_0_20260714_LATEST.json`, generated with **two parity-CLI bugs fixed** this
-pass (both landed, tested, see §G) — the scoreboard below is post-fix and
-trustworthy:
-1. `scripts.parity.cli --batch`'s glob matched `fwdllm_plus` for the `fwdllm` tag
-   too (`fwdllm` is a strict prefix), silently double-reporting fwdllm_plus's
-   numbers under the fwdllm label whenever both baselines' run dirs coexisted.
-2. `_progress_axis()` (`scripts/parity/checks.py`) picked `round` vs `data_id`
-   independently per side, and raw `cycle_data_id` collided across laps — see the
-   §G entries for the full mechanism. This was corrupting `overhead_residual`/
-   `per_round_advance`/`throughput`/`terminal_state`/`total_commits`/`convergence`
-   for fwdllm and fwdllm_plus specifically (fluxtune was unaffected — it never
-   completes a lap at this scale). **Re-run after the fix**: those rungs now FAIL
-   with sane, comparable numbers instead of the earlier degenerate ones (e.g.
-   fwdllm's `overhead_residual` went from a nonsensical `sim=572.8s/real=37.7s`
-   to a genuine `sim=45.5s/real=37.7s`, 20.6% rel) — a real finding, not an
-   artifact (below).
+**Basis:** the 7200s scoreboard below (`run_20260714_002901`–`_052349`, `--delays on --num-gpus 8`,
+fluxtune `--delay-divisor 0.48` / fwdllm+plus `--delay-divisor 1.63`, §O) was generated with the two
+parity-CLI bugs fixed (batch-glob tag collision; `_progress_axis()` per-side/lap-collision bug — both
+landed+tested, §G) but **before** the selector RNG-order fix (§G) landed. That fix makes real/sim pick
+the same trainers in the same dispatch order under a matched seed. **Working hypothesis, not yet
+validated:** a divergent dispatch order let the two runs' trajectories drift, which both (a) drives
+more sim variance-gate retries → `overhead_residual`'s `v1_iter_per_data_id`, and (b) changes how much
+gradient work sim does per wall-second at matched vclock budget → the `C1` accuracy gap. The table
+below predates the fix — the 3h re-run (commands at the end of this section) is the first test of
+whether it moves.
 
-| baseline | `sim_rate` | enforced | verdict |
-|---|---|---|---|
-| **fluxtune** (async) | **1.82×** (was 0.97× pre-fix) | 52/64 pass · 12 fail · 3 warn · 17 skip | Bug-A gate fix (§G) confirmed real: sim_rate roughly doubled. Still trails fwdllm's (lower, recalibrated) rate. Root: `overhead_residual` 19.2%, `preferred_duration` 50.7pp, `step_timing_breakdown`, `g1_grad_norm`. |
-| **fwdllm** (sync) | **2.46×** (was 5.71× at 1200s/factor 0.5) | 51/63 pass · 12 fail · 1 warn · 20 skip | sim_rate drop is EXPECTED (§O recalibration, not a regression — below). Zero `[TIMING_OVERRUN]` in 3350 real commits. Root: `overhead_residual` 20.6% (shared with the other two, see below), `phase_weights_to_ram` (ms-scale, low practical weight), `step_timing_breakdown`. |
-| **fwdllm_plus** (sync) | **2.47×** | 52/63 pass · 11 fail · 1 warn · 20 skip | Same recalibration-driven sim_rate drop as fwdllm. Root: `overhead_residual` 21.5% (shared), `step_timing_breakdown`. |
+| baseline | `sim_rate` | verdict (pre-RNG-fix) |
+|---|---|---|
+| **fluxtune** (async) | 1.82× | 52/64 pass · 12 fail · 3 warn · 17 skip — root: `overhead_residual` 19.2%, `preferred_duration` 50.7pp, `step_timing_breakdown`, `g1_grad_norm` |
+| **fwdllm** (sync) | 2.46× | 51/63 pass · 12 fail · 1 warn · 20 skip — root: `overhead_residual` 20.6%, `phase_weights_to_ram`, `step_timing_breakdown` |
+| **fwdllm_plus** (sync) | 2.47× | 52/63 pass · 11 fail · 1 warn · 20 skip — root: `overhead_residual` 21.5%, `step_timing_breakdown` |
 
-### `overhead_residual` — RESOLVED (sessions 5-7, 07-14)
+sim_rate drop vs the old 1200s/factor-0.5 numbers is EXPECTED (§O recalibration, not a regression). Zero
+`[TIMING_OVERRUN]` across 6,000+ real commits combined, including fwdllm/plus's thin (+0.13s) fast-class
+margin — reconfirmed clean on a second, independent run since.
 
-All three show ~17-21%, two unrelated mechanisms:
-- **fluxtune** (19.2%, real>sim): the classic gap this rung was built for — real pays per-commit MQTT/dispatch
-  overhead sim skips by design (§F #1). Just over tolerance; same class as felix/refl/oort's smaller gaps.
-- **fwdllm/fwdllm_plus** (20-21%, sim>real): fully explained by `v1_iter_per_data_id` — real/sim are two
-  independently-unseeded runs whose trajectories drift apart late in the run, so sim needs more variance-gate
-  retries per `data_id`, and each retry costs a fixed ~11s barrier cycle. Confirmed: `max(trainer_speed)` itself
-  is mode-invariant once iteration-count is held fixed (real 11.23s vs sim 11.04s, 1.6% apart, n=72 matched
-  cycles) — the gap is purely the retry-COUNT variable, not a clock-formula defect. No code change; principle #1
-  ("never put overhead on the vclock") stands.
+### `overhead_residual` — two unrelated mechanisms, root-caused not yet fixed in code
+- **fluxtune** (19.2%, real>sim): classic real-transport overhead sim skips by design (§F#1) — just over
+  tolerance, same class as felix/refl/oort's smaller gaps.
+- **fwdllm/fwdllm_plus** (20-21%, sim>real): `v1_iter_per_data_id` — sim needs more variance-gate retries
+  per `data_id` than real, ~11s/retry. Confirmed NOT a clock-formula defect: `max(trainer_speed)` itself is
+  mode-invariant once iteration-count is held fixed (real 11.23s vs sim 11.04s, 1.6% apart, n=72 matched
+  cycles) — purely a retry-COUNT divergence, and a candidate for the RNG-order fix to shrink (above).
 
 `step_timing` breakdown (aggregator's own, now checked via `agg_step_timing_breakdown`, §G):
 
@@ -98,89 +88,61 @@ per lap, and bulk-collecting risks stranding messages (same hazard `drain_ready`
 validation, not attempted blind. The log-volume half of the gap (not the lap coupling) was cheap to cut and is
 fixed (§G).
 
-### Session 8 (07-14) — momentum A/B run + RNG-order bug found. PAUSED, parity is next priority.
+### Session 8 (07-14) — RNG-order bug found+fixed (§G); momentum PAUSED
 
-**Momentum A/B (4h, N=100):** `server_momentum=0.9` **diverges to NaN loss by `data_id` 73**; no-momentum leg
-healthy (acc 0.35→0.86). Root-caused and written up in `fluxtune_contributions.md` §8.2 S1 (REFUTED as
-heavy-ball; needs variance-normalized step or Polyak/EMA instead). **S1/S2/S3 all PAUSED** — momentum work
-does not resume until Phase-1 parity closes.
+Momentum A/B (4h, N=100) surfaced `server_momentum=0.9` diverging to NaN loss by `data_id` 73 (no-momentum
+leg healthy, 0.35→0.86) — root-caused in `fluxtune_contributions.md` §8.2 S1 (REFUTED as heavy-ball, needs
+variance-normalized step or Polyak/EMA). **S1/S2/S3 PAUSED** until Phase-1 parity closes. While diffing
+that A/B's `selection` telemetry, found the RNG-order bug (dispatch order leaked through
+`PYTHONHASHSEED` despite a matched seed) — fixed, see §G for the mechanism. Directly matters for parity:
+it would have inflated the seeded real↔real "GPU-nondeterminism floor" measurement and broken bit-for-bit
+SIM↔SIM reproducibility (principle #12).
 
-**RNG-order bug — FOUND + FIXED.** While diffing the two A/B runs' `selection` telemetry (same
-`hyperparameters.seed=1234` both legs): the chosen **set** of trainers matched exactly (fingerprints
-identical) but the **dispatch order** in the `chosen` list did not. Root: `select_random` (`async_oort.py`,
-`oort.py`, `async_random.py`) fed `_pyrng.sample(...)`'s deterministically-ordered output through a bare
-`set()` before returning it; Python randomizes string-hash iteration order per-process
-(`PYTHONHASHSEED`, confirmed active, not pinned anywhere in the launch scripts), independent of the seed —
-same trainers, different order every launch. Fix: `set()` → `dict.fromkeys()` (preserves RNG order, still
-dedupes) at all 3 sites. New cross-process regression test
-(`tests/selector/test_selection_determinism.py::TestSelectRandomOrderDeterminism`, spawns subprocesses under
-different `PYTHONHASHSEED` — a same-process test can't see this, hash seed is fixed per-process) fails on the
-old code, passes on the fix. **This directly matters for parity**: it was silently inflating whatever the
-planned seeded real↔real pair (item 3 below) would have reported as "GPU-nondeterminism floor," and would
-have broken bit-for-bit SIM↔SIM reproducibility outright (principle #12). Landed 07-14, `pytest
-tests/selector/` 193/193 pass.
+### Next decisions — priority order
 
-### Next decisions before the next run — priority order
+1. **NEXT.** Re-run the 3h scoreboard (commands below) now the RNG-order fix is in — first test of
+   whether it closes `overhead_residual`/`C1` for fwdllm/fwdllm_plus. Watch `round_threshold` +
+   duration-population diff for fluxtune's `preferred_duration` in the same run (below).
+2. `sim_sct_ordered_drain` A/B (fluxtune only, below) — unexercised since the Bug-A gate fix.
+3. felix (async_cifar10) 46/46 reconfirmation (deferred repeatedly) + C1/C2 convergence at matched
+   `data_id` — gates Phase 2.
+4. Operator-run seeded real↔real pair (`*_seeded.yaml`s) — GPU-nondeterminism floor, now meaningful with
+   dispatch order deterministic.
+5. **DEFERRED, not dropped:** momentum (S1-S3) and fluxtune server-optimizer retry (Adam-style, not
+   heavy-ball) — see `fluxtune_contributions.md` §8.2. Resume only after Phase-1 parity (§E) closes.
 
-1. **NEXT.** Operator-run seeded real↔real pair (`*_seeded.yaml`s, §G) now that the RNG-order bug is fixed —
-   this is the first clean measurement of the actual GPU-nondeterminism floor.
-2. Re-run the 7200s scoreboard with `agg_step_timing_breakdown` active + trimmed logging for a clean post-fix
-   baseline.
-3. `sim_sct_ordered_drain` A/B (below), felix (async_cifar10) 46/46 re-confirmation (deferred repeatedly),
-   C1/C2 convergence at matched `data_id` — then gate to Phase 2 (unavailability).
-4. **DEFERRED, not dropped:** fluxtune server-optimizer (S1 retry, Adam-style not heavy-ball) — see
-   `fluxtune_contributions.md` §8.2. Resume only after Phase-1 parity exit criteria (§E) are met.
+### 3h (10800s) two-node parity re-run — commands
 
-### Short-run iteration loop (now) — short run → check logs/telemetry → fix → repeat
-
-Do this before any 7200s commitment. **Real only** — the momentum question is "does it stabilize training",
-not real<->sim parity, so sim adds nothing here (the `_sim_short[.yaml]`/`_sim_short_momentum.yaml` siblings
-still exist for later parity work, just not part of this A/B). All 12 short/momentum yamls (real+sim, all 3
-baselines, both legs) now carry `hyperparameters.seed: 1234` — same seed on both A/B legs, so selector/model-init
-RNG is controlled and momentum is the only thing that can differ between them; no separate seeded run needed.
-6 real configs total (3 baselines × without/with momentum=0.9), split across 2 nodes by treatment group:
+Same delay-divisor split as §O (fluxtune's JVP cost ≈4× fwdllm/plus's — not the ~10×
+`perturbation_count` alone would suggest), `--num-gpus 8` matching the calibration basis:
 
 ```
-bash lib/python/examples/fwdllm/expt_scripts/run_momentum_ab_without.sh   # node A: momentum=0, all 3 baselines
-bash lib/python/examples/fwdllm/expt_scripts/run_momentum_ab_with.sh      # node B: momentum=0.9, all 3 baselines
-```
-
-Read after each pair: `agg_eval`'s `test-accuracy`/`test-loss` (any exact 0.25/mcc=0 collapse in the momentum
-run vs without, at matched `data_id`s) and run `scripts/analysis/analyze_run.py` for the plots. Then, whenever
-touching the parity ladder itself:
-
-```
-python -m pytest lib/python/tests/mode -k fwdllm -q
-python -m pytest lib/python/examples/async_cifar10/scripts/parity/ -q
-```
-
-### Long-running overnight commands (later, once the short-run loop looks solid)
-
-Not to be launched yet — full 7200s real+sim parity pairs, one baseline at a time, `--delays on` +
-per-baseline `--delay-divisor` from §O:
-
-```
+# Node A — fluxtune (own delay-divisor)
 lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fluxtune \
-    --delays on --delay-divisor 0.48 --max-runtime-s 7200
+    --mode both --delays on --delay-divisor 0.48 --num-gpus 8 --max-runtime-s 10800 \
+    --after parity,sanity,plot
 
+# Node B — fwdllm + fwdllm_plus (shared delay-divisor)
 lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fwdllm,fwdllm_plus \
-    --delays on --delay-divisor 1.63 --max-runtime-s 7200
+    --mode both --delays on --delay-divisor 1.63 --num-gpus 8 --max-runtime-s 10800 \
+    --after parity,sanity,plot
 ```
 
-Plus, once the seeded-yaml real↔real floor and the momentum decision are both ready to check at full scale:
+Add `--yes` on either if launching unattended (skips the interactive confirm). Read after: the printed
+parity scoreboard (`overhead_residual`/`C1`/`preferred_duration` movement vs the table above), plus
+`round_threshold` and the sorted-duration population (real vs sim) for fluxtune's `preferred_duration`.
 
-```
-python -m flame.launch.run_experiment lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke_seeded.yaml
-python -m flame.launch.run_experiment lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke_seeded.yaml  # run twice, diff the two real run dirs
-```
+### fluxtune `preferred_duration` (oort, 50.7pp gap) — not yet root-caused
 
-### Per-baseline items NOT already covered above
+Real's utility term binds selection 80.1% of rounds vs sim's 29.3%. `round_threshold` telemetry already
+exists (`async_oort.py:461`). Next diagnostic step, not yet done: is the gap (a) `round_threshold` itself
+diverging real vs sim (pacer/control-loop — the earlier pacer bug was fixed, but re-verify for this
+config) or (b) the *input population* (`PROP_CLIENT_TASK_TRAIN_DURATION` per round) diverging because
+real/sim pick a different cohort speed-mix — same trajectory-drift class as `overhead_residual`/`C1`
+above. Diff both real-vs-sim before touching any code.
 
-`overhead_residual`/`v1_iter_per_data_id`/`step_timing_breakdown`'s shared `_fetch_weights`/`recv_wrapper`
-pattern is folded into the resolution above — don't re-litigate per baseline. What's left, baseline-specific:
-- **fluxtune**: `preferred_duration` (Sd, oort-only) — real's utility term is the *binding* selection constraint
-  80.1% of rounds vs sim's 29.3%, a 50.7pp gap isolated to the oort selector.
-- **fwdllm**: `phase_weights_to_ram` (ms-scale: real 6ms vs sim 2ms) — low practical weight, sanity-check only.
+**fwdllm's** own remaining minor rung: `phase_weights_to_ram` (ms-scale, real 6ms vs sim 2ms) — low
+practical weight, sanity-check only.
 
 ### GPU-overrun check: clean across all 3
 
@@ -204,23 +166,12 @@ excludes sim's lap-2 evals from being compared against real's lap-1 ones).
 | fwdllm | 0.66 | 0.51 | +0.15 | 0.097 (FAIL) |
 | fwdllm_plus | 0.62 | 0.51 | +0.11 | 0.085 (FAIL) |
 
-Two consistent patterns: (1) **real always ends higher than sim** across all
-three baselines, by a similar ~0.11-0.15 absolute margin — not yet root-caused,
-plausibly downstream of the same `overhead_residual` gap (sim's per-commit
-cadence models more/less elapsed vclock-time than real actually took, so at a
-matched *vclock* budget sim has done a different amount of *actual* gradient
-work than real did in the same *wall* budget); needs checking against gradient
-step counts, not assumed. (2) **fluxtune (async) reaches the highest real
-accuracy** (0.72 vs fwdllm's 0.66 and fwdllm_plus's 0.62) despite far fewer total
-commits (66 vs 100-101) at the same 7200s wall budget — async's overlap lets more
-wall-clock-parallel gradient work happen per commit; not an apples-to-apples
-comparison (different `agg_goal`/optimizer config per §C) but a real, notable
-outcome-level gap worth keeping in view. Aside: fwdllm's and fwdllm_plus's SIM
-legs track near-bit-identically for their first ~54/146 evals (confirmed exact
-floating-point match on several early points) — expected, not a bug: under syn_0
-(100% availability) there's no forced-reselection trigger, so fwdllm_plus's only
-distinguishing knob (`reselect_each_iteration`) is close to a no-op early on: both
-legs pick the same cohort/order until small GPU nondeterminism accumulates.
+Real always ends higher than sim (hypothesis in the intro above). Separately: **fluxtune (async) reaches
+the highest real accuracy** (0.72 vs fwdllm's 0.66 / fwdllm_plus's 0.62) despite far fewer total commits
+(66 vs 100-101) — async's overlap lets more wall-clock-parallel gradient work happen per commit; not
+apples-to-apples (different `agg_goal`/optimizer per §C) but worth keeping in view. Aside: fwdllm's and
+fwdllm_plus's SIM legs track near-bit-identically for their first ~54/146 evals — expected under syn_0
+(no forced-reselection trigger, so `reselect_each_iteration` is close to a no-op early on).
 
 ### vclock vs. wall-clock gap, across baselines
 
@@ -246,18 +197,17 @@ with its larger `overhead_residual` rel_diff (19.2% vs ~21%, similar) compoundin
 over fewer, larger commit cycles (`agg_goal=3` vs `10`) so each individual
 mismatch is a bigger absolute vclock-second.
 
-**Old fluxtune-specific detail below (Bug A / reactive gate) is CLOSED — see §G.
-The `sim_sct_ordered_drain` A/B question is still open, not exercised by this run
-(both legs used the config default `true`).**
+**Old fluxtune-specific detail (Bug A / reactive gate) is CLOSED — see §G.**
 
-### fluxtune: still-open `sim_sct_ordered_drain` A/B (unexercised by this run)
+### fluxtune: still-open `sim_sct_ordered_drain` A/B
 
-Both fluxtune legs used the config default `sim_sct_ordered_drain: true`. Whether the flag is load-bearing
-(felix never sets it, uses `recv_fifo` unconditionally — `grep -rl sim_sct_ordered_drain
-lib/python/examples/*/expt_scripts/*.yaml` matches only fluxtune's yaml) is still unsettled — no run has been
-made with it `false` since the Bug-A gate fix landed. `fluxtune_n10_smoke_sim_no_sct_drain.yaml` exists for this
-(`sim_sct_ordered_drain: false`, otherwise identical to `fluxtune_n10_smoke_sim.yaml`); re-run at the current
-7200s/factor-0.48 basis, not the stale 1800s/factor-0.5 one, for a matched-vintage pair:
+Schema default is `false` (`config.py:245` = legacy `recv_fifo`); felix (async_cifar10) never sets it, so
+uses that default. **All of fluxtune's yamls override it to `true`** (`drain_ready`, comment-justified:
+fluxtune's higher per-grad probe frequency vs felix's per-round one risks the shared queue stranding a
+delivered update the readiness probe can't see) — not evidence-justified, since no run has been made with
+it `false` since the Bug-A gate fix landed. `fluxtune_n10_smoke_sim_no_sct_drain.yaml` exists for the A/B
+(`sim_sct_ordered_drain: false`, otherwise identical to `fluxtune_n10_smoke_sim.yaml`); re-run at the
+current 7200s+/factor-0.48 basis, not the stale 1800s/factor-0.5 one:
 
 ```
 python -m flame.launch.run_experiment \
@@ -268,7 +218,7 @@ Read after: `sim_rate` (does it move off 1.82×?); `pastdated_n`/`pastdated_gap_
 (materially higher with the flag OFF means `recv_fifo`'s background streamer really does strand/lap messages
 under fluxtune's probe frequency — the flag's actual justification).
 
-(Roadmap after this closes: see "Next decisions before the next run" above.)
+(Roadmap after this closes: see "Next decisions" above.)
 
 ### Open follow-up: real-mode sync visibility-lag anchor (not yet decided)
 
