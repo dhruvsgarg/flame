@@ -8,8 +8,9 @@ verdict), and the pytest suite. **ONE `## Status` section, updated in place.**
 tiers/dependency-gating, workflow policy, run-length budget, and mechanism reference (§3) are
 **example-agnostic**. The async_cifar10 rung catalog (§2) is the reference instance; a second
 example appends its own rung catalog rather than forking the method. **fwdllm** (forward-gradient,
-variance-gated dynamic-K FL) is catalogued in **§F** — its build plan lives in
-`examples/fwdllm/simulate_fwdllm.md`, which references §F for rung definitions.
+variance-gated dynamic-K FL) is catalogued in **§F** — its live parity status/fixes are in
+`examples/fwdllm/simulate_fwdllm.md` (references §F for rung definitions); its build plan, structural
+deltas, roadmap, and calibration work are in `examples/fwdllm/FWDLLM_DESIGN.md`.
 
 **Comparator — give two run dirs, get a report JSON:**
 ```bash
@@ -722,9 +723,10 @@ refl overriding.
 ## §F  FwdLLM extension -- variance-gated dynamic-K (forward-gradient FL)
 
 The method above (§1-§5) is example-agnostic; this is fwdllm's rung catalog. Rungs not
-redefined here are inherited from §2 unchanged. `[NEW]` = to implement. The fwdllm build plan
-(staged implementation, files, exit criteria, design decisions) is
-`examples/fwdllm/simulate_fwdllm.md`; this section is the rung reference it points at.
+redefined here are inherited from §2 unchanged. `[NEW]` = to implement. fwdllm's live real↔sim parity
+status/fixes are `examples/fwdllm/simulate_fwdllm.md` (this section is the rung reference it points at);
+its build plan (staged implementation, files, exit criteria, design decisions) is
+`examples/fwdllm/FWDLLM_DESIGN.md`.
 
 ### §F.1  How FwdLLM differs (drives every new rung)
 - **Aggregates GRADIENTS (JVPs), not weights.** Trainers send forward-gradient estimates; the

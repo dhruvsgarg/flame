@@ -113,6 +113,9 @@ LOSS_MIN_REL_DELTA=""  # RELATIVE test-loss drop vs running-best that counts as 
 DELAY_FACTOR=""        # training_delay_factor: DIVISOR on the registry 4-18s delay (NOT a multiplier).
                        # >1 SHORTENS (default 10 => 0.4-1.8s; 1 => full 4-18s); <1 LENGTHENS
                        # (0.5 => 8-36s, restores GPU-vs-delay headroom). Fans to both roles via runner.py.
+DELAY_FLOOR=""         # training_delay_floor_s: floor on the RAW registry delay (applied BEFORE
+                       # dividing by DELAY_FACTOR), so trainers at/near the fast-class floor don't
+                       # get a razor-thin budget. 0/unset = no-op. See FWDLLM_DESIGN.md §O.
 RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
                   # (single source of truth for multi-node runs; CLI flags override)
 ONLY=""
@@ -128,6 +131,7 @@ usage() {
   echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
+  echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
@@ -170,6 +174,7 @@ while [[ $# -gt 0 ]]; do
                             STALL_ON="$2"; shift 2 ;;
     --loss-min-rel-delta)   LOSS_MIN_REL_DELTA="$2"; shift 2 ;;
     --delay-divisor|--delay-factor)  DELAY_FACTOR="$2"; shift 2 ;;
+    --delay-floor)           DELAY_FLOOR="$2"; shift 2 ;;
     --run-set)              RUN_SET="$2"; shift 2 ;;
     --only)                 ONLY="$2"; shift 2 ;;
     --after)                AFTER="$2"; shift 2 ;;
@@ -399,6 +404,12 @@ def patch(exp, run_key, variant, trace):
     if DELAY_FACTOR:
         exp["trainer"].setdefault("hyperparameters", {})
         exp["trainer"]["hyperparameters"]["training_delay_factor"] = float(DELAY_FACTOR)
+    # training_delay_floor_s (FWDLLM_DESIGN.md §O): floor on the RAW registry
+    # delay, applied before the divisor above. Only patched when explicitly
+    # passed (else the code default 0.0 = no-op).
+    if DELAY_FLOOR:
+        exp["trainer"].setdefault("hyperparameters", {})
+        exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(DELAY_FLOOR)
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART

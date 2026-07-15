@@ -603,6 +603,8 @@ class ExperimentRunner:
         _tr_hp = exp.trainer.hyperparameters or {}
         if "training_delay_factor" in _tr_hp:
             _delay_fan["trainingDelayFactor"] = _tr_hp["training_delay_factor"]
+        if "training_delay_floor_s" in _tr_hp:
+            _delay_fan["trainingDelayFloorSeconds"] = _tr_hp["training_delay_floor_s"]
         layers.append((
             "experiment.trainer.training_delay (fanned to aggregator)",
             {"hyperparameters": _delay_fan},

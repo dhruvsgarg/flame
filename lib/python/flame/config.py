@@ -206,6 +206,15 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )
+    # Floor on the RAW registry training_delay_s (applied BEFORE dividing by
+    # training_delay_factor), so trainers whose registry delay sits at/near
+    # the fast-class floor don't get a razor-thin (or negative-margin) budget
+    # once divided. 0.0 = no-op (byte-identical). Derived per baseline from
+    # observed real GPU-compute tail, not the class mean -- see
+    # examples/fwdllm/FWDLLM_DESIGN.md §O.
+    training_delay_floor_s: t.Optional[float] = Field(
+        alias="trainingDelayFloorSeconds", default=0.0
+    )
     # Sim-mode per-commit virtual-clock overhead (MQTT/dispatch). 0 = off.
     sim_commit_overhead_s: t.Optional[float] = Field(
         alias="simCommitOverheadSeconds", default=0.0

@@ -210,6 +210,7 @@ def load_agg_jsonl(path: str) -> dict:
     abandon_timeouts: list = []
     agg_belief_changes: list = []
     step_timing: list = []
+    comm_dispatch: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -217,6 +218,11 @@ def load_agg_jsonl(path: str) -> dict:
                 continue
             e = json.loads(line)
             ev = e.get("event")
+            if ev == "comm" and e.get("direction") == "agg_to_trainer":
+                # R1 residence (checks.py inflight_overlap_parity): the
+                # DISPATCH side of the per-message timeline. peer_id is the
+                # trainer this message went to.
+                comm_dispatch.append(e)
             if ev == "selection" and e.get("task") == "train":
                 selection_train.append(e)
             elif ev == "withheld_delivery":
@@ -254,12 +260,14 @@ def load_agg_jsonl(path: str) -> dict:
     withheld_deliveries.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
     abandon_timeouts.sort(key=lambda x: (x.get("round", 0), x.get("ts", 0)))
     agg_belief_changes.sort(key=lambda x: (x.get("round", 0), x.get("observed_at", 0.0)))
+    comm_dispatch.sort(key=lambda x: x["ts"])
     return {
         "selection_train": selection_train,
         "agg_rounds": agg_rounds,
         "eval_commits": eval_commits,
         "agg_evals": agg_evals,
         "residence": residence,
+        "comm_dispatch": comm_dispatch,
         # Stage C availability events (sim-only): the send-gate late stale
         # deliveries and the 90s vclock abandons.
         "withheld_deliveries": withheld_deliveries,
@@ -292,6 +300,7 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
         task_recv_evs, trainer_round_evs, task_send_evs = [], [], []
         avail_change_evs: list = []
         step_timing_evs: list = []
+        comm_recv_evs: list = []
         with open(f) as fp:
             for line in fp:
                 line = line.strip()
@@ -314,12 +323,18 @@ def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
                     avail_change_evs.append(e)
                 elif ev == "step_timing":
                     step_timing_evs.append(e)
+                elif ev == "comm" and e.get("direction") == "trainer_to_agg":
+                    # R1 residence (checks.py inflight_overlap_parity): the
+                    # RECEIVE (upload) side of the per-message timeline.
+                    comm_recv_evs.append(e)
+        comm_recv_evs.sort(key=lambda x: x["ts"])
         result[short_id] = {
             "task_recv": task_recv_evs,
             "trainer_round": trainer_round_evs,
             "task_send": task_send_evs,
             "avail_change": avail_change_evs,
             "step_timing": step_timing_evs,
+            "comm_recv": comm_recv_evs,
         }
     return result
 
@@ -338,7 +353,7 @@ def load_run_dir(run_dir: str) -> tuple:
     else:
         merged: dict = {"selection_train": [], "agg_rounds": [],
                         "eval_commits": [], "agg_evals": [], "residence": [],
-                        "step_timing": []}
+                        "step_timing": [], "comm_dispatch": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -349,6 +364,7 @@ def load_run_dir(run_dir: str) -> tuple:
         merged["eval_commits"].sort(key=lambda x: (x["round"], x["ts"]))
         merged["agg_evals"].sort(key=lambda x: x["round"])
         merged["residence"].sort(key=lambda x: (x["round"], x["ts"]))
+        merged["comm_dispatch"].sort(key=lambda x: x["ts"])
         agg_data = merged
     trainer_data = load_trainer_jsonl_dir(telemetry_dir)
     return agg_data, trainer_data
@@ -4599,22 +4615,99 @@ def _overlap_fraction(cycles: list) -> tuple:
     return frac, n_pairs, n_intervals
 
 
-def inflight_overlap_parity(real: dict, sim: dict, tol_frac: float = 0.02) -> dict:
-    """R1 [INV]: one-in-flight-per-trainer residence on the grad path.
+def _dispatch_resolve_overlap(agg: dict) -> tuple:
+    """(overlap_frac, n_dispatches, n_trainers) over per-trainer DISPATCH/RESOLVE
+    timelines.
 
-    Per-trainer dispatch->commit intervals must NOT overlap (a trainer is
-    re-pickable only after its update commits). Real satisfies this by channel
-    construction (~0%); sim must model it (commit-then-carry + slot hold). A
-    non-zero sim fraction with real ~0 is the residence bug. Checked per mode --
-    both must sit under tol_frac.
+    DISPATCH = a `comm` `agg_to_trainer` message, EITHER `payload_kind`
+    ("weights" = new round; "var_bad" = keep training, submit a NEW round of
+    perturbations against the current model -- also genuine new work, not a
+    passive ping: confirmed 2026-07-15 by tracing one trainer's full
+    dispatch/reply/eval timeline end to end). RESOLVE = an `agg_round`
+    (variance-gate evaluation, pass OR fail) that lists this trainer in
+    `contributor_intervals` -- the event that actually consumes/evaluates the
+    trainer's outstanding contribution, whether or not the fail branch later
+    reuses the grad from `cached_v`. A dispatch "overlaps" if it lands before
+    the trainer's prior dispatch has been RESOLVED this way.
+
+    Deliberately NOT the trainer's own `trainer_to_agg` reply: confirmed
+    2026-07-15 (one full end-to-end trace, real vs sim) that REAL always
+    orders RESOLVE before its next DISPATCH for a trainer (clean by channel
+    construction -- the aggregator's per-message reply handler in async_oort's
+    `_handle_send_state` re-dispatches synchronously, but real's network
+    latency means the async variance-gate evaluation has usually already run
+    by the time a reply lands), while SIM's near-zero-latency control path can
+    dispatch again before that evaluation has caught up -- a genuine sim-only
+    race, not the reply/re-sampling design pattern earlier (wrongly) assumed
+    here. 0.0 = no trainer ever had two simultaneously-unresolved dispatches.
     """
-    rc, sc = _fwd_cadence_cycles(real), _fwd_cadence_cycles(sim)
-    r_frac, r_pairs, r_n = _overlap_fraction(rc)
-    s_frac, s_pairs, s_n = _overlap_fraction(sc)
-    if r_pairs == 0 and s_pairs == 0:
+    by_end: dict = {}
+    for e in agg.get("comm_dispatch", []):
+        peer = e.get("peer_id")
+        if peer is None:
+            continue
+        by_end.setdefault(peer, []).append(("dispatch", float(e["ts"])))
+    for e in agg.get("agg_rounds", []):
+        for iv in (e.get("contributor_intervals") or []):
+            end = iv.get("end")
+            if end is None:
+                continue
+            by_end.setdefault(end, []).append(("resolve", float(e["ts"])))
+
+    n_dispatches = 0
+    n_overlap = 0
+    n_trainers = 0
+    for events in by_end.values():
+        events.sort(key=lambda x: x[1])
+        outstanding = False
+        saw_dispatch = False
+        for kind, _ts in events:
+            if kind == "dispatch":
+                saw_dispatch = True
+                n_dispatches += 1
+                if outstanding:
+                    n_overlap += 1
+                outstanding = True
+            else:  # resolve
+                outstanding = False
+        if saw_dispatch:
+            n_trainers += 1
+    frac = (n_overlap / n_dispatches) if n_dispatches else 0.0
+    return frac, n_dispatches, n_trainers
+
+
+def _is_async_run(agg: dict) -> bool:
+    return any(e.get("is_async") for e in agg.get("agg_rounds", []))
+
+
+def inflight_overlap_parity(real_agg: dict, sim_agg: dict,
+                            tol_frac: float = 0.02) -> dict:
+    """R1 [INV]: no trainer ever has two simultaneously-UNRESOLVED dispatches.
+
+    ASYNC baselines (fluxtune) only. Per-trainer DISPATCH->RESOLVE timelines,
+    where RESOLVE is the variance-gate evaluation (agg_round) that consumes
+    the trainer's outstanding contribution -- NOT its own reply arriving (see
+    `_dispatch_resolve_overlap` for why: confirmed 2026-07-15 that using the
+    reply as the release signal masks a genuine sim-only race). Real
+    satisfies this by construction (~0%); sim must too. Checked per mode --
+    both under tol_frac.
+
+    SYNC baselines (fwdllm/fwdllm_plus) SKIP: R1 is specifically about the
+    ASYNC per-message reactive dispatch loop's (`async_oort._handle_send_
+    state`) hold-to-resolve invariant. Sync's barrier-based per-lap broadcast
+    dispatch is a structurally different pattern -- this DISPATCH->RESOLVE
+    model doesn't apply the same way (confirmed 2026-07-15: naively applying
+    it to fwdllm_plus's real leg reported a nonsensical 90% "violation" rate).
+    """
+    if not (_is_async_run(real_agg) or _is_async_run(sim_agg)):
         return {"ok": True, "tier": "INV", "status": "SKIP",
-                "note": "no contributor_intervals with >=2 contributions per "
-                        "trainer (field absent, non-fwdllm run, or no re-selection)"}
+                "note": "sync baseline (or non-fwdllm run) -- R1's async "
+                        "dispatch/resolve model doesn't apply"}
+    r_frac, r_n, r_trainers = _dispatch_resolve_overlap(real_agg)
+    s_frac, s_n, s_trainers = _dispatch_resolve_overlap(sim_agg)
+    if r_n == 0 and s_n == 0:
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no comm dispatch / contributor_intervals telemetry"}
     ok = r_frac <= tol_frac and s_frac <= tol_frac
     return {
         "ok": ok,
@@ -4622,14 +4715,14 @@ def inflight_overlap_parity(real: dict, sim: dict, tol_frac: float = 0.02) -> di
         "real_overlap_frac": round(r_frac, 4),
         "sim_overlap_frac": round(s_frac, 4),
         "tol_frac": tol_frac,
-        "n_real_pairs": r_pairs,
-        "n_sim_pairs": s_pairs,
-        "n_real_intervals": r_n,
-        "n_sim_intervals": s_n,
+        "n_real_dispatches": r_n,
+        "n_sim_dispatches": s_n,
+        "n_real_trainers": r_trainers,
+        "n_sim_trainers": s_trainers,
         "interpretation": (
-            f"real {r_frac:.1%} / sim {s_frac:.1%} of same-trainer intervals "
-            f"overlap a prior one; >0 = re-dispatched while still in flight "
-            f"(residence violation)."
+            f"real {r_frac:.1%} / sim {s_frac:.1%} of dispatches land while "
+            f"the same trainer's prior dispatch hasn't yet been resolved by a "
+            f"variance-gate evaluation; >0 = a genuine residence violation."
         ),
     }
 

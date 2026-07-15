@@ -68,7 +68,7 @@ experiments:
           sim_sct_ordered_drain: true
           sim_staggered_redispatch: false
           sim_compute_truthful_gate: true
-          sim_gate_compute_cap_s: 10.0
+          sim_gate_compute_cap_s: 16.0  # derived, not guessed: fluxtune real compute p99=6.2s max=10.6s (07-15 banked run) x 1.5 safety -- FWDLLM_DESIGN.md §O
           # Reliable auto-terminate: max_runtime_s's PRIMARY check is
           # vclock-gated in sim mode, and the deadlock this run is diagnosing
           # freezes the vclock -- so if it recurs, max_runtime_s alone will

@@ -114,6 +114,16 @@ def _extract_sample_data(example):
     return {"text": text, "label": label, "hash": sample_hash}
 
 
+def resolve_training_delay_s(raw_delay_s, floor_s) -> float:
+    """Floor the RAW registry `training_delay_s` before it's divided by
+    `training_delay_factor`. A trainer at/near the registry's class floor
+    otherwise gets a budget with no real headroom over observed GPU-compute
+    variance (TIMING_OVERRUN, FWDLLM_DESIGN.md §O). `floor_s` of 0.0/None is
+    a no-op (byte-identical to the pre-floor behavior)."""
+    _floor = float(floor_s) if floor_s is not None else 0.0
+    return max(float(raw_delay_s), _floor)
+
+
 class FedSGDTrainer(Trainer):
 
     def __init__(
@@ -179,7 +189,14 @@ class FedSGDTrainer(Trainer):
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
-        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        # Floor the RAW registry delay before dividing: a trainer at/near the
+        # class floor otherwise gets a budget with no real headroom over
+        # observed GPU-compute variance (TIMING_OVERRUN). 0.0 = no-op.
+        # Derivation: examples/fwdllm/FWDLLM_DESIGN.md §O.
+        self.training_delay_s = resolve_training_delay_s(
+            self.config.hyperparameters.training_delay_s,
+            getattr(self.config.hyperparameters, "training_delay_floor_s", 0.0),
+        )
         # DIVISOR on the modeled delay (effective = training_delay_s / divisor):
         # >1 shortens, <1 lengthens. Named `_divisor` so the direction is
         # unambiguous at use sites; wire key stays `training_delay_factor`.

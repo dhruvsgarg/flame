@@ -28,7 +28,7 @@ sys.path.insert(
 )
 
 import FedSgdTrainer as _fst_module  # noqa: E402
-from FedSgdTrainer import FedSGDTrainer  # noqa: E402
+from FedSgdTrainer import FedSGDTrainer, resolve_training_delay_s  # noqa: E402
 
 
 class _FakeTrainer:
@@ -194,3 +194,25 @@ class TestSimCompletionStampIsMaxGpuDelay:
         t.train_with_data_id()
         assert t._sim_round_duration_s == 2.0
         assert t._sim_completion_ts == 13.5  # 10.0 + 2.0 + 1.5
+
+
+class TestResolveTrainingDelayS:
+    """FWDLLM_DESIGN.md §O: floor the RAW registry delay before it's divided
+    by training_delay_factor, so a trainer at/near the registry's class floor
+    doesn't get a razor-thin (or negative-margin) budget once divided."""
+
+    def test_no_floor_is_byte_identical(self):
+        assert resolve_training_delay_s(2.0, 0.0) == 2.0
+        assert resolve_training_delay_s(2.0, None) == 2.0
+
+    def test_floor_raises_a_trainer_below_it(self):
+        # fluxtune's floor (FWDLLM_DESIGN.md §O): a delay=2.0 (class floor)
+        # trainer gets bumped to 7.0, not left at 2.0.
+        assert resolve_training_delay_s(2.0, 7.0) == 7.0
+
+    def test_floor_never_lowers_a_trainer_above_it(self):
+        # a very_slow trainer (e.g. raw delay 20.0) is unaffected by a 7.0 floor.
+        assert resolve_training_delay_s(20.0, 7.0) == 20.0
+
+    def test_floor_at_exact_boundary_is_a_no_op(self):
+        assert resolve_training_delay_s(7.0, 7.0) == 7.0

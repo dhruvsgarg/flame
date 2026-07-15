@@ -1176,43 +1176,77 @@ def _trainers_with_rounds(counts):
             for sid, n in counts.items()}
 
 
-class TestR1InflightOverlap:
-    """R1 [INV]: per-trainer dispatch->commit intervals must not overlap
-    (one-in-flight residence)."""
+def _dispatch(peer, ts, payload_kind="weights"):
+    return {"event": "comm", "direction": "agg_to_trainer", "peer_id": peer,
+            "ts": ts, "payload_kind": payload_kind}
 
-    def test_non_overlapping_intervals_pass(self):
-        # Each trainer's two contributions are strictly sequential (commit before
-        # the next dispatch) in BOTH modes.
-        agg = _agg(agg_rounds=[
-            _cyc(0, [("A", 0.0, 5.0), ("B", 0.0, 5.0)]),
-            _cyc(1, [("A", 6.0, 11.0), ("B", 6.0, 11.0)]),
-        ])
+
+def _agg_comm(dispatches, resolves=None):
+    """`dispatches` = list of (peer, ts) or (peer, ts, payload_kind) ->
+    comm_dispatch. `resolves` = list of (peer, ts) -> agg_rounds entries
+    whose contributor_intervals name that peer (the variance-gate evaluation
+    that actually consumes the trainer's outstanding contribution). Always
+    tags is_async=True (R1 is async-only, see inflight_overlap_parity) even
+    with no resolves, via a marker round with no contributor."""
+    d = _agg()
+    d["comm_dispatch"] = [_dispatch(*args) for args in dispatches]
+    d["agg_rounds"] = [{"event": "agg_round", "ts": 0.0, "is_async": True}] + [
+        {"event": "agg_round", "ts": ts, "is_async": True,
+         "contributor_intervals": [{"end": peer}]}
+        for (peer, ts) in (resolves or [])
+    ]
+    return d
+
+
+class TestR1InflightOverlap:
+    """R1 [INV]: no trainer may have two simultaneously-UNRESOLVED dispatches
+    (a DISPATCH before the trainer's prior dispatch was RESOLVED by a
+    variance-gate evaluation). NOT the trainer's own reply landing: confirmed
+    2026-07-15 by tracing one trainer's full dispatch/reply/eval timeline
+    end-to-end that real always orders eval-before-next-dispatch (clean by
+    channel construction -- real's network latency means the async
+    variance-gate evaluation has usually already run by the time a reply
+    lands) while sim's near-zero-latency control path can dispatch again
+    before that evaluation catches up -- a genuine sim-only race. `var_bad`
+    ("keep training, submit a new round of perturbations") counts as a real
+    dispatch too, not a passive ping -- confirmed by the same trace."""
+
+    def test_dispatch_after_resolve_passes(self):
+        # A and B are each re-dispatched a 2nd time, but only AFTER a
+        # variance-gate evaluation resolved their 1st contribution.
+        agg = _agg_comm(
+            dispatches=[("A", 0.0), ("B", 0.0), ("A", 6.0), ("B", 6.0)],
+            resolves=[("A", 5.0), ("B", 5.0)],
+        )
         r = pc.inflight_overlap_parity(agg, agg)
         assert r["ok"]
         assert r["real_overlap_frac"] == 0.0 and r["sim_overlap_frac"] == 0.0
 
     def test_sim_overlap_fails_with_clean_real(self):
-        # Real: A's 2nd dispatch (6.0) is after its 1st commit (5.0) -> clean.
-        real = _agg(agg_rounds=[
-            _cyc(0, [("A", 0.0, 5.0)]),
-            _cyc(1, [("A", 6.0, 11.0)]),
-        ])
-        # Sim: A re-dispatched at 2.0 while its 1st contribution (commit 5.0) was
-        # still in flight -> overlap = the residence violation.
-        sim = _agg(agg_rounds=[
-            _cyc(0, [("A", 0.0, 5.0)]),
-            _cyc(1, [("A", 2.0, 7.0)]),
-        ])
-        r = pc.inflight_overlap_parity(real, sim)
+        # Real: A's 2nd dispatch (6.0) is after the eval resolving the 1st (5.0) -> clean.
+        real_agg = _agg_comm(dispatches=[("A", 0.0), ("A", 6.0)], resolves=[("A", 5.0)])
+        # Sim: A re-dispatched at 2.0 BEFORE the eval resolving its 1st
+        # dispatch (5.0) ran -> overlap = the genuine residence violation.
+        sim_agg = _agg_comm(dispatches=[("A", 0.0), ("A", 2.0)], resolves=[("A", 5.0)])
+        r = pc.inflight_overlap_parity(real_agg, sim_agg)
         assert not r["ok"]
         assert r["real_overlap_frac"] == 0.0
         assert r["sim_overlap_frac"] > 0.0
 
-    def test_skips_without_contributor_intervals(self):
-        # Sync baselines / non-fwdllm runs don't emit contributor_intervals.
-        agg = _agg(agg_rounds=[_round(1, ["a"], [0])])
+    def test_skips_without_comm_telemetry(self):
+        # Sync baselines / runs predating the comm dispatch telemetry.
+        agg = _agg()
         r = pc.inflight_overlap_parity(agg, agg)
         assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_var_bad_is_a_real_dispatch(self):
+        # var_bad IS new work ("keep training, submit a new round of
+        # perturbations against the current model"), not a passive ping --
+        # two of them with no intervening resolve is a genuine violation.
+        agg = _agg_comm(dispatches=[("A", 0.0, "var_bad"), ("A", 2.0, "var_bad")])
+        r = pc.inflight_overlap_parity(agg, agg)
+        assert not r["ok"]
+        assert r["sim_overlap_frac"] > 0.0
 
 
 class TestW1ComputeConservation:
