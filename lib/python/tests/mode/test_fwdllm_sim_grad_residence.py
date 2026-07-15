@@ -334,13 +334,46 @@ class TestPendingCommitBridge:
         agg._sim_hold_busy_slots(ch)
         assert agg._sim_pending_commit == {"A", "B"}
 
-        # A commits -> leaves in-flight, marked committed.
+        # A commits -> leaves in-flight, marked committed. `outstanding` now also
+        # reads `_sim_pending_commit` (first-dispatch fix, see the `outstanding`
+        # comment in _sim_hold_busy_slots), so a faithful simulation of "A
+        # committed" must include the same discard the real commit path
+        # (`_sim_recv_min_grad`) always performs before this function is next
+        # reached -- not just mutating `_sim_inflight_expected`.
         agg._sim_inflight_expected = {"B": 20.0}
         agg._sim_committed = {"A"}
+        agg._sim_pending_commit.discard("A")
         agg._sim_hold_busy_slots(ch)
 
         # A is re-pickable again (dropped from pending); `|=` would have kept it.
         assert agg._sim_pending_commit == {"B"}
+
+    def test_unseen_delay_trainer_stays_held_until_commit(self):
+        """R1 regression (07-15 fluxtune telemetry, trainer ...0449): a trainer's
+        FIRST-EVER dispatch in a run has no `_sim_known_delay_s` entry yet (it's
+        only learned from a trainer's OWN prior message), so `_sim_inflight_
+        expected` never gets one either -- deliberately, see test_train_staggered_
+        unseen_trainer_gets_no_gate_entry. Before this fix, `outstanding` read
+        only `_sim_inflight_expected | buffered`, so such a trainer was invisible
+        to it and got wiped from `all_selected` the moment ANY OTHER trainer's
+        commit triggered this reconcile -- selectable again seconds before its
+        own grad could possibly return (measured as `r1_inflight_overlap`'s
+        19.4%). `_sim_pending_commit` (added unconditionally at dispatch,
+        regardless of whether the delay is known) must keep it held instead.
+        """
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["NEW", "B"])
+        # NEW was just dispatched (the real dispatch path adds to all_selected +
+        # selected_ends + _sim_pending_commit unconditionally) but has no known
+        # delay yet, so _sim_inflight_expected has nothing for it.
+        agg._sim_pending_commit = {"NEW"}
+        agg._sim_inflight_expected = {"B": 20.0}   # B has a known delay, still computing
+
+        agg._sim_hold_busy_slots(ch)
+
+        assert "NEW" in agg._sim_pending_commit
+        assert "NEW" in ch._selector.all_selected
+        assert "NEW" in ch._selector.selected_ends["agg"]
 
     def test_commit_discards_from_pending(self):
         agg = _residence_agg(residence=True)

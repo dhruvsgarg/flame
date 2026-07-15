@@ -73,6 +73,67 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
         assert "fresh" in sel.selected_ends["agg"]
 
 
+class TestAsyncOortSendTimeoutDropsPendingCommitRef:
+    """R1 regression: once `_sim_hold_busy_slots` (fwdllm_aggregator.py) folds
+    `_agg_pending_commit_ref` into its own reconciliation, a trainer abandoned
+    here but left in that set would stay permanently un-re-pickable -- the
+    290s+ SEND_TIMEOUT_WAIT_S reclaim would appear to work (all_selected/
+    selected_ends clear) while the aggregator's virtual in-flight set quietly
+    keeps the slot occupied forever."""
+
+    @staticmethod
+    def _stub_selector():
+        from flame.selector.async_oort import AsyncOortSelector
+
+        sel = AsyncOortSelector.__new__(AsyncOortSelector)
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"stale"}}
+        sel.all_selected = {"stale": time.time() - 100}  # past 90s SEND_TIMEOUT_WAIT_S
+        sel.ordered_updates_recv_ends = []
+        sel.track_trainer_timeouts = {}
+        sel.pacer = _boom
+        sel._agg_pending_commit_ref = {"stale", "other"}
+        return sel
+
+    def test_abandoned_end_dropped_from_pending_commit_ref(self, make_ends):
+        sel = self._stub_selector()
+        ends = make_ends(["stale", "fresh"])
+
+        with pytest.raises(_StopAfterAbandon):
+            sel._handle_send_state(
+                ends=ends,
+                concurrency=2,
+                channel_props={"round": 1},
+                trainer_unavail_list=[],
+                task_to_perform="train",
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
+            )
+
+        assert "stale" not in sel._agg_pending_commit_ref
+        assert "other" in sel._agg_pending_commit_ref  # unrelated entry untouched
+
+    def test_noop_when_no_pending_commit_ref_bound(self, make_ends):
+        # Real fwdllm binds this ref via _sim_hold_busy_slots; other selectors
+        # (felix/async_cifar10) never set the attribute at all.
+        sel = self._stub_selector()
+        del sel._agg_pending_commit_ref
+        ends = make_ends(["stale", "fresh"])
+
+        with pytest.raises(_StopAfterAbandon):
+            sel._handle_send_state(
+                ends=ends,
+                concurrency=2,
+                channel_props={"round": 1},
+                trainer_unavail_list=[],
+                task_to_perform="train",
+                agg_version_key=(1, 0, 0),
+                trainer_version_keys={},
+            )
+
+        assert "stale" not in sel.all_selected
+
+
 class TestAsyncOortSendTimeoutIsConfigurable:
     """§R, 2026-07-11: the bare 90s constant evicted a genuinely-busy fwdllm
     trainer as abandoned. `send_timeout_wait_s` is now configurable (getattr

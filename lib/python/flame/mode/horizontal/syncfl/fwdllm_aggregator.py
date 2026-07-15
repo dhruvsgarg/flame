@@ -412,7 +412,16 @@ class TopAggregator(AsyncTopAgg):
         self._sim_compute_truthful_gate = bool(getattr(
             self.config.hyperparameters, "sim_compute_truthful_gate", False))
         # Wall seconds a dispatched grad may still plausibly be computing before it
-        # is treated as idle/phantom. Only consulted when the gate flag is on.
+        # is treated as idle/phantom. Only consulted when the gate flag is on. NOT
+        # a universal constant -- real GPU compute time is roughly uniform across
+        # trainers regardless of registry speed_class (unlike the modeled delay
+        # D), so this should be set per-baseline in config from that baseline's
+        # OWN observed real-compute p99/max + safety margin, the same way
+        # training_delay_floor_s is derived (FWDLLM_DESIGN.md §O; fluxtune's
+        # yamls set 16.0 explicitly = 07-15 observed p99=6.2s/max=10.6s x 1.5).
+        # 10.0 here is a generic last-resort fallback for a config that enables
+        # the flag without setting its own derived value -- don't treat it as
+        # correct for any specific baseline.
         _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
         self._sim_gate_compute_cap_s = float(_cap) if _cap is not None else 10.0
         # end -> wall time its weights/VAR=bad payload was last sent (sim only).
@@ -1241,7 +1250,9 @@ class TopAggregator(AsyncTopAgg):
     def _sim_hold_busy_slots(self, channel) -> None:
         """Assert `selected_ends` == the virtual-time in-flight set: every
         dispatched-but-not-committed trainer (`_sim_inflight_expected` ∪ buffered
-        surplus), holding both its compute slot (`selected_ends`, drives
+        surplus ∪ `_sim_pending_commit`, the last covering first-ever dispatches
+        whose delay isn't learned yet -- see the `outstanding` comment below),
+        holding both its compute slot (`selected_ends`, drives
         `extra = c − len(selected_ends)`) and its re-pick guard (`all_selected`)
         until its grad commits.
 
@@ -1262,15 +1273,29 @@ class TopAggregator(AsyncTopAgg):
         selected_ends = getattr(sel, "selected_ends", None)
 
         buffered = set(self._sim_buffer.pending_ends())          # returned, grad carried
-        # Outstanding = still in flight in virtual time: membership in
-        # `_sim_inflight_expected` or `_sim_buffer` (both popped on commit) IS the
-        # "not yet committed" truth. Do NOT subtract `_sim_committed`: it is a
-        # stale cross-cycle marker cleared only at the agg-goal boundary, so a
-        # trainer that committed then got re-picked + re-dispatched (re-added to
-        # _sim_inflight_expected) would be wrongly dropped -> re-pickable while its
+        # Outstanding = still in flight in virtual time. `_sim_inflight_expected`
+        # only holds an entry once a trainer's delay has been LEARNED from a prior
+        # message (§M -- deliberately no fallback, see test_train_staggered_
+        # unseen_trainer_gets_no_gate_entry), so a trainer's FIRST-EVER dispatch in
+        # a run is invisible to it. Folding in `_sim_pending_commit` (added
+        # unconditionally at dispatch, fwdllm_aggregator.py's distribute path;
+        # discarded ONLY on actual commit, `_sim_recv_min_grad`) closes that gap
+        # without touching the delay-gate's own semantics: a first-time trainer
+        # now stays held until it genuinely commits, instead of being wiped out of
+        # `all_selected` the instant any OTHER trainer's commit triggers this
+        # reconcile (confirmed 07-15 fluxtune telemetry: exactly this caused
+        # `r1_inflight_overlap`'s 19.4%, e.g. trainer ...0449). Safe to read here
+        # because `_sim_pending_commit.discard(_end)` (the commit path) always
+        # runs before this function is reached for that same commit event -- see
+        # `_sim_recv_min_grad`, which calls both in that order.
+        #
+        # Do NOT subtract `_sim_committed`: it is a stale cross-cycle marker
+        # cleared only at the agg-goal boundary, so a trainer that committed then
+        # got re-picked + re-dispatched (re-added to `_sim_inflight_expected`/
+        # `_sim_pending_commit`) would be wrongly dropped -> re-pickable while its
         # new dispatch is in flight -> R1 violation. One that committed THIS cycle
-        # is already absent from both sets, so the subtraction was redundant.
-        outstanding = set(self._sim_inflight_expected) | buffered
+        # is already absent from all three sets, so the subtraction was redundant.
+        outstanding = set(self._sim_inflight_expected) | buffered | set(self._sim_pending_commit)
         # `_sim_pending_commit` is the authoritative virtual in-flight set;
         # reconcile it to `outstanding` in place (clear+update, never rebind -- the
         # selector holds a live reference) so a committed trainer drops out

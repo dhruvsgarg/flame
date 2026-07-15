@@ -1560,6 +1560,15 @@ class AsyncOortSelector(AbstractSelector):
                     if end in self.all_selected.keys():
                         del self.all_selected[end]
                     selected_ends.discard(end)
+                    # R1: also drop it from the aggregator's virtual in-flight set
+                    # (bound via _agg_pending_commit_ref, sim fwdllm only). Since
+                    # _sim_hold_busy_slots now folds this set into its own
+                    # "outstanding" reconciliation (see fwdllm_aggregator.py), a
+                    # trainer abandoned here but never discarded there would stay
+                    # permanently un-re-pickable despite the timeout reclaim above.
+                    _pending_ref = getattr(self, "_agg_pending_commit_ref", None)
+                    if _pending_ref is not None:
+                        _pending_ref.discard(end)
 
         # Challenge 13: cleanup must check CONNECTED membership, not availability-
         # eligibility — an in-flight trainer that merely went UN_AVL (or is the
