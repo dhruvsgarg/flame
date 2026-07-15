@@ -307,6 +307,7 @@ NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$S
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
+DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
 STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
@@ -330,6 +331,7 @@ PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
+DELAY_FLOOR = env("DELAY_FLOOR") or ""
 STALL_ON = env("STALL_ON") or ""; LOSS_MIN_REL_DELTA = env("LOSS_MIN_REL_DELTA") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
 STALL_WINDOW_S = env("STALL_WINDOW_S") or ""; STALL_MIN_DELTA = env("STALL_MIN_DELTA") or ""
@@ -554,6 +556,7 @@ _cond = {
     "partition": _res_parts, "trace": _res_traces,
     "delays": "on" if delays_on else "off",
     "delay_factor": DELAY_FACTOR or "base",
+    "delay_floor": DELAY_FLOOR or "0.0",
     "target_acc": TARGET_ACC or "none",
     "stall_window_s": STALL_WINDOW_S or "off", "stall_min_delta": STALL_MIN_DELTA or "off",
     "stall_on": STALL_ON or "either", "loss_min_rel_delta": LOSS_MIN_REL_DELTA or "0.01",
@@ -597,7 +600,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                         else "NON-syn_0 — unavailability (Phase 2+)"))),
     scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
                note=(f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; "
-                     f"delay_factor={DELAY_FACTOR or 'base(10)'} (divides yaml base 4-18s delay); matched BOTH sides — K-D8")),
+                     f"delay_factor={DELAY_FACTOR or 'base(10)'} (divides yaml base 4-18s delay); "
+                     f"delay_floor={DELAY_FLOOR or '0.0 (no-op)'} (floors the raw delay before "
+                     f"dividing, --delay-floor); matched BOTH sides — K-D8")),
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
     # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
     # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
