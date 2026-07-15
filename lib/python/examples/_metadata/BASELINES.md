@@ -41,7 +41,8 @@ baselines, same backprop CNN substrate), `fedbuff` (async no-selection floor), `
 lower-bound reference) — all **✅ compare**. A possible small-on-device-LM backprop extension (still
 Felix's own selection/agg, still backprop) would be a Felix-internal generalization result, not a
 cross-paper comparison. `fluxtune` / `Felix(P)` / `Felix(P)+IT` (below) never appear in Felix's results
-— different substrate/training method (forward-mode) and different paper; see the disambiguation note.
+— different substrate/training method (forward-mode) and different paper; see the disambiguation note
+(including why C2/`dynamic_kc` is the one FluxTune mechanism plausible as a *Felix-internal* ablation).
 
 ---
 
@@ -66,19 +67,28 @@ that's in `EXPTS_CHARTER.md`, not restated per occurrence. **Status:** ✅ EVAL 
 | FwdLLM+IT | `fwdllm_it_unaware` | ⚠ ABLATION | sync, random select | L1 alone | round→iteration on the sync substrate; pairs with the oracular twin |
 | FwdLLM+IT+O | `fwdllm_it_oracular` | ⚠ ABLATION | sync, random select | L1 alone, aware twin | identical to `+IT` at `syn_0` (oracular tracking inert under full availability), diverges Phase 2 |
 | **FedBuff(P)** | `fedbuff_round` | ✅ EVAL | async, random select | L0 alone | published anchor (Nguyen et al. FedBuff): does naive async already help before any of our contributions? |
-| FedBuff(P)+IT | `fedbuff_it_unaware` | ⚠ ABLATION (key) | async, random select | L1 alone / L2 floor | **the direct L2 attribution floor** = FluxTune − C1/C2/C3, L0+L1 held fixed |
+| FedBuff(P)+IT | `fedbuff_it_unaware` | ⚠ ABLATION (key) | async, random select | L1 alone / L2 floor | **the direct L2 attribution floor** = FluxTune − C1/C2ᵖ/C3, L0+L1 held fixed |
 | FedBuff(P)+IT+O | `fedbuff_it_oracular` | ⚠ ABLATION | async, random select | L1 alone, aware twin | L2 floor's aware twin |
-| Felix(P) | `felix_round` | ⚠ ABLATION | async, oort-smart (ported) | L1, smart-selection substrate | second independent L1 measurement, robustness check that L1's gain isn't a random-selection artifact |
-| Felix(P)+IT | `felix_it` | ⚠ ABLATION | async, oort-smart (ported) | L1 (smart) + C1+C3 | `→ FluxTune` isolates **exactly C1+C3** — FluxTune's own delta over Felix's contributions, no raw Felix needed |
-| **FluxTune** | `fluxtune` | ✅ EVAL (ours) | async, oort-smart (ours) | L0+L1+C1+C2+C3 | the headline result |
+| **Felix(P)** | `felix_round` | ✅ EVAL | async, oort-smart (ported) | L1, smart-selection substrate | published anchor (Felix, this project's own async substrate paper — preprint public): does availability-aware smart selection alone already close most of the gap before any of our L2 contributions? |
+| Felix(P)+IT | `felix_it` | ⚠ ABLATION | async, oort-smart (ported) | L1 (smart) + C1+C3 | **not Felix's native behavior** — grafts FluxTune's own iteration-level reselect cadence onto Felix's selector, done only to isolate L1's contribution and show iteration-level control *alone* isn't enough (motivating C1+C3); never headlined, since crediting a published baseline with our own mechanism in the EVAL row would be an unearned advantage to that baseline. `→ FluxTune` isolates **exactly C1+C3** (not C2 — see ᵖ) — FluxTune's own delta over Felix's contributions, no raw Felix needed |
+| **FluxTune** | `fluxtune` | ✅ EVAL (ours) | async, oort-smart (ours) | L0+L1+C1+C2ᵖ+C3 | the headline result |
 
-*(`fluxtune_dynkc` — dynamic_kc enabled, ⛔ RESEARCH, not part of the paper matrix, slated for
-removal — see Remaining work.)*
+**ᵖ C2 (dynamic K/C) is pending, not landed in the headline config.** `Opt-4 dynamic_kc.enabled` is
+wired but **off by default** — `fluxtune`'s current run does *not* include C2 (`EXPTS_CHARTER.md`'s
+"Default fluxtune = full stack" line names only C1+Opt-1+Opt-2+Opt-3, i.e. C1+C3, confirming this).
+C1/C2/C3 remain the intended three-contribution L2 story; every `C2`/`C1+C2+C3` mention in this doc is
+the *target*, not yet the *shipped* headline number, until C2 lands. `fluxtune_dynkc` (below) is the
+flag that will promote it from research to headline when that happens — **parked, not deleted** (see
+Remaining work #3).
+
+*(`fluxtune_dynkc` — dynamic_kc enabled, ⛔ RESEARCH, not part of the paper matrix yet — this *is* the
+flag path that lands C2 into the headline `fluxtune` config once it's validated; parked pending that
+decision, not slated for removal — see Remaining work.)*
 
 Exact per-baseline selector/optimizer/avail-tracking knobs live in `baselines.yaml`, not repeated here.
 **Opt flags (fluxtune, flag-gated, byte-identical off):** Opt-1 `suppress_redundant_weights` (all
 baselines) · Opt-2 `var_stopping_policy=plateau` · Opt-3 `agg_rate_conf.type=grad_aware` · Opt-4
-`dynamic_kc.enabled` (wired, off).
+`dynamic_kc.enabled` = **C2, wired, off** (pending — see ᵖ above).
 
 **Excluded — related work only, not run on this substrate:** `oort` (raw CNN utility-guided selection)
 — subsumed, its utility idea already lives inside `async_oort`/Felix(P)/FluxTune's own selector, cite as
@@ -100,9 +110,10 @@ revisit Phase-2.
 Three layers: **L0 async execution** (adapts FedBuff, *not claimed*) · **L1 iteration-level control** —
 the reframe that collapses the *control* grain onto FwdLLM's already-fine *execution* grain
 (perturbation=one scalar, databin, iteration); *enabling but insufficient alone* · **L2** the three
-contributions **C1/C2/C3** (the policies the reframe makes expressible). FwdLLM owns the execution
-primitives; FluxTune owns L1+L2. **SPRY**: discussed gradient-quality upper bound, not run
-(weight-splitting ⟂ homogeneous deployment).
+contributions **C1/C2/C3** (the policies the reframe makes expressible; **C2 pending**, not yet in the
+headline config — see ᵖ note under the FluxTune paper matrix). FwdLLM owns the execution primitives;
+FluxTune owns L1+L2. **SPRY**: discussed gradient-quality upper bound, not run (weight-splitting ⟂
+homogeneous deployment).
 
 ### Why round→iteration matters *more* here than in classical FL
 
@@ -126,7 +137,8 @@ vs iteration variants; (b) fraction of aggregator time blocked on the round barr
 committing; (c) the categorical does-it-even-complete result for round-based rungs under a Phase-2
 `mobiperf_*` trace vs. iteration-based ones.
 
-### Felix ↔ FluxTune disambiguation (both are the operator's own work; both must publish independently)
+### Felix ↔ FluxTune disambiguation (both are the operator's own work — Felix's preprint is already
+public, FluxTune has not yet published — each paper's results must still stand fully independent)
 
 Felix's paper evaluates image/speech classification via backprop on `async_cifar10`/`google-speech`;
 FluxTune only exists on AG News/DistilBERT, forward-mode — no shared task/metric axis for one to appear
@@ -138,11 +150,34 @@ Felix's own evaluation.
   only in the Felix section above. Neither is ever merged into a shared cross-paper results table.
 - **Naming firewall.** Anything derived from Felix but run on the forward-grad substrate is always
   labeled `Felix(P)` or "NOT FeLiX" in text, captions, and yaml descriptions — never bare "Felix"/"FeLiX"
-  — so a FluxTune-paper ablation number can never be cited as "Felix's result."
+  — so a FluxTune-paper `Felix(P)`/`Felix(P)+IT` number (EVAL or ABLATION alike) can never be cited as
+  "Felix's result." This firewall is what makes headlining `Felix(P)` in FluxTune's own results table
+  safe — the `(P)` marks it as FluxTune's re-run, not a claim about Felix's paper.
 - **Directionality.** FluxTune may say "we build on Felix's client-tier pools, async execution, and
   staleness/utility-aware selection" (`Felix(P)`/`Felix(P)+IT` are the receipts). Felix's paper may
   never say "FluxTune's approach, evaluated on our task, does worse than ours" — FluxTune's approach is
   never run on Felix's task.
+- **Why the asymmetry is principled, not just a house rule.** What ports *into* FluxTune from Felix
+  (oort-smart selection, fedbuff aggregation, availability-tiered tracking) are substrate-agnostic
+  scheduling/aggregation policies — they decide *when/which clients* to select or commit, never *how* a
+  client computes its update — so they transplant cleanly onto forward-mode JVP training
+  (`Felix(P)`/`Felix(P)+IT` are that transplant). What does **not** port back — **C1** (JVP-magnitude
+  perturbation selection: pick the steepest of `P` measured candidate directions) and **C3**
+  (gradient-aware aggregation: align-gate + inverse-variance weighting, built specifically to tame the
+  single-scalar JVP estimate's high variance, `fluxtune_contributions.md` §8.3) — are contributions
+  *about the forward-gradient computation itself*. Backprop already yields one exact minibatch gradient
+  per step: there's no candidate-direction to select among (C1 has no backprop analog) and no JVP-scale
+  single-sample noise for C3's variance-gate to damp. So FluxTune's headline contributions are
+  *structurally* inapplicable to Felix's training method — not merely "different paper, different task"
+  — which is why Felix's paper can argue non-comparison qualitatively rather than needing to run
+  FluxTune on its task.
+- **The one exception: C2 (dynamic K/C).** Cohort-sizing is a scheduling policy, not a
+  gradient-computation one — exactly as substrate-agnostic as the mechanisms that already port *into*
+  FluxTune from Felix. It plausibly benefits Felix's own async substrate too. Treat any Felix-side use
+  of it as a **Felix-paper-internal ablation candidate** (`dynamic_kc` applied to `felix`/`fedbuff`,
+  argued and evaluated entirely within Felix's own contribution set) — not a FluxTune comparison, and a
+  separate concern from `fluxtune_dynkc`'s removal from *FluxTune's* paper matrix (Remaining work #3),
+  which is scoped to this paper only.
 - If Felix's paper later adds a small-on-device-LM backprop experiment for generalization, it stays
   entirely Felix's own method (still backprop) and is never compared against FluxTune in either
   direction — it's a **cited motivating result** in FluxTune's introduction, not a baseline entry.
@@ -171,9 +206,15 @@ Naming is finalized (this doc); none of it is propagated to code/tests/yaml file
    (base/momentum/seeded/sim/sim_seeded/sim_short/sim_short_momentum/short/short_momentum);
    cosmetic-only comment fixes in `flame/config.py`, `flame/launch/runner.py`,
    `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`, `flame/selector/random.py`.
-3. **Delete `fluxtune_dynkc`**: drop or repurpose `test_fluxtune_dynkc_preserves_legacy_production_default`
-   (candidate: redefine as a C2/dynamic-K-C ablation on the new keys), remove its
-   `test_config_generator.py` param case, drop the comment in `configs/trainer_base.yaml`.
+3. **Park `fluxtune_dynkc` (do not delete)**: C2/dynamic K/C is a pending, not descoped, third L2
+   contribution (see ᵖ note under the FluxTune paper matrix) — `fluxtune_dynkc` is the flag path that
+   promotes it from `⛔ RESEARCH` to part of the headline `fluxtune` config once validated. Keep
+   `test_fluxtune_dynkc_preserves_legacy_production_default` and its `test_config_generator.py` param
+   case as-is; leave the `configs/trainer_base.yaml` comment. Revisit only once C2 either lands (rename
+   off the `_dynkc` research name into the finalized headline config) or is explicitly descoped (ask the
+   operator first — this doc's ✅/⚠/pending framing depends on the answer). A *Felix*-side reuse of
+   dynamic K/C as a Felix-internal ablation (disambiguation note, C2 exception) is a separate, later
+   concern either way.
 4. **Sweep remaining referencing docs/scripts** for old-key mentions and apply this doc's display names:
    `EXPERIMENTS.md` (§1 table + §10 run ledger), `EXPTS_CHARTER.md`, `simulate_fwdllm.md`,
    `fluxtune_contributions.md`, `MIGRATION_TO_LAUNCHER_FWDLLM.md`, `expt_scripts/compare_baselines.py`,
