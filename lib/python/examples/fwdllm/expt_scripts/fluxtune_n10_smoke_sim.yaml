@@ -1,7 +1,8 @@
-# FedFwd SIMULATED-clock smoke test: 10 trainers, agnews H5 partitions
-# (client_idx 0-9 of the 100 available niid_label_clients=100_alpha=1
-# partitions). Sim sibling of fluxtune_n10_smoke.yaml -- IDENTICAL except
-# time_mode: simulated and the job id (so run dirs don't collide).
+# FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
+# (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
+# population). Sim sibling of fluxtune_n10_smoke.yaml -- IDENTICAL except
+# time_mode: simulated and the job id (so run dirs don't collide). c=30
+# concurrency pool out of the 100-trainer population (agg_goal=3).
 #
 # fluxtune is the ASYNC baseline (async_oort selector, fedbuff), so this
 # variant exercises the Batch-1 async grad-loop sim drive: _sim_recv_min_grad
@@ -19,7 +20,7 @@
 
 experiments:
   - name: fluxtune_n10_smoke_sim
-    description: "FedFwd SIM smoke (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated). Validates the Batch-1 async grad-loop sim drive."
+    description: "FedFwd SIM smoke (100 trainers, c=30, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated). Validates the Batch-1 async grad-loop sim drive."
 
     baseline: fluxtune
 
@@ -29,7 +30,7 @@ experiments:
       trainer_main: trainer/main.py
 
     trainer:
-      num_trainers: 10
+      num_trainers: 100
       start_id: 1
       dataset:
         name: agnews
@@ -46,8 +47,8 @@ experiments:
       time_mode: simulated
       # Skip the registry's 4-18s artificial delay for a fast smoke run.
       enable_training_delays: false
-      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
-      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
@@ -77,7 +78,7 @@ experiments:
           id: fluxtune_n10_smoke_sim
         hyperparameters:
           rounds: 50  # short smoke run, not the full 300
-          # With c=10 >> agg_goal=3, commit-then-carry the surplus grads +
+          # With c=30 >> agg_goal=3, commit-then-carry the surplus grads +
           # hold busy trainers across the boundary (K-D12). Applies to real
           # too (§R, 2026-07-11) -- must match the real yaml.
           inflight_residence: true
@@ -136,23 +137,21 @@ experiments:
           partition_method: uniform
         selector:
           kwargs:
-            # Scaled down from the baseline's n=150-ish defaults
-            # (c=15, aggGoal=5, minInitialTrainers=15) to fit 10 trainers.
-            # minInitialTrainers=10 = wait for all 10 smoke trainers to join.
-            # aggGoal is set once via the top-level `agg_goal: 3` above --
-            # the runner fans it into both this kwarg and
-            # hyperparameters.aggGoal so they can't drift apart; don't
-            # duplicate it here.
-            c: 10
-            minInitialTrainers: 10
+            # c=30 concurrency pool out of the 100-trainer population (§O:
+            # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
+            # pool keeps enough in-flight surplus for the c-agg_goal=27
+            # rotating cohort, §F#17). minInitialTrainers matches c (only c
+            # trainers need join before selection starts). aggGoal is set
+            # once via the top-level `agg_goal: 3` above -- the runner fans
+            # it into both this kwarg and hyperparameters.aggGoal so they
+            # can't drift apart; don't duplicate it here.
+            c: 30
+            minInitialTrainers: 30
 
     execution:
-      # 8, not 1, even though this YAML's own default is 10 trainers --
-      # run_sequential.sh's --num-trainers commonly scales this up to 100+
-      # without a matching GPU bump (it has no num_gpus override of its
-      # own), and cramming 100 trainer processes onto 1 GPU OOMs almost
-      # immediately (see fluxtune_n10_smoke run 20260629_221116). Spreading
-      # across 8 GPUs even at the 10-trainer default is harmless headroom.
+      # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
+      # 100 trainer processes onto 1 GPU OOMs almost immediately (see
+      # fluxtune_n10_smoke run 20260629_221116).
       num_gpus: 8
       sleep_between_spawns: 2.0
       aggregator_warmup_time: 20

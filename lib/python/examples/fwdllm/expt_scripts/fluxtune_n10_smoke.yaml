@@ -1,12 +1,14 @@
-# FedFwd smoke test: 10 trainers, agnews H5 partitions (client_idx 0-9 of the
-# 100 available niid_label_clients=100_alpha=1 partitions), real time_mode
+# FedFwd smoke test: 100 trainers, agnews H5 partitions (client_idx 0-99, the
+# full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
 # (FedFwd has no simulated-clock support yet).
 #
 # Uses the `fluxtune` baseline (async, async_oort selector, fedbuff with an
 # explicit learning_rate, 3-tier client_notify, fixed K/C i.e.
 # selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
 # Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
-# for full real/sim parity coverage across the taxonomy.
+# for full real/sim parity coverage across the taxonomy. c=30 concurrency
+# pool out of the 100-trainer population (agg_goal=3, c-async only -- see §O:
+# fluxtune's JVP cost per commit is ~4x fwdllm/plus's, hence the higher c).
 #
 # Run:
 #   python -m flame.launch.run_experiment \
@@ -14,7 +16,7 @@
 
 experiments:
   - name: fluxtune_n10_smoke
-    description: "FedFwd smoke (10 trainers, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
+    description: "FedFwd smoke (100 trainers, c=30, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
 
     baseline: fluxtune
 
@@ -24,7 +26,7 @@ experiments:
       trainer_main: trainer/main.py
 
     trainer:
-      num_trainers: 10
+      num_trainers: 100
       start_id: 1
       dataset:
         name: agnews
@@ -41,8 +43,8 @@ experiments:
       time_mode: real
       # Skip the registry's 4-18s artificial delay for a fast smoke run.
       enable_training_delays: false
-      # client_idx = (trainer_id - 1) % 100 -- wraps 10 trainers onto a
-      # distinct, non-colliding subset (0-9) of the 100 H5 partitions.
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
@@ -92,23 +94,21 @@ experiments:
           partition_method: uniform
         selector:
           kwargs:
-            # Scaled down from the baseline's n=150-ish defaults
-            # (c=15, aggGoal=5, minInitialTrainers=15) to fit 10 trainers.
-            # minInitialTrainers=10 = wait for all 10 smoke trainers to join.
-            # aggGoal is set once via the top-level `agg_goal: 3` above --
-            # the runner fans it into both this kwarg and
-            # hyperparameters.aggGoal so they can't drift apart; don't
-            # duplicate it here.
-            c: 10
-            minInitialTrainers: 10
+            # c=30 concurrency pool out of the 100-trainer population (§O:
+            # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
+            # pool keeps enough in-flight surplus for the c-agg_goal=27
+            # rotating cohort, §F#17). minInitialTrainers matches c (only c
+            # trainers need join before selection starts). aggGoal is set
+            # once via the top-level `agg_goal: 3` above -- the runner fans
+            # it into both this kwarg and hyperparameters.aggGoal so they
+            # can't drift apart; don't duplicate it here.
+            c: 30
+            minInitialTrainers: 30
 
     execution:
-      # 8, not 1, even though this YAML's own default is 10 trainers --
-      # run_sequential.sh's --num-trainers commonly scales this up to 100+
-      # without a matching GPU bump (it has no num_gpus override of its
-      # own), and cramming 100 trainer processes onto 1 GPU OOMs almost
-      # immediately (see fluxtune_n10_smoke run 20260629_221116). Spreading
-      # across 8 GPUs even at the 10-trainer default is harmless headroom.
+      # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
+      # 100 trainer processes onto 1 GPU OOMs almost immediately (see
+      # fluxtune_n10_smoke run 20260629_221116).
       num_gpus: 8
       sleep_between_spawns: 2.0
       aggregator_warmup_time: 20

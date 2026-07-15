@@ -114,23 +114,40 @@ SIM↔SIM reproducibility (principle #12).
 ### 3h (10800s) two-node parity re-run — commands
 
 Same delay-divisor split as §O (fluxtune's JVP cost ≈4× fwdllm/plus's — not the ~10×
-`perturbation_count` alone would suggest), `--num-gpus 8` matching the calibration basis:
+`perturbation_count` alone would suggest), `--num-gpus 8` matching the calibration basis. Also bumped
+this pass: `num_trainers` 10→100 (now the FULL §O registry/H5-partition population, not a 10-trainer
+subset of it) and concurrency `c` 10→30 for fluxtune only (fwdllm/fwdllm_plus keep `c=10`) — baked into
+the yaml defaults (`git diff` the 6 `*_n10_smoke*.yaml` files), passed again explicitly below so the
+two-node `condition_fp` check hashes the actual N/C instead of falling back to the literal string
+`"yaml"`:
 
 ```
-# Node A — fluxtune (own delay-divisor)
+# Node A — fluxtune (own delay-divisor, higher c)
 lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fluxtune \
     --mode both --delays on --delay-divisor 0.48 --num-gpus 8 --max-runtime-s 10800 \
+    --num-trainers 100 --c-async 30 \
     --after parity,sanity,plot
 
 # Node B — fwdllm + fwdllm_plus (shared delay-divisor)
 lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fwdllm,fwdllm_plus \
     --mode both --delays on --delay-divisor 1.63 --num-gpus 8 --max-runtime-s 10800 \
+    --num-trainers 100 --c 10 --min-initial-trainers 10 \
     --after parity,sanity,plot
 ```
+
+**Gotcha caught by dry-run:** passing `--c` (not `--c-async`) together with `--num-trainers` makes
+`run_sequential.sh` default `minInitialTrainers` to `NUM_TRAINERS` (100), not `c` (see its `patch()`:
+`if not MIN_INIT: kwargs["minInitialTrainers"] = NUM_TRAINERS if NUM_TRAINERS else SEL_C`) — silently
+forcing the sync barrier to wait for all 100 trainers to join before round 1, not just `c=10`. Node B's
+command above adds `--min-initial-trainers 10` to cancel that. `--c-async` (fluxtune, Node A) doesn't
+trigger this fallback, so no equivalent flag is needed there. Verified both node commands with
+`--dry-run` — tier② now shows the intended `minInit` on both.
 
 Add `--yes` on either if launching unattended (skips the interactive confirm). Read after: the printed
 parity scoreboard (`overhead_residual`/`C1`/`preferred_duration` movement vs the table above), plus
 `round_threshold` and the sorted-duration population (real vs sim) for fluxtune's `preferred_duration`.
+`k` is NOT set — `RandomSelector`/`AsyncOortSelector` have no `k` concept (both selectors' own kwargs
+comments confirm it; `c`/`agg_goal` alone drive selection), so a `k` kwarg would be a dead, unread field.
 
 ### fluxtune `preferred_duration` (oort, 50.7pp gap) — not yet root-caused
 
