@@ -857,7 +857,12 @@ class AsyncOortSelector(AbstractSelector):
         # TODO: (DG) Check. Changed from self.selected_ends to local
         # selected_ends.
 
-        selected_random_ends = set(self._pyrng.sample(sorted(ends), num_of_ends))
+        # dict.fromkeys (not set()) -- preserves _pyrng.sample's deterministic
+        # order. A bare set() here iterates in str-hash order, which is
+        # randomized per-process (PYTHONHASHSEED) independent of the seeded
+        # RNG, so two same-seed runs pick the identical trainers but dispatch
+        # them in a different order every launch.
+        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
         return {key: None for key in selected_random_ends}

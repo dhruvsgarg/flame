@@ -185,3 +185,70 @@ class TestDedicatedRngContract:
         sel = _Mini(_seed=seed)
         assert sel._seed == seed
         assert isinstance(_np_seq(sel), list) and isinstance(_py_seq(sel), list)
+
+
+class TestSelectRandomOrderDeterminism:
+    """select_random's *dispatch order*, not just its chosen set, must be a pure
+    function of (state, seed): it feeds `_pyrng.sample(...)` (deterministic)
+    into `dict.fromkeys(...)` to build the returned candidates dict. A bare
+    `set()` there would silently reorder by string hash, which Python
+    randomizes PER-PROCESS (PYTHONHASHSEED) independent of the seed -- same
+    trainers chosen, different dispatch order every launch. That only shows up
+    ACROSS process launches (hash seed is fixed for the lifetime of one
+    process), which is also why a same-process frozenset-comparison test
+    (as used elsewhere in this file) cannot catch it -- these spawn real
+    subprocesses under different PYTHONHASHSEED values, exactly reproducing
+    how the bug first showed up (two separate `run_experiment` launches with
+    identical `hyperparameters.seed` picking the same 30 trainers in a
+    different order each time)."""
+
+    _SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
+"""
+
+    def _order_under_hashseed(self, module, cls, kwargs, hashseed):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        env = dict(os.environ, PYTHONHASHSEED=hashseed)
+        code = self._SNIPPET.format(module=module, cls=cls, kwargs=kwargs)
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        # logging (this repo's default config) may also land on stdout; the
+        # payload is always the last non-empty line.
+        last_line = [ln for ln in out.stdout.splitlines() if ln.strip()][-1]
+        return json.loads(last_line)
+
+    def _assert_order_hashseed_invariant(self, module, cls, kwargs):
+        a = self._order_under_hashseed(module, cls, kwargs, "0")
+        b = self._order_under_hashseed(module, cls, kwargs, "1")
+        c = self._order_under_hashseed(module, cls, kwargs, "42")
+        assert a == b == c, (
+            f"{cls}.select_random order depends on PYTHONHASHSEED "
+            f"(same seed=7, different hash seeds): {a} vs {b} vs {c}"
+        )
+
+    def test_async_oort_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "async_oort", "AsyncOortSelector",
+            dict(
+                c=5, aggGoal=2, evalGoalFactor=0.5,
+                roundNudgeType="last_train", selectType="default",
+            ),
+        )
+
+    def test_oort_order_reproducible(self):
+        self._assert_order_hashseed_invariant("oort", "OortSelector", dict(aggr_num=5))
+
+    def test_async_random_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2)
+        )

@@ -223,7 +223,11 @@ class AsyncRandomSelector(AbstractSelector):
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends."""
 
-        selected_random_ends = set(self._pyrng.sample(sorted(ends), num_of_ends))
+        # dict.fromkeys (not set()) -- preserves _pyrng.sample's deterministic
+        # order; set() iterates in str-hash order, randomized per-process
+        # (PYTHONHASHSEED) independent of the seeded RNG (see async_oort.py's
+        # twin of this method for the full explanation).
+        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
         return {key: None for key in selected_random_ends}

@@ -98,23 +98,38 @@ per lap, and bulk-collecting risks stranding messages (same hazard `drain_ready`
 validation, not attempted blind. The log-volume half of the gap (not the lap coupling) was cheap to cut and is
 fixed (§G).
 
-### Next decisions before the next run
+### Session 8 (07-14) — momentum A/B run + RNG-order bug found. PAUSED, parity is next priority.
 
-1. ~~fluxtune server-optimizer, code~~ — **LANDED (07-14), see §G.** `server_momentum` (heavy-ball momentum,
-   default 0.0 = byte-identical) gated in the shared `FedSgdAggregator.aggregate()`. Code + tests landed, no
-   run yet. Short (8min) with/without pairs exist for **all 3 baselines** now (`*_n10_smoke_short.yaml` vs
-   `*_n10_smoke_short_momentum.yaml`, momentum=0.9), not just fluxtune — S1's scope is UNDECIDED
-   (`fluxtune_contributions.md` §8.3 caveat: fwdllm's own telemetry shows the same early acc=0.25/mcc=0
-   collapse). **Short runs can only test the early-cold-start severity** (`data_id` ~0-15, the only range
-   an 8min budget reaches) — confirming fluxtune's specific **position-locked, recurs-every-epoch** pattern
-   (F5) needs ≥2 full laps (`total_data_bins=150` each), which at the per-`data_id` iteration cost observed
-   (~11-20s × several retries) realistically needs a 7200s-class run, not a short one.
+**Momentum A/B (4h, N=100):** `server_momentum=0.9` **diverges to NaN loss by `data_id` 73**; no-momentum leg
+healthy (acc 0.35→0.86). Root-caused and written up in `fluxtune_contributions.md` §8.2 S1 (REFUTED as
+heavy-ball; needs variance-normalized step or Polyak/EMA instead). **S1/S2/S3 all PAUSED** — momentum work
+does not resume until Phase-1 parity closes.
+
+**RNG-order bug — FOUND + FIXED.** While diffing the two A/B runs' `selection` telemetry (same
+`hyperparameters.seed=1234` both legs): the chosen **set** of trainers matched exactly (fingerprints
+identical) but the **dispatch order** in the `chosen` list did not. Root: `select_random` (`async_oort.py`,
+`oort.py`, `async_random.py`) fed `_pyrng.sample(...)`'s deterministically-ordered output through a bare
+`set()` before returning it; Python randomizes string-hash iteration order per-process
+(`PYTHONHASHSEED`, confirmed active, not pinned anywhere in the launch scripts), independent of the seed —
+same trainers, different order every launch. Fix: `set()` → `dict.fromkeys()` (preserves RNG order, still
+dedupes) at all 3 sites. New cross-process regression test
+(`tests/selector/test_selection_determinism.py::TestSelectRandomOrderDeterminism`, spawns subprocesses under
+different `PYTHONHASHSEED` — a same-process test can't see this, hash seed is fixed per-process) fails on the
+old code, passes on the fix. **This directly matters for parity**: it was silently inflating whatever the
+planned seeded real↔real pair (item 3 below) would have reported as "GPU-nondeterminism floor," and would
+have broken bit-for-bit SIM↔SIM reproducibility outright (principle #12). Landed 07-14, `pytest
+tests/selector/` 193/193 pass.
+
+### Next decisions before the next run — priority order
+
+1. **NEXT.** Operator-run seeded real↔real pair (`*_seeded.yaml`s, §G) now that the RNG-order bug is fixed —
+   this is the first clean measurement of the actual GPU-nondeterminism floor.
 2. Re-run the 7200s scoreboard with `agg_step_timing_breakdown` active + trimmed logging for a clean post-fix
-   baseline before drawing conclusions from the momentum A/B.
-3. Operator-run seeded real↔real pair (new `*_seeded.yaml`s, §G) to measure the GPU-nondeterminism floor.
-4. Already open before this session, still open: `sim_sct_ordered_drain` A/B (below), felix (async_cifar10)
-   46/46 re-confirmation (deferred repeatedly), C1/C2 convergence at matched `data_id` — then gate to Phase 2
-   (unavailability).
+   baseline.
+3. `sim_sct_ordered_drain` A/B (below), felix (async_cifar10) 46/46 re-confirmation (deferred repeatedly),
+   C1/C2 convergence at matched `data_id` — then gate to Phase 2 (unavailability).
+4. **DEFERRED, not dropped:** fluxtune server-optimizer (S1 retry, Adam-style not heavy-ball) — see
+   `fluxtune_contributions.md` §8.2. Resume only after Phase-1 parity exit criteria (§E) are met.
 
 ### Short-run iteration loop (now) — short run → check logs/telemetry → fix → repeat
 
@@ -410,6 +425,11 @@ K8/U2 within bar; V1/V2 binned residual flat.
 *(Collapsed from the former §G/§H/§K. Superseded hypothesis chains keep only the final correct answer + a
 one-word lesson; pure scaffolding/telemetry-only entries dropped — git has that record. Full history:
 `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.)*
+
+**`select_random` dispatch order leaked through PYTHONHASHSEED (07-14) — FIXED.** Seeded RNG sample was correct
+(same trainer set) but wrapped in a bare `set()` before return, so iteration order followed per-process string
+hashing, not the seed. Fix: `set()` → `dict.fromkeys()` in `async_oort.py`/`oort.py`/`async_random.py`; new
+cross-process order test. 193/193 selector tests pass.
 
 **Parity-CLI progress-axis bugs (Bug C, 07-14) — FIXED.** `_progress_axis()` chose round-vs-data_id per side
 independently, and raw `cycle_data_id` collided across laps; batch-CLI glob matched `fwdllm_plus` for `fwdllm`
