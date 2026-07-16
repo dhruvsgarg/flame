@@ -89,8 +89,10 @@ from parity.checks import (  # noqa: F401, E402
     budget_not_cap,
     # §F fwdllm variance-cadence layer (V/DK/G rungs)
     _iters_per_data_id,
+    _moving_avg,
     cohort_sequence_parity,
     iters_per_data_id_parity,
+    iters_per_data_id_moving_avg_parity,
     var_trajectory_parity,
     cached_v_pool_parity,
     force_commit_rate_parity,
@@ -109,7 +111,9 @@ from parity.checks import (  # noqa: F401, E402
     drain_wall_budget_parity,
     trainer_phase_wall_budget_ok,
     _STEP_TIMING_REAL_ONLY_FUNCS,
+    _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS,
     step_timing_breakdown_parity,
+    agg_step_timing_breakdown_parity,
     aggregation_compute_wall_parity,
     # overall
     run_all_parity,

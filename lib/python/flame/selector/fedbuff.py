@@ -488,7 +488,9 @@ class FedBuffSelector(AbstractSelector):
         # non-reproducible, clobbered the process-global random state for every
         # other consumer, and defeated the aggregator's deterministic seed
         # (breaking real/sim parity). The RNG is seeded once at aggregator init.
-        shuffled_end_ids = list(ends.keys())  # get the keys
+        # sorted() before shuffle: a seeded shuffle is applied positionally, so
+        # ends.keys() (join order, differs real vs sim) would leak into the result.
+        shuffled_end_ids = sorted(ends.keys())  # canonical order, then shuffle
         logger.debug(f"Original shuffled_end_ids: {shuffled_end_ids}")
         self._pyrng.shuffle(shuffled_end_ids)  # then shuffle (dedicated RNG)
         logger.debug(f"Updated shuffled_end_ids: {shuffled_end_ids}")

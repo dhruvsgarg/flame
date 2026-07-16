@@ -3031,6 +3031,27 @@ def aggregation_plots(records, out, stamp, tdir):
                            nbins=150, reducer="mean")
         if p: saved.append(p)
 
+    # 1b) iterations-per-data_id (realized dynamic-K) = agg_rounds per
+    # cycle_data_id, smoothed with a P10-P90 band. Visual behind the
+    # v1_iter_per_data_id / v1b_iters_moving_avg rungs (simulate_fwdllm.md §F).
+    iters_by_data = defaultdict(int)
+    for r in ar:
+        did = r.get("cycle_data_id")
+        if did is not None:
+            iters_by_data[did] += 1
+    if iters_by_data:
+        ix = sorted(iters_by_data)
+        # nbins << data_id count so each bin holds several bins; else the band is
+        # degenerate (1 point/bin).
+        _nb = max(10, min(40, len(ix) // 3))
+        p = ph.binned_line(
+            {"iters/data_id": (ix, [iters_by_data[k] for k in ix])},
+            "data_id (progress)", "iterations to commit (realized K)",
+            "Iterations per data bin (realized dynamic-K, mean/bin ± P10-P90)",
+            d, "iters_per_data_bin.pdf", stamp=stamp,
+            nbins=_nb, reducer="mean", band=True)
+        if p: saved.append(p)
+
     # 2) staleness vs trainer-speed (per commit): slow trainers should be the
     # stale ones — confirms the staleness mechanism. Both are single-element lists.
     sp_x, st_y = [], []

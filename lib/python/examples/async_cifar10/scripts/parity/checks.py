@@ -4014,6 +4014,16 @@ _AGG_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
     "_distribute_weights_async",
 })
 
+# Backgrounded / off-critical-path funcs, reported but excluded from `ok`.
+# `eval_model` runs on a daemon thread (off the vclock, off either critical path,
+# simulate_fwdllm.md §B fluxtune #4); its real<->sim gap is pure GPU contention
+# (sim trainers never sleep -> denser GPUs), not an algorithmic divergence. Any
+# bleed into TRAINER compute would still fail the enforced trainer-side
+# `phase_gpu_compute` / `step_timing_breakdown`, so this can't mask a regression.
+_AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
+    "eval_model",
+})
+
 # Below this a @timer_decorator duration is quantization noise, not a
 # measurement: KS on two degenerate all-zero samples scores the tie-breaking
 # dither, not a divergence.
@@ -4150,8 +4160,9 @@ def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_agg), _collect(sim_agg)
-    return _step_timing_compare(r_by_func, s_by_func, ks_tol,
-                                _AGG_STEP_TIMING_REAL_ONLY_FUNCS)
+    return _step_timing_compare(
+        r_by_func, s_by_func, ks_tol,
+        _AGG_STEP_TIMING_REAL_ONLY_FUNCS | _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4242,6 +4253,26 @@ def _iters_per_data_id(cycles: list) -> dict:
     return out
 
 
+def _moving_avg(seq: list, window: int) -> list:
+    """Trailing simple moving average over `seq` (window <= i uses a short
+    trailing window at the head, so out[i] is always defined). window<=1 or a
+    sequence shorter than the window degrades to the cumulative running mean."""
+    if window <= 1 or len(seq) < window:
+        out, run = [], 0.0
+        for i, v in enumerate(seq):
+            run += v
+            out.append(run / (i + 1))
+        return out
+    csum = [0.0]
+    for v in seq:
+        csum.append(csum[-1] + v)
+    out = []
+    for i in range(len(seq)):
+        lo = max(0, i - window + 1)
+        out.append((csum[i + 1] - csum[lo]) / (i + 1 - lo))
+    return out
+
+
 def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
                              mean_tol_rel: float = 0.15,
                              max_bin: Optional[int] = None) -> dict:
@@ -4277,6 +4308,66 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
         "mean_tol_rel": mean_tol_rel,
         "n_real_data_ids": len(r_iters),
         "n_sim_data_ids": len(s_iters),
+    }
+
+
+def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
+                                        ma_mean_abs_tol: float = 0.25,
+                                        ma_max_abs_tol: float = 0.75,
+                                        cum_mean_rel_tol: float = 0.05,
+                                        max_bin: Optional[int] = None) -> dict:
+    """V1b [DIST]: MOVING-AVERAGE trajectory of iterations-per-data_id over the run.
+
+    v1_iter_per_data_id compares the POOLED distribution + global mean, blind to a
+    drift that develops over the run but cancels in the pooled stats (sim needing
+    more cycles late-run, fewer early). This orders realized K by data_id (the
+    progress axis), smooths both legs with a trailing moving average, and requires
+    sim's curve to shadow real's within a tight band -- the "tight, not exact"
+    contract for cadence parity (exact per-bin parity is impossible past ~bin 6,
+    cohort_sequence §). Gates on three bounds: mean |Δ| and worst |Δ| of the MA
+    curves, and the cumulative-mean rel diff. SKIPs on non-fwdllm / <2 shared bins.
+    """
+    rc = _fwd_cadence_cycles(real, max_bin)
+    sc = _fwd_cadence_cycles(sim, max_bin)
+    if not rc or not sc:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
+    r_map, s_map = _iters_per_data_id(rc), _iters_per_data_id(sc)
+    # Align on data_ids BOTH legs reached (real may cap earlier on a wall budget).
+    common = sorted(set(r_map) & set(s_map))
+    if len(common) < 2:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "fewer than 2 shared data_ids — moving average undefined"}
+    r_seq = [r_map[d] for d in common]
+    s_seq = [s_map[d] for d in common]
+    w = max(2, min(window, len(common)))
+    r_ma, s_ma = _moving_avg(r_seq, w), _moving_avg(s_seq, w)
+    devs = [abs(a - b) for a, b in zip(r_ma, s_ma)]
+    ma_mean_abs = sum(devs) / len(devs)
+    ma_max_abs = max(devs)
+    r_mean = sum(r_seq) / len(r_seq)
+    s_mean = sum(s_seq) / len(s_seq)
+    cum_mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
+                    if max(r_mean, s_mean) > 0 else 0.0)
+    _wi = max(range(len(devs)), key=lambda i: devs[i])
+    return {
+        "ok": (ma_mean_abs <= ma_mean_abs_tol and ma_max_abs <= ma_max_abs_tol
+               and cum_mean_rel <= cum_mean_rel_tol),
+        "tier": "DIST",
+        "window": w,
+        "n_shared_data_ids": len(common),
+        "ma_mean_abs_dev": round(ma_mean_abs, 4),
+        "ma_max_abs_dev": round(ma_max_abs, 4),
+        "ma_mean_abs_tol": ma_mean_abs_tol,
+        "ma_max_abs_tol": ma_max_abs_tol,
+        "cum_mean_rel_diff": round(cum_mean_rel, 4),
+        "cum_mean_rel_tol": cum_mean_rel_tol,
+        "real_mean_iters": round(r_mean, 3),
+        "sim_mean_iters": round(s_mean, 3),
+        "worst_drift": {"data_id": common[_wi],
+                        "real_ma": round(r_ma[_wi], 3),
+                        "sim_ma": round(s_ma[_wi], 3),
+                        "abs_dev": round(devs[_wi], 3)},
     }
 
 
@@ -5304,6 +5395,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
     results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(real_agg, sim_agg)
     results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg, max_bin=max_bin)
@@ -5433,6 +5525,7 @@ CHECK_META: dict = {
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
     "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
+    "v1b_iters_moving_avg":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
     "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},

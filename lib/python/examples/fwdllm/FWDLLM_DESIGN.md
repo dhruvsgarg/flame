@@ -147,6 +147,19 @@ math); `perturbation_count`↓ (changes the baseline algorithm).
   `_setup_training_state` (the live ones are nested in `_train_one_batch`) and `_randn_like_wrapper`, whose
   per-perturbation `torch.cuda.synchronize()` existed only to make a debug hash accurate — and was never called.
 
+> **Cross-baseline coverage (checked 2026-07-16, NOT re-implemented) — the overhead removals above are already
+> shared by all three baselines.** fluxtune/fwdllm/fwdllm_plus route through the SAME files
+> (`aggregator/FedSgdAggregator.py`, `trainer/forward_training/{FedSgdTrainer,tc_transformer_trainer_distribute}.py`);
+> they differ by config (selector / agg mode / reselection), not by class. So the hash-gating, `_force_cuda_
+> memory_cleanup` deletion, INFO-log drops, and the aggregator per-commit dedup (`simulate_fwdllm.md` §G) all
+> apply to fwdllm/fwdllm_plus automatically — nothing to port. Two caveats: (1) **`jvp_perf_opt` is fluxtune-only
+> by design** (trainable-only FD + dropped diagnostic passes + cached-JVP reuse) and the SYNC cos-sim path is
+> intentionally untouched — that is a different algorithm, not a missing overhead removal, so there is nothing to
+> port there either. (2) **the sync baselines' compute has NOT been re-measured post-removal** — §O's
+> fwdllm/fwdllm_plus figures (mean 1.215s / max 1.712s) are pre-removal 07-12/13 numbers, so when Phase-1 parity
+> switches to those baselines, re-read their `gpu_compute_s` at n100 (as fluxtune's 3.63→0.47s here) and
+> re-derive their floor (11.0) the same way — it is almost certainly over-provisioned now too.
+
 ---
 
 ## §M  Sim receive/barrier redesign — event-driven, zero-hardcoded-wait
@@ -172,6 +185,21 @@ felix's default `recv_fifo` path doesn't (`simulate_fwdllm.md` §A / §B.1#8).
 `_sim_recv_min`/`_sim_pop_committable` path which fluxtune's grad loop never went through) — folded into the
 `[SIM_GRAD_RECV]` log line. Purpose: make the pending `sim_sct_ordered_drain` A/B (`simulate_fwdllm.md` §A)
 legible on the correctness dimension, not just `sim_rate`.
+
+**2026-07-16 sim-sleep audit (fluxtune async = CLEAN; sync-baseline TODOs).** Swept every `time.sleep` on the
+sim path. fluxtune's async loop has NO artificial waits: the `_distribute_weights_async` pads (0.1s×2) are
+`if not self.simulated` gated, `_await_dispatchable_under_scarcity` is `if self.simulated: return`, the trainer
+`pause_execution` (1s) is sim-gated, the aggregator `pause_execution` is dead (not in any `>>` chain), and the
+drain uses a 0.01s fast-probe + a timeout *ceiling* (`recv_fifo` returns on arrival). The modeled device delay
+(~14.6s) is a vclock jump, never slept — corroborated by `sim_rate` 2.79× (>1). **The 2.79×-vs-~32×-theoretical
+gap is NOT sleeps** — it's the queue-bound aggregator's serial per-commit throughput (~225ms; `simulate_fwdllm.md`
+§B fluxtune #3); pipelining `_process_aggregation_goal_met` is the real sim-speedup lever. **Sync-baseline TODOs
+(fwdllm/fwdllm_plus, revisit when Phase-1 moves to them):** (1) `top_aggregator._aggregate_weights:621` and
+`_distribute_weights:1124` each `time.sleep(0.5)` as a retry-backoff when `channel.ends()` is transiently empty —
+621's own comment notes sim's back-to-back distribute/aggregate can null `ends`, so this can fire in the sync sim;
+guarded (only when nothing to process) but worth confirming against telemetry and gating/shortening if it stalls.
+(2) The aggregator `pause_execution` unconditional `time.sleep(1)` is dead now but should be `if not simulated`
+gated for safety before any sync-loop rewire re-enables it.
 
 ---
 
@@ -227,6 +255,26 @@ fluxtune:               target 24.685+1.5=26.185s → divisor = 12.51/26.185 ≈
 **Fast-class headroom (the binding constraint — smallest budget, so checked explicitly, not just the mean).**
 Real observed GPU compute (07-12/13 banked runs, this dev GPU, not the NPU): fwdllm/plus mean 1.215s max
 1.712s; fluxtune mean 3.630s max 5.618s.
+
+> **RE-MEASURED 2026-07-16 (post overhead-removal) — the 3.630s "compute" was ~87% harness overhead, now
+> gone.** The §L determinism-hash / gc / logging removals + the aggregator per-commit dedup (`simulate_fwdllm.md`
+> §G) landed AFTER the 07-12/13 numbers above. On the 07-16 n100 pair (`run_20260716_112707`/`_112753`,
+> `gpu_compute_s` over 4787 sim / 4198 real updates) fluxtune's genuine forward-grad JVP is **mean 0.47s,
+> median 0.39s, p95 0.66s, max 6.1s (real) / 4.9s (sim)** — and it matches real↔sim to ~1% (mean 0.470 vs
+> 0.476), confirming the update-duration identity. The MEAN collapsed 3.63→0.47s (the removed hashing was a
+> flat per-update tax); the MAX barely moved (5.6→6.1s) because it is now genuine GPU-contention spikes at
+> n=100, not overhead. **Zero `[TIMING_OVERRUN]`** in either leg. The p95 (0.66s) is the real budget floor to
+> size against; the 6.1s max is a rare contention outlier.
+>
+> **Recomputed floor (÷0.48, ×1.3 over the new max compute).** The divisor stays **0.48** — it is NPU-fidelity
+> (models the reference mobile device's per-databin cost, independent of our harness overhead), so removing our
+> waste must NOT lower it. Only the overrun-safety FLOOR changes: `budget ≥ 1.3 × max_compute` → `floor ≥ 0.48
+> × 1.3 × 6.1 = 3.8s`. So **fluxtune floor 7.0 → 4.0** (budget 14.58s → **8.33s**, still ×1.36 over the 6.1s max
+> and ×12 over p95). The old 7.0 more-than-DOUBLED the fast-class device time (NPU-derived 6.25s → floored
+> 14.58s) purely for a now-vanished overrun risk — that is the "don't slow fluxtune trainers unnecessarily"
+> over-provisioning. Re-measure `training_overran` on the next run with `--delay-floor 4.0`; fwdllm/fwdllm_plus
+> floors are NOT re-derived here (needs their own fresh n100 compute read).
+
 ```
 fwdllm/plus fast-class: 3.00/1.63 = 1.840s vs observed max 1.712s → margin +0.13s (THIN — watch first)
 fluxtune fast-class:    3.00/0.48 = 6.250s vs observed max 5.618s → margin +0.63s (comfortable)
@@ -257,10 +305,11 @@ MEAN (3.00s raw delay) as the reference trainer, but the actual binding constrai
 5 of 100 trainers) — every single overrun traced to exactly those 5 trainers, zero involvement from same-GPU
 concurrency or any other speed class (both checked and refuted directly). **Fix landed** (`training_delay_
 floor_s`, `simulate_fwdllm.md` §G): floors the raw registry delay before dividing, so only the floor-adjacent
-trainers get a wider budget rather than rescaling everyone via the divisor. Derived per-baseline (this run's
-data, ×1.3 safety over the observed max): fluxtune floor **7.0** (budget 14.58s, was 4.17s), fwdllm+plus floor
-**11.0** (budget 6.75s, was 1.227s). **NOT YET VALIDATED against a live run** — `simulate_fwdllm.md` §A has the
-exact command (`--delay-floor 7.0`/`11.0`), staged for the next session.
+trainers get a wider budget rather than rescaling everyone via the divisor. Originally derived ×1.3 over the
+THEN-observed max (fluxtune floor 7.0 / fwdllm+plus 11.0). **fluxtune's floor is now re-derived to 4.0** on the
+post-overhead-removal compute (see the RE-MEASURED box above: 6.1s max → budget 8.33s); the 07-16 pair ran
+`--delay-floor 7.0` with **0 overruns**, so 4.0 is the tighter, still-safe value to validate next. fwdllm+plus
+floor 11.0 is unre-derived (needs their own fresh compute read).
 
 ---
 

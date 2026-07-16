@@ -987,6 +987,49 @@ class TestV1IterPerDataId:
         assert r["ok"] and r.get("status") == "SKIP", r
 
 
+class TestV1bItersMovingAvg:
+    """V1b: the MOVING-AVERAGE trajectory of iters-per-data_id must track tightly
+    over the whole run -- catches a run-length DRIFT that v1's pooled KS+mean is
+    blind to (identical pooled stats, divergent trajectory)."""
+
+    def test_matched_passes(self):
+        seq = [1, 2, 1, 3, 1, 2, 1, 1, 2, 3] * 6  # 60 data_ids
+        real = _agg(agg_rounds=_cadence_run(seq))
+        sim = _agg(agg_rounds=_cadence_run(seq))
+        r = pc.iters_per_data_id_moving_avg_parity(real, sim, window=10)
+        assert r["ok"] and r["ma_max_abs_dev"] == 0.0, r
+
+    def test_late_run_drift_fails_even_when_pooled_stats_match(self):
+        # Construct the exact case v1 misses: the SAME multiset of iteration
+        # counts (identical pooled histogram + mean, so v1 KS+mean PASS), but the
+        # ORDER differs -- sim front-loads the cheap data_ids and back-loads the
+        # expensive ones, so its moving average drifts above real's late-run.
+        base = ([1] * 30) + ([3] * 30)          # cheap-then-expensive
+        real = _agg(agg_rounds=_cadence_run(base))
+        sim = _agg(agg_rounds=_cadence_run(list(reversed(base))))  # expensive-then-cheap
+        # v1 (pooled) cannot tell them apart:
+        v1 = pc.iters_per_data_id_parity(real, sim)
+        assert v1["ok"] and v1["real_mean_iters"] == v1["sim_mean_iters"], v1
+        # v1b (trajectory) catches the drift:
+        r = pc.iters_per_data_id_moving_avg_parity(real, sim, window=10)
+        assert not r["ok"] and r["ma_max_abs_dev"] > 1.0, r
+
+    def test_small_jitter_within_tight_bound_passes(self):
+        # Per-data_id counts differ by an occasional +/-1 (fp16 jitter), but the
+        # smoothed average stays within the tight band -> PASS (exact not required).
+        real_seq = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2] * 5
+        sim_seq = [2, 3, 2, 1, 2, 2, 3, 1, 2, 2] * 5   # same mean, local wobble
+        real = _agg(agg_rounds=_cadence_run(real_seq))
+        sim = _agg(agg_rounds=_cadence_run(sim_seq))
+        r = pc.iters_per_data_id_moving_avg_parity(real, sim, window=10)
+        assert r["ok"], r
+
+    def test_non_fwdllm_skips(self):
+        a = _agg(agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])
+        r = pc.iters_per_data_id_moving_avg_parity(a, a)
+        assert r["ok"] and r.get("status") == "SKIP", r
+
+
 class TestV2VarTrajectory:
     def test_matched_passes(self):
         real = _agg(agg_rounds=_cadence_run([2, 2, 2]))
@@ -1640,6 +1683,41 @@ class TestStepTimingBreakdown:
         r = pc.step_timing_breakdown_parity(real, sim)
         assert not r["ok"]
         assert not r["by_func"]["jvp_eval"]["ok"]
+
+
+class TestAggStepTimingEvalModelExempt:
+    """`eval_model` runs on a daemon thread (off the vclock, off the critical
+    path); its real<->sim wall gap is pure GPU contention (sim trainers never
+    sleep the delay -> sim GPUs denser). It is reported but excluded from gating,
+    same mechanism as the real-only-sleep funcs. It must NOT be able to mask a
+    genuine divergence in an ON-path aggregator function."""
+
+    def _agg(self, funcs):
+        # funcs: {name: [durations]} -> a flat aggregator step_timing list.
+        st = [{"event": "step_timing", "func": f, "duration_s": d}
+              for f, ds in funcs.items() for d in ds]
+        return {"step_timing": st}
+
+    def test_eval_model_gap_reported_but_does_not_gate(self):
+        # eval_model 17s sim vs 11s real, everything else matched -> rung PASSES.
+        real = self._agg({"eval_model": [10.8] * 20, "aggregate": [0.1] * 20})
+        sim = self._agg({"eval_model": [17.2] * 20, "aggregate": [0.1] * 20})
+        r = pc.agg_step_timing_breakdown_parity(real, sim)
+        assert r["ok"], r
+        assert r["by_func"]["eval_model"]["gates_ok"] is False
+        assert r["by_func"]["eval_model"]["ok"] is False  # still reported as diverged
+
+    def test_eval_model_exemption_does_not_mask_on_path_divergence(self):
+        # aggregate (on the critical path) genuinely diverges -> rung still FAILS,
+        # even though eval_model is exempt.
+        real = self._agg({"eval_model": [10.8] * 20, "aggregate": [0.1] * 20})
+        sim = self._agg({"eval_model": [17.2] * 20, "aggregate": [0.4] * 20})
+        r = pc.agg_step_timing_breakdown_parity(real, sim)
+        assert not r["ok"], r
+        assert r["by_func"]["aggregate"]["ok"] is False
+
+    def test_eval_model_in_exemption_set(self):
+        assert "eval_model" in pc._AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
 
 
 class TestAggregationComputeWall:

@@ -173,7 +173,9 @@ class FedDanceSelector(AbstractSelector):
         mean_A = self.prev_round_mean_A if self.prev_round_mean_A is not None else 1.0
 
         utilities = []
-        for end_id, end in eligible.items():
+        # sorted(): _pick_top_n's stable sort resolves utility ties on this order;
+        # canonicalize (eligible dict = join order, differs real vs sim).
+        for end_id, end in sorted(eligible.items()):
             v = self.predictor.V_m(end_id, round_num)
 
             i = self.last_loss.get(end_id)

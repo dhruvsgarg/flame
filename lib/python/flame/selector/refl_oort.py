@@ -348,8 +348,9 @@ class REFLOortSelector(OortSelector):
         if not candidate_end_ids or num_to_select == 0:
             return []
 
-        # Filter ends to only candidates
-        candidate_ends = {eid: ends[eid] for eid in candidate_end_ids if eid in ends}
+        # sorted(): candidate_end_ids is a set (hash-order); canonicalize so the
+        # utility list + seeded draws are cross-mode-stable.
+        candidate_ends = {eid: ends[eid] for eid in sorted(candidate_end_ids) if eid in ends}
 
         if len(candidate_ends) <= num_to_select:
             return list(candidate_ends.keys())

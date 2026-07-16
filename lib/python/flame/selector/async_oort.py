@@ -667,7 +667,10 @@ class AsyncOortSelector(AbstractSelector):
         utility_list = []
         unexplored_end_ids = []
 
-        for end_id in ends.keys():
+        # sorted(): ends' dict order = trainer JOIN order (differs real vs sim);
+        # canonicalize before the seeded draws over unexplored_end_ids/utility_list
+        # so a shared seed picks identical cohorts in both modes.
+        for end_id in sorted(ends.keys()):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):

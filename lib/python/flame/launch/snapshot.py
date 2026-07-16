@@ -86,6 +86,13 @@ class ExperimentSnapshot:
             if agg_cfg is not None
             else (exp_config.aggregator.agg_goal if exp_config.aggregator else None)
         )
+        # Record the resolved seed (was dropped here while aggregator_config.json
+        # carried it) so the snapshot alone can reproduce selection -- §F-18.
+        effective_seed = (
+            (agg_cfg or {}).get("hyperparameters", {}).get("seed")
+            if agg_cfg is not None
+            else None
+        )
         return {
             "name": exp_config.name,
             "description": exp_config.description,
@@ -108,6 +115,7 @@ class ExperimentSnapshot:
                     "selector": exp_config.aggregator.selector,
                     "tracking_mode": exp_config.aggregator.tracking_mode,
                     "agg_goal": effective_agg_goal,
+                    "seed": effective_seed,
                 }
                 if exp_config.aggregator
                 else None

@@ -51,16 +51,22 @@ def _round_or_none(v, ndigits: int = 4):
 class AbstractSelector(ABC):
     """Abstract base class for selector implementation."""
 
+    # Fallback seed when none is threaded in: every selector is deterministic
+    # across real/sim by default, not a per-process PYTHONHASHSEED lottery.
+    DEFAULT_SEED = 1234
+
     def __init__(self, **kwargs) -> None:
-        # Reserved kwarg (consumed, not setattr'd as a hyperparameter).
+        # Reserved kwarg (consumed, not setattr'd). None -> DEFAULT_SEED.
         _seed = kwargs.pop("_seed", None)
+        if _seed is None:
+            _seed = self.DEFAULT_SEED
         for key, value in kwargs.items():
             setattr(self, key, value)
         self.selected_ends: set = set()
         self.ordered_updates_recv_ends: list = []
         # Dedicated, seed-able RNGs insulated from the process-global np.random/
         # random. Selectors MUST draw from these (never bare np.random/random) so
-        # selection is reproducible across real/sim. seed=None = unseeded (legacy).
+        # selection is reproducible across real/sim. Always seeded (DEFAULT_SEED).
         self._seed = _seed
         self._rng = _NpRandomState(_seed)
         self._pyrng = _StdRandom(_seed)

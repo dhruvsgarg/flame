@@ -25,7 +25,9 @@
 #   --c-async        selector.kwargs.c for the async baseline (fluxtune) only.
 #   --k / --agg-goal selector k / aggregator.agg_goal directly.
 #   --min-initial-trainers / --min-initial-frac  join barrier before first selection:
-#                    absolute count, or floor(F*N) (e.g. 0.98) startup-cohort parity lever.
+#                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
+#                    set-exact initial cohort real<->sim). frac<1 tolerates stragglers but
+#                    reintroduces a pool-size race; N blocks forever if a trainer never joins.
 #   --partition-method  hyperparameters.partition_method (agnews_partition.h5 group; default uniform/IID).
 #   --var-threshold / --max-iter-per-data-id  variance gate / force-commit cap (review each run, tier ①).
 #   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
@@ -404,8 +406,6 @@ def patch(exp, run_key, variant, trace):
     is_async = (run_key == "fluxtune")
     if SEL_C:
         kwargs["c"] = int(SEL_C)
-        if not MIN_INIT:
-            kwargs["minInitialTrainers"] = int(NUM_TRAINERS) if NUM_TRAINERS else int(SEL_C)
         if not AGG_GOAL:
             exp["aggregator"]["agg_goal"] = int(SEL_C)  # legacy: agg_goal matches c
     if SEL_C_ASYNC and is_async:
@@ -414,13 +414,21 @@ def patch(exp, run_key, variant, trace):
         kwargs["k"] = int(SEL_K)
     if AGG_GOAL:
         exp["aggregator"]["agg_goal"] = int(AGG_GOAL)
+    # minInitialTrainers join barrier. DEFAULT = N: the gate fires at
+    # ends_count >= threshold, so threshold < N admits a nondeterministic surplus
+    # (98 vs 99, join-vs-poll race) -> divergent seeded first cohort; threshold=N
+    # caps at the ceiling -> set-exact. CAVEAT: at N the first selection blocks
+    # until all N register -- one silent no-show and the run never progresses;
+    # --min-initial-frac <1 tolerates stragglers (reintroducing the race).
     if MIN_INIT:
         kwargs["minInitialTrainers"] = int(MIN_INIT)
     elif MIN_INIT_FRAC and NUM_TRAINERS:
-        # Parity lever (§B fluxtune #4): hold the first selection until ~frac*N join,
-        # so real+sim form an identical initial cohort. frac<1 tolerates stragglers.
         import math as _math
         kwargs["minInitialTrainers"] = max(1, _math.floor(float(MIN_INIT_FRAC) * int(NUM_TRAINERS)))
+    elif NUM_TRAINERS:
+        kwargs["minInitialTrainers"] = int(NUM_TRAINERS)
+    elif SEL_C:
+        kwargs["minInitialTrainers"] = int(SEL_C)
     if trace:
         exp["trainer"].setdefault("availability", {})["mode"] = trace
         t_hp = exp["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})

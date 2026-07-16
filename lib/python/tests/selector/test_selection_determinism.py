@@ -120,8 +120,10 @@ class TestDedicatedRngInsulation:
         second = _oort_chosen(7, make_ends)
         assert first == second
 
-    def test_unseeded_is_still_stochastic(self, make_ends):
-        # _seed=None (legacy) -> independent RNG each construction -> may differ.
+    def test_no_seed_defaults_to_deterministic(self, make_ends):
+        # No seed passed -> every construction falls back to DEFAULT_SEED, so
+        # selection is deterministic across constructions (there is no longer an
+        # "unseeded" path -- see AbstractSelector.DEFAULT_SEED).
         outcomes = {
             frozenset(
                 OortSelector(aggr_num=3).select(
@@ -132,7 +134,7 @@ class TestDedicatedRngInsulation:
             )
             for _ in range(12)
         }
-        assert len(outcomes) > 1
+        assert len(outcomes) == 1
 
 
 from flame.selector import AbstractSelector
@@ -166,10 +168,12 @@ class TestDedicatedRngContract:
         assert _np_seq(_Mini(_seed=7)) != _np_seq(_Mini(_seed=8))
         assert _py_seq(_Mini(_seed=7)) != _py_seq(_Mini(_seed=8))
 
-    def test_none_seed_is_unseeded_and_independent(self):
-        assert _Mini(_seed=None)._seed is None
-        # two independent unseeded RNGs almost surely differ
-        assert _np_seq(_Mini(_seed=None)) != _np_seq(_Mini(_seed=None))
+    def test_none_seed_falls_back_to_default_and_is_deterministic(self):
+        # _seed=None now falls back to DEFAULT_SEED (no unseeded path), so two
+        # None-seed selectors produce IDENTICAL sequences.
+        assert _Mini(_seed=None)._seed == AbstractSelector.DEFAULT_SEED
+        assert _np_seq(_Mini(_seed=None)) == _np_seq(_Mini(_seed=None))
+        assert _py_seq(_Mini(_seed=None)) == _py_seq(_Mini(_seed=None))
 
     def test_construction_does_not_touch_global_rng(self):
         # Seeding a selector must not perturb the process-global RNG state.
@@ -183,7 +187,8 @@ class TestDedicatedRngContract:
     @pytest.mark.parametrize("seed", [None, 0, 1234])
     def test_seed_recorded_and_rngs_present(self, seed):
         sel = _Mini(_seed=seed)
-        assert sel._seed == seed
+        expected = AbstractSelector.DEFAULT_SEED if seed is None else seed
+        assert sel._seed == expected
         assert isinstance(_np_seq(sel), list) and isinstance(_py_seq(sel), list)
 
 
@@ -252,3 +257,47 @@ print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
         self._assert_order_hashseed_invariant(
             "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2)
         )
+
+
+class TestCandidateOrderInsulatedFromEndsInsertionOrder:
+    """The oort-family candidate list must not depend on `ends` insertion order
+    (= trainer JOIN order, differs real vs sim). Pre-fix, `unexplored_end_ids`
+    came from raw `ends.keys()`, so the seeded `_rng.choice` drew a different
+    cohort per leg at cycle 0 under an identical seed (simulate_fwdllm.md §B
+    fluxtune #1). Feed the same ids in two orders; require identical output."""
+
+    _IDS = [f"t{i:03d}" for i in range(40)]
+
+    def _async_oort(self):
+        from flame.selector.async_oort import AsyncOortSelector
+        return AsyncOortSelector(_seed=1234, c=5, aggGoal=2, evalGoalFactor=0.5,
+                                 roundNudgeType="last_train", selectType="default")
+
+    def _oort(self):
+        from flame.selector.oort import OortSelector
+        return OortSelector(_seed=1234, aggr_num=5)
+
+    def test_async_oort_collect_order_invariant(self, make_ends):
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._async_oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._async_oort().fetch_statistical_utility(rev, [], [])
+        assert un_fwd == un_rev == sorted(self._IDS)
+
+    def test_oort_collect_order_invariant(self, make_ends):
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._oort().fetch_statistical_utility(rev, [], [])
+        assert un_fwd == un_rev == sorted(self._IDS)
+
+    def test_async_oort_unexplored_draw_same_cohort_across_orders(self, make_ends):
+        # End-to-end at the leak site: the seeded explore draw over the collected
+        # candidates must pick the SAME set regardless of ends insertion order.
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._async_oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._async_oort().fetch_statistical_utility(rev, [], [])
+        a = frozenset(self._async_oort().sample_by_speed(un_fwd, 5))
+        b = frozenset(self._async_oort().sample_by_speed(un_rev, 5))
+        assert a == b and len(a) == 5

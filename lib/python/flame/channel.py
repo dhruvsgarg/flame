@@ -27,6 +27,7 @@ from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
+from flame.selector.properties import PROP_AVL_STATE
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 from flame.monitor.runtime import timer_decorator
@@ -902,6 +903,14 @@ class Channel(object):
         # Set END_LAST_AVAIL_TS to current timestamp.
         current_ts = datetime.now()
         self.set_end_property(end_id=end_id, key=END_LAST_AVAIL_TS, value=current_ts)
+
+        # Initial availability = AVL_TRAIN so a just-joined end is never read as
+        # UNKNOWN before the first selection stamps it (kills the startup transient
+        # in avail_composition). Only a default: _avail_stamp_end_states overwrites
+        # it per selection from the trace (aware); unaware runs keep AVL_TRAIN.
+        self.set_end_property(
+            end_id=end_id, key=PROP_AVL_STATE, value=TrainerAvailState.AVL_TRAIN
+        )
 
         # NOTE: Also set in end_state_info for further use
         if end_id not in self._end_state_info.keys():

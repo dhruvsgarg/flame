@@ -498,7 +498,9 @@ class OortSelector(AbstractSelector):
         utility_list = []
         unexplored_end_ids = []
 
-        for end_id in ends.keys():
+        # sorted(): canonicalize before the seeded draws (join order differs
+        # real vs sim). Same as async_oort.
+        for end_id in sorted(ends.keys()):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):
