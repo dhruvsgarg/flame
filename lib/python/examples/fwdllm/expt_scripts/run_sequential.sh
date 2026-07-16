@@ -1,16 +1,12 @@
 #!/bin/bash
 # Drive the fwdllm real<->sim launcher pairs (fwdllm, fwdllm_plus, fluxtune) for
-# the parity sign-off runs. Thin driver over the shared harness
-# examples/scripts/expt_runner.sh (conda activation, launch+progress loop,
-# log-health asserts); this file owns the fwdllm specifics: the
-# baseline->(real yaml, sim yaml) map, the knob patching, and the pre-flight spec.
-#
-# --mode {sim|real|both} pairs each baseline's real+sim runs (default both = the
-# parity run); run names carry a _real/_sim tag so scripts.parity.cli globs the
-# pair. --delays {on|off} sets enable_training_delays IDENTICALLY on both sides
-# (mismatched D would be a false divergence). A pre-flight gate prints the
-# hyperparameters in three tiers and refuses infeasible configs; --dry-run shows
-# it without launching, --yes skips the confirm, --force overrides a block.
+# parity runs. Thin driver over examples/scripts/expt_runner.sh; owns the fwdllm
+# baseline->(real yaml, sim yaml) map, knob patching, and the pre-flight gate.
+# --mode both pairs each baseline's real+sim (names tagged _real/_sim so
+# scripts.parity.cli globs the pair); --delays sets enable_training_delays
+# IDENTICALLY both sides (mismatched D = false divergence). Pre-flight prints a
+# tiered table + refuses infeasible configs (--dry-run preview, --yes skip
+# confirm, --force override a block).
 #
 # Usage (from anywhere):
 #   run_sequential.sh [--mode sim|real|both] [--delays on|off]
@@ -20,42 +16,25 @@
 #       [--only name1,name2] [--stop-on-fail] [--dry-run] [--yes] [--force]
 #       [--show-all]
 #
-#   --mode           which time_mode variant(s) to run per baseline (default both).
-#   --delays         enable_training_delays for BOTH sides of a pair (default off=D=0).
-#   --max-runtime-s  wall/vclock cap per run (default 600 = 10 min).
-#   --max-data-id    stop a run once data_id reaches this (default 9999 =
-#                    effectively unbounded, so --max-runtime-s governs). Pass a small
-#                    value only for a deliberately data-id-capped run.
-#   --num-trainers   override trainer.num_trainers (default: each YAML's own, 10).
-#   --num-gpus       override execution.num_gpus (default: each YAML's own).
-#   --c / --c-async / --k / --agg-goal / --min-initial-trainers
-#                    selector/aggregator knobs (see the per-flag notes below).
-#   --partition-method  override hyperparameters.partition_method both sides.
-#   --var-threshold  set the variance-pass gate threshold (hyperparameters.var_threshold)
-#                    on both sides. It VARIES with data heterogeneity, so it's a
-#                    review-every-run knob (shown in tier ①), not a fixed default.
-#   --max-iter-per-data-id  set the force-commit cap (max_iterations_per_data_id)
-#                    on both sides (review-every-run, tier ①).
+#   --mode           time_mode variant(s) per baseline (default both).
+#   --delays         enable_training_delays BOTH sides (default off=D=0).
+#   --max-runtime-s  wall/vclock cap per run (default 600).
+#   --max-data-id    stop when data_id reaches this (default 9999 = unbounded).
+#   --num-trainers / --num-gpus  override trainer.num_trainers / execution.num_gpus.
+#   --c              selector.kwargs.c (+ minInitialTrainers + agg_goal unless overridden).
+#   --c-async        selector.kwargs.c for the async baseline (fluxtune) only.
+#   --k / --agg-goal selector k / aggregator.agg_goal directly.
+#   --min-initial-trainers / --min-initial-frac  join barrier before first selection:
+#                    absolute count, or floor(F*N) (e.g. 0.98) startup-cohort parity lever.
+#   --partition-method  hyperparameters.partition_method (agnews_partition.h5 group; default uniform/IID).
+#   --var-threshold / --max-iter-per-data-id  variance gate / force-commit cap (review each run, tier ①).
 #   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
-#   --only           comma-separated baseline subset (default all three).
-#   --after          comma-separated post-launch hooks to run once all launches
-#                    finish: parity (scripts.parity.cli --batch on the real/sim
-#                    pairs), sanity (extract_sanity_checks.py per run dir), plot
-#                    (analyze_run.py over the produced telemetry). e.g. --after parity,sanity
+#   --only           baseline subset (default all three).
+#   --after          post-launch hooks: parity,sanity,plot.
 #   --stop-on-fail   abort remaining runs on first non-zero exit.
-#   --dry-run        show the pre-flight table + checks, generate cfgs, DON'T launch.
-#   --yes            don't prompt to confirm a real (GPU) run.
-#   --force          launch even if a pre-flight check is BLOCKING (error).
-#   --show-all       expand tier ③ (config-baked) + list passing checks.
-#
-# Per-flag knob notes:
-#   --c        sets selector.kwargs.c (+ minInitialTrainers + agg_goal unless
-#              --agg-goal/--min-initial-trainers override those per-field).
-#   --c-async  sets selector.kwargs.c only for the async baseline (fluxtune).
-#   --agg-goal sets aggregator.agg_goal directly (fans into hyperparameters.aggGoal
-#              + selector aggGoal/aggr_num per runner.py) independent of --c.
-#   --partition-method  must be a group name in agnews_partition.h5
-#              (e.g. niid_label_clients=100_alpha=0.1); default "uniform" (IID).
+#   --dry-run / --yes / --force / --show-all  preview / skip-confirm / override-block / expand table.
+# Other knobs (see usage()): --var-stopping-policy --agg-rate-type --target-acc
+# --converge-window --stall-* --delay-divisor --delay-floor --run-set --clean.
 set -u
 
 # repo paths (portable across nodes/checkouts)
@@ -75,12 +54,8 @@ expt_pin_pythonpath "$REPO_ROOT"
 MODE="both"
 DELAYS="off"
 MAX_RUNTIME_S=600
-# Default high so --max-runtime-s governs, not a silent low data-id cap (cost of a
-# high default is zero -- --max-runtime-s still bounds the run).
-MAX_DATA_ID=9999
-# "Was this passed on the command line?" companions -- MODE/DELAYS/MAX_RUNTIME_S/
-# MAX_DATA_ID have non-empty defaults, so their value alone can't distinguish
-# "passed (override)" from "defaulted". Empty-default knobs don't need this.
+MAX_DATA_ID=9999       # high => --max-runtime-s governs (not a silent data-id cap)
+# "was this passed?" flags for non-empty-default knobs (value alone can't tell override from default)
 MODE_SET=0; DELAYS_SET=0; MAX_RUNTIME_S_SET=0; MAX_DATA_ID_SET=0
 STOP_ON_FAIL=0
 NUM_TRAINERS=""
@@ -96,31 +71,19 @@ AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
-VAR_STOPPING_POLICY=""   # Opt-2 stopping policy: off|fixed_cap|plateau. Empty => baselines.yaml
-                         # default (fluxtune=plateau); `off` reverts to var<=threshold only.
-AGG_RATE_TYPE=""         # Opt-3 aggregation rate: grad_aware|new. Empty => baselines.yaml
-                         # default (fluxtune=grad_aware); `new` = the FeLiX scalar rate.
-TARGET_ACC=""          # convergence stop (EXPERIMENTS.md WS2): terminate when the last
-                       # --converge-window data bins are ALL >= this test accuracy.
-CONVERGE_WINDOW=""     # W consecutive-bin window for the convergence stop (default 20 when --target-acc set)
-STALL_WINDOW_S=""      # stall guard: terminate EARLY if best acc hasn't gained --stall-min-delta
-                       # within this many wall s (empty/0 = off unless registry/--run-set sets it).
-                       # Set via --stall-window-s S or the hours alias --stall-window-h H.
+VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
+AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
+TARGET_ACC=""          # convergence stop: terminate when last --converge-window bins all >= this acc
+CONVERGE_WINDOW=""     # W-bin window for the convergence stop (default 20 when --target-acc set)
+STALL_WINDOW_S=""      # stall guard: terminate EARLY if no progress within this many wall s (--stall-window-s/-h)
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
-STALL_ON=""            # signal that resets the idle clock: acc | loss | either (default either).
-                       # 'either' keeps a run alive if accuracy gains >=stall_min_delta OR test-loss
-                       # drops >=loss_min_rel_delta (empty => converge_watch default: either).
-LOSS_MIN_REL_DELTA=""  # RELATIVE test-loss drop vs running-best that counts as progress (default 0.01 = 1%)
-DELAY_FACTOR=""        # training_delay_factor: DIVISOR on the registry 4-18s delay (NOT a multiplier).
-                       # >1 SHORTENS (default 10 => 0.4-1.8s; 1 => full 4-18s); <1 LENGTHENS
-                       # (0.5 => 8-36s, restores GPU-vs-delay headroom). Fans to both roles via runner.py.
-DELAY_FLOOR=""         # training_delay_floor_s: floor on the RAW registry delay (applied BEFORE
-                       # dividing by DELAY_FACTOR), so trainers at/near the fast-class floor don't
-                       # get a razor-thin budget. 0/unset = no-op. See FWDLLM_DESIGN.md §O.
-RUN_SET=""        # load the SHARED condition from experiments.yaml run_sets[NAME]
-                  # (single source of truth for multi-node runs; CLI flags override)
+STALL_ON=""            # signal that resets the idle clock: acc|loss|either (default either)
+LOSS_MIN_REL_DELTA=""  # relative test-loss drop vs running-best that counts as progress (default 0.01)
+DELAY_FACTOR=""        # DIVISOR on the registry 4-18s delay (>1 shortens, <1 lengthens; default 10). --delay-divisor
+DELAY_FLOOR=""         # floor on the RAW registry delay, applied before the divisor (0/unset=no-op). FWDLLM_DESIGN.md §O
+RUN_SET=""             # load SHARED condition from experiments.yaml run_sets[NAME] (CLI flags override)
 ONLY=""
-AFTER=""          # comma list of post-launch hooks: parity,sanity,plot (see after_* below)
+AFTER=""               # post-launch hooks: parity,sanity,plot
 DRY_RUN=0
 ASSUME_YES=0
 FORCE=0
@@ -346,12 +309,9 @@ LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
 DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
 delays_on = (DELAYS == "on")
 
-# Availability trace(s). Default to syn_0 (Phase-1, 100% availability) when the
-# operator passes no --avail-trace, so patch() ALWAYS sets the mode EXPLICITLY on
-# every baseline (trainer availability.mode + aggregator trackTrainerAvail +
-# client_notify -- lines below) rather than silently inheriting each yaml's own
-# `mode:`. This is what makes the printed "trace" row match what actually runs:
-# the resolved value is patched into the launched cfg, not just displayed.
+# Availability trace(s). Default syn_0 (Phase-1, 100% avail) when no --avail-trace,
+# so patch() sets the mode EXPLICITLY on every baseline (rather than inheriting
+# each yaml's `mode:`) — the printed "trace" row then matches what actually runs.
 _trace_raw = [t for t in (env("TRACE_CSV") or "").replace(",", " ").split()]
 trace_set = bool(_trace_raw)              # operator passed --avail-trace(s)?
 traces = _trace_raw or ["syn_0"]          # Phase-1 default: 100% availability
@@ -359,12 +319,9 @@ multi_trace = len(traces) > 1
 
 variants = {"real": 0, "sim": 1} if MODE == "both" else {MODE: (0 if MODE == "real" else 1)}
 
-# Baseline-distinguishing internals (selector algorithm / optimizer / sync|async)
-# come from the shared catalog _metadata/baselines.yaml, merged at LAUNCH — NOT
-# from the per-run YAML the operator edits. Surface them in the review table so a
-# mis-picked baseline (e.g. a sync selector where async was intended) is caught
-# BEFORE the run, not after. Best-effort: if the catalog can't be read, the
-# columns show "?" rather than blocking.
+# Baseline internals (selector/optimizer/sync|async) from the shared catalog
+# _metadata/baselines.yaml (merged at launch, not the per-run yaml). Surfaced in
+# the review table to catch a mis-picked baseline pre-run. "?" if unreadable.
 _BL_INTERNALS = {}
 try:
     _bl_path = os.path.join(env("EXAMPLE_DIR"), "..", "_metadata", "baselines.yaml")
@@ -401,17 +358,13 @@ def patch(exp, run_key, variant, trace):
     h["max_data_id_progress"] = MAX_DATA_ID
     # enable_training_delays: SAME on both sides of a pair (K-D8).
     exp["trainer"]["enable_training_delays"] = delays_on
-    # training_delay_factor (simulate_fwdllm.md #12): DIVISOR on the registry
-    # 4-18s delay (default 10 => 0.4-1.8s; <1 lengthens, e.g. 0.5 => 8-36s).
-    # Wire key kept as *factor*; trainer reads it as training_delay_divisor. Set
-    # hyperparameters; runner.py fans the same value into the aggregator so both
-    # roles agree. Only patched when explicitly passed (else the base default).
+    # training_delay_factor (#12): DIVISOR on the registry 4-18s delay; runner.py
+    # fans it to both roles. Patched only when explicitly passed.
     if DELAY_FACTOR:
         exp["trainer"].setdefault("hyperparameters", {})
         exp["trainer"]["hyperparameters"]["training_delay_factor"] = float(DELAY_FACTOR)
-    # training_delay_floor_s (FWDLLM_DESIGN.md §O): floor on the RAW registry
-    # delay, applied before the divisor above. Only patched when explicitly
-    # passed (else the code default 0.0 = no-op).
+    # training_delay_floor_s (FWDLLM_DESIGN.md §O): floor on the RAW delay, before
+    # the divisor. Patched only when explicitly passed (default 0.0 = no-op).
     if DELAY_FLOOR:
         exp["trainer"].setdefault("hyperparameters", {})
         exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(DELAY_FLOOR)
@@ -704,10 +657,8 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
-# agg_goal MATCHES across baselines (operator invariant 2026-07-06): the aggregation
-# batch size should be identical for a fair head-to-head; a mismatch is almost always
-# an unintended fan from --c/--c-async. Warn (visible), don't block (an experiment
-# MAY intentionally vary it -- but then it's an eyeballed choice, not a silent one).
+# agg_goal MATCHES across baselines: identical batch size for a fair head-to-head;
+# a mismatch is usually an unintended --c/--c-async fan. Warn, don't block.
 _goals = {rk: per_baseline.get(rk, {}).get("agg_goal") for rk in (r[0] for r in runs)}
 _gset = {g for g in _goals.values() if g is not None}
 if len(_gset) > 1:
@@ -716,12 +667,9 @@ if len(_gset) > 1:
 elif _gset:
     checks.append({"name": "agg_goal matches across baselines", "level": "ok",
                    "detail": f"all baselines agg_goal={next(iter(_gset))}"})
-# Availability consistency + sync-barrier liveness: surface the RESOLVED per-
-# baseline trace (what actually runs), and BLOCK a full-participation sync
-# barrier under a non-syn_0 trace -- agg_goal == n_trainers can never assemble if
-# any trainer is unavailable, so the real barrier waits to the wall cap (the
-# fwdllm_plus / K-D20 stall; Stage C's wait bounds the log but still can't
-# complete when full participation is required under scarcity).
+# Availability liveness: BLOCK a full-participation sync barrier (agg_goal >=
+# n_trainers) under a non-syn_0 trace — it can never assemble if any trainer is
+# unavailable, so the barrier stalls to the wall cap (fwdllm_plus / K-D20).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
     av, g, n, is_async = b.get("avail"), b.get("agg_goal"), b.get("n_trainers"), b.get("async")
@@ -735,11 +683,8 @@ for rk in (r[0] for r in runs):
                            "detail": f"trace={av} — non-syn_0 unavailability (Phase 2+); confirm intended"})
     else:
         checks.append({"name": f"availability ({rk})", "level": "ok", "detail": f"trace={av}"})
-# (No k-vs-agg_goal check: in the random selector, send-side selection/concurrency
-# is driven by `c` (required_trainers = min(len(ends), c - in_use)); `k` is the
-# RECV-side batch size (num_ends_to_remove = min(..., self.k)), NOT a selection
-# cap -- so k < agg_goal is fine, the barrier still collects agg_goal grads across
-# RECV passes. c <= num_trainers and agg_goal <= c are the binding invariants.)
+# (No k-vs-agg_goal check: `c` drives send-side concurrency, `k` is the RECV batch
+# size, not a selection cap — so k < agg_goal is fine. Binding: c<=n, agg_goal<=c.)
 # num_gpus <= visible.
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
@@ -786,9 +731,8 @@ PY
 GATE_RC=$?
 
 # ---- gate decision ----
-# render_and_gate returns 0 (ok) or 2 (blocking check). Anything else means the
-# pre-flight step itself failed (e.g. a bad YAML or a spec-builder bug) -- abort
-# rather than silently launch on an unvalidated config.
+# render_and_gate: 0=ok, 2=blocking check. Anything else = the pre-flight step
+# itself failed (bad YAML / spec bug) -> abort, don't launch an unvalidated config.
 if [ "$GATE_RC" -ne 0 ] && [ "$GATE_RC" -ne 2 ]; then
   echo "ERROR: pre-flight step failed (exit $GATE_RC) -- see traceback above. Nothing launched." >&2
   exit "$GATE_RC"
@@ -841,9 +785,8 @@ after_plot() {
   done < <(find "$EXAMPLE_DIR/experiments" -maxdepth 1 -type d -name "run_*" -newer "$MANIFEST" 2>/dev/null)
 }
 
-# Convergence stop (EXPERIMENTS.md WS2): export so expt_launch arms the watcher.
-# Only when --target-acc was passed; otherwise runs stay governed by their caps
-# (default behavior unchanged). Window defaults to 20 bins.
+# Convergence stop: export so expt_launch arms the watcher (only when --target-acc
+# passed; else runs stay governed by their caps). Window defaults to 20 bins.
 if [ -n "$TARGET_ACC" ]; then
   export EXPT_TARGET_ACC="$TARGET_ACC"
   export EXPT_CONVERGE_WINDOW="${CONVERGE_WINDOW:-20}"
@@ -895,12 +838,9 @@ while IFS=$'\t' read -r name cfg variant budget; do
   expt_assert_run "$EXAMPLE_DIR" "$EXPT_LAST_MARKER" "$name"
   if [ "${EXPT_LAST_HEALTH:-}" = "CONVERGED" ] || [ "${EXPT_LAST_HEALTH:-}" = "STALLED" ] \
      || [ "${EXPT_LAST_HEALTH:-}" = "TIMEOUT_KILLED" ]; then
-    # Watcher/backstop-watchdog kills the run's process group -> rc is the
-    # SIGKILL code (expected), NOT a launcher failure. Report the clean verdict
-    # (CONVERGED / STALLED / TIMEOUT_KILLED) without exit noise. TIMEOUT_KILLED
-    # means the run never self-stopped at its budget (a hang) and the backstop
-    # watchdog (expt_launch) force-killed it so this sequence could continue --
-    # see simulate_fwdllm.md §A for the documented real-mode MQTT hangs this guards.
+    # Watcher/backstop kills the process group -> rc is the SIGKILL code, NOT a
+    # launcher failure; report the clean verdict. TIMEOUT_KILLED = the run never
+    # self-stopped at its budget (a hang) and was force-killed (simulate_fwdllm.md §A).
     RESULT[$name]="${EXPT_LAST_HEALTH}"
   elif [ "$rc" -ne 0 ]; then
     # Launcher itself failed: surface that, but keep the health word if the
