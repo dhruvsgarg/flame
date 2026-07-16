@@ -261,7 +261,7 @@ See §B for what's actively being worked per baseline; see §G for what's alread
     experiment must spend wall time on compute, not on building log strings. Any log whose ARGUMENTS are
     non-trivial (`_calculate_hash`/GPU→CPU `.cpu()`/`.item()`/`.tolist()`, `torch.allclose`/`.norm()`/`stack`,
     a comprehension or repr over params/grads/state_dict) MUST be gated behind `logger.isEnabledFor(logging.DEBUG)`
-    (or a purpose flag like `_pert_audit`) so it computes ONLY when explicitly enabled — an f-string evaluates its
+    (or a purpose flag like `_perturb_audit`) so it computes ONLY when explicitly enabled — an f-string evaluates its
     args even when the level would drop the line, so an ungated `logger.debug(f"...{hash(x)}")` still pays the
     cost. Determinism/correctness audits belong here: verify once with DEBUG on, then run with it off at zero cost.
     The high-perf run keeps at INFO only what plotting/sanity scripts parse (`extract_sanity_checks.py`'s regexes:

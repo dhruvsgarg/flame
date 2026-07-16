@@ -129,7 +129,7 @@ math); `perturbation_count`↓ (changes the baseline algorithm).
 
 **LANDED 07-15 — pure-overhead removals (no numerics touched; RNG stream verified byte-identical to raw
 `torch.randn`).** All were invisible to their own `@timer_decorator` or ran under a disabled log level:
-- **Determinism-audit hashes gated** behind `FWDLLM_PERT_AUDIT=1`/DEBUG. `_calculate_hash` pulls a tensor
+- **Determinism-audit hashes gated** behind `FWDLLM_PERTURB_AUDIT=1`/DEBUG. `_calculate_hash` pulls a tensor
   GPU→CPU and sha256s it; `params hashes` was **unfiltered over all 67.4M params** and ran **twice per batch**
   (`_train_one_batch` + `_prepare_perturbation_tensors`), ~489ms/copy — i.e. re-hashing **253MB of frozen
   weights that never change**, ~59× the ~10ms of actual math, for a log line DEBUG-off discards (f-string args

@@ -77,15 +77,15 @@ def _stage_timer(owner, name: str):
                 logging.debug("stage_timer telemetry emit failed", exc_info=True)
 
 
-def _pert_audit_enabled() -> bool:
+def _perturb_audit_enabled() -> bool:
     """Is the perturbation determinism audit ([RNG_FINGERPRINT] + the rolling
     candidate_v hash) wanted this run?
 
     These sha256 every 10x perturbation tensor and the whole 67M-param model --
     together ~10x the cost of the JVP they audit -- so they can't ride along
-    unconditionally. Opt in with FWDLLM_PERT_AUDIT=1, or by enabling DEBUG.
+    unconditionally. Opt in with FWDLLM_PERTURB_AUDIT=1, or by enabling DEBUG.
     """
-    if os.environ.get("FWDLLM_PERT_AUDIT", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("FWDLLM_PERTURB_AUDIT", "").strip().lower() in ("1", "true", "yes"):
         return True
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
@@ -362,8 +362,8 @@ class ForwardTextClassificationTrainer:
                 # [RNG_FINGERPRINT] is a determinism tool, not run telemetry:
                 # it costs a full sha256 walk of every 10x candidate_v, so it is
                 # opt-in. Off, the fingerprints report "off" rather than lying.
-                _pert_audit = _pert_audit_enabled()
-                rng_before = _torch_rng_fingerprint(self.torch_rng) if _pert_audit else "off"
+                _perturb_audit = _perturb_audit_enabled()
+                rng_before = _torch_rng_fingerprint(self.torch_rng) if _perturb_audit else "off"
                 for k, v in self.model.named_parameters():
                     if v.requires_grad:
                         self.total_rng_iter += 1
@@ -378,7 +378,7 @@ class ForwardTextClassificationTrainer:
                         # perturbation_count (26 x 4902 = 127k lines/run, the bulk
                         # of the 184-219MB trainer logs). Both hashes below walk
                         # the full 10x tensor and are audit-only.
-                        if _pert_audit:
+                        if _perturb_audit:
                             logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                             all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
@@ -404,7 +404,7 @@ class ForwardTextClassificationTrainer:
                             del candidate_v, shape
                     index += 1
 
-                if _pert_audit:
+                if _perturb_audit:
                     logging.info(
                         f"[RNG_FINGERPRINT] client_idx={self.args.client_idx} "
                         f"data_id={logging_state.get('data_id')} iteration={logging_state.get('iteration')} "
