@@ -398,9 +398,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 self._model_version = msg[MessageType.MODEL_VERSION]
                 logger.info(f"Trainer {self.trainer_id} actually updated local _model_version to {self._model_version} after receiving weights.")
 
-            # Helper lambda for a cleaner log
-            format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-            logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
+            # Debug-gated: hashes the full state_dict (GPU->CPU) per weight recv.
+            if logger.isEnabledFor(logging.DEBUG):
+                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+                logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
             
             if MessageType.DATA_ID in msg:
                 logger.info(
@@ -434,8 +435,9 @@ class Trainer(Role, metaclass=ABCMeta):
                                     )
                         
                         if partial_grad is not None:
-                            format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
+                            if logger.isEnabledFor(logging.DEBUG):
+                                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                                logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
                         else:
                             logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
 
@@ -592,8 +594,10 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"({size_mb:.2f} MB)."
                 )
 
-                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-                logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
+                # Debug-gated (was INFO): hashes the full grad dict + var-check grad per send.
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+                    logger.debug(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
             else:
                 total_bytes = 0
                 logger.info("No gradients exist; sending an empty dictionary.")

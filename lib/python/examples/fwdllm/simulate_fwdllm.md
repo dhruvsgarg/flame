@@ -257,6 +257,18 @@ See §B for what's actively being worked per baseline; see §G for what's alread
     chasing a phantom (07-16: trainer `seed` logged `None` while the run was genuinely seeded, sparking a false
     "seed regression" hunt; snapshot recorded no seed at all). When you add or wire a knob, add its log on every
     surface in the SAME change and diff a real run to confirm it reads the resolved value, not a default.
+19. **No compute on the critical path for a log the run doesn't need.** Logging is for monitoring; the real
+    experiment must spend wall time on compute, not on building log strings. Any log whose ARGUMENTS are
+    non-trivial (`_calculate_hash`/GPU→CPU `.cpu()`/`.item()`/`.tolist()`, `torch.allclose`/`.norm()`/`stack`,
+    a comprehension or repr over params/grads/state_dict) MUST be gated behind `logger.isEnabledFor(logging.DEBUG)`
+    (or a purpose flag like `_pert_audit`) so it computes ONLY when explicitly enabled — an f-string evaluates its
+    args even when the level would drop the line, so an ungated `logger.debug(f"...{hash(x)}")` still pays the
+    cost. Determinism/correctness audits belong here: verify once with DEBUG on, then run with it off at zero cost.
+    The high-perf run keeps at INFO only what plotting/sanity scripts parse (`extract_sanity_checks.py`'s regexes:
+    selector `select()`/`_select_candidates`, `_distribute_weights…data_id`, `eval_model(): results after eval`,
+    trainer PID, client data hash/samples) + telemetry `emit()`; everything else is DEBUG or deleted. This holds
+    for ALL baselines and BOTH roles — grep `logger.(info|debug).*_calculate_hash|format_hash|\.item\(\)` before
+    a perf run. Never change a value inside a gated log (reads are inert; gating must stay correctness-neutral).
 
 ---
 

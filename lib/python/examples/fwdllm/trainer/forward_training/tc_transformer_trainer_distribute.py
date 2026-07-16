@@ -303,11 +303,12 @@ class ForwardTextClassificationTrainer:
         )
 
     def compute_metrics_with_logging_train(self, x, labels):
-
-        logging.info(f"Trainer ID |  'Example'  | 'Label")
-
+        # Debug-gated: per-example GPU->CPU hash; monitoring/audit only.
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logging.debug(f"Trainer ID |  'Example'  | 'Label")
         for j, example in enumerate(x):
-            logging.info(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
+            logging.debug(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
         return
     
     @timer_decorator
