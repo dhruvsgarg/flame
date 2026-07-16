@@ -54,6 +54,9 @@ experiments:
       client_idx_modulo: 100
       config_overrides:
         hyperparameters:
+          # Selector RNG seed — inert on the trainer (self-selects); logged for
+          # cross-role consistency with the aggregator (§F-18). Not the pert seed.
+          seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # Uniform/IID partition for smoke tests -- avoids the niid_label

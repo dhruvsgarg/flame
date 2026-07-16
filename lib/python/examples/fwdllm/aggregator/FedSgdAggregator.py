@@ -213,16 +213,19 @@ class FedSGDAggregator(TopAggregator):
     @timer_decorator
     def aggregate(self, current_round):
         start_time = time.time()
+        # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
+        # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
         self.var = calculate_var(self.grad_for_var_check_list)
-        var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
         self.var_prev_iter_list.append(self.var.item())
-        self.snr = calculate_snr(self.jvp_for_snr_check_list)
-        grads_snr = calculate_snr_gradients(self.grad_for_var_check_list)
-        self.snr_prev_iter_list.append(self.snr)
-        c_of_variation = calculate_cv(self.grad_for_var_check_list)
         logger.info(f"self.var = {self.var}")
-        logger.info(f"snr of jvps = {self.snr}")
-        logger.info(f"coefficient of variation = {c_of_variation}")
+        if logger.isEnabledFor(logging.DEBUG):
+            var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
+            self.snr = calculate_snr(self.jvp_for_snr_check_list)
+            grads_snr = calculate_snr_gradients(self.grad_for_var_check_list)
+            self.snr_prev_iter_list.append(self.snr)
+            c_of_variation = calculate_cv(self.grad_for_var_check_list)
+            logger.debug(f"snr of jvps = {self.snr}")
+            logger.debug(f"coefficient of variation = {c_of_variation}")
 
         # Opt-2 (charter §5c/§5e): variance-plateau force-commit. Under the
         # 'plateau' policy, additionally force a commit once the per-bin variance
@@ -244,9 +247,10 @@ class FedSGDAggregator(TopAggregator):
         logger.debug(
             f"self.grad_for_var_check_list size: {len(self.grad_for_var_check_list)}"
         )
-        logger.debug(
-            f"self.grad_for_var_check_list hashes: {[(_calculate_hash(p), p.shape) for p in self.grad_for_var_check_list]}"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"self.grad_for_var_check_list hashes: {[(_calculate_hash(p), p.shape) for p in self.grad_for_var_check_list]}"
+            )
 
         model_list = []
         training_num = 0
@@ -273,22 +277,9 @@ class FedSGDAggregator(TopAggregator):
 
         # logger.info(f"len(model_list): {len(model_list)}")
 
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
-        if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
-        # logger.info(f"len(model_list): {len(model_list)}")
-
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
-        if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
-        # logger.info(f"len(model_list): {len(model_list)}")
-
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
+        # Cache a deepcopy of model_dict (mutated below) for cache_v reuse at ~L421.
+        # Was written 3x identically (redundant full-model deepcopy/commit); collapsed
+        # to one -- byte-identical.
         if self.args.var_control:
             model_dict_cached = copy.deepcopy(self.model_dict)
             origin_param = copy.deepcopy(self.get_global_model_params())
@@ -297,10 +288,11 @@ class FedSGDAggregator(TopAggregator):
             logger.info(f"len of cached v: {len(self.cached_v)}")
             for cached_v in self.cached_v:
                 model_list.append(cached_v)
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.info(
-                    f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
+                    )
 
                 training_num += cached_v[0]
             logger.info(f"training_num : {training_num}")
@@ -326,10 +318,11 @@ class FedSGDAggregator(TopAggregator):
                     return old_param
                 # If weighted_aggregation_enabled is False, then the weight of each gradient in this sum is 1. Else, the weight the is determined by calling self.optimizer.weight_factor()
                 (_, weighted_gradient_sum) = model_list[0]
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
                 logger.info(f"Length of model_list : {len(model_list)}")
                 for id, k in enumerate(weighted_gradient_sum):
                     for i in range(0, len(model_list)):
@@ -344,10 +337,11 @@ class FedSGDAggregator(TopAggregator):
                             id, learning_rate * weighted_gradient_sum[id] / training_num
                         )
                     )
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
                 self.last_round_update = [
                     p.clone().detach() for p in weighted_gradient_sum
                 ]
@@ -371,10 +365,11 @@ class FedSGDAggregator(TopAggregator):
                     return old_param
                 # If weighted_aggregation_enabled is False, then the weight of each gradient in this sum is 1. Else, the weight the is determined by calling self.optimizer.weight_factor()
                 (_, weighted_gradient_sum) = model_list[0]
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
                 logger.info(f"Length of model_list : {len(model_list)}")
                 for id, k in enumerate(weighted_gradient_sum):
                     for i in range(0, len(model_list)):
@@ -389,10 +384,11 @@ class FedSGDAggregator(TopAggregator):
                             id, learning_rate * weighted_gradient_sum[id] / training_num
                         )
                     )
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
 
                 self.last_round_update = [
                     p.clone().detach() for p in weighted_gradient_sum

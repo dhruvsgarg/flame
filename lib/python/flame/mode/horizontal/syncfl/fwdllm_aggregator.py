@@ -770,13 +770,17 @@ class TopAggregator(AsyncTopAgg):
         same `rate` and appended to `self.grad_for_var_check_list` for variance checks.
         """
         # logger.info(f"trainer grad in {trainer_grad}")
-        format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-        logger.debug(f"Trainer grad received {format_hash(trainer_grad)}")
+        # Debug-gated: per-update GPU->CPU sha256, off the critical path unless DEBUG.
+        if logger.isEnabledFor(logging.DEBUG):
+            format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+            logger.debug(f"Trainer grad received {format_hash(trainer_grad)}")
         self.print_trainable_params_stats(
             location="[start,aggregate_grads_from_trainers()]"
         )
-        all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
-        logger.info(f"Are all grads zero initially? {all_zero}")
+        # Debug-gated: allclose forces a full-grad GPU sync per recv; numerically inert.
+        if logger.isEnabledFor(logging.DEBUG):
+            all_zero = all(torch.allclose(g, torch.zeros_like(g)) for g in self.grad)
+            logger.debug(f"Are all grads zero initially? {all_zero}")
 
         self.log_memory("start aggregate_grads_from_trainers", self.device)
 
@@ -1638,9 +1642,10 @@ class TopAggregator(AsyncTopAgg):
                 else None
             )
             logger.info(f"jvp_for_snr_check at aggregator: {jvp_for_snr_check}")
-            logger.debug(
-                f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
+                )
             # Use this message's stat_utility, not the channel property --
             # the property is set below, after this call, so reading it here
             # was always None on a trainer's first contribution (crashing
@@ -1942,10 +1947,12 @@ class TopAggregator(AsyncTopAgg):
                 _cycle_staleness.append(_cycle_target_version - _trainer_version)
 
         self.grad_pool.append(self.grad)
-        format_hash = lambda d: [_calculate_hash(v) for v in d]
-        logger.debug(
-            f"self.grad when agg goal met - length : {len(self.grad)} - hash :  {format_hash(self.grad)}"
-        )
+        # Debug-gated: full-model GPU->CPU sha256 (~1s) per commit; free unless DEBUG.
+        if logger.isEnabledFor(logging.DEBUG):
+            format_hash = lambda d: [_calculate_hash(v) for v in d]
+            logger.debug(
+                f"self.grad when agg goal met - length : {len(self.grad)} - hash :  {format_hash(self.grad)}"
+            )
 
         self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
 
@@ -3204,10 +3211,12 @@ class TopAggregator(AsyncTopAgg):
         # (Stage C); no-op on the sim path / when availability tracking is off.
         self._await_dispatchable_under_scarcity(task_to_perform)
         global_model_params = self.get_global_model_params()
-        format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-        logging.info(
-            f"Model distributed to clients (Hashed): {format_hash(global_model_params)}"
-        )
+        # Debug-gated (was INFO): full-model GPU->CPU sha256 per dispatch.
+        if logger.isEnabledFor(logging.DEBUG):
+            format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+            logger.debug(
+                f"Model distributed to clients (Hashed): {format_hash(global_model_params)}"
+            )
         self.weights = global_model_params
 
         # Real-transport pad to let just-distributed messages settle before the

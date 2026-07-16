@@ -90,6 +90,7 @@ SEL_C_ASYNC=""
 SEL_K=""
 AGG_GOAL=""
 MIN_INIT_TRAINERS=""
+MIN_INIT_FRAC=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
 PARTITION_METHOD=""
@@ -154,6 +155,7 @@ while [[ $# -gt 0 ]]; do
     --k)                    SEL_K="$2"; shift 2 ;;
     --agg-goal)             AGG_GOAL="$2"; shift 2 ;;
     --min-initial-trainers) MIN_INIT_TRAINERS="$2"; shift 2 ;;
+    --min-initial-frac)     MIN_INIT_FRAC="$2"; shift 2 ;;
     --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
@@ -304,7 +306,7 @@ done
 EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
-SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" \
+SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 DELAY_FLOOR="$DELAY_FLOOR" \
@@ -327,6 +329,7 @@ NUM_TRAINERS = env("NUM_TRAINERS") or ""
 NUM_GPUS = env("NUM_GPUS") or ""
 SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env("SEL_K") or ""
 AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
+MIN_INIT_FRAC = env("MIN_INIT_FRAC") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
@@ -460,6 +463,11 @@ def patch(exp, run_key, variant, trace):
         exp["aggregator"]["agg_goal"] = int(AGG_GOAL)
     if MIN_INIT:
         kwargs["minInitialTrainers"] = int(MIN_INIT)
+    elif MIN_INIT_FRAC and NUM_TRAINERS:
+        # Parity lever (§B fluxtune #4): hold the first selection until ~frac*N join,
+        # so real+sim form an identical initial cohort. frac<1 tolerates stragglers.
+        import math as _math
+        kwargs["minInitialTrainers"] = max(1, _math.floor(float(MIN_INIT_FRAC) * int(NUM_TRAINERS)))
     if trace:
         exp["trainer"].setdefault("availability", {})["mode"] = trace
         t_hp = exp["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
