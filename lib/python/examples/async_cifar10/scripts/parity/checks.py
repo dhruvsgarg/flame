@@ -1681,6 +1681,62 @@ def decision_determinism_parity(real: dict, sim: dict) -> dict:
     }
 
 
+def trainer_speed_identity_parity(real: dict, sim: dict, tol_rel: float = 0.10,
+                                  min_samples: int = 3) -> dict:
+    """P3b [DIST]: per-trainer speed/utility IDENTITY -- is trainer X itself the
+    same speed and stat-utility in both modes?
+
+    P3 enforces the speed DISTRIBUTION and scopes per-trainer identity out;
+    cohort_sequence compares cohorts by ID only. Both are consistent with
+    trainer 373 being fast in real and slow in sim, which would make a cohort
+    match meaningless -- same IDs, different arrival order, different next
+    cohort. Speed is registry-assigned, so this should be near-exact; `tol_rel`
+    only absorbs measurement scatter. SKIPs when the audit carries no speeds.
+    """
+    def _per_trainer(events, field):
+        acc: dict = {}
+        for e in events:
+            for tid, c in (e.get("per_trainer") or {}).items():
+                v = c.get(field)
+                if v is not None:
+                    acc.setdefault(tid, []).append(float(v))
+        return {t: v for t, v in acc.items() if len(v) >= min_samples}
+
+    out = {"ok": True, "tier": "DIST", "tol_rel": tol_rel}
+    any_axis = False
+    for field in ("speed_s", "utility"):
+        r_pt = _per_trainer(real["selection_train"], field)
+        s_pt = _per_trainer(sim["selection_train"], field)
+        shared = sorted(set(r_pt) & set(s_pt))
+        if not shared:
+            out[field] = {"status": "SKIP", "note": "no shared per-trainer samples"}
+            continue
+        any_axis = True
+        devs = []
+        for t in shared:
+            rm = sum(r_pt[t]) / len(r_pt[t])
+            sm = sum(s_pt[t]) / len(s_pt[t])
+            devs.append((abs(rm - sm) / max(abs(rm), abs(sm), 1e-9), t, rm, sm))
+        devs.sort(reverse=True)
+        bad = [d for d in devs if d[0] > tol_rel]
+        ok = not bad
+        out[field] = {
+            "ok": ok,
+            "trainers_compared": len(shared),
+            "trainers_outside_tol": len(bad),
+            "max_rel_dev": round(devs[0][0], 4),
+            "mean_rel_dev": round(sum(d[0] for d in devs) / len(devs), 4),
+            "worst": [{"trainer": short(t), "real_mean": round(rm, 3),
+                       "sim_mean": round(sm, 3), "rel_dev": round(d, 4)}
+                      for d, t, rm, sm in devs[:5]],
+        }
+        out["ok"] = out["ok"] and ok
+    if not any_axis:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no per_trainer speed/utility audit (non-oort selector)"}
+    return out
+
+
 def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
                          support_tol: float = 0.15) -> dict:
     """P3: trainer_speed_s — the speed MODEL is identical (control).
@@ -3950,14 +4006,35 @@ _STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
     "train_with_data_id",
 })
 
+# Aggregator-side analog. `_distribute_weights_async` holds a hardcoded
+# real-only `time.sleep(0.1)` ("Real-transport pad ... No sim analog"), so its
+# real<->sim gap IS that sleep by construction -- same class as
+# `_emulate_training_delay`. Reported, excluded from `ok`.
+_AGG_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
+    "_distribute_weights_async",
+})
+
+# Below this a @timer_decorator duration is quantization noise, not a
+# measurement: KS on two degenerate all-zero samples scores the tie-breaking
+# dither, not a divergence.
+_STEP_TIMING_DEGENERATE_MAX_S = 1e-3
+
 
 def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
-                          real_only_funcs: frozenset = frozenset()) -> dict:
+                          real_only_funcs: frozenset = frozenset(),
+                          mean_tol_rel: float = 0.05) -> dict:
     """Shared DIST (KS + mean) per-function comparator behind both
     `step_timing_breakdown_parity` (trainer-side) and
     `agg_step_timing_breakdown_parity` (aggregator-side) -- same tier/shape,
     only the `func -> [duration_s, ...]` collection differs (per-trainer
-    nested dict vs a flat aggregator event list)."""
+    nested dict vs a flat aggregator event list).
+
+    A function passes on `ks <= ks_tol` OR `mean_rel_diff <= mean_tol_rel`. The
+    mean escape exists because KS saturates on TIGHT distributions under a small
+    systematic shift (eval_model: ks=0.50 but means 4.2% apart -- GPU contention,
+    not a divergence). It cannot mask what this rung is for: the gap it was built
+    to catch is ~10s/cycle, orders of magnitude outside a 5% mean band.
+    """
     funcs = sorted(set(r_by_func) | set(s_by_func))
     if not funcs:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
@@ -3971,12 +4048,24 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
             by_func[func] = {"ok": True, "tier": "DIST", "status": "SKIP",
                              "note": "no samples in one mode"}
             continue
+        if max(max(rv), max(sv)) < _STEP_TIMING_DEGENERATE_MAX_S:
+            by_func[func] = {
+                "ok": True, "tier": "DIST", "status": "SKIP",
+                "note": (f"every sample < {_STEP_TIMING_DEGENERATE_MAX_S}s on both "
+                         f"sides -- timer quantization noise, not a measurement"),
+                "real_mean_s": round(sum(rv) / len(rv), 6),
+                "sim_mean_s": round(sum(sv) / len(sv), 6),
+                "n_real": len(rv), "n_sim": len(sv),
+            }
+            continue
         ks = ks_stat(rv, sv)
         rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
+        mean_rel = abs(rm - sm) / max(abs(rm), abs(sm), 1e-9)
         entry = {
-            "ok": ks <= ks_tol,
+            "ok": ks <= ks_tol or mean_rel <= mean_tol_rel,
             "tier": "DIST",
             "ks_stat": round(ks, 3), "ks_tol": ks_tol,
+            "mean_rel_diff": round(mean_rel, 4), "mean_tol_rel": mean_tol_rel,
             "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
             "n_real": len(rv), "n_sim": len(sv),
         }
@@ -4042,12 +4131,13 @@ def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
     `sync_collect_and_accumulate_grads` gap between real (called once per
     individual trainer message, real-only `num_min_req=1` clamp) and sim
     (bulk-drains the cohort in one call) was only visible via manual
-    telemetry archaeology. No real-only exemption set here (unlike the
-    trainer-side rung): every currently-decorated aggregator function is
-    architecturally expected to run comparably on both sides, so the whole
-    point is for a genuine gap like `sync_collect_and_accumulate_grads`'s to
-    FAIL, not to be pre-exempted the way real-transport-only trainer phases
-    are.
+    telemetry archaeology. The default premise is that every currently-
+    decorated aggregator function runs comparably on both sides, so a genuine
+    gap like `sync_collect_and_accumulate_grads`'s FAILs rather than being
+    pre-exempted the way real-transport-only trainer phases are. The lone
+    exception is `_AGG_STEP_TIMING_REAL_ONLY_FUNCS` (see there): a function
+    holding a real-only `time.sleep` is a real-only sleep by construction, and
+    the premise simply does not hold for it.
     """
     def _collect(agg: dict) -> dict:
         out: dict = {}
@@ -4060,7 +4150,8 @@ def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_agg), _collect(sim_agg)
-    return _step_timing_compare(r_by_func, s_by_func, ks_tol)
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                _AGG_STEP_TIMING_REAL_ONLY_FUNCS)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -5129,6 +5220,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["sim_commit_monotone"] = sim_commit_order_monotone(sim_agg)
     results["sim_rate"] = sim_rate_ok(sim_agg)
     results["trainer_speed"] = trainer_speed_parity(real_agg, sim_agg)
+    results["trainer_speed_identity"] = trainer_speed_identity_parity(real_agg, sim_agg)
     results["modeled_compute_advance"] = modeled_compute_advance(real_agg, sim_agg)
     results["overhead_residual"] = overhead_residual(
         real_agg, sim_agg, agg_goal=agg_goal)
@@ -5267,6 +5359,7 @@ CHECK_META: dict = {
     "sim_commit_monotone":     {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
     "sim_rate":                {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
     "trainer_speed":           {"stage": 1, "role": "CONTROL",  "deps": ()},
+    "trainer_speed_identity":  {"stage": 1, "role": "CONTROL",  "deps": ("trainer_speed",)},
     "modeled_compute_advance": {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
     "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
     "overlap_factor":          {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},

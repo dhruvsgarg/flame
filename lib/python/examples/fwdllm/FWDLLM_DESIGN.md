@@ -83,8 +83,21 @@ K8/U2 within bar; V1/V2 binned residual flat.
 
 ## §L  Forward-grad JVP compute profile & retained fluxtune optimizations
 *(tool: `scripts/profile_jvp_opt.py` — reuses real `create_model` + `calculate_jvp`; distilbert-base
-+ AdapterHub adapters, batch 8, seq 192, A40, fp16. Absolute ms are a CLEAN single-trainer profile; the real run
-is ~10× from GPU contention across the 10 concurrent trainers, but pass-counts/ratios/memory transfer.)*
++ AdapterHub adapters, batch 8, seq 192, A40, fp16. Absolute ms are a CLEAN single-trainer profile.)*
+
+> **The "real run is ~10× from GPU contention" note that used to sit here was wrong — measured 2026-07-15.**
+> Replaying the real code (real `create_model` adapter model, 1 pinned core + `OMP_NUM_THREADS=1` as the
+> spawner sets, real batch) on one A40: **alone 144.9ms/batch; 4 concurrent 212ms; 12 concurrent 216ms** — GPU
+> contention is **1.5×, not 10×**. The n100 real run nonetheless reports `_train_one_batch` at **3952ms**
+> (n=4902), while a 10-trainer smoke reproduces **366ms**. So the 18× is a 100-trainer SCALE effect that is
+> neither the code nor GPU sharing, and it is unexplained. `tb_*` phase telemetry + `train_batch_unaccounted_cdf`
+> (`simulate_fwdllm.md` §B, cross-baseline) exist to settle it on the next n100 pair. **Do not optimize this
+> loop further until that reads out** — the math is ~10ms of a 3952ms batch.
+
+> **`select_perturbation_using_jvp` is FALSE in the shipped fluxtune config**, so the 2P=20-pass row below does
+> NOT describe the runs: the trainer takes the cos-sim path (1 final JVP = **2 passes**), confirmed by
+> `JVP of the perturbation` appearing exactly 4902× for 4902 batches. The 20-pass path is what fluxtune does
+> *if that flag is turned on*.
 
 **Mechanism.** Forward-grad trains via a **central finite-difference JVP** (`fwdgrad_utils.calculate_jvp`): each
 perturbation = **2 forward passes** `f(θ±hv)`, h=0.01, autocast+no_grad → `jvp=(f(θ+hv)−f(θ−hv))/2h`. **fluxtune**
@@ -113,6 +126,26 @@ untouched.
 **NOT retained (changes fidelity, excluded per the fidelity bar):** vmap-batching (2.0× win, but ~5% different
 in fp16/fp32 from catastrophic-cancellation reduction-order sensitivity); forward-mode AD (slower, different
 math); `perturbation_count`↓ (changes the baseline algorithm).
+
+**LANDED 07-15 — pure-overhead removals (no numerics touched; RNG stream verified byte-identical to raw
+`torch.randn`).** All were invisible to their own `@timer_decorator` or ran under a disabled log level:
+- **Determinism-audit hashes gated** behind `FWDLLM_PERT_AUDIT=1`/DEBUG. `_calculate_hash` pulls a tensor
+  GPU→CPU and sha256s it; `params hashes` was **unfiltered over all 67.4M params** and ran **twice per batch**
+  (`_train_one_batch` + `_prepare_perturbation_tensors`), ~489ms/copy — i.e. re-hashing **253MB of frozen
+  weights that never change**, ~59× the ~10ms of actual math, for a log line DEBUG-off discards (f-string args
+  evaluate before `logging.debug` checks the level). Same trap in `_randn_wrapper` (12.3µs hashing vs 5.7µs of
+  RNG work, per param per pass).
+- **`_force_cuda_memory_cleanup` deleted** (trainer + aggregator) and the post-send `gc.collect()`/
+  `empty_cache()` in `fwdllm_trainer`. `empty_cache()` issues `cudaFree` (device-wide sync) and returns every
+  cached block, so the next round re-`cudaMalloc`s it. Measured: **+14% wall AND peak allocated 817MB→1090MB**
+  — it made pressure *worse*; without it a 300-cycle soak drifts **0.00MB** (46GB A40, ~32% used, no leak).
+  The aggregator's copy also ran on the eval daemon thread, stalling the main `aggregate()`. On OOM, tune
+  `PYTORCH_CUDA_ALLOC_CONF`.
+- **127k lines/run of INFO** dropped (`len of candidate_v` = a constant, once per trainable tensor per batch;
+  `cos sim values`) — the bulk of the 184–219MB trainer logs.
+- **157 lines of dead code** removed: two unreachable stale forks of `_select_optimal_perturbations` /
+  `_setup_training_state` (the live ones are nested in `_train_one_batch`) and `_randn_like_wrapper`, whose
+  per-perturbation `torch.cuda.synchronize()` existed only to make a debug hash accurate — and was never called.
 
 ---
 

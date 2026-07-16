@@ -2063,6 +2063,7 @@ class AsyncOortSelector(AbstractSelector):
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
+        _dispatch_order = None  # set only when this call re-samples (see return)
 
         # from the selected ends, remove those that are in recv state
         # already This is done to avoid waiting on trainers that you
@@ -2116,14 +2117,19 @@ class AsyncOortSelector(AbstractSelector):
                 f"Will pick cc: {cc} as min(candidates,concurrency) "
                 f"from candidates: {candidates}"
             )
-            selected_ends = set(self._pyrng.sample(sorted(candidates), cc))
+            # dict.fromkeys (not a bare set()): this function's RETURN is
+            # dispatch order, and set() iterates in str-hash order, randomized
+            # per-process by PYTHONHASHSEED independent of the seeded RNG.
+            # self.selected_ends stays a set -- callers .remove()/.union() it.
+            _dispatch_order = dict.fromkeys(self._pyrng.sample(sorted(candidates), cc))
+            selected_ends = set(_dispatch_order)
 
             self.selected_ends[self.requester] = selected_ends
             logger.debug(
                 f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
             )
 
-            for selected_end in selected_ends:
+            for selected_end in _dispatch_order:
                 # Add to all_selected. {key: end, val: TS epoch (s)}
                 self.all_selected[selected_end] = self._abandon_clock_now()  # #1c
             logging.debug(
@@ -2133,7 +2139,10 @@ class AsyncOortSelector(AbstractSelector):
 
         logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
-        return {key: None for key in selected_ends}
+        # Fresh sample -> seeded-RNG order. Carry-over path -> a prior sample's
+        # set, whose order set() already discarded; sorted() at least makes it
+        # process-stable so real and sim agree.
+        return {key: None for key in (_dispatch_order or sorted(selected_ends))}
 
     def reset_end_state_to_none(self, ends: dict[str, End], end_id: str) -> None:
         """Reset's the state of end_id from send/recv to none"""

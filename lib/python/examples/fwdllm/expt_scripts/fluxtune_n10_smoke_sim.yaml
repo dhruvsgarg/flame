@@ -77,6 +77,7 @@ experiments:
         job:
           id: fluxtune_n10_smoke_sim
         hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init; MUST match fluxtune_n10_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
           # With c=30 >> agg_goal=3, commit-then-carry the surplus grads +
           # hold busy trainers across the boundary (K-D12). Applies to real

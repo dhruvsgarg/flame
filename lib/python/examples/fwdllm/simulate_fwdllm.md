@@ -73,6 +73,11 @@ genuine shared compute.
 
 ## §A  Score — refreshed 2026-07-15 (see PREAMBLE's score-tracking trigger)
 
+> **ALL THREE baselines' numbers below predate the seed fix (§G): sim ran unseeded, real at `seed=1234`.**
+> Every cohort/variance/convergence-shaped rung was therefore measured against a sim drawing a different
+> selection order AND a different model init. Treat the whole table as a pre-fix baseline; refresh from the
+> next 7200s pair before drawing any conclusion from it.
+
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
 | baseline | run pair | duration | pass | fail | skip |
@@ -107,23 +112,30 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (5400s, post-delay-floor-fix)
-1. **`cohort_sequence` total divergence — top priority.** Real/sim pick entirely different trainers from
-   cycle 0 (0% set match) despite sharing the RNG-order fix that gives fwdllm/fwdllm_plus ~100%. Not traced.
-2. **`throughput`/`per_round_advance`/`terminal_state`/`total_commits`/`overhead_residual` — one gap.** Sim
-   completes 139 rounds vs real's 103-117 in the same matched vclock budget (~24-26% rel diff); `sim_rate`
-   itself is 0.88× (<1). `r1_inflight_overlap` is ruled out as a cause (§G) — look elsewhere, start with #4.
-3. **`preferred_duration` — borderline, re-check.** frac_diff exactly at the 20pp tolerance (real 23.9% vs sim
-   3.9%) — worse than the 9.3pp this rung hit before. Could be this run's shorter length (5400s vs 7200s) or a
-   genuine drift; re-check at matched length before concluding either way.
-4. `agg_step_timing_breakdown` — worst offender `_distribute_weights_async` (real 0.166s vs sim 0.046s,
-   KS=0.976); `_release_end_on_return`/`eval_model`/`_force_cuda_memory_cleanup` also diverge. Candidate
-   explanation for #2, unexamined.
-5. `v2_var_trajectory` — sim's mean post-perturbation variance 11.94 vs real's 10.21 (14.5% rel, tol 2%).
-   Unexamined.
-6. `convergence` — both legs at the ~0.25 accuracy floor; tracked as an ML-stability issue in
+> **§A's numbers predate the seed fix (§G) and are expected to move.** `cohort_sequence`/`v2`/`convergence`/
+> `preferred_duration` were all measured with sim unseeded; re-read them from the next 7200s pair before
+> spending any analysis on them.
+
+1. **`throughput`/`per_round_advance`/`terminal_state`/`total_commits`/`overhead_residual` — one gap, and the
+   likely mechanism is now identified.** Sim does 139 commits vs real's 103 in the matched vclock budget
+   (~26%); `sim_rate` 0.88×. Real's wall charges ~12.4s/commit of `eval_model`; sim's vclock does not
+   (`_eval_s = None`, on the "eval is backgrounded" premise). Measured: only 30.5% of sim eval overlaps
+   `_process_aggregation_goal_met` (real 21.6%) — it is backgrounded in code but cannot hide, because sim idle
+   (13.8%) < eval (32.9%). Charging eval would put sim at 47.3s/commit vs real 45.4s (4.1%) and clear the
+   cluster. **Not landed — operator wants eval genuinely isolated (own GPU/process) rather than charged, so
+   neither clock pays instrumentation. Decide before touching these five rungs.**
+2. `v2_var_trajectory` — sim mean var 11.94 vs real 10.21 (14.5% rel, tol 2%); cycle-0 var is 7.36 vs 1.53,
+   which is a different model init, not fp16 jitter. Expected to be a seed artifact; re-read post-fix.
+3. `trainer_speed_identity` (NEW rung) — `speed_s` per trainer matches (max 4.4% dev) but `utility` does not:
+   47/100 trainers outside 10%, and *scrambled* (0408 10.40→8.07, 0449 8.74→10.91), i.e. a different model
+   init. Falsifiable: should go green with the seed fix. If it does not, a second divergence is hiding here.
+4. `preferred_duration` — real binds 23.9% vs sim 3.9%, exactly at the 20pp tol (boundary fail). `pref` medians
+   agree (14.99/14.58), so it's WHICH trainers got selected → downstream of the seed. Re-read post-fix.
+5. `convergence` — both legs at the ~0.25 accuracy floor; tracked as an ML-stability issue in
    `fluxtune_contributions.md` §8 (H3/S2 fixes pending there), not a parity bug — don't re-open here.
-7. `sim_sct_ordered_drain` A/B — unblocked (TIMING_OVERRUN + `r1_inflight_overlap` both closed, §G); behind
-   #1 so it isn't confounded. Command + what to read: `fluxtune_n10_smoke_sim_no_sct_drain.yaml`.
+6. `sim_sct_ordered_drain` A/B — was blocked on cohort determinism; the seed fix unblocks it, since both legs
+   now draw identically. Run it against the next pair: `fluxtune_n10_smoke_sim_no_sct_drain.yaml`.
+7. **Accuracy drop after reaching 81%** — known, unfixed, deferred by operator (07-15). Not yet triaged.
 
 ### fwdllm (STALE run — pre-delay-floor-fix)
 1. **TIMING_OVERRUN validation not yet launched** (`--delay-floor 11.0`) — everything below is stale until it
@@ -151,9 +163,17 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    `convergence` — failing, not individually triaged; re-check after #1 lands.
 
 ### Cross-baseline / shared
+- **All three baselines' `cohort_sequence` re-read after the seed fix** — fwdllm/fwdllm_plus were also
+  real-seeded/sim-unseeded (§G), so their cohort numbers are as suspect as fluxtune's.
+- **Trainer wall-time attribution — instrumented, not yet read.** The n100 real run showed
+  `_train_one_batch` at 3952ms while the same code offline (real adapter model, 1 pinned core,
+  12-way GPU share) does its work in ~216ms; a 10-trainer smoke reproduces ~366ms, i.e. the gap is a
+  100-trainer scale effect, NOT GPU contention (measured 1.5x at 12-way) and NOT the code. `tb_*` phases +
+  `train_batch_unaccounted_cdf` now decide it: phases sum ⇒ the cost is in a stage; `tb_unaccounted`
+  dominates ⇒ the batch is stalled outside instrumented work and stage-level optimization won't touch it.
 - felix (async_cifar10) 46/46 reconfirmation — deferred repeatedly, gates Phase 2.
-- Operator-run seeded real↔real pairs (`*_seeded.yaml`) — GPU-nondeterminism floor; blocked on fluxtune #1
-  above (dispatch-order determinism).
+- Operator-run seeded real↔real pairs (`*_seeded.yaml`) — GPU-nondeterminism floor; the seed fix (§G) makes
+  the default yamls seeded, so these now measure only the GPU-jitter floor.
 - Momentum (S1-S3) / fluxtune server-optimizer retry — roadmap item, not parity; see
   `fluxtune_contributions.md` §8.2 / FWDLLM_DESIGN.md. Resume only after Phase-1 parity closes.
 
@@ -220,6 +240,11 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **Sim ran UNSEEDED while real had `seed=1234`** (07-15) — sim yamls omitted the key; added to all 3 + `config.py` default `None`→`1234`; drove `cohort_sequence` set-match to 0.0 at cycle 0.
+- **`_handle_recv_state` leaked dispatch order via PYTHONHASHSEED** (07-15) — `select_random`'s `dict.fromkeys` fix never reached it; ported to async_oort/fedbuff/async_random.
+- **Trainer batch interior emitted zero telemetry** (07-15) — `timer_decorator` keys off `args[0].fwd_llm_stage`; nested helpers pass `device`; added `_stage_timer` + 10 `tb_*` phases + phase/unaccounted CDFs.
+- **`agg_step_timing_breakdown` false positives** (07-15) — KS on all-zero + tight distributions; degenerate-skip, 5% mean escape, exempt `_distribute_weights_async` (real-only `sleep(0.1)`).
+- **`aggregation_plots` dead on NameError** (07-15) — `pc_x`/`pc_y`/`pgm_y` collection loop missing; restored, `pastdated_commits_over_rounds.pdf` renders again.
 - **TIMING_OVERRUN** (07-15) — §O's margin used fast-class MEAN not FLOOR; `training_delay_floor_s` fix; VALIDATED 0 overruns (5400s run).
 - **fluxtune accuracy floor** (07-14/15) — cross-refs `fluxtune_contributions.md` §8's tracked H0/F1-F15 collapse; not a parity bug, both legs match.
 - **`r1_inflight_overlap`** (07-15) — checker flagged FedBuff's legit stale-accept redispatch as a violation; rescoped per `version_key`; FIXED, 0.0%/0.0%.

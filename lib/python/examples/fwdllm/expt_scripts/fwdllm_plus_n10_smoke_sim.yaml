@@ -75,6 +75,7 @@ experiments:
         job:
           id: fwdllm_plus_n10_smoke_sim
         hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_plus_n10_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)

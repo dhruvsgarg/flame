@@ -164,8 +164,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # Deterministic RNG seed: seeds the global RNGs (torch model init, syncfl
     # internal_init) and each selector's dedicated RNG, making selection
-    # reproducible across real/sim. None = unseeded.
-    seed: t.Optional[int] = Field(alias="seed", default=None)
+    # reproducible across real/sim. Defaults to 1234, NOT None: unseeded, every
+    # launch draws a different selection order and model init, which makes
+    # real<->sim cohort/variance parity unachievable rather than merely hard.
+    # Set None only to deliberately opt OUT of determinism.
+    seed: t.Optional[int] = Field(alias="seed", default=1234)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
     #       mechanism in the control plane. This needs to be revisited

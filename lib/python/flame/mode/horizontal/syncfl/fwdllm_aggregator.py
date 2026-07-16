@@ -2716,9 +2716,12 @@ class TopAggregator(AsyncTopAgg):
         # TODO: Check if model needs to be moved back to cpu? Do we need to keep
         # moving the model between CPU and GPU repeatedly?
 
-        # Can delete x, labels, output, logits, loss in case we run into any memory issues
-        self._force_cuda_memory_cleanup()
-
+        # No _force_cuda_memory_cleanup() here: it ran BEFORE this returns, so
+        # the locals it claimed to free were still referenced, and empty_cache()
+        # issues cudaFree (a device-wide sync) from the eval daemon thread,
+        # stalling the main thread's aggregate(). Nothing to reclaim either --
+        # memory is flat across the run. On OOM, tune PYTORCH_CUDA_ALLOC_CONF
+        # rather than putting a device sync back on a hot path.
         self.log_memory("end eval_model", self.device)
 
         return result, model_outputs, wrong

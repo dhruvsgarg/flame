@@ -1885,6 +1885,108 @@ def sim_speedup_plots(records, out, stamp, tdir):
 _PHASE_VCLOCK_WARMUP_S = 5.0
 
 
+def train_batch_phase_plots(records, out, stamp, tdir):
+    """CDFs of the trainer's per-batch wall phases (`tb_*` step_timing events).
+
+    CDFs, not means: a mean can't separate "every batch pays 300ms here" from
+    "1 in 50 stalls for 15s" -- opposite diagnoses, same average.
+
+    `tb_unaccounted` (batch total minus the sum of its top-level phases) is the
+    load-bearing series: if the phases sum to the batch, the cost is IN the code
+    and the CDFs say which stage; if unaccounted dominates, the batch is being
+    stalled outside the instrumented work and stage-level optimization won't
+    touch it.
+    """
+    d = _sub(out, "system")
+    st = by_event(records, EVENT_STEP_TIMING)
+    if not st:
+        p = ph.no_data_plot(
+            "Trainer batch phases (no step_timing telemetry)", d,
+            "train_batch_phase_cdf.pdf",
+            note="run predates tb_* phase instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    by_func = defaultdict(list)
+    for r in st:
+        f, dur = r.get("func"), r.get("duration_s")
+        if f and dur is not None and dur >= 0:
+            by_func[f].append(float(dur))
+
+    tb = {f: v for f, v in by_func.items() if f.startswith("tb_")}
+    if not tb:
+        p = ph.no_data_plot(
+            "Trainer batch phases (no tb_* events)", d,
+            "train_batch_phase_cdf.pdf",
+            note="run predates tb_* phase instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+
+    # ---- 1. per-phase CDF overlay, in ms (phases are sub-second) ----
+    series = {f.replace("tb_", ""): [x * 1e3 for x in v]
+              for f, v in sorted(tb.items(), key=lambda kv: -sum(kv[1]))}
+    p = ph.cdf_multi(series, "phase wall (ms)",
+                     "Trainer per-batch phase wall (CDF by stage)",
+                     d, "train_batch_phase_cdf.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+
+    # ---- 2. unaccounted = batch total - sum(top-level phases) ----
+    # Only TOP-LEVEL phases; tb_grad_clone/tb_perturb_draw_cpu/tb_cos_sim_select
+    # nest inside tb_setup_training_state and would be double-counted.
+    _TOP = ("tb_batch_to_device", "tb_stat_utility", "tb_setup_training_state",
+            "tb_prepare_perturbation", "tb_deepcopy_best_v", "tb_forward_jvp",
+            "tb_accumulate_grads")
+
+    # Pair phases to their batch by EMISSION ORDER per trainer, not by
+    # (data_id, iteration): a variance retry revisits the same cadence key, and
+    # each collision would fold N batches' phases onto one total and manufacture
+    # a hugely negative "unaccounted". Order is reliable: each inner phase emits
+    # on exit, always before the enclosing _train_one_batch's own emit.
+    per_trainer = defaultdict(list)
+    for r in st:
+        if r.get("func") and r.get("duration_s") is not None:
+            per_trainer[r.get("trainer_id")].append(r)
+
+    unacc, batch_totals = [], []
+    for _tid, rows in per_trainer.items():
+        rows.sort(key=lambda r: (r.get("ts") is None, r.get("ts") or 0.0))
+        acc = 0.0
+        for r in rows:
+            f = r["func"]
+            if f in _TOP:
+                acc += float(r["duration_s"])
+            elif f == "_train_one_batch":
+                total = float(r["duration_s"])
+                batch_totals.append(total)
+                unacc.append((total - acc) * 1e3)
+                acc = 0.0
+    if unacc:
+        p = ph.cdf_plot(unacc, "unaccounted wall per batch (ms)",
+                        "Trainer batch time NOT in any instrumented phase",
+                        d, "train_batch_unaccounted_cdf.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+        tot_batch = sum(batch_totals)
+        tot_unacc = sum(unacc) / 1e3
+        frac = tot_unacc / tot_batch if tot_batch else 0.0
+        print(f"  [train_batch_phase_plots] batches={len(unacc)} "
+              f"mean_batch={tot_batch/len(unacc)*1e3:.0f}ms "
+              f"mean_unaccounted={tot_unacc/len(unacc)*1e3:.0f}ms ({frac:.0%})")
+        if frac > 0.5:
+            print(f"  [train_batch_phase_plots] >50% of batch wall is OUTSIDE the "
+                  f"instrumented phases -- the batch is being stalled, not computing; "
+                  f"stage-level optimization will not move it.")
+
+    # ---- 3. stage ranking table (printed; the CDFs are the visual) ----
+    print(f"  [train_batch_phase_plots] per-batch stage means (ms):")
+    n_batches = len(batch_totals) or 1
+    for f, v in sorted(tb.items(), key=lambda kv: -sum(kv[1])):
+        print(f"      {f:26} n={len(v):6} total/batch={sum(v)/n_batches*1e3:8.2f} "
+              f"mean/call={sum(v)/len(v)*1e3:7.2f}")
+    return out_paths
+
+
 def phase_vclock_plots(records, out, stamp, tdir):
     """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained,
     every-example/every-mode companion to sim_speedup_plots' round-level view
@@ -2993,6 +3095,20 @@ def aggregation_plots(records, out, stamp, tdir):
     # anomaly. Plotted alongside pastdated_commits (same file) so a healthy
     # run reads as pastdated_commits flat-at-0 + carried_surplus_commits
     # stepping up on its own expected cadence, not conflated into one alarm.
+    # pc_*/pgm_* are the pastdated counters this plot is named for; their
+    # collection loop was missing, so the whole group died on a NameError at
+    # `if pc_x:` and took the carried-surplus series with it. Field is
+    # `pastdated_gap_max` (the series label below says _s; the emitted key
+    # does not carry the suffix).
+    pc_x, pc_y, pgm_y = [], [], []
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd < 1 or r.get("pastdated_commits") is None:
+            continue
+        pc_x.append(rd)
+        pc_y.append(float(r["pastdated_commits"]))
+        pgm_y.append(float(r.get("pastdated_gap_max") or 0.0))
+
     cs_y = []
     for r in ar:
         rd = int(r.get("round", 0))
@@ -3105,6 +3221,7 @@ def write_summary(records, out, tdir, manifest=None, saved_paths=None):
 _PLOT_GROUPS = (
     perf_plots, sanity_plots, selection_plots, insights_plots,
     system_plots, sim_speedup_plots, phase_vclock_plots, phase_wall_vclock_plots,
+    train_batch_phase_plots,
     mqtt_delivery_plots,
     availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
     send_gate_wait_plots, commit_promptness_plots,

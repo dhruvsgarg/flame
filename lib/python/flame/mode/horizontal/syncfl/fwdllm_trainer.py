@@ -694,11 +694,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel._selector._cleanup_send_ends()
 
-        # Optimization: Perform GC and CUDA memory cleanup after sending gradients.
-        # This moves the "stop the world" synchronous flushes out of the measured 
-        # training/evaluation phases and into the idle time between rounds.
-        gc.collect()
-        torch.cuda.empty_cache()
+        # No gc.collect()/torch.cuda.empty_cache() here: moving them "into the
+        # idle time between rounds" only moved the cost off this trainer's own
+        # stopwatch, and empty_cache() hands every cached block back to the
+        # driver so the next round re-cudaMallocs it. Measured: ~14% wall AND
+        # peak allocated 817MB -> 1090MB -- it made memory pressure worse, not
+        # better; without it a 300-cycle soak drifts 0.00MB.
 
     def _perform_channel_leave(self, tag: str) -> None:
         logger.debug(
