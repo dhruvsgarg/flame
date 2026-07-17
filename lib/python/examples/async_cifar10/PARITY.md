@@ -94,6 +94,14 @@ JSONs: `parity_{felix,oort,refl}_20260624_5400` (1.5h); 3h `parity_*_20260624_3h
    identical stored inputs.
 3. **feddance / felix — closed**, no rerun needed.
 4. **Run plan: oort + refl at 3h next.**
+5. **felix — check `_sim_recv_min`'s round-1 cold-start gate before the next reconfirmation run (flagged
+   07-16, not data-checked here).** fwdllm's sibling (`_sim_recv_min_grad`, async) had a confirmed bug:
+   `_sim_inflight_expected` only arms once `_sim_known_delay_s` (reactive, no fallback) has that trainer
+   cached, so round 1 is blind and commits whatever lands first instead of the true sct-minimum. `_sim_recv_min`
+   here (`asyncfl/top_aggregator.py:315`) has the identical gate shape. felix's own comment (line ~158) claims
+   it's empirically inert (0.4s GPU compute ≪ its 0.5s fallback margin) — plausible but unverified. Fix
+   pattern if felix's data shows otherwise: `fwdllm_aggregator.py`'s `unknown_stuck` (simulate_fwdllm.md §G,
+   07-16). Not implemented here — flagged only, out of this session's blast radius.
 
 ### Roadmap: lock mechanism parity on ALL baselines BEFORE the perf pass (Jun 21)
 Get 46/46 on oort+refl+feddance first, then the sim perf pass — do not interleave. The

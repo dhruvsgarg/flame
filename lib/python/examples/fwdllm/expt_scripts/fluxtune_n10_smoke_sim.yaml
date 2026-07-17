@@ -118,7 +118,7 @@ experiments:
           # only unblocks the commit path so held trainers are freed promptly.
           # SIM-only; must not move cohort/var/staleness parity (PARITY_LOGICAL_TASKS.md #15).
           sim_compute_truthful_gate: true
-          sim_gate_compute_cap_s: 16.0  # derived, not guessed: fluxtune real compute p99=6.2s max=10.6s (07-15 banked run) x 1.5 safety -- FWDLLM_DESIGN.md §O
+          sim_gate_compute_cap_s: 11.0  # re-derived 07-16 (was 16.0/07-15, stale pre-overhead-removal): max(real,sim) _perform_training=7.274s/5.241s x 1.5 -- run_20260716_202633/_212850
           # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
           # not reject (K-D13). Set identically in the real sibling; never a
           # parity lever. camelCase MUST match the base key to override it —

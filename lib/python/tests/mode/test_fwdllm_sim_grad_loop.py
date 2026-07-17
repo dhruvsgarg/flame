@@ -106,6 +106,7 @@ class _FakeGradAgg:
         self._sim_committed = set()
         self._sim_inflight_expected = {}
         self._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
+        self._sim_dispatch_wall = {}  # #16: cold-start gate dispatch stamps
         self._sim_pending_commit = set()
         self._inflight_residence = False
         self._sim_staggered_redispatch = False   # #13 step 4 (default off)
@@ -702,3 +703,69 @@ class TestComputeTruthfulGate:
         assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
         assert getattr(agg, "_sim_gate_phantom_skip", 0) == 0
         assert agg._sim_gate_failsafe == 1
+
+
+class TestColdStartUnknownDelayGate:
+    """#16: a trainer's first-ever contact has no _sim_known_delay_s entry
+    (reactive cache, no fallback), so earlier_stuck is blind to it and a cold
+    run used to commit whatever arrived first. Unconditional -- independent of
+    sim_compute_truthful_gate (the separate #15 phantom-skip flag) -- reusing
+    the same sim_gate_compute_cap_s bound."""
+
+    def test_holds_for_a_still_unknown_faster_trainer(self):
+        """Neither A nor B has a known delay. A arrives first physically but
+        B's modeled completion is earlier -- gate must hold A, commit B first."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 10.0
+        now = time.time()
+        agg._sim_dispatch_wall = {"A": now, "B": now}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)  # arrives first physically
+        ch.add_msg("B", sct=50.0, release_at=1)    # arrives on the 2nd probe
+
+        first_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first_msg[MessageType.SIM_COMPLETION_TS] == 50.0  # B, not A
+
+    def test_releases_after_cap_elapses_for_a_never_arriving_unknown_trainer(self):
+        """A trainer dispatched long enough ago that it's past the compute cap
+        can't block a commit forever -- same "not genuinely computing anymore"
+        reasoning as the #15 phantom-skip path, just for an unknown-delay end."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 0.05
+        agg._sim_dispatch_wall = {"GHOST": time.time() - 1.0}  # cap long elapsed
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        # GHOST never gets a message -- would otherwise block forever.
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "GHOST"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert getattr(agg, "_sim_gate_failsafe", 0) == 0  # cap resolved it
+
+    def test_no_dispatch_wall_stamp_does_not_hold(self):
+        """An end with no _sim_dispatch_wall entry (never dispatched via the
+        real path) can't spuriously trigger the cold-start hold -- matches
+        production, where dispatch always stamps it unconditionally."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 10.0
+        # _sim_dispatch_wall stays {} (default from __init__).
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=50.0, release_at=5)  # would arrive much later
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0  # A commits, doesn't wait for B
+
+    def test_flag_off_still_applies_the_cold_start_gate(self):
+        """Unlike #15's phantom-skip, this gate does NOT depend on
+        sim_compute_truthful_gate -- it must hold even with that flag at its
+        default (off)."""
+        agg = _FakeGradAgg()  # sim_compute_truthful_gate never set (off)
+        agg._sim_gate_compute_cap_s = 10.0
+        now = time.time()
+        agg._sim_dispatch_wall = {"A": now, "B": now}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=50.0, release_at=1)
+
+        first_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first_msg[MessageType.SIM_COMPLETION_TS] == 50.0

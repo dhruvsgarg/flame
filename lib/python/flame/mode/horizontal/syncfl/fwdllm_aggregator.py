@@ -1060,13 +1060,28 @@ class TopAggregator(AsyncTopAgg):
                         continue  # not genuinely computing -> can't block a commit
                 if min_stuck is None or exp < min_stuck:
                     min_stuck, _stuck_end = exp, e
+            # #16 cold-start gate (simulate_fwdllm.md §G): a trainer's FIRST
+            # contact has no _sim_known_delay_s entry (reactive cache, no
+            # fallback), so _sim_inflight_expected is never armed for it and
+            # earlier_stuck above is blind to it -- round 1 used to commit
+            # whatever arrived first instead of the true sct-minimum.
+            # Unconditional (not gated by sim_compute_truthful_gate): hold
+            # while a probed end is still unknown and within the compute cap
+            # of its own dispatch; clears once it reports or ages out.
+            unknown_stuck = any(
+                e not in self._sim_known_delay_s
+                and not self._sim_buffer.has(e) and e not in self._sim_committed
+                and self._sim_dispatch_wall.get(e) is not None
+                and (_now_wall - self._sim_dispatch_wall[e]) <= _cap
+                for e in to_probe
+            )
             earlier_stuck = (
                 bmin is not None and min_stuck is not None
                 and min_stuck + _SIM_ORDER_SLACK_S < bmin
             )
             if bmin is None and not to_probe:
                 break  # nothing to commit and nothing in flight
-            if not earlier_stuck:
+            if not earlier_stuck and not unknown_stuck:
                 break  # the buffered minimum is the true next completion
             if time.time() >= deadline:
                 # #13 failsafe: the earliest-expected in-flight trainer never
@@ -1074,9 +1089,11 @@ class TopAggregator(AsyncTopAgg):
                 # _sim_inflight_expected forever, so `earlier_stuck` re-fires the
                 # full deadline every drain cycle -> pipeline starvation. Treat it
                 # as lost: drop it from the expected set and commit the buffered
-                # min now. Sim-only.
+                # min now. Sim-only. (_stuck_end is None if unknown_stuck alone
+                # triggered this -- guard the evict, that path is deadline-safe.)
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
-                self._sim_inflight_expected.pop(_stuck_end, None)
+                if _stuck_end is not None:
+                    self._sim_inflight_expected.pop(_stuck_end, None)
                 logger.info(
                     f"[SIM_GRAD_STUCK_EVICT] round={getattr(self, '_round', -1)} "
                     f"end={str(_stuck_end)[-4:]} exp={min_stuck} bmin={bmin} "
