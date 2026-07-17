@@ -104,11 +104,11 @@ experiments:
             # aggGoal is set once via the top-level `agg_goal: 10` above -- the
             # runner fans it into both this kwarg and hyperparameters.aggGoal
             # so they can't drift apart; don't duplicate it here.
-            # minInitialTrainers=c=30: wait for a full concurrency-worth of
-            # the 100-trainer pool before starting selection (matches the n10
-            # smoke convention of minInitialTrainers==c, not "wait for all N").
+            # minInitialTrainers=N=100, not c=30 (07-17, simulate_fwdllm.md
+            # §G): c<N let post-barrier joiners race sim's faster cycle
+            # cadence vs real's, diverging cohort_sequence from cycle 1.
             c: 30
-            minInitialTrainers: 30
+            minInitialTrainers: 100
 
     execution:
       # 8 GPUs for 100 trainer processes -- cramming 100 trainers onto 1 GPU

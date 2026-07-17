@@ -122,16 +122,10 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
-### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=c=30, agg_goal=10 — VALIDATED)
-1. **NEXT UP — `cohort_sequence` still fails: a NEW divergence starts at cycle 1 (candidate REFILL at the
-   cycle boundary), not the round-1 gate (fixed — see §G).** 6-min smoke pair (`run_20260716_233147_..._real`/
-   `_233128_..._sim`, cap=11.0 active): cycle 0 now 10/10; cycle 1 drops to 7/10 and keeps decaying. Real's
-   cycle-1-only trainers (`405`/`402`/`401`, fast/medium) vs sim's (`372`/`378`/`385`, all very_slow) — real
-   dispatches+commits all three by cycle 1, sim doesn't dispatch them until cycles 4-6. Dispatch-TIMING gap,
-   not an in-buffer ordering gap — different mechanism than the round-1 fix, root cause not yet found. Start
-   next session by tracing the cycle-0→cycle-1 refill/re-selection (`[Distribute]`/`select()` both modes), the
-   same method as the round-1 trace. Also re-check `throughput`/`total_commits`/`terminal_state` (failed here,
-   likely 6-min noise not a regression) once this lands.
+### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=**N=100** (was c=30), agg_goal=10 — VALIDATE next run)
+1. **`cohort_sequence` cycle-1+ divergence ROOT-CAUSED+FIXED — see §G 07-17.** `minInitialTrainers=c=30` raced
+   sim's faster cycle cadence vs real's; fixed to `N=100`. Unvalidated — re-run and confirm cycle-1+ SET match
+   plus `throughput`/`total_commits`/`terminal_state` (failed on the pre-fix 6-min pair, likely just noise).
 2. **`agg_step_timing_breakdown` re-diagnosed: the aggregator queue-bound gap, not `_distribute_weights_async`.**
    `_distribute_weights_async` (KS=0.985) is already exempted (`gates_ok=False`, real-only sleep) — the
    `worst_func` field just reports it regardless of exemption, which previously obscured the real gating
@@ -150,33 +144,31 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 7. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
    `deps`); unblocked but deferred until #1's cascade root is found (may change what admissibility should test).
 
-### fwdllm (~3600s, delay-floor 11.0, divisor 1.63, min-init=c=10, agg_goal=10 — first fresh pair)
+### fwdllm (~3600s, delay-floor 11.0, divisor 1.63, min-init=**N=100** (was c=10), agg_goal=10 — first fresh pair)
 > First non-STALE pair since the delay-floor+seed fixes landed. 7 fails (down from 16 on the stale pair);
 > none individually triaged this session (fluxtune was the operator's stated focus) — next session's queue:
-1. **`cohort_sequence` — fluxtune #1's diagnosis does NOT transfer, needs its own investigation.** fwdllm/
-   fwdllm_plus are SYNC baselines (`_sync_sim_recv_first_k`, `top_aggregator.py:447`) — a genuine full-cohort
-   barrier that drains every selected end before sorting by sct, structurally immune to the async
-   `_sim_recv_min_grad` round-1 admission-race bug fluxtune had (§G 07-16). Root cause here is unknown; start
-   from a `[SYNC_SIM_BARRIER]`/`[SYNC_SIM_RECV]` log trace of the first cycle, same method as fluxtune's
-   `[SIM_GRAD_RECV]` trace, not by assuming the async fix applies.
+1. **`cohort_sequence` — fluxtune's round-1 admission-race fix does NOT transfer (SYNC full-cohort barrier,
+   `_sync_sim_recv_first_k`, structurally immune — §G 07-16), but the `minInitialTrainers=c=10`→`N=100`
+   join-race fix (§G 07-17) does — same misconfiguration.** Unvalidated: re-run before tracing further.
 2. `overhead_residual`/`per_round_advance` — previously root-caused (real-only `num_min_req=1` clamp calls the
    sync collect path once per LAP, not per cycle) but unfixed; needs a compose-loop refactor, risks stranding
    messages if done blind. Re-check the root cause still holds on this fresh pair before refactoring.
 3. `throughput`, `step_timing_breakdown`, `agg_step_timing_breakdown`, `utility` — failing, UNEXAMINED this
    session, no root cause yet.
 
-### fwdllm_plus (~3600s, delay-floor 11.0, divisor 1.63, min-init=c=10, agg_goal=10 — first fresh pair)
+### fwdllm_plus (~3600s, delay-floor 11.0, divisor 1.63, min-init=**N=100** (was c=10), agg_goal=10 — first fresh pair)
 > First non-STALE pair since the delay-floor+seed fixes landed. 7 fails; none individually triaged this
 > session (fluxtune was the operator's stated focus) — next session's queue:
 1. **`cohort_sequence` / `v2_var_trajectory` / `v1b_iters_moving_avg` / `convergence`** — same near-miss cluster
-   shape as fluxtune #3/#4, but fluxtune's cycle-0-cascade fix does NOT apply (fwdllm_plus is sync, same
-   `_sync_sim_recv_first_k` full-barrier as fwdllm — see fwdllm #1 above). Needs its own trace, not inherited.
+   as fluxtune #3/#4. Sync full-barrier means fluxtune's §G 07-16 fix doesn't apply, but the `minInitialTrainers`
+   `c=10`→`N=100` fix (§G 07-17) does — same misconfiguration. Unvalidated; re-run before tracing further.
 2. `eligibility`, `step_timing_breakdown`, `agg_step_timing_breakdown` — failing, UNEXAMINED this session.
 
 ### Cross-baseline / shared
-- **fwdllm/fwdllm_plus `cohort_sequence`, still failing on fresh pairs — root cause is UNRELATED to fluxtune's
-  (§G 07-16 async fix doesn't apply to their sync `_sync_sim_recv_first_k` barrier)**, needs independent
-  investigation from their own `[SYNC_SIM_BARRIER]` trace.
+- **`minInitialTrainers=c` (not N) reopened the post-barrier join-order race for ALL THREE baselines —
+  ROOT-CAUSED+FIXED, §G 07-17.** Sim's cycle cadence legitimately outruns real's (transport-collapse), so
+  identical wall-clock-bound trainer spawn timing lands in different cycles per mode — no algorithmic bug.
+  Fixed in all 5 n100 parity yamls; re-run all three before assuming any remaining gap is algorithmic.
 - **felix (async_cifar10) likely has the same round-1 cold-start gap fluxtune had** — `asyncfl/top_aggregator.py`
   `_sim_recv_min` uses the identical `_sim_inflight_expected`/reactive-`_sim_known_delay_s` gate shape (no
   fallback for unseen ends), same theoretical blind spot on first contact. Felix's own code comment claims the
@@ -273,6 +265,10 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **`minInitialTrainers=c` reopened the post-barrier join-order race, all 3 baselines** (07-17) — sim's cycle
+  cadence outruns real's wall-clock (transport-collapse), so identical wall-clock-bound trainer spawn timing
+  landed in different cycles per mode (fluxtune 6-min pair: sim cycle1 t=106s/33 joined vs real t=125s/42).
+  Fixed: `minInitialTrainers=N=100` in all 5 n100 parity yamls. Unvalidated, next run.
 - **Round-1 cold-start cohort scramble (async only)** (07-16) — `_sim_recv_min_grad`'s gate was blind on a
   trainer's first contact (`_sim_known_delay_s` reactive, no fallback); added `unknown_stuck`, a wall-clock-cap
   hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). VALIDATED

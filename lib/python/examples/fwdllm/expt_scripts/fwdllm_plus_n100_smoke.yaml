@@ -89,10 +89,11 @@ experiments:
             # trainers from this agg_goal==c==10 selected pool every round
             # and, combined with the §M reselect-gate cache, caused a
             # livelock (simulate_fwdllm.md §A). Fixed: cleanup now drains all.
-            # c=10 of the 100-trainer pool selected/round; minInitialTrainers
-            # matches c (only c trainers need join before selection starts).
+            # c=10 selected/round. minInitialTrainers=N=100, not c (07-17,
+            # simulate_fwdllm.md §G): c<N raced sim's faster cycle cadence
+            # vs real's for post-barrier joiners, diverging cohort_sequence.
             c: 10
-            minInitialTrainers: 10
+            minInitialTrainers: 100
 
     execution:
       # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
