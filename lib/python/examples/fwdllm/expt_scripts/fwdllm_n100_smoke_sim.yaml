@@ -1,22 +1,31 @@
-# FedFwd smoke test: 100 trainers, agnews H5 partitions (client_idx 0-99, the
-# full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
-# (FedFwd has no simulated-clock support yet).
+# FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
+# (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
+# population). Sim sibling of fwdllm_n100_smoke.yaml -- IDENTICAL except
+# time_mode: simulated and the job id (so run dirs don't collide). c=10 of
+# the 100-trainer pool selected/round (agg_goal==c==10).
 #
-# Uses the `fwdllm_plus` baseline (sync, random selector, fedavg, ORACULAR
-# availability read from _metadata, per-iteration reselection). Sibling of
-# fwdllm_n10_smoke.yaml/fluxtune_n10_smoke.yaml; run all three for full
-# real/sim parity coverage across the taxonomy. c=10 of the 100-trainer pool
-# selected/round (agg_goal==c==10, no longer a full-population cohort).
+# time_mode: simulated exercises the Batch-1 sim path: the trainer skips the
+# real emulated-delay sleep and stamps a modeled sim_completion_ts; the
+# aggregator orders commits by that sct on a virtual clock (sync barrier here,
+# via _sync_sim_recv_first_k). Trainers still do real forward-grad compute, so
+# gradient VALUES are mode-invariant -- only the clock/ordering differ.
+#
+# enable_training_delays stays false (as in the real smoke) so this variant is
+# DIRECTLY comparable to fwdllm_n100_smoke.yaml: with D=0 the sct = dispatch +
+# real GPU time, which still drives the reorder buffer + vclock advance and
+# validates the mechanics. Modeled-delay-on (D>0, the full sim behavior) is for
+# the later convergence/parity runs, enabled in BOTH the real reference and the
+# sim run together (see simulate_fwdllm.md §K-D8).
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n10_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n100_smoke_sim.yaml
 
 experiments:
-  - name: fwdllm_plus_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=10, fwdllm_plus baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
+  - name: fwdllm_n100_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm baseline: sync random+fedavg, time_mode=simulated). Validates the Batch-1 sim clock/ordering port."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -32,15 +41,9 @@ experiments:
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
       availability:
-        # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
-        # reads all-available, so the sync barrier assembles the agg_goal=10
-        # cohort out of the 100-trainer pool. Switch to a mobiperf_* trace
-        # (via --avail-trace) only for the Phase-2 unavailability runs. Keep
-        # trainer + aggregator on the SAME trace (run_sequential.sh's
-        # --avail-trace patches both).
         mode: syn_0
-      # FedFwd has no simulated-clock support; always real.
-      time_mode: real
+      # Batch 1: drive the simulated virtual clock instead of real sleeps.
+      time_mode: simulated
       # Skip the registry's 4-18s artificial delay for a fast smoke run.
       enable_training_delays: false
       # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
@@ -53,21 +56,31 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
+          # Uniform/IID partition for smoke tests -- the niid_label baseline
+          # default adds a data-skew confound we don't want while validating
+          # the launcher mechanics.
           partition_method: uniform
+          # Phase 4c (B2, #6): widen the sim barrier's k-th-smallest sct to
+          # match real's per-trainer completion dispersion (banked real compute
+          # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
+          # active with --delays on (convergence run); inert at D=0. Calibrate
+          # to wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
+          client_notify:
+            trace: syn_0
 
     aggregator:
       config_template: configs/aggregator_base.json
       selector: random
-      tracking_mode: oracular
+      tracking_mode: default
+      # Matches selector.kwargs.c below -- every selected trainer is required.
       agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n10_smoke
+          id: fwdllm_n100_smoke_sim
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_plus_n10_smoke_momentum.yaml)
+          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_n100_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
@@ -78,6 +91,15 @@ experiments:
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 1800  # ...or after 30 minutes wall time
+          # Phase 4c (B1, #6, REMOVED §6 Part 6): sim_model_eval_time used to
+          # charge the MEASURED server eval_s (~13s/data_id -- the syn_0 wall
+          # dominator) onto the vclock -- removed once eval_model() was
+          # backgrounded (no longer a synchronous critical-path cost in either
+          # mode to fold). See simulate_fwdllm.md §G.
+          # #15: also charge the measured aggregate()-call wall (every cycle,
+          # not just committed ones) -- was the dominant uncredited real-wall
+          # driver of sim_rate<1, not a trainer-side compute floor.
+          sim_model_agg_compute_time: true
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform

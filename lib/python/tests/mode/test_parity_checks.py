@@ -1506,6 +1506,90 @@ class TestCohortSequence:
         assert pc.CHECK_META["cohort_sequence"]["deps"]
 
 
+# Real trainer_registry.yaml task_ids (lib/python/examples/_metadata) with known
+# raw training_delay_s, used to exercise the tie-window contention logic below
+# without mocking the registry: 370=4.0s, 375=5.0s (1.0s apart -- boundary tie),
+# 371=16.0s (far from 370 -- never a tie).
+_TID_370 = "505f9fc483cf4df68a2409257b5fad7d3c580370"
+_TID_375 = "505f9fc483cf4df68a2409257b5fad7d3c580375"
+_TID_371 = "505f9fc483cf4df68a2409257b5fad7d3c580371"
+
+
+def _with_delay_cfg(agg: dict, divisor: float = 1.0, floor_s: float = 0.0) -> dict:
+    agg["training_delay_factor"] = divisor
+    agg["training_delay_floor_s"] = floor_s
+    return agg
+
+
+class TestCohortSequenceTieWindow:
+    """simulate_fwdllm.md §B item 2: a committed-cohort divergence at a
+    near-degenerate fast class is an arrival race, not a bug, when every
+    differing trainer's EXPECTED delay (registry, divisor-scaled) is within
+    `tie_window_s` of the others' -- granted a TIE instead of a hard fail.
+    Ungrantable (no delay model, or an unknown trainer) stays strict."""
+
+    def test_set_swap_within_tie_window_is_granted(self):
+        # 370 (4.0s) <-> 375 (5.0s): 1.0s apart, exactly at the default window.
+        real = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, ["372", "373", _TID_370], 0.5)]))
+        sim = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, ["372", "373", _TID_375], 0.5)]))
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["set_match_frac"] == 0.0 and r["set_tie_frac"] == 1.0
+        assert r["set_divergence"] is None
+        assert r["delay_model_available"] is True
+
+    def test_set_swap_beyond_tie_window_still_fails(self):
+        # 370 (4.0s) vs 371 (16.0s): 12.0s apart, far outside the window.
+        real = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, ["372", "373", _TID_370], 0.5)]))
+        sim = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, ["372", "373", _TID_371], 0.5)]))
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        assert r["set_tie_frac"] == 0.0
+        assert r["set_divergence"] is not None
+
+    def test_order_swap_within_tie_window_is_granted_for_async(self):
+        real = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_370, _TID_375], 0.5, is_async=True)]))
+        sim = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_375, _TID_370], 0.5, is_async=True)]))
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["first_divergence"] is None
+
+    def test_order_swap_beyond_tie_window_still_fails_for_async(self):
+        real = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_370, _TID_371], 0.5, is_async=True)]))
+        sim = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_371, _TID_370], 0.5, is_async=True)]))
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        assert r["first_divergence"]["order_ok"] is False
+
+    def test_unknown_trainer_falls_back_to_strict_even_with_divisor(self):
+        # Neither "unknown_x" nor "unknown_y" is in the registry -- the tie
+        # can't be assessed, so it isn't granted (no silent free pass).
+        real = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_370, "unknown_x"], 0.5)]))
+        sim = _with_delay_cfg(_agg(agg_rounds=[
+            _lcyc(0, 1, [_TID_370, "unknown_y"], 0.5)]))
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        assert r["set_tie_frac"] == 0.0
+
+    def test_no_delay_model_falls_back_to_strict(self):
+        # No training_delay_factor on either side (pre-knob run) -> exp_map is
+        # None -> byte-identical to the pre-tie-window behavior.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["372", "373", _TID_370], 0.5)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["372", "373", _TID_375], 0.5)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        assert r["delay_model_available"] is False
+
+
 class TestDrainWallBudget:
     """New commit-stage invariant: sim must NEVER cost more wall-clock than
     real at the drain/commit stage -- generalizes the #15 diagnostic (a
@@ -1660,6 +1744,32 @@ class TestStepTimingBreakdown:
 
     def test_present_in_run_all_and_meta(self):
         assert "step_timing_breakdown" in pc.CHECK_META
+
+    def test_degenerate_bulk_with_one_outlier_is_skipped_not_scored(self):
+        # simulate_fwdllm.md §B item 3: a multi-thousand-sample near-zero
+        # function has an occasional GC/cache-miss outlier that pushes the MAX
+        # a hair over the degenerate threshold while the bulk (p99) is still
+        # quantization noise -- must SKIP, not score the dither as a KS
+        # "divergence" (real tb_batch_to_device: p99 9.3e-5s, one 1.2e-3s tail
+        # sample among 5504).
+        real_durs = [5e-5] * 999 + [9e-4]       # p99 ~5e-5, max 9e-4
+        sim_durs = [5e-5] * 999 + [1.2e-3]      # p99 ~5e-5, max 1.2e-3 (over old threshold)
+        real, sim = self._st("tb_batch_to_device", real_durs, sim_durs)
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert r["ok"], r
+        assert r["by_func"]["tb_batch_to_device"].get("status") == "SKIP"
+
+    def test_genuine_divergence_spanning_many_samples_still_fails(self):
+        # A divergence affecting a real FRACTION of samples (not a lone
+        # outlier) must still be caught even though every value is tiny --
+        # the p99 gate tolerates one-in-a-thousand noise, not a systematic
+        # shift.
+        real_durs = [5e-5] * 500 + [2e-3] * 500   # p99 well above threshold
+        sim_durs = [5e-5] * 1000
+        real, sim = self._st("tb_batch_to_device", real_durs, sim_durs)
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert not r["ok"]
+        assert r["by_func"]["tb_batch_to_device"].get("status") != "SKIP"
 
     def test_real_only_funcs_reported_but_never_gate(self):
         # _emulate_training_delay/pause_execution are commented real-only

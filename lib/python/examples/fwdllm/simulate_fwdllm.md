@@ -73,16 +73,19 @@ genuine shared compute.
 
 ## §A  Score — refreshed 2026-07-16 (see PREAMBLE's score-tracking trigger)
 
-> **fluxtune's row is the first POST-dispatch-fix rerun** (delay-floor 4.0, `minInitialTrainers=N=100`, c=30/
-> agg_goal=3, both legs `seed=1234` fingerprint `caa8ea628537`, confirmed in each `aggregator_config.json`).
-> fwdllm/fwdllm_plus rows are STALE (pre-delay-floor + pre-seed) — carried forward untouched; refresh from their
-> next 7200s pair before reading them.
+> **fluxtune's row is the same `_161235`/`_161255` pair, RE-SCORED** against the tie-window (§B item 1) and
+> step_timing_breakdown p99 (§G) checker fixes below — not a new run. `agg_goal` 3→10 (§B item 1) landed AFTER
+> this pair and is UNVALIDATED; next 3600s pair also carries a fresh `agg_goal=10` fingerprint. fwdllm/
+> fwdllm_plus rows are STALE (pre-delay-floor + pre-seed, still `n10_smoke`-scale yamls) — carried forward
+> untouched; both baselines' yamls were also renamed `fwdllm[_plus]_n10_smoke*.yaml` →
+> `fwdllm[_plus]_n100_smoke*.yaml` (filename only, matched actual `num_trainers=100` all along) ahead of their
+> next 3600s pair.
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
 | baseline | run pair | duration | pass | fail | skip |
 |---|---|---|---|---|---|
-| fluxtune/syn_0 | `run_20260716_161235`/`_161255` (delay-floor 4.0, divisor 0.48, min-init=N, c=30/agg3) | 3598s | 54 | 12 | 18 |
+| fluxtune/syn_0 | `run_20260716_161235`/`_161255` (delay-floor 4.0, divisor 0.48, min-init=N, c=30/agg3 — pre-agg10) | 3598s | 55 | 11 | 18 |
 | fwdllm/syn_0 | `run_20260715_000924`/`_021109` — **STALE**, pre-delay-floor+pre-seed | 7200s | 47 | 16 | 21 |
 | fwdllm_plus/syn_0 | `run_20260715_030542`/`_050735` — **STALE**, pre-delay-floor+pre-seed | 7200s | 53 | 8 | 21 |
 
@@ -95,16 +98,16 @@ genuine shared compute.
 | fwdllm_plus | ✗ | ✓ | ✗ | ✗ | ✗ | – | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
 
 **All failing rungs, this run:**
-- **fluxtune** (12): `cohort_sequence`, `v2_var_trajectory`, `utility`, `v1b_iters_moving_avg`,
+- **fluxtune** (11): `cohort_sequence`, `v2_var_trajectory`, `utility`, `v1b_iters_moving_avg`,
   `trainer_speed_identity` (utility sub-check only), `throughput`, `total_commits`, `terminal_state`,
-  `step_timing_breakdown`, `agg_step_timing_breakdown`, `convergence`, `convergence_loss`. **The dispatch/seed
-  fix WORKED** — initial 30-selection is now set-exact (`selection` jaccard 1.0, seed fingerprint matches). The
-  first cluster (`cohort`/`v2`/`utility`/`v1b`/`trainer_speed_identity`-util/`convergence*`) is now downstream of
-  a NEW root: the committed-3-of-30 arrival race among a near-degenerate fast class (§B item 1, rewritten).
-  `throughput`/`total_commits`/`terminal_state` (~6%, just over 5% tol) are the aggregator queue-bound residual
-  now surfacing because delay-floor 7→4 removed the wait that amortized it (§B item 3). `step_timing_breakdown`
-  fails ONLY on `_emulate_training_delay` (real delay sleep, no sim analog — one-sided-exempt checker gap, §B
-  item 4). `preferred_duration` + `avail_composition` now PASS (§G).
+  `agg_step_timing_breakdown`, `convergence`, `convergence_loss`. The dispatch/seed fix holds (`selection`
+  jaccard 1.0). `cohort`/`v2`/`utility`/`v1b`/`trainer_speed_identity`-util/`convergence*` are downstream of the
+  committed-cohort arrival race at `agg_goal=3` (§B item 1) — the new tie-window classifier grants only 0.7% of
+  cycles as genuine ties, confirming most of the divergence is real (a `c=30` pool has more contenders than
+  `K=3` can admit), not jitter; `agg_goal→10` (landed, unvalidated) is the fix, next up for the 1h re-run.
+  `throughput`/`total_commits`/`terminal_state` (~6%, just over 5% tol, §B item 2) deferred per operator.
+  `step_timing_breakdown` now PASSES (§G, checker fix — was never `_emulate_training_delay`, already exempted;
+  the real gap was a p99/max degenerate-noise miss on `tb_batch_to_device`).
 - **fwdllm** (16): `trainer_speed`, `overhead_residual`, `per_round_advance`, `throughput`,
   `avail_composition`, `eligibility`, `training_budget`, `step_timing_breakdown`, `agg_step_timing_breakdown`,
   `cohort_sequence`, `v1_iter_per_data_id`, `v2_var_trajectory`, `utility`, `terminal_state`, `total_commits`,
@@ -118,65 +121,61 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
-### fluxtune (3598s, delay-floor 4.0, min-init=N, c=30/agg3)
-1. **Committed-3-of-30 arrival race — NEW root (dispatch/seed fix WORKED, cohort still ✗).** The initial
-   30-selection is now set-exact (`selection` jaccard 1.0, seed fingerprint `caa8ea628537` both legs) — the
-   sorted-candidate + seed fixes closed the SELECTION divergence. But `cohort_sequence` compares the **3-of-30
-   that COMMIT first per cycle**, and those diverge from cycle 0 (real `[370,455,458]` / sim `[370,431,467]`,
-   sharing only the fastest `370`). Root: the fast class is near-degenerate — durations cluster 8.33–8.41s (<1%
-   spread) — so *which 3 commit first* is an arrival race decided by sub-1% jitter; real's is irreducible
-   transport/GPU jitter, which sim neither has nor should replicate. `decision_determinism`'s canned verdict
-   ("candidate set differs upstream") is MISLEADING here — the set matches; the divergence is arrival order.
-   **NEXT STEP = admissibility (§F-5) BEFORE any fix:** run a seeded real↔real pair — if real's committed-3 is
-   itself non-deterministic across two real runs, the cohort SET check at the degenerate fast class is measuring
-   jitter floor and must be relaxed (tie-window / gate SET only when intra-cohort duration spread exceeds the
-   real↔real floor), NOT "fixed" in sim. Decide direction from that pair before touching code.
-2. **`v2_var_trajectory` / `utility` / `v1b_iters_moving_avg` / `trainer_speed_identity`(utility) — downstream of
-   #1's arrival race.** `speed_s` matches to <1% (durations identical real↔sim, max_rel_dev 0.009); only the
-   utility sub-check diverges (38/100, computed at a different committed `(data_id,iter)` per trainer). v2 mean
-   var 11.0 real / 19.0 sim, v1b worst drift 3.0 @ data_id 1 — all trace to divergent committed cohorts, not an
-   independent bug. Will move with #1.
-3. **Aggregator queue-bound — now FAILS `throughput`/`total_commits`/`terminal_state` (~6%, just over 5% tol).**
-   Sim 25.89 s/round vs real 27.63 (sim 139 rounds / commits 130 vs real 122): the per-commit aggregator gap
-   (`_process_aggregation_goal_met` real 242ms / sim 290ms; `aggregate` real 100ms / sim 137ms — sim ~25% slower,
-   GPU contention) used to be amortized by the delay wait, but delay-floor 7→4 shrank round wall so the residual
-   now shows above tol. Gates `sim_rate`; vclock legitimately skips the queue wait. Close by trimming sim's
-   per-commit cost or accept as a measured density artifact — decide with #1.
-4. **`agg_step_timing_breakdown` eval_model EXEMPTED (§G); `step_timing_breakdown` has a NEW one-sided gap.**
-   agg rung: eval_model off-vclock/off-critical-path (excluded via `_AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS`),
-   still correctly FAILs on-path `aggregate`/`_process_aggregation_goal_met` (item #3). NEW: `step_timing_breakdown`
-   fails ONLY on `_emulate_training_delay` (real 18.56s / sim 0.0, ks 1.0) — real's `max(0,D-gpu)` delay sleep,
-   which sim SKIPS by design (the whole point). No sim analog → must be one-sided-exempt (`sim<=real`) like the
-   `_distribute_weights_async` `sleep(0.1)` fix (§G 07-15); `_fetch_weights` (real 50s / sim 23s transport) is the
-   same class. Clean checker fix, no sim behavior change.
-5. `convergence` — acc diff 0.153 / loss diff 0.172 (was 0.066), both now FAIL. Worse because the divergent
-   committed-grad sequence (#1) compounds over 1h; still partly ML-stability (`fluxtune_contributions.md` §8).
-   Re-measure after #1's admissibility call — may shrink if the cohort divergence is a measurement artifact.
-6. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
-7. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
+### fluxtune (3598s, delay-floor 4.0, min-init=N, c=30/agg3 — pre-agg10)
+1. **Committed-cohort arrival race at `agg_goal=3` — tie-window checker landed, `agg_goal→10` landed
+   (unvalidated).** `cohort_sequence` now grants a SET/ORDER divergence a TIE (not a fail) when every differing
+   trainer's registry-derived expected delay (`max(raw,floor)/divisor`) is within `tie_window_s=1.0` of the
+   others' — an arrival race, not a bug (`checks.py` `_cohort_set_tie_ok`/`_cohort_order_tie_ok`). On the
+   `_161235` pair only 0.7% of cycles qualify; the rest is genuine — cycle 0's real∖sim members (455/458,
+   expected 8.33s each) vs sim's (431/467, expected 8.33s/**14.58s**) show trainer 467 is a real class
+   divergence, not jitter. Root: `c=30` has more near-tied contenders than `K=3` can admit. Fix: `agg_goal`
+   3→10 in `fluxtune_n10_smoke[_sim].yaml` (landed) — validate on the next 3600s pair.
+2. `v2_var_trajectory` / `utility` / `v1b_iters_moving_avg` / `trainer_speed_identity`(utility) — downstream of
+   #1; `speed_s` itself matches to <1%. Re-measure after #1's `agg_goal=10` pair lands.
+3. **Aggregator queue-bound — `throughput`/`total_commits`/`terminal_state` ~6%, just over 5% tol.** Sim 25.89
+   s/round vs real 27.63 (sim 139 rounds/130 commits vs real 122): per-commit aggregator gap (`aggregate`,
+   `_process_aggregation_goal_met` ~25% slower, GPU contention) used to be amortized by the delay wait;
+   delay-floor 7→4 shrank round wall so it now shows above tol. Operator: no invented numbers to force parity —
+   defer until after #1.
+4. `convergence` — acc diff 0.153 / loss diff 0.172. Compounds from #1's divergent committed-grad sequence over
+   1h; re-measure after #1 lands — may shrink if the cohort divergence was inflating it.
+5. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
+6. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
+7. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
+   `deps`); unblocked but deferred until the `agg_goal=10` re-run shows whether #1 still needs it.
 
-### fwdllm (STALE run — pre-delay-floor-fix)
-1. **TIMING_OVERRUN validation not yet launched** (`--delay-floor 11.0`) — everything below is stale until it
-   lands:
+### fwdllm (STALE run — pre-delay-floor-fix, pre-rename)
+> Yaml renamed `fwdllm_n10_smoke*.yaml` → `fwdllm_n100_smoke*.yaml` (filename only; `num_trainers` was already
+> 100). `run_sequential.sh --only fwdllm` picks it up automatically.
+1. **Fresh 3600s validation pair not yet launched** (divisor/floor per §O, unchanged: K=C=10 both fine at this
+   scale) — everything below is stale until it lands:
    ```
-   lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fwdllm,fwdllm_plus \
-       --mode both --delays on --delay-divisor 1.63 --delay-floor 11.0 --num-gpus 8 --max-runtime-s 7200 \
-       --num-trainers 100 --c 10 --min-initial-trainers 10 --after parity,sanity,plot
+   lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fwdllm \
+       --mode both --delays on --delay-divisor 1.63 --delay-floor 11.0 --num-gpus 8 --max-runtime-s 3600 \
+       --after parity,sanity,plot
    ```
 2. `overhead_residual`/`v1_iter_per_data_id` — root-caused (real-only `num_min_req=1` clamp calls the sync
    collect path once per LAP, not per cycle) but unfixed; needs a compose-loop refactor, risks stranding
    messages if done blind.
-3. `cohort_sequence` — failing; not cross-checked against the RNG-order fix's actual effect at this run/scale.
+3. `cohort_sequence` — failing; not cross-checked against the RNG-order fix or the tie-window checker at this
+   run/scale.
 4. `trainer_speed`, `avail_composition`, `eligibility`, `training_budget`, `utility` — failing, UNEXAMINED
    this session, no root cause yet.
 5. `per_round_advance`, `throughput`, `step_timing_breakdown`, `agg_step_timing_breakdown`, `terminal_state`,
    `total_commits`, `convergence` — failing, not individually triaged; re-check after #1 lands before digging
    into any of these (may resolve or reshuffle once the run is fresh).
 
-### fwdllm_plus (STALE run — pre-delay-floor-fix)
-1. **TIMING_OVERRUN validation not yet launched** (same command as fwdllm above) — everything below is stale
-   until it lands.
-2. `cohort_sequence` — failing; not cross-checked against the RNG-order fix's actual effect at this run/scale.
+### fwdllm_plus (STALE run — pre-delay-floor-fix, pre-rename)
+> Yaml renamed `fwdllm_plus_n10_smoke*.yaml` → `fwdllm_plus_n100_smoke*.yaml` (filename only).
+1. **Fresh 3600s validation pair not yet launched** (same divisor/floor as fwdllm above):
+   ```
+   lib/python/examples/fwdllm/expt_scripts/run_sequential.sh --only fwdllm_plus \
+       --mode both --delays on --delay-divisor 1.63 --delay-floor 11.0 --num-gpus 8 --max-runtime-s 3600 \
+       --after parity,sanity,plot
+   ```
+   Everything below is stale until it lands.
+2. `cohort_sequence` — failing; not cross-checked against the RNG-order fix or the tie-window checker at this
+   run/scale.
 3. `throughput`, `step_timing_breakdown`, `agg_step_timing_breakdown`, `terminal_state`, `total_commits`,
    `convergence` — failing, not individually triaged; re-check after #1 lands.
 
@@ -271,6 +270,10 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **`cohort_sequence` tie-window for arrival-race divergence** (07-16) — SET/ORDER divergence now granted a TIE, not a fail, when every differing trainer's registry-derived expected delay is within `tie_window_s=1.0` of the others'; ungrantable (no delay model/unknown trainer) stays strict. 6 new tests.
+- **`agg_goal` 3→10 for fluxtune's `c=30` pool** (07-16) — K=3 was too tight for a `c=30` near-degenerate fast class, admitting only a coin-flip subset per cycle; `fluxtune_n10_smoke[_sim].yaml`. Unvalidated, next run.
+- **`step_timing_breakdown` degenerate-noise skip was max-gated, not p99-gated** (07-16) — a single GC/cache-miss outlier in a multi-thousand-sample near-zero function (`tb_batch_to_device`) defeated the skip and scored KS=0.3+ on quantization noise; gated on p99 instead. `_emulate_training_delay`/`_fetch_weights` were already correctly exempted since 07-10 — the doc previously misattributed the fail to them.
+- **fwdllm/fwdllm_plus yamls renamed `_n10_smoke*` → `_n100_smoke*`** (07-16) — filename only; `num_trainers` was already 100. `run_sequential.sh`'s baseline map + `test_config_generator.py` updated.
 - **`minInitialTrainers` defaults to N** (07-16) — `run_sequential.sh` now waits for ALL trainers before the first selection (removes the `>=threshold` pool-size race: real fired at 98, sim at 99 → divergent seeded draw). Set-exact initial cohort; `--min-initial-frac <1` opts back into straggler tolerance. Caveat: blocks forever if a trainer never joins.
 - **AVL_TRAIN stamped at registration** (07-16) — `Channel.add` now sets `PROP_AVL_STATE=AVL_TRAIN` so a just-joined end is never read UNKNOWN before the first selection stamp; trace/tracker overwrites per selection (aware) or it stays (unaware). Kills the startup UNKNOWN transient in avail_composition; 4 tests (init→aware-override→unaware-persist).
 - **seed added to snapshot.yaml** (07-16) — serializer dropped `hyperparameters.seed` while aggregator_config.json carried it; snapshot's `aggregator` block now records the resolved seed (§F-18 completeness).

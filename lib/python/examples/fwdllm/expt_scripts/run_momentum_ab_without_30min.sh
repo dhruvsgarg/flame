@@ -17,8 +17,8 @@ set -uo pipefail
 
 RUNS=(
   "lib/python/examples/fwdllm/expt_scripts/fluxtune_n10_smoke.yaml"
-  "lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml"
-  "lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n10_smoke.yaml"
+  "lib/python/examples/fwdllm/expt_scripts/fwdllm_n100_smoke.yaml"
+  "lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n100_smoke.yaml"
 )
 
 for yaml in "${RUNS[@]}"; do

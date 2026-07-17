@@ -219,7 +219,7 @@ FWDLLM_EXPT_SCRIPTS = (
     reason="shared metadata or fwdllm trainer_base not present",
 )
 class TestFwdllmSmokeYamlsResolve:
-    """The n10_smoke.yaml for each of the three owner-spec baselines (fwdllm,
+    """The smoke yaml for each of the three owner-spec baselines (fwdllm,
     fwdllm_plus, fluxtune) must load, resolve its baseline, generate a
     trainer config, and pass _validate_stack against the real entrypoint --
     this is the dry-run Smoke Test D does live, kept as a permanent
@@ -228,8 +228,8 @@ class TestFwdllmSmokeYamlsResolve:
     @pytest.mark.parametrize(
         "yaml_name,expected_baseline",
         [
-            ("fwdllm_n10_smoke.yaml", "fwdllm"),
-            ("fwdllm_plus_n10_smoke.yaml", "fwdllm_plus"),
+            ("fwdllm_n100_smoke.yaml", "fwdllm"),
+            ("fwdllm_plus_n100_smoke.yaml", "fwdllm_plus"),
             ("fluxtune_n10_smoke.yaml", "fluxtune"),
         ],
     )
@@ -247,7 +247,7 @@ class TestFwdllmSmokeYamlsResolve:
 
         exp = load_experiment_config(path).experiments[0]
         assert exp.baseline == expected_baseline
-        assert exp.trainer.num_trainers == 10
+        assert exp.trainer.num_trainers == 100
 
         baselines = load_baselines(SHARED_METADATA)
         baseline = baselines[exp.baseline]

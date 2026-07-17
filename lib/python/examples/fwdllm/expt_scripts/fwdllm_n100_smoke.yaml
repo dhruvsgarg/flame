@@ -9,10 +9,10 @@
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_n100_smoke.yaml
 
 experiments:
-  - name: fwdllm_n10_smoke
+  - name: fwdllm_n100_smoke
     description: "FedFwd smoke (100 trainers, c=10, fwdllm baseline: sync random+fedavg). Validates the launcher port before a full-scale run."
 
     baseline: fwdllm
@@ -62,7 +62,7 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_n10_smoke
+          id: fwdllm_n100_smoke
         hyperparameters:
           seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_n10_smoke_momentum.yaml)
           rounds: 50  # short smoke run, not the full 300

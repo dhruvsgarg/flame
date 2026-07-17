@@ -7,8 +7,11 @@
 # selector.kwargs.dynamic_kc.enabled left at the baseline default of false).
 # Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
 # for full real/sim parity coverage across the taxonomy. c=30 concurrency
-# pool out of the 100-trainer population (agg_goal=3, c-async only -- see §O:
+# pool out of the 100-trainer population (agg_goal=10, c-async only -- see §O:
 # fluxtune's JVP cost per commit is ~4x fwdllm/plus's, hence the higher c).
+# agg_goal raised 3->10 (simulate_fwdllm.md §B item 1, 07-16): at K=3 the
+# committed set is dominated by sub-1s arrival jitter in a near-degenerate
+# fast class; K=10 dilutes that. Must match fluxtune_n10_smoke_sim.yaml.
 #
 # Run:
 #   python -m flame.launch.run_experiment \
@@ -16,7 +19,7 @@
 
 experiments:
   - name: fluxtune_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=30, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier). Validates the launcher port before a full-scale run."
 
     baseline: fluxtune
 
@@ -67,7 +70,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
-      agg_goal: 3
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -99,10 +102,10 @@ experiments:
           kwargs:
             # c=30 concurrency pool out of the 100-trainer population (§O:
             # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
-            # pool keeps enough in-flight surplus for the c-agg_goal=27
+            # pool keeps enough in-flight surplus for the c-agg_goal=20
             # rotating cohort, §F#17). minInitialTrainers matches c (only c
             # trainers need join before selection starts). aggGoal is set
-            # once via the top-level `agg_goal: 3` above -- the runner fans
+            # once via the top-level `agg_goal: 10` above -- the runner fans
             # it into both this kwarg and hyperparameters.aggGoal so they
             # can't drift apart; don't duplicate it here.
             c: 30

@@ -2,7 +2,8 @@
 # (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
 # population). Sim sibling of fluxtune_n10_smoke.yaml -- IDENTICAL except
 # time_mode: simulated and the job id (so run dirs don't collide). c=30
-# concurrency pool out of the 100-trainer population (agg_goal=3).
+# concurrency pool out of the 100-trainer population (agg_goal=10 --
+# simulate_fwdllm.md §B item 1, 07-16: must match fluxtune_n10_smoke.yaml).
 #
 # fluxtune is the ASYNC baseline (async_oort selector, fedbuff), so this
 # variant exercises the Batch-1 async grad-loop sim drive: _sim_recv_min_grad
@@ -20,7 +21,7 @@
 
 experiments:
   - name: fluxtune_n10_smoke_sim
-    description: "FedFwd SIM smoke (100 trainers, c=30, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated). Validates the Batch-1 async grad-loop sim drive."
+    description: "FedFwd SIM smoke (100 trainers, c=30/agg_goal=10, fluxtune baseline: async async_oort+fedbuff+JVP+3-tier, time_mode=simulated). Validates the Batch-1 async grad-loop sim drive."
 
     baseline: fluxtune
 
@@ -74,7 +75,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
-      agg_goal: 3
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -82,7 +83,7 @@ experiments:
         hyperparameters:
           seed: 1234  # deterministic selector RNG + model init; MUST match fluxtune_n10_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
-          # With c=30 >> agg_goal=3, commit-then-carry the surplus grads +
+          # With c=30 >> agg_goal=10, commit-then-carry the surplus grads +
           # hold busy trainers across the boundary (K-D12). Applies to real
           # too (§R, 2026-07-11) -- must match the real yaml.
           inflight_residence: true
@@ -143,10 +144,10 @@ experiments:
           kwargs:
             # c=30 concurrency pool out of the 100-trainer population (§O:
             # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
-            # pool keeps enough in-flight surplus for the c-agg_goal=27
+            # pool keeps enough in-flight surplus for the c-agg_goal=20
             # rotating cohort, §F#17). minInitialTrainers matches c (only c
             # trainers need join before selection starts). aggGoal is set
-            # once via the top-level `agg_goal: 3` above -- the runner fans
+            # once via the top-level `agg_goal: 10` above -- the runner fans
             # it into both this kwarg and hyperparameters.aggGoal so they
             # can't drift apart; don't duplicate it here.
             c: 30

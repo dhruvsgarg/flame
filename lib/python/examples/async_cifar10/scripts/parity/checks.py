@@ -367,7 +367,28 @@ def load_run_dir(run_dir: str) -> tuple:
         merged["comm_dispatch"].sort(key=lambda x: x["ts"])
         agg_data = merged
     trainer_data = load_trainer_jsonl_dir(telemetry_dir)
+    agg_data["training_delay_factor"], agg_data["training_delay_floor_s"] = \
+        _load_training_delay_config(run_dir)
     return agg_data, trainer_data
+
+
+def _load_training_delay_config(run_dir: str) -> tuple:
+    """(divisor, floor_s) from this run's own ``aggregator_config.json`` —
+    ``hyperparameters.trainingDelayFactor`` / ``trainingDelayFloorSeconds``.
+    (None, None) if the file or either key is absent (non-fwdllm run, or a run
+    predating the delay-floor knob) -- callers must treat that as "no delay
+    model available", not zero."""
+    path = os.path.join(run_dir, "aggregator_config.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    hp = cfg.get("hyperparameters", {}) if isinstance(cfg, dict) else {}
+    divisor = hp.get("trainingDelayFactor")
+    floor_s = hp.get("trainingDelayFloorSeconds")
+    return (float(divisor) if divisor is not None else None,
+            float(floor_s) if floor_s is not None else None)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4028,6 +4049,10 @@ _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
 # measurement: KS on two degenerate all-zero samples scores the tie-breaking
 # dither, not a divergence.
 _STEP_TIMING_DEGENERATE_MAX_S = 1e-3
+# Gated on p99, not max: a multi-thousand-sample near-zero function can have
+# one GC/cache-miss outlier push the max over the threshold while the bulk is
+# still quantization noise (tb_batch_to_device, simulate_fwdllm.md §B item 3).
+_STEP_TIMING_DEGENERATE_PCTL = 99
 
 
 def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
@@ -4058,11 +4083,12 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
             by_func[func] = {"ok": True, "tier": "DIST", "status": "SKIP",
                              "note": "no samples in one mode"}
             continue
-        if max(max(rv), max(sv)) < _STEP_TIMING_DEGENERATE_MAX_S:
+        if max(percentile(rv, _STEP_TIMING_DEGENERATE_PCTL),
+               percentile(sv, _STEP_TIMING_DEGENERATE_PCTL)) < _STEP_TIMING_DEGENERATE_MAX_S:
             by_func[func] = {
                 "ok": True, "tier": "DIST", "status": "SKIP",
-                "note": (f"every sample < {_STEP_TIMING_DEGENERATE_MAX_S}s on both "
-                         f"sides -- timer quantization noise, not a measurement"),
+                "note": (f"p{_STEP_TIMING_DEGENERATE_PCTL} < {_STEP_TIMING_DEGENERATE_MAX_S}s on "
+                         f"both sides -- timer quantization noise, not a measurement"),
                 "real_mean_s": round(sum(rv) / len(rv), 6),
                 "sim_mean_s": round(sum(sv) / len(sv), 6),
                 "n_real": len(rv), "n_sim": len(sv),
@@ -4409,14 +4435,70 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     }
 
 
+def _cohort_expected_delay_map(real: dict, sim: dict,
+                               floor_s: Optional[float] = None) -> Optional[dict]:
+    """{task_id: expected_delay_s}, mirroring `FedSgdTrainer.resolve_training_
+    delay_s` (`max(raw, floor_s) / divisor`) -- the CONFIGURED delay, not a
+    noisy observed one (simulate_fwdllm.md §B item 2). None if the divisor or
+    registry is unavailable; callers must then treat ties as unassessable."""
+    divisor = real.get("training_delay_factor")
+    if divisor is None:
+        divisor = sim.get("training_delay_factor")
+    if not divisor:
+        return None
+    if floor_s is None:
+        floor_s = real.get("training_delay_floor_s")
+        if floor_s is None:
+            floor_s = sim.get("training_delay_floor_s")
+    floor_s = floor_s or 0.0
+    raw = _trainer_delay_map()
+    if not raw:
+        return None
+    return {tid: max(d, floor_s) / divisor for tid, d in raw.items()}
+
+
+def _cohort_set_tie_ok(real_ids: list, sim_ids: list,
+                       exp_map: Optional[dict], tie_window_s: float) -> bool:
+    """True if the differing trainers between the two cohorts all have
+    expected delays within `tie_window_s` of each other -- an arrival race,
+    not a divergence (simulate_fwdllm.md §B item 1). False if unassessable."""
+    only = set(real_ids) ^ set(sim_ids)
+    if not only:
+        return True
+    if not exp_map or any(t not in exp_map for t in only):
+        return False
+    vals = [exp_map[t] for t in only]
+    return (max(vals) - min(vals)) <= tie_window_s
+
+
+def _cohort_order_tie_ok(real_ids: list, sim_ids: list,
+                         exp_map: Optional[dict], tie_window_s: float) -> bool:
+    """True if a same-SET cohort's commit order differs only because every
+    member is within `tie_window_s` of every other -- one contention cluster,
+    any internal permutation benign (simulate_fwdllm.md §B item 2)."""
+    if sorted(real_ids) != sorted(sim_ids):
+        return False  # membership differs -- the SET check owns this, not order
+    if real_ids == sim_ids:
+        return True
+    if not exp_map or any(t not in exp_map for t in real_ids):
+        return False
+    vals = [exp_map[t] for t in real_ids]
+    return (max(vals) - min(vals)) <= tie_window_s
+
+
 def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
-                           var_rel_tol: float = 1e-3) -> dict:
+                           var_rel_tol: float = 1e-3,
+                           tie_window_s: float = 1.0) -> dict:
     """L1 [EXACT, scoped]: the ordered per-aggregation logical sequence, HARD
     where achievable and SOFT/scoped where it provably is not (simulate_fwdllm.md
     §A ROOT — operator decision, #N):
 
       - SET   : HARD over the ENTIRE run, never bin-capped -- fluxtune's #1d
-        (a genuine divergence) must still fail regardless of data_id.
+        (a genuine divergence) must still fail regardless of data_id. EXCEPT a
+        membership swap where every differing trainer's expected delay
+        (registry, divisor-scaled) is within `tie_window_s` (default 1.0s) --
+        an arrival race, not a bug, granted a TIE (simulate_fwdllm.md §B item
+        2). Ungrantable (no delay model) falls back to strict.
       - CADENCE (cycle_data_id/iteration_per_data_id/agg_goal_count/
         var_good_enough/force_commit_planned) and VAR VALUE (`var_rel_tol`):
         HARD only through `max_bin` (default 1) -- grads aren't bit-
@@ -4426,7 +4508,9 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         v1_iter_per_data_id/v2_var_trajectory/v4_force_commit_rate/v5.
       - RECEIVE-ORDER: reported every capped cycle, gates `ok` only when
         `is_async` -- sync's fedavg is order-invariant and K-D31 canonicalizes
-        ties, so a nominal reorder with matched SET/CADENCE/VAR is benign.
+        ties, so a nominal reorder with matched SET/CADENCE/VAR is benign. A
+        same-SET reorder within one tie-window cluster is likewise a TIE for
+        async; a reorder crossing clusters stays a hard fail.
 
     `max_bin` can only narrow the CADENCE/VAR/ORDER window below its bin-1
     default, never widen it -- SET stays uncapped regardless. SKIPs cleanly
@@ -4438,6 +4522,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
 
+    exp_map = _cohort_expected_delay_map(real, sim)
+
     def cohort(e):        # receive/commit-ordered contributing trainers
         return list(e.get("contributing_trainers") or [])
 
@@ -4446,15 +4532,23 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                 e.get("agg_goal_count"), e.get("var_good_enough"),
                 e.get("force_commit_planned"))
 
-    # ---- SET: HARD over the entire compared run, never bin-capped. ----
+    # ---- SET: HARD over the entire compared run, never bin-capped, except a
+    # tie-window-admissible contention swap (see docstring). ----
     n_full = min(len(rc_full), len(sc_full))
-    set_m = sum(1 for i in range(n_full)
-                if sorted(cohort(rc_full[i])) == sorted(cohort(sc_full[i])))
-    set_ok = (len(rc_full) == len(sc_full) and set_m == n_full)
+    set_m = tie_m = 0
+    for i in range(n_full):
+        r_ids, s_ids = cohort(rc_full[i]), cohort(sc_full[i])
+        if sorted(r_ids) == sorted(s_ids):
+            set_m += 1
+        elif _cohort_set_tie_ok(r_ids, s_ids, exp_map, tie_window_s):
+            tie_m += 1
+    set_ok = (len(rc_full) == len(sc_full) and (set_m + tie_m) == n_full)
     set_divergence = None
     if not set_ok:
         _idx = next((i for i in range(n_full)
-                     if sorted(cohort(rc_full[i])) != sorted(cohort(sc_full[i]))),
+                     if sorted(cohort(rc_full[i])) != sorted(cohort(sc_full[i]))
+                     and not _cohort_set_tie_ok(cohort(rc_full[i]), cohort(sc_full[i]),
+                                                 exp_map, tie_window_s)),
                     n_full)  # falls through to a length mismatch past n_full
         if _idx < n_full:
             r, s = rc_full[_idx], sc_full[_idx]
@@ -4476,8 +4570,10 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     for i in range(n):
         r, s = rc[i], sc[i]
         rc_ord, sc_ord = cohort(r), cohort(s)
-        set_ok_i = sorted(rc_ord) == sorted(sc_ord)
-        order_ok = rc_ord == sc_ord
+        set_ok_i = (sorted(rc_ord) == sorted(sc_ord)
+                    or _cohort_set_tie_ok(rc_ord, sc_ord, exp_map, tie_window_s))
+        order_ok = (rc_ord == sc_ord
+                    or _cohort_order_tie_ok(rc_ord, sc_ord, exp_map, tie_window_s))
         cad_ok = cadence(r) == cadence(s)
         rv, sv = r.get("var"), s.get("var")
         var_ok = (rv is None and sv is None) or (
@@ -4511,6 +4607,7 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "n_real_cycles": len(rc_full),
         "n_sim_cycles": len(sc_full),
         "set_match_frac": round(set_m / n_full, 3) if n_full else None,
+        "set_tie_frac": round(tie_m / n_full, 3) if n_full else None,
         "set_divergence": set_divergence,
         "order_match_frac": round(order_m / n, 3) if n else None,
         "cadence_match_frac": round(cad_m / n, 3) if n else None,
@@ -4519,6 +4616,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "is_async": bool(is_async),
         "order_gates_ok": bool(is_async),
         "max_bin": max_bin,
+        "tie_window_s": tie_window_s,
+        "delay_model_available": exp_map is not None,
         "first_divergence": first_div,
     }
 

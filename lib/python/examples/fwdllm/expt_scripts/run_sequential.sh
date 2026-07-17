@@ -228,8 +228,8 @@ fi
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
 # "n10" baked into each source filename.
 ALL_RUNS=(
-  "fwdllm:$SCRIPT_DIR/fwdllm_n10_smoke.yaml:$SCRIPT_DIR/fwdllm_n10_smoke_sim.yaml"
-  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n10_smoke.yaml:$SCRIPT_DIR/fwdllm_plus_n10_smoke_sim.yaml"
+  "fwdllm:$SCRIPT_DIR/fwdllm_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_n100_smoke_sim.yaml"
+  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_plus_n100_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
 )
 
