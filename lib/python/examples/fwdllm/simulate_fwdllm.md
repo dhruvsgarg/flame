@@ -123,15 +123,13 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=**N=100** (was c=30), agg_goal=10 — VALIDATE next run)
-1. **`cohort_sequence` cycle-1+ divergence: yaml fix confirmed applied, then exposed a SECOND, deeper bug — both
-   now fixed, unvalidated.** `minInitialTrainers=c=30` raced sim's faster cycle cadence vs real's; corrected to
-   `N=100` in `fluxtune_n10_smoke[_sim].yaml` (the actual file `BASE_YAML_MAP` uses, despite the name — first
-   attempt touched the unused `fluxtune_n100_smoke_4h.yaml`). Re-running with the correct fix then hit a
-   pre-existing, SIM-ONLY stall (§G 07-17b): `async_oort.py`'s `_handle_recv_state` fallback resample
-   mis-compared a never-touched end's Python `None` state against the string `VAL_END_STATE_NONE`, sweeping
-   fresh ends into `all_selected` before send-state ever dispatched to them — total deadlock (0 agg_rounds in
-   6 min) once `minInitialTrainers=N` releases all 100 at once instead of staggering c=30 at a time. Fixed in
-   `async_oort.py`/`async_random.py`; re-run before trusting any cohort_sequence read.
+1. **NEW — `var_ok` gate fails at cycle 0 despite an IDENTICAL cohort in identical order.** Now that #1's join-
+   race + deadlock are fixed (§G 07-17/07-17b) and cycle-0/1 SET+ORDER match exactly, the parity checker's own
+   report (`_parity_reports/parity_fluxtune_syn_0_20260717_115739.json`) surfaces a separate gap: real var
+   `1.8717` vs sim var `1.4800` at cycle 0 (~26% relative, tol `1e-3`) — same 10 trainers, same order, same
+   `data_id`/`iteration`. This is the ONE bin where the doc's principles expect tight reproducibility (bin-1
+   wall, before GPU-jitter-amplified drift). Not investigated yet — likely JVP/perturbation-sampling GPU
+   non-determinism or a genuine real/sim variance-calculation gap, unrelated to cohort assembly.
 2. **`agg_step_timing_breakdown` re-diagnosed: the aggregator queue-bound gap, not `_distribute_weights_async`.**
    `_distribute_weights_async` (KS=0.985) is already exempted (`gates_ok=False`, real-only sleep) — the
    `worst_func` field just reports it regardless of exemption, which previously obscured the real gating
@@ -277,7 +275,7 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 - **`minInitialTrainers=c` reopened the post-barrier join-order race, all 3 baselines** (07-17) — sim's cycle
   cadence outruns real's wall-clock (transport-collapse), so identical wall-clock-bound trainer spawn timing
   landed in different cycles per mode (fluxtune 6-min pair: sim cycle1 t=106s/33 joined vs real t=125s/42).
-  Fixed: `minInitialTrainers=N=100` in all 5 n100 parity yamls. Unvalidated, next run.
+  Fixed: `minInitialTrainers=N=100` in all 5 n100 parity yamls. VALIDATED 07-17 — see next entry.
 - **`_handle_recv_state`'s recv-side resample fallback deadlocked ALL dispatch once minInitialTrainers=N
   released 100 trainers at once** (07-17b) — the fallback resampled fresh candidates itself whenever
   `selected_ends` was empty, contradicting its own docstring ("get() will proceed and wait on
@@ -286,7 +284,9 @@ See §B for what's actively being worked per baseline; see §G for what's alread
   send-state ever sent them anything — 0 agg_rounds in 6 min (rare at c=30's staggered arrival, guaranteed once
   minInitialTrainers=N released all 100 at the same instant). Fixed by REMOVING the fallback entirely (not
   patching the comparison) in `async_oort.py`/`async_random.py` — `_handle_recv_state` is now strictly
-  read-only over `selected_ends`, matching its docstring; 3 new tests. Unvalidated, next run.
+  read-only over `selected_ends`, matching its docstring; 3 new tests. **VALIDATED 07-17**: fresh 6-min pair,
+  sim ran to completion (72 agg_rounds, 725 dispatches, 0 stalls); `cohort_sequence` SET divergence pushed from
+  cycle 1 → cycle 2 (cycles 0+1 now exact SET+ORDER matches). Surfaced a separate `var_ok` gap — see §B.
 - **Round-1 cold-start cohort scramble (async only)** (07-16) — `_sim_recv_min_grad`'s gate was blind on a
   trainer's first contact (`_sim_known_delay_s` reactive, no fallback); added `unknown_stuck`, a wall-clock-cap
   hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). VALIDATED
