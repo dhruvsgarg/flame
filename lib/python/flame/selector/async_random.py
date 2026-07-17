@@ -769,7 +769,12 @@ class AsyncRandomSelector(AbstractSelector):
                 curr_end_state = end.get_property(KEY_END_STATE)
                 # candidates[end_id] = end
                 if end_id not in self.all_selected.keys():
-                    if curr_end_state != VAL_END_STATE_NONE:
+                    # A never-touched end returns Python None (unset property),
+                    # not VAL_END_STATE_NONE ("none" the string) -- treat both as
+                    # "no state" or a fresh end gets swept into this recv-side
+                    # fallback resample before send-state ever dispatches to it,
+                    # deadlocking it forever (simulate_fwdllm.md §G 07-17).
+                    if curr_end_state not in (None, VAL_END_STATE_NONE):
                         logging.info(
                             f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
                             f"to candidates: key {end_id}, val: {end}"

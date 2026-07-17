@@ -594,6 +594,44 @@ class TestChallenge13SendStateCleanup:
         assert async_oort.selected_ends["agg"] == {"t1"}
 
 
+class TestRecvStateNeverTouchedEndBug:
+    """`_handle_recv_state`'s empty-`selected_ends` fallback resample must NOT
+    sweep up a never-touched end (KEY_END_STATE unset -> Python None) as if it
+    already had some state. VAL_END_STATE_NONE is the string "none", not Python
+    None, so `curr_end_state != VAL_END_STATE_NONE` mis-included fresh ends,
+    letting the recv side claim them into all_selected before send-state ever
+    dispatched to them -> those ends deadlock forever, never getting a payload
+    (simulate_fwdllm.md §G 07-17, all-100-join-at-once fluxtune smoke stall).
+    """
+
+    def test_never_touched_end_not_selected(self, async_oort, make_ends):
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}   # nothing currently in flight
+        async_oort.all_selected = {}
+        ends = make_ends(count=5, prefix="t")        # KEY_END_STATE never set -> None
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=5)
+
+        assert result == {}
+        assert async_oort.selected_ends["agg"] == set()
+        assert async_oort.all_selected == {}
+
+    def test_end_with_real_state_still_selected(self, async_oort, make_ends):
+        from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD
+
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}
+        async_oort.all_selected = {}
+        ends = make_ends(count=3, prefix="t")
+        for e in ends.values():
+            e.set_property(KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD)
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=3)
+
+        assert set(result) == set(ends)
+        assert async_oort.selected_ends["agg"] == set(ends)
+
+
 class TestPendingCommitExcludedFromSelection:
     """async_oort must exclude the aggregator's VIRTUAL in-flight set
     (`_agg_pending_commit_ref`, bound live to the fwdllm aggregator's

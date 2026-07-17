@@ -123,11 +123,15 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=**N=100** (was c=30), agg_goal=10 — VALIDATE next run)
-1. **`cohort_sequence` cycle-1+ divergence ROOT-CAUSED — first fix landed on the WRONG file, now corrected.**
-   `minInitialTrainers=c=30` races sim's faster cycle cadence vs real's (§G 07-17). Fluxtune's smoke pair
-   actually generates from `fluxtune_n10_smoke[_sim].yaml` (`BASE_YAML_MAP`, despite the name — `num_trainers:
-   100` already baked in), not `fluxtune_n100_smoke_4h.yaml`; a same-day re-run still showed `minInitialTrainers:
-   30` launched because the first fix touched the unused `_4h` file. Corrected now. Unvalidated, re-run next.
+1. **`cohort_sequence` cycle-1+ divergence: yaml fix confirmed applied, then exposed a SECOND, deeper bug — both
+   now fixed, unvalidated.** `minInitialTrainers=c=30` raced sim's faster cycle cadence vs real's; corrected to
+   `N=100` in `fluxtune_n10_smoke[_sim].yaml` (the actual file `BASE_YAML_MAP` uses, despite the name — first
+   attempt touched the unused `fluxtune_n100_smoke_4h.yaml`). Re-running with the correct fix then hit a
+   pre-existing, SIM-ONLY stall (§G 07-17b): `async_oort.py`'s `_handle_recv_state` fallback resample
+   mis-compared a never-touched end's Python `None` state against the string `VAL_END_STATE_NONE`, sweeping
+   fresh ends into `all_selected` before send-state ever dispatched to them — total deadlock (0 agg_rounds in
+   6 min) once `minInitialTrainers=N` releases all 100 at once instead of staggering c=30 at a time. Fixed in
+   `async_oort.py`/`async_random.py`; re-run before trusting any cohort_sequence read.
 2. **`agg_step_timing_breakdown` re-diagnosed: the aggregator queue-bound gap, not `_distribute_weights_async`.**
    `_distribute_weights_async` (KS=0.985) is already exempted (`gates_ok=False`, real-only sleep) — the
    `worst_func` field just reports it regardless of exemption, which previously obscured the real gating
@@ -274,6 +278,11 @@ See §B for what's actively being worked per baseline; see §G for what's alread
   cadence outruns real's wall-clock (transport-collapse), so identical wall-clock-bound trainer spawn timing
   landed in different cycles per mode (fluxtune 6-min pair: sim cycle1 t=106s/33 joined vs real t=125s/42).
   Fixed: `minInitialTrainers=N=100` in all 5 n100 parity yamls. Unvalidated, next run.
+- **`_handle_recv_state` deadlocked ALL dispatch once minInitialTrainers=N released 100 trainers at once**
+  (07-17b) — `curr_end_state != VAL_END_STATE_NONE` compared a never-touched end's Python `None` against the
+  STRING `"none"`, so fresh ends got swept into recv's empty-`selected_ends` fallback resample and claimed into
+  `all_selected` before send-state ever dispatched to them: 0 agg_rounds in 6 min (was fine at c=30, staggered
+  arrival made it rare). Fixed in `async_oort.py`/`async_random.py`; 2 new tests. Unvalidated, next run.
 - **Round-1 cold-start cohort scramble (async only)** (07-16) — `_sim_recv_min_grad`'s gate was blind on a
   trainer's first contact (`_sim_known_delay_s` reactive, no fallback); added `unknown_stuck`, a wall-clock-cap
   hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). VALIDATED
