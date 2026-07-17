@@ -123,9 +123,11 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=**N=100** (was c=30), agg_goal=10 — VALIDATE next run)
-1. **`cohort_sequence` cycle-1+ divergence ROOT-CAUSED+FIXED — see §G 07-17.** `minInitialTrainers=c=30` raced
-   sim's faster cycle cadence vs real's; fixed to `N=100`. Unvalidated — re-run and confirm cycle-1+ SET match
-   plus `throughput`/`total_commits`/`terminal_state` (failed on the pre-fix 6-min pair, likely just noise).
+1. **`cohort_sequence` cycle-1+ divergence ROOT-CAUSED — first fix landed on the WRONG file, now corrected.**
+   `minInitialTrainers=c=30` races sim's faster cycle cadence vs real's (§G 07-17). Fluxtune's smoke pair
+   actually generates from `fluxtune_n10_smoke[_sim].yaml` (`BASE_YAML_MAP`, despite the name — `num_trainers:
+   100` already baked in), not `fluxtune_n100_smoke_4h.yaml`; a same-day re-run still showed `minInitialTrainers:
+   30` launched because the first fix touched the unused `_4h` file. Corrected now. Unvalidated, re-run next.
 2. **`agg_step_timing_breakdown` re-diagnosed: the aggregator queue-bound gap, not `_distribute_weights_async`.**
    `_distribute_weights_async` (KS=0.985) is already exempted (`gates_ok=False`, real-only sleep) — the
    `worst_func` field just reports it regardless of exemption, which previously obscured the real gating
@@ -168,7 +170,10 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 - **`minInitialTrainers=c` (not N) reopened the post-barrier join-order race for ALL THREE baselines —
   ROOT-CAUSED+FIXED, §G 07-17.** Sim's cycle cadence legitimately outruns real's (transport-collapse), so
   identical wall-clock-bound trainer spawn timing lands in different cycles per mode — no algorithmic bug.
-  Fixed in all 5 n100 parity yamls; re-run all three before assuming any remaining gap is algorithmic.
+  Fixed in the yamls `run_sequential.sh`'s `BASE_YAML_MAP` actually generates from: `fwdllm_n100_smoke[_sim]`,
+  `fwdllm_plus_n100_smoke[_sim]`, and (despite the name) `fluxtune_n10_smoke[_sim].yaml` — NOT
+  `fluxtune_n100_smoke_4h.yaml`, which the first pass mistakenly targeted and which this pipeline never reads.
+  Re-run all three before assuming any remaining gap is algorithmic.
 - **felix (async_cifar10) likely has the same round-1 cold-start gap fluxtune had** — `asyncfl/top_aggregator.py`
   `_sim_recv_min` uses the identical `_sim_inflight_expected`/reactive-`_sim_known_delay_s` gate shape (no
   fallback for unseen ends), same theoretical blind spot on first contact. Felix's own code comment claims the

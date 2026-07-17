@@ -555,8 +555,8 @@ else:
     mode_row = scalar_row("mode", MODE, MODE_SET, note="real+sim pair (--mode)")
 tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     {"label": "condition_fp", "value": _cond_fp, "level": "set",
-     "note": "TWO-NODE CHECK: same fingerprint on every node ⇒ same shared condition "
-             "(N/K/C/partition/trace/delays/target_acc/caps). Differs ⇒ a knob was mistyped."},
+     "note": "TWO-NODE CHECK: same fp on both nodes ⇒ same condition "
+             "(N/K/C/partition/trace/delays/caps). Differs ⇒ mistyped knob."},
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
@@ -568,32 +568,30 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                      + ("100% availability (Phase 1)" if _resolved_avails == {"syn_0"}
                         else "NON-syn_0 — unavailability (Phase 2+)"))),
     scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
-               note=(f"modeled training delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; "
-                     f"delay_factor={DELAY_FACTOR or 'base(10)'} (divides yaml base 4-18s delay); "
-                     f"delay_floor={DELAY_FLOOR or '0.0 (no-op)'} (floors the raw delay before "
-                     f"dividing, --delay-floor); matched BOTH sides — K-D8")),
+               note=(f"delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; "
+                     f"factor={DELAY_FACTOR or 'base(10)'} divides base 4-18s delay; "
+                     f"floor={DELAY_FLOOR or '0.0 (no-op)'}; matched both sides — K-D8")),
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
     # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
     # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
     scalar_row("var_threshold", VAR_THRESHOLD if VAR_THRESHOLD else "unset",
                bool(VAR_THRESHOLD), review=True,
-               note="variance-pass gate; varies w/ data heterogeneity (--var-threshold). unset ⇒ trainer/code default"),
+               note="variance-pass gate; varies w/ data heterogeneity. unset ⇒ code default"),
     scalar_row("max_iters_per_data_id", MAX_ITER if MAX_ITER else "unset",
                bool(MAX_ITER), review=True,
-               note="FORCE-COMMIT cap (--max-iter-per-data-id) — NOT the max_data_id_progress stop above. unset ⇒ code default"),
+               note="FORCE-COMMIT cap, NOT the max_data_id_progress stop above. unset ⇒ code default"),
     scalar_row("var_stopping_policy", VAR_STOPPING_POLICY if VAR_STOPPING_POLICY else "default",
                bool(VAR_STOPPING_POLICY), review=True,
-               note="Opt-2 (--var-stopping-policy) off|fixed_cap|plateau. default ⇒ baselines.yaml (fluxtune=plateau)"),
+               note="Opt-2: off|fixed_cap|plateau. default ⇒ baselines.yaml (fluxtune=plateau)"),
     scalar_row("agg_rate_type", AGG_RATE_TYPE if AGG_RATE_TYPE else "default",
                bool(AGG_RATE_TYPE), review=True,
-               note="Opt-3 (--agg-rate-type) grad_aware|new. default ⇒ baselines.yaml (fluxtune=grad_aware); new = FeLiX"),
+               note="Opt-3: grad_aware|new. default ⇒ baselines.yaml (fluxtune=grad_aware, new=FeLiX)"),
     # Convergence stop (EXPERIMENTS.md WS2): terminate when the last W data bins
     # are ALL >= target accuracy. When set, max_runtime_s/max_data_id become
     # SAFETY CAPS (a non-converging run -> DID_NOT_CONVERGE). unset ⇒ time/data-id bound only.
     scalar_row("target_acc", TARGET_ACC if TARGET_ACC else "unset",
                bool(TARGET_ACC), review=True,
-               note=("convergence stop: last %s bins all >= this (--target-acc). "
-                     "unset ⇒ NO accuracy stop, only max_runtime_s/max_data_id"
+               note=("stop when last %s bins all >= target. unset ⇒ time/data-id bound only"
                      % (CONVERGE_WINDOW or "20"))),
     # Stall guard: early-terminate a not-learning run before the wall ceiling.
     scalar_row("stall_guard",
@@ -604,9 +602,8 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                  }[_on])(STALL_ON or "either", int(float(STALL_WINDOW_S))//3600)
                 if STALL_WINDOW_S and float(STALL_WINDOW_S) > 0 else "off"),
                bool(STALL_WINDOW_S), review=True,
-               note=("terminate EARLY if there is no PROGRESS within stall_window_s on the armed signal "
-                     "(--stall-on acc|loss|either): acc gain < stall_min_delta (abs) and/or test-loss "
-                     "drop < loss_min_rel_delta (rel vs running-best). off ⇒ run to convergence or the wall ceiling")),
+               note=("early-terminate if no PROGRESS within stall_window_s on the armed signal "
+                     "(acc/loss vs running-best). off ⇒ run to convergence or the wall ceiling")),
 ]}
 tiers.append(tier1)
 

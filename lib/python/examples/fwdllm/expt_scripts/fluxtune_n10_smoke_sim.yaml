@@ -145,13 +145,15 @@ experiments:
             # c=30 concurrency pool out of the 100-trainer population (§O:
             # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
             # pool keeps enough in-flight surplus for the c-agg_goal=20
-            # rotating cohort, §F#17). minInitialTrainers matches c (only c
-            # trainers need join before selection starts). aggGoal is set
-            # once via the top-level `agg_goal: 10` above -- the runner fans
-            # it into both this kwarg and hyperparameters.aggGoal so they
-            # can't drift apart; don't duplicate it here.
+            # rotating cohort, §F#17). aggGoal is set once via the top-level
+            # `agg_goal: 10` above -- the runner fans it into both this
+            # kwarg and hyperparameters.aggGoal so they can't drift apart;
+            # don't duplicate it here.
+            # minInitialTrainers=N=100, not c (07-17, simulate_fwdllm.md
+            # §G): c<N raced sim's faster cycle cadence vs real's for
+            # post-barrier joiners, diverging cohort_sequence.
             c: 30
-            minInitialTrainers: 30
+            minInitialTrainers: 100
 
     execution:
       # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
