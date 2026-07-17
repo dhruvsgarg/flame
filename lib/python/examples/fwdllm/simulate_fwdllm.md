@@ -123,17 +123,15 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~3600s, delay-floor 4.0, divisor 0.48, min-init=c=30, agg_goal=10 — VALIDATED)
-1. **`cohort_sequence` SET divergence — ROOT-CAUSED + FIXED, LANDED UNVALIDATED (pending next live pair).**
-   Root: `_sim_inflight_expected`'s gate is only armed for a trainer already cached in `_sim_known_delay_s` (a
-   reactive, first-observation-only cache) — round 1 is every trainer's first contact, so the gate starts
-   empty and cycle 0 commits whichever grad physically lands first instead of the true sct-minimum; 2/10
-   objectively-faster trainers (registry rank 5/9 of 30) miss the window and land in cycle 1, and the
-   divergence cascades (mean cohort overlap 8/10→1.8/10 over 520 cycles). Fix: `unknown_stuck`, a new gate
-   condition in `_sim_recv_min_grad` — hold while a probed end is still delay-unknown and within
-   `sim_gate_compute_cap_s` of its dispatch time (adaptive, unconditional, costs wall time once per trainer
-   ever). `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale, pre-overhead-removal). **Fluxtune (async)
-   only** — fwdllm/fwdllm_plus's sync `_sync_sim_recv_first_k` is a full-barrier, immune by construction; see
-   §G and their own §B entries below.
+1. **NEXT UP — `cohort_sequence` still fails: a NEW divergence starts at cycle 1 (candidate REFILL at the
+   cycle boundary), not the round-1 gate (fixed — see §G).** 6-min smoke pair (`run_20260716_233147_..._real`/
+   `_233128_..._sim`, cap=11.0 active): cycle 0 now 10/10; cycle 1 drops to 7/10 and keeps decaying. Real's
+   cycle-1-only trainers (`405`/`402`/`401`, fast/medium) vs sim's (`372`/`378`/`385`, all very_slow) — real
+   dispatches+commits all three by cycle 1, sim doesn't dispatch them until cycles 4-6. Dispatch-TIMING gap,
+   not an in-buffer ordering gap — different mechanism than the round-1 fix, root cause not yet found. Start
+   next session by tracing the cycle-0→cycle-1 refill/re-selection (`[Distribute]`/`select()` both modes), the
+   same method as the round-1 trace. Also re-check `throughput`/`total_commits`/`terminal_state` (failed here,
+   likely 6-min noise not a regression) once this lands.
 2. **`agg_step_timing_breakdown` re-diagnosed: the aggregator queue-bound gap, not `_distribute_weights_async`.**
    `_distribute_weights_async` (KS=0.985) is already exempted (`gates_ok=False`, real-only sleep) — the
    `worst_func` field just reports it regardless of exemption, which previously obscured the real gating
@@ -277,7 +275,9 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 - **Round-1 cold-start cohort scramble (async only)** (07-16) — `_sim_recv_min_grad`'s gate was blind on a
   trainer's first contact (`_sim_known_delay_s` reactive, no fallback); added `unknown_stuck`, a wall-clock-cap
-  hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). Unvalidated.
+  hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). VALIDATED
+  on a 6-min pair — cycle 0 now 10/10 (was 8/10). `cohort_sequence` still fails from a new cycle-1+ divergence
+  (§B item 1, separate mechanism).
 - **`cohort_sequence` tie-window for arrival-race divergence** (07-16) — SET/ORDER divergence now granted a TIE, not a fail, when every differing trainer's registry-derived expected delay is within `tie_window_s=1.0` of the others'; ungrantable (no delay model/unknown trainer) stays strict. 6 new tests.
 - **`agg_goal` 3→10 for fluxtune's `c=30` pool** (07-16) — K=3 was too tight for a `c=30` near-degenerate fast class, admitting only a coin-flip subset per cycle; `fluxtune_n10_smoke[_sim].yaml`. VALIDATED on the `_202633`/`_212850` 1h pair: `throughput`/`total_commits`/`terminal_state` all PASS (was ~6% over tol) and `convergence_loss` 0.172→0.007. `cohort_sequence` itself still fails — re-diagnosed as a cycle-0 seed cascade, not the `agg_goal=3` contention (§B fluxtune #1).
 - **`step_timing_breakdown` degenerate-noise skip was max-gated, not p99-gated** (07-16) — a single GC/cache-miss outlier in a multi-thousand-sample near-zero function (`tb_batch_to_device`) defeated the skip and scored KS=0.3+ on quantization noise; gated on p99 instead. `_emulate_training_delay`/`_fetch_weights` were already correctly exempted since 07-10 — the doc previously misattributed the fail to them.
