@@ -735,14 +735,23 @@ class AsyncRandomSelector(AbstractSelector):
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
+        """Read-only over `selected_ends`: report who Clerk A (send-state) has
+        outstanding, minus anyone who has already replied. NEVER writes a new
+        name into `selected_ends`/`all_selected` -- that's `_handle_send_state`'s
+        job alone. A prior version resampled fresh candidates here when
+        `selected_ends` was empty, racing `_handle_send_state`'s own dispatch
+        and (via a `curr_end_state != VAL_END_STATE_NONE` bug comparing a
+        never-touched end's Python `None` against the string `"none"`) sweeping
+        untouched ends into `all_selected` before they were ever sent anything
+        -- permanent deadlock (simulate_fwdllm.md §G 07-17). Removed; if
+        `selected_ends` is empty this simply returns {} and the next
+        send-state tick dispatches normally.
+        """
         selected_ends = self.selected_ends[self.requester]
-        _dispatch_order = None  # set only when this call re-samples (see return)
 
         # from the selected ends, remove those that are in recv state
         # already This is done to avoid waiting on trainers that you
-        # have already heard from. If selected ends is empty, get()
-        # will proceed and wait on distribute_weights before running
-        # again. Thus, it avoids stalling and ensures progress
+        # have already heard from.
         for end_id in list(selected_ends):
             # trainer might have become unavailable, check if it is
             # still available first
@@ -761,62 +770,10 @@ class AsyncRandomSelector(AbstractSelector):
                     f"longer in self._ends"
                 )
 
-        if len(selected_ends) == 0:
-            logger.debug(f"len(selected_ends)=0, let's select {concurrency} ends")
-
-            candidates = dict()
-            for end_id, end in ends.items():
-                curr_end_state = end.get_property(KEY_END_STATE)
-                # candidates[end_id] = end
-                if end_id not in self.all_selected.keys():
-                    # A never-touched end returns Python None (unset property),
-                    # not VAL_END_STATE_NONE ("none" the string) -- treat both as
-                    # "no state" or a fresh end gets swept into this recv-side
-                    # fallback resample before send-state ever dispatches to it,
-                    # deadlocking it forever (simulate_fwdllm.md §G 07-17).
-                    if curr_end_state not in (None, VAL_END_STATE_NONE):
-                        logging.info(
-                            f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
-                            f"to candidates: key {end_id}, val: {end}"
-                        )
-                        candidates[end_id] = end
-                    else:
-                        logging.debug(
-                            f"end_id {end_id} not in all_selected but in state: {curr_end_state}, not adding "
-                            f"to candidates"
-                        )
-
-            cc = min(len(candidates), concurrency)
-            logger.debug(
-                f"Will pick cc: {cc} as min(candidates,concurrency) "
-                f"from candidates: {candidates}"
-            )
-            # dict.fromkeys (not a bare set()): this function's RETURN is
-            # dispatch order, and set() iterates in str-hash order, randomized
-            # per-process by PYTHONHASHSEED independent of the seeded RNG.
-            # self.selected_ends stays a set -- callers .remove()/.union() it.
-            _dispatch_order = dict.fromkeys(self._pyrng.sample(sorted(candidates), cc))
-            selected_ends = set(_dispatch_order)
-
-            self.selected_ends[self.requester] = selected_ends
-            logger.debug(
-                f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
-            )
-
-            for selected_end in _dispatch_order:
-                # Add to all_selected. {key: end, val: TS epoch (s)}
-                self.all_selected[selected_end] = time.time()
-            logging.debug(
-                f"self.all_selected {self.all_selected} after combining with "
-                f"selected_ends {selected_ends}"
-            )
-
         logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
-        # Fresh sample -> seeded-RNG order. Carry-over path -> a prior sample's
-        # set, whose order set() already discarded; sorted() at least makes it
-        # process-stable so real and sim agree.
-        return {key: None for key in (_dispatch_order or sorted(selected_ends))}
+        # sorted(): process-stable order so real and sim agree.
+        return {key: None for key in sorted(selected_ends)}
 
     def reset_end_state_to_none(self, ends: dict[str, End], end_id: str) -> None:
         """Reset's the state of end_id from send/recv to none"""

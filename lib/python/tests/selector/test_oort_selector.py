@@ -594,17 +594,23 @@ class TestChallenge13SendStateCleanup:
         assert async_oort.selected_ends["agg"] == {"t1"}
 
 
-class TestRecvStateNeverTouchedEndBug:
-    """`_handle_recv_state`'s empty-`selected_ends` fallback resample must NOT
-    sweep up a never-touched end (KEY_END_STATE unset -> Python None) as if it
-    already had some state. VAL_END_STATE_NONE is the string "none", not Python
-    None, so `curr_end_state != VAL_END_STATE_NONE` mis-included fresh ends,
-    letting the recv side claim them into all_selected before send-state ever
-    dispatched to them -> those ends deadlock forever, never getting a payload
+class TestRecvStateNeverWritesNewSelections:
+    """`_handle_recv_state` must be read-only over `selected_ends`: it reports
+    who send-state already dispatched, minus anyone who has replied, and NEVER
+    picks new candidates itself -- that's `_handle_send_state`'s job alone. A
+    prior version resampled fresh candidates here when `selected_ends` was
+    empty (racing send-state's own dispatch, and via a
+    `curr_end_state != VAL_END_STATE_NONE` bug comparing a never-touched end's
+    Python `None` against the string `"none"`) letting it claim ends into
+    `all_selected` before they were ever sent anything -> permanent deadlock
     (simulate_fwdllm.md §G 07-17, all-100-join-at-once fluxtune smoke stall).
+    The fallback is removed; empty `selected_ends` in -> empty result out,
+    regardless of what state the connected ends are in.
     """
 
-    def test_never_touched_end_not_selected(self, async_oort, make_ends):
+    def test_empty_selected_ends_returns_empty_never_touched(
+        self, async_oort, make_ends
+    ):
         async_oort.requester = "agg"
         async_oort.selected_ends = {"agg": set()}   # nothing currently in flight
         async_oort.all_selected = {}
@@ -616,7 +622,9 @@ class TestRecvStateNeverTouchedEndBug:
         assert async_oort.selected_ends["agg"] == set()
         assert async_oort.all_selected == {}
 
-    def test_end_with_real_state_still_selected(self, async_oort, make_ends):
+    def test_empty_selected_ends_returns_empty_even_with_real_state(
+        self, async_oort, make_ends
+    ):
         from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD
 
         async_oort.requester = "agg"
@@ -628,8 +636,29 @@ class TestRecvStateNeverTouchedEndBug:
 
         result = async_oort._handle_recv_state(ends=ends, concurrency=3)
 
-        assert set(result) == set(ends)
-        assert async_oort.selected_ends["agg"] == set(ends)
+        # No resample fallback at all -> a real state doesn't matter either.
+        assert result == {}
+        assert async_oort.selected_ends["agg"] == set()
+        assert async_oort.all_selected == {}
+
+    def test_only_reports_already_selected_ends_minus_recvd(
+        self, async_oort, make_ends
+    ):
+        from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD
+
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": {"t0", "t1"}}  # send-state already dispatched
+        async_oort.all_selected = {"t0": 0.0, "t1": 0.0}
+        ends = make_ends(["t0", "t1"])
+        ends["t0"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # t0 replied
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=2)
+
+        assert set(result) == {"t1"}
+        assert async_oort.selected_ends["agg"] == {"t1"}
+        # all_selected untouched here -- cleared by the aggregator after
+        # processing t0's grad (_cleanup_recvd_ends), not by this function.
+        assert async_oort.all_selected == {"t0": 0.0, "t1": 0.0}
 
 
 class TestPendingCommitExcludedFromSelection:

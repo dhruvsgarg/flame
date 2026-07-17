@@ -278,11 +278,15 @@ See §B for what's actively being worked per baseline; see §G for what's alread
   cadence outruns real's wall-clock (transport-collapse), so identical wall-clock-bound trainer spawn timing
   landed in different cycles per mode (fluxtune 6-min pair: sim cycle1 t=106s/33 joined vs real t=125s/42).
   Fixed: `minInitialTrainers=N=100` in all 5 n100 parity yamls. Unvalidated, next run.
-- **`_handle_recv_state` deadlocked ALL dispatch once minInitialTrainers=N released 100 trainers at once**
-  (07-17b) — `curr_end_state != VAL_END_STATE_NONE` compared a never-touched end's Python `None` against the
-  STRING `"none"`, so fresh ends got swept into recv's empty-`selected_ends` fallback resample and claimed into
-  `all_selected` before send-state ever dispatched to them: 0 agg_rounds in 6 min (was fine at c=30, staggered
-  arrival made it rare). Fixed in `async_oort.py`/`async_random.py`; 2 new tests. Unvalidated, next run.
+- **`_handle_recv_state`'s recv-side resample fallback deadlocked ALL dispatch once minInitialTrainers=N
+  released 100 trainers at once** (07-17b) — the fallback resampled fresh candidates itself whenever
+  `selected_ends` was empty, contradicting its own docstring ("get() will proceed and wait on
+  distribute_weights") and racing `_handle_send_state`'s real dispatch; a `curr_end_state != VAL_END_STATE_NONE`
+  bug (Python `None` vs the string `"none"`) made it claim never-touched ends into `all_selected` before
+  send-state ever sent them anything — 0 agg_rounds in 6 min (rare at c=30's staggered arrival, guaranteed once
+  minInitialTrainers=N released all 100 at the same instant). Fixed by REMOVING the fallback entirely (not
+  patching the comparison) in `async_oort.py`/`async_random.py` — `_handle_recv_state` is now strictly
+  read-only over `selected_ends`, matching its docstring; 3 new tests. Unvalidated, next run.
 - **Round-1 cold-start cohort scramble (async only)** (07-16) — `_sim_recv_min_grad`'s gate was blind on a
   trainer's first contact (`_sim_known_delay_s` reactive, no fallback); added `unknown_stuck`, a wall-clock-cap
   hold, instead of oracle-seeding the delay. `sim_gate_compute_cap_s` re-derived 16.0→11.0 (stale). VALIDATED
