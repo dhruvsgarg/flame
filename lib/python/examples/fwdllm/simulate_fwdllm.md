@@ -188,19 +188,25 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    track trainer count (two isolated sim-only outlier calls, unrelated mechanism, likely GC/scheduler
    jitter at this sample size — re-check at higher n).
    **FIXED 2026-07-18g, two of the three mitigations discussed in §B, landed together:**
-   (1) *NUMA isolation* (`flame/launch/runner.py`): CPU-partition logic was reserving "first 8 core IDs"
-   for the aggregator with no topology awareness, so trainer memory traffic could still share its NUMA
-   node. Added `_read_numa_nodes()` (parses `/sys/devices/system/node`); on a ≥2-node host (confirmed:
-   operator's box has 2), the aggregator's ENTIRE node is now excluded from the trainer pool, not just
-   its few pinned cores — single-node hosts keep the old behavior. Shared launcher code (affects
-   async_cifar10 too); 124/124 `tests/launch` pass. (2) *Reduce the aggregator's own footprint*
-   (`FedSgdAggregator.py`): `_snapshot_retry_cache` deepcopied TWO things every call —
-   `self.model_dict` (used) and `get_global_model_params()` (dead: its only reader was a commented-out
-   `set_global_model_params` call). Removed the dead deepcopy — halves this call's memory-copy volume,
-   unconditionally, both modes; 275/275 fwdllm tests pass. (3) *Widen the rung's tolerance* — NOT
-   implemented, kept as fallback per operator if 1+2 don't close the gap enough. Next: rerun the same
-   n=15 or n=40 pair with both fixes live and re-measure `_snapshot_retry_cache`/`_apply_weighted_update`'s
-   gap.
+   (1) *NUMA isolation* (`flame/launch/runner.py` + `spawner.py`): CPU-partition logic was reserving
+   "first 8 core IDs" for the aggregator with no topology awareness, so trainer memory traffic could
+   still share its NUMA node. Added `_read_numa_nodes()` (parses `/sys/devices/system/node`); on a
+   ≥2-node host (confirmed: operator's box has 2, 64 cores/node), trainers now PREFER the
+   aggregator-free node(s) and only spill onto the aggregator's node's remaining cores as overflow
+   once that preference is exhausted — **not** a blanket node exclusion, which was tried first and
+   reverted (2026-07-18h) after the operator flagged it would force >1 trainer/core at their real
+   target scale (n=100 > 64-core node ⇒ 36 trainers doubling up, reintroducing the exact contention
+   this exists to prevent). Verified via simulation: n≤64 trainers get full isolation, n=100 still
+   gets exactly 1 dedicated core/trainer (64 isolated + 36 overflow onto the agg node's spare 56
+   cores), core-sharing only starts past n=120 (same ceiling the pre-NUMA-aware code always had).
+   Shared launcher code (affects async_cifar10 too); 124/124 `tests/launch` pass. (2) *Reduce the
+   aggregator's own footprint* (`FedSgdAggregator.py`): `_snapshot_retry_cache` deepcopied TWO things
+   every call — `self.model_dict` (used) and `get_global_model_params()` (dead: its only reader was a
+   commented-out `set_global_model_params` call). Removed the dead deepcopy — halves this call's
+   memory-copy volume, unconditionally, both modes; 275/275 fwdllm tests pass. (3) *Widen the rung's
+   tolerance* — NOT implemented, kept as fallback per operator if 1+2 don't close the gap enough.
+   Next: rerun the same n=15 or n=40 pair with both fixes live and re-measure
+   `_snapshot_retry_cache`/`_apply_weighted_update`'s gap.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`

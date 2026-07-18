@@ -216,6 +216,7 @@ class TrainerSpawner:
         battery_threshold: int = 50,
         cpu_pinning: bool = True,
         reserved_cores: Optional[set] = None,
+        core_order: Optional[list] = None,
     ):
         self.config_gen = config_generator
         self.num_gpus = num_gpus
@@ -233,12 +234,20 @@ class TrainerSpawner:
         self._usable_cores: List[int] = []
         if self.cpu_pinning:
             try:
-                self._usable_cores = sorted(os.sched_getaffinity(0))
-                # Exclude cores reserved for the aggregator so trainers don't
-                # time-slice the (bottlenecked) aggregator process.
-                if self.reserved_cores:
-                    self._usable_cores = [c for c in self._usable_cores
-                                          if c not in self.reserved_cores]
+                _affinity = set(os.sched_getaffinity(0))
+                if core_order:
+                    # Caller-supplied preference order (e.g. NUMA-aware: other
+                    # node(s) first, aggregator's node as overflow) -- keep only
+                    # cores this process actually has, preserve the given order.
+                    self._usable_cores = [c for c in core_order
+                                          if c in _affinity and c not in self.reserved_cores]
+                else:
+                    self._usable_cores = sorted(_affinity)
+                    # Exclude cores reserved for the aggregator so trainers don't
+                    # time-slice the (bottlenecked) aggregator process.
+                    if self.reserved_cores:
+                        self._usable_cores = [c for c in self._usable_cores
+                                              if c not in self.reserved_cores]
                 _resv = f", {len(self.reserved_cores)} reserved for aggregator" if self.reserved_cores else ""
                 print(f"  CPU pinning ON: {len(self._usable_cores)} usable cores for trainers{_resv}: {self._usable_cores[:8]}{'...' if len(self._usable_cores) > 8 else ''}")
             except AttributeError:

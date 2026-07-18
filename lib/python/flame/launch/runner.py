@@ -201,10 +201,16 @@ class ExperimentRunner:
             # stop trainer memory traffic from saturating the aggregator's own
             # NUMA node -- confirmed a real driver of the fwdllm sim/real gap via
             # an n=15-vs-n=40 A/B (simulate_fwdllm.md §B). On >=2 NUMA nodes,
-            # reserve the aggregator's whole node from the trainer pool; single-
-            # node hosts fall back to the prior arbitrary-core-ID reservation.
-            reserved_cores: set = set()   # cores excluded from the trainer pool
-            agg_pin_cores: set = set()    # cores the aggregator itself is pinned to
+            # trainers PREFER the other node(s) (full isolation up to their
+            # combined core count) and only SPILL onto the aggregator's node's
+            # remaining cores as overflow -- excluding the whole node outright
+            # would force >1 trainer/core once the trainer count exceeds one
+            # node's size (e.g. 100 trainers on a 64-core node), reintroducing
+            # the exact core-level contention this pinning exists to prevent.
+            # Single-node hosts fall back to the prior arbitrary-core-ID split.
+            reserved_cores: set = set()      # cores excluded from the trainer pool
+            agg_pin_cores: set = set()       # cores the aggregator itself is pinned to
+            trainer_core_order: list = []    # NUMA-preferred core order for trainers
             if hasattr(os, "sched_getaffinity"):
                 _all = sorted(os.sched_getaffinity(0))
                 _numa = {nid: [c for c in cpus if c in set(_all)]
@@ -215,13 +221,18 @@ class ExperimentRunner:
                     _node_cores = _numa[_agg_node]
                     _n = min(8, max(2, len(_node_cores) // 8))
                     agg_pin_cores = set(_node_cores[:_n])
-                    reserved_cores = set(_node_cores)
+                    reserved_cores = set(agg_pin_cores)
+                    _other_cores = sorted(c for nid, cpus in _numa.items()
+                                          if nid != _agg_node for c in cpus)
+                    _overflow_cores = sorted(c for c in _node_cores if c not in agg_pin_cores)
+                    trainer_core_order = _other_cores + _overflow_cores
                     print(f"  CPU partition (NUMA-aware): aggregator pinned to "
                           f"{len(agg_pin_cores)} core(s) on node {_agg_node} "
-                          f"{sorted(agg_pin_cores)}; trainers excluded from all "
-                          f"{len(reserved_cores)} of node {_agg_node}'s cores, "
-                          f"{len(_all) - len(reserved_cores)} cores across "
-                          f"{len(_numa) - 1} other node(s) available")
+                          f"{sorted(agg_pin_cores)}; trainers prefer "
+                          f"{len(_other_cores)} core(s) on other node(s), "
+                          f"spilling onto node {_agg_node}'s remaining "
+                          f"{len(_overflow_cores)} core(s) past "
+                          f"{len(_other_cores)} trainers")
                 else:
                     _n = min(8, max(2, len(_all) // 8))
                     agg_pin_cores = reserved_cores = set(_all[:_n])
@@ -239,6 +250,7 @@ class ExperimentRunner:
                 time_mode=exp.trainer.time_mode,
                 battery_threshold=exp.trainer.battery_threshold,
                 reserved_cores=reserved_cores,
+                core_order=trainer_core_order,
             )
 
             if exp.execution.monitoring.enabled and create_monitor_from_config is not None:
