@@ -173,7 +173,10 @@ class FedSGDAggregator(TopAggregator):
         return False
         
 
+    @timer_decorator
     def get_global_model_params(self):
+        """Timed: `get_model_params()` does `.cpu().state_dict()`, a real device
+        transfer, not a free accessor (simulate_fwdllm.md §B)."""
         return self.trainer.get_model_params()
 
     def get_global_model(self):
@@ -225,6 +228,27 @@ class FedSGDAggregator(TopAggregator):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
         Shared by both commit branches -- was duplicated verbatim."""
         return [p.clone().detach() for p in weighted_gradient_sum]
+
+    @timer_decorator
+    def _accumulate_retry_cache(self, model_list, training_num):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        for cached_v in self.cached_v:
+            model_list.append(cached_v)
+            if logger.isEnabledFor(logging.DEBUG):
+                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                logger.debug(
+                    f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
+                )
+            training_num += cached_v[0]
+        return training_num
+
+    @timer_decorator
+    def _cache_grad_for_retry(self, model_dict_cached):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        for idx in range(self.worker_num):
+            self.cached_v.append(
+                (self.sample_num_dict[idx], model_dict_cached[idx])
+            )
 
     @timer_decorator
     def _apply_weighted_update(self, model_list, weighted_gradient_sum, old_param,
@@ -328,15 +352,7 @@ class FedSGDAggregator(TopAggregator):
 
             # cached_v:  (num, params)
             logger.info(f"len of cached v: {len(self.cached_v)}")
-            for cached_v in self.cached_v:
-                model_list.append(cached_v)
-                if logger.isEnabledFor(logging.DEBUG):
-                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                    logger.debug(
-                        f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
-                    )
-
-                training_num += cached_v[0]
+            training_num = self._accumulate_retry_cache(model_list, training_num)
             logger.info(f"training_num : {training_num}")
 
         logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
@@ -428,10 +444,7 @@ class FedSGDAggregator(TopAggregator):
                     f"rolling back weights, caching grads for next iteration."
                 )
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v
-                for idx in range(self.worker_num):
-                    self.cached_v.append(
-                        (self.sample_num_dict[idx], model_dict_cached[idx])
-                    )
+                self._cache_grad_for_retry(model_dict_cached)
                 # 模型改回去
                 # self.set_global_model_params(origin_param)
 

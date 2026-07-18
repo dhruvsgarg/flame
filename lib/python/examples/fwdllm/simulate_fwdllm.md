@@ -171,11 +171,25 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    timed the other commit-branch duplicate (`self.last_round_update = [p.clone().detach() for p in
    weighted_gradient_sum]`) as `_snapshot_last_round_update`. Note `_prepare_round_state` nests
    `_compute_var` inside its own span (calls it internally) — subtract `_compute_var`'s duration from
-   `_prepare_round_state`'s when attributing, don't double-count. Next: rerun (same command) — if the
-   preamble accounts for the remaining ~10-30ms/call, the search narrows to `.item()`'s GPU sync
-   specifically (device business unrelated to the already-refuted trainer-CPU-contention hypothesis) or
-   `_should_force_commit_on_plateau()`; if not, the last untimed corners are `_snapshot_last_round_update`
-   itself and the DEBUG-gated hash dumps (verify `isEnabledFor(DEBUG)` is actually false both legs, §F-19).
+   `_prepare_round_state`'s when attributing, don't double-count.
+   **FULL COVERAGE landed 2026-07-18c** (one pass instead of one-timer-per-run, per operator ask): every
+   remaining substantive block in `aggregate()` is now individually timed, closing what would otherwise
+   have been more rounds of subtraction/guessing. Added `_accumulate_retry_cache` (the `for cached_v in
+   self.cached_v` pool-merge loop) and `_cache_grad_for_retry` (the rollback branch's own
+   `self.cached_v.append(...)`, previously the only untimed rollback-branch code — both were cheap list
+   ops, unlikely culprits, but now measured instead of assumed). Bigger find while sweeping for gaps:
+   `get_global_model_params()` (`FedSgdAggregator.py:176`) is **not a free accessor** — it calls
+   `self.trainer.get_model_params()` → `self.model.cpu().state_dict()`, a real GPU→CPU full-model device
+   transfer, called UNCONDITIONALLY at the tail of every single `aggregate()` call (`old_param =
+   self.get_global_model_params()`, after the branch block) regardless of commit/rollback, plus again
+   inside `_snapshot_retry_cache`'s `var_control` deepcopy. This was completely unaccounted for in every
+   prior measurement in this item and is a strong candidate for the remaining branch-independent
+   residual — decorated it directly with `@timer_decorator` so it shows up under its own name at BOTH
+   call sites. `aggregate()`'s wall time should now be fully accounted for by its sub-block sum (modulo
+   the nesting noted above); if a residual still remains after the next run, it is by elimination the
+   bare `if`/`elif`/`else` dispatch and the un-gated `logger.info` f-string lines, at which point the
+   established §F-19 precedent (INFO-level logs with simple scalar args cost ~nothing in this codebase)
+   should be re-verified rather than assumed.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
