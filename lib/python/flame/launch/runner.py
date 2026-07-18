@@ -53,6 +53,37 @@ def _resolve(base: Path, rel: Optional[str]) -> Optional[Path]:
     return (base / p).resolve()
 
 
+def _read_numa_nodes() -> dict:
+    """{node_id: sorted([cpu_id, ...])} from sysfs; {} if unavailable (single
+    node / non-Linux / no permission) -- callers must fall back gracefully."""
+    base = "/sys/devices/system/node"
+    nodes: dict = {}
+    if not os.path.isdir(base):
+        return nodes
+    for entry in os.listdir(base):
+        if not entry.startswith("node") or not entry[4:].isdigit():
+            continue
+        cpulist_path = os.path.join(base, entry, "cpulist")
+        try:
+            with open(cpulist_path) as f:
+                spec = f.read().strip()
+        except OSError:
+            continue
+        cpus: list = []
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                lo, hi = part.split("-")
+                cpus.extend(range(int(lo), int(hi) + 1))
+            else:
+                cpus.append(int(part))
+        if cpus:
+            nodes[int(entry[4:])] = sorted(cpus)
+    return nodes
+
+
 class ExperimentRunner:
     """Run experiments end-to-end against a generic example layout."""
 
@@ -165,18 +196,38 @@ class ExperimentRunner:
             # to stderr (merged into _aggregator.log) before the process dies.
             os.environ.setdefault("PYTHONFAULTHANDLER", "1")
 
-            # CPU partition: reserve a few cores for the single, message-processing
-            # -bound aggregator so the 300 pinned trainers don't time-slice it
-            # (the aggregator's recv/chunk-reassembly throughput sets the sim's
-            # commit rate). Trainers pin to the remaining cores.
-            reserved_cores: set = set()
+            # CPU partition: pin the message-processing-bound aggregator away from
+            # trainers so they don't time-slice it. Core-ID pinning alone doesn't
+            # stop trainer memory traffic from saturating the aggregator's own
+            # NUMA node -- confirmed a real driver of the fwdllm sim/real gap via
+            # an n=15-vs-n=40 A/B (simulate_fwdllm.md §B). On >=2 NUMA nodes,
+            # reserve the aggregator's whole node from the trainer pool; single-
+            # node hosts fall back to the prior arbitrary-core-ID reservation.
+            reserved_cores: set = set()   # cores excluded from the trainer pool
+            agg_pin_cores: set = set()    # cores the aggregator itself is pinned to
             if hasattr(os, "sched_getaffinity"):
                 _all = sorted(os.sched_getaffinity(0))
-                _n = min(8, max(2, len(_all) // 8))
-                reserved_cores = set(_all[:_n])
-                print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
-                      f"aggregator {sorted(reserved_cores)}, "
-                      f"{len(_all) - len(reserved_cores)} for trainers")
+                _numa = {nid: [c for c in cpus if c in set(_all)]
+                         for nid, cpus in _read_numa_nodes().items()}
+                _numa = {nid: cpus for nid, cpus in _numa.items() if cpus}
+                if len(_numa) >= 2:
+                    _agg_node = min(_numa, key=lambda nid: len(_numa[nid]))
+                    _node_cores = _numa[_agg_node]
+                    _n = min(8, max(2, len(_node_cores) // 8))
+                    agg_pin_cores = set(_node_cores[:_n])
+                    reserved_cores = set(_node_cores)
+                    print(f"  CPU partition (NUMA-aware): aggregator pinned to "
+                          f"{len(agg_pin_cores)} core(s) on node {_agg_node} "
+                          f"{sorted(agg_pin_cores)}; trainers excluded from all "
+                          f"{len(reserved_cores)} of node {_agg_node}'s cores, "
+                          f"{len(_all) - len(reserved_cores)} cores across "
+                          f"{len(_numa) - 1} other node(s) available")
+                else:
+                    _n = min(8, max(2, len(_all) // 8))
+                    agg_pin_cores = reserved_cores = set(_all[:_n])
+                    print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
+                          f"aggregator {sorted(reserved_cores)}, "
+                          f"{len(_all) - len(reserved_cores)} for trainers")
 
             self.aggregator_spawner = AggregatorSpawner(log_file=agg_log)
             self.trainer_spawner = TrainerSpawner(
@@ -222,7 +273,7 @@ class ExperimentRunner:
                 config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
-                cpu_cores=reserved_cores,
+                cpu_cores=agg_pin_cores,
                 gpu_id=_agg_gpu,
             )
             if not self.aggregator_spawner.wait_until_ready(

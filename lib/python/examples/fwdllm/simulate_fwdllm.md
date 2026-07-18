@@ -178,15 +178,29 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    background thread stealing GIL time inside the aggregator's own process — `flame/sim/virtual_clock.py`
    (vclock + reorder buffer) is plain synchronous dict/heap code, no `threading.Thread`; the only
    background thread anywhere (`eval_model`) exists in both modes and is already exempted from this rung.
-   **Live test QUEUED, not yet run**: cut ambient trainer activity to near-zero (`--num-trainers 15
-   --min-initial-trainers 15`, still ≥ `agg_goal=10`) and re-measure the same sub-block breakdown. Decisive
-   either way — gap shrinks ⇒ confirms ambient (memory-bandwidth/cache) trainer contention, fix is
-   deployment-level (NUMA-isolate the aggregator's reserved cores from the trainer pool, not a code fix);
-   gap unchanged ⇒ rules out ambient contention entirely (note: the n=40 pair's relative gap was NOT
-   smaller than the earlier n=100 pair's, which already leans this direction), next candidate is a
-   structural code-path difference upstream of `aggregate()` — check `.device` on the tensors entering
-   `_snapshot_retry_cache`/`_apply_weighted_update`, real vs sim, in case messages land on different
-   devices before ever reaching the aggregator.
+   **CONFIRMED 2026-07-18f**: n=15-vs-n=40 A/B (`run_20260718_005859`/`_010529` vs the n=40 pair above) —
+   cutting trainers 40→15 shrank `_apply_weighted_update`'s relative gap +38%→+12.5% (>3× less, 40.1ms→
+   11.9ms per call) and `_snapshot_retry_cache`'s +31%→+23% (14.8ms→6.3ms per call), roughly proportional
+   to the trainer-count cut — real, causal evidence for ambient (memory-bandwidth/cache) contention from
+   sim's continuously-active trainers on these two specific memory-heavy blocks. This also explains why
+   n=40 wasn't smaller than the original n=100 numbers: bandwidth contention saturates past some trainer
+   count, so 100→40 stayed above threshold while 40→15 crossed below it. `_compute_var`'s gap did NOT
+   track trainer count (two isolated sim-only outlier calls, unrelated mechanism, likely GC/scheduler
+   jitter at this sample size — re-check at higher n).
+   **FIXED 2026-07-18g, two of the three mitigations discussed in §B, landed together:**
+   (1) *NUMA isolation* (`flame/launch/runner.py`): CPU-partition logic was reserving "first 8 core IDs"
+   for the aggregator with no topology awareness, so trainer memory traffic could still share its NUMA
+   node. Added `_read_numa_nodes()` (parses `/sys/devices/system/node`); on a ≥2-node host (confirmed:
+   operator's box has 2), the aggregator's ENTIRE node is now excluded from the trainer pool, not just
+   its few pinned cores — single-node hosts keep the old behavior. Shared launcher code (affects
+   async_cifar10 too); 124/124 `tests/launch` pass. (2) *Reduce the aggregator's own footprint*
+   (`FedSgdAggregator.py`): `_snapshot_retry_cache` deepcopied TWO things every call —
+   `self.model_dict` (used) and `get_global_model_params()` (dead: its only reader was a commented-out
+   `set_global_model_params` call). Removed the dead deepcopy — halves this call's memory-copy volume,
+   unconditionally, both modes; 275/275 fwdllm tests pass. (3) *Widen the rung's tolerance* — NOT
+   implemented, kept as fallback per operator if 1+2 don't close the gap enough. Next: rerun the same
+   n=15 or n=40 pair with both fixes live and re-measure `_snapshot_retry_cache`/`_apply_weighted_update`'s
+   gap.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`

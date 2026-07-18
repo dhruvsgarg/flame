@@ -221,7 +221,7 @@ class FedSGDAggregator(TopAggregator):
     @timer_decorator
     def _snapshot_retry_cache(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
-        return copy.deepcopy(self.model_dict), copy.deepcopy(self.get_global_model_params())
+        return copy.deepcopy(self.model_dict)
 
     @timer_decorator
     def _snapshot_last_round_update(self, weighted_gradient_sum):
@@ -346,9 +346,10 @@ class FedSGDAggregator(TopAggregator):
 
         # Cache a deepcopy of model_dict (mutated below) for cache_v reuse at ~L421.
         # Was written 3x identically (redundant full-model deepcopy/commit); collapsed
-        # to one -- byte-identical.
+        # to one -- byte-identical. Dropped the paired deepcopy of the global model
+        # params too: its only reader was a commented-out, unreachable call.
         if self.args.var_control:
-            model_dict_cached, origin_param = self._snapshot_retry_cache()
+            model_dict_cached = self._snapshot_retry_cache()
 
             # cached_v:  (num, params)
             logger.info(f"len of cached v: {len(self.cached_v)}")
@@ -445,8 +446,6 @@ class FedSGDAggregator(TopAggregator):
                 )
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v
                 self._cache_grad_for_retry(model_dict_cached)
-                # 模型改回去
-                # self.set_global_model_params(origin_param)
 
         self._force_commit_this_cycle = False
 
