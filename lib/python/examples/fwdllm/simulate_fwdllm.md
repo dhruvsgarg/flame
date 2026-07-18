@@ -440,6 +440,11 @@ the actual parity bugs above.
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **A 07-18 fluxtune relaunch missing `--delays` silently ran D=0, collapsing sim throughput
+  ~22x (buf_depth pinned near c, sim_rate≈0.045)** (07-18m) — not a code bug (P0-1 unaffected);
+  `run_sequential.sh`'s `--delays`/`--delay-divisor`/`--delay-floor` defaulted to global off/base.
+  Added per-baseline `BASELINE_DELAY_DEFAULTS` (fluxtune 0.48/4.0, fwdllm(+) 1.63/11.0, all on);
+  explicit flags still override. Pre-flight table/fingerprint now show resolved per-baseline values.
 - **`self.grad`'s per-cycle FedAvg merge summed in raw arrival order, not canonical order** (07-18l) — real
   physical-arrival vs sim modeled-sct order diverged (non-associative float add; fluxtune's `grad_aware` rate
   also reads the running `self.grad`, so it's order-*dependent* not just noisy). `_process_single_trainer_

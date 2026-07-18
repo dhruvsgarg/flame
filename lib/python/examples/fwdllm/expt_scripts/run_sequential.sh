@@ -8,6 +8,10 @@
 # tiered table + refuses infeasible configs (--dry-run preview, --yes skip
 # confirm, --force override a block).
 #
+# delays/delay-divisor/delay-floor default to each baseline's settled value
+# (BASELINE_DELAY_DEFAULTS below) instead of a global off -- a forgotten --delays
+# used to silently collapse sim throughput (simulate_fwdllm.md §G, 07-18m).
+#
 # Usage (from anywhere):
 #   run_sequential.sh [--mode sim|real|both] [--delays on|off]
 #       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N]
@@ -17,7 +21,7 @@
 #       [--show-all]
 #
 #   --mode           time_mode variant(s) per baseline (default both).
-#   --delays         enable_training_delays BOTH sides (default off=D=0).
+#   --delays         enable_training_delays BOTH sides (default: per-baseline, see above).
 #   --max-runtime-s  wall/vclock cap per run (default 600).
 #   --max-data-id    stop when data_id reaches this (default 9999 = unbounded).
 #   --num-trainers / --num-gpus  override trainer.num_trainers / execution.num_gpus.
@@ -54,7 +58,8 @@ expt_pin_pythonpath "$REPO_ROOT"
 
 # defaults
 MODE="both"
-DELAYS="off"
+DELAYS="off"    # placeholder when DELAYS_SET=0 -- python resolves the real
+                # per-baseline default (BASELINE_DELAY_DEFAULTS)
 MAX_RUNTIME_S=600
 MAX_DATA_ID=9999       # high => --max-runtime-s governs (not a silent data-id cap)
 # "was this passed?" flags for non-empty-default knobs (value alone can't tell override from default)
@@ -81,8 +86,10 @@ STALL_WINDOW_S=""      # stall guard: terminate EARLY if no progress within this
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
 STALL_ON=""            # signal that resets the idle clock: acc|loss|either (default either)
 LOSS_MIN_REL_DELTA=""  # relative test-loss drop vs running-best that counts as progress (default 0.01)
-DELAY_FACTOR=""        # DIVISOR on the registry 4-18s delay (>1 shortens, <1 lengthens; default 10). --delay-divisor
-DELAY_FLOOR=""         # floor on the RAW registry delay, applied before the divisor (0/unset=no-op). FWDLLM_DESIGN.md §O
+DELAY_FACTOR=""        # DIVISOR on the registry 4-18s delay (>1 shortens, <1 lengthens). unset =>
+                        # BASELINE_DELAY_DEFAULTS. --delay-divisor
+DELAY_FLOOR=""         # floor on the RAW registry delay, before the divisor. unset =>
+                        # BASELINE_DELAY_DEFAULTS. FWDLLM_DESIGN.md §O
 RUN_SET=""             # load SHARED condition from experiments.yaml run_sets[NAME] (CLI flags override)
 ONLY=""
 AFTER=""               # post-launch hooks: parity,sanity,plot
@@ -98,6 +105,8 @@ usage() {
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
+  echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
+  echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
@@ -212,8 +221,10 @@ PY
   [ -z "$STALL_MIN_DELTA" ]   && [ -n "${REG_STALL_MIN_DELTA:-}" ] && STALL_MIN_DELTA="$REG_STALL_MIN_DELTA"
   [ -z "$STALL_ON" ]          && [ -n "${REG_STALL_ON:-}" ]        && STALL_ON="$REG_STALL_ON"
   [ -z "$LOSS_MIN_REL_DELTA" ] && [ -n "${REG_LOSS_MIN_REL_DELTA:-}" ] && LOSS_MIN_REL_DELTA="$REG_LOSS_MIN_REL_DELTA"
-  # non-empty-default knobs: apply registry only when the operator didn't pass the flag
-  if [ "$DELAYS_SET" = "0" ] && [ -n "${REG_DELAYS:-}" ]; then DELAYS="$REG_DELAYS"; fi
+  # non-empty-default knobs: apply registry only when the operator didn't pass the flag.
+  # Also mark DELAYS_SET so resolve_delay_settings() doesn't then fall through to
+  # BASELINE_DELAY_DEFAULTS and discard the registry's value.
+  if [ "$DELAYS_SET" = "0" ] && [ -n "${REG_DELAYS:-}" ]; then DELAYS="$REG_DELAYS"; DELAYS_SET=1; fi
   if [ "$MAX_RUNTIME_S_SET" = "0" ] && [ -n "${REG_MAX_RUNTIME_S:-}" ]; then MAX_RUNTIME_S="$REG_MAX_RUNTIME_S"; fi
   if [ "$MAX_DATA_ID_SET" = "0" ] && [ -n "${REG_MAX_DATA_ID:-}" ]; then MAX_DATA_ID="$REG_MAX_DATA_ID"; fi
   echo "run-set '$RUN_SET' loaded from experiments.yaml (explicit CLI flags override registry)."
@@ -311,6 +322,26 @@ LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
 DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
 delays_on = (DELAYS == "on")
 
+# Settled per-baseline training-delay condition (validated at 7200s scale,
+# simulate_fwdllm.md §A) so operators stop re-typing --delays/--delay-divisor/
+# --delay-floor every launch. CLI flags still win when explicitly passed.
+BASELINE_DELAY_DEFAULTS = {
+    "fluxtune":    {"delays": True, "factor": 0.48, "floor": 4.0},
+    "fwdllm":      {"delays": True, "factor": 1.63, "floor": 11.0},
+    "fwdllm_plus": {"delays": True, "factor": 1.63, "floor": 11.0},
+}
+
+
+def resolve_delay_settings(run_key):
+    """(delays_on, factor_str, floor_str) for `run_key`: explicit CLI wins,
+    else this baseline's settled default, else the OFF/base-code fallback for
+    a baseline with no entry (new/unregistered baseline)."""
+    bl = BASELINE_DELAY_DEFAULTS.get(run_key, {})
+    _on = delays_on if DELAYS_SET else bl.get("delays", delays_on)
+    _factor = DELAY_FACTOR or (str(bl["factor"]) if "factor" in bl else "")
+    _floor = DELAY_FLOOR or (str(bl["floor"]) if "floor" in bl else "")
+    return _on, _factor, _floor
+
 # Availability trace(s). Default syn_0 (Phase-1, 100% avail) when no --avail-trace,
 # so patch() sets the mode EXPLICITLY on every baseline (rather than inheriting
 # each yaml's `mode:`) — the printed "trace" row then matches what actually runs.
@@ -358,18 +389,19 @@ def patch(exp, run_key, variant, trace):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = MAX_RUNTIME_S
     h["max_data_id_progress"] = MAX_DATA_ID
-    # enable_training_delays: SAME on both sides of a pair (K-D8).
-    exp["trainer"]["enable_training_delays"] = delays_on
+    # enable_training_delays: SAME on both sides of a pair (K-D8) -- resolve_delay_settings
+    # is a pure function of run_key, so real/sim calls for one baseline always agree.
+    _bl_delays_on, _bl_delay_factor, _bl_delay_floor = resolve_delay_settings(run_key)
+    exp["trainer"]["enable_training_delays"] = _bl_delays_on
     # training_delay_factor (#12): DIVISOR on the registry 4-18s delay; runner.py
-    # fans it to both roles. Patched only when explicitly passed.
-    if DELAY_FACTOR:
+    # fans it to both roles. CLI wins; else this baseline's settled default.
+    if _bl_delay_factor:
         exp["trainer"].setdefault("hyperparameters", {})
-        exp["trainer"]["hyperparameters"]["training_delay_factor"] = float(DELAY_FACTOR)
-    # training_delay_floor_s (FWDLLM_DESIGN.md §O): floor on the RAW delay, before
-    # the divisor. Patched only when explicitly passed (default 0.0 = no-op).
-    if DELAY_FLOOR:
+        exp["trainer"]["hyperparameters"]["training_delay_factor"] = float(_bl_delay_factor)
+    # training_delay_floor_s (FWDLLM_DESIGN.md §O): floor on the RAW delay, before the divisor.
+    if _bl_delay_floor:
         exp["trainer"].setdefault("hyperparameters", {})
-        exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(DELAY_FLOOR)
+        exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(_bl_delay_floor)
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
@@ -475,6 +507,8 @@ for trace in traces:
                 "n_gpus": e0.get("execution", {}).get("num_gpus"),
                 "partition": h0.get("partition_method"),
                 "delays": e0["trainer"].get("enable_training_delays"),
+                "delay_factor": e0["trainer"].get("hyperparameters", {}).get("training_delay_factor"),
+                "delay_floor": e0["trainer"].get("hyperparameters", {}).get("training_delay_floor_s"),
                 # RESOLVED availability mode read back from the PATCHED cfg (what
                 # actually launches), so the table can't show a stale default.
                 "avail": e0["trainer"].get("availability", {}).get("mode"),
@@ -519,13 +553,17 @@ def scalar_row(label, val, overridden, note=None, review=False):
 # catches a mistyped flag on the second node before the runs diverge.
 _res_parts = sorted({str(b.get("partition")) for b in per_baseline.values()})
 _res_traces = sorted({str(b.get("avail")) for b in per_baseline.values()})
+# delays/factor/floor now legitimately differ BY BASELINE, so fingerprint the
+# resolved per-baseline tuples read back from the patched cfgs, not one CLI value.
+_res_delays = sorted(
+    f"{rk}:{b.get('delays')}/{b.get('delay_factor')}/{b.get('delay_floor')}"
+    for rk, b in per_baseline.items()
+)
 _cond = {
     "N": NUM_TRAINERS or "yaml", "K": SEL_K or "yaml",
     "C_sync": SEL_C or "yaml", "C_async": SEL_C_ASYNC or SEL_C or "yaml",
     "partition": _res_parts, "trace": _res_traces,
-    "delays": "on" if delays_on else "off",
-    "delay_factor": DELAY_FACTOR or "base",
-    "delay_floor": DELAY_FLOOR or "0.0",
+    "delays": _res_delays,
     "target_acc": TARGET_ACC or "none",
     "stall_window_s": STALL_WINDOW_S or "off", "stall_min_delta": STALL_MIN_DELTA or "off",
     "stall_on": STALL_ON or "either", "loss_min_rel_delta": LOSS_MIN_REL_DELTA or "0.01",
@@ -553,6 +591,20 @@ if MODE != "both":
     mode_row = {"label": "mode", "value": MODE, "level": "warn", "note": "single-sided: parity needs both"}
 else:
     mode_row = scalar_row("mode", MODE, MODE_SET, note="real+sim pair (--mode)")
+# Resolved (delays, factor, floor) differs by baseline now -- show one value
+# only if every baseline agrees, else defer to tier ② (same pattern as trace/avail).
+_resolved_delay_vals = {(b.get("delays"), b.get("delay_factor"), b.get("delay_floor"))
+                         for b in per_baseline.values()}
+_delays_overridden = DELAYS_SET or bool(DELAY_FACTOR) or bool(DELAY_FLOOR)
+if len(_resolved_delay_vals) == 1:
+    _don, _dfac, _dflr = next(iter(_resolved_delay_vals))
+    delays_row = scalar_row(
+        "enable_training_delays", f"{'on' if _don else 'off'} (factor={_dfac}, floor={_dflr})",
+        _delays_overridden, note="matched both sides of every pair — K-D8")
+else:
+    delays_row = scalar_row(
+        "enable_training_delays", "MIXED — see ②", _delays_overridden,
+        note="differs by baseline (BASELINE_DELAY_DEFAULTS); see tier ② for each")
 tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     {"label": "condition_fp", "value": _cond_fp, "level": "set",
      "note": "TWO-NODE CHECK: same fp on both nodes ⇒ same condition "
@@ -567,10 +619,7 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                note=("resolved availability actually patched into each launched cfg; "
                      + ("100% availability (Phase 1)" if _resolved_avails == {"syn_0"}
                         else "NON-syn_0 — unavailability (Phase 2+)"))),
-    scalar_row("enable_training_delays", str(delays_on).lower(), DELAYS_SET,
-               note=(f"delay {'ON (D>0)' if delays_on else 'OFF (D=0)'}; "
-                     f"factor={DELAY_FACTOR or 'base(10)'} divides base 4-18s delay; "
-                     f"floor={DELAY_FLOOR or '0.0 (no-op)'}; matched both sides — K-D8")),
+    delays_row,
     # var_threshold / max_iterations_per_data_id vary with data heterogeneity ->
     # review-every-run (warn when defaulted). NOTE: max_iters_per_data_id is the
     # FORCE-COMMIT cap and is NOT the same as max_data_id_progress (the stop) above.
@@ -615,6 +664,7 @@ tier2_cols = [
     ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
     ("min_init", "minInit"), ("n_trainers", "n_trainers"),
     ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
+    ("delays", "delays (factor/floor)"),
 ]
 overridden2 = []
 if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
@@ -625,9 +675,11 @@ if bool(NUM_TRAINERS): overridden2.append("n_trainers")
 if bool(NUM_GPUS):     overridden2.append("n_gpus")
 if bool(PART):         overridden2.append("partition")
 if trace_set:          overridden2.append("avail")
+if _delays_overridden: overridden2.append("delays")
 rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
+    _don = b.get("delays")
     rows2.append({"name": rk, "cells": {
         "sync_async": b.get("sync_async"), "selector": b.get("selector"),
         "optimizer": b.get("optimizer"),
@@ -635,6 +687,8 @@ for rk in (r[0] for r in runs):
         "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
         "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
         "avail": b.get("avail"),
+        "delays": (f"{'on' if _don else 'off'} ({b.get('delay_factor')}/{b.get('delay_floor')})"
+                   if _don else "off"),
     }})
 tiers.append({"name": "② PER-BASELINE (moderate)",
               "table": {"columns": tier2_cols, "rows": rows2,
@@ -649,10 +703,14 @@ tiers.append({"name": "③ RARELY CHANGED", "collapsed": True, "rows": [
 ]})
 
 # ---------------- feasibility checks ----------------
-# D matched across each pair (by construction, but assert it visibly).
+# D matched across each pair (by construction), per baseline since it can now
+# differ ACROSS baselines (BASELINE_DELAY_DEFAULTS).
 if MODE == "both":
-    checks.append({"name": "enable_training_delays matched across every real/sim pair",
-                   "level": "ok", "detail": f"D={'>0' if delays_on else '0'} both sides"})
+    for rk in (r[0] for r in runs):
+        _don, _dfac, _dflr = resolve_delay_settings(rk)
+        checks.append({"name": f"enable_training_delays matched across real/sim pair ({rk})",
+                       "level": "ok",
+                       "detail": f"D={'>0' if _don else '0'} both sides (factor={_dfac or 'base'}, floor={_dflr or '0.0'})"})
 # agg_goal <= c (more required than concurrently selected -> stall).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
