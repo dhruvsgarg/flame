@@ -140,20 +140,31 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator queue-bound gap, unchanged root.** `_distribute_weights_async`
-   still exempted (`gates_ok=False`, real-only sleep). Gating failures: `_process_aggregation_goal_met`
-   (KS=0.341, real 0.220s/sim 0.264s, 20% slower) and `aggregate` (KS=0.376, real 0.096s/sim 0.123s, 28%
-   slower) — same GPU-contention gap as the 1h pair, gap narrowing slightly (28%→20%, 32%→28%).
-2. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
+1. **`agg_step_timing_breakdown`: aggregator queue-bound gap — ROOT CONFIRMED 2026-07-17, fix identified, NOT
+   YET VALIDATED (needs an operator run).** `_process_aggregation_goal_met`/`aggregate` run slower in sim
+   (n40 pair: 29%/61% slower) because the aggregator shares its physical GPU with ~5 trainers, identically in
+   both legs (`CUDA_VISIBLE_DEVICES` confirmed equal) — but sim's trainers never sleep (§F1), so that shared
+   GPU is far denser in sim at any instant than in real, where those trainers spend most of their time asleep
+   through the modeled delay. Same mechanism as `eval_model`'s existing exemption, just not yet recognized as
+   applying to the aggregator's own (critical-path) compute. `sim_rate=5.24` on the n40 pair confirms this
+   isn't eroding sim's overall speedup. **No code change needed** — `runner.py` (lib/python/flame/launch/
+   runner.py:205-219) already dedicates an idle physical GPU to the aggregator whenever
+   `execution.num_gpus < visible GPU count`; this run's config used `num_gpus=8` (= all 8 visible GPUs), so
+   the branch never triggered. Fix: launch with `--num-gpus 7` (one less than visible) so the aggregator gets
+   GPU 7 exclusively. Validate: rerun the n40 smoke command with `--num-gpus 7` added, then
+   `run_parity.py --baselines fluxtune --yes`, check `agg_step_timing_breakdown`.
+2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
+   the above.
+3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
    (ma_max_abs_dev 2.25 vs 0.75 tol, up from 0.85), `convergence` (acc_diff 0.0509 vs 0.05, ~flat) — this
    5400s pair predates the `cohort_sequence` checker fix (§G 07-17d); re-measure on a fresh pair before
    treating any of these as independent bugs (they were downstream of the now-explained SET cascade/tie noise).
-3. **NEW, marginal — `step_timing_breakdown` / `tb_prepare_perturbation`**: KS 0.251 (tol 0.25) / mean_rel 36%,
+4. **NEW, marginal — `step_timing_breakdown` / `tb_prepare_perturbation`**: KS 0.251 (tol 0.25) / mean_rel 36%,
    but real 1.9ms vs sim 3.0ms — both near the 1ms degenerate-noise floor, likely surfaced only by the larger
    n=7362/8340 sample count at 5400s. Not yet triaged; check whether it's noise before spending time on it.
-4. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
-5. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
-6. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
+5. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
+6. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
+7. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
    `deps`); unblocked, ready to resume (the `cohort_sequence` admission investigation that deferred it is
    closed, §G 07-17d).
 
