@@ -1873,9 +1873,11 @@ class TestAggStepTimingEvalModelExempt:
         return {"step_timing": st}
 
     def test_eval_model_gap_reported_but_does_not_gate(self):
-        # eval_model 17s sim vs 11s real, everything else matched -> rung PASSES.
+        # eval_model 30s sim vs 11s real (gap > the aggregator rung's widened
+        # mean_tol_rel, simulate_fwdllm.md §B fluxtune #1), everything else
+        # matched -> rung PASSES (eval_model exempt) but still reports diverged.
         real = self._agg({"eval_model": [10.8] * 20, "aggregate": [0.1] * 20})
-        sim = self._agg({"eval_model": [17.2] * 20, "aggregate": [0.1] * 20})
+        sim = self._agg({"eval_model": [30.0] * 20, "aggregate": [0.1] * 20})
         r = pc.agg_step_timing_breakdown_parity(real, sim)
         assert r["ok"], r
         assert r["by_func"]["eval_model"]["gates_ok"] is False

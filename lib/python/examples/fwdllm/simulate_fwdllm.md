@@ -203,10 +203,25 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    aggregator's own footprint* (`FedSgdAggregator.py`): `_snapshot_retry_cache` deepcopied TWO things
    every call — `self.model_dict` (used) and `get_global_model_params()` (dead: its only reader was a
    commented-out `set_global_model_params` call). Removed the dead deepcopy — halves this call's
-   memory-copy volume, unconditionally, both modes; 275/275 fwdllm tests pass. (3) *Widen the rung's
-   tolerance* — NOT implemented, kept as fallback per operator if 1+2 don't close the gap enough.
-   Next: rerun the same n=15 or n=40 pair with both fixes live and re-measure
-   `_snapshot_retry_cache`/`_apply_weighted_update`'s gap.
+   memory-copy volume, unconditionally, both modes; 275/275 fwdllm tests pass. Both mitigations live in
+   shared code with no `real`/`simulated` branch, so the REAL leg benefits too (not sim-only tuning).
+   **VALIDATED 2026-07-18i** (`run_20260718_013545`/`_013943`, n=40, NUMA pinning confirmed via
+   trainers' `[PIN] cpu_affinity` — all 40 landed on the non-aggregator node, zero overlap): both legs
+   got measurably faster (`aggregate()` real mean 100ms→71ms/call, sim 141ms→107ms/call) and
+   `_snapshot_retry_cache`'s relative gap dropped +31%→+11.5%, a clean win from the deepcopy removal.
+   `_apply_weighted_update`'s gap (+36-44%) did NOT close as much — inconclusive at only 3 commit
+   samples/run, muddied by a single 238ms sim-only `_compute_var` outlier that inflated that run's
+   headline number (excluding it, `aggregate()`'s overall gap was ~29.5%, down from ~40% pre-fix — real
+   but partial improvement). (3) **Tolerance widened 2026-07-18j** (`checks.py`
+   `agg_step_timing_breakdown_parity`): diminishing returns from further root-causing at this sample
+   size — `mean_tol_rel` 5%→50% for this rung only (trainer-side `step_timing_breakdown` untouched,
+   still 5%, since JVP compute is GPU-bound and genuinely mode-invariant per §F-1; this rung's gap is
+   CPU/memory-bound bookkeeping co-located with sim's intentionally denser-than-real concurrent
+   workload — some residual gap is inherent to the speedup design, not a bug). 1 pre-existing test
+   fixture (`test_eval_model_gap_reported_but_does_not_gate`) updated to use a gap that still exceeds
+   the new tolerance; 436 `tests/mode -k "fwdllm or parity"` pass. Next: operator launching fresh 7200s
+   real/sim pairs for all 3 baselines with all landed fixes live — refresh §A per the score-tracking
+   trigger once they land.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
