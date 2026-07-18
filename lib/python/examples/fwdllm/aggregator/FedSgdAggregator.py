@@ -221,6 +221,12 @@ class FedSGDAggregator(TopAggregator):
         return copy.deepcopy(self.model_dict), copy.deepcopy(self.get_global_model_params())
 
     @timer_decorator
+    def _snapshot_last_round_update(self, weighted_gradient_sum):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
+        Shared by both commit branches -- was duplicated verbatim."""
+        return [p.clone().detach() for p in weighted_gradient_sum]
+
+    @timer_decorator
     def _apply_weighted_update(self, model_list, weighted_gradient_sum, old_param,
                                 learning_rate, training_num):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
@@ -240,8 +246,10 @@ class FedSGDAggregator(TopAggregator):
             )
 
     @timer_decorator
-    def aggregate(self, current_round):
-        start_time = time.time()
+    def _prepare_round_state(self, current_round):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B):
+        shared preamble (var bookkeeping, plateau check, model_list/training_num accumulation)
+        that runs identically before the commit/rollback branch split."""
         # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
         # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
         self.var = self._compute_var()
@@ -303,6 +311,12 @@ class FedSGDAggregator(TopAggregator):
             logger.info(
                 f"Model dict length (should be same as total layers in the model) : {len(self.model_dict[idx])}"
             )
+        return model_list, training_num, learning_rate
+
+    @timer_decorator
+    def aggregate(self, current_round):
+        start_time = time.time()
+        model_list, training_num, learning_rate = self._prepare_round_state(current_round)
 
         # logger.info(f"len(model_list): {len(model_list)}")
 
@@ -359,9 +373,7 @@ class FedSGDAggregator(TopAggregator):
                     logger.debug(
                         f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
-                self.last_round_update = [
-                    p.clone().detach() for p in weighted_gradient_sum
-                ]
+                self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
                 logger.info(
                     f"[Variance=GOOD] var={self.var} <= thr={self.var_threshold}; "
                     f"keeping weight update, clearing cached_v."
@@ -396,9 +408,7 @@ class FedSGDAggregator(TopAggregator):
                         f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
 
-                self.last_round_update = [
-                    p.clone().detach() for p in weighted_gradient_sum
-                ]
+                self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
                 self._force_commit_reason = (
                     "plateau" if getattr(self, "_plateau_fired_this_cycle", False)
                     else "cap"

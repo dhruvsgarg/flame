@@ -152,25 +152,30 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    workload-scaling SLOPE — ruling out sim simply processing bigger pools (`g2_grad_pool_size` already
    passes, +9% mean, too small to explain it anyway).
    **`calculate_var` and the retry-cache deepcopy, timed separately 2026-07-17g
-   (`_compute_var`/`_snapshot_retry_cache`, `FedSgdAggregator.py`), are NOT the fixed-cost source** —
-   confirmed on a fresh n=40/max-data-id=3 smoke pair (`run_20260718_000320`/`_000717`, identical
-   cohort admission real vs sim so `grad_pool_size` matches call-for-call): both track real within
-   ~22-23% and a few ms/call. The residual (`aggregate() − _compute_var − _snapshot_retry_cache`, i.e.
-   everything NOT yet timed) is where the gap actually lives, and it is heavily branch-skewed — rollback
-   residual real 9.3ms vs sim 11.7ms (+26%, ~2.4ms/call) but **commit residual real 137.0ms vs sim
-   229.8ms (+68%, ~93ms/call)** — commits are only 1/4 of calls yet carry the whole gap. The only
-   untimed code inside the commit branches is the FedAvg weighted-update double-loop
-   (`for id in weighted_gradient_sum: for i in range(len(model_list))`, plus the per-param
-   `next(old_param).detach().to("cpu").sub_(self._server_update_step(...))` call) — identical code was
-   duplicated verbatim across the `var_good_enough`/force-commit branches; **FIXED 2026-07-18**:
-   deduplicated into one `@timer_decorator`-wrapped `_apply_weighted_update` (`FedSgdAggregator.py`),
-   called from both. Flows through the existing generic step_timing infra, no new check/plot code.
-   Next: rerun to get a direct `_apply_weighted_update` measurement — if it accounts for the ~93ms/call
-   commit-residual gap, look at `.detach().to("cpu")` (device transfer cost) and `_server_update_step`
-   next; if it does NOT, the gap is in the untimed logging/list-comprehension lines around it
-   (`self.last_round_update = [p.clone().detach() for p in weighted_gradient_sum]`, the DEBUG-gated hash
-   dumps — verify `logger.isEnabledFor(logging.DEBUG)` is actually false in both legs before ruling those
-   out, §F-19).
+   (`_compute_var`/`_snapshot_retry_cache`), are NOT the fixed-cost source** — confirmed on a fresh
+   n=40/max-data-id=3 smoke pair (`run_20260718_000320`/`_000717`): both track real within ~22-23%, a
+   few ms/call. The residual was heavily branch-skewed — rollback +26% (~2.4ms/call) vs **commit +68%
+   (~93ms/call)** — pointing at the untimed FedAvg weighted-update double-loop inside the commit
+   branches, which was ALSO duplicated verbatim across `var_good_enough`/force-commit; deduplicated +
+   timed as `_apply_weighted_update`.
+   **Direct measurement, second n=40 pair (`run_20260718_002204`/`_002603`) 2026-07-18b:
+   `_apply_weighted_update` explains ~half the commit gap, not all of it.** Real mean 91.0ms/call vs sim
+   125.8ms/call (+38%, ~34.8ms/call) — real, but the residual AFTER subtracting it (`aggregate() −
+   _compute_var − _snapshot_retry_cache − _apply_weighted_update`) still shows commit +31% (real 48.8ms
+   vs sim 63.8ms/call) and rollback +18% (real 9.9ms vs sim 11.6ms/call, unchanged from before — rollback
+   never touches `_apply_weighted_update` at all, so this residual is branch-INDEPENDENT, meaning it lives
+   in the SHARED preamble that runs before the commit/rollback split, not in branch-specific code).
+   **FIXED 2026-07-18b**: extracted that shared preamble (var bookkeeping incl. `self.var.item()`, the
+   plateau-force-commit check, `model_list`/`training_num` accumulation — everything between the
+   `_compute_var()` call and the branch split) into `_prepare_round_state`, and deduplicated +
+   timed the other commit-branch duplicate (`self.last_round_update = [p.clone().detach() for p in
+   weighted_gradient_sum]`) as `_snapshot_last_round_update`. Note `_prepare_round_state` nests
+   `_compute_var` inside its own span (calls it internally) — subtract `_compute_var`'s duration from
+   `_prepare_round_state`'s when attributing, don't double-count. Next: rerun (same command) — if the
+   preamble accounts for the remaining ~10-30ms/call, the search narrows to `.item()`'s GPU sync
+   specifically (device business unrelated to the already-refuted trainer-CPU-contention hypothesis) or
+   `_should_force_commit_on_plateau()`; if not, the last untimed corners are `_snapshot_last_round_update`
+   itself and the DEBUG-gated hash dumps (verify `isEnabledFor(DEBUG)` is actually false both legs, §F-19).
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
