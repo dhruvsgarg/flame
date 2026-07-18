@@ -140,19 +140,20 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator queue-bound gap — ROOT CONFIRMED 2026-07-17, fix identified, NOT
-   YET VALIDATED (needs an operator run).** `_process_aggregation_goal_met`/`aggregate` run slower in sim
-   (n40 pair: 29%/61% slower) because the aggregator shares its physical GPU with ~5 trainers, identically in
-   both legs (`CUDA_VISIBLE_DEVICES` confirmed equal) — but sim's trainers never sleep (§F1), so that shared
-   GPU is far denser in sim at any instant than in real, where those trainers spend most of their time asleep
-   through the modeled delay. Same mechanism as `eval_model`'s existing exemption, just not yet recognized as
-   applying to the aggregator's own (critical-path) compute. `sim_rate=5.24` on the n40 pair confirms this
-   isn't eroding sim's overall speedup. **No code change needed** — `runner.py` (lib/python/flame/launch/
-   runner.py:205-219) already dedicates an idle physical GPU to the aggregator whenever
-   `execution.num_gpus < visible GPU count`; this run's config used `num_gpus=8` (= all 8 visible GPUs), so
-   the branch never triggered. Fix: launch with `--num-gpus 7` (one less than visible) so the aggregator gets
-   GPU 7 exclusively. Validate: rerun the n40 smoke command with `--num-gpus 7` added, then
-   `run_parity.py --baselines fluxtune --yes`, check `agg_step_timing_breakdown`.
+1. **`agg_step_timing_breakdown`: aggregator queue-bound gap — GPU-sharing hypothesis TESTED AND REFUTED
+   2026-07-17.** Suspected shared-GPU contention (aggregator co-located with ~5 trainers, denser in sim since
+   trainers never sleep) — dedicated the aggregator's own GPU via `--num-gpus 7` (verified working: aggregator
+   exclusively on GPU 7, trainers confined to 0-6, both legs). Result: NO improvement — `_process_aggregation_
+   goal_met` real/sim went 0.194s/0.273s (shared) → 0.195s/0.295s (dedicated); `aggregate` 0.093s/0.149s →
+   0.096s/0.156s (dedicated GPU sim mean is *higher*, not lower). Real stayed flat both times, as expected.
+   Ruling out device-sharing as the cause — the mechanism (`runner.py:205-219`, dedicate an idle GPU when
+   `num_gpus < visible`) is real and correctly wired, just not the fix for this gap. Falls back to the older
+   §G steer ("Aggregator is queue-bound... 70% busy, serial commits") — likely arrival-DENSITY, not GPU
+   device topology: sim's commits land in much denser wall-clock bursts than real's (confirmed this session
+   for a different investigation — post-cohort-close carried-surplus commits drain ~8 in ~1s), so the
+   aggregator's single-threaded loop faces a thicker backlog per call regardless of which GPU it's on. NOT
+   YET examined from this angle — look at per-call queue depth / inter-arrival timing at the moment
+   `aggregate()`/`_process_aggregation_goal_met` are invoked, not GPU assignment.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
