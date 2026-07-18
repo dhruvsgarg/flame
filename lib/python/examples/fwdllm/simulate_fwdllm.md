@@ -140,23 +140,41 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing hypothesis TESTED AND REFUTED 2026-07-17;
-   NEW candidate is GC pressure from bursty deepcopy allocation, not yet confirmed (needs live profiling).**
-   Dedicated the aggregator's own GPU via `--num-gpus 7` (verified: aggregator exclusively on GPU 7, trainers
-   confined to 0-6, both legs) — `_process_aggregation_goal_met`/`aggregate` showed NO improvement (sim means
-   flat or slightly higher), ruling out device-sharing. Per-call breakdown (`aggregate` duration vs
-   `cached_v_size`/`grad_pool_size` position, matched real vs sim): the slowdown is NOT a consistent per-call
-   sim penalty — sim's SECOND commit cycle at `cached_v_size=26` tracks real's pace closely (0.065/0.062/0.063s
-   vs real 0.083/0.045/0.048s); it's specifically the FIRST cycle's positions 1 and 3 that spike anomalously
-   (0.196s, 0.326s), and those fall inside the same dense post-cohort-close carried-surplus commit burst
-   already identified this session (~8 commits draining in ~1s of wall time). `aggregate()` does two
-   full-model `copy.deepcopy`s when `var_control=True` caches for a retry (`FedSgdAggregator.py:284-285`,
-   ~267MB+ each) — several landing back-to-back in a burst would spike the allocation rate, plausibly
-   triggering more frequent/expensive Python GC passes for calls caught inside it; real's sleep-staggered
-   arrivals never create that spike. Consistent with all evidence gathered but NOT proven — would need live
-   `gc` stats or a profiler during a run, not derivable from banked logs. Next step if resumed: instrument
-   `gc.collect()` counts/pause time around `aggregate()`, or bucket per-call duration by how many OTHER
-   `aggregate()` calls landed in the preceding 1s window (burst density), real vs sim.
+1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing, burst-density-GC, AND CPU-contention
+   hypotheses TESTED AND REFUTED 2026-07-17f; the gap is a per-call FIXED-cost divergence, workload-size- and
+   branch-independent, root cause still open (needs sub-function profiling).** GPU dedication (`--num-gpus 7`)
+   and burst-density (no correlation, no bursts >2 calls) were both refuted per the prior two entries here.
+   CPU/scheduler-contention (real trainers `time.sleep` their remainder, `FedSgdTrainer.py:591-592`, sim
+   trainers don't) is ALSO refuted: `aggregate()` takes exactly two branches per call — commit
+   (`var_good_enough`, does the O(pool) FedAvg double-loop) and rollback (append-only, cheap) — logged
+   unambiguously via `agg_round.var_good_enough`/`commit_reason` (emitted on EVERY call, not just commits).
+   Splitting the full 5400s pair by branch: rollback real mean 0.0767s (n=632) vs sim 0.1017s (n=728, +33%);
+   commit real mean 0.2200s (n=100) vs sim 0.2763s (n=102, +26%) — **the gap holds on BOTH branches**, ruling
+   out anything tied to the commit path specifically (FedAvg loop cost, `g2_grad_pool_size`'s already-passing
+   +9% mean pool-size gap) as the sole cause. Per-branch linear regression of `duration_s` on `grad_pool_size`
+   (the one workload variable that varies call-to-call) makes this precise: the slope (marginal cost per
+   pooled grad) is small and NOT the driver — re-pricing sim's actual mean duration at REAL's mean pool size,
+   using sim's own fitted slope, barely moves it (rollback: 0.1017s actual → 0.1069s "at real's smaller pool",
+   i.e. still higher, not lower; commit: 0.2763s → 0.2688s, same story) — so the gap is NOT explained by sim
+   processing bigger `model_list`s. What differs is the regression INTERCEPT (the fixed, pool-size-0 cost):
+   rollback 0.101s real vs 0.136s sim (+34%), commit 0.147s real vs 0.194s sim (+32%) — a near-identical
+   proportional fixed-cost markup on both branches. The only code common to both branches, independent of
+   `grad_pool_size`, is the unconditional `calculate_var(self.grad_for_var_check_list)` (`FedSgdAggregator.py:
+   218`) and the unconditional `copy.deepcopy(self.model_dict)` / `copy.deepcopy(get_global_model_params())`
+   pair gated only on `var_control` (`FedSgdAggregator.py:283-285`) — both fixed-size-model operations that
+   should cost the same wall time regardless of mode UNLESS something outside `aggregate()`'s own logic (e.g.
+   sim-only persistent bookkeeping — `SimReorderBuffer`, vclock state, retained `cached_v` history — growing
+   the sim aggregator process's live Python heap and making its GC/allocator work costlier per call, a
+   STEADY-STATE variant of the already-refuted BURST-triggered GC story) is the source. NOT proven — banked
+   telemetry only timed the whole `aggregate()` call, not its sub-blocks. **FIXED 2026-07-17g**: `calculate_var`
+   and the `copy.deepcopy` pair are now each their own `@timer_decorator`-wrapped method
+   (`_compute_var`/`_snapshot_retry_cache`, `FedSgdAggregator.py`) — no new check/plot code needed, both flow
+   through the existing generic per-func `agg_step_timing_breakdown`/`phase_vclock_ratio` infra automatically.
+   Operator queued a fresh run to attribute the fixed-cost gap between the two sub-blocks — re-read this item
+   once that pair lands. Next step if the gap localizes to `calculate_var`: `grad_for_var_check_list`'s own
+   length isn't currently telemetered (only `grad_pool_size`/`cached_v_size` are, on `agg_round`) and its reset
+   trigger (`_is_model_updated`) isn't verified to track `grad_pool_size` 1:1 — add that length to the new
+   sub-timer's telemetry before concluding it's a real per-item cost divergence rather than an input-size one.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`

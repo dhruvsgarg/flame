@@ -211,11 +211,21 @@ class FedSGDAggregator(TopAggregator):
         return buf
 
     @timer_decorator
+    def _compute_var(self):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        return calculate_var(self.grad_for_var_check_list)
+
+    @timer_decorator
+    def _snapshot_retry_cache(self):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        return copy.deepcopy(self.model_dict), copy.deepcopy(self.get_global_model_params())
+
+    @timer_decorator
     def aggregate(self, current_round):
         start_time = time.time()
         # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
         # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
-        self.var = calculate_var(self.grad_for_var_check_list)
+        self.var = self._compute_var()
         self.var_prev_iter_list.append(self.var.item())
         logger.info(f"self.var = {self.var}")
         if logger.isEnabledFor(logging.DEBUG):
@@ -281,8 +291,7 @@ class FedSGDAggregator(TopAggregator):
         # Was written 3x identically (redundant full-model deepcopy/commit); collapsed
         # to one -- byte-identical.
         if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
+            model_dict_cached, origin_param = self._snapshot_retry_cache()
 
             # cached_v:  (num, params)
             logger.info(f"len of cached v: {len(self.cached_v)}")
