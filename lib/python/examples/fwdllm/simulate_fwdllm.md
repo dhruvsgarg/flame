@@ -140,41 +140,37 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing, burst-density-GC, AND CPU-contention
-   hypotheses TESTED AND REFUTED 2026-07-17f; the gap is a per-call FIXED-cost divergence, workload-size- and
-   branch-independent, root cause still open (needs sub-function profiling).** GPU dedication (`--num-gpus 7`)
-   and burst-density (no correlation, no bursts >2 calls) were both refuted per the prior two entries here.
-   CPU/scheduler-contention (real trainers `time.sleep` their remainder, `FedSgdTrainer.py:591-592`, sim
-   trainers don't) is ALSO refuted: `aggregate()` takes exactly two branches per call — commit
-   (`var_good_enough`, does the O(pool) FedAvg double-loop) and rollback (append-only, cheap) — logged
-   unambiguously via `agg_round.var_good_enough`/`commit_reason` (emitted on EVERY call, not just commits).
-   Splitting the full 5400s pair by branch: rollback real mean 0.0767s (n=632) vs sim 0.1017s (n=728, +33%);
-   commit real mean 0.2200s (n=100) vs sim 0.2763s (n=102, +26%) — **the gap holds on BOTH branches**, ruling
-   out anything tied to the commit path specifically (FedAvg loop cost, `g2_grad_pool_size`'s already-passing
-   +9% mean pool-size gap) as the sole cause. Per-branch linear regression of `duration_s` on `grad_pool_size`
-   (the one workload variable that varies call-to-call) makes this precise: the slope (marginal cost per
-   pooled grad) is small and NOT the driver — re-pricing sim's actual mean duration at REAL's mean pool size,
-   using sim's own fitted slope, barely moves it (rollback: 0.1017s actual → 0.1069s "at real's smaller pool",
-   i.e. still higher, not lower; commit: 0.2763s → 0.2688s, same story) — so the gap is NOT explained by sim
-   processing bigger `model_list`s. What differs is the regression INTERCEPT (the fixed, pool-size-0 cost):
-   rollback 0.101s real vs 0.136s sim (+34%), commit 0.147s real vs 0.194s sim (+32%) — a near-identical
-   proportional fixed-cost markup on both branches. The only code common to both branches, independent of
-   `grad_pool_size`, is the unconditional `calculate_var(self.grad_for_var_check_list)` (`FedSgdAggregator.py:
-   218`) and the unconditional `copy.deepcopy(self.model_dict)` / `copy.deepcopy(get_global_model_params())`
-   pair gated only on `var_control` (`FedSgdAggregator.py:283-285`) — both fixed-size-model operations that
-   should cost the same wall time regardless of mode UNLESS something outside `aggregate()`'s own logic (e.g.
-   sim-only persistent bookkeeping — `SimReorderBuffer`, vclock state, retained `cached_v` history — growing
-   the sim aggregator process's live Python heap and making its GC/allocator work costlier per call, a
-   STEADY-STATE variant of the already-refuted BURST-triggered GC story) is the source. NOT proven — banked
-   telemetry only timed the whole `aggregate()` call, not its sub-blocks. **FIXED 2026-07-17g**: `calculate_var`
-   and the `copy.deepcopy` pair are now each their own `@timer_decorator`-wrapped method
-   (`_compute_var`/`_snapshot_retry_cache`, `FedSgdAggregator.py`) — no new check/plot code needed, both flow
-   through the existing generic per-func `agg_step_timing_breakdown`/`phase_vclock_ratio` infra automatically.
-   Operator queued a fresh run to attribute the fixed-cost gap between the two sub-blocks — re-read this item
-   once that pair lands. Next step if the gap localizes to `calculate_var`: `grad_for_var_check_list`'s own
-   length isn't currently telemetered (only `grad_pool_size`/`cached_v_size` are, on `agg_round`) and its reset
-   trigger (`_is_model_updated`) isn't verified to track `grad_pool_size` 1:1 — add that length to the new
-   sub-timer's telemetry before concluding it's a real per-item cost divergence rather than an input-size one.
+1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing, burst-density-GC, and CPU-contention
+   hypotheses all TESTED AND REFUTED; sub-block timers now localize the gap to the untimed FedAvg
+   commit-update loop, not `calculate_var` or the retry-cache deepcopy. Root cause STILL OPEN, next
+   measurement queued.** Refutation trail (5400s pair, 07-17): GPU dedication (`--num-gpus 7`) — no
+   improvement. Burst density of `aggregate()` calls — no correlation, no bursts >2 calls. CPU/scheduler
+   contention (real trainers `time.sleep` their remainder, sim trainers don't) — refuted by splitting
+   `aggregate()` into its two branches via `agg_round.var_good_enough` (emitted on every call, not just
+   commits): the gap holds on BOTH commit and rollback branches (+26-33%), and per-branch regression of
+   `duration_s` on `grad_pool_size` shows the gap is a fixed, pool-size-independent INTERCEPT, not a
+   workload-scaling SLOPE — ruling out sim simply processing bigger pools (`g2_grad_pool_size` already
+   passes, +9% mean, too small to explain it anyway).
+   **`calculate_var` and the retry-cache deepcopy, timed separately 2026-07-17g
+   (`_compute_var`/`_snapshot_retry_cache`, `FedSgdAggregator.py`), are NOT the fixed-cost source** —
+   confirmed on a fresh n=40/max-data-id=3 smoke pair (`run_20260718_000320`/`_000717`, identical
+   cohort admission real vs sim so `grad_pool_size` matches call-for-call): both track real within
+   ~22-23% and a few ms/call. The residual (`aggregate() − _compute_var − _snapshot_retry_cache`, i.e.
+   everything NOT yet timed) is where the gap actually lives, and it is heavily branch-skewed — rollback
+   residual real 9.3ms vs sim 11.7ms (+26%, ~2.4ms/call) but **commit residual real 137.0ms vs sim
+   229.8ms (+68%, ~93ms/call)** — commits are only 1/4 of calls yet carry the whole gap. The only
+   untimed code inside the commit branches is the FedAvg weighted-update double-loop
+   (`for id in weighted_gradient_sum: for i in range(len(model_list))`, plus the per-param
+   `next(old_param).detach().to("cpu").sub_(self._server_update_step(...))` call) — identical code was
+   duplicated verbatim across the `var_good_enough`/force-commit branches; **FIXED 2026-07-18**:
+   deduplicated into one `@timer_decorator`-wrapped `_apply_weighted_update` (`FedSgdAggregator.py`),
+   called from both. Flows through the existing generic step_timing infra, no new check/plot code.
+   Next: rerun to get a direct `_apply_weighted_update` measurement — if it accounts for the ~93ms/call
+   commit-residual gap, look at `.detach().to("cpu")` (device transfer cost) and `_server_update_step`
+   next; if it does NOT, the gap is in the untimed logging/list-comprehension lines around it
+   (`self.last_round_update = [p.clone().detach() for p in weighted_gradient_sum]`, the DEBUG-gated hash
+   dumps — verify `logger.isEnabledFor(logging.DEBUG)` is actually false in both legs before ruling those
+   out, §F-19).
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`

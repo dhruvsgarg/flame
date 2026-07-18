@@ -221,6 +221,25 @@ class FedSGDAggregator(TopAggregator):
         return copy.deepcopy(self.model_dict), copy.deepcopy(self.get_global_model_params())
 
     @timer_decorator
+    def _apply_weighted_update(self, model_list, weighted_gradient_sum, old_param,
+                                learning_rate, training_num):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
+        Shared by both commit branches (natural / force-commit) -- was duplicated verbatim."""
+        for id, k in enumerate(weighted_gradient_sum):
+            for i in range(0, len(model_list)):
+                local_sample_number, local_model_params = model_list[i]
+                # w = local_sample_number / training_num
+                if i == 0:
+                    weighted_gradient_sum[id] = local_model_params[id]
+                else:
+                    weighted_gradient_sum[id] += local_model_params[id]
+            next(old_param).detach().to("cpu").sub_(
+                self._server_update_step(
+                    id, learning_rate * weighted_gradient_sum[id] / training_num
+                )
+            )
+
+    @timer_decorator
     def aggregate(self, current_round):
         start_time = time.time()
         # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
@@ -333,19 +352,8 @@ class FedSGDAggregator(TopAggregator):
                         f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
                 logger.info(f"Length of model_list : {len(model_list)}")
-                for id, k in enumerate(weighted_gradient_sum):
-                    for i in range(0, len(model_list)):
-                        local_sample_number, local_model_params = model_list[i]
-                        # w = local_sample_number / training_num
-                        if i == 0:
-                            weighted_gradient_sum[id] = local_model_params[id]
-                        else:
-                            weighted_gradient_sum[id] += local_model_params[id]
-                    next(old_param).detach().to("cpu").sub_(
-                        self._server_update_step(
-                            id, learning_rate * weighted_gradient_sum[id] / training_num
-                        )
-                    )
+                self._apply_weighted_update(model_list, weighted_gradient_sum, old_param,
+                                             learning_rate, training_num)
                 if logger.isEnabledFor(logging.DEBUG):
                     format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
                     logger.debug(
@@ -380,19 +388,8 @@ class FedSGDAggregator(TopAggregator):
                         f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
                 logger.info(f"Length of model_list : {len(model_list)}")
-                for id, k in enumerate(weighted_gradient_sum):
-                    for i in range(0, len(model_list)):
-                        local_sample_number, local_model_params = model_list[i]
-                        # w = local_sample_number / training_num
-                        if i == 0:
-                            weighted_gradient_sum[id] = local_model_params[id]
-                        else:
-                            weighted_gradient_sum[id] += local_model_params[id]
-                    next(old_param).detach().to("cpu").sub_(
-                        self._server_update_step(
-                            id, learning_rate * weighted_gradient_sum[id] / training_num
-                        )
-                    )
+                self._apply_weighted_update(model_list, weighted_gradient_sum, old_param,
+                                             learning_rate, training_num)
                 if logger.isEnabledFor(logging.DEBUG):
                     format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
                     logger.debug(
