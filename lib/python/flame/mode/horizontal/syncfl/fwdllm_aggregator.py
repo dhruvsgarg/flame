@@ -279,6 +279,9 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = []
+        # Parallel to _per_agg_trainer_list: buffered per-contribution material,
+        # merged into self.grad in canonical order, not raw arrival (P0-1).
+        self._pending_cohort_contribs = []
         # G1: per-contributor raw (pre-rate-scaling) gradient L2 norm this cycle
         # -- gradient VALUES are mode-invariant given identical input+perturbation
         # seed (principle #1), so this is a DIRECT measurement of that claim
@@ -1661,19 +1664,22 @@ class TopAggregator(AsyncTopAgg):
             logger.info(f"jvp_for_snr_check at aggregator: {jvp_for_snr_check}")
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    f"Calling aggregate_grads_for_trainers with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
+                    f"Buffering aggregate_grads_from_trainers call with grad_for_var_check: {_calculate_hash(grad_for_var_check)}"
                 )
+            # Buffer, don't merge yet -- self.grad's accumulation happens in
+            # _process_aggregation_goal_met, in canonical order (P0-1).
             # Use this message's stat_utility, not the channel property --
             # the property is set below, after this call, so reading it here
             # was always None on a trainer's first contribution (crashing
             # fedbuff's weight_factor() on `1 + None`).
-            self.aggregate_grads_from_trainers(
+            self._pending_cohort_contribs = getattr(self, "_pending_cohort_contribs", [])
+            self._pending_cohort_contribs.append((
                 trainer_gradients,
-                version_for_rate=version_for_rate,
-                stat_utility=msg[MessageType.STAT_UTILITY],
-                grad_for_var_check=grad_for_var_check,
-                jvp_for_snr_check=jvp_for_snr_check,
-            )
+                version_for_rate,
+                msg[MessageType.STAT_UTILITY],
+                grad_for_var_check,
+                jvp_for_snr_check,
+            ))
 
             # del trainer_gradients # Free memory
 
@@ -1873,15 +1879,15 @@ class TopAggregator(AsyncTopAgg):
         Real receives updates in modeled-delay (D) order; sim commits in sct order
         (= D order). The sole residual divergence is the tie-break when two
         trainers share a D: real breaks it by physical arrival, sim by sct-sort.
-        Both tied members land in the same split-half so `var` is unchanged, but
-        the exact-order `cohort_sequence` rung flags the swap. Sort by (D, str(end))
-        so equal-D ties break by trainer_id in both modes; var/grads stay
-        bit-identical (the aggregated grad is an order-independent sum).
+        Sort by (D, str(end)) so equal-D ties break by trainer_id in both modes.
 
-        Scope = this cycle only. `grad_for_var_check_list` accumulates across a
-        data_id's iterations while `_per_agg_trainer_list` is per-cycle, so reorder
-        just the trailing len(cohort) slice (the sync barrier appends this cohort
-        contiguously in `_per_agg_trainer_list` order).
+        Not cosmetic: `_pending_cohort_contribs` (buffered, not yet merged into
+        self.grad) is permuted in lockstep, so self.grad's later summation
+        replays in this canonical order rather than raw arrival order --
+        float addition isn't associative, and grad_aware's rate reads the
+        running self.grad, so arrival-order noise was a real divergence, not
+        just float dust (P0-1). Both lists share one append site
+        (_process_single_trainer_message), so they stay 1:1.
 
         No-op unless every contributor stamped a modeled delay AND a tie actually
         changes the order.
@@ -1897,16 +1903,10 @@ class TopAggregator(AsyncTopAgg):
         if perm == list(range(n)):
             return  # already canonical (the common, non-tie path)
         self._per_agg_trainer_list = [ends[i] for i in perm]
-        # Reorder the trailing cohort slice of the accumulating var/jvp lists in
-        # lockstep. Length guard: only when the slice aligns 1:1 with this cohort
-        # (a mismatch means a non-grad message slipped in -> leave lists untouched).
-        for lst in (self.grad_for_var_check_list, self.jvp_for_snr_check_list):
-            if len(lst) >= n:
-                tail = lst[-n:]
-                lst[-n:] = [tail[i] for i in perm]
+        self._pending_cohort_contribs = [self._pending_cohort_contribs[i] for i in perm]
         logger.info(
             f"[COMMIT_CANON] equal-D tie → reordered {n}-cohort to (D,id) order "
-            f"(perm={perm}); var/grads unchanged, receive order now real↔sim identical."
+            f"(perm={perm}); pending merge + receive order now real↔sim identical."
         )
 
     @timer_decorator
@@ -1921,6 +1921,28 @@ class TopAggregator(AsyncTopAgg):
         # on commit-key state -> skipped when delays are off (arrival order).
         if getattr(self, "_commit_key_by_end", None):
             self._canonicalize_cohort_commit_order()
+
+        # Merge this cohort's buffered contributions into self.grad now, in
+        # the canonical order just established -- not raw arrival order
+        # (P0-1). Must run before telemetry below reads _cycle_grad_norms/
+        # grad_for_var_check_list, both populated here. getattr default: a
+        # caller that pre-populates self.grad itself (e.g. a test double)
+        # never buffers anything, so this is a no-op for it.
+        for (
+            _pc_grad,
+            _pc_version_for_rate,
+            _pc_stat_utility,
+            _pc_grad_for_var_check,
+            _pc_jvp_for_snr_check,
+        ) in getattr(self, "_pending_cohort_contribs", []):
+            self.aggregate_grads_from_trainers(
+                _pc_grad,
+                version_for_rate=_pc_version_for_rate,
+                stat_utility=_pc_stat_utility,
+                grad_for_var_check=_pc_grad_for_var_check,
+                jvp_for_snr_check=_pc_jvp_for_snr_check,
+            )
+        self._pending_cohort_contribs = []
 
         # Snapshot for this cycle's agg_round telemetry (emitted further down,
         # after self._per_agg_trainer_list is cleared and self._model_version
@@ -2460,6 +2482,7 @@ class TopAggregator(AsyncTopAgg):
         self._per_agg_trainer_list = []
         self._cycle_grad_norms = []
         self._commit_key_by_end = {}  # cohort-scoped
+        self._pending_cohort_contribs = []  # already drained above; defensive
 
         logger.info(
             f"====== aggregation finished for round {self._round}, "

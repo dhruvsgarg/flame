@@ -161,31 +161,34 @@ class ForwardTextClassificationTrainer:
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        gpu_id = torch.cuda.current_device()
+        if self.device.type == "cuda":
+            visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            gpu_id = torch.cuda.current_device()
 
-        # Get free and total memory on the selected CUDA device
-        free_mem, total_mem = torch.cuda.mem_get_info(gpu_id)
+            # Get free and total memory on the selected CUDA device
+            free_mem, total_mem = torch.cuda.mem_get_info(gpu_id)
 
-        # Convert to MB for easier reading
-        free_mb = free_mem / (1024 * 1024)
-        total_mb = total_mem / (1024 * 1024)
+            # Convert to MB for easier reading
+            free_mb = free_mem / (1024 * 1024)
+            total_mb = total_mem / (1024 * 1024)
 
-        print(
-            f"[GPU Memory Info] Device: {self.device}, logical_device_id: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB, Occupied: {(total_mb-free_mb):.2f} MB"
-        )
+            print(
+                f"[GPU Memory Info] Device: {self.device}, logical_device_id: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB, Occupied: {(total_mb-free_mb):.2f} MB"
+            )
 
-        device_name = torch.cuda.get_device_name(gpu_id)
+            device_name = torch.cuda.get_device_name(gpu_id)
 
-        real_index = (
-            visible_devices.split(",")[gpu_id] if visible_devices else str(gpu_id)
-        )
+            real_index = (
+                visible_devices.split(",")[gpu_id] if visible_devices else str(gpu_id)
+            )
 
-        logging.info(
-            f"[Device Init] CUDA_VISIBLE_DEVICES={visible_devices}, "
-            f"torch.device={self.device}, torch.cuda.current_device={gpu_id}, "
-            f"Real GPU Index (Global) = {real_index}, Device Name: {device_name}"
-        )
+            logging.info(
+                f"[Device Init] CUDA_VISIBLE_DEVICES={visible_devices}, "
+                f"torch.device={self.device}, torch.cuda.current_device={gpu_id}, "
+                f"Real GPU Index (Global) = {real_index}, Device Name: {device_name}"
+            )
+        else:
+            logging.info(f"[Device Init] torch.device={self.device} (no CUDA device available)")
 
         self.loss_fn = None
         self.dataset_size = 0

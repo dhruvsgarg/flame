@@ -21,6 +21,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Without this, CUDA's device enumeration order is driver-dependent and can
+# diverge from nvidia-smi's PCI-bus-ID order -- the aggregator's "spare Nth
+# GPU" pin (below) and the trainer pool's round-robin pin (spawner.py) both
+# select by raw CUDA ordinal, so a mismatch can silently land either role on
+# a different physical card than its index suggests (e.g. a card nvidia-smi
+# reports as unhealthy). Set before any torch.cuda call in this process; env
+# is inherited by every spawned aggregator/trainer subprocess.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 from flame.launch.aggregator_spawner import AggregatorSpawner
 from flame.launch.baselines import (
     format_provenance,
