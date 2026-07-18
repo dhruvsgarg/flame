@@ -169,13 +169,24 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    processes total), so simple core-count contention (the mechanism assumed for the original 100-trainer/
    96-core numbers) doesn't apply either — if it's contention at all, it's a subtler form: memory-bandwidth/
    cache/NUMA pressure from 40 concurrently-running trainer processes (deepcopy of a ~267MB model is
-   memory-bandwidth-bound, not core-bound), or GIL contention from sim-only bookkeeping (vclock/
-   reorder-buffer machinery) running in the SAME process as `aggregate()`, which would explain why ALL
-   CPU-bound sub-blocks are uniformly slower by a similar relative margin regardless of what they compute.
-   **This can't be resolved by more log analysis — every timeable line is now timed.** Next step requires a
-   live tool: `py-spy dump`/`perf` bracketing an `aggregate()` call to see what else is runnable on the
-   process at that moment, or a controlled A/B (`taskset` pinning trainers away from the aggregator's
-   core, or a run with a fraction of the trainers) to test whether the gap shrinks with less ambient load.
+   memory-bandwidth-bound, not core-bound).
+   **Two candidate mechanisms RULED OUT by direct code inspection 2026-07-18e (not indirect regression):**
+   (1) OS core-scheduling contention — `flame/launch/runner.py:172-190` + `aggregator_spawner.py:88-109`
+   already reserve dedicated cores for the aggregator (8/96) with matching `OMP_NUM_THREADS` etc., excluded
+   from trainer pinning, identically in both real and sim launches — the aggregator is never time-sliced
+   with trainers at the OS level in either mode, so this can't be the differential. (2) A sim-only
+   background thread stealing GIL time inside the aggregator's own process — `flame/sim/virtual_clock.py`
+   (vclock + reorder buffer) is plain synchronous dict/heap code, no `threading.Thread`; the only
+   background thread anywhere (`eval_model`) exists in both modes and is already exempted from this rung.
+   **Live test QUEUED, not yet run**: cut ambient trainer activity to near-zero (`--num-trainers 15
+   --min-initial-trainers 15`, still ≥ `agg_goal=10`) and re-measure the same sub-block breakdown. Decisive
+   either way — gap shrinks ⇒ confirms ambient (memory-bandwidth/cache) trainer contention, fix is
+   deployment-level (NUMA-isolate the aggregator's reserved cores from the trainer pool, not a code fix);
+   gap unchanged ⇒ rules out ambient contention entirely (note: the n=40 pair's relative gap was NOT
+   smaller than the earlier n=100 pair's, which already leans this direction), next candidate is a
+   structural code-path difference upstream of `aggregate()` — check `.device` on the tensors entering
+   `_snapshot_retry_cache`/`_apply_weighted_update`, real vs sim, in case messages land on different
+   devices before ever reaching the aggregator.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
