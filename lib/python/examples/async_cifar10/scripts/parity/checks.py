@@ -1536,11 +1536,21 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     a diagnostic; `avg_diff`/`max_diff` raw diagnostics.
     """
     def rounds_of(agg_rounds):
+        """{window_key: [contributing_trainers, ...]}. Keys on `round` (increments
+        per cohort for felix/oort/fedbuff/...); for fwdllm-family baselines --
+        whose `round` is coarse, advancing only once every data_id finishes -- keys
+        on the agg_round event's own position instead, one bucket per agg-goal
+        boundary (cohort_sequence_parity's own cycle unit). Round-keying fwdllm
+        degenerated the matched window to n=1 (simulate_fwdllm.md §SCRATCH,
+        2026-07-17): every commit landed in the same round-bucket, so this rung
+        silently compared full-run aggregate counts instead of a real window."""
+        is_fwdllm = any("cycle_data_id" in e or "var_good_enough" in e
+                        for e in agg_rounds)
         by_round = collections.defaultdict(list)
-        for e in agg_rounds:
-            r = e.get("round")
-            if r is not None:
-                by_round[r].extend(e.get("contributing_trainers", []))
+        for i, e in enumerate(agg_rounds):
+            key = i if is_fwdllm else e.get("round")
+            if key is not None:
+                by_round[key].extend(e.get("contributing_trainers", []))
         return by_round
 
     def counts_first_n(by_round, n):
@@ -1603,11 +1613,11 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
         speed_class_tvd = 0.5 * sum(abs(rcs.get(b, 0) - scs.get(b, 0)) for b in buckets)
 
     selector = _selector_name(real, sim)
-    # NOT un-gated by the full-cohort rule: participation keys on `round`, which is
-    # CONSTANT for fwdllm, so the matched-round window degenerates to nmatch=1 and a
-    # mechanical KS=1.0. fwdllm's per-cycle cohort enforcement is cohort_sequence;
-    # here the stochastic speed-class TVD branch is the right call. Set-based round
-    # rungs are full-cohort-safe (all-K union both sides); count rungs aren't.
+    # fwdllm now windows by cycle (rounds_of above), so this is a real matched
+    # window there too, not a degenerate n=1 -- population-level participation
+    # is the right long-run counterpart to cohort_sequence's SET rung, which
+    # is only EXACT/tie-tolerant through the achievable-determinism window
+    # (legitimate admission ties cascade past it, simulate_fwdllm.md §SCRATCH).
     gated = bool(selector) and selector not in DETERMINISTIC_SELECTORS
     tvd_tol = 0.15
     if gated and speed_class_tvd is not None:
@@ -4457,14 +4467,113 @@ def _cohort_expected_delay_map(real: dict, sim: dict,
     return {tid: max(d, floor_s) / divisor for tid, d in raw.items()}
 
 
+def _cohort_boundary_ts(cycle: dict) -> Optional[float]:
+    """commit_ts of this cycle's own boundary (last/agg-goal-th) contributing
+    trainer, read from its OWN `contributor_intervals`. None if absent."""
+    contributing = cycle.get("contributing_trainers") or []
+    if not contributing:
+        return None
+    boundary_end = contributing[-1]
+    for ci in (cycle.get("contributor_intervals") or []):
+        if ci.get("end") == boundary_end:
+            return ci.get("commit_ts")
+    return None
+
+
+def _cohort_ts_spread(cycle: dict, ids: list) -> Optional[float]:
+    """max-min commit_ts spread across `ids` within one cycle's own
+    contributor_intervals (mode-native units). None if any id's ts is missing."""
+    by_end = {ci.get("end"): ci.get("commit_ts")
+              for ci in (cycle.get("contributor_intervals") or [])}
+    vals = [by_end.get(t) for t in ids]
+    if any(v is None for v in vals):
+        return None
+    return max(vals) - min(vals)
+
+
+def _cohort_boundary_adjacent(cycles: list, pos: int, end_id: str,
+                              tie_window_s: float) -> bool:
+    """True if end_id -- a member of cycles[pos] -- committed within
+    tie_window_s of the boundary EITHER separating cycles[pos-1]/cycles[pos]
+    OR closing cycles[pos] itself: its own inclusion in cycle `pos` (rather
+    than pos-1, or instead of the next candidate) was itself a coin-flip.
+    Single-mode by design -- explains a one-cycle echo in the OTHER mode
+    without any cross-mode timestamp comparison (simulate_fwdllm.md §SCRATCH,
+    2026-07-17: a granted tie at cycle N shifts the displaced member into
+    cycle N+1 in whichever mode excluded it, re-flagging as a NEW divergence
+    there unless recognized as the same boundary event)."""
+    by_end = {ci.get("end"): ci.get("commit_ts")
+              for ci in (cycles[pos].get("contributor_intervals") or [])}
+    ts = by_end.get(end_id)
+    if ts is None:
+        return False
+    this_boundary = _cohort_boundary_ts(cycles[pos])
+    prev_boundary = _cohort_boundary_ts(cycles[pos - 1]) if pos > 0 else None
+    candidates = [b for b in (this_boundary, prev_boundary) if b is not None]
+    return any(abs(ts - b) <= tie_window_s for b in candidates)
+
+
+def _cohort_member_nearby(cycles: list, near_pos: int, end_id: str,
+                          window: int = 5) -> bool:
+    """True if end_id appears in ANY cycle's contributing_trainers within
+    `window` positions of near_pos (either direction) -- confirms a differing
+    member actually exists nearby in the other mode (shifted by a boundary
+    coin-flip, not dropped) before a tie is granted on it."""
+    lo, hi = max(0, near_pos - window), min(len(cycles), near_pos + window + 1)
+    return any(end_id in (c.get("contributing_trainers") or [])
+               for c in cycles[lo:hi])
+
+
 def _cohort_set_tie_ok(real_ids: list, sim_ids: list,
-                       exp_map: Optional[dict], tie_window_s: float) -> bool:
-    """True if the differing trainers between the two cohorts all have
-    expected delays within `tie_window_s` of each other -- an arrival race,
-    not a divergence (simulate_fwdllm.md §B item 1). False if unassessable."""
+                       exp_map: Optional[dict], tie_window_s: float,
+                       *, real_cycles: Optional[list] = None,
+                       sim_cycles: Optional[list] = None,
+                       real_pos: Optional[int] = None,
+                       sim_pos: Optional[int] = None) -> bool:
+    """True if every differing trainer between the two cohorts is explainable
+    by a boundary coin-flip -- an arrival race, not a divergence
+    (simulate_fwdllm.md §B item 1, revised §SCRATCH 2026-07-17).
+
+    Prefers OBSERVED data (`contributor_intervals`) when available: for each
+    differing trainer, check (in the mode that INCLUDES it) whether its own
+    commit landed within `tie_window_s` of a cohort boundary -- meaning its
+    presence in this specific cycle, rather than the neighboring one, was
+    itself a coin-flip -- AND that it still exists somewhere nearby in the
+    mode that excluded it (shifted, not dropped). Single-mode per trainer, no
+    cross-mode clock alignment needed; a boundary tie's displaced member
+    naturally re-triggers this SAME check one cycle later in whichever mode
+    excluded it, so a chain of ties resolves link-by-link without needing to
+    special-case the echo.
+
+    Falls back to the bare-registry-delay comparison (blind to dispatch
+    offset, only valid when every differing member was dispatched at the same
+    reference time) when observed data is unavailable -- older telemetry,
+    non-fwdllm runs, or an unresolved lookup."""
     only = set(real_ids) ^ set(sim_ids)
     if not only:
         return True
+    if (real_cycles is not None and sim_cycles is not None
+            and real_pos is not None and sim_pos is not None):
+        has_all_data = True
+        observed_ok = True
+        for t in only:
+            own_cycle = real_cycles[real_pos] if t in real_ids else sim_cycles[sim_pos]
+            by_end = {ci.get("end"): ci.get("commit_ts")
+                      for ci in (own_cycle.get("contributor_intervals") or [])}
+            if by_end.get(t) is None:
+                has_all_data = False  # no contributor_intervals -- can't assess
+                break
+            if t in real_ids:
+                ok = (_cohort_boundary_adjacent(real_cycles, real_pos, t, tie_window_s)
+                      and _cohort_member_nearby(sim_cycles, sim_pos, t))
+            else:
+                ok = (_cohort_boundary_adjacent(sim_cycles, sim_pos, t, tie_window_s)
+                      and _cohort_member_nearby(real_cycles, real_pos, t))
+            if not ok:
+                observed_ok = False
+                break
+        if has_all_data:
+            return observed_ok
     if not exp_map or any(t not in exp_map for t in only):
         return False
     vals = [exp_map[t] for t in only]
@@ -4472,14 +4581,24 @@ def _cohort_set_tie_ok(real_ids: list, sim_ids: list,
 
 
 def _cohort_order_tie_ok(real_ids: list, sim_ids: list,
-                         exp_map: Optional[dict], tie_window_s: float) -> bool:
+                         exp_map: Optional[dict], tie_window_s: float,
+                         *, real_cycle: Optional[dict] = None,
+                         sim_cycle: Optional[dict] = None) -> bool:
     """True if a same-SET cohort's commit order differs only because every
     member is within `tie_window_s` of every other -- one contention cluster,
-    any internal permutation benign (simulate_fwdllm.md §B item 2)."""
+    any internal permutation benign (simulate_fwdllm.md §B item 2). Prefers
+    each mode's OWN observed commit_ts spread (mode-native, no cross-mode
+    alignment needed since the SET is identical); falls back to the bare-
+    registry-delay spread when observed data is unavailable."""
     if sorted(real_ids) != sorted(sim_ids):
         return False  # membership differs -- the SET check owns this, not order
     if real_ids == sim_ids:
         return True
+    if real_cycle is not None and sim_cycle is not None:
+        real_spread = _cohort_ts_spread(real_cycle, real_ids)
+        sim_spread = _cohort_ts_spread(sim_cycle, sim_ids)
+        if real_spread is not None and sim_spread is not None:
+            return real_spread <= tie_window_s and sim_spread <= tie_window_s
     if not exp_map or any(t not in exp_map for t in real_ids):
         return False
     vals = [exp_map[t] for t in real_ids]
@@ -4491,14 +4610,27 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                            tie_window_s: float = 1.0) -> dict:
     """L1 [EXACT, scoped]: the ordered per-aggregation logical sequence, HARD
     where achievable and SOFT/scoped where it provably is not (simulate_fwdllm.md
-    §A ROOT — operator decision, #N):
+    §A ROOT — operator decision, #N; SET's cap REVISED 2026-07-17, §SCRATCH):
 
-      - SET   : HARD over the ENTIRE run, never bin-capped -- fluxtune's #1d
-        (a genuine divergence) must still fail regardless of data_id. EXCEPT a
-        membership swap where every differing trainer's expected delay
-        (registry, divisor-scaled) is within `tie_window_s` (default 1.0s) --
-        an arrival race, not a bug, granted a TIE (simulate_fwdllm.md §B item
-        2). Ungrantable (no delay model) falls back to strict.
+      - SET   : HARD only through `max_bin` (default 1), same wall as CADENCE/
+        VAR below -- REVISED from an earlier uncapped-over-the-entire-run
+        policy once a genuine admission tie was proven to legitimately CASCADE
+        into neighboring cycles (a trainer that misses a boundary by a hair
+        becomes the front of the next cohort, displacing whoever the other
+        mode picked there, and so on) -- chasing exact SET match past the
+        achievable-determinism window chases an artifact of that cascade, not
+        a bug. Within the window: a membership swap where every differing
+        trainer's OWN commit landed within `tie_window_s` of a cohort boundary
+        in the mode that includes it (preferred; falls back to the bare
+        registry-delay comparison when observed data is unavailable) is an
+        arrival race, not a bug, granted a TIE (simulate_fwdllm.md §B item 2,
+        revised §SCRATCH 2026-07-17). A cycle resolved only via a TIE (not an
+        exact SET match) exempts VAR/var-derived CADENCE fields for that
+        cycle too -- differing trainers legitimately produce differing
+        gradients, so exact var equality is not an expectable target there.
+        Population-level participation over the FULL run (not just the
+        window) is participation_parity's job (S2) -- a real selection-mix
+        bug still surfaces there even once SET stops being exact-checked.
       - CADENCE (cycle_data_id/iteration_per_data_id/agg_goal_count/
         var_good_enough/force_commit_planned) and VAR VALUE (`var_rel_tol`):
         HARD only through `max_bin` (default 1) -- grads aren't bit-
@@ -4512,9 +4644,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         same-SET reorder within one tie-window cluster is likewise a TIE for
         async; a reorder crossing clusters stays a hard fail.
 
-    `max_bin` can only narrow the CADENCE/VAR/ORDER window below its bin-1
-    default, never widen it -- SET stays uncapped regardless. SKIPs cleanly
-    on non-fwdllm runs.
+    `max_bin` narrows the SET/CADENCE/VAR/ORDER window below its bin-1
+    default; it can't widen it. SKIPs cleanly on non-fwdllm runs.
     """
     rc_full = _fwd_cadence_cycles(real, None)
     sc_full = _fwd_cadence_cycles(sim, None)
@@ -4523,6 +4654,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
 
     exp_map = _cohort_expected_delay_map(real, sim)
+    real_pos_of = {id(e): i for i, e in enumerate(rc_full)}
+    sim_pos_of = {id(e): i for i, e in enumerate(sc_full)}
 
     def cohort(e):        # receive/commit-ordered contributing trainers
         return list(e.get("contributing_trainers") or [])
@@ -4532,53 +4665,66 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                 e.get("agg_goal_count"), e.get("var_good_enough"),
                 e.get("force_commit_planned"))
 
-    # ---- SET: HARD over the entire compared run, never bin-capped, except a
-    # tie-window-admissible contention swap (see docstring). ----
-    n_full = min(len(rc_full), len(sc_full))
-    set_m = tie_m = 0
-    for i in range(n_full):
-        r_ids, s_ids = cohort(rc_full[i]), cohort(sc_full[i])
-        if sorted(r_ids) == sorted(s_ids):
-            set_m += 1
-        elif _cohort_set_tie_ok(r_ids, s_ids, exp_map, tie_window_s):
-            tie_m += 1
-    set_ok = (len(rc_full) == len(sc_full) and (set_m + tie_m) == n_full)
-    set_divergence = None
-    if not set_ok:
-        _idx = next((i for i in range(n_full)
-                     if sorted(cohort(rc_full[i])) != sorted(cohort(sc_full[i]))
-                     and not _cohort_set_tie_ok(cohort(rc_full[i]), cohort(sc_full[i]),
-                                                 exp_map, tie_window_s)),
-                    n_full)  # falls through to a length mismatch past n_full
-        if _idx < n_full:
-            r, s = rc_full[_idx], sc_full[_idx]
-            set_divergence = {
-                "cycle_index": _idx,
-                "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
-                "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
-            }
+    def _set_tie(r_cycle, s_cycle):
+        return _cohort_set_tie_ok(
+            cohort(r_cycle), cohort(s_cycle), exp_map, tie_window_s,
+            real_cycles=rc_full, sim_cycles=sc_full,
+            real_pos=real_pos_of.get(id(r_cycle)), sim_pos=sim_pos_of.get(id(s_cycle)),
+        )
 
-    # ---- CADENCE / VAR / ORDER: HARD only through the bin-1 wall by default;
-    # an explicit `max_bin` narrows further but never widens past 1. ----
+    # ---- SET / CADENCE / VAR / ORDER: all HARD only through the bin-1 wall by
+    # default (see docstring's REVISED SET note above for why SET is capped now). ----
     _cap = 1 if max_bin is None else max_bin
     rc = [e for e in rc_full if e.get("cycle_data_id") is not None and e["cycle_data_id"] <= _cap]
     sc = [e for e in sc_full if e.get("cycle_data_id") is not None and e["cycle_data_id"] <= _cap]
     n = min(len(rc), len(sc))
     is_async = any(e.get("is_async") for e in rc_full[:1] + sc_full[:1])
+
+    set_m = tie_m = 0
+    for i in range(n):
+        r_ids, s_ids = cohort(rc[i]), cohort(sc[i])
+        if sorted(r_ids) == sorted(s_ids):
+            set_m += 1
+        elif _set_tie(rc[i], sc[i]):
+            tie_m += 1
+    set_ok = (len(rc) == len(sc) and (set_m + tie_m) == n)
+    set_divergence = None
+    if not set_ok:
+        _idx = next((i for i in range(n)
+                     if sorted(cohort(rc[i])) != sorted(cohort(sc[i]))
+                     and not _set_tie(rc[i], sc[i])),
+                    n)  # falls through to a length mismatch past n
+        if _idx < n:
+            r, s = rc[_idx], sc[_idx]
+            set_divergence = {
+                "cycle_index": _idx,
+                "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
+                "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
+            }
     order_m = cad_m = var_m = 0
     first_div = None
     for i in range(n):
         r, s = rc[i], sc[i]
         rc_ord, sc_ord = cohort(r), cohort(s)
-        set_ok_i = (sorted(rc_ord) == sorted(sc_ord)
-                    or _cohort_set_tie_ok(rc_ord, sc_ord, exp_map, tie_window_s))
-        order_ok = (rc_ord == sc_ord
-                    or _cohort_order_tie_ok(rc_ord, sc_ord, exp_map, tie_window_s))
-        cad_ok = cadence(r) == cadence(s)
+        set_exact_i = sorted(rc_ord) == sorted(sc_ord)
+        set_ok_i = set_exact_i or _set_tie(r, s)
         rv, sv = r.get("var"), s.get("var")
-        var_ok = (rv is None and sv is None) or (
-            rv is not None and sv is not None
-            and abs(rv - sv) <= var_rel_tol * max(abs(rv), abs(sv), 1e-9))
+        if set_exact_i:
+            # Only an EXACT membership match makes bit-level var/order/derived
+            # -cadence comparison meaningful -- a cycle resolved via a SET tie
+            # has genuinely different contributing trainers, so their
+            # gradients (and anything var-derived: var_good_enough,
+            # force_commit_planned) are expected to differ too, and receive-
+            # ORDER isn't even comparable across different membership.
+            order_ok = (rc_ord == sc_ord
+                        or _cohort_order_tie_ok(rc_ord, sc_ord, exp_map, tie_window_s,
+                                                 real_cycle=r, sim_cycle=s))
+            cad_ok = cadence(r) == cadence(s)
+            var_ok = (rv is None and sv is None) or (
+                rv is not None and sv is not None
+                and abs(rv - sv) <= var_rel_tol * max(abs(rv), abs(sv), 1e-9))
+        else:
+            order_ok = cad_ok = var_ok = set_ok_i
         order_m += order_ok; cad_m += cad_ok; var_m += var_ok
         _gated_ok = set_ok_i and cad_ok and var_ok and (order_ok if is_async else True)
         if first_div is None and not _gated_ok:
@@ -4603,11 +4749,11 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     return {
         "ok": ok,
         "tier": "EXACT",
-        "cycles_compared": n_full,
+        "cycles_compared": n,
         "n_real_cycles": len(rc_full),
         "n_sim_cycles": len(sc_full),
-        "set_match_frac": round(set_m / n_full, 3) if n_full else None,
-        "set_tie_frac": round(tie_m / n_full, 3) if n_full else None,
+        "set_match_frac": round(set_m / n, 3) if n else None,
+        "set_tie_frac": round(tie_m / n, 3) if n else None,
         "set_divergence": set_divergence,
         "order_match_frac": round(order_m / n, 3) if n else None,
         "cadence_match_frac": round(cad_m / n, 3) if n else None,

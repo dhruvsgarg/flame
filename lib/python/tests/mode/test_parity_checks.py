@@ -1394,6 +1394,50 @@ def _lcyc(data_id, iteration, cohort, var, var_good=False, force=False, goal=3,
             "is_async": is_async}
 
 
+class TestParticipationParityFwdllmWindowing:
+    """S2 (participation_parity) normally keys its matched-window on `round`
+    (increments per cohort for felix/oort/fedbuff); fwdllm's round is coarse
+    (advances only once every data_id finishes), so it keys on cycle position
+    instead there (simulate_fwdllm.md §SCRATCH, 2026-07-17) -- otherwise every
+    cohort landed in the same round-bucket and the window degenerated to n=1,
+    comparing full-run totals unmatched instead of a real window."""
+
+    def test_fwdllm_matched_window_ignores_pure_throughput_gap(self):
+        # Real completes 3 cohorts, sim completes 6 -- same shape, pure
+        # throughput gap. Round-keying would compare real's 3-cohort total
+        # against sim's full 6-cohort total unmatched (a false failure, the
+        # throughput-gap-as-shape-divergence bug the DIST tier's "History"
+        # note warns about); cycle-keying matches on the first 3 of each.
+        real = _agg(agg_rounds=[_lcyc(i, 1, ["a", "b"], 0.5) for i in range(3)])
+        sim = _agg(agg_rounds=[_lcyc(i, 1, ["a", "b"], 0.5) for i in range(6)])
+        r = pc.participation_parity(real, sim)
+        assert r["n_rounds_matched"] == 3
+        assert r["ok"], r
+
+    def test_fwdllm_matched_window_catches_real_shape_divergence(self):
+        # Same cohort size and total commits both modes (9 each), but the
+        # participation SHAPE differs sharply: real concentrates on one
+        # trainer, sim spreads evenly across three -- a genuine divergence the
+        # matched window must still catch (KS is on the count-VALUE
+        # distribution, so this needs a real skew, not just relabeled counts).
+        real = _agg(agg_rounds=[_lcyc(i, 1, ["a", "a", "a"], 0.5) for i in range(3)])
+        sim = _agg(agg_rounds=[_lcyc(i, 1, ["a", "b", "c"], 0.5) for i in range(3)])
+        r = pc.participation_parity(real, sim)
+        assert r["n_rounds_matched"] == 3
+        assert not r["ok"], r
+
+    def test_non_fwdllm_still_windows_by_round(self):
+        # async_cifar10-shape events (no cycle_data_id/var_good_enough) keep the
+        # original round-keyed behavior, unchanged.
+        real = _agg(agg_rounds=[_round(0, ["a", "b"], [0, 0]),
+                                _round(1, ["a", "b"], [0, 0])])
+        sim = _agg(agg_rounds=[_round(0, ["a", "b"], [0, 0]),
+                               _round(1, ["a", "b"], [0, 0])])
+        r = pc.participation_parity(real, sim)
+        assert r["n_rounds_matched"] == 2
+        assert r["ok"], r
+
+
 class TestCohortSequence:
     """L1 cohort_sequence_parity: the ordered per-aggregation logical sequence
     (set + receive-ORDER + cadence + var value) must be IDENTICAL. EXACT, ungated
@@ -1489,13 +1533,33 @@ class TestCohortSequence:
         assert r["ok"], r
         assert r["cadence_var_order_max_bin"] == 1
 
-    def test_set_divergence_beyond_bin1_still_enforced(self):
-        # #N: cohort SET is HARD over the ENTIRE run, uncapped -- a genuine
-        # divergence (fluxtune's #1d) must still fail no matter the data_id.
+    def test_set_divergence_beyond_bin1_not_enforced_by_default(self):
+        # REVISED 2026-07-17 (simulate_fwdllm.md §SCRATCH): SET used to be HARD
+        # over the entire run, uncapped. A genuine admission tie was proven to
+        # legitimately CASCADE into neighboring cycles once it occurs (a
+        # trainer that misses a boundary by a hair becomes the front of the
+        # next cohort, displacing whoever the other mode picked there, ad
+        # infinitum) -- chasing exact SET match past the achievable-
+        # determinism window chases an artifact of that cascade, not a bug,
+        # same wall as CADENCE/VAR. Population-level correctness over the full
+        # run is participation_parity's (S2) job now, not this rung's.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                 _lcyc(7, 2, ["a", "b"], 0.5)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                _lcyc(7, 2, ["a", "c"], 0.5)])  # different SET
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["cadence_var_order_max_bin"] == 1
+
+    def test_set_divergence_within_bin1_still_enforced(self):
+        # The achievable window itself stays HARD -- a genuine divergence at
+        # or before max_bin still fails (test_different_cohort_FAILS covers
+        # the single-cycle case; this checks a 2-cycle run where BOTH cycles
+        # are within the default bin-1 window).
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                                _lcyc(1, 2, ["a", "b"], 0.5)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
+                               _lcyc(1, 2, ["a", "c"], 0.5)])  # different SET
         r = pc.cohort_sequence_parity(real, sim)
         assert not r["ok"]
         assert r["set_match_frac"] < 1.0

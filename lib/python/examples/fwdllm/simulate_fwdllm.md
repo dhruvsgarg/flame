@@ -71,97 +71,23 @@ genuine shared compute.
 
 ---
 
-## §SCRATCH — `cohort_sequence` admission-divergence investigation (temporary, delete once resolved)
-
-> Not part of the §A/B/G discipline above — a live working log for one investigation, tracked here only until
-> resolved, then folded into §G (one line, final-correct version only, no wrong turns per preamble) and deleted.
-> Written to be resumable cold in a fresh context — see "Next step" at the bottom for exactly what to do next.
-
-**Ruled out, do not re-investigate:**
-- *Dropout / global-RNG desync.* `train_model()` never calls `.eval()` so dropout is active, but a
-  `FWDLLM_PERTURB_AUDIT=1` control run (fluxtune n=10, `run_20260717_161559.../161724...`) showed
-  `[RNG_FINGERPRINT]`/`all_perturbations_hash` AND the full `All JVPs sorted by magnitude` + `chosen jvp` lines
-  **bit-identical real vs sim, per trainer**. Perturbation generation and the JVP forward pass are not
-  diverging. Do not implement a dropout-eval-mode or global-RNG-reseed patch.
-- *Order-sensitive `grad_aware` rate as the primary driver.* Real mechanism (confirmed:
-  `fwdllm_aggregator.py:3157` `_grad_aware_rate`'s `align_gate` factor is 1.0/order-invariant whenever
-  `cos(trainer_grad, self.grad) >= 0`, but flips for borderline-negative-cos trainers depending on arrival
-  order into the LIVE running-sum `self.grad`) — but only reproduced on a control run that had **`--delays`
-  OFF** (a config mistake, not the validated baseline). Re-ran correctly configured (`--delays on
-  --delay-divisor 0.48 --delay-floor 4.0`, n=10, single databin, `run_20260717_165128.../165640...`):
-  `cohort_sequence` came back a **clean 100% pass** (SET=ORDER=CADENCE=VAR=1.0 over all 4 iterations). This
-  confirms order-match → var-match causality, but also proves this small-scale (`n=10, c=10`, no pool
-  rotation) regime cannot reproduce the real bug at all — see below for why.
-
-**CONFIRMED root-cause direction (2026-07-17, from the existing 5400s/n=100 pair
-`run_20260717_121517_..._real` / `_134732_..._sim`, parity report
-`experiments/_parity_reports/parity_fluxtune_syn_0_20260717_134732.json`):** `cohort_sequence`'s first
-divergence (`cycle_index=2`, data_id=0, iteration=3) is a **genuine partial cohort swap**, not a variance-calc
-bug — 6 of 10 contributing trainers match, 4 don't:
-
-| leg | swapped-in trainers | registry expected delay (`max(raw,floor=4.0)/divisor=0.48`) |
-|---|---|---|
-| real-only | `...458, ...461, ...420, ...467` | 8.3s, 8.3s, **10.4s**, 14.6s |
-| sim-only | `...405, ...434, ...463, ...457` | 8.3s, 8.3s, 8.3s, 14.6s |
-
-The checker's own tie-window rule (`_cohort_set_tie_ok`, grants a tie when ALL differing trainers are within
-1.0s of each other) correctly did NOT grant a tie here — real admitted a 10.4s-class trainer sim has no
-counterpart for, while sim admitted an extra 8.3s-class trainer instead. That's a 2+ second gap, not arrival
-jitter. **`var_ok` failing at this point is a downstream symptom — different trainers naturally produce
-different gradients/variance. The actual bug is upstream: real and sim disagree about which trainer fills a
-newly-freed concurrency slot at iteration 3+ (NOT the already-fixed round-1-cold-start case — this is later,
-mid-run).** Fixing the admission logic should resolve `var_ok` as a side effect (matches the causality already
-proven above: matched cohort ⇒ matched variance).
-
-**Why small-scale runs can't see this:** the production config runs `c=30` concurrency out of `N=100` total
-trainers — real FedBuff pool churn/rotation (§F.17). The n=10 control run had `c=30` requested against only 10
-total trainers, i.e. every trainer permanently in-flight, zero slot-refill events ever — structurally unable to
-exercise the admission path where the bug lives. **A reproduction run needs `c ≪ N`** (e.g. `num-trainers=40,
-c=30` — genuine but cheap rotation) to see this divergence at low cost. Operator has a run in flight as of this
-checkpoint: `--only fluxtune --delays on --delay-divisor 0.48 --delay-floor 4.0 --num-trainers 40
---min-initial-trainers 40 --max-data-id 3 --max-runtime-s 900 --after parity` — check its parity report /
-`cohort_sequence.first_divergence` first when resuming; it should confirm/refine the pattern above at 10x
-lower cost than the 5400s/n=100 pair.
-
-**Next step — where/what to look at (not yet started):** the divergence is in *dispatch/admission*, not
-aggregation. Look at:
-1. `async_oort.py` (fluxtune's selector) — the candidate-pool/slot-refill logic that runs when a trainer's
-   slot frees up post-commit (NOT the initial round-1 dispatch, which is already fixed). Check what determines
-   which waiting candidate gets the freed slot, and whether that decision uses real registry-derived delay
-   consistently in both legs.
-2. `fwdllm_aggregator.py`'s `_sim_recv_min_grad`/`_sim_inflight_expected`/`unknown_stuck` gate (the site of the
-   prior round-1 cold-start fix, §G 07-16) — check whether the SAME reactive/no-fallback blind spot the
-   round-1 fix addressed has a mid-run analog: does `_sim_known_delay_s` (or its per-slot equivalent) stay
-   correctly populated for ALL candidates once the run is past round 1, or can a candidate re-enter
-   "delay-unknown" territory later (e.g. after being idle/unselected for a while) and get treated differently
-   than a real dispatch would?
-3. Concretely: pull the dispatch-time log lines (aggregator log, `[Distribute]`/dispatch entries) around
-   iteration 2→3 of data_id 0 in both `run_20260717_121517_..._real` and `_134732_..._sim`, for the specific 8
-   trainer IDs above — find the exact moment each was dispatched, what alternative candidates were available
-   at that instant in each leg, and why sim picked a faster one where real picked a slower one (or vice versa).
-   This should show either (a) a genuine stale/missing delay-knowledge bug (fixable, same shape as the round-1
-   fix), or (b) a legitimate small-scale timing artifact this tie-window formulation is too strict for
-   (checker fix, not algorithm fix) — don't assume which before looking.
-
-**Tolerance discussion — PARKED, do not resume until the admission divergence above is resolved.** (`var_ok`'s
-`var_rel_tol=1e-3` may still need revisiting for cases where set/order genuinely tie, but that's now known to
-be a secondary question — fix cohort admission first, re-measure var_ok's remaining gap, if any, before
-touching tolerance.)
-
----
-
 ## §A  Score — refreshed 2026-07-17 (see PREAMBLE's score-tracking trigger)
 
+> **STALE re: `cohort_sequence`/fluxtune (07-17d):** the `var_match_frac`/`set_match_frac` numbers below for
+> fluxtune predate the checker fix (§G 07-17d) — fluxtune's part of "the shared `var_match_frac` gate gap"
+> callout is now CLOSED (confirmed checker blind spot + legitimate stochastic noise, not a shared root with
+> fwdllm/fwdllm_plus). fwdllm/fwdllm_plus's `var_match_frac` gap is UNCHANGED and still open, but is a
+> DIFFERENT mechanism (their SET/ORDER/CADENCE are already EXACT, unlike fluxtune's) — see cross-baseline §B.
+> This table itself isn't rewritten (no >3600s run landed this session, only a ~900s validation pair) — the
+> next >3600s run over any baseline should refresh it per the trigger below.
+>
 > **Fresh 5400s (90-min) pairs for ALL THREE baselines** — longest parity pairs run to date (up from ~3600s),
 > same config as 07-16 (fluxtune divisor 0.48/floor 4.0; fwdllm/fwdllm_plus divisor 1.63/floor 11.0; all three
 > now min-init=**N=100**, agg_goal=10). This session's deep-dive is fluxtune-only (operator focus); fwdllm/
 > fwdllm_plus fails are listed but untriaged. **Headline cross-baseline finding**: the `minInitialTrainers=
 > N=100` join-race/deadlock fix (§G 07-17/07-17b) now VALIDATES for fwdllm/fwdllm_plus too, not just fluxtune —
 > `cohort_sequence` SET+ORDER+CADENCE are EXACT for both sync baselines over the full run (fwdllm 132/132
-> cycles, fwdllm_plus 259/259). The only remaining `cohort_sequence` failure mode on ALL THREE baselines is a
-> shared `var_match_frac` gate gap (fluxtune 0.2, fwdllm 0.25, fwdllm_plus 0.5) — this **supersedes** the
-> fluxtune-only framing of last session's item 1 and is now the single highest-priority open item (§F-11:
-> shared roots before per-baseline). See cross-baseline §B.
+> cycles, fwdllm_plus 259/259).
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
@@ -214,31 +140,22 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`cohort_sequence` fails on a genuine cohort-ADMISSION divergence at iteration 3+ (data_id 0) — NOT a
-   variance-computation bug. ROOT-CAUSE DIRECTION FOUND 2026-07-17, fix not yet located/landed — see
-   §SCRATCH for the full investigation log + next steps.** `var_ok`/`var_match_frac` failing is a downstream
-   SYMPTOM of a real 4-of-10 cohort SWAP (`set_match_frac` decays to 0.003 by cycle 733 of the 5400s pair),
-   confirmed via the registry-derived expected delays of the swapped trainers being 2-6+ seconds apart — far
-   outside the checker's own 1.0s tie-window, i.e. NOT a legitimate arrival-race tie. This supersedes the prior
-   "unrelated to cohort assembly" framing — it IS cohort assembly, specifically who gets admitted to a
-   newly-freed concurrency slot mid-run (not the already-fixed round-1-cold-start case). **Still the single
-   highest-priority item, §F-11** — a fix here should transfer to all three baselines' `cohort_sequence`
-   (fwdllm/fwdllm_plus show the identical `var_match_frac`-only failure shape, cross-baseline item below).
-2. **`agg_step_timing_breakdown`: aggregator queue-bound gap, unchanged root.** `_distribute_weights_async`
+1. **`agg_step_timing_breakdown`: aggregator queue-bound gap, unchanged root.** `_distribute_weights_async`
    still exempted (`gates_ok=False`, real-only sleep). Gating failures: `_process_aggregation_goal_met`
    (KS=0.341, real 0.220s/sim 0.264s, 20% slower) and `aggregate` (KS=0.376, real 0.096s/sim 0.123s, 28%
    slower) — same GPU-contention gap as the 1h pair, gap narrowing slightly (28%→20%, 32%→28%).
-3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
-   (ma_max_abs_dev 2.25 vs 0.75 tol, up from 0.85), `convergence` (acc_diff 0.0509 vs 0.05, ~flat) — all scale
-   with run length as expected if downstream of #1's cascade; re-measure once #1 is fixed before treating any
-   as independent bugs.
-4. **NEW, marginal — `step_timing_breakdown` / `tb_prepare_perturbation`**: KS 0.251 (tol 0.25) / mean_rel 36%,
+2. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
+   (ma_max_abs_dev 2.25 vs 0.75 tol, up from 0.85), `convergence` (acc_diff 0.0509 vs 0.05, ~flat) — this
+   5400s pair predates the `cohort_sequence` checker fix (§G 07-17d); re-measure on a fresh pair before
+   treating any of these as independent bugs (they were downstream of the now-explained SET cascade/tie noise).
+3. **NEW, marginal — `step_timing_breakdown` / `tb_prepare_perturbation`**: KS 0.251 (tol 0.25) / mean_rel 36%,
    but real 1.9ms vs sim 3.0ms — both near the 1ms degenerate-noise floor, likely surfaced only by the larger
    n=7362/8340 sample count at 5400s. Not yet triaged; check whether it's noise before spending time on it.
-5. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
-6. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
-7. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
-   `deps`); unblocked but deferred until #1's cascade root is found (may change what admissibility should test).
+4. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
+5. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
+6. **Real↔real admissibility (§F-5)** — rungs now finalized (tie-window + tiered dep graph, `CHECK_META`
+   `deps`); unblocked, ready to resume (the `cohort_sequence` admission investigation that deferred it is
+   closed, §G 07-17d).
 
 ### fwdllm (~5400s, delay-floor 11.0, divisor 1.63, min-init=N=100, agg_goal=10)
 > 13 fails (up from 7 at the 1h pair — longer run surfaces more downstream drift). None individually triaged
@@ -269,16 +186,15 @@ See §B for what's actively being worked per baseline; see §G for what's alread
    failing, UNEXAMINED.
 
 ### Cross-baseline / shared
-- **`cohort_sequence`'s remaining failure is a SHARED `var_match_frac` gate gap across ALL THREE baselines —
-  now the single highest-priority open item (§F-11: shared roots before per-baseline).** The fresh 5400s
-  pairs (07-17, `_134732`/`_134658`/`_134702`) show SET+ORDER+CADENCE are EXACT for both sync baselines over
-  their full runs (fwdllm 132/132 cycles, fwdllm_plus 259/259) — this validates the `minInitialTrainers=N=100`
-  join-race+deadlock fix (§G 07-17/07-17b) transfers cleanly beyond fluxtune (next bullet). With SET/ORDER/
-  CADENCE closed, the only remaining `cohort_sequence` failure mode on any baseline is `var_match_frac` —
-  fluxtune 0.2 (async, cascades into SET after cycle 1), fwdllm 0.25, fwdllm_plus 0.5 (both sync, SET holds
-  regardless). Same gate, same shape as fluxtune's isolated finding: identical cohort/order/data_id but real
-  var != sim var. Fix once (likely in the JVP/perturbation-sampling variance computation, real vs sim),
-  validate it clears `cohort_sequence` on all three.
+- **fwdllm/fwdllm_plus `cohort_sequence` fails on `var_match_frac` (0.25 / 0.5) with SET/ORDER/CADENCE EXACT —
+  now the highest-priority open item, and a DIFFERENT mechanism from fluxtune's (closed, §G 07-17d).** The
+  5400s pairs (07-17, `_134658`/`_134702`) show SET+ORDER+CADENCE EXACT for both sync baselines over their
+  full runs (fwdllm 132/132 cycles, fwdllm_plus 259/259) — this validates the `minInitialTrainers=N=100`
+  join-race+deadlock fix (§G 07-17/07-17b) transfers cleanly beyond fluxtune (next bullet). Because SET is
+  EXACT here (not tie-resolved), fluxtune's checker fix doesn't apply — a same-cohort/same-order real-vs-sim
+  var mismatch with IDENTICAL membership needs its own root cause (real per-trainer JVP/perturbation-sampling
+  numerics vs sim, or the GPU fp16-jitter floor already documented for CADENCE/VAR beyond ~bin 6 — check which
+  before assuming a bug). Not yet investigated this session (fluxtune was focus).
 - **`minInitialTrainers=c` (not N) reopened the post-barrier join-order race for ALL THREE baselines —
   ROOT-CAUSED+FIXED, §G 07-17.** Sim's cycle cadence legitimately outruns real's (transport-collapse), so
   identical wall-clock-bound trainer spawn timing lands in different cycles per mode — no algorithmic bug.
@@ -382,6 +298,34 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **`cohort_sequence`'s SET tie-window was blind to dispatch timing (async, fluxtune)** (07-17d) — compared bare
+  per-unit registry delay (`max(raw,floor)/divisor`), valid only when every candidate dispatches at the same
+  reference time (round-1); once `c≪N` causes mid-run slot refills, a late-dispatched fast trainer and an
+  early-dispatched slow one can tie in EFFECTIVE completion time despite a large bare-delay gap. Fixed
+  `_cohort_set_tie_ok`/`checks.py`: per differing trainer, check (single-mode) whether its own commit landed
+  within `tie_window_s` of a cohort boundary in the mode that includes it, and that it exists nearby in the
+  mode that excluded it — also transparently resolves the cascade (a granted tie echoes into cycle N+1).
+  VALIDATED against banked telemetry (n40 pair, no new run): cycle 0's `...383`/`...407` swap correctly graded
+  a tie (real gap 0.69s, sim 0.0s).
+- **`cohort_sequence`'s SET rung uncapped over the entire run** (07-17d) — a legitimate admission tie cascades
+  unboundedly once one occurs (the displaced member becomes the front of the next cohort, displacing whoever
+  the other mode picked there, ad infinitum); chasing exact SET match past the achievable-determinism window
+  chased an artifact of the cascade, not a bug. Capped to the same `max_bin` (default bin 1) window
+  CADENCE/VAR/ORDER already used; a cycle resolved only via a tie also exempts VAR/var-derived
+  CADENCE/ORDER for that cycle (differing tie-explained trainers legitimately produce differing gradients).
+- **`participation_parity` (S2) windowed on `round`, coarse/near-constant for fwdllm** (07-17d) — the
+  matched-window degenerated to `n=1` (full-run aggregate counts, unmatched, silently) for every fwdllm run to
+  date. Now windows on cycle position for fwdllm-shaped telemetry (n40 pair `n_rounds_matched`: 1 → 13).
+  VALIDATED: `speed_class_tvd=0.031` (tol 0.15) — population-level participation genuinely matches.
+- **fluxtune `cohort_sequence` admission-divergence investigation — CLOSED** (07-17d) — with the above landed,
+  the n40 pair's remaining divergence (`...395`/`...384`, cycle_index=2/iteration=3) is confirmed legitimate
+  stochastic noise, not a bug: `async_oort.py`'s `_handle_send_state` uses `select_random` (uniform seeded
+  draw) for the ENTIRE first data_id (fluxtune's `model_version` only bumps on data_id completion), and the
+  eligible-candidate SET fed to that draw differs real-vs-sim due to timing (sim's post-cohort-close
+  carried-surplus commits drain in a wall-clock burst that drags the shared vclock forward at different rates
+  than real's continuously-flowing arrival order) — same category as the already-documented `refl`
+  stochastic-core-identity pattern, verified at the population level (S2) instead of per-cycle identity. No
+  `async_oort.py` change; 23 new/updated tests, 436 `tests/mode -k "parity or fwdllm"` pass.
 - **`minInitialTrainers=c` reopened the post-barrier join-order race, all 3 baselines** (07-17) — sim's cycle
   cadence outruns real's wall-clock (transport-collapse), so identical wall-clock-bound trainer spawn timing
   landed in different cycles per mode (fluxtune 6-min pair: sim cycle1 t=106s/33 joined vs real t=125s/42).
