@@ -140,20 +140,23 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator queue-bound gap — GPU-sharing hypothesis TESTED AND REFUTED
-   2026-07-17.** Suspected shared-GPU contention (aggregator co-located with ~5 trainers, denser in sim since
-   trainers never sleep) — dedicated the aggregator's own GPU via `--num-gpus 7` (verified working: aggregator
-   exclusively on GPU 7, trainers confined to 0-6, both legs). Result: NO improvement — `_process_aggregation_
-   goal_met` real/sim went 0.194s/0.273s (shared) → 0.195s/0.295s (dedicated); `aggregate` 0.093s/0.149s →
-   0.096s/0.156s (dedicated GPU sim mean is *higher*, not lower). Real stayed flat both times, as expected.
-   Ruling out device-sharing as the cause — the mechanism (`runner.py:205-219`, dedicate an idle GPU when
-   `num_gpus < visible`) is real and correctly wired, just not the fix for this gap. Falls back to the older
-   §G steer ("Aggregator is queue-bound... 70% busy, serial commits") — likely arrival-DENSITY, not GPU
-   device topology: sim's commits land in much denser wall-clock bursts than real's (confirmed this session
-   for a different investigation — post-cohort-close carried-surplus commits drain ~8 in ~1s), so the
-   aggregator's single-threaded loop faces a thicker backlog per call regardless of which GPU it's on. NOT
-   YET examined from this angle — look at per-call queue depth / inter-arrival timing at the moment
-   `aggregate()`/`_process_aggregation_goal_met` are invoked, not GPU assignment.
+1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing hypothesis TESTED AND REFUTED 2026-07-17;
+   NEW candidate is GC pressure from bursty deepcopy allocation, not yet confirmed (needs live profiling).**
+   Dedicated the aggregator's own GPU via `--num-gpus 7` (verified: aggregator exclusively on GPU 7, trainers
+   confined to 0-6, both legs) — `_process_aggregation_goal_met`/`aggregate` showed NO improvement (sim means
+   flat or slightly higher), ruling out device-sharing. Per-call breakdown (`aggregate` duration vs
+   `cached_v_size`/`grad_pool_size` position, matched real vs sim): the slowdown is NOT a consistent per-call
+   sim penalty — sim's SECOND commit cycle at `cached_v_size=26` tracks real's pace closely (0.065/0.062/0.063s
+   vs real 0.083/0.045/0.048s); it's specifically the FIRST cycle's positions 1 and 3 that spike anomalously
+   (0.196s, 0.326s), and those fall inside the same dense post-cohort-close carried-surplus commit burst
+   already identified this session (~8 commits draining in ~1s of wall time). `aggregate()` does two
+   full-model `copy.deepcopy`s when `var_control=True` caches for a retry (`FedSgdAggregator.py:284-285`,
+   ~267MB+ each) — several landing back-to-back in a burst would spike the allocation rate, plausibly
+   triggering more frequent/expensive Python GC passes for calls caught inside it; real's sleep-staggered
+   arrivals never create that spike. Consistent with all evidence gathered but NOT proven — would need live
+   `gc` stats or a profiler during a run, not derivable from banked logs. Next step if resumed: instrument
+   `gc.collect()` counts/pause time around `aggregate()`, or bucket per-call duration by how many OTHER
+   `aggregate()` calls landed in the preceding 1s window (burst density), real vs sim.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
