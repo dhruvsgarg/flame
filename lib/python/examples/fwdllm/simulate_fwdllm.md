@@ -140,56 +140,42 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
 ### fluxtune (~5400s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10)
-1. **`agg_step_timing_breakdown`: aggregator gap — GPU-sharing, burst-density-GC, and CPU-contention
-   hypotheses all TESTED AND REFUTED; sub-block timers now localize the gap to the untimed FedAvg
-   commit-update loop, not `calculate_var` or the retry-cache deepcopy. Root cause STILL OPEN, next
-   measurement queued.** Refutation trail (5400s pair, 07-17): GPU dedication (`--num-gpus 7`) — no
-   improvement. Burst density of `aggregate()` calls — no correlation, no bursts >2 calls. CPU/scheduler
-   contention (real trainers `time.sleep` their remainder, sim trainers don't) — refuted by splitting
-   `aggregate()` into its two branches via `agg_round.var_good_enough` (emitted on every call, not just
-   commits): the gap holds on BOTH commit and rollback branches (+26-33%), and per-branch regression of
-   `duration_s` on `grad_pool_size` shows the gap is a fixed, pool-size-independent INTERCEPT, not a
-   workload-scaling SLOPE — ruling out sim simply processing bigger pools (`g2_grad_pool_size` already
-   passes, +9% mean, too small to explain it anyway).
-   **`calculate_var` and the retry-cache deepcopy, timed separately 2026-07-17g
-   (`_compute_var`/`_snapshot_retry_cache`), are NOT the fixed-cost source** — confirmed on a fresh
-   n=40/max-data-id=3 smoke pair (`run_20260718_000320`/`_000717`): both track real within ~22-23%, a
-   few ms/call. The residual was heavily branch-skewed — rollback +26% (~2.4ms/call) vs **commit +68%
-   (~93ms/call)** — pointing at the untimed FedAvg weighted-update double-loop inside the commit
-   branches, which was ALSO duplicated verbatim across `var_good_enough`/force-commit; deduplicated +
-   timed as `_apply_weighted_update`.
-   **Direct measurement, second n=40 pair (`run_20260718_002204`/`_002603`) 2026-07-18b:
-   `_apply_weighted_update` explains ~half the commit gap, not all of it.** Real mean 91.0ms/call vs sim
-   125.8ms/call (+38%, ~34.8ms/call) — real, but the residual AFTER subtracting it (`aggregate() −
-   _compute_var − _snapshot_retry_cache − _apply_weighted_update`) still shows commit +31% (real 48.8ms
-   vs sim 63.8ms/call) and rollback +18% (real 9.9ms vs sim 11.6ms/call, unchanged from before — rollback
-   never touches `_apply_weighted_update` at all, so this residual is branch-INDEPENDENT, meaning it lives
-   in the SHARED preamble that runs before the commit/rollback split, not in branch-specific code).
-   **FIXED 2026-07-18b**: extracted that shared preamble (var bookkeeping incl. `self.var.item()`, the
-   plateau-force-commit check, `model_list`/`training_num` accumulation — everything between the
-   `_compute_var()` call and the branch split) into `_prepare_round_state`, and deduplicated +
-   timed the other commit-branch duplicate (`self.last_round_update = [p.clone().detach() for p in
-   weighted_gradient_sum]`) as `_snapshot_last_round_update`. Note `_prepare_round_state` nests
-   `_compute_var` inside its own span (calls it internally) — subtract `_compute_var`'s duration from
-   `_prepare_round_state`'s when attributing, don't double-count.
-   **FULL COVERAGE landed 2026-07-18c** (one pass instead of one-timer-per-run, per operator ask): every
-   remaining substantive block in `aggregate()` is now individually timed, closing what would otherwise
-   have been more rounds of subtraction/guessing. Added `_accumulate_retry_cache` (the `for cached_v in
-   self.cached_v` pool-merge loop) and `_cache_grad_for_retry` (the rollback branch's own
-   `self.cached_v.append(...)`, previously the only untimed rollback-branch code — both were cheap list
-   ops, unlikely culprits, but now measured instead of assumed). Bigger find while sweeping for gaps:
-   `get_global_model_params()` (`FedSgdAggregator.py:176`) is **not a free accessor** — it calls
-   `self.trainer.get_model_params()` → `self.model.cpu().state_dict()`, a real GPU→CPU full-model device
-   transfer, called UNCONDITIONALLY at the tail of every single `aggregate()` call (`old_param =
-   self.get_global_model_params()`, after the branch block) regardless of commit/rollback, plus again
-   inside `_snapshot_retry_cache`'s `var_control` deepcopy. This was completely unaccounted for in every
-   prior measurement in this item and is a strong candidate for the remaining branch-independent
-   residual — decorated it directly with `@timer_decorator` so it shows up under its own name at BOTH
-   call sites. `aggregate()`'s wall time should now be fully accounted for by its sub-block sum (modulo
-   the nesting noted above); if a residual still remains after the next run, it is by elimination the
-   bare `if`/`elif`/`else` dispatch and the un-gated `logger.info` f-string lines, at which point the
-   established §F-19 precedent (INFO-level logs with simple scalar args cost ~nothing in this codebase)
-   should be re-verified rather than assumed.
+1. **`agg_step_timing_breakdown`: aggregator gap — LOCATED, not yet ROOT-CAUSED.** `aggregate()` is now
+   fully sub-decomposed (7 timed sub-blocks, ~91% of its wall time directly attributed, n=40/max-data-id=3
+   pair `run_20260718_003750`/`_004148`); GPU-sharing and pool-size/workload-scaling are refuted as the
+   mechanism, but **every block that DOES carry the gap is plain CPU/memory-bound tensor work** (deepcopy,
+   a weighted-sum loop, tensor clone/detach, `torch.stack`+var) with no mode-dependent branching of its
+   own — which reopens ambient-contention as the explanation, just not the form already tested. Gap
+   attribution (sum over 12 calls, sim 1686.6ms vs real 1204.7ms, total gap 481.9ms / 40.2ms per call):
+   | sub-block | what it is | % of total gap |
+   |---|---|---|
+   | `_snapshot_retry_cache` (own cost) | `copy.deepcopy(model_dict)` + `copy.deepcopy(get_global_model_params())` | 36.7% |
+   | `_apply_weighted_update` | FedAvg weighted-sum double-loop + per-param server update | 25.0% |
+   | `_compute_var` | `calculate_var` (`torch.stack`+mean+var) | 18.3% (single-call outlier in both legs — see below) |
+   | residual (unattributed) | dispatch logic + un-gated `logger.info` lines | 9.2%, concentrated in data_id=0's warmup calls, ~EQUAL real vs sim (not part of the real/sim gap) |
+   | `_snapshot_last_round_update` | `[p.clone().detach() for p in weighted_gradient_sum]` | 7.5% |
+   | `get_global_model_params` (both call sites) | `.cpu().state_dict()` | 3.2%, and BOTH calls measure only ~2ms each — NOT the earlier-suspected big driver, ruled out by direct measurement |
+   | `_prepare_round_state`/`_accumulate_retry_cache`/`_cache_grad_for_retry` | preamble, retry-cache merge, rollback cache-append | ~0% |
+   `_compute_var`'s 18.3% is mostly ONE anomalous call in EACH leg (real 50ms / sim 120ms, both on the
+   same logical position, data_id boundary) against an otherwise flat 4-9ms baseline both sides — an
+   outlier at this sample size (n=12), not a systematic mechanism; re-check at higher n before trusting it.
+   **Self-correction on the CPU-contention hypothesis (refuted 07-17f, reopened 07-18d):** the earlier
+   refutation showed the gap is a pool-size-INDEPENDENT fixed intercept, not a workload-scaling slope, and
+   concluded from that "not contention." That conclusion doesn't follow — ambient contention (other
+   processes competing for CPU/memory bandwidth/GIL) is BY DEFINITION independent of this call's own
+   workload size, so a pool-size-independent intercept is equally consistent with contention as with any
+   other fixed-cost explanation; the regression only ruled out *workload-scaling* contention, not ambient
+   contention generally. However, this run's n=40 doesn't even oversubscribe the host's 96 cores (41
+   processes total), so simple core-count contention (the mechanism assumed for the original 100-trainer/
+   96-core numbers) doesn't apply either — if it's contention at all, it's a subtler form: memory-bandwidth/
+   cache/NUMA pressure from 40 concurrently-running trainer processes (deepcopy of a ~267MB model is
+   memory-bandwidth-bound, not core-bound), or GIL contention from sim-only bookkeeping (vclock/
+   reorder-buffer machinery) running in the SAME process as `aggregate()`, which would explain why ALL
+   CPU-bound sub-blocks are uniformly slower by a similar relative margin regardless of what they compute.
+   **This can't be resolved by more log analysis — every timeable line is now timed.** Next step requires a
+   live tool: `py-spy dump`/`perf` bracketing an `aggregate()` call to see what else is runnable on the
+   process at that moment, or a controlled A/B (`taskset` pinning trainers away from the aggregator's
+   core, or a run with a fraction of the trainers) to test whether the gap shrinks with less ambient load.
 2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected by
    the above.
 3. `v2_var_trajectory` (mean_rel_diff 0.0536 vs 0.02 tol, up from 0.0229 at 1h), `v1b_iters_moving_avg`
