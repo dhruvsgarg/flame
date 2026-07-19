@@ -86,6 +86,8 @@ experiments:
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
           # but keeps the invariant/config identical across all baselines.
           inflight_residence: true
+          # Opt-1 (EXPTS_CHARTER §1) -- see fwdllm_n100_smoke.yaml, MUST match.
+          suppress_redundant_weights: true
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

@@ -85,6 +85,7 @@ class _FakeAggregator:
         pass
 
     process = TopAggregator._process_aggregation_goal_met
+    _replay_buffered_cohort_contribs = TopAggregator._replay_buffered_cohort_contribs
     # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now
     # snapshotted + backgrounded via the shared _eval_snapshot_model. With
     # self.model = None here, the snapshot gracefully fails (caught inside

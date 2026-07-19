@@ -81,6 +81,11 @@ experiments:
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.
           inflight_residence: true
+          # Opt-1 (EXPTS_CHARTER §1) -- matches baselines.yaml canonical config.
+          # fluxtune's async re-pick guard already avoids re-visiting an
+          # in-flight trainer (0/9986 real fetches aborted, simulate_fwdllm.md
+          # §G), so this is expected to be a no-op here; added for consistency.
+          suppress_redundant_weights: true
           # 90s default evicted a genuinely-busy trainer (rounds incl.
           # warmup up to ~108s). Workload knob, not a parity lever; must
           # match sim yaml (§R, 2026-07-11).

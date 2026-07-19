@@ -70,6 +70,12 @@ experiments:
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
           # but keeps the invariant/config identical across all baselines.
           inflight_residence: true
+          # Opt-1 (EXPTS_CHARTER §1, validated 0% redundant/-79% down-bytes):
+          # downgrades a redundant intra-databin re-send to a still-computing
+          # trainer (real-only, num_min_req=1 clamp) to VAR=bad instead of a
+          # full weights re-fetch. Already true in baselines.yaml canonical
+          # config; was missing here (simulate_fwdllm.md P1, 2026-07-19).
+          suppress_redundant_weights: true
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

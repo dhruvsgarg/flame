@@ -74,6 +74,7 @@ class _FakeAggregator:
     """
 
     _process_aggregation_goal_met = TopAggregator._process_aggregation_goal_met
+    _replay_buffered_cohort_contribs = TopAggregator._replay_buffered_cohort_contribs
     # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now snapshotted
     # + backgrounded via the shared _eval_snapshot_model, not called inline.
     _eval_snapshot_model = TopAggregator._eval_snapshot_model

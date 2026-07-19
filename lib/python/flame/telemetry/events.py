@@ -32,6 +32,7 @@ EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a tr
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
+EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the variance gate (DEBUG-only audit)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -53,6 +54,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_STEP_TIMING,
         EVENT_COMM,
         EVENT_VERSION_BUMP_CENSUS,
+        EVENT_VAR_CALC,
     }
 )
 
@@ -231,6 +233,29 @@ def build_step_timing(
         if v is not None:
             fields[k] = v
     return EVENT_STEP_TIMING, fields
+
+
+def build_var_calc(
+    *,
+    round_num: int,
+    data_id: int,
+    iteration: int,
+    input_grad_norms: list[float],
+    output_var: float,
+) -> tuple[str, dict[str, Any]]:
+    """DEBUG-only audit: per-tensor L2 norm of the INPUT `grad_for_var_check_
+    list` feeding `calculate_var`, plus its scalar OUTPUT, one record per
+    `_compute_var` call. Diffable real vs sim to localize a `v2_var_trajectory`
+    divergence to a specific input tensor vs the reduction itself. Gated at
+    the call site (§F-19) -- the norm computation is a GPU->CPU sync.
+    """
+    return EVENT_VAR_CALC, {
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "input_grad_norms": input_grad_norms,
+        "output_var": output_var,
+    }
 
 
 def build_comm(

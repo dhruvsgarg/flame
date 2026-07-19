@@ -1922,24 +1922,13 @@ class TopAggregator(AsyncTopAgg):
         )
 
     @timer_decorator
-    def _process_aggregation_goal_met(self, tag, channel, is_async=False):
-        logger.info(
-            f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation."
-        )
-
-        # Canonicalize this cohort's commit order to (D, trainer_id) before the
-        # telemetry snapshot and aggregate() so the recorded receive order and the
-        # split-half var use the same deterministic order in real and sim. Gated
-        # on commit-key state -> skipped when delays are off (arrival order).
-        if getattr(self, "_commit_key_by_end", None):
-            self._canonicalize_cohort_commit_order()
-
-        # Merge this cohort's buffered contributions into self.grad now, in
-        # the canonical order just established -- not raw arrival order
-        # (P0-1). Must run before telemetry below reads _cycle_grad_norms/
-        # grad_for_var_check_list, both populated here. getattr default: a
-        # caller that pre-populates self.grad itself (e.g. a test double)
-        # never buffers anything, so this is a no-op for it.
+    def _replay_buffered_cohort_contribs(self):
+        """Merge buffered per-trainer contributions into self.grad in canonical
+        order (P0-1). Split out and timed separately so this burst's own wall
+        cost is visible in agg_step_timing_breakdown (simulate_fwdllm.md §B).
+        getattr default: a caller that pre-populates self.grad (e.g. a test
+        double) never buffers anything, so this is a no-op for it.
+        """
         for (
             _pc_grad,
             _pc_version_for_rate,
@@ -1955,6 +1944,30 @@ class TopAggregator(AsyncTopAgg):
                 jvp_for_snr_check=_pc_jvp_for_snr_check,
             )
         self._pending_cohort_contribs = []
+
+    @timer_decorator
+    def _process_aggregation_goal_met(self, tag, channel, is_async=False):
+        logger.info(
+            f"Aggregation goal {self._agg_goal} reached. Performing FwdLLM aggregation."
+        )
+
+        # Canonicalize this cohort's commit order to (D, trainer_id) before the
+        # telemetry snapshot and aggregate() so the recorded receive order and the
+        # split-half var use the same deterministic order in real and sim. Gated
+        # on commit-key state -> skipped when delays are off (arrival order).
+        # Timed inline to sub-phase drain_tail_s (simulate_fwdllm.md §B).
+        _canon_wall_start = time.time()
+        if getattr(self, "_commit_key_by_end", None):
+            self._canonicalize_cohort_commit_order()
+        _drain_tail_canonicalize_s = time.time() - _canon_wall_start
+
+        # Merge this cohort's buffered contributions into self.grad now, in
+        # the canonical order just established -- not raw arrival order
+        # (P0-1). Must run before telemetry below reads _cycle_grad_norms/
+        # grad_for_var_check_list, both populated here.
+        _replay_wall_start = time.time()
+        self._replay_buffered_cohort_contribs()
+        _drain_tail_replay_s = time.time() - _replay_wall_start
 
         # Snapshot for this cycle's agg_round telemetry (emitted further down,
         # after self._per_agg_trainer_list is cleared and self._model_version
@@ -2062,6 +2075,12 @@ class TopAggregator(AsyncTopAgg):
         _lastg = getattr(self, "_last_grad_wall_ts", None)
         _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
+        # drain_tail_s sub-phases: canonicalize + replay are the two known
+        # occupants; residual is everything else in the window.
+        _drain_tail_residual_s = (
+            _drain_tail_s - _drain_tail_canonicalize_s - _drain_tail_replay_s
+            if _drain_tail_s is not None else None
+        )
         _eval_s = None  # permanently None (§6 Part 6): eval is now backgrounded,
         _eval_vclock_s = None  # never measured synchronously on this path anymore.
 
@@ -2379,6 +2398,10 @@ class TopAggregator(AsyncTopAgg):
                         # tail (artifact) + fedavg + eval.
                         "barrier_wait_s": _barrier_wait_s,
                         "drain_tail_s": _drain_tail_s,
+                        # drain_tail_s sub-phases, diagnostic only (not gated).
+                        "drain_tail_canonicalize_s": _drain_tail_canonicalize_s,
+                        "drain_tail_replay_s": _drain_tail_replay_s,
+                        "drain_tail_residual_s": _drain_tail_residual_s,
                         "aggregate_fedavg_s": _aggregate_fedavg_s,
                         # Reorder-buffer health (sim only): last commit's
                         # vclock-vs-sct gap and post-pop buffer depth, plus the

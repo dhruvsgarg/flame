@@ -216,7 +216,29 @@ class FedSGDAggregator(TopAggregator):
     @timer_decorator
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
-        return calculate_var(self.grad_for_var_check_list)
+        result = calculate_var(self.grad_for_var_check_list)
+        # DEBUG-only audit (§B P1, 2026-07-19): input grad norms + output var,
+        # diffable real vs sim to localize a v2_var_trajectory numeric
+        # divergence to a specific input tensor vs the reduction itself.
+        # Gated: .norm().item() is a GPU->CPU sync, not free (§F-19).
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_var_calc
+                    stage = getattr(self, "fwd_llm_stage", None)
+                    norms = [p.detach().norm().item() for p in self.grad_for_var_check_list]
+                    ev, fields = build_var_calc(
+                        round_num=getattr(stage, "round_id", None),
+                        data_id=getattr(stage, "data_id", None),
+                        iteration=getattr(stage, "iteration", None),
+                        input_grad_norms=norms,
+                        output_var=result.item() if hasattr(result, "item") else float(result),
+                    )
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - telemetry must never fault training
+                logger.debug("var_calc telemetry emit failed", exc_info=True)
+        return result
 
     @timer_decorator
     def _snapshot_retry_cache(self):
