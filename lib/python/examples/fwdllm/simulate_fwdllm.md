@@ -73,22 +73,19 @@ genuine shared compute.
 
 ## §A  Score — refreshed 2026-07-18 (see PREAMBLE's score-tracking trigger)
 
-> **fwdllm/syn_0 CRASHED this session, row below is STALE (carried forward, still the 07-17 5400s numbers)** —
-> the real leg died in the first second (aggregator `RuntimeError: No CUDA GPUs are available`, uncaught,
-> `main_fedfwd_agg.py:171`); root-caused + FIXED same session, see §G 07-18k. No fresh fwdllm pair yet —
-> operator should relaunch fwdllm once the other two are triaged.
+> **fwdllm/syn_0 row is STALE** (07-17 5400s numbers, carried forward) — 07-18 relaunch crashed pre-training,
+> root-caused + fixed same session (§G 07-18k), not yet rerun.
 >
-> **Fresh 7200s (2h) pairs for fluxtune/fwdllm_plus** — longest parity pairs run to date (up from 5400s), same
-> config as 07-17 (fluxtune divisor 0.48/floor 4.0; fwdllm_plus divisor 1.63/floor 11.0; both min-init=**N=100**,
-> agg_goal=10). This session's deep-dive is fluxtune-only (operator focus, top priority); fwdllm_plus fails are
-> listed with numbers but untriaged beyond identifying the shared root with fwdllm (see cross-baseline §B).
-> **Headline finding**: fluxtune's `agg_step_timing_breakdown` and `convergence` now both PASS (validates the
-> 07-18j NUMA-isolation + tolerance-widening fix at 2h scale, see §G) — fluxtune is down to 5 fails, all either
-> the known `cohort_sequence` cascade or new/escalated DIST-tier gaps (§B). fwdllm_plus, conversely, got WORSE
-> (8→13 fails) — `overhead_residual`/`per_round_advance` now fail there too, the same real-only `num_min_req=1`
-> clamp mechanism previously only confirmed for fwdllm (§B fwdllm item 2), now shown to be a shared root across
-> BOTH sync baselines that only surfaces once the run is long enough to compound (invisible at 5400s/1.5h,
-> clear by 7200s/2h) — promoted to cross-baseline, now the top open item after fluxtune's cohort cascade.
+> **Post-fix spot-check** (sub-1h triple, HEAD `a1adcea8`, not a score-trigger run): `cohort_sequence` now EXACT
+> 1.0 on every sub-metric for fwdllm and fwdllm_plus — P0-1 confirmed (§G 07-18l/n); re-run at ≥3600s to make it
+> official below. fluxtune's leg in that triple logged a transient `git_info.dirty` at launch — its throughput/
+> round-count deltas there are untrusted noise, not a regression.
+>
+> **fluxtune/fwdllm_plus rows are fresh 7200s (2h) pairs** — longest parity pairs to date. fluxtune down to 5
+> fails (07-18j NUMA-isolation fix validated `agg_step_timing_breakdown`+`convergence` at 2h scale, §G).
+> fwdllm_plus got WORSE (8→13) — the real-only `num_min_req=1` clamp gap (previously fwdllm-only) is now
+> confirmed shared across both sync baselines, only surfacing once a run is long enough to compound (invisible
+> at 5400s, clear by 7200s) — cross-baseline P0-2, top open item after fluxtune's cohort cascade.
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
@@ -151,27 +148,51 @@ This session root-caused two of the table items below to code-level bugs (not ac
 downgraded/confirmed three others via telemetry already on disk — no new runs needed for any of it. Ordered by
 (confirmed-bug > cheap-verification > new-instrumentation > infra):
 
-**P0 — confirmed correctness bugs, fix these first:**
-1. ~~`_apply_weighted_update` order-dependent float summation~~ — **LANDED this session, see §G 07-18l.**
-   Root cause was actually `aggregate_grads_from_trainers`'s per-message `self.grad` accumulation
-   (`fwdllm_aggregator.py`), not `_apply_weighted_update` (dead code path at `worker_num=1`) — corrected during
-   implementation. Also required restructuring fluxtune's `grad_aware` rate path (order-DEPENDENT, not just
-   float noise, since its rate reads the running `self.grad`), not just a `model_list.sort()`. VALIDATE next
-   parity run.
-2. **Sim sync barrier can't do incremental (`num_min_req=1`) collection — root cause of `overhead_residual`/
-   `per_round_advance` (item 5 below).** Bigger, riskier, touches shared barrier plumbing. Design decided below
-   (Shape 1); unblocked now that P0-1's tests pass (P0-1 touched the same aggregator file).
+~~**P0 — sim sync barrier can't do incremental (`num_min_req=1`) collection**~~ — **LANDED (code+tests), see
+§G. NOT YET VALIDATED against a live pair** (P0-1, the grad-merge-order bug, closed separately — §G 07-18l/n).
 
 **P1 — cheap verifications against telemetry already on disk, no new runs, do alongside/before P0:**
 3. Cross-reference `trainer_speed_identity`'s 4 utility outliers against the FULL-run cohort-cascade displaced
    set (item 2 below) — this session only checked the first 5 rounds (partial: 2/4 matched).
 4. Correlate fwdllm_plus's `_apply_weighted_update`/`_compute_var` timing gap with round-boundary contention
-   burstiness (item 4 below) — structural hypothesis identified, not yet measured.
+   burstiness (item 4 below) — structural hypothesis identified, not yet measured. **New data point this
+   session**: fwdllm (not just fwdllm_plus) now shows the identical `agg_step_timing_breakdown` residual shape
+   on the fresh short pair (`_aggregate_grads_sync`/`_apply_weighted_update`/`_compute_var`/`_prepare_round_
+   state`/`_process_aggregation_goal_met`/`aggregate` all fail at 44-87% mean_rel past the 50% tol) — since
+   fwdllm shares fwdllm_plus's `c=agg_goal=10` zero-slack config, this strengthens (doesn't yet prove) the
+   contention-spike hypothesis over a fwdllm_plus-specific cause. **New hypothesis (untested)**: P0-1's fix
+   itself may add a second contributing factor — `_process_single_trainer_message` now only buffers per
+   message (`_pending_cohort_contribs.append`, cheap), deferring ALL of the cohort's `aggregate_grads_from_
+   trainers` tensor-arithmetic to one back-to-back burst in `_process_aggregation_goal_met`, right before
+   `aggregate()`'s own memory-heavy blocks — vs the pre-fix behavior of spreading that work across the round,
+   interleaved between successive `recv_fifo` waits. Total compute is unchanged, but the burst now lands at the
+   same instant as `aggregate()`'s contention-sensitive work, which could compound the gap under investigation
+   here. Check by timing the buffered-replay loop itself (add a timer around the loop in
+   `_process_aggregation_goal_met`, `fwdllm_aggregator.py:1931-1944`) and correlating its wall cost against
+   real vs sim GPU/CPU density at that instant — no new run needed, existing pair has the data once instrumented.
 5. Extend the candidate-set divergence measurement (item 1 below) across the full run and resolve the
    data_id=0 iteration-count mismatch (real 4 iters vs sim 5) it surfaced.
+7. **New, this session**: `v2_var_trajectory` still fails post-P0-1 (fwdllm 11.0% mean_rel vs 2% tol; fwdllm_plus
+   2.51% vs 2%, hairline) — since `var_match_frac` (cohort_sequence's per-cycle variance-decision match) is now
+   exact 1.0, this is NOT simply downstream of the fixed grad-merge-order gap; check whether it's a genuinely
+   separate variance-calc discrepancy or a short-run artifact (re-check at the next ≥3600s pair before treating
+   as independent).
 
 **P2 — new instrumentation + A/B (single baseline, fluxtune):**
-6. `tb_prepare_perturbation` branch-taken + concurrent-trainer-density logging, then A/B (item 3 below).
+6. ~~`tb_prepare_perturbation` branch-taken + concurrent-trainer-density logging, then A/B~~ — **LANDED, NOT
+   YET RUN.** `_stage_timer` (`tc_transformer_trainer_distribute.py`) gained an `extra: dict` param; the
+   `tb_prepare_perturbation` call site now passes `extra={"branch": "cached"|"fresh"}` (same condition the
+   function itself gates on). Concurrent-trainer density needs no new field — derived post-hoc from the
+   EXISTING `trainer_round` `gpu_pass_start_wall`/`gpu_pass_end_wall` windows, same overlap method as
+   `measure_agg_overlap.py` (§G 07-18f). New standalone script `analyze_tb_prepare_perturbation.py`
+   (`expt_scripts/`) prints duration-by-branch and duration-by-concurrency-bucket for one run dir; smoke-tested
+   against the existing 07-18 fluxtune real+sim pair (pre-dates the `branch` field, so that column reads empty,
+   but concurrency already shows a clean gradient: real 1.82ms low-density → 11.0ms high-density, n=15 top
+   bucket; sim similar direction, noisier). Not unit-testable in isolation — `tc_transformer_trainer_distribute.
+   py` requires `transformers`, not installed in `dg_flame`; same constraint applies to all trainer-side code in
+   that file, no existing test imports it either. Validate the `branch` field lands on the next real fluxtune
+   run: `python analyze_tb_prepare_perturbation.py --run <new_run_dir>` should show `branch field present on`
+   count > 0.
 
 **P3 — infra robustness, not parity-blocking (this session's GPU-crash tangent):**
 7. Dynamic GPU health filtering (see below) — `CUDA_DEVICE_ORDER=PCI_BUS_ID` (landed today, `runner.py`) only
@@ -229,17 +250,18 @@ the actual parity bugs above.
    outliers may still be explained by later-run cascade displacement — this session only checked the first 5
    rounds. **If item 1 is resolved (cascade tightened/closed), re-run this cross-reference over the FULL run
    before concluding independence for `0411`/`0429`** (P1-3) — don't assume yet either way.
-3. **`step_timing_breakdown` / `tb_prepare_perturbation` — A/B design decided this session (not yet built)**:
+3. **`step_timing_breakdown` / `tb_prepare_perturbation` — instrumentation LANDED (07-18o), A/B not yet run**:
    KS 0.267 (tol 0.25), mean_rel 45.5%, real 1.8ms vs sim 3.4ms, grew with run length (was KS 0.251 at 1.5h).
    The call (`tc_transformer_trainer_distribute.py:499`) is mode-invariant code with two branches — index a
    cached `v_buffer` vs `torch.randn_like` a fresh one — so a real/sim gap here must be either (a) the same
    GPU-density artifact already accepted for `eval_model` (§G 07-16: sim's continuously-active trainers keep
    GPUs ~3.5× denser than real's paced ones) or (b) sim taking the two branches at a different RATE than real
-   (itself likely downstream of item 1's cadence mismatch). **Plan (P2-6):** add per-call telemetry for (i)
-   which branch was taken and (ii) concurrent-trainer count at call time, both modes; then correlate the ms gap
-   against branch choice and against concurrency density, same method as the aggregator's n15-vs-n40 A/B
-   (§G 07-18f). If density correlates independent of branch: exempt like `eval_model`. If branch-rate explains
-   it: no separate fix, rides item 1.
+   (itself likely downstream of item 1's cadence mismatch). Per-call `branch` telemetry now on the event
+   (`_stage_timer`'s new `extra` param); concurrency derived post-hoc from existing `trainer_round` GPU-pass
+   windows, no new field needed. `analyze_tb_prepare_perturbation.py` (`expt_scripts/`) prints both breakdowns
+   — smoke-tested against the pre-fix 07-18 pair (no `branch` data yet, but concurrency already trends: real
+   1.82ms low-density → 11.0ms high-density). Run it against the next fluxtune pair to get the actual verdict:
+   density correlates independent of branch → exempt like `eval_model`; branch-rate explains it → rides item 1.
 4. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected.
 5. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
 6. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
@@ -247,95 +269,118 @@ the actual parity bugs above.
    `deps`); unblocked, ready to resume (the `cohort_sequence` admission investigation that deferred it is
    closed, §G 07-17d).
 
-### fwdllm (~5400s, delay-floor 11.0, divisor 1.63, min-init=N=100, agg_goal=10) — STALE, relaunch crashed
-> This session's relaunch (`run_20260718_015353_..._real`) died in the aggregator's first second on
-> `RuntimeError: No CUDA GPUs are available`, before any training — root-caused + FIXED, §G 07-18k. No fresh
-> data landed, so the analysis below is carried forward verbatim from the 07-17 5400s pair; re-run before
-> trusting these numbers again.
-1. **`cohort_sequence` — SET/ORDER/CADENCE VALIDATED exact (set_match_frac 1.0 over all 132 cycles,
-   confirms §G 07-17/07-17b's join-race+deadlock fix transfers to the SYNC full-cohort barrier too).** The
-   rung itself still fails, now purely on `var_match_frac=0.25` — same cross-baseline gate gap as fluxtune's
-   old callout; don't re-investigate the join-race here, track the fix in the cross-baseline item.
-2. **`overhead_residual`/`per_round_advance` — root-caused (real-only `num_min_req=1` clamp calls the sync
-   collect path once per LAP, not per cycle), unfixed; needs a compose-loop refactor, risks stranding messages
-   if done blind.** Now CONFIRMED to also affect fwdllm_plus at 2h scale — promoted to cross-baseline top
-   priority (after fluxtune), see cross-baseline §B.
-3. `throughput`, `step_timing_breakdown`, `agg_step_timing_breakdown`, `terminal_state` — failing, UNEXAMINED,
-   likely downstream of #2's compounding gap given the pattern.
-4. `v1_iter_per_data_id`, `v1b_iters_moving_avg`, `v2_var_trajectory`, `v5_variance_pass_ratio`,
-   `g2_grad_pool_size` — UNEXAMINED; check whether they're downstream of #1's `var_match_frac` gap before
-   treating as independent.
+### fwdllm (fresh short pair `run_20260718_154808`/`_161939`, 886s — sub-1h, NOT a score-trigger run)
+> The 07-17 5400s numbers below are gone — a fresh (if short) post-P0-1 pair landed this session and fully
+> supersedes them for the items it touches. 57 pass / 5 fail / 22 skip. Re-run at ≥3600s to make this official
+> in §A and re-check every item below at scale before treating it as closed.
+> `cohort_sequence` `var_match_frac` gap: RESOLVED at this run's scale (P0-1, §G 07-18l/n) — see cross-baseline §B.
+1. `overhead_residual`/`per_round_advance` — **absent at this scale, as expected** (doc already knew this only
+   compounds past ~5400s); root cause unchanged (P0 item 2 above), not re-triaged here.
+2. **`step_timing_breakdown`/`agg_step_timing_breakdown` — EXAMINED this session** (were UNEXAMINED). Trainer
+   side: every fail except `_make_model_functional` is an already-exempted real-only func
+   (`_emulate_training_delay`/`pause_execution`/`_fetch_weights`/`recv_wrapper`/`train_with_data_id`, all
+   `gates_ok=False`); `_make_model_functional` itself is a small, likely GPU-density-contention gap (real
+   35.9ms vs sim 30.3ms, 15.6% rel) — same shape/class as fluxtune's still-open `tb_prepare_perturbation`
+   (§B fluxtune item 3), not independently triaged. Agg side: 6 of 7 functions fail at 44-87% mean_rel past the
+   widened 50% tol — same functions and same magnitude as fwdllm_plus's residual post-fix gap (§B fwdllm_plus
+   item 3); fwdllm sharing `c=agg_goal=10` (zero slack) with fwdllm_plus strengthens that item's
+   contention-spike hypothesis (P1-4). `terminal_state`/`total_commits` fail only by 1 round (15 vs 16, 6.25%
+   vs 5% tol) — almost certainly a small-N artifact of this run's short length (16 real rounds total), not a
+   bug; expect this to clear on its own at ≥3600s.
+3. `v1_iter_per_data_id`, `v1b_iters_moving_avg`, `v5_variance_pass_ratio`, `g2_grad_pool_size` — now PASS on
+   this pair (were failing/UNEXAMINED at 5400s pre-fix) — consistent with P0-1 fixing their upstream driver.
+   `v2_var_trajectory` still fails (11.0% mean_rel vs 2% tol) despite `var_match_frac` now exact — see P1-7,
+   this is NOT simply downstream of the grad-merge-order gap and needs its own look.
 
-### fwdllm_plus (~7200s, delay-floor 11.0, divisor 1.63, min-init=N=100, agg_goal=10)
-> 13 fails (up from 8 at the 1.5h pair — got WORSE, longer run surfaces the shared sync-mode gap). Untriaged
-> beyond identifying the shared root with fwdllm — next session's queue:
-1. **`cohort_sequence` — SET/ORDER/CADENCE still VALIDATED exact (1.0/1.0/1.0 over the compared window).**
-   Rung still fails only on `var_match_frac=0.5` — cross-baseline gate gap, track the fix in the cross-baseline
-   item, not here.
-2. **NEW, major — `overhead_residual`/`per_round_advance` now FAIL** (sim 69.06s/round vs real 58.15s/round,
-   +15.3%): the SAME real-only `num_min_req=1` clamp mechanism previously only confirmed for plain fwdllm
-   (§B fwdllm item 2), now shown to affect fwdllm_plus too once the run is long enough to compound (absent at
-   5400s/1.5h). Promoted to cross-baseline — don't fix per-baseline, see cross-baseline §B.
-3. `throughput` (105 sim vs 108 real rounds), `total_commits` (94 sim vs 108 real, -13%), `terminal_state`,
-   `g2_grad_pool_size`, `v1_iter_per_data_id`, `v1b_iters_moving_avg`, `v2_var_trajectory`, `convergence`
-   (acc_diff 0.0506, hairline) — all downstream symptoms of item 2's rounds-completed gap, not independent
-   bugs; no separate triage needed once item 2 is fixed.
-4. `step_timing_breakdown` — new `_send_grads` fail (KS 0.9, real 0.9ms vs sim 8.5ms, both sub-ms) — likely
-   the same degenerate-noise category as other tiny funcs but not yet gated/exempted. UNEXAMINED.
-5. **`agg_step_timing_breakdown` — CONFIRMED already post-fix, correction to last write-up.** Both this run
-   and fluxtune's share commit `4450e7aa` (verified via `execution_config.yaml`'s `git_info`, both include the
-   NUMA-isolation + dead-deepcopy + 50%-tolerance fixes, §G 07-18g/j) — so this ISN'T "unconfirmed, re-check
-   post-fix" as previously written; it's a genuine RESIDUAL gap that survived the same fix that cleared it for
-   fluxtune. Structural hypothesis (untested, P1-4): fwdllm_plus's sync config has `c=agg_goal=10` (zero slack
-   — every dispatched trainer must complete for the round to close), vs fluxtune's `c=30≫agg_goal=10` (soft
-   pool, only the fastest 10-of-30 needed). A zero-slack barrier round creates a contention SPIKE right at
-   `aggregate()`-call time (all 10 dispatched trainers finish in a tight cluster, no staggering), whereas
-   fluxtune's async pool churns continuously — same NUMA-isolated cores, but a burstier arrival pattern at
-   fwdllm_plus's aggregate() call boundaries. **Next step: correlate `_apply_weighted_update`/`_compute_var`
-   latency against how tightly clustered the 10 contributing trainers' finish timestamps are** (both modes,
-   existing telemetry, no new run) — same shape as the aggregator's n15-vs-n40 A/B (§G 07-18f).
-6. `trainer_speed`/`training_budget` no longer fail (were new at 1.5h) — no action needed.
+### fwdllm_plus (fresh short pair `run_20260718_162558`/`_165734`, 1415s — sub-1h, NOT a score-trigger run)
+> The 7200s numbers below are gone — a fresh (if short) post-P0-1 pair landed this session and fully supersedes
+> them for the items it touches. 59 pass / 4 fail / 21 skip (down from 13 fails at 2h — but not apples-to-apples,
+> this run is 5x shorter, see item 2). Re-run at ≥3600s to make this official in §A.
+> `cohort_sequence` `var_match_frac` gap: RESOLVED at this run's scale (P0-1, §G 07-18l/n) — see cross-baseline §B.
+1. `overhead_residual`/`per_round_advance` and every item-2-downstream symptom from the 2h pair (`throughput`,
+   `total_commits`, `terminal_state`, `g2_grad_pool_size`, `v1_iter_per_data_id`, `v1b_iters_moving_avg`,
+   `convergence`) — **absent at this scale, as expected** (root mechanism only compounds past ~5400s, per the
+   2h finding); unchanged, still open, see cross-baseline §B / P0 item 2.
+2. **`step_timing_breakdown`'s `_send_grads` fail — EXAMINED this session, no longer "likely degenerate
+   noise."** Sim's mean (8.9-9.0ms) is an order of magnitude above the 1ms degenerate-noise floor used
+   elsewhere, so this isn't quantization dither. New hypothesis (replaces the old one): downstream of the SAME
+   P0-2 dispatch-cadence gap as `overhead_residual` — real's continuous per-commit refill dispatches (and
+   sends) far more candidate trainers per round than sim's one-shot batch dispatch, so real racks up many more
+   (cheaper, ~1ms) `_send_grads` calls while sim's fewer calls each do more work relatively. Not independently
+   fixable; rides P0-2 (confirmed via call-count telemetry, see P0-2 item above).
+3. **`agg_step_timing_breakdown` — still a genuine RESIDUAL gap post-fix** (both this run and fluxtune's now-
+   passing pair share the NUMA-isolation + 50%-tolerance fix, §G 07-18g/j, so this survives that fix). Same
+   functions failing as before (`_apply_weighted_update`/`_compute_var`/etc, 51-89% mean_rel). Structural
+   hypothesis (untested, P1-4): `c=agg_goal=10` zero-slack barrier creates a contention SPIKE at `aggregate()`-
+   call time (all 10 dispatched trainers finish in a tight cluster), vs fluxtune's `c=30≫agg_goal=10` soft pool
+   that churns continuously. **Strengthened this session**: fwdllm (also `c=agg_goal=10`) now shows the
+   identical residual shape on its own fresh pair (§B fwdllm item 2) — same config class, same symptom, raises
+   confidence this is config-driven and not fwdllm_plus-specific. Next step unchanged: correlate
+   `_apply_weighted_update`/`_compute_var` latency against how tightly clustered the 10 contributing trainers'
+   finish timestamps are (existing telemetry, no new run needed).
 
 ### Cross-baseline / shared
 
-- **P0-1 — `cohort_sequence` `var_match_frac` gap despite EXACT SET/ORDER/CADENCE — LANDED, see §G 07-18l.**
-  VALIDATE against next parity run for all 3 baselines.
+- **P0-1 — `cohort_sequence` `var_match_frac` gap despite EXACT SET/ORDER/CADENCE — LANDED + VALIDATED, see
+  §G 07-18l/n.** Confirmed on a fresh post-fix triple for fwdllm/fwdllm_plus (the two baselines the gap
+  affected); fluxtune's `cohort_sequence` fail is a different, pre-existing mechanism (SET cascade, §G 07-17d)
+  and was never a `var_match_frac` case. Re-confirm at ≥3600s scale next long run (this validation pair was
+  short, see §A note) before treating as fully closed for the record.
 
-- **P0-2 — `overhead_residual`/`per_round_advance` real-only `num_min_req=1` clamp: FULLY ROOT-CAUSED this
-  session, design decided, not yet implemented.** Precise mechanism (`fwdllm_aggregator.py:2511-2582` +
-  `:3266-3270`): `ends_not_selected_yet` is set `True` whenever a dispatch pass selects `>= agg_goal` candidates
-  (the common/steady-state case, not a rare ramp-up edge case as previously described) — under it, real
-  collects via `channel.recv_fifo(ends, num_min_req=1, timeout=...)` (`channel.py:456`), whose `first_k` param
-  only bounds how many messages ONE generator call yields before returning, not how long it blocks per message —
-  it always streams incrementally regardless of `first_k`. With `first_k=1`, control returns to the OUTER
-  composer loop after EVERY single commit; `_aggregate_grads_sync` early-returns without aggregating
-  (`:2609-2611`) until `_agg_goal_cnt` reaches `agg_goal`, and the composer's outer loop re-invokes
-  `_distribute_weights_sync` (which RE-SELECTS/re-dispatches ends every call, `:3259`) in between — so real
-  continuously refills freed trainer slots after every single collected grad. With `first_k=agg_goal` (sim's
-  only mode), `channel.recv_fifo`/`_sync_sim_recv_first_k` streams a full batch before ever returning control,
-  so sim's composer never gets a chance to interleave re-dispatch until the whole batch lands. **This is the
-  actual mechanism: real pipelines dispatch↔collect at single-commit granularity; sim can only pipeline at
-  whole-batch granularity — a genuine algorithmic gap, not a modeling/tuning gap (§F-12 applies, do not
-  relax tolerance, see the table from last turn).** Sim can't just also drop to `num_min_req=1` today because
-  `_sync_sim_recv_first_k` is a stateless "pick k-smallest-by-modeled-sct from the CURRENT candidate pool, drop
-  the rest" call each time it runs — repeated `k=1` calls would each recompute fresh from whatever's in
-  `channel.ends()` NOW (which changes between calls once interleaved re-dispatch is added), permanently losing
-  track of previously-dispatched-but-uncommitted candidates → deadlock (the exact failure the code comment
-  warns about).
-  **Design decision: give sim's collect path persistent, incrementally-drainable candidate state**, so it can
-  be called with `num_min_req=1` (removing the `and not self.simulated` gate entirely) using the SAME call
-  site and clamp condition as real — not a parallel sim-only mechanism. Concretely: replace
-  `_sync_sim_recv_first_k`'s one-shot "recompute top-k of `channel.ends()` now" with a persistent
-  sorted-by-modeled-sct pending structure, populated as ends are dispatched and only ever drained (never
-  wholesale recomputed/discarded) by however many a given call requests. This is the highest-fidelity option —
-  same code path both modes, not two barrier implementations to keep in sync — but it's a real change to
-  shared vclock/barrier plumbing, so: implement behind existing `tests/mode -k "fwdllm or parity"` coverage,
-  add new tests for the persistent-state drain specifically (never-strand + never-double-commit invariants),
-  and validate against a fresh telemetry-only diff (no full run needed first) before trusting it on a live pair.
-  (A lighter-weight alternative — keep `_sync_sim_recv_first_k` one-shot but have it `yield` its batch one
-  commit at a time so the composer can interleave between yields — was considered and rejected: it doesn't
-  actually fix the underlying "recompute-and-discard" semantics, just changes where control returns, so a
-  later re-dispatch could still race with the batch's own remaining committed-but-not-yet-yielded members.)
+- **P0-2 — `overhead_residual`/`per_round_advance` real-only `num_min_req=1` clamp: root-caused + IMPLEMENTED
+  this session, NOT YET VALIDATED against a live pair.** Mechanism, CORRECTED after operator pushback exposed an
+  imprecise earlier framing (`fwdllm_aggregator.py`): `ends_not_selected_yet` is set `True` whenever a dispatch
+  pass selects `>= agg_goal` candidates; under it real collects via `channel.recv_fifo(ends, num_min_req=1,
+  ...)`, returning control to the composer after EVERY commit. **This is NOT re-selection** — selection is
+  cached per `version_key` (`_select_ends_respecting_reselect_gate:3121-3162`, `_reselect_each_iteration=True`
+  default), so the SAME fixed `agg_goal`-sized cohort persists all cycle; no new/different trainers are ever
+  picked mid-cohort. What actually happens: `_distribute_weights_sync` re-runs against that SAME cached `ends`
+  list, and since `_trainer_last_model_version` is written only on grad-RETURN (not dispatch, `:1753` +
+  comment `:383/392`), a still-computing dispatched-but-not-yet-returned trainer reads as "stale" every re-run
+  and gets the FULL model payload RE-SENT (`_should_send_full_weights:3241-3267`; the redundancy is even
+  self-documented there, and there's an opt-in flag, `_suppress_redundant_weights`, to downgrade it — OFF by
+  default, not set in fwdllm's parity yamls). **Empirically confirmed, not just inferred from code**: on the
+  banked `run_20260718_154808` real pair, 3851/4359 (88%) of trainer `_fetch_weights` calls were aborted
+  duplicates (`grep -c "Fetch weights aborted"`), matching EXACTLY the 3851 near-zero-duration (<1ms) `_send_
+  grads` telemetry samples out of 4259 total (90.4%) — confirming the trainer's own `abort_training` dedup
+  (`fwdllm_trainer.py:303-339`) catches the redundant SEND, but the wasted FETCH (full-model MQTT round trip)
+  still happens first. Once that noise is excluded, real's GENUINE send rate (408/16 rounds ≈ 25.5/round)
+  closely matches sim's OLD one-shot-batch rate (810/33 rounds ≈ 24.5/round) — the two sides' actual training
+  cadence was never far apart; the previously-reported "~10x call-count gap" was ~90% redundant-fetch noise
+  with no sim analog, not ~10x more genuine work. **Fluxtune is NOT exposed**: 0/9986 real `_fetch_weights`
+  calls aborted on its banked pair (`run_20260718_015337`) — its async `_distribute_weights_async` passes
+  `trainer_version_keys=self._trainer_state_dict` into the channel query (`:3571-3577`), and its `c=30≫
+  agg_goal=10` pool rotates through genuinely different candidates as slots free, rather than re-visiting the
+  same still-computing one. Confirmed empirically, not just by selection-code reading.
+  **Fix landed** (mechanism unaffected by the correction above — the fix targets COLLECT granularity, not
+  selection): new fwdllm-scoped method `_sim_sync_recv_incremental` (`fwdllm_aggregator.py`, right before
+  `sync_collect_and_accumulate_grads`) gives sim's collect path a PERSISTENT, instance-level sct-ordered pending
+  buffer (`self._sim_sync_pending`, a `SimReorderBuffer`) — populated once per dispatched end, only ever popped
+  (never wholesale recomputed/discarded), cleared at the agg-goal boundary by `_release_sim_slots_at_agg_goal`
+  alongside the existing sim-state clears. The `and not self.simulated` gate on the `num_min_req` clamp is
+  removed — sim now uses the identical `num_min_req=1` call site and clamp condition as real. Deliberately
+  fwdllm-scoped, NOT a change to shared `top_aggregator.py::_sync_sim_recv_first_k` (§F-6: that method stays
+  byte-identical for its other callers — scaffold/eager_syncfl/coord_syncfl/lifl_coord_syncfl/hybrid, and felix
+  which inherits but never calls it — avoiding the larger, riskier shared-barrier-plumbing edit the design
+  originally considered). 7 new tests (`test_fwdllm_sim_sync_incremental.py`: never-strand, never-double-commit,
+  late-arrival pickup, vclock monotonicity, backward-compat with the old single-call shape, duration stamping);
+  444 `tests/mode -k "fwdllm or parity"` + full 592 `tests/mode` pass (felix/asyncfl untouched, confirmed).
+  **PREDICTED (unverified) side effect, flagged for the next run, not code-fixed pre-emptively (no evidence yet
+  to act on):** since sim's sync selection path lacks fluxtune's `trainer_version_keys` re-pick guard, removing
+  the `num_min_req` gate means sim's `_distribute_weights_sync` will now ALSO re-run against its cached,
+  unchanged cohort between commits — plausibly triggering the SAME redundant-fetch → trainer-`abort_training`
+  pattern in sim for the first time (it never exercised this path before, since sim previously collected its
+  whole cohort in one call with no mid-cohort re-dispatch). Expected effects, all worth checking against the
+  next pair rather than assuming: (a) `step_timing_breakdown`'s `_send_grads` KS-fail may IMPROVE (both sides'
+  distributions become bimodal degenerate-noise + real-work, closer in shape) or may not, depending on whether
+  the proportions match; (b) sim's own wall-clock run duration may increase somewhat (extra channel round trips
+  don't touch the vclock, so shouldn't affect correctness/rung outcomes, but could affect `sim_rate` /
+  absolute wall time) — real already pays this cost, so it's not a new asymmetry, just newly-shared; (c) no
+  deadlock/stall risk expected (the abort path is a fast no-op, doesn't block dispatch or collection) but not
+  proven absent a run.
+  **Not yet run against a live real/sim pair** — do that next, checking `overhead_residual`/`per_round_advance`/
+  `_send_grads`/`agg_step_timing_breakdown` (fwdllm §B item 2-3, fwdllm_plus §B item 2-3) clear, AND the three
+  predicted effects above.
 
 - **`minInitialTrainers=c` (not N) reopened the post-barrier join-order race for ALL THREE baselines —
   ROOT-CAUSED+FIXED, §G 07-17.** Sim's cycle cadence legitimately outruns real's (transport-collapse), so
@@ -440,6 +485,30 @@ the actual parity bugs above.
 
 ## §G  Landed fixes — one line each (problem → fix). Full history: `git log -- lib/python/examples/fwdllm/simulate_fwdllm.md`.
 
+- **P2-6: `tb_prepare_perturbation` had no way to correlate its real/sim ms gap against branch or GPU density**
+  (07-18o) — `_stage_timer` gained an `extra` param (branch now on the event); concurrency derived post-hoc
+  from existing `trainer_round` GPU-pass windows, no new field. `analyze_tb_prepare_perturbation.py`
+  (`expt_scripts/`), same overlap method as `measure_agg_overlap.py`. NOT YET RUN against fresh (post-fix)
+  telemetry.
+- **P0-2: sim sync barrier's one-shot drain-and-discard couldn't do real's incremental `num_min_req=1`
+  collect** (07-18o) — new fwdllm-scoped `_sim_sync_recv_incremental` (persistent per-instance
+  `SimReorderBuffer`, populated once per dispatched end, only ever popped not discarded) replaces
+  `_sync_sim_recv_first_k` at fwdllm's one call site; `and not self.simulated` gate on the `num_min_req` clamp
+  removed. Shared `top_aggregator.py::_sync_sim_recv_first_k` untouched (§F-6: other sync baselines + felix
+  unaffected). 7 new tests + 444 `tests/mode -k "fwdllm or parity"` + full 592 `tests/mode` pass. **NOT YET
+  VALIDATED against a live real/sim pair** — next run should confirm `overhead_residual`/`per_round_advance`/
+  `_send_grads`/`agg_step_timing_breakdown` clear (§B cross-baseline).
+- **Mechanism correction: real's `num_min_req=1` clamp is NOT re-selection, and is real-only-exposed to
+  redundant re-fetch** (07-18o) — selection is cached per version_key (`_select_ends_respecting_reselect_gate`),
+  so the same cohort persists all cycle; the clamp only makes `_distribute_weights_sync` re-run against that
+  SAME cached set, redundantly re-sending to still-computing trainers (`_trainer_last_model_version` updates on
+  RETURN only). Empirically confirmed 3851/4359 (88%) of fwdllm real `_fetch_weights` calls were aborted
+  duplicates on the banked `run_20260718_154808` pair (trainer's own `abort_training` dedup catches the
+  resend, wasted fetch still happens); fluxtune 0/9986 on its own real pair — its async dispatch passes
+  `trainer_version_keys` into the channel query, no re-visit of the same in-flight trainer.
+- **P0-1 canonical grad-merge fix (07-18l) VALIDATED post-fix** (07-18n) — fresh sub-1h fwdllm/fwdllm_plus pair
+  at HEAD `a1adcea8`: `cohort_sequence` `var_match_frac` 0.25/0.5 → exact 1.0 (all sub-metrics) both baselines;
+  fluxtune's separate SET-cascade fail unaffected, as expected. Needs a ≥3600s rerun to officially refresh §A.
 - **A 07-18 fluxtune relaunch missing `--delays` silently ran D=0, collapsing sim throughput
   ~22x (buf_depth pinned near c, sim_rate≈0.045)** (07-18m) — not a code bug (P0-1 unaffected);
   `run_sequential.sh`'s `--delays`/`--delay-divisor`/`--delay-floor` defaulted to global off/base.

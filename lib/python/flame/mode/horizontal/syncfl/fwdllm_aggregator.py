@@ -16,6 +16,7 @@
 """Aysnc and SyncFL horizontal FL top level aggregator for FwdLLM."""
 
 # TODO: Shift is_async param to hyperparameters
+import cloudpickle
 import gc
 import logging
 import psutil
@@ -55,6 +56,7 @@ from flame.mode.horizontal.asyncfl.top_aggregator import (
 from flame.mode.message import MessageType
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.mode.tasklet import Loop, Tasklet
+from flame.sim.virtual_clock import SimReorderBuffer
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
@@ -1257,6 +1259,16 @@ class TopAggregator(AsyncTopAgg):
         """
         if not self.simulated:
             return
+        # P0-2: sync-only incremental-collect state (never touched by the async
+        # path above) -- always safe to clear here, a no-op via getattr when
+        # unset (fluxtune/async never populates these).
+        _sim_sync_pending = getattr(self, "_sim_sync_pending", None)
+        if _sim_sync_pending is not None:
+            _sim_sync_pending.clear()
+        _sim_sync_committed = getattr(self, "_sim_sync_committed", None)
+        if _sim_sync_committed is not None:
+            _sim_sync_committed.clear()
+        self._sim_sync_barrier_durs = []
         if is_async and getattr(self, "_inflight_residence", False):
             self._sim_hold_busy_slots(channel)   # reads buffer/in-flight -> hold before clear
             self._sim_committed.clear()
@@ -2531,6 +2543,97 @@ class TopAggregator(AsyncTopAgg):
         # Centralized cleanup
         # self._force_cuda_memory_cleanup()
 
+    def _sim_sync_recv_incremental(self, channel, ends, num_min_req):
+        """Sim analog of real's incremental `num_min_req` collect (P0-2,
+        simulate_fwdllm.md §B). fwdllm-scoped fork of `_sync_sim_recv_first_k`
+        (§F-6: shared `top_aggregator.py` stays untouched, other sync baselines
+        unaffected) -- differs in exactly one way: `_sync_sim_recv_first_k`
+        drains the WHOLE selected set every call into a LOCAL buffer and drops
+        anything past `first_k`, so it can only ever be called once per cohort.
+        This keeps a PERSISTENT sct-ordered buffer (`self._sim_sync_pending`)
+        across calls -- populated once per dispatched end, only ever drained,
+        never wholesale recomputed/discarded -- so a `num_min_req=1` call
+        returns just the smallest-sct candidate without waiting for or
+        discarding the rest of the cohort, matching real's per-commit refill
+        cadence.
+
+        Cleared at the agg-goal cycle boundary by
+        `_release_sim_slots_at_agg_goal` (never strands a candidate across a
+        rollback); an end already popped this cycle (`self._sim_sync_committed`)
+        is never re-added or double-committed.
+        """
+        pending = getattr(self, "_sim_sync_pending", None)
+        if pending is None:
+            pending = self._sim_sync_pending = SimReorderBuffer()
+        committed_this_cycle = getattr(self, "_sim_sync_committed", None)
+        if committed_this_cycle is None:
+            committed_this_cycle = self._sim_sync_committed = set()
+
+        live = [e for e in ends if channel.has(e)]
+        new_ends = [
+            e for e in live if not pending.has(e) and e not in committed_this_cycle
+        ]
+        if new_ends:
+            timeout = self._sim_recv_timeout_s(new_ends)
+            for msg, md in channel.recv_fifo(new_ends, first_k=len(new_ends), timeout=timeout):
+                if not msg:  # no more ready (bound expired or set drained)
+                    break
+                end = md[0]
+                self._note_sim_known_delay(end, msg)
+                sct = msg.get(MessageType.SIM_COMPLETION_TS)
+                sct = float(sct) if sct is not None else self._vclock.now
+                pending.add(end, sct, (msg, md))
+
+        committed = []
+        while len(committed) < num_min_req:
+            popped = pending.pop_min()
+            if popped is None:
+                break
+            end, sct, (msg, md) = popped
+            if MessageType.WEIGHTS_BYTES in msg:
+                msg[MessageType.WEIGHTS] = cloudpickle.loads(
+                    msg.pop(MessageType.WEIGHTS_BYTES)
+                )
+            # E.1: send-gate — withhold if trainer is UN_AVL at completion.
+            if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
+                continue
+            self._advance_sim_clock(sct)
+            committed_this_cycle.add(end)
+            _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
+            if _srd is not None:
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION,
+                                         timedelta(seconds=float(_srd)))
+            elif _sst is not None:
+                channel.set_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION,
+                                         timedelta(seconds=max(0.0, sct - float(_sst))))
+            logger.info(
+                f"[SIM_SYNC_INCREMENTAL] committed {end[-4:]} sct={sct:.1f} "
+                f"T_v={self._vclock.now:.1f} pending={len(pending)}"
+            )
+            committed.append((msg, md))
+
+        # E.1 / E.2: withheld-delivery bonus -- unchanged mechanism, same
+        # self._sim_buffer as _sync_sim_recv_first_k (separate lifecycle from
+        # the pending-candidate buffer above).
+        self._sim_reinject_ready_withheld()
+        while True:
+            wh = self._sim_buffer.pop_min()
+            if wh is None:
+                break
+            wend, wdts, (wmsg, wmd) = wh
+            if MessageType.WEIGHTS_BYTES in wmsg:
+                wmsg[MessageType.WEIGHTS] = cloudpickle.loads(
+                    wmsg.pop(MessageType.WEIGHTS_BYTES)
+                )
+            _wd = self._sim_take_withheld_delivering(wend)
+            self._advance_sim_clock(wdts)
+            if _wd is not None:
+                self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
+            committed.append((wmsg, wmd))
+
+        return committed
+
     @timer_decorator
     def sync_collect_and_accumulate_grads(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
@@ -2543,10 +2646,12 @@ class TopAggregator(AsyncTopAgg):
         num_min_req = self._agg_goal  # change hardcoding, set it to aggGoal
         logger.info(f"Total ends: {len(recv_ends)}, required : {num_min_req}")
         num_min_req = min(num_min_req, len(recv_ends))
-        # Real-only: "commit 1 per pass" relies on uncommitted msgs persisting in
-        # the queue. The sim barrier drains + drops past first_k, so clamping to 1
-        # strands the cohort -> deadlock (§F #8).
-        if self.ends_not_selected_yet and not self.simulated:
+        # P0-2 (simulate_fwdllm.md §B): sim now mirrors real's incremental
+        # collect exactly -- clamp to 1 whenever a dispatch pass selected >=
+        # agg_goal, in BOTH modes. `_sim_sync_recv_incremental`'s persistent
+        # buffer (unlike the old one-shot `_sync_sim_recv_first_k`) means a
+        # clamped call no longer strands the rest of the cohort.
+        if self.ends_not_selected_yet:
             logger.info(f"We are waiting to clear up queue")
             num_min_req = min(num_min_req, 1)
 
@@ -2559,22 +2664,28 @@ class TopAggregator(AsyncTopAgg):
         # budget until manually killed. Same fix as _aggregate_grads_async.
         #
         # Sim barrier: instead of committing by physical arrival,
-        # _sync_sim_recv_first_k commits the num_min_req trainers with the smallest
-        # modeled sim_completion_ts (the k that would finish first in real),
-        # advancing the vclock to the k-th smallest -- immune to arrival jitter. It
-        # returns an ascending-sct list and stamps PROP_CLIENT_TASK_TRAIN_DURATION
-        # per commit; each is fed through the same per-message path. Real unchanged.
+        # _sim_sync_recv_incremental commits the num_min_req trainers with the
+        # smallest modeled sim_completion_ts (the k that would finish first in
+        # real) out of its PERSISTENT pending pool, advancing the vclock to the
+        # k-th smallest -- immune to arrival jitter, and (P0-2) safe to call
+        # repeatedly with num_min_req=1 across a cohort like real does. Each
+        # commit is fed through the same per-message path. Real unchanged.
         if self.simulated:
-            committed = self._sync_sim_recv_first_k(
+            committed = self._sim_sync_recv_incremental(
                 channel, channel.ends(), num_min_req
             )
-            _barrier_durs = []
+            _barrier_durs = getattr(self, "_sim_sync_barrier_durs", None)
+            if _barrier_durs is None:
+                _barrier_durs = self._sim_sync_barrier_durs = []
             for msg, metadata in committed:
                 end, timestamp = metadata
                 if not msg:
                     continue
                 # dispatch-relative completion for the U6 barrier anchor = the
-                # modeled round duration.
+                # modeled round duration. Accumulated ACROSS calls (P0-2: a
+                # cycle is now assembled over many num_min_req=1 calls, not one
+                # first_k=agg_goal call) so the barrier-anchored lag below still
+                # covers the FULL cohort, not just this call's slice.
                 _barrier_durs.append(
                     msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
                 )

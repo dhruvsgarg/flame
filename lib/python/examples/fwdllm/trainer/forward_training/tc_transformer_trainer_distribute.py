@@ -46,7 +46,7 @@ def _calculate_hash(tensor):
 
 
 @contextlib.contextmanager
-def _stage_timer(owner, name: str):
+def _stage_timer(owner, name: str, extra: dict = None):
     """Emit a `step_timing` record for a named wall phase of the training step.
 
     timer_decorator can't do this: it does `self = args[0]` and only emits when
@@ -55,6 +55,11 @@ def _stage_timer(owner, name: str):
     invisible in telemetry. Same event shape as timer_decorator, so the
     `step_timing_breakdown` rung and the phase-CDF plots read these for free.
     `tb_` prefix keeps the family greppable and collision-free.
+
+    `extra` (simulate_fwdllm.md §B P2-6): optional dict of additional fields
+    merged into the emitted record -- e.g. `tb_prepare_perturbation`'s
+    branch-taken, so the KS-gap investigation can correlate duration against
+    it directly from this one event instead of joining two streams.
     """
     t0 = time.time()
     try:
@@ -72,6 +77,8 @@ def _stage_timer(owner, name: str):
                         round_num=stage.round_id, data_id=stage.data_id,
                         iteration=stage.iteration, trainer_id=stage.trainer_id,
                     )
+                    if extra:
+                        fields.update(extra)
                     telemetry.emit(ev, **fields)
             except Exception:  # pragma: no cover - never break training
                 logging.debug("stage_timer telemetry emit failed", exc_info=True)
@@ -627,7 +634,21 @@ class ForwardTextClassificationTrainer:
             v_params = self.databin_best_v_params
             logging.debug("Using global best, not using a new perturbation.")
         else:
-            with _stage_timer(self, "tb_prepare_perturbation"):
+            # P2-6 (simulate_fwdllm.md §B): same branch condition
+            # _prepare_perturbation_tensors itself gates on -- computed here
+            # (not returned from the function, which has a second, differently
+            # -attributed call site at _select_optimal_perturbations) so the
+            # KS-gap investigation can split real-vs-sim duration by branch.
+            # Concurrent-trainer density is derived post-hoc from the existing
+            # trainer_round gpu_pass_start_wall/end_wall windows (same method
+            # as measure_agg_overlap.py) -- no new field needed for that.
+            _tb_branch = (
+                "cached" if (self.args.perturbation_sampling and v_buffer != {})
+                else "fresh"
+            )
+            with _stage_timer(
+                self, "tb_prepare_perturbation", extra={"branch": _tb_branch},
+            ):
                 v_params = _prepare_perturbation_tensors(device, v_buffer, best_idx)
             # deepcopy of all 104 v_param tensors (~257MB incl. the frozen zeros)
             with _stage_timer(self, "tb_deepcopy_best_v"):
