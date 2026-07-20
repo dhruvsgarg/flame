@@ -166,11 +166,9 @@ recheck unless marked 30min-only.
 
 | Baseline | Rung(s) | Evidence | Read | Hypothesis / root cause | Next step |
 |---|---|---|---|---|---|
-| FW, FW+, FT | `agg_step_timing_breakdown`; `drain_wall_budget` (`drain_tail_s`) | 2 unconditional sync points isolated with their own `step_timing` sub-event: `agg_var_item_sync`, `agg_apply_update_cpu_sync` (`FedSgdAggregator.py`) | Not GIL/thread-scheduling (no such call found) — real CUDA/CPU sync points, unconditional, can't be DEBUG-gated (feed the live commit gate) | Sync cost scales with ambient GPU queue depth — sim's trainer pool never sleeps (denser queue) than real's | LANDED (tests + plot). Needs a live pair: tax IN sync → queue-depth theory holds; tax OUTSIDE it → wrong |
-| FW, FW+ | `per_round_advance` (matched KS) | `r(advance, cadence_cycle_count)=1.00/0.93`; `r(advance, avg_step_timing_per_call)=-0.19/-0.25` (`analyze_per_round_advance_vs_step_timing.py`) | REFUTED: not a vclock-hygiene leak — advance is fully explained by iteration count, NOT per-call duration | Same root as `v1_iter_per_data_id`/`v1b_iters_moving_avg`: iteration-count variance, not a separate mechanism | No fix needed here — track via v1/v1b instead; this rung's residual is downstream of THAT variance |
-| FT | `cohort_sequence` (SET); `v1b_iters_moving_avg`; `convergence` (C1) | Value-level margin detail (`_cohort_margin_detail`): cycles 2-9 excluded candidates sit 0.2x-7x the noise-floor scale from cutoff; cycles 10-11 sit 12x-200x away | REOPENED: excluded candidates are moderately-to-massively WORSE, not near-ties — real-vs-real PATTERN still stands, the near-tie CAUSE doesn't | Cycle 2's moderate gap compounds: once exploration STATE diverges, later cycles pick from fully-diverged utility landscapes (100x+ gap) | Don't promote to gating. Investigate why cycle 2 itself (the seed divergence) has a real, non-tie utility gap |
+| FW, FW+, FT | `agg_step_timing_breakdown`; `drain_wall_budget` (`drain_tail_s`) | 2 unconditional sync points isolated with their own `step_timing` sub-event: `agg_var_item_sync`, `agg_apply_update_cpu_sync` (`FedSgdAggregator.py`) | Not GIL/thread-scheduling (no such call found) — real CUDA/CPU sync points, unconditional, can't be DEBUG-gated (feed the live commit gate) | Sync cost scales with ambient GPU queue depth — sim's trainer pool never sleeps (denser queue) than real's | Needs a live pair: tax IN sync → queue-depth theory holds; tax OUTSIDE it → wrong |
+| FT | `cohort_sequence` (SET); `v1b_iters_moving_avg`; `convergence` (C1) | `selection_train`'s `vclock_now` was ALWAYS None on the sim side (0/19205 events) — every sim-side margin query was silently blind | FIXED (§G): `_distribute_weights_async` never stamped `channel.properties["vclock_now"]`. Real-side margin evidence (0.2x-200x scale) stands on its own, unaffected | Cycle 2's moderate real-side gap compounds via the algorithm's OWN feedback loop (temporal_uncertainty/round_threshold depend on past selections), not coin-flips | Re-run with the vclock fix live: sim-side gate1/gate2 will finally be non-blind, giving the full (not half) picture |
 | FT | `v2_var_trajectory`, `utility` (F1-F3, pooled) | 7200s matched-window: `v2_var_trajectory` mean-rel-diff 12.3%→1.35%; `utility` pooled_ks 0.343→0.153 (both would pass) | Population-length dominates here too, same as FW/FW+ — contradicts the 30min pair's own read, which showed the opposite | Ungated only because fluxtune is async (`real_coord` is None) — an unrelated safeguard, not a decision about index-truncation | Open design question: extend `matched_window_*` to async via index-truncation? Untested under overlap — ask operator, don't decide unilaterally |
-| FT | `preferred_duration` | Real's first-1800s window of the 7200s run: frac_binding=0.575, near-identical to the fresh 30min pair's 0.577 | CONFIRMED regime effect, NOT noise: the 30min pair and the early slice of the long run read identical numbers | Binding rate starts high early in training, decays toward the 7200s-validated gap as `round_threshold` settles — a transient | Don't launch more 30min pairs — they'd reproduce the SAME transient, not converge toward the settled value. Close via §G |
 
 **Other open items (not a failing rung):**
 - FT: `trainer_speed_identity`'s `utility` sub-check reopened on the 7200s run (23/100 >10% dev) but did NOT
@@ -310,6 +308,14 @@ the actual parity bugs above.
 > confirmed/refuted, write ONE terse line below (mechanism + outcome, no narrative) and delete it from §A/§B in
 > the same edit. Full reasoning lives in the commit/code comment, not this doc.
 
+- **fluxtune's `selection_train.vclock_now` was ALWAYS None in sim, FIXED** (07-20 pm-6) —
+  `_distribute_weights_async` never stamped `channel.properties["vclock_now"]` before dispatching, unlike
+  `asyncfl/top_aggregator.py`'s own pattern. `AsyncOortSelector` reads it for its abandon-timeout clock
+  (`_sim_now_s`/`_abandon_clock_now`, fell back to wall `time.time()` in sim) AND to tag every
+  `selection_train` event — silently blinding the sim side of exploration-drift diagnostics (this session's
+  `_cohort_margin_detail`, the existing `_trainer_first_explored_marker`) without affecting the real side.
+  Fixed: `channel.properties["vclock_now"] = self.vclock_now` before `channel.ends()`. 2 new unit tests,
+  571/571 `tests/mode -k "parity or fwdllm"` pass. Not yet validated against a live run.
 - **FT `preferred_duration`'s 30min marginal fail EXPLAINED, not noise** (07-20 pm-5) — real's first-1800s
   window of the ALREADY-BANKED 7200s run reproduces the fresh 30min pair's frac_binding almost exactly (0.575
   vs 0.577): a genuine early-training regime (binding rate starts high, decays as `round_threshold` settles),

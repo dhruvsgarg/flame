@@ -3625,6 +3625,18 @@ class TopAggregator(AsyncTopAgg):
         logger.debug(
             f"Aggregator version_key (model_version, iteration): {self._curr_agg_version}"
         )
+        # AsyncOortSelector reads channel_props["vclock_now"] to stamp its
+        # in-flight abandon-timeout clock (async_oort.py's `_sim_now_s`/
+        # `_abandon_clock_now`) and to tag `selection_train` telemetry -- fwdllm
+        # never set it here, unlike asyncfl/top_aggregator.py's own dispatch
+        # (`channel.properties["vclock_now"] = self._avail_now()`), so it read
+        # None always in sim (fluxtune): the abandon-timeout silently fell back
+        # to wall-clock `time.time()` instead of virtual time, and every
+        # selection_train event's `vclock_now` field was None (simulate_fwdllm.md
+        # §B, 2026-07-20). Only matters for a selector that consumes it
+        # (AsyncOortSelector); harmless no-op for RandomSelector (fwdllm/
+        # fwdllm_plus, sync path).
+        channel.properties["vclock_now"] = self.vclock_now
         ends = channel.ends(
             state=VAL_CH_STATE_SEND,
             task_to_perform=task_to_perform,
