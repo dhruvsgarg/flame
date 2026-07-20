@@ -1654,6 +1654,130 @@ class TestCohortSequenceTieWindow:
         assert r["delay_model_available"] is False
 
 
+def _sel_full(ts=None, vclock_now=None, per_trainer=None, chosen=None):
+    return {"event": "selection", "task": "train", "round": 1,
+            "ts": ts, "vclock_now": vclock_now,
+            "chosen": chosen or [], "per_trainer": per_trainer or {}}
+
+
+def _cyc_with_boundary(data_id, iteration, cohort, var, commit_ts_by_end):
+    """_lcyc plus contributor_intervals (needed for _cohort_boundary_ts) --
+    the LAST entry in `cohort` is the boundary trainer (mirrors real
+    fwdllm telemetry, where the agg-goal-th commit closes the cycle)."""
+    c = _lcyc(data_id, iteration, cohort, var)
+    c["contributor_intervals"] = [
+        {"end": end, "commit_ts": ts} for end, ts in commit_ts_by_end.items()
+    ]
+    return c
+
+
+class TestCohortFirstCommitRaceDiagnostic:
+    """simulate_fwdllm.md §G 2026-07-20 pm-3: `first_commit_race_diagnostic`
+    reports whether a SET divergence is explained by a trainer's first-ever
+    exploring transition racing the cohort boundary (real=raw FIFO jitter,
+    sim=clean sct-order, proven inherent via real<->real fingerprint pairing).
+    Must NEVER affect `ok`/`set_ok`, and must NOT explain away a divergence
+    that isn't actually a near-tie."""
+
+    # A single-cycle cohort list on each side means the differing member
+    # (458 / 405) can't appear "nearby" in the other mode's list at all, so
+    # the EXISTING _cohort_set_tie_ok (_cohort_member_nearby) correctly does
+    # NOT grant a tie here -- set_divergence is populated and this
+    # diagnostic actually runs, same as it would on a genuine multi-cycle run.
+
+    def _scale_event(self):
+        # LATE event (scanned last by _run_utility_rank_gap_scale) with a
+        # clean, evenly-spaced utility distribution -> noise-floor scale=1.0.
+        return _sel_full(ts=200.0, per_trainer={
+            "u1": {"utility": 1.0}, "u2": {"utility": 2.0},
+            "u3": {"utility": 3.0}, "u4": {"utility": 4.0}, "u5": {"utility": 5.0},
+        })
+
+    def test_near_tie_is_explained(self):
+        real = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "458"], 0.5,
+            {"372": 100.0, "373": 101.0, "458": 102.0})],
+            selection=[
+                _sel_full(ts=50.0, per_trainer={
+                    "372": {"utility": 5.0}, "373": {"utility": 4.5},
+                    "405": {"utility": 4.55}, "458": {"utility": None},
+                }),
+                # 458 explores at ts=101.8 -- 0.2s from the boundary (102.0),
+                # well within the default 1.0s tie_window_s.
+                _sel_full(ts=101.8, per_trainer={"458": {"utility": 4.6}}),
+                self._scale_event(),
+            ])
+        sim = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "405"], 0.5,
+            {"372": 100.0, "373": 101.0, "405": 102.0})])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]  # diagnostic must NOT flip this
+        assert r["set_divergence"] is not None
+        diag = r["first_commit_race_diagnostic"]
+        assert diag["applicable"] is True
+        assert diag["gate1_structural_ok"] is True
+        assert "458" in diag["gate1_recent_explore_hits"]
+        assert diag["gate2_margin_ok"] is True
+        assert diag["explained"] is True
+
+    def test_large_margin_is_NOT_explained(self):
+        # Same structural race (458 explores right at the boundary), but its
+        # replacement (405) is nowhere near real's own selection cutoff --
+        # a genuinely worse candidate, not a close call. Must NOT be excused.
+        real = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "458"], 0.5,
+            {"372": 100.0, "373": 101.0, "458": 102.0})],
+            selection=[
+                _sel_full(ts=50.0, per_trainer={
+                    "372": {"utility": 5.0}, "373": {"utility": 4.5},
+                    "405": {"utility": 0.1},   # far below the cutoff (~4.5)
+                    "458": {"utility": None},
+                }),
+                _sel_full(ts=101.8, per_trainer={"458": {"utility": 4.6}}),
+                self._scale_event(),
+            ])
+        sim = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "405"], 0.5,
+            {"372": 100.0, "373": 101.0, "405": 102.0})])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        diag = r["first_commit_race_diagnostic"]
+        assert diag["gate1_structural_ok"] is True   # the race precondition still holds...
+        assert diag["gate2_margin_ok"] is False       # ...but the margin doesn't -> no free pass
+        assert diag["explained"] is False
+
+    def test_stale_exploring_transition_is_NOT_explained(self):
+        # 458 explored LONG before the boundary (not a race at all) -- even
+        # with a small margin, gate 1 alone must block "explained".
+        real = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "458"], 0.5,
+            {"372": 100.0, "373": 101.0, "458": 102.0})],
+            selection=[
+                _sel_full(ts=10.0, per_trainer={
+                    "372": {"utility": 5.0}, "373": {"utility": 4.5},
+                    "405": {"utility": 4.55}, "458": {"utility": 4.6},
+                }),
+                self._scale_event(),
+            ])
+        sim = _agg(agg_rounds=[_cyc_with_boundary(
+            0, 1, ["372", "373", "405"], 0.5,
+            {"372": 100.0, "373": 101.0, "405": 102.0})])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"]
+        diag = r["first_commit_race_diagnostic"]
+        assert diag["gate1_structural_ok"] is False
+        assert diag["explained"] is False
+
+    def test_diagnostic_absent_when_cohorts_match(self):
+        # No set divergence -> the diagnostic isn't computed at all (None),
+        # not a vacuous "applicable": False on a real pass.
+        real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.5)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.5)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"]
+        assert r["first_commit_race_diagnostic"] is None
+
+
 class TestDrainWallBudget:
     """New commit-stage invariant: sim must NEVER cost more wall-clock than
     real at the drain/commit stage -- generalizes the #15 diagnostic (a

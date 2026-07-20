@@ -394,6 +394,9 @@ class TopAggregator(AsyncTopAgg):
         self.grad_pool = []
         self.cached_shared_grad_pool_trainable = None
         self.var = None
+        # Cached scalar of self.var, set in _prepare_round_state (§F-19). None
+        # pre-first-aggregate.
+        self._var_scalar = None
         self.ends_not_selected_yet = False
         self.iteration_per_data_id = 0
 
@@ -550,6 +553,10 @@ class TopAggregator(AsyncTopAgg):
         return
 
     def log_memory(self, tag, device):
+        """Diagnostic only -- was unconditional (§G 07-20 pm-2), paying a
+        syscall + CUDA allocator query on every call regardless of log level."""
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
         # GPU memory
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
@@ -558,7 +565,7 @@ class TopAggregator(AsyncTopAgg):
         process = psutil.Process()
         cpu_memory = process.memory_info().rss  # in bytes
 
-        logging.info(
+        logger.debug(
             f"[MEM:{tag}] "
             f"GPU Allocated: {allocated/1e6:.2f} MB | "
             f"GPU Reserved: {reserved/1e6:.2f} MB | "
@@ -567,6 +574,10 @@ class TopAggregator(AsyncTopAgg):
         )
 
     def print_trainable_params_stats(self, location=""):
+        """Diagnostic only -- was unconditional (§G 07-20 pm-2), iterating
+        every model param on every call regardless of log level."""
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
         total_params = 0
         trainable_params = 0
         total_size = 0.0
@@ -586,7 +597,7 @@ class TopAggregator(AsyncTopAgg):
         fraction = trainable_params / total_params if total_params > 0 else 0
         loc_str = f"[{location}] " if location else ""
 
-        print(
+        logger.debug(
             f"{loc_str}Trainable params: {trainable_params:,} / {total_params:,} "
             f"({fraction:.2%}), Size: {trainable_size:.2f} MB / {total_size:.2f} MB"
         )
@@ -2079,16 +2090,18 @@ class TopAggregator(AsyncTopAgg):
         _eval_vclock_s = None  # never measured synchronously on this path anymore.
 
         _var_thr = getattr(self, "var_threshold", None)
+        # Cached scalar (§F-19); getattr since this can run pre-first-aggregate.
+        _var_val = getattr(self, "_var_scalar", None)
         _ratio = (
-            float(self.var) / _var_thr
-            if (self.var is not None and _var_thr not in (None, 0))
+            _var_val / _var_thr
+            if (_var_val is not None and _var_thr not in (None, 0))
             else None
         )
         logger.info(
             f"[IterProgress] data_id={self.data_id} "
             f"iter={self.iteration_per_data_id} "
             f"max_iter={self._max_iter_per_data_id} "
-            f"var={self.var} var_thr={_var_thr} ratio={_ratio} "
+            f"var={_var_val} var_thr={_var_thr} ratio={_ratio} "
             f"var_good_enough={self.var_good_enough} "
             f"force_commit_planned={_force_commit_planned}"
         )
@@ -2998,8 +3011,8 @@ class TopAggregator(AsyncTopAgg):
             # returned WEIGHTS when var_good_enough=True, so Opt-1 could not
             # downgrade a commit-branch re-send. The message carries the current
             # model_version, so a trainer that cached it just keeps training.
-            logger.info(
-                f"[PreparePayload/VAR=bad] var={self.var} vs "
+            logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                f"[PreparePayload/VAR=bad] var={getattr(self, '_var_scalar', None)} vs "
                 f"thr={self.var_threshold}; payload asks trainer to keep "
                 f"training on current model_version={self._model_version}."
             )
@@ -3013,10 +3026,11 @@ class TopAggregator(AsyncTopAgg):
             }
 
         _var_thr = getattr(self, "var_threshold", None)
+        _var_val = getattr(self, "_var_scalar", None)  # cached float, no extra GPU sync (§F-19)
         _reason = (
-            f"var_good_enough=True (var={self.var} <= thr={_var_thr})"
+            f"var_good_enough=True (var={_var_val} <= thr={_var_thr})"
             if self.var_good_enough
-            else f"force_weights=True (var={self.var}, thr={_var_thr})"
+            else f"force_weights=True (var={_var_val}, thr={_var_thr})"
         )
         logger.info(
             f"[PreparePayload/WEIGHTS] {_reason}; building WEIGHTS payload "
@@ -3492,38 +3506,42 @@ class TopAggregator(AsyncTopAgg):
             # Label/size by the actual payload (send_weights), not var_good_enough:
             # keying off the latter mislabeled a var_good_enough=False is_stale
             # WEIGHTS send as var_bad, undercounting sync weight bytes.
+            # _send_bytes feeds build_comm telemetry below -- always ONE
+            # pickle.dumps(payload) call so the byte count stays level-independent
+            # (§F-19). The per-key breakdown was N extra redundant pickles
+            # unconditionally (§G 07-20 pm-2) -- now DEBUG-gated.
             if send_weights:
                 logger.info(
                     f"sending weights to {end} with model_version: {self._model_version}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
 
-                sizes_mb = {
-                    key.name if hasattr(key, "name") else str(key): len(
-                        pickle.dumps(value)
-                    )
-                    / (1024 * 1024)
-                    for key, value in payload.items()
-                }
-                total_size_mb = sum(sizes_mb.values())
-                _send_bytes = int(round(total_size_mb * 1024 * 1024))
+                _send_bytes = len(pickle.dumps(payload))
                 _payload_kind = "weights"
 
-                logger.info(
-                    f"[DEBUG] Payload size breakdown for {end}: "
-                    + ", ".join([f"{k}: {v:.2f} MB" for k, v in sizes_mb.items()])
-                    + f", Total: {total_size_mb:.2f} MB"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    sizes_mb = {
+                        key.name if hasattr(key, "name") else str(key): len(
+                            pickle.dumps(value)
+                        )
+                        / (1024 * 1024)
+                        for key, value in payload.items()
+                    }
+                    logger.debug(
+                        f"[DEBUG] Payload size breakdown for {end}: "
+                        + ", ".join([f"{k}: {v:.2f} MB" for k, v in sizes_mb.items()])
+                        + f", Total: {_send_bytes / (1024 * 1024):.2f} MB"
+                    )
             else:
                 logger.info(
                     f"sending var = bad to {end} with model_version: {self._model_version}, round: {self._round}, data_id: {self.data_id} for task: {task_to_perform}"
                 )
 
-                msg_bytes = pickle.dumps(payload)
-                _send_bytes = len(msg_bytes)
+                _send_bytes = len(pickle.dumps(payload))
                 _payload_kind = "var_bad"
-                logger.info(
-                    f"[DEBUG] Payload size for {end}: {len(msg_bytes) / (1024 * 1024):.2f} MB"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"[DEBUG] Payload size for {end}: {_send_bytes / (1024 * 1024):.2f} MB"
+                    )
 
             # Network telemetry: one dispatch message onto the wire. Size reuses
             # the value already computed for the debug log above.
@@ -3624,11 +3642,12 @@ class TopAggregator(AsyncTopAgg):
             return
 
         _var_thr = getattr(self, "var_threshold", None)
+        _var_val = getattr(self, "_var_scalar", None)  # cached float, no extra GPU sync (§F-19)
         logger.info(
             f"[Distribute] Starting distribute for model_version={self._model_version}, "
             f"data_id={self.data_id}, iter={self.iteration_per_data_id}, "
             f"task={task_to_perform}, |ends|={len(ends)}, "
-            f"var={self.var}, var_thr={_var_thr}, var_good_enough={self.var_good_enough}. "
+            f"var={_var_val}, var_thr={_var_thr}, var_good_enough={self.var_good_enough}. "
             f"Stale trainers will get WEIGHTS; current trainers will get "
             f"{'WEIGHTS' if self.var_good_enough else 'VAR=bad'}."
         )

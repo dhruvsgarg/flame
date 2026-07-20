@@ -217,13 +217,10 @@ class FedSGDAggregator(TopAggregator):
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
         result = calculate_var(self.grad_for_var_check_list)
-        # v2_var_trajectory audit (§B P1, 2026-07-19 pm): input grad norms +
-        # output var, diffable real vs sim to localize the divergence to a
-        # specific input tensor vs the reduction itself. Elevated DEBUG->INFO
-        # for this investigation only (avoids flipping every other DEBUG log
-        # on for a short run) -- .norm().item() is a GPU->CPU sync, not free
-        # (§F-19), so drop back to DEBUG once v2_var_trajectory is resolved.
-        if logger.isEnabledFor(logging.INFO):
+        # v2_var_trajectory audit: input grad norms + output var, diffable
+        # real vs sim. Back to DEBUG (§G 07-20 pm-2) -- was mistakenly left at
+        # INFO, silently taxing every prod run's _compute_var timing (§F-19).
+        if logger.isEnabledFor(logging.DEBUG):
             try:
                 from flame import telemetry
                 if telemetry.is_enabled():
@@ -301,8 +298,11 @@ class FedSGDAggregator(TopAggregator):
         # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
         # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
         self.var = self._compute_var()
-        self.var_prev_iter_list.append(self.var.item())
-        logger.info(f"self.var = {self.var}")
+        # Cached scalar so downstream logs don't re-sync the GPU tensor just
+        # to print it (§F-19, §G 07-20 pm-2); self.var itself stays a tensor.
+        self._var_scalar = self.var.item()
+        self.var_prev_iter_list.append(self._var_scalar)
+        logger.info(f"self.var = {self._var_scalar}")
         if logger.isEnabledFor(logging.DEBUG):
             var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
             self.snr = calculate_snr(self.jvp_for_snr_check_list)
@@ -415,8 +415,8 @@ class FedSGDAggregator(TopAggregator):
                         f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
                 self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
-                logger.info(
-                    f"[Variance=GOOD] var={self.var} <= thr={self.var_threshold}; "
+                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                    f"[Variance=GOOD] var={self._var_scalar} <= thr={self.var_threshold}; "
                     f"keeping weight update, clearing cached_v."
                 )
                 self.var_good_enough = True
@@ -454,8 +454,8 @@ class FedSGDAggregator(TopAggregator):
                     "plateau" if getattr(self, "_plateau_fired_this_cycle", False)
                     else "cap"
                 )
-                logger.info(
-                    f"[MaxIterBypass] Variance FAILED (var={self.var} > "
+                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                    f"[MaxIterBypass] Variance FAILED (var={self._var_scalar} > "
                     f"thr={self.var_threshold}) but force-commit is set "
                     f"(reason={self._force_commit_reason}); "
                     f"committing weights anyway, clearing cached_v."
@@ -464,8 +464,8 @@ class FedSGDAggregator(TopAggregator):
                 self.cached_v = []
             else:
                 self.var_good_enough = False
-                logger.info(
-                    f"[Variance=BAD] var={self.var} > thr={self.var_threshold}; "
+                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                    f"[Variance=BAD] var={self._var_scalar} > thr={self.var_threshold}; "
                     f"rolling back weights, caching grads for next iteration."
                 )
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v

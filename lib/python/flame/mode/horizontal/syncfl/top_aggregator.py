@@ -1182,10 +1182,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # later trace transitions (UNAVAILABILITY_DESIGN.md's Batch 4 finding
         # 2). Piggyback the final vclock on this broadcast (reaches every
         # connected end regardless of dispatch state) as a last wake-up for
-        # _refresh_avl_state() to flush queued transitions before exit. Gated
-        # on the availability feature (byte-identical broadcast payload when
-        # off); real mode's clock never freezes, so it doesn't need this.
-        if self.simulated and getattr(self, "trainer_event_dict", None) is not None:
+        # _refresh_avl_state() to flush queued transitions before exit.
+        # Unconditional on `simulated` (§G 07-20): the old `trainer_event_dict`
+        # gate left non-avail-trace runs' final task_recv null for no reason.
+        if self.simulated:
             payload[MessageType.SIM_SEND_TS] = self._avail_now()
         channel.broadcast(payload)
         logger.debug("done broadcasting end-of-training")

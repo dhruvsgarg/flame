@@ -952,13 +952,17 @@ class AsyncOortSelector(AbstractSelector):
                 stat_utility, temporal_uncertainty, global_system_utility
             )
 
-            # TODO (GD): Change this back to DEBUG
-            logger.info(
-                f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
-            )
+            # Per-candidate, fires up to `c` times/call -- was left at INFO
+            # despite its own TODO (§G 07-20 pm-2), same class as §G 07-14.
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
+                )
 
-        # Sort the utility list, with the updated utility value
-        return sorted(utility_list, key=lambda x: x[PROP_UTILITY])
+        # Explicit end_id tie-break (§G 07-20 pm-2): pre-sort order is already
+        # canonical (sorted(ends.keys())), so this just makes the existing
+        # stable-sort tie-break explicit instead of incidental.
+        return sorted(utility_list, key=lambda x: (x[PROP_UTILITY], x[PROP_END_ID]))
 
     def _cleanup_provided_ends(
         self, ends_to_cleanup: dict[str, End], ends: dict[str, End]

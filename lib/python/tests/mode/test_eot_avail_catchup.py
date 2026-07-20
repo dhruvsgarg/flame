@@ -6,9 +6,11 @@ frozen `_sim_now()` and so can never catch its `avail_change` telemetry up to
 later trace transitions on its own. `inform_end_of_training`'s existing
 `channel.broadcast(...)` already reaches every connected end regardless of
 dispatch state, so it now piggybacks the aggregator's final `_avail_now()`
-(gated on sim mode + the availability feature being on, so the broadcast
-payload is byte-identical when off) -- one last wake-up letting
-`_refresh_avl_state()` flush any queued transitions before the trainer exits.
+(gated on sim mode alone) -- one last wake-up letting `_refresh_avl_state()`
+flush any queued transitions before the trainer exits. Previously also gated
+on `trainer_event_dict is not None` (the availability feature), which left
+every non-avail-trace sim run's final `task_recv` with a null `sim_send_ts`
+for no reason -- `_avail_now()` is equally cheap either way (§G 07-20 pm-2).
 
 Two halves, mirroring test_agg_start_ts_broadcast.py's structure:
   * aggregator side: inform_end_of_training's broadcast payload.
@@ -77,12 +79,13 @@ class TestInformEndOfTrainingCarriesFinalClock:
         assert ch.broadcasts[0][MessageType.SIM_SEND_TS] == 77.0
         assert ch.broadcasts[0][MessageType.EOT] is True
 
-    def test_sim_mode_gate_off_omits_sim_send_ts(self):
-        """Byte-identical broadcast payload when the availability feature is off."""
-        agg, ch = _make_syncfl_agg(simulated=True, gate_on=False)
+    def test_sim_mode_gate_off_still_carries_sim_send_ts(self):
+        """Availability feature off must not suppress the stamp -- it's a
+        plain vclock read, not conditional on avail-trace state."""
+        agg, ch = _make_syncfl_agg(simulated=True, gate_on=False, vclock_now=77.0)
         agg.inform_end_of_training()
-        assert MessageType.SIM_SEND_TS not in ch.broadcasts[0]
-        assert ch.broadcasts[0] == {MessageType.EOT: True}
+        assert ch.broadcasts[0][MessageType.SIM_SEND_TS] == 77.0
+        assert ch.broadcasts[0][MessageType.EOT] is True
 
     def test_real_mode_omits_sim_send_ts(self):
         """Real mode's clock never freezes -- no catch-up broadcast needed."""

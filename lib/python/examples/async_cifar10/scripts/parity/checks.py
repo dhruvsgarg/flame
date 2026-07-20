@@ -4711,6 +4711,134 @@ def _cohort_order_tie_ok(real_ids: list, sim_ids: list,
     return (max(vals) - min(vals)) <= tie_window_s
 
 
+# ---- First-commit-race diagnostic (simulate_fwdllm.md §B/§G 2026-07-20 pm-3) --
+# DIAGNOSTIC ONLY: reported alongside a SET divergence, does NOT gate `ok`/
+# `set_ok`. Root cause: real commits in raw FIFO arrival order (network/OS
+# jitter, uncorrected); sim commits in clean sct-order by design (no jitter
+# term). Proven via real<->real fingerprint pairing that this is inherent
+# independent-process noise, not a sim defect, confined to a trainer's
+# FIRST-EVER exploring transition (stat_utility None -> a value). Two gates,
+# BOTH required for `explained=True` -- a genuine ranking bug (large margin)
+# still reports False regardless of gate 1.
+
+def _trainer_first_explored_marker(selection_events: list, time_field: str) -> dict:
+    """{end_id: earliest `time_field` at which per_trainer[end_id]'s utility
+    was first observed non-None} -- mode-native units (`ts` for real,
+    `vclock_now` for sim), matching `_cohort_boundary_ts`'s unit for that mode
+    so no cross-mode conversion is needed. Assumes chronological order (true
+    of load_agg_jsonl's `selection_train`)."""
+    out: dict = {}
+    for e in selection_events:
+        t = e.get(time_field)
+        if t is None:
+            continue
+        for end_id, info in (e.get("per_trainer") or {}).items():
+            if end_id in out:
+                continue
+            if info.get("utility") is not None:
+                out[end_id] = t
+    return out
+
+
+def _run_utility_rank_gap_scale(selection_events: list) -> Optional[float]:
+    """This run's own noise floor for 'how close is close': the median
+    adjacent-rank utility gap from the LAST selection event carrying a
+    `per_trainer` breakdown (the most-explored pool available), not a fixed
+    constant -- avoids a threshold that silently loosens over time or that
+    degenerates on the early-run all-unexplored state. None if unavailable."""
+    for e in reversed(selection_events):
+        pt = e.get("per_trainer")
+        if not pt:
+            continue
+        utils = sorted(v["utility"] for v in pt.values() if v.get("utility") is not None)
+        if len(utils) < 2:
+            continue
+        gaps = sorted(b - a for a, b in zip(utils, utils[1:]))
+        mid = len(gaps) // 2
+        return gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) / 2
+    return None
+
+
+def _cohort_margin_ok(chosen_ids: list, excluded_ids: list, sel_events: list,
+                      time_field: str, boundary: Optional[float],
+                      scale: Optional[float]) -> bool:
+    """Single-mode margin check: were the EXCLUDED candidates' utilities (last
+    known in THIS mode, at/before the boundary) within `scale` of this mode's
+    own chosen-cohort minimum? False if any is unknown or the gap exceeds
+    `scale` -- a clearly-better excluded candidate still fails here."""
+    if not scale or boundary is None or not excluded_ids:
+        return False
+    def _last_u(end_id):
+        best = None
+        for e in sel_events:
+            t = e.get(time_field)
+            if t is None or t > boundary + 1e-6:
+                continue
+            u = (e.get("per_trainer") or {}).get(end_id, {}).get("utility")
+            if u is not None:
+                best = u
+        return best
+    chosen_us = [u for u in (_last_u(t) for t in chosen_ids) if u is not None]
+    if not chosen_us:
+        return False
+    cutoff = min(chosen_us)
+    excluded_us = [_last_u(t) for t in excluded_ids]
+    return all(u is not None and abs(u - cutoff) <= scale for u in excluded_us)
+
+
+def _cohort_first_commit_race_diagnostic(
+    real_ids: list, sim_ids: list,
+    real_sel: list, sim_sel: list,
+    real_cycles: list, sim_cycles: list,
+    real_pos: Optional[int], sim_pos: Optional[int],
+    tie_window_s: float,
+) -> dict:
+    """DIAGNOSTIC ONLY -- see module comment above. Returns a report; callers
+    must NOT use `explained` to flip `ok`/`set_ok` until validated against a
+    live run (simulate_fwdllm.md §B)."""
+    only_real = [t for t in real_ids if t not in sim_ids]
+    only_sim = [t for t in sim_ids if t not in real_ids]
+    if not only_real and not only_sim:
+        return {"applicable": False}
+
+    r_boundary = (_cohort_boundary_ts(real_cycles[real_pos])
+                  if real_pos is not None and real_cycles else None)
+    s_boundary = (_cohort_boundary_ts(sim_cycles[sim_pos])
+                  if sim_pos is not None and sim_cycles else None)
+
+    r_explored = _trainer_first_explored_marker(real_sel or [], "ts")
+    s_explored = _trainer_first_explored_marker(sim_sel or [], "vclock_now")
+
+    def _recent(marker, boundary):
+        return (marker is not None and boundary is not None
+                and abs(marker - boundary) <= tie_window_s)
+
+    structural_hits = [t for t in only_real if _recent(r_explored.get(t), r_boundary)]
+    structural_hits += [t for t in only_sim if _recent(s_explored.get(t), s_boundary)]
+    gate1_ok = bool(structural_hits)
+
+    scale = (_run_utility_rank_gap_scale(real_sel or [])
+             or _run_utility_rank_gap_scale(sim_sel or []))
+    real_margin_ok = _cohort_margin_ok(real_ids, only_sim, real_sel or [], "ts",
+                                       r_boundary, scale)
+    sim_margin_ok = _cohort_margin_ok(sim_ids, only_real, sim_sel or [], "vclock_now",
+                                      s_boundary, scale)
+    gate2_ok = real_margin_ok or sim_margin_ok
+
+    return {
+        "applicable": True,
+        "only_real": only_real,
+        "only_sim": only_sim,
+        "gate1_structural_ok": gate1_ok,
+        "gate1_recent_explore_hits": structural_hits,
+        "gate2_margin_ok": gate2_ok,
+        "gate2_real_margin_ok": real_margin_ok,
+        "gate2_sim_margin_ok": sim_margin_ok,
+        "utility_scale": scale,
+        "explained": gate1_ok and gate2_ok,
+    }
+
+
 def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                            var_rel_tol: float = 1e-3,
                            tie_window_s: float = 1.0) -> dict:
@@ -4795,6 +4923,7 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
             tie_m += 1
     set_ok = (len(rc) == len(sc) and (set_m + tie_m) == n)
     set_divergence = None
+    race_diagnostic = None
     if not set_ok:
         _idx = next((i for i in range(n)
                      if sorted(cohort(rc[i])) != sorted(cohort(sc[i]))
@@ -4807,6 +4936,15 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                 "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
                 "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
             }
+            # DIAGNOSTIC ONLY -- does not affect set_ok/ok (simulate_fwdllm.md
+            # §B/§G 2026-07-20 pm-3). Not yet validated against a live run.
+            race_diagnostic = _cohort_first_commit_race_diagnostic(
+                cohort(r), cohort(s),
+                real.get("selection_train"), sim.get("selection_train"),
+                rc_full, sc_full,
+                real_pos_of.get(id(r)), sim_pos_of.get(id(s)),
+                tie_window_s,
+            )
     order_m = cad_m = var_m = 0
     first_div = None
     for i in range(n):
@@ -4861,6 +4999,9 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "set_match_frac": round(set_m / n, 3) if n else None,
         "set_tie_frac": round(tie_m / n, 3) if n else None,
         "set_divergence": set_divergence,
+        # DIAGNOSTIC ONLY (simulate_fwdllm.md §B/§G 2026-07-20 pm-3) -- does
+        # NOT gate `ok`/`set_ok`. None unless set_divergence is present.
+        "first_commit_race_diagnostic": race_diagnostic,
         "order_match_frac": round(order_m / n, 3) if n else None,
         "cadence_match_frac": round(cad_m / n, 3) if n else None,
         "var_match_frac": round(var_m / n, 3) if n else None,

@@ -79,59 +79,66 @@ genuine shared compute.
 
 ---
 
-## §A  Score — refreshed 2026-07-19 (see PREAMBLE's score-tracking trigger)
+## §A  Score — refreshed 2026-07-20 pm (see PREAMBLE's score-tracking trigger)
 
-> **Second data point: fresh 3600s (1h) triple**, independent of the same-day 7200s triple above it in git
-> history — shorter run, same launch script/knobs. This session: (1) root-caused and exempted the agg-side
-> real-only blocking-recv wait (`sync_collect_and_accumulate_grads`/`_aggregate_grads_sync`, real
-> `channel.recv_fifo` block under the `num_min_req=1` clamp vs sim's non-blocking vclock compute) from
-> `agg_step_timing_breakdown` gating — it was the reported `worst_func` at 23-76x real/sim ratio but was never
-> an algorithmic divergence, same class as the already-exempted `_distribute_weights_async` (§G). (2) Added a
-> point-mass guard to the shared `_step_timing_compare` comparator, closing fwdllm's spurious `step_timing_
-> breakdown` fail (`_send_grads`, a sub-millisecond function failing purely on relative-% noise). (3) VALIDATED
-> `suppress_redundant_weights` is working — `audit_weight_redundancy.py` confirms 0% redundant weight-sends on
-> both fwdllm and fwdllm_plus real legs (was ~88-90% before the 07-19 fix). (4) That validation REFUTES the
-> leading hypothesis for fwdllm's `throughput`/`per_round_advance` gap (P1 item 1 below) — the ~2x per-call
-> `_fetch_weights` cost vs fwdllm_plus persists even at 0% redundancy, so it isn't the resend mechanism; new
-> cause unknown. (5) `agg_step_timing_breakdown`'s GPU-density-contention hypothesis is REFUTED for all 3
-> baselines this session (`analyze_agg_step_timing_density.py`: fwdllm/fwdllm_plus sim show ZERO measured
-> trainer-GPU-pass overlap at every failing call, yet the gap persists; fluxtune's own concurrency-vs-duration
-> correlation runs BACKWARDS — higher bucketed concurrency measures FASTER, not slower). (6) fluxtune's
-> iters-per-data_id mismatch reconfirmed stable on this independent run (68% vs the prior run's 67%).
+> **Third data point: fresh 7200s (2h) triple**, same launch script/knobs as the two prior sessions, first run
+> at this scale since 07-18. This session: (1) `agg_step_timing_breakdown`'s thread-local `time.thread_time()`
+> cpu/wall diagnostic (landed 07-20 am, previously unexercised) finally has a real signal, cross-baseline: real
+> cpu/wall ≈0.90-1.00 (thread busy ~the whole window) vs sim ≈0.82-0.89 for every residual function, on ALL 3
+> baselines — reopens contention as a candidate via a DIFFERENT mechanism (thread scheduling, not the
+> already-refuted GPU-pass-window overlap) — see the §B tracker table. (2) fluxtune's `pacer()` once-per-round
+> fix (§G, 07-20 am) VALIDATED live: `preferred_duration` passes (frac_diff 0.152 vs 0.2 tol). (3) fwdllm_plus's
+> `throughput`/`per_round_advance` 1h marginal fails CONFIRMED as sample-size variance, not a regression — both
+> pass clean at 2h (4.9%/matched 0.5%). (4) fwdllm's `throughput` now PASSES clean for the first time (matched-
+> window gate holds at 2h scale, 4.9%/matched 0.5%; `per_round_advance`'s KS sub-check still fails, see the §B
+> tracker table). (5) Two NEW fluxtune fails at this scale: `sim_send_ts` and `trainer_speed_identity`'s `utility`
+> component (23/100 trainers >10% deviation, previously closed 07-19 as non-reproducing — now reproduces).
+> (6) fwdllm's `v2_var_trajectory` regresses (9.93% vs 2% tol, was passing at 1.4% at 1h scale). **Follow-up
+> same day (pm-2)**: root-caused 3 of these from telemetry already on disk and landed 2 fixes (§G) —
+> `sim_send_ts` was the EOT/shutdown broadcast omitting the stamp by design when avail-tracking is off, not a
+> mid-run gap; FIXED (stamped unconditionally now), 591/591 `tests/mode` pass. `var_calc`'s DEBUG telemetry was
+> also mis-gated at INFO since 07-19, silently taxing `_compute_var`'s own measured time in every run; FIXED.
+> fwdllm/fwdllm_plus's `v2_var_trajectory` is the SAME sim-outruns-real population artifact as `overhead_
+> residual`/`throughput`, not a separate mystery (`var_calc` shows 0 mismatches on every shared call); fluxtune's
+> tie-cascade "confirmed legitimate" framing (§G 07-17d) does NOT hold on this run's own tie-check
+> (`set_tie_frac=0.0`) — reopened. See the §B tracker table for the full breakdown.
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
 | baseline | run pair | duration | pass | fail | skip |
 |---|---|---|---|---|---|
-| fluxtune/syn_0 | `run_20260719_104043`/`_114252` (delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10) | ~3600s | 62 | 5 | 18 |
-| fwdllm/syn_0 | `run_20260719_104123`/`_114259` (delay-floor 11.0, divisor 1.63, min-init=N=100, agg_goal=10) | ~3600s | 59 | 3 | 22 |
-| fwdllm_plus/syn_0 | `run_20260719_115153`/`_125341` (delay-floor 11.0, divisor 1.63, min-init=N=100, agg_goal=10) | ~3600s | 59 | 4 | 21 |
+| fluxtune/syn_0 | `run_20260720_014454`/`_034713` (delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10) | ~7200s | 61 | 6 | 18 |
+| fwdllm/syn_0 | `run_20260720_014507`/`_034623` (delay-floor 7.0, divisor 1.63, min-init=N=100, agg_goal=10) | ~7200s | 57 | 5 | 22 |
+| fwdllm_plus/syn_0 | `run_20260720_014523`/`_034736` (delay-floor 7.0, divisor 1.63, min-init=N=100, agg_goal=10) | ~7200s | 60 | 3 | 21 |
 
 **Key-rung status** (✓ pass · ✗ fail · – skip; catalog: `async_cifar10/PARITY.md` §F):
 
 | baseline | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | fluxtune | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| fwdllm | ✓ | ✓ | ✗ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| fwdllm_plus | ✓ | ✓ | ✗ | ✓ | ✓ | – | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| fwdllm | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| fwdllm_plus | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 
 **All failing rungs, this run:**
-- **fluxtune** (5, was 6 — `tb_prepare_perturbation` exemption landed and held, see §G): `cohort_sequence` SET
-  cascade at the same cycle_index=2, same 4/10-member divergence signature as every prior session (full
-  determinism reconfirmed a 3rd time — not a bug, §F-17). `v1b_iters_moving_avg`/`v2_var_trajectory` still fail,
-  downstream of the reconfirmed 68% iters-per-data_id mismatch (§B). `agg_step_timing_breakdown` still fails
-  (`_compute_var`/`_prepare_round_state` — contention hypothesis now refuted, cause open). `drain_wall_budget`'s
-  `drain_tail_s` still fails, but is NOT independent — same root as `agg_step_timing_breakdown`'s
-  `_replay_buffered_cohort_contribs` gap (§G, consolidated this session).
-- **fwdllm** (3, was 4 pre-fix this session): `step_timing_breakdown` now PASSES (point-mass guard, §G).
-  `per_round_advance`/`throughput` still fail (~8.3% sim-over-real, CONFIRMED STABLE vs the prior run's 11% —
-  same direction, same rough magnitude, not noise). `agg_step_timing_breakdown` still fails (real-only wait now
-  exempted, §G; genuine residual — `_compute_var`/`_apply_weighted_update`/`_prepare_round_state`/etc — remains,
-  contention hypothesis refuted, cause open).
-- **fwdllm_plus** (4, was 2 in the prior 7200s run): `throughput` (5.4% vs 5% tol) and `v2_var_trajectory`
-  (3.6% vs 2% tol) newly fail, both MARGINALLY — likely 1h-vs-2h sample-size variance, not a regression (§B),
-  needs a longer run to confirm either way. `drain_wall_budget`/`agg_step_timing_breakdown` unchanged, same
-  consolidated root as fluxtune's.
+- **fluxtune** (6, was 5 — `agg_step_timing_breakdown` flips fail→pass for the first time this session, but
+  TWO new fails open it back up): `cohort_sequence` SET cascade at the same cycle_index=2, same signature as
+  every prior session (4th confirmation, not a bug, §F-17). `v1b_iters_moving_avg`/`v2_var_trajectory` still
+  fail, downstream of the SET cascade. `drain_wall_budget`'s `drain_tail_s` still fails even though
+  `agg_step_timing_breakdown` (its presumed same-root sibling) now passes — the coupling is looser than
+  assumed. **NEW**: `trainer_speed_identity`'s `utility` component reopens (23/100 trainers >10% dev, closed
+  07-19 as non-reproducing). **NEW→FIXED**: `sim_send_ts` failed on this run (EOT broadcast omitting the stamp
+  by design); root-caused and fixed same day, §G — should read clean on the next run.
+- **fwdllm** (5, was 3 pre-session): `throughput` now PASSES clean (matched-window gate, first clean pass).
+  `per_round_advance`'s matched-window KS still fails, now at n=65 (no longer small-N; ratios still ~1.0, mean
+  diff 0.5%) — see §B table. **NEW**: `overhead_residual` crosses its own un-gated tol (12.8% vs 10%) — same
+  raw population-mismatch artifact as `per_round_advance`/`throughput`, not independent. **NEW**:
+  `v2_var_trajectory` regresses (9.93% vs 2%, was passing 1.4% at 1h) — ROOT-CAUSED same day, same population
+  artifact (`var_calc` 0 mismatches on shared calls). `agg_step_timing_breakdown`/`drain_wall_budget` residual
+  persists — new cpu/wall signal, confounded by a `var_calc` instrumentation-cost artifact, see §B table.
+- **fwdllm_plus** (3, was 4 at 1h scale): `throughput`/`per_round_advance`'s 1h marginal fails are CONFIRMED
+  sample-size variance — both pass clean at 2h. `agg_step_timing_breakdown`/`drain_wall_budget` residual
+  persists, same cpu/wall signal as fwdllm/fluxtune. `v2_var_trajectory` stays marginal (3.2% vs 2% tol),
+  stable across both scales.
 
 See §B for what's actively being worked per baseline; see §G for what's already closed.
 
@@ -139,34 +146,27 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 
 ## §B  Next steps / open issues — per baseline, as of the §A runs above
 
-### Priority plan — refreshed 2026-07-20 am (see PREAMBLE: bullets updated in place, ≤75 words each)
+### Failing-rung tracker — refreshed 2026-07-20 pm-2 (rows combined across baselines when issue + hypothesis match)
 
-1. **`per_round_advance` matched-window gate (fwdllm) fails on a small-N KS artifact.** `throughput` fully
-   LANDED (§G) — `matched_window_*` now gates `ok` for sync baselines (`real_coord is not None`), validated
-   clean on both fwdllm+fwdllm_plus, both scales. Added a matching `matched_window_ks_stat` for
-   `per_round_advance` (same AND-semantics as the raw gate) — fwdllm_plus flips clean, but fwdllm still fails
-   (KS 0.24-0.29 vs 0.2 tol) DESPITE near-perfect ratios (median 1.00-1.003, max 1.02-1.34) and tiny mean diff
-   (0.5-1.7%) — looks like small-sample KS noise (fwdllm's matched windows are 7-33 rounds vs fwdllm_plus's
-   12-55), not a real divergence. NOT loosened without understanding why first (§F-13) — open.
-2. **`agg_step_timing_breakdown` residual still OPEN — cpu/wall diagnostic fixed, needs a fresh run.**
-   Contention REFUTED (zero measured overlap, gap persists). The `cpu_duration_s` diagnostic was confounded —
-   `time.process_time()` is process-wide, picked up the backgrounded eval daemon thread (9/10 top-cpu outliers
-   coincided with an active eval window; ~7-8x on BOTH real and sim symmetrically, not a real/sim signal).
-   FIXED 07-20: `timer_decorator` now uses `time.thread_time()` (thread-local). Landed, not yet exercised on a
-   live run — the next pair will finally give a usable cpu/wall signal for this residual.
-3. **`v2_var_trajectory`**: fwdllm PASSES. fwdllm_plus/fluxtune remain marginal fails (2.9-5.4% vs 2% tol) —
-   plausible short-run sample noise, unconfirmed. `var_calc` DEBUG telemetry available if needed to dig
-   further; not currently enabled.
-4. **`tb_accumulate_grads`**: flagged once (07-19), did not reproduce next run. Noise unless it recurs.
-5. **fluxtune `pacer()` once-per-round fix LANDED 07-20 am, needs live validation** (mechanism + fix in §G).
-   202/202 selector, 451/451 fwdllm+mode, 118/118 async_cifar10-parity tests pass (shared class with felix,
-   both scopes checked). Confirm on next fluxtune run: `round_threshold` no longer bursts 10→100 in seconds,
-   `preferred_duration`'s frac_diff tightens at short-run scale. Re-validate felix's own parity too (shared
-   blast radius, out of this session's scope).
+Run pairs: FT `run_20260720_014454`/`_034713`, FW `run_20260720_014507`/`_034623`,
+FW+ `run_20260720_014523`/`_034736` (all ~7200s). One row per open failing rung (or combined cluster); ≤20
+words/cell. Ordered by next-step readiness (trivial fix → needs one more diagnostic → genuinely open).
+Cross-cutting principles this feeds into: §F-13 (no un-rooted tolerance loosening), §F-16 (contention claims
+need measurement, not guessing).
+
+| Baseline | Rung(s) | Evidence | Read | Hypothesis / root cause | Next step |
+|---|---|---|---|---|---|
+| FW, FW+, FT | `agg_step_timing_breakdown`; `drain_wall_budget` (`drain_tail_s`) | real cpu/wall 0.90-1.00, sim 0.82-0.89; sim concurrency to 17 vs real 5-6; `_compute_var` is one of the flagged funcs | Sim threads idle more per wall-window despite 0 GPU-pass overlap | Thread-scheduling/GIL pressure from sim's denser thread pool (plausible, unconfirmed) — `_compute_var`'s own measured time was ALSO contaminated by a mis-gated `var_calc` GPU-sync, fixed 07-20 pm-2 (§G) | Re-run the cpu/wall density script on a clean pair (post `var_calc` fix) before drawing further conclusions |
+| FW, FW+ | `per_round_advance` (matched KS); `overhead_residual`; `v2_var_trajectory` | matched n=65 KS=0.231; real/sim per-round advances stack in 5 discrete tiers, sim ~0.15s wider + right-skewed per tier; `var_calc` shows 0 mismatches on ALL shared (round,data_id,iter) keys, sim's extra unmatched calls average higher | Shape gap within matched rounds, not a magnitude gap; `v2_var_trajectory` is the SAME sim-outruns-real population effect as `overhead_residual`/`throughput`, not a separate mystery | `overhead_residual`/`v2_var_trajectory` root-caused: un-gated siblings of the already-fixed `throughput`/`per_round_advance` pattern. Residual KS gap: GPU-overrun ruled out (0% both sides) — dispatch-stagger jitter under thread contention is the live hypothesis, ties to row 2 | Extend `matched_window_*` gating to `overhead_residual` + `v2_var_trajectory`; correlate per-round tail outliers against that round's aggregator `step_timing` wall cost |
+| FT | `cohort_sequence` (SET); `v1b_iters_moving_avg`; `trainer_speed_identity` (`utility`); `v2_var_trajectory` | Cycles 0-1 match exactly (10/10); cycle 2 forks 4/10; real-vs-real fingerprint pairing (2 independent real runs) shows the SAME divergence pattern | Real=raw FIFO arrival order (jitter); sim=clean sct-order by design (no jitter) — proven inherent, not sim-specific, via real↔real (§G) | **ROOT-CAUSED**: confined to a trainer's first-ever exploring transition, not an RNG/value bug (utility bit-identical once both sides explore) | `first_commit_race_diagnostic` landed on `cohort_sequence_parity` (§G), diagnostic-only. Observe `explained` on the next live pair; promote to gating only after validation |
+
+**Other open items (not a failing rung):**
+- FT: `sim_sct_ordered_drain` A/B unblocked — run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
+- FT: accuracy drop after reaching 81% — known, deferred by operator (07-15), not yet triaged.
 
 **P3 — infra robustness, not parity-blocking:**
-6. Dynamic GPU health filtering — `CUDA_DEVICE_ORDER=PCI_BUS_ID` only fixes *which* physical card a given
-   ordinal maps to; it does not detect or skip a genuinely broken card. Not attempted, lower priority.
+- Dynamic GPU health filtering — `CUDA_DEVICE_ORDER=PCI_BUS_ID` only fixes *which* physical card a given
+  ordinal maps to; it does not detect or skip a genuinely broken card. Not attempted, lower priority.
 
 ---
 
@@ -186,33 +186,15 @@ the actual parity bugs above.
 
 ---
 
-### fluxtune (~7200s, delay-floor 4.0, divisor 0.48, min-init=N=100, agg_goal=10) — TOP PRIORITY
-1. **`cohort_sequence` SET cascade**: diverges 4/10 members at cycle_index 2. Operator hypothesis (slow
-   aggregation/eval historically caused it) REFUTED — `aggregate()` is ~100ms/call, two orders below the ~10s
-   inter-round cadence. Real driver: fluxtune's `c=30≫agg_goal=10` surplus pool (§F-17, by design) plus an
-   anomalously fast real round-4 gap (4.46s vs ~10s) right where the divergence starts. data_id=0's
-   iters-per-data_id mismatch (4 vs 5) is the same fork, not independent.
-2. `_distribute_weights_async` still exempted (`gates_ok=False`, real-only sleep) — unrelated, unaffected.
-3. `sim_sct_ordered_drain` A/B — unblocked. Run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
-4. **Accuracy drop after reaching 81%** — known, deferred by operator (07-15). Not yet triaged.
-5. **Real↔real admissibility (§F-5)** — rungs finalized (tie-window + tiered dep graph); unblocked, ready to
-   resume (the `cohort_sequence` investigation that deferred it is closed, §G 07-17d).
-6. `agg_step_timing_breakdown` — contention + cpu/wall diagnostic both REFUTED (P1 item 2); residual
-   (`_compute_var`/`_prepare_round_state`) still open, cause unknown.
-7. `drain_wall_budget`'s `drain_tail_s` — not independent, same root as item 6.
-8. `v2_var_trajectory` — still fails (5.4% vs 2% tol); see P1 item 3.
-9. `tb_prepare_perturbation` exemption — held on this run, no regression (§G).
+### Per-baseline settled state (fails are in the tracker table above, not repeated here)
 
-### fwdllm (`run_20260719_104123`/`_114259`, ~3600s; `_232650`/`_234337` ~900s spot-check, see §A)
-> `cohort_sequence`/`step_timing_breakdown`/`v2_var_trajectory`/`throughput` all PASS — no longer open items.
-1. `per_round_advance` — matched-window gate still fails on a small-N KS artifact; see P1 item 1.
-2. `agg_step_timing_breakdown` — real-only wait exempted (§G); residual open, see P1 item 2.
-
-### fwdllm_plus (`run_20260719_115153`/`_125341`, ~3600s; `_232706`/`_234341` ~900s spot-check, see §A)
-> `step_timing_breakdown`/`per_round_advance`/`throughput` all PASS clean at both scales. `v2_var_trajectory`
-> marginal fail reads as short-run/sample noise (P1 item 3), not a regression.
-1. `agg_step_timing_breakdown` — residual open, see P1 item 2.
-2. `drain_wall_budget`'s `drain_tail_s` — not independent, same root as item 1.
+- **fluxtune** (`run_20260720_014454`/`_034713`, delay-floor 4.0, divisor 0.48, agg_goal=10) — TOP PRIORITY.
+  `_distribute_weights_async` stays exempted (`gates_ok=False`, real-only sleep). `tb_prepare_perturbation`
+  exemption held, no regression (§G).
+- **fwdllm** (`run_20260720_014507`/`_034623`, delay-floor 7.0, divisor 1.63, agg_goal=10) —
+  `cohort_sequence`/`step_timing_breakdown`/`throughput` all PASS.
+- **fwdllm_plus** (`run_20260720_014523`/`_034736`, delay-floor 7.0, divisor 1.63, agg_goal=10) —
+  `step_timing_breakdown`/`per_round_advance`/`throughput` all PASS clean at both 1h and 2h scale.
 
 ### Cross-baseline / shared
 
@@ -312,6 +294,50 @@ the actual parity bugs above.
 > **RULE: closed = here, in ≤30 words, immediately.** The instant a rung flips fail→pass or a hypothesis is
 > confirmed/refuted, write ONE terse line below (mechanism + outcome, no narrative) and delete it from §A/§B in
 > the same edit. Full reasoning lives in the commit/code comment, not this doc.
+
+- **fluxtune `sim_send_ts` FIXED** (07-20 pm-2) — root-caused to the EOT/shutdown broadcast: `top_aggregator.py`'s
+  `inform_end_of_training` only stamped `SIM_SEND_TS` when `trainer_event_dict` was set (avail-tracking on);
+  99/100 trainers' null event was their final `task_recv`, not a mid-run gap. Now stamped unconditionally on
+  `simulated`. `test_eot_avail_catchup.py` updated; 591/591 `tests/mode` pass.
+- **`agg_step_timing_breakdown`'s `_compute_var` residual had a self-inflicted confound** (07-20 pm-2) —
+  `var_calc` DEBUG telemetry (07-19 pm) was mis-gated at `logging.INFO` instead of `DEBUG`
+  (`FedSgdAggregator.py:226`), so its `.norm().item()` GPU-sync ran on every `_compute_var` call in every run
+  since, inflating exactly the function flagged as the residual's worst offender. Fixed; 282/282 fwdllm tests pass.
+- **fwdllm/fwdllm_plus's `v2_var_trajectory` ROOT-CAUSED** (07-20 pm-2, via the still-banked `var_calc`
+  telemetry) — 0 mismatches on every shared (round,data_id,iteration) key real vs sim; the fail is entirely
+  sim's extra unmatched (further-into-training) calls averaging higher, pulling the population mean up. Same
+  mechanism as `overhead_residual`/`throughput` (§G 07-19 pm), not a separate bug. fluxtune's stays open — 1583
+  of 1585 shared keys genuinely mismatch (cohort-fork downstream, not population length).
+- **fluxtune's cohort-fork mechanism ROOT-CAUSED precisely** (07-20 pm-3, supersedes the pm-2 "does NOT hold"
+  entry) — real commits in raw FIFO arrival order (`channel.py:recv_fifo`, network/OS jitter, uncorrected); sim
+  commits in clean sct-order by design (`asyncfl/top_aggregator.py:_sim_recv_min`, no jitter term, intentional).
+  Proven via `eligible_fingerprint`/`decision_fingerprint` pairing (already-existing `emit_selection`
+  instrumentation) that TWO INDEPENDENT REAL runs diverge the same way at the same point — inherent
+  independent-process noise confined to a trainer's first-ever exploring transition, not a sim defect, not an
+  RNG desync (values are bit-identical once both sides explore a trainer). `_cohort_set_tie_ok`'s boundary-tie
+  concept simply doesn't cover this mechanism (a different kind of "tie") — see the new diagnostic below.
+- **New DIAGNOSTIC-ONLY `first_commit_race_diagnostic` field on `cohort_sequence_parity`** (07-20 pm-3) — two
+  gates, both required: (1) structural — a differing trainer's exploring transition landed within `tie_window_s`
+  of the cohort boundary; (2) margin — the utility gap vs. the mode's own chosen-cohort cutoff is within that
+  run's own observed rank-gap noise floor (not a fixed constant). Does NOT gate `ok`/`set_ok` yet — reports
+  `explained: bool` for review. 4 new unit tests (near-tie explained; large-margin NOT explained; stale-explore
+  NOT explained; absent when cohorts match) + 175/175 `test_parity_checks.py`, 595/595 `tests/mode` pass. Not yet
+  validated against a live run — tune/promote to gating only after the next fluxtune pair.
+
+- **fluxtune `pacer()` once-per-round fix VALIDATED live** (07-20 pm, fresh 7200s pair) — `preferred_duration`
+  passes (frac_diff 0.152 vs 0.2 tol). Confirms the fix holds at scale; felix's own parity still needs a
+  separate re-check (shared class, out of this session's scope).
+- **fwdllm_plus's 1h `throughput`/`per_round_advance` marginal fails CONFIRMED sample-size variance** (07-20 pm)
+  — both pass clean on the fresh 7200s pair (4.9%/matched 0.5%), not a regression as hypothesized 07-19.
+- **fwdllm's `throughput` PASSES clean for the first time** (07-20 pm, 7200s pair) — matched-window gate holds
+  at 2h scale (4.9%, matched 0.5%). `per_round_advance`'s KS sub-check remains open (§B item 1).
+- **`tb_accumulate_grads` borderline fail did not reproduce on a 2nd independent run** (07-20 pm) — confirmed
+  noise, closing the 07-19 flag.
+- **`agg_step_timing_breakdown`'s `time.thread_time()` cpu/wall diagnostic exercised on a live run for the first
+  time** (07-20 pm) — real cpu/wall ≈0.90-1.00, sim ≈0.82-0.89 for every residual function, consistent across
+  all 3 baselines (`analyze_agg_step_timing_density.py`). Sim threads idle/blocked more of their wall window
+  than real despite zero GPU-pass overlap — reopens contention via thread-scheduling pressure, not the already-
+  refuted mechanism. Residual itself still open (§B item 2).
 
 - **fwdllm/fwdllm_plus's `throughput` chronic fail FIXED** (07-20 am) — `checks.py`'s `throughput_parity`/
   `per_round_advance_parity` now gate `ok` on `matched_window_*` (same population, not full-vs-truncated) when
