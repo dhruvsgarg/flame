@@ -335,12 +335,11 @@ baselines:
         # Opt-2) that did not exist in vanilla FwdLLM, so fwdllm/fwdllm_plus run
         # the original unbounded variance gate (grind until variance passes).
         var_threshold: 0.3
-        # Opt-1 comm-redundancy fix (charter §5c): learning-neutral, enabled on
-        # ALL baselines so E4 bytes are fair. fwdllm re-sent the identical model
-        # to the same K trainers every iteration (~90% redundant, ~22 GB) because
-        # the return-driven staleness guard never marked actively-training clients
-        # current. Set false to revert (byte-on-wire identical off).
-        suppress_redundant_weights: true
+        # Opt-1 comm-redundancy fix (charter §5c) is now unconditional aggregator
+        # behavior, not a config knob (simulate_fwdllm.md §G, 07-19) -- fwdllm
+        # used to re-send the identical model to the same K trainers every
+        # iteration (~90% redundant, ~22 GB) because the return-driven staleness
+        # guard never marked actively-training clients current.
         reselect_each_iteration: false
     trainer:
       hyperparameters:
@@ -389,10 +388,9 @@ baselines:
         # (charter Opt-2), not part of vanilla FwdLLM_Plus; sync baselines run
         # the original unbounded variance gate. See fwdllm block above.
         var_threshold: 0.3
-        # Opt-1 comm-redundancy fix (charter §5c), learning-neutral. Already near
-        # clean here (per-iteration reselect keeps the guard current, ~3.5%), but
-        # enabled for consistency so the fix covers all baselines. Set false to revert.
-        suppress_redundant_weights: true
+        # Opt-1 comm-redundancy fix (charter §5c) is now unconditional (see
+        # fwdllm block above) -- already near-clean here (per-iteration reselect
+        # keeps the guard current, ~3.5%), but the fix covers all baselines.
         reselect_each_iteration: true
     trainer:
       hyperparameters:
@@ -506,15 +504,10 @@ baselines:
         # absence is a documented choice, not a default.
         stalenessPolicy: none
         var_threshold: 0.3
-        # --- fluxtune optimizations (charter §5c; flag gated) ---
-        # Opt-1: suppress byte-identical intra-databin weight re-sends (shared
-        # sync+async fix, enabled on all baselines). Within a data-bin the
-        # model_version is constant and the full WEIGHTS+GRAD_POOL payload is
-        # identical across iterations; a trainer that already received it this
-        # cycle is downgraded to the tiny VAR=bad "keep training" message (it
-        # caches its weights). Learning-neutral; here it was 71% redundant / ~68 GB.
-        # Set false to revert (byte-on-wire identical off).
-        suppress_redundant_weights: true
+        # --- fluxtune optimizations (charter §5c) ---
+        # Opt-1 (suppress byte-identical intra-databin weight re-sends) is now
+        # unconditional aggregator behavior (see fwdllm block above), not a
+        # config knob -- here it was 71% redundant / ~68 GB before landing.
         # Opt-2 — variance-plateau force-commit (charter §5c/§5e; DEFAULT ON for
         # fluxtune). The plain var<=threshold gate is a FIXED ABSOLUTE bar: as the
         # model converges, gradients shrink but the perturbation-noise floor doesn't,

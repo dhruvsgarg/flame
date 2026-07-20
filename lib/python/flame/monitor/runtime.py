@@ -36,10 +36,18 @@ def timer_decorator(func):
         # exactly one such branch and it lives inside the property itself.
         vclock_start = getattr(self, "vclock_now", None)
         start = time.time()
+        cpu_start = time.process_time()
         result = func(*args, **kwargs)
         end = time.time()
+        cpu_end = time.process_time()
         vclock_end = getattr(self, "vclock_now", None)
         duration = end - start
+        # CPU time (this process only) vs wall time (simulate_fwdllm.md §B,
+        # 07-19 pm): distinguishes "waiting on contention" (wall inflated, CPU
+        # flat) from "genuinely more compute" (CPU itself inflated) for the
+        # agg_step_timing_breakdown residual the narrow GPU-pass-window density
+        # check already refuted as pure contention.
+        cpu_duration = cpu_end - cpu_start
         # Meaningful delta on the aggregator (vclock ticks live there);
         # usually 0 on a trainer (vclock_now is a snapshot between messages,
         # see Trainer.vclock_now) -- both are correct, not a bug.
@@ -70,6 +78,7 @@ def timer_decorator(func):
                         round_num=stage.round_id, data_id=stage.data_id,
                         iteration=stage.iteration, trainer_id=stage.trainer_id,
                         vclock_s=vclock_delta, vclock_now_s=vclock_end,
+                        cpu_duration_s=cpu_duration,
                     )
                     telemetry.emit(ev, **fields)
             except Exception:  # pragma: no cover - telemetry must never fault training

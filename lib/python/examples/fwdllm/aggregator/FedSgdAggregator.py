@@ -217,11 +217,13 @@ class FedSGDAggregator(TopAggregator):
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
         result = calculate_var(self.grad_for_var_check_list)
-        # DEBUG-only audit (§B P1, 2026-07-19): input grad norms + output var,
-        # diffable real vs sim to localize a v2_var_trajectory numeric
-        # divergence to a specific input tensor vs the reduction itself.
-        # Gated: .norm().item() is a GPU->CPU sync, not free (§F-19).
-        if logger.isEnabledFor(logging.DEBUG):
+        # v2_var_trajectory audit (§B P1, 2026-07-19 pm): input grad norms +
+        # output var, diffable real vs sim to localize the divergence to a
+        # specific input tensor vs the reduction itself. Elevated DEBUG->INFO
+        # for this investigation only (avoids flipping every other DEBUG log
+        # on for a short run) -- .norm().item() is a GPU->CPU sync, not free
+        # (§F-19), so drop back to DEBUG once v2_var_trajectory is resolved.
+        if logger.isEnabledFor(logging.INFO):
             try:
                 from flame import telemetry
                 if telemetry.is_enabled():

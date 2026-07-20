@@ -2187,7 +2187,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     ok = rel_diff <= tol_rel
     sim_s_per_round = final_vclock / n_sim_rounds if n_sim_rounds else 0
     real_s_per_round = wall_elapsed / n_real_rounds if n_real_rounds else 0
-    return {
+    result = {
         "ok": ok,
         "tier": "EXACT",
         "sim_rounds": n_sim_rounds,
@@ -2199,6 +2199,21 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         "rel_diff": round(rel_diff, 3),
         "tol": tol_rel,
     }
+    # DIAG-only, doesn't gate `ok`. sim_s_per_round averages sim's FULL round
+    # count, which can outrun real's wall-capped count; restrict to real's
+    # matched window to separate a population-length artifact from genuine
+    # per-round drift (simulate_fwdllm.md §B, 07-19 pm).
+    matched_n = min(n_sim_rounds, n_real_rounds)
+    if matched_n >= 2:
+        sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)[: matched_n - 1]
+        if sim_adv:
+            matched_sim_s_per_round = sum(sim_adv) / len(sim_adv)
+            result["matched_window_n"] = len(sim_adv)
+            result["matched_window_sim_s_per_round"] = round(matched_sim_s_per_round, 2)
+            result["matched_window_rel_diff"] = round(
+                abs(matched_sim_s_per_round - real_s_per_round)
+                / max(matched_sim_s_per_round, real_s_per_round, 1e-9), 3)
+    return result
 
 
 def per_round_advance_parity(real: dict, sim: dict,
@@ -2236,7 +2251,7 @@ def per_round_advance_parity(real: dict, sim: dict,
     mean_rel_diff = (abs(sim_mean - real_mean) / max(sim_mean, real_mean)
                      if max(sim_mean, real_mean) > 0 else 0.0)
     ok = grid_ks <= ks_tol and mean_rel_diff <= mean_tol_rel
-    return {
+    result = {
         "ok": ok,
         "tier": "EXACT",
         "sim_mean_advance_s": round(sim_mean, 2),
@@ -2249,6 +2264,25 @@ def per_round_advance_parity(real: dict, sim: dict,
         "n_sim_rounds": len(sim_adv),
         "n_real_rounds": len(real_adv),
     }
+    # DIAG-only, doesn't gate `ok` -- same population-mismatch rationale as
+    # throughput_parity's matched_window_* fields (§B, 07-19 pm).
+    matched_n = min(len(sim_adv), len(real_adv))
+    if matched_n >= 2:
+        matched_sim = sim_adv[:matched_n]
+        matched_real = real_adv[:matched_n]
+        matched_sim_mean = sum(matched_sim) / matched_n
+        matched_real_mean = sum(matched_real) / matched_n
+        ratios = [s / r for s, r in zip(matched_sim, matched_real) if r > 0]
+        result["matched_window_n"] = matched_n
+        result["matched_window_sim_mean_s"] = round(matched_sim_mean, 2)
+        result["matched_window_real_mean_s"] = round(matched_real_mean, 2)
+        result["matched_window_mean_rel_diff"] = round(
+            abs(matched_sim_mean - matched_real_mean)
+            / max(matched_sim_mean, matched_real_mean, 1e-9), 3)
+        if ratios:
+            result["matched_window_ratio_median"] = round(statistics.median(ratios), 3)
+            result["matched_window_ratio_max"] = round(max(ratios), 3)
+    return result
 
 
 def wall_disparity(real: dict, sim: dict) -> dict:
@@ -4051,8 +4085,16 @@ _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
 # real-only `time.sleep(0.1)` ("Real-transport pad ... No sim analog"), so its
 # real<->sim gap IS that sleep by construction -- same class as
 # `_emulate_training_delay`. Reported, excluded from `ok`.
+# `sync_collect_and_accumulate_grads` blocks on `channel.recv_fifo` (real-only,
+# num_min_req clamp) in real; sim's `_sim_sync_recv_incremental` is
+# non-blocking -- same real-transport-wait class as `_distribute_weights_async`
+# (real 3.5s vs sim 0.05-0.08s, all 3 baselines, simulate_fwdllm.md §B/§G
+# 07-19). `_aggregate_grads_sync` wraps that call, so its own gap is the same
+# wait bubbling up -- same pattern as `train_with_data_id` on the trainer side.
 _AGG_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
     "_distribute_weights_async",
+    "sync_collect_and_accumulate_grads",
+    "_aggregate_grads_sync",
 })
 
 # Backgrounded / off-critical-path funcs, reported but excluded from `ok`.
@@ -4064,6 +4106,17 @@ _AGG_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
 _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
     "eval_model",
 })
+
+# Point-mass guard (same rationale as `trainer_phase_split`'s
+# `_near_zero_phase_s`): near-zero distributions score KS/mean-rel dither, not
+# divergence (fwdllm's `_send_grads` failed on 9% mean_rel_diff from an
+# 0.8ms/0.9ms noise gap, simulate_fwdllm.md §B 07-19). Also requires the
+# ABSOLUTE gap to be tiny, not just both means small -- else a real
+# fraction-of-samples shift (e.g. half of real jumping 5e-5s->2e-3s) would
+# dilute under the mean floor and wrongly pass, see
+# test_genuine_divergence_spanning_many_samples_still_fails.
+_STEP_TIMING_NEAR_ZERO_MEAN_S = 0.005
+_STEP_TIMING_NEAR_ZERO_ABS_DIFF_S = 3e-4
 
 # Below this a @timer_decorator duration is quantization noise, not a
 # measurement: KS on two degenerate all-zero samples scores the tie-breaking
@@ -4117,14 +4170,25 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
         ks = ks_stat(rv, sv)
         rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
         mean_rel = abs(rm - sm) / max(abs(rm), abs(sm), 1e-9)
+        if (abs(rm) <= _STEP_TIMING_NEAR_ZERO_MEAN_S and abs(sm) <= _STEP_TIMING_NEAR_ZERO_MEAN_S
+                and abs(rm - sm) <= _STEP_TIMING_NEAR_ZERO_ABS_DIFF_S):
+            ok = True
+            note = (f"near-zero point mass (both means <={_STEP_TIMING_NEAR_ZERO_MEAN_S*1000:.0f}ms, "
+                    f"abs gap <={_STEP_TIMING_NEAR_ZERO_ABS_DIFF_S*1000:.2f}ms): "
+                    "KS/mean-rel uninformative -- passed on absolute near-zero")
+        else:
+            ok = ks <= ks_tol or mean_rel <= mean_tol_rel
+            note = None
         entry = {
-            "ok": ks <= ks_tol or mean_rel <= mean_tol_rel,
+            "ok": ok,
             "tier": "DIST",
             "ks_stat": round(ks, 3), "ks_tol": ks_tol,
             "mean_rel_diff": round(mean_rel, 4), "mean_tol_rel": mean_tol_rel,
             "real_mean_s": round(rm, 4), "sim_mean_s": round(sm, 4),
             "n_real": len(rv), "n_sim": len(sv),
         }
+        if note:
+            entry["note"] = note
         if func in real_only_funcs:
             entry["gates_ok"] = False
         by_func[func] = entry

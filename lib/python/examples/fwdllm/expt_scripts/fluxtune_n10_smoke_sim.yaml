@@ -87,8 +87,6 @@ experiments:
           # hold busy trainers across the boundary (K-D12). Applies to real
           # too (§R, 2026-07-11) -- must match the real yaml.
           inflight_residence: true
-          # Opt-1 (EXPTS_CHARTER §1) -- see fluxtune_n10_smoke.yaml, MUST match.
-          suppress_redundant_weights: true
           # 90s default evicted a genuinely-busy trainer (rounds incl.
           # warmup up to ~108s). Workload knob, not a parity lever; must
           # match real yaml (§R, 2026-07-11).

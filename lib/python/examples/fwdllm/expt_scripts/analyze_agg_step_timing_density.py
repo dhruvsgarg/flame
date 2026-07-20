@@ -65,7 +65,10 @@ def _load_events(run_dir: Path, funcs: set):
         func = e.get("func")
         if func not in funcs or e.get("ts") is None or e.get("duration_s") is None:
             continue
-        events_by_func[func].append({"ts": float(e["ts"]), "duration_s": float(e["duration_s"])})
+        rec = {"ts": float(e["ts"]), "duration_s": float(e["duration_s"])}
+        if e.get("cpu_duration_s") is not None:
+            rec["cpu_duration_s"] = float(e["cpu_duration_s"])
+        events_by_func[func].append(rec)
 
     gpu_windows: dict = {}
     for f in glob.glob(str(run_dir / "telemetry" / "trainer_*.jsonl")):
@@ -145,13 +148,28 @@ def main():
         durs_ms = [e["duration_s"] * 1e3 for e in events]
         print(f"\n{func}: n={len(events)} mean={_mean(durs_ms):.4f}ms "
               f"median={statistics.median(durs_ms):.4f}ms")
+        cpu_ms = [e["cpu_duration_s"] * 1e3 for e in events if "cpu_duration_s" in e]
+        if cpu_ms:
+            wall_mean = _mean(durs_ms)
+            cpu_mean = _mean(cpu_ms)
+            ratio = f"{cpu_mean / wall_mean:.2f}" if wall_mean else "n/a"
+            print(f"    cpu_duration: n={len(cpu_ms)} mean={cpu_mean:.4f}ms cpu/wall={ratio}")
+        else:
+            print("    cpu_duration: no data (run predates cpu_duration_s telemetry, re-run to get it)")
         _bucket_print(events)
 
     print(
-        "\nVerdict guide: if mean duration climbs with concurrency -> GPU/CPU "
-        "contention from sim's denser trainer pool, same class as eval_model/"
-        "tb_prepare_perturbation. Flat across buckets -> contention doesn't "
-        "explain this function's gap, look elsewhere."
+        "\nVerdict guide (concurrency): if mean duration climbs with concurrency "
+        "-> GPU/CPU contention from sim's denser trainer pool, same class as "
+        "eval_model/tb_prepare_perturbation. Flat/backwards across buckets -> "
+        "contention doesn't explain this function's gap, look elsewhere."
+        "\nVerdict guide (cpu/wall, simulate_fwdllm.md §B 07-19 pm): low cpu/wall "
+        "means the process is waiting on something external (scheduler/GPU/"
+        "memory-bus contention) rather than computing -- still a contention "
+        "story, just not the narrow gpu_pass-window kind concurrency bucketing "
+        "already refuted. cpu/wall near 1 means the wall gap IS cpu time -- sim "
+        "is doing genuinely more computation per call, look for a code-path "
+        "difference instead."
     )
 
 

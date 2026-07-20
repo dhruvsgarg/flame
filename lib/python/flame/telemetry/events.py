@@ -206,6 +206,7 @@ def build_step_timing(
     trainer_id: Optional[str] = None,
     vclock_s: Optional[float] = None,
     vclock_now_s: Optional[float] = None,
+    cpu_duration_s: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Per-function wall duration of one timed compute step (`timer_decorator`).
 
@@ -220,6 +221,12 @@ def build_step_timing(
     aggregator, where the clock ticks live; usually 0 on a trainer, which only
     has a last-known snapshot -- see Trainer.vclock_now). `vclock_now_s` is
     the cumulative pointer as of this step's end, for cross-step alignment.
+
+    `cpu_duration_s` (simulate_fwdllm.md §B, 07-19 pm) is `time.process_time()`
+    delta -- CPU time actually consumed by THIS process, as opposed to
+    `duration_s`'s wall time. A function whose wall time diverges real<->sim but
+    whose CPU time doesn't is waiting on contention (scheduler/GPU/memory-bus),
+    not doing more work; if CPU time itself diverges, the extra cost is real.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -229,6 +236,7 @@ def build_step_timing(
         ("trainer_id", trainer_id),
         ("vclock_s", vclock_s),
         ("vclock_now_s", vclock_now_s),
+        ("cpu_duration_s", cpu_duration_s),
     ):
         if v is not None:
             fields[k] = v
