@@ -27,10 +27,16 @@ logger = logging.getLogger(__name__)
 class DefaultSelector(AbstractSelector):
     """A default selector class."""
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         """Initailize instance."""
-        super().__init__()
+        super().__init__(**kwargs)
         self.round = 0
+
+    def _cleanup_recvd_ends(self, ends) -> None:
+        pass
+
+    def _cleanup_send_ends(self) -> None:
+        pass
 
     def select(
         self, ends: dict[str, End], channel_props: dict[str, Scalar], **kwargs
