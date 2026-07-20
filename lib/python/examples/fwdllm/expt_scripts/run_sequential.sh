@@ -322,13 +322,18 @@ LOGDIR = env("LOGDIR"); MANIFEST = env("MANIFEST")
 DRY_RUN = env("DRY_RUN") == "1"; SHOW_ALL = env("SHOW_ALL") == "1"
 delays_on = (DELAYS == "on")
 
-# Settled per-baseline training-delay condition (validated at 7200s scale,
-# simulate_fwdllm.md §A) so operators stop re-typing --delays/--delay-divisor/
-# --delay-floor every launch. CLI flags still win when explicitly passed.
+# Settled per-baseline training-delay condition so operators stop re-typing
+# --delays/--delay-divisor/--delay-floor every launch. CLI flags still win
+# when explicitly passed. `factor` is validated at 7200s scale (simulate_
+# fwdllm.md §A). fwdllm/fwdllm_plus's `floor` re-derived 07-19 pm (FWDLLM_
+# DESIGN.md §O, same 1.3x-over-observed-max-compute formula as fluxtune's
+# 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix and was
+# never re-checked against post-fix compute (2.72s/3.18s max, floor >=
+# 1.3*1.63*3.18=6.74s) -- pending a validation run to confirm 0 TIMING_OVERRUN.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":    {"delays": True, "factor": 0.48, "floor": 4.0},
-    "fwdllm":      {"delays": True, "factor": 1.63, "floor": 11.0},
-    "fwdllm_plus": {"delays": True, "factor": 1.63, "floor": 11.0},
+    "fwdllm":      {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fwdllm_plus": {"delays": True, "factor": 1.63, "floor": 7.0},
 }
 
 

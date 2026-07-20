@@ -396,6 +396,10 @@ the actual parity bugs above.
 > confirmed/refuted, write ONE terse line below (mechanism + outcome, no narrative) and delete it from §A/§B in
 > the same edit. Full reasoning lives in the commit/code comment, not this doc.
 
+- **fwdllm/fwdllm_plus's `training_delay_floor_s`=11.0 predated the harness-overhead-removal fix, unlike
+  fluxtune's already-re-derived 4.0** (07-19 pm, FWDLLM_DESIGN.md §O) — re-derived on a fresh compute read
+  (max 2.72s/3.18s) with the same formula: `1.3 × 1.63 × 3.18 = 6.74s` → **7.0**. Landed in `run_sequential.sh`'s
+  `BASELINE_DELAY_DEFAULTS`. Needs a validation run to confirm 0 `[TIMING_OVERRUN]` at the tighter floor.
 - **fwdllm's `throughput`/`per_round_advance` gap had no mechanism, just a fwdllm_plus cross-baseline
   comparison that never explained a within-baseline real-vs-sim gap** (07-19 pm) — ROOT-CAUSED: per-trainer
   modeled delay is statistically identical real/sim (11.41s both); agg compute is never on the vclock (§F-1,

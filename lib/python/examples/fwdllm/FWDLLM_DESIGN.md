@@ -308,8 +308,13 @@ floor_s`, `simulate_fwdllm.md` §G): floors the raw registry delay before dividi
 trainers get a wider budget rather than rescaling everyone via the divisor. Originally derived ×1.3 over the
 THEN-observed max (fluxtune floor 7.0 / fwdllm+plus 11.0). **fluxtune's floor is now re-derived to 4.0** on the
 post-overhead-removal compute (see the RE-MEASURED box above: 6.1s max → budget 8.33s); the 07-16 pair ran
-`--delay-floor 7.0` with **0 overruns**, so 4.0 is the tighter, still-safe value to validate next. fwdllm+plus
-floor 11.0 is unre-derived (needs their own fresh compute read).
+`--delay-floor 7.0` with **0 overruns**, so 4.0 is the tighter, still-safe value to validate next.
+
+**fwdllm+plus floor re-derived 4->11.0 to 7.0 (07-19 pm)**, same formula, on a fresh compute read
+(`run_20260719_104123`/`_115153`, real `gpu_compute_s`): fwdllm max 2.72s, fwdllm_plus max 3.18s (pooled, since
+both share one divisor and were always operated as one calibration group). `floor ≥ 1.3 × 1.63 × 3.18 = 6.74s`
+→ rounded to **7.0** (same ~35% margin proportion as fluxtune's 4.0). Landed in `run_sequential.sh`'s
+`BASELINE_DELAY_DEFAULTS`; needs a validation run to confirm 0 `[TIMING_OVERRUN]` at the tighter value.
 
 ---
 
