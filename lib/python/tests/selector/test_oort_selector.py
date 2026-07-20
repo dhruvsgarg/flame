@@ -522,20 +522,34 @@ class TestPacerFidelity:
         assert oort.round_threshold == 10.0
 
     def test_async_oort_pacer_faithful(self, async_oort):
-        # felix's separate AsyncOortSelector.pacer must use the same two-branch
-        # reference logic, keyed on self.round.
+        # felix/fluxtune's shared AsyncOortSelector.pacer must use the same
+        # two-branch reference logic, keyed on the passed current_round.
         async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
         async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
-        async_oort.round_threshold, async_oort.round = 10.0, 4
-        async_oort.pacer()                       # FLAT |Δ|=1 <= 2 -> relax
+        async_oort.round_threshold = 10.0
+        async_oort.pacer(current_round=4)        # FLAT |Δ|=1 <= 2 -> relax
         assert async_oort.round_threshold == 15.0
         async_oort.exploitation_util_history = [10.0, 10.0, 100.0, 100.0]
-        async_oort.round_threshold, async_oort.round = 30.0, 4
-        async_oort.pacer()                       # SHARP |Δ|=180 >= 100 -> tighten
+        async_oort.round_threshold = 30.0
+        async_oort.pacer(current_round=4)        # SHARP |Δ|=180 >= 100 -> tighten
         assert async_oort.round_threshold == 25.0
-        async_oort.round_threshold, async_oort.round = 30.0, 3  # off-cadence
-        async_oort.pacer()
+        async_oort.round_threshold = 30.0
+        async_oort.pacer(current_round=3)         # off-cadence
         assert async_oort.round_threshold == 30.0
+
+    def test_async_oort_pacer_once_per_round(self, async_oort):
+        # §S.pacer once-per-round guard (simulate_fwdllm.md §G 07-20): a burst
+        # of same-model_version select() calls must fire the pacer's state
+        # transition at most once, not once per call.
+        async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
+        async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
+        async_oort.round_threshold = 10.0
+        assert async_oort._last_pacer_round is None
+        for _ in range(5):  # simulate 5 select() calls for the SAME round
+            if 4 != async_oort._last_pacer_round:
+                async_oort.pacer(current_round=4)
+                async_oort._last_pacer_round = 4
+        assert async_oort.round_threshold == 15.0  # moved ONCE, not 5x (would be 35.0)
 
 
 class TestOortCleanup:

@@ -163,13 +163,12 @@ def main():
         "-> GPU/CPU contention from sim's denser trainer pool, same class as "
         "eval_model/tb_prepare_perturbation. Flat/backwards across buckets -> "
         "contention doesn't explain this function's gap, look elsewhere."
-        "\nVerdict guide (cpu/wall, simulate_fwdllm.md §B 07-19 pm): low cpu/wall "
-        "means the process is waiting on something external (scheduler/GPU/"
-        "memory-bus contention) rather than computing -- still a contention "
-        "story, just not the narrow gpu_pass-window kind concurrency bucketing "
-        "already refuted. cpu/wall near 1 means the wall gap IS cpu time -- sim "
-        "is doing genuinely more computation per call, look for a code-path "
-        "difference instead."
+        "\nVerdict guide (cpu/wall, now thread-local `time.thread_time()`, §G "
+        "07-20): ratio near 1 -> thread was busy the whole window, sim is doing "
+        "genuinely more computation, look for a code-path difference. Ratio "
+        "well below 1 -> thread was blocked/idle part of the window (contention, "
+        "not the gpu_pass-window kind already refuted). Ratio > 1 should no "
+        "longer happen -- treat as a bug, not a signal."
     )
 
 

@@ -36,17 +36,17 @@ def timer_decorator(func):
         # exactly one such branch and it lives inside the property itself.
         vclock_start = getattr(self, "vclock_now", None)
         start = time.time()
-        cpu_start = time.process_time()
+        cpu_start = time.thread_time()
         result = func(*args, **kwargs)
         end = time.time()
-        cpu_end = time.process_time()
+        cpu_end = time.thread_time()
         vclock_end = getattr(self, "vclock_now", None)
         duration = end - start
-        # CPU time (this process only) vs wall time (simulate_fwdllm.md §B,
-        # 07-19 pm): distinguishes "waiting on contention" (wall inflated, CPU
-        # flat) from "genuinely more compute" (CPU itself inflated) for the
-        # agg_step_timing_breakdown residual the narrow GPU-pass-window density
-        # check already refuted as pure contention.
+        # Thread-local CPU vs wall time, for agg_step_timing_breakdown's
+        # contention-vs-compute diagnostic (simulate_fwdllm.md §G 07-20). MUST
+        # be `thread_time()`, not `process_time()` -- the latter sums ALL
+        # threads and silently picks up the aggregator's backgrounded eval
+        # thread (confirmed: ~7-8x inflation on both real and sim alike).
         cpu_duration = cpu_end - cpu_start
         # Meaningful delta on the aggregator (vclock ticks live there);
         # usually 0 on a trainer (vclock_now is a snapshot between messages,

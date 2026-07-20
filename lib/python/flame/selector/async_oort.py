@@ -75,6 +75,9 @@ class AsyncOortSelector(AbstractSelector):
             )
 
         self.round = 0
+        # §S.pacer guard: last round pacer() actually ran for, so a same-round
+        # dispatch burst can't re-fire it (simulate_fwdllm.md §G 07-20).
+        self._last_pacer_round = None
 
         # CONFIG CHANGES FOR ASYNCFL WITH OORT
         try:
@@ -585,14 +588,17 @@ class AsyncOortSelector(AbstractSelector):
         # speed We initially implement to perform random here
         return self._rng.choice(unexplored_end_ids, size=num_of_ends, replace=False)
 
-    def pacer(self) -> None:
+    def pacer(self, current_round: int) -> None:
         """Adapt `round_threshold` from the exploited-utility trend — faithful to
         the Oort pacer (third_party/Oort/oort/oort.py:184-199, byte-identical in
         the third_party/REFL fork). TWO symmetric moves on the reference's 0.1 / 5×
         bands over the last two `pacer_step` windows: a FLAT plateau
         (`|Δ| <= 0.1·last`) RELAXES (`round_threshold += pacer_delta`); a SHARP
-        change (`|Δ| >= 5·last`) TIGHTENS (floored at `pacer_delta`). Keyed on the
-        current `self.round` (= reference `training_round`); caller train-gates it.
+        change (`|Δ| >= 5·last`) TIGHTENS (floored at `pacer_delta`). Keyed on
+        `current_round` (= reference `training_round`); caller train-gates it and
+        must only invoke this once per genuine round change (§G 07-20) — takes an
+        explicit param since `self.round` lags until the caller sets it after
+        this returns.
 
         The async selector has no async-Oort reference, but the pacer's adaptation
         is the SAME concept — so it must match the reference's two-branch logic.
@@ -604,8 +610,8 @@ class AsyncOortSelector(AbstractSelector):
         """
         if not (
             self.pacer_step > 0
-            and self.round >= 2 * self.pacer_step
-            and self.round % self.pacer_step == 0
+            and current_round >= 2 * self.pacer_step
+            and current_round % self.pacer_step == 0
             and len(self.exploitation_util_history) >= 2 * self.pacer_step
         ):
             return
@@ -1642,13 +1648,16 @@ class AsyncOortSelector(AbstractSelector):
 
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed
 
-        # Run pacer that controls round_threshold. TRAIN-ONLY: the reference
-        # Oort pacer is the *training* selector's (it reads exploited train
-        # utility, advances once per training round). felix's eval hand leaves
-        # self.round / exploitation_util_history unchanged, so firing it on an
-        # eval call would re-adjust round_threshold off a stale round (§S.pacer).
-        if task_to_perform == "train":
-            self.pacer()
+        # Run pacer that controls round_threshold. TRAIN-ONLY (§S.pacer): felix's
+        # eval hand leaves self.round/exploitation_util_history unchanged, so
+        # firing on eval would re-adjust off a stale round. ONCE-PER-ROUND (§G
+        # 07-20): unlike Oort's reference (pacer() only ever called once/round,
+        # by construction), this select() fires many times per model_version
+        # (once per freed slot) -- without the guard each call re-fires the
+        # pacer, ratcheting round_threshold to 100 in one dispatch burst.
+        if task_to_perform == "train" and model_version != self._last_pacer_round:
+            self.pacer(model_version)
+            self._last_pacer_round = model_version
 
         # TODO: (DG) Add code to allow only those ends (not in
         # all_selected) to be passed. filtered_ends consists of ends

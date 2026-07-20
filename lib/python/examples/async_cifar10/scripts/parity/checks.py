@@ -2184,11 +2184,10 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero wall elapsed or throughput — run too short to measure"}
     rel_diff = abs(sim_throughput - real_throughput) / max(sim_throughput, real_throughput)
-    ok = rel_diff <= tol_rel
     sim_s_per_round = final_vclock / n_sim_rounds if n_sim_rounds else 0
     real_s_per_round = wall_elapsed / n_real_rounds if n_real_rounds else 0
     result = {
-        "ok": ok,
+        "ok": rel_diff <= tol_rel,
         "tier": "EXACT",
         "sim_rounds": n_sim_rounds,
         "real_rounds": n_real_rounds,
@@ -2199,20 +2198,25 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         "rel_diff": round(rel_diff, 3),
         "tol": tol_rel,
     }
-    # DIAG-only, doesn't gate `ok`. sim_s_per_round averages sim's FULL round
-    # count, which can outrun real's wall-capped count; restrict to real's
-    # matched window to separate a population-length artifact from genuine
-    # per-round drift (simulate_fwdllm.md §B, 07-19 pm).
+    # sim_s_per_round averages sim's FULL round count, which legitimately
+    # outruns real's wall-capped one (sim skips real's transport tax, §F-1).
+    # Matched window fixes that population-length artifact and GATES `ok` when
+    # `real_coord` is available (sync baselines, validated §G 07-20); falls
+    # back to raw `rel_diff` for async (`real_coord is None` -- doesn't clean
+    # up fluxtune the same way, simulate_fwdllm.md §B).
     matched_n = min(n_sim_rounds, n_real_rounds)
     if matched_n >= 2:
         sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)[: matched_n - 1]
         if sim_adv:
             matched_sim_s_per_round = sum(sim_adv) / len(sim_adv)
+            matched_rel_diff = (
+                abs(matched_sim_s_per_round - real_s_per_round)
+                / max(matched_sim_s_per_round, real_s_per_round, 1e-9))
             result["matched_window_n"] = len(sim_adv)
             result["matched_window_sim_s_per_round"] = round(matched_sim_s_per_round, 2)
-            result["matched_window_rel_diff"] = round(
-                abs(matched_sim_s_per_round - real_s_per_round)
-                / max(matched_sim_s_per_round, real_s_per_round, 1e-9), 3)
+            result["matched_window_rel_diff"] = round(matched_rel_diff, 3)
+            if real_coord is not None:
+                result["ok"] = matched_rel_diff <= tol_rel
     return result
 
 
@@ -2250,9 +2254,8 @@ def per_round_advance_parity(real: dict, sim: dict,
     real_mean, _ = mean_std(real_adv)
     mean_rel_diff = (abs(sim_mean - real_mean) / max(sim_mean, real_mean)
                      if max(sim_mean, real_mean) > 0 else 0.0)
-    ok = grid_ks <= ks_tol and mean_rel_diff <= mean_tol_rel
     result = {
-        "ok": ok,
+        "ok": grid_ks <= ks_tol and mean_rel_diff <= mean_tol_rel,
         "tier": "EXACT",
         "sim_mean_advance_s": round(sim_mean, 2),
         "real_mean_advance_s": round(real_mean, 2),
@@ -2264,24 +2267,34 @@ def per_round_advance_parity(real: dict, sim: dict,
         "n_sim_rounds": len(sim_adv),
         "n_real_rounds": len(real_adv),
     }
-    # DIAG-only, doesn't gate `ok` -- same population-mismatch rationale as
-    # throughput_parity's matched_window_* fields (§B, 07-19 pm).
+    # Same population-mismatch rationale as throughput_parity's matched_window_*.
+    # GATES `ok` when `real_coord` is available (sync baselines, validated §G
+    # 07-20); falls back to raw grid_ks/mean for async (doesn't clean up
+    # fluxtune the same way, simulate_fwdllm.md §B).
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
     matched_n = min(len(sim_adv), len(real_adv))
     if matched_n >= 2:
         matched_sim = sim_adv[:matched_n]
         matched_real = real_adv[:matched_n]
         matched_sim_mean = sum(matched_sim) / matched_n
         matched_real_mean = sum(matched_real) / matched_n
+        matched_mean_rel_diff = (
+            abs(matched_sim_mean - matched_real_mean)
+            / max(matched_sim_mean, matched_real_mean, 1e-9))
+        matched_grid_ks = ks_stat([round(v) for v in matched_sim],
+                                   [round(v) for v in matched_real])
         ratios = [s / r for s, r in zip(matched_sim, matched_real) if r > 0]
         result["matched_window_n"] = matched_n
         result["matched_window_sim_mean_s"] = round(matched_sim_mean, 2)
         result["matched_window_real_mean_s"] = round(matched_real_mean, 2)
-        result["matched_window_mean_rel_diff"] = round(
-            abs(matched_sim_mean - matched_real_mean)
-            / max(matched_sim_mean, matched_real_mean, 1e-9), 3)
+        result["matched_window_mean_rel_diff"] = round(matched_mean_rel_diff, 3)
+        result["matched_window_ks_stat"] = round(matched_grid_ks, 3)
         if ratios:
             result["matched_window_ratio_median"] = round(statistics.median(ratios), 3)
             result["matched_window_ratio_max"] = round(max(ratios), 3)
+        if real_coord is not None:
+            result["ok"] = (matched_grid_ks <= ks_tol
+                             and matched_mean_rel_diff <= mean_tol_rel)
     return result
 
 

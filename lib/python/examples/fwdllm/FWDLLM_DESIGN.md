@@ -331,3 +331,25 @@ Undecided: whether streaming per-message `_update_visibility_lag` or barrier-anc
 (adapted to fwdllm's variance-gated dynamic-K cadence, not a fixed round) is the right anchor — needs deciding
 by reading how `sync_collect_and_accumulate_grads`'s collection loop actually shapes arrival vs. commit for
 fwdllm's dynamic-K. Left `None` deliberately rather than guessed at.
+
+### Opt-in "deployment-time" vclock mode (not yet built) — proposed 2026-07-20
+
+Sim's vclock deliberately never charges real's transport tax (mqtt refetch/redistribute/drain-tail between
+sync rounds, §F-1 of `simulate_fwdllm.md`) — that's why `matched_window_*` was needed to fix the `throughput`/
+`per_round_advance` rungs (`simulate_fwdllm.md` §G 07-20) rather than the raw population lining up on its own.
+Operator proposal: an opt-in flag that adds a modeled per-round transport-tax term to sim's vclock (derived
+from real's own distribution), so `max_runtime_s` in vclock terms would produce the SAME round count sim would
+see in a real deployment of that same wall duration — a distinct, deliberately-slower mode from the default
+(which stays tax-free and must keep producing a speedup, §F-10), for users who want "what would this look like
+deployed for N real seconds" rather than "explore as many algorithmic steps as possible."
+
+**Not a flat constant.** Real's per-round tax (raw wall Δts − intrinsic `Δspan`) on the 1h fwdllm pair does NOT
+scale continuously with `iteration_per_data_id` — it clusters near multiples of ~34s (iter=0: mostly ~1s, one
+outlier at 32.6s; iter=1: tight 33.8-34.7s; iter=2: bimodal ~35s OR ~67s, not a spread in between; iter=3/4:
+~68-69s) — consistent with a DISCRETE per-event cost (e.g. one `_distribute_weights_sync` redistribute pass
+per some countable trigger) rather than continuous per-round noise. Modeling this as "add the mean" would fix
+the mean but wrong the shape (would newly fail `per_round_advance`'s KS on a distribution that's too smooth).
+**Next step before building the flag**: identify what's actually happening every ~34s (weight-resend count?
+redistribute-pass count? something in `_distribute_weights_sync`/`sync_collect_and_accumulate_grads`) and
+model that mechanism directly, not a fitted average. Better done after the next long run gives more samples to
+confirm the clustering isn't a 1h-run coincidence.

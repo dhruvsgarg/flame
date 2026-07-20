@@ -16,7 +16,7 @@ class _StopAfterAbandon(Exception):
     (same technique as TestCoolingHoldsConcurrency in test_async_sim_ordering.py)."""
 
 
-def _boom():
+def _boom(*args, **kwargs):
     raise _StopAfterAbandon()
 
 
@@ -31,6 +31,7 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
         sel.all_selected = {"stale": time.time() - 100}  # past 90s SEND_TIMEOUT_WAIT_S
         sel.ordered_updates_recv_ends = []
         sel.track_trainer_timeouts = {}
+        sel._last_pacer_round = None
         sel.pacer = _boom
         return sel
 
@@ -91,6 +92,7 @@ class TestAsyncOortSendTimeoutDropsPendingCommitRef:
         sel.all_selected = {"stale": time.time() - 100}  # past 90s SEND_TIMEOUT_WAIT_S
         sel.ordered_updates_recv_ends = []
         sel.track_trainer_timeouts = {}
+        sel._last_pacer_round = None
         sel.pacer = _boom
         sel._agg_pending_commit_ref = {"stale", "other"}
         return sel
@@ -151,6 +153,7 @@ class TestAsyncOortSendTimeoutIsConfigurable:
         sel.ordered_updates_recv_ends = []
         sel.track_trainer_timeouts = {}
         sel.send_timeout_wait_s = send_timeout_wait_s
+        sel._last_pacer_round = None
         sel.pacer = _boom
         return sel
 

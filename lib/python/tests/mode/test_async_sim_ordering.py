@@ -313,6 +313,7 @@ class TestCoolingHoldsConcurrency:
         sel.requester = "agg"
         sel.selected_ends = {"agg": set()}  # no in-flight
         sel.all_selected = {}
+        sel._last_pacer_round = None
         return sel
 
     def _call(self, sel, concurrency, cooling_count):
@@ -340,7 +341,7 @@ class TestCoolingHoldsConcurrency:
         class _Tripwire(Exception):
             pass
 
-        def _boom():
+        def _boom(*args, **kwargs):
             raise _Tripwire()
 
         sel.pacer = _boom
@@ -376,6 +377,7 @@ class TestSendTimeoutReclaimsConcurrencySlot:
         sel.all_selected = {cls.STALE_END: send_ts}
         sel.ordered_updates_recv_ends = []
         sel.track_trainer_timeouts = {}
+        sel._last_pacer_round = None
         return sel
 
     def _call(self, sel, concurrency=1):
@@ -402,7 +404,7 @@ class TestSendTimeoutReclaimsConcurrencySlot:
         class _Tripwire(Exception):
             pass
 
-        def _boom():
+        def _boom(*args, **kwargs):
             raise _Tripwire()
 
         sel.pacer = _boom
