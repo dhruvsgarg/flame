@@ -512,6 +512,48 @@ def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     return coord
 
 
+def _matched_virtual_budget(real_agg_rounds: list, sim_agg_rounds: list):
+    """Matched virtual budget V = min(final_sim_vclock, final_real_wall), plus a
+    real-side time function -- the SAME mechanism `total_commits_parity`/
+    `terminal_state_parity` already use, generalized for reuse (simulate_
+    fwdllm.md §B, 2026-07-20 pm-7).
+
+    Unlike index-count truncation (`events[:matched_n]`), this reads each
+    event's OWN commit timestamp (real: cumulative intrinsic-span clock when
+    available, else raw wall `ts`; sim: `vclock_now`) rather than assuming
+    "the i-th event" means the same thing on both sides. That assumption is
+    safe for sync (strictly serial cycles) but not for async, where cohorts
+    can commit out of arrival order (simulate_fwdllm.md §B/§G, the SET-cascade
+    root-cause work) -- a raw per-event timestamp has no such ordering
+    assumption baked in, so this works UNCONDITIONALLY for both, exactly as
+    total_commits_parity/terminal_state_parity already validate for fluxtune.
+
+    Returns (V, real_time_fn) or (None, None) if either side has no usable
+    clock. `real_time_fn(event) -> Optional[float]`, 0-based from real's own
+    run start.
+    """
+    sim_vclock_vals = [e.get("vclock_now") for e in sim_agg_rounds
+                       if e.get("vclock_now") is not None]
+    if not sim_vclock_vals:
+        return None, None
+    real_ts = [e["ts"] for e in real_agg_rounds if e.get("ts") is not None]
+    if not real_ts:
+        return None, None
+    final_sim_vclock = max(sim_vclock_vals)
+    real_coord = _real_intrinsic_clock(real_agg_rounds)
+    real_t0 = min(real_ts)
+    if real_coord is not None:
+        real_time_fn = lambda e: real_coord.get(id(e))
+        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+    else:
+        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
+        final_real_wall = max(real_ts) - real_t0
+    V = min(final_sim_vclock, final_real_wall)
+    if V <= 0:
+        return None, None
+    return V, real_time_fn
+
+
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
     """Per-progress-unit time advances (positive only).
 
@@ -1921,23 +1963,28 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
     # (simulate_fwdllm.md §B, 07-20 pm-4): utility evolves over training (staleness/
     # speed terms decay), so sim's extra unmatched (further-into-training) rounds
     # in the same wall window shift the pooled distribution even with zero
-    # per-round divergence. Truncating both sides to the first `matched_n`
-    # chronological utility-bearing events isolates that. GATES `ok` when
-    # `real_coord` is available (sync baselines); diagnostic-only for async
-    # (fluxtune) — its own gap may be a genuine cohort-fork effect, not a
-    # population-length one, so it should NOT be silently cleaned up here.
+    # per-round divergence. pm-7: filter both sides to the matched virtual
+    # budget V (each event's OWN commit time) instead of index-count
+    # truncation -- works UNCONDITIONALLY for async too, same mechanism
+    # `total_commits_parity`/`terminal_state_parity` already validate for
+    # fluxtune. Still NOT gating `ok` for async pending `cohort_sequence`
+    # resolving first (simulate_fwdllm.md §B) -- diagnostic-only there.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     r_events = utility_events(real["agg_rounds"])
     s_events = utility_events(sim["agg_rounds"])
-    matched_n = min(len(r_events), len(s_events))
-    if matched_n >= 2:
-        matched_r_pool = [u for e in r_events[:matched_n]
+    V, real_time_fn = _matched_virtual_budget(real["agg_rounds"], sim["agg_rounds"])
+    if V is not None:
+        matched_r_pool = [u for e in r_events
+                          if real_time_fn(e) is not None and real_time_fn(e) <= V + 1e-9
                           for u in (e.get("stat_utility") or []) if u is not None]
-        matched_s_pool = [u for e in s_events[:matched_n]
+        matched_s_pool = [u for e in s_events
+                          if (e.get("vclock_now") or 0) <= V + 1e-9
                           for u in (e.get("stat_utility") or []) if u is not None]
         if matched_r_pool and matched_s_pool:
             matched_pooled_ks = ks_stat(matched_r_pool, matched_s_pool)
-            result["matched_window_n"] = matched_n
+            result["matched_virtual_budget_s"] = round(V, 1)
+            result["matched_window_n_real"] = len(matched_r_pool)
+            result["matched_window_n_sim"] = len(matched_s_pool)
             result["matched_window_pooled_ks_stat"] = round(matched_pooled_ks, 3)
             if real_coord is not None:
                 matched_pooled_ok = matched_pooled_ks <= max_ks
@@ -4604,30 +4651,39 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     # Same population-mismatch rationale as throughput_parity's matched_window_*
     # (simulate_fwdllm.md §B, 07-20 pm-4): sim commits more cycles than real in
     # the same wall window, and its extra (further-into-training) cycles average
-    # a higher `var`, pulling the pooled mean/KS. Truncating both sides to the
-    # first `matched_n` chronological cycles removes that population artifact.
-    # GATES `ok` when `real_coord` is available (sync baselines); falls back to
-    # the raw pooled comparison for async (fluxtune, whose gap is a genuine
-    # cohort-fork divergence, not a population-length one — doesn't clean up
-    # the same way).
+    # a higher `var`, pulling the pooled mean/KS. pm-7: filter both sides to the
+    # matched virtual budget V (each event's OWN commit time, real: intrinsic
+    # clock or raw ts; sim: vclock_now) instead of index-count truncation --
+    # `_matched_virtual_budget` works UNCONDITIONALLY for async too (no
+    # index-position-tracks-progress-position assumption), same mechanism
+    # `total_commits_parity`/`terminal_state_parity` already validate for
+    # fluxtune. Still NOT gating `ok` for async pending `cohort_sequence`
+    # resolving first (simulate_fwdllm.md §B) -- diagnostic-only there.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    matched_n = min(len(r_var), len(s_var))
-    if matched_n >= 2:
-        matched_r = r_var[:matched_n]
-        matched_s = s_var[:matched_n]
-        matched_ks = ks_stat(matched_s, matched_r)
-        matched_r_mean, _ = mean_std(matched_r)
-        matched_s_mean, _ = mean_std(matched_s)
-        matched_mean_rel = (
-            abs(matched_r_mean - matched_s_mean) / max(abs(matched_r_mean), abs(matched_s_mean))
-            if max(abs(matched_r_mean), abs(matched_s_mean)) > 0 else 0.0)
-        result["matched_window_n"] = matched_n
-        result["matched_window_real_mean_var"] = round(matched_r_mean, 6)
-        result["matched_window_sim_mean_var"] = round(matched_s_mean, 6)
-        result["matched_window_mean_rel_diff"] = round(matched_mean_rel, 4)
-        result["matched_window_ks_stat"] = round(matched_ks, 3)
-        if real_coord is not None:
-            result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
+    V, real_time_fn = _matched_virtual_budget(real["agg_rounds"], sim["agg_rounds"])
+    if V is not None:
+        matched_r = [e["var"] for e in rc
+                     if e.get("var") is not None
+                     and real_time_fn(e) is not None and real_time_fn(e) <= V + 1e-9]
+        matched_s = [e["var"] for e in sc
+                     if e.get("var") is not None
+                     and (e.get("vclock_now") or 0) <= V + 1e-9]
+        if len(matched_r) >= 2 and len(matched_s) >= 2:
+            matched_ks = ks_stat(matched_s, matched_r)
+            matched_r_mean, _ = mean_std(matched_r)
+            matched_s_mean, _ = mean_std(matched_s)
+            matched_mean_rel = (
+                abs(matched_r_mean - matched_s_mean) / max(abs(matched_r_mean), abs(matched_s_mean))
+                if max(abs(matched_r_mean), abs(matched_s_mean)) > 0 else 0.0)
+            result["matched_virtual_budget_s"] = round(V, 1)
+            result["matched_window_n_real"] = len(matched_r)
+            result["matched_window_n_sim"] = len(matched_s)
+            result["matched_window_real_mean_var"] = round(matched_r_mean, 6)
+            result["matched_window_sim_mean_var"] = round(matched_s_mean, 6)
+            result["matched_window_mean_rel_diff"] = round(matched_mean_rel, 4)
+            result["matched_window_ks_stat"] = round(matched_ks, 3)
+            if real_coord is not None:
+                result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
     return result
 
 

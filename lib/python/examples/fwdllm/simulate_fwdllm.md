@@ -109,12 +109,24 @@ genuine shared compute.
 > Result: `v2_var_trajectory` flips fail→pass for BOTH fwdllm and fwdllm_plus, and the matched window is
 > bit-identical (0.0 KS, 0.0 mean diff) — the cleanest possible confirmation this was pure population-length,
 > never a bug. fwdllm's fail count drops 5→3, fwdllm_plus's 3→2 (see table). fluxtune's `v2_var_trajectory` stays
-> gated-FAIL by design (async, no `real_coord`), but its own matched-window diagnostic shows the SAME effect
-> (mean-rel-diff 12.3%→1.35%, near-closing) — the "cohort-fork downstream, not population-length" framing this
-> rung previously had for fluxtune does NOT hold at 7200s scale; open design question whether matched-window
-> gating should extend to async (§B). Separately, `first_commit_race_diagnostic` now runs over EVERY divergent
-> cycle in the window (was: first only) — on fluxtune's 8 divergent cycles, `explained_frac = 0.0`: the
-> near-tie-timing mechanism explains NONE of them, reopening (not just qualifying) the pm-3 root-cause claim.
+> gated-FAIL by design (async, no `real_coord`); its INDEX-truncated matched-window diagnostic looked like it
+> nearly closed the gap (12.3%→1.35%), but pm-7 (below) shows that was a truncation artifact, not a real
+> effect — the "cohort-fork downstream, not population-length" framing stands. Separately,
+> `first_commit_race_diagnostic` now runs over EVERY divergent cycle in the window (was: first only) — on
+> fluxtune's 8 divergent cycles, `explained_frac = 0.0`: the near-tie-timing mechanism explains NONE of them,
+> reopening (not just qualifying) the pm-3 root-cause claim.
+
+> **pm-7**: replaced INDEX-count truncation (`events[:matched_n]`) with the matched-VIRTUAL-BUDGET mechanism
+> `total_commits_parity`/`terminal_state_parity` already validate for async (each event's OWN commit
+> timestamp — real intrinsic-clock-or-`ts`, sim `vclock_now` — filtered to `<= V`, never index position) in
+> `var_trajectory_parity`/`utility_parity`. For fwdllm/fwdllm_plus this is a STRICTER, more honest check —
+> matched counts are no longer forced equal by construction, yet still land near-identical (KS 0.002-0.005) —
+> a stronger confirmation than before, not a weaker one. For fluxtune it REVERSES pm-5's read: at matched
+> budget, `v2_var_trajectory`'s mean-rel-diff is 10.6% (barely moved from the raw 12.3%), not the 1.35% the
+> index-truncation trick suggested — that closure was an artifact of forcing equal population COUNTS on a
+> metric that happens to average similarly late in training, not evidence of a real population-length effect.
+> `cohort-fork downstream` is the standing hypothesis again. `channel.properties["vclock_now"]` fix (pm-6)
+> also means sim-side selection diagnostics are no longer blind — not yet re-validated live.
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
@@ -168,7 +180,7 @@ recheck unless marked 30min-only.
 |---|---|---|---|---|---|
 | FW, FW+, FT | `agg_step_timing_breakdown`; `drain_wall_budget` (`drain_tail_s`) | 2 unconditional sync points isolated with their own `step_timing` sub-event: `agg_var_item_sync`, `agg_apply_update_cpu_sync` (`FedSgdAggregator.py`) | Not GIL/thread-scheduling (no such call found) — real CUDA/CPU sync points, unconditional, can't be DEBUG-gated (feed the live commit gate) | Sync cost scales with ambient GPU queue depth — sim's trainer pool never sleeps (denser queue) than real's | Needs a live pair: tax IN sync → queue-depth theory holds; tax OUTSIDE it → wrong |
 | FT | `cohort_sequence` (SET); `v1b_iters_moving_avg`; `convergence` (C1) | `selection_train`'s `vclock_now` was ALWAYS None on the sim side (0/19205 events) — every sim-side margin query was silently blind | FIXED (§G): `_distribute_weights_async` never stamped `channel.properties["vclock_now"]`. Real-side margin evidence (0.2x-200x scale) stands on its own, unaffected | Cycle 2's moderate real-side gap compounds via the algorithm's OWN feedback loop (temporal_uncertainty/round_threshold depend on past selections), not coin-flips | Re-run with the vclock fix live: sim-side gate1/gate2 will finally be non-blind, giving the full (not half) picture |
-| FT | `v2_var_trajectory`, `utility` (F1-F3, pooled) | 7200s matched-window: `v2_var_trajectory` mean-rel-diff 12.3%→1.35%; `utility` pooled_ks 0.343→0.153 (both would pass) | Population-length dominates here too, same as FW/FW+ — contradicts the 30min pair's own read, which showed the opposite | Ungated only because fluxtune is async (`real_coord` is None) — an unrelated safeguard, not a decision about index-truncation | Open design question: extend `matched_window_*` to async via index-truncation? Untested under overlap — ask operator, don't decide unilaterally |
+| FT | `v2_var_trajectory` | pm-7 (matched VIRTUAL BUDGET, not index count): mean-rel-diff only 12.3%→10.6% — barely moves, unlike the misleading 1.35% index-truncation gave | `cohort-fork downstream` stands (§G pm-3/pm-5 correction) — population-length was NOT the dominant effect here after all | Mechanism now correctly implemented (receive-side commit timestamp, same as `total_commits`/`terminal_state`) — just not yet gating for async | Gating still blocked on `cohort_sequence` resolving first (agreed) — `utility` (pooled) already passes either way, no action needed |
 
 **Other open items (not a failing rung):**
 - FT: `trainer_speed_identity`'s `utility` sub-check reopened on the 7200s run (23/100 >10% dev) but did NOT
@@ -316,6 +328,15 @@ the actual parity bugs above.
   `_cohort_margin_detail`, the existing `_trainer_first_explored_marker`) without affecting the real side.
   Fixed: `channel.properties["vclock_now"] = self.vclock_now` before `channel.ends()`. 2 new unit tests,
   571/571 `tests/mode -k "parity or fwdllm"` pass. Not yet validated against a live run.
+- **`v2_var_trajectory`/`utility`'s matched-window switched from index-count to matched VIRTUAL BUDGET**
+  (07-20 pm-7) — new `_matched_virtual_budget` (each event's own commit timestamp: real intrinsic-clock-or-
+  `ts`, sim `vclock_now`, filtered to `<= V`) replaces `events[:matched_n]`, reusing the mechanism
+  `total_commits_parity`/`terminal_state_parity` already validate for BOTH sync and async — no more
+  index-position-tracks-progress-position assumption, which async's out-of-order commits can violate.
+  FW/FW+ results get STRICTER (counts no longer forced equal) yet stay near-identical (KS 0.002-0.005) —
+  stronger confirmation, not weaker. **Corrects pm-5**: fluxtune's `v2_var_trajectory` "12.3%→1.35%" closure
+  was a truncation ARTIFACT of forcing equal counts, not a real effect — at matched budget it's 12.3%→10.6%,
+  barely moved. `cohort-fork downstream` (not population-length) stands as the root hypothesis for fluxtune.
 - **FT `preferred_duration`'s 30min marginal fail EXPLAINED, not noise** (07-20 pm-5) — real's first-1800s
   window of the ALREADY-BANKED 7200s run reproduces the fresh 30min pair's frac_binding almost exactly (0.575
   vs 0.577): a genuine early-training regime (binding rate starts high, decays as `round_threshold` settles),
