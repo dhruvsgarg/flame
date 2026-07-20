@@ -1867,6 +1867,9 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
                     d[t].append(u)
         return d
 
+    def utility_events(agg_rounds):
+        return [e for e in agg_rounds if e.get("contributing_trainers")]
+
     r_utils = per_trainer_utils(real["agg_rounds"])
     s_utils = per_trainer_utils(sim["agg_rounds"])
 
@@ -1901,7 +1904,7 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
     # Stochastic: enforce the pooled distribution only.  Deterministic: also
     # require per-trainer identity over well-sampled trainers.
     ok = pooled_ok if gated else (pooled_ok and per_trainer_ok)
-    return {
+    result = {
         "ok": ok,
         "tier": "DIST",
         "gated": gated,
@@ -1914,6 +1917,32 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
         "min_samples": min_samples,
         "max_ks_tol": max_ks,
     }
+    # Same population-mismatch rationale as throughput_parity's matched_window_*
+    # (simulate_fwdllm.md §B, 07-20 pm-4): utility evolves over training (staleness/
+    # speed terms decay), so sim's extra unmatched (further-into-training) rounds
+    # in the same wall window shift the pooled distribution even with zero
+    # per-round divergence. Truncating both sides to the first `matched_n`
+    # chronological utility-bearing events isolates that. GATES `ok` when
+    # `real_coord` is available (sync baselines); diagnostic-only for async
+    # (fluxtune) — its own gap may be a genuine cohort-fork effect, not a
+    # population-length one, so it should NOT be silently cleaned up here.
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    r_events = utility_events(real["agg_rounds"])
+    s_events = utility_events(sim["agg_rounds"])
+    matched_n = min(len(r_events), len(s_events))
+    if matched_n >= 2:
+        matched_r_pool = [u for e in r_events[:matched_n]
+                          for u in (e.get("stat_utility") or []) if u is not None]
+        matched_s_pool = [u for e in s_events[:matched_n]
+                          for u in (e.get("stat_utility") or []) if u is not None]
+        if matched_r_pool and matched_s_pool:
+            matched_pooled_ks = ks_stat(matched_r_pool, matched_s_pool)
+            result["matched_window_n"] = matched_n
+            result["matched_window_pooled_ks_stat"] = round(matched_pooled_ks, 3)
+            if real_coord is not None:
+                matched_pooled_ok = matched_pooled_ks <= max_ks
+                result["ok"] = matched_pooled_ok if gated else (matched_pooled_ok and per_trainer_ok)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2939,7 +2968,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     residual = real_mean - sim_mean
     rel = abs(residual) / real_mean if real_mean > 0 else 0.0
     per_commit = (residual / agg_goal) if agg_goal else None
-    return {
+    result = {
         "ok": rel <= tol_rel,
         "tier": "EXACT",
         "real_mean_advance_s": round(real_mean, 2),
@@ -2951,6 +2980,29 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
                                           if per_commit is not None else None),
         "agg_goal": agg_goal or None,
     }
+    # Same population-mismatch rationale as throughput_parity's matched_window_*
+    # (simulate_fwdllm.md §B, 07-20 pm-4): sim's round count legitimately outruns
+    # real's wall-capped one, inflating the raw residual with rounds real never
+    # reached. GATES `ok` when `real_coord` is available (sync baselines); falls
+    # back to raw `rel` for async (fluxtune, doesn't clean up the same way).
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    matched_n = min(len(sim_adv), len(real_adv))
+    if matched_n >= 2:
+        matched_sim = sim_adv[:matched_n]
+        matched_real = real_adv[:matched_n]
+        matched_sim_mean = sum(matched_sim) / matched_n
+        matched_real_mean = sum(matched_real) / matched_n
+        matched_residual = matched_real_mean - matched_sim_mean
+        matched_rel = (abs(matched_residual) / matched_real_mean
+                       if matched_real_mean > 0 else 0.0)
+        result["matched_window_n"] = matched_n
+        result["matched_window_sim_mean_s"] = round(matched_sim_mean, 2)
+        result["matched_window_real_mean_s"] = round(matched_real_mean, 2)
+        result["matched_window_residual_s"] = round(matched_residual, 2)
+        result["matched_window_rel"] = round(matched_rel, 3)
+        if real_coord is not None:
+            result["ok"] = matched_rel <= tol_rel
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4537,7 +4589,7 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     s_mean, _ = mean_std(s_var)
     mean_rel = (abs(r_mean - s_mean) / max(abs(r_mean), abs(s_mean))
                 if max(abs(r_mean), abs(s_mean)) > 0 else 0.0)
-    return {
+    result = {
         "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
         "tier": "DIST",
         "real_mean_var": round(r_mean, 6),
@@ -4549,6 +4601,34 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
         "n_real_cycles": len(r_var),
         "n_sim_cycles": len(s_var),
     }
+    # Same population-mismatch rationale as throughput_parity's matched_window_*
+    # (simulate_fwdllm.md §B, 07-20 pm-4): sim commits more cycles than real in
+    # the same wall window, and its extra (further-into-training) cycles average
+    # a higher `var`, pulling the pooled mean/KS. Truncating both sides to the
+    # first `matched_n` chronological cycles removes that population artifact.
+    # GATES `ok` when `real_coord` is available (sync baselines); falls back to
+    # the raw pooled comparison for async (fluxtune, whose gap is a genuine
+    # cohort-fork divergence, not a population-length one — doesn't clean up
+    # the same way).
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    matched_n = min(len(r_var), len(s_var))
+    if matched_n >= 2:
+        matched_r = r_var[:matched_n]
+        matched_s = s_var[:matched_n]
+        matched_ks = ks_stat(matched_s, matched_r)
+        matched_r_mean, _ = mean_std(matched_r)
+        matched_s_mean, _ = mean_std(matched_s)
+        matched_mean_rel = (
+            abs(matched_r_mean - matched_s_mean) / max(abs(matched_r_mean), abs(matched_s_mean))
+            if max(abs(matched_r_mean), abs(matched_s_mean)) > 0 else 0.0)
+        result["matched_window_n"] = matched_n
+        result["matched_window_real_mean_var"] = round(matched_r_mean, 6)
+        result["matched_window_sim_mean_var"] = round(matched_s_mean, 6)
+        result["matched_window_mean_rel_diff"] = round(matched_mean_rel, 4)
+        result["matched_window_ks_stat"] = round(matched_ks, 3)
+        if real_coord is not None:
+            result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
+    return result
 
 
 def _cohort_expected_delay_map(real: dict, sim: dict,
@@ -4786,6 +4866,43 @@ def _cohort_margin_ok(chosen_ids: list, excluded_ids: list, sel_events: list,
     return all(u is not None and abs(u - cutoff) <= scale for u in excluded_us)
 
 
+def _cohort_margin_detail(chosen_ids: list, excluded_ids: list, sel_events: list,
+                          time_field: str, boundary: Optional[float],
+                          scale: Optional[float]) -> dict:
+    """Value-level sibling of `_cohort_margin_ok` (simulate_fwdllm.md §B,
+    2026-07-20 pm-5): `_cohort_margin_ok` only reports a bool, hiding WHETHER a
+    "not ok" margin was a near-miss (a slightly wrong noise-floor threshold) or
+    a genuine value-level gap (excluded candidate's utility far from the
+    chosen cutoff -- the kind of gap a mere near-tie timing story can't
+    explain). Returns per-excluded-id {utility, gap, gap_over_scale} plus the
+    cutoff -- DIAGNOSTIC ONLY, does not gate anything."""
+    def _last_u(end_id):
+        best = None
+        for e in sel_events:
+            t = e.get(time_field)
+            if t is None or (boundary is not None and t > boundary + 1e-6):
+                continue
+            u = (e.get("per_trainer") or {}).get(end_id, {}).get("utility")
+            if u is not None:
+                best = u
+        return best
+    chosen_us = [u for u in (_last_u(t) for t in chosen_ids) if u is not None]
+    if not chosen_us or boundary is None:
+        return {"cutoff": None, "excluded": []}
+    cutoff = min(chosen_us)
+    excluded = []
+    for eid in excluded_ids:
+        u = _last_u(eid)
+        gap = abs(u - cutoff) if u is not None else None
+        excluded.append({
+            "end_id": eid,
+            "utility": u,
+            "gap_vs_cutoff": gap,
+            "gap_over_scale": (round(gap / scale, 2) if gap is not None and scale else None),
+        })
+    return {"cutoff": cutoff, "excluded": excluded}
+
+
 def _cohort_first_commit_race_diagnostic(
     real_ids: list, sim_ids: list,
     real_sel: list, sim_sel: list,
@@ -4824,6 +4941,14 @@ def _cohort_first_commit_race_diagnostic(
     sim_margin_ok = _cohort_margin_ok(sim_ids, only_real, sim_sel or [], "vclock_now",
                                       s_boundary, scale)
     gate2_ok = real_margin_ok or sim_margin_ok
+    # pm-5: value-level detail behind the gate2 booleans -- distinguishes a
+    # near-miss margin (small gap_over_scale, threshold likely just mis-tuned)
+    # from a genuine value-level divergence (gap_over_scale >> 1, points at a
+    # real value/RNG desync, not a timing story). Diagnostic-only.
+    real_margin_detail = _cohort_margin_detail(real_ids, only_sim, real_sel or [], "ts",
+                                               r_boundary, scale)
+    sim_margin_detail = _cohort_margin_detail(sim_ids, only_real, sim_sel or [], "vclock_now",
+                                              s_boundary, scale)
 
     return {
         "applicable": True,
@@ -4834,6 +4959,8 @@ def _cohort_first_commit_race_diagnostic(
         "gate2_margin_ok": gate2_ok,
         "gate2_real_margin_ok": real_margin_ok,
         "gate2_sim_margin_ok": sim_margin_ok,
+        "gate2_real_margin_detail": real_margin_detail,
+        "gate2_sim_margin_detail": sim_margin_detail,
         "utility_scale": scale,
         "explained": gate1_ok and gate2_ok,
     }
@@ -4915,36 +5042,44 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     is_async = any(e.get("is_async") for e in rc_full[:1] + sc_full[:1])
 
     set_m = tie_m = 0
+    _divergent_idxs = []
     for i in range(n):
         r_ids, s_ids = cohort(rc[i]), cohort(sc[i])
         if sorted(r_ids) == sorted(s_ids):
             set_m += 1
         elif _set_tie(rc[i], sc[i]):
             tie_m += 1
+        else:
+            _divergent_idxs.append(i)
     set_ok = (len(rc) == len(sc) and (set_m + tie_m) == n)
     set_divergence = None
     race_diagnostic = None
-    if not set_ok:
-        _idx = next((i for i in range(n)
-                     if sorted(cohort(rc[i])) != sorted(cohort(sc[i]))
-                     and not _set_tie(rc[i], sc[i])),
-                    n)  # falls through to a length mismatch past n
-        if _idx < n:
-            r, s = rc[_idx], sc[_idx]
-            set_divergence = {
-                "cycle_index": _idx,
-                "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
-                "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
-            }
-            # DIAGNOSTIC ONLY -- does not affect set_ok/ok (simulate_fwdllm.md
-            # §B/§G 2026-07-20 pm-3). Not yet validated against a live run.
-            race_diagnostic = _cohort_first_commit_race_diagnostic(
+    # DIAGNOSTIC ONLY -- does not affect set_ok/ok (simulate_fwdllm.md §B/§G
+    # 2026-07-20 pm-3/pm-4). Runs the race diagnostic over EVERY divergent
+    # cycle in the window, not just the first (pm-4: a single instance isn't
+    # enough to judge whether "near-tie timing" explains the SET cascade in
+    # general). `all_race_diagnostics` + `explained_frac` summarize; callers
+    # must NOT use either to flip `ok`/`set_ok` until validated.
+    all_race_diagnostics = []
+    if _divergent_idxs:
+        _idx = _divergent_idxs[0]
+        r, s = rc[_idx], sc[_idx]
+        set_divergence = {
+            "cycle_index": _idx,
+            "real": {"data_id": r.get("cycle_data_id"), "cohort": cohort(r)},
+            "sim": {"data_id": s.get("cycle_data_id"), "cohort": cohort(s)},
+        }
+        for i in _divergent_idxs:
+            r, s = rc[i], sc[i]
+            diag = _cohort_first_commit_race_diagnostic(
                 cohort(r), cohort(s),
                 real.get("selection_train"), sim.get("selection_train"),
                 rc_full, sc_full,
                 real_pos_of.get(id(r)), sim_pos_of.get(id(s)),
                 tie_window_s,
             )
+            all_race_diagnostics.append({"cycle_index": i, **diag})
+        race_diagnostic = all_race_diagnostics[0]
     order_m = cad_m = var_m = 0
     first_div = None
     for i in range(n):
@@ -4999,9 +5134,15 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "set_match_frac": round(set_m / n, 3) if n else None,
         "set_tie_frac": round(tie_m / n, 3) if n else None,
         "set_divergence": set_divergence,
-        # DIAGNOSTIC ONLY (simulate_fwdllm.md §B/§G 2026-07-20 pm-3) -- does
-        # NOT gate `ok`/`set_ok`. None unless set_divergence is present.
+        # DIAGNOSTIC ONLY (simulate_fwdllm.md §B/§G 2026-07-20 pm-3/pm-4) --
+        # does NOT gate `ok`/`set_ok`. None unless set_divergence is present.
         "first_commit_race_diagnostic": race_diagnostic,
+        # pm-4: same diagnostic over EVERY divergent cycle in the window (not
+        # just the first) + the fraction `explained` -- still diagnostic-only.
+        "all_race_diagnostics": all_race_diagnostics or None,
+        "explained_frac": (round(sum(1 for d in all_race_diagnostics if d.get("explained")) /
+                                 len(all_race_diagnostics), 3)
+                           if all_race_diagnostics else None),
         "order_match_frac": round(order_m / n, 3) if n else None,
         "cadence_match_frac": round(cad_m / n, 3) if n else None,
         "var_match_frac": round(var_m / n, 3) if n else None,

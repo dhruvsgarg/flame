@@ -1987,6 +1987,57 @@ def train_batch_phase_plots(records, out, stamp, tdir):
     return out_paths
 
 
+def agg_step_timing_plots(records, out, stamp, tdir):
+    """CDF + mean-bar of the AGGREGATOR's own `step_timing` events (simulate_
+    fwdllm.md §B row 1, 2026-07-20 pm-5) -- `_compute_var`/`_prepare_round_
+    state`/`_apply_weighted_update`/etc, plus the new isolated-sync-point
+    sub-events `agg_var_item_sync`/`agg_apply_update_cpu_sync`. This is the
+    aggregator-side analog of `train_batch_phase_plots` (trainer `tb_*`
+    phases); distinguished from it by func name NOT starting with `tb_` (the
+    established prefix convention, see `_stage_timer`'s docstring) since both
+    aggregator and trainer `step_timing` events are merged into one `records`
+    list upstream. Fills the gap `agg_step_timing_breakdown_parity` has had
+    since it landed (§A session-6): the rung existed with no visual.
+    """
+    d = _sub(out, "aggregation")
+    st = by_event(records, EVENT_STEP_TIMING)
+    if not st:
+        p = ph.no_data_plot(
+            "Aggregator step timing (no step_timing telemetry)", d,
+            "agg_step_timing_cdf.pdf",
+            note="run predates step_timing instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    by_func = defaultdict(list)
+    for r in st:
+        f, dur = r.get("func"), r.get("duration_s")
+        if f and not f.startswith("tb_") and dur is not None and dur >= 0:
+            by_func[f].append(float(dur))
+    if not by_func:
+        p = ph.no_data_plot(
+            "Aggregator step timing (no aggregator-side events)", d,
+            "agg_step_timing_cdf.pdf",
+            note="only trainer tb_* events present", stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+    ranked = sorted(by_func.items(), key=lambda kv: -sum(kv[1]))
+    series = {f: [x * 1e3 for x in v] for f, v in ranked}
+    p = ph.cdf_multi(series, "duration (ms)",
+                     "Aggregator step_timing wall duration (CDF by function)",
+                     d, "agg_step_timing_cdf.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+
+    means_ms = [sum(v) / len(v) * 1e3 for _, v in ranked]
+    p = ph.bar_plot([f for f, _ in ranked], means_ms, "mean duration (ms)",
+                    "Aggregator step_timing mean duration by function",
+                    d, "agg_step_timing_mean_bar.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+    return out_paths
+
+
 def phase_vclock_plots(records, out, stamp, tdir):
     """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained,
     every-example/every-mode companion to sim_speedup_plots' round-level view
@@ -3242,7 +3293,7 @@ def write_summary(records, out, tdir, manifest=None, saved_paths=None):
 _PLOT_GROUPS = (
     perf_plots, sanity_plots, selection_plots, insights_plots,
     system_plots, sim_speedup_plots, phase_vclock_plots, phase_wall_vclock_plots,
-    train_batch_phase_plots,
+    train_batch_phase_plots, agg_step_timing_plots,
     mqtt_delivery_plots,
     availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
     send_gate_wait_plots, commit_promptness_plots,

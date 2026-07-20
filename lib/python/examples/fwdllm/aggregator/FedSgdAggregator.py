@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import logging
 import random
@@ -21,6 +22,40 @@ def _calculate_hash(tensor):
 
     """Calculate a hash for a tensor for logging."""
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
+
+
+@contextlib.contextmanager
+def _agg_sync_timer(owner, name: str):
+    """Isolate the wall time of a single CPU/GPU sync point (`.item()`,
+    `.to("cpu")`) from the rest of its enclosing `@timer_decorator`-wrapped
+    function (simulate_fwdllm.md §B, 2026-07-20 pm-5, row 1). Emits its OWN
+    named `step_timing` event -- `agg_step_timing_breakdown_parity` reads ANY
+    `step_timing` func name generically, so this gets a KS+mean rung for free,
+    no `checks.py` change needed. If sim's fixed per-call tax on `_compute_var`/
+    `_prepare_round_state`/`_apply_weighted_update` is concentrated in these
+    isolated sync windows, that supports the GPU-queue-depth-under-a-denser-
+    sim-trainer-pool hypothesis; if the sync itself is fast and the REST of the
+    function accounts for the tax, that hypothesis is wrong -- look elsewhere.
+    """
+    t0 = time.time()
+    try:
+        yield
+    finally:
+        dur = time.time() - t0
+        stage = getattr(owner, "fwd_llm_stage", None)
+        if stage is not None:
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_step_timing
+                    ev, fields = build_step_timing(
+                        func=name, duration_s=dur,
+                        round_num=stage.round_id, data_id=stage.data_id,
+                        iteration=stage.iteration, trainer_id=stage.trainer_id,
+                    )
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - telemetry must never fault training
+                logger.debug("agg_sync_timer telemetry emit failed", exc_info=True)
 
 
 class FedSGDAggregator(TopAggregator):
@@ -284,11 +319,15 @@ class FedSGDAggregator(TopAggregator):
                     weighted_gradient_sum[id] = local_model_params[id]
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
-            next(old_param).detach().to("cpu").sub_(
-                self._server_update_step(
-                    id, learning_rate * weighted_gradient_sum[id] / training_num
+            # `.to("cpu")` is a GPU->CPU sync point -- isolated separately
+            # (simulate_fwdllm.md §B row 1) since it's summed over every
+            # param, not just once per call.
+            with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                next(old_param).detach().to("cpu").sub_(
+                    self._server_update_step(
+                        id, learning_rate * weighted_gradient_sum[id] / training_num
+                    )
                 )
-            )
 
     @timer_decorator
     def _prepare_round_state(self, current_round):
@@ -300,7 +339,9 @@ class FedSGDAggregator(TopAggregator):
         self.var = self._compute_var()
         # Cached scalar so downstream logs don't re-sync the GPU tensor just
         # to print it (§F-19, §G 07-20 pm-2); self.var itself stays a tensor.
-        self._var_scalar = self.var.item()
+        # `.item()` is the sync point -- isolated separately (simulate_fwdllm.md §B row 1).
+        with _agg_sync_timer(self, "agg_var_item_sync"):
+            self._var_scalar = self.var.item()
         self.var_prev_iter_list.append(self._var_scalar)
         logger.info(f"self.var = {self._var_scalar}")
         if logger.isEnabledFor(logging.DEBUG):
