@@ -62,6 +62,24 @@ def _resolve(base: Path, rel: Optional[str]) -> Optional[Path]:
     return (base / p).resolve()
 
 
+def _check_gpu_health(gpu_ids: set) -> dict:
+    """Probe each ordinal with a real allocation -- is_available()/device_count()
+    can both report healthy on a faulted GPU (e.g. "requires reset").
+    Returns {gpu_id: error_str} for any ordinal that fails; {} if all healthy."""
+    try:
+        import torch as _torch
+    except ImportError:
+        return {}
+    bad = {}
+    for gid in sorted(gpu_ids):
+        try:
+            _torch.cuda.set_device(gid)
+            _torch.zeros(1, device=f"cuda:{gid}")
+        except Exception as exc:
+            bad[gid] = str(exc).splitlines()[0]
+    return bad
+
+
 def _read_numa_nodes() -> dict:
     """{node_id: sorted([cpu_id, ...])} from sysfs; {} if unavailable (single
     node / non-Linux / no permission) -- callers must fall back gracefully."""
@@ -289,6 +307,21 @@ class ExperimentRunner:
                 _agg_gpu = _num_gpus - 1        # least-loaded trainer GPU
             else:
                 _agg_gpu = None
+
+            # Fail fast on a faulted GPU before spawning anything -- otherwise
+            # it surfaces as an obscure crash deep in whichever process lands
+            # on it (simulate_fwdllm.md §B, 07-21).
+            _gpu_pool = set(range(_num_gpus))
+            if _agg_gpu is not None:
+                _gpu_pool.add(_agg_gpu)
+            if _gpu_pool:
+                _bad_gpus = _check_gpu_health(_gpu_pool)
+                if _bad_gpus:
+                    raise RuntimeError(
+                        "GPU health check failed before spawn -- refusing to launch: "
+                        + "; ".join(f"GPU {gid}: {err}" for gid, err in _bad_gpus.items())
+                    )
+
             self.aggregator_spawner.spawn(
                 paths["aggregator_main"],
                 config_json=json.dumps(agg_cfg),

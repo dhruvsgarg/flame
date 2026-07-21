@@ -267,8 +267,10 @@ class ForwardTextClassificationTrainer:
         # Initialized RNGs with client_ids and the exact same static seed (42), to avoid all trainers generating the same sequence of perturbations, which was stalling the accuracy increase
         self.torch_rng = torch.Generator(device="cpu")
         self.torch_rng.manual_seed(self.args.client_idx)
-        self.torch_cuda_rng = torch.Generator(device="cuda")
-        self.torch_cuda_rng.manual_seed(self.args.client_idx)
+        self.torch_cuda_rng = None
+        if self.device.type == "cuda":
+            self.torch_cuda_rng = torch.Generator(device="cuda")
+            self.torch_cuda_rng.manual_seed(self.args.client_idx)
 
         self.total_rng_iter = 0
 

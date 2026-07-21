@@ -57,7 +57,8 @@ into throughput/commits/utility/convergence. **Fix landed same session** (§B) �
 same `_per_agg_trainer_list` already used for the dedup guard, no new data structure. 617/617 `tests/mode`
 pass. A follow-up 900s smoke pair (`run_20260721_100808`/`_103232`) already shows 19→12 fails with this fix
 alone. Remaining `cohort_sequence` divergence root-caused + a second fix landed same session (§B) —
-**not yet validated live.**
+**not yet validated live**: the `run_20260721_123141`/`_123548` pair meant to validate it crashed both
+aggregators at startup on an unrelated bug (unconditional CUDA RNG init on a bad GPU ordinal, now fixed — §B).
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
@@ -141,6 +142,22 @@ key. (2) sim now also does `self._sim_pending_commit.add(end)` synchronously on 
 live-reference guard), additive only — commit still discards it. 14 new tests (`test_selection_determinism.py`,
 `test_fwdllm_real_pending_commit.py`), full `tests/` suite green. **Needs the next live pair** to confirm
 `cohort_sequence` (and its downstream-gated `v2_var_trajectory`/`utility`/`v1b_iters_moving_avg`) clear.
+
+**Both live-validation pairs crashed at startup (07-21 pm), unrelated to the fixes above.** GPU ordinal 7 went
+unhealthy on the run node between the `_100808`/`_103232` pair (10:08-10:46, ordinal 7 fine for every client) and
+the next pair `_123141`/`_123548` (12:32+, `cuda_device_count=0` for every client on ordinal 7, all 8 min of the
+run) — not contention (operator confirmed nothing running on any of the 8 GPUs), a real fault (Xid/needs-reset
+class). `ForwardTextClassificationTrainer.__init__` compounded it: unconditionally built `torch_cuda_rng =
+torch.Generator(device="cuda")` — dead code, never read elsewhere in the file — regardless of `self.device`,
+so the aggregator (pinned to the bad ordinal) and trainer client_idx=7 crashed instead of surfacing a clear
+error. **[LANDED, unvalidated live] Fix, two parts.** (1) `tc_transformer_trainer_distribute.py`: only
+construct `torch_cuda_rng` when `self.device.type == "cuda"`. (2) `flame/launch/runner.py`: new
+`_check_gpu_health()` does a real allocation (not just `is_available()`/`device_count()`, which both reported
+healthy right up to the point a real alloc would've failed) on every ordinal about to be used — trainer pool
+`0..num_gpus-1` plus the aggregator's pinned GPU — before spawning anything; aborts the whole launch with the
+bad ordinal(s) named, instead of 100+ processes limping into an obscure crash. 435/435 `tests/` (runner + fwdllm
+scope) pass. Needs the next live pair to confirm real+sim both start clean (or fail fast with a clear message
+if ordinal 7 is still bad).
 
 **Contributing factor, still open.** Every trainer's first-ever GPU/JVP pass takes ~8-11x longer than its
 later, steady-state passes (real median 4.11s vs 0.40s; sim 3.75s vs 0.48s) — a CUDA-context/kernel-compile
