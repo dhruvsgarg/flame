@@ -242,6 +242,18 @@ def recv_fifo_wrapper(channel, ends):
     logger.debug("Exiting recv_fifo_wrapper")
 
 
+class _OrderedContributorList(list):
+    """Ordered list + `.discard()`, so `_per_agg_trainer_list` can bind straight
+    to the selector's `_agg_pending_commit_ref` (duck-typed against sim's
+    set-based `_sim_pending_commit`) without losing commit-order indexing."""
+
+    def discard(self, item):
+        try:
+            self.remove(item)
+        except ValueError:
+            pass
+
+
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
@@ -280,7 +292,7 @@ class TopAggregator(AsyncTopAgg):
 
         self._updates_in_queue = 0
         self._updates_received = {}
-        self._per_agg_trainer_list = []
+        self._per_agg_trainer_list = _OrderedContributorList()
         # Parallel to _per_agg_trainer_list: buffered per-contribution material,
         # merged into self.grad in canonical order, not raw arrival (P0-1).
         self._pending_cohort_contribs = []
@@ -1469,11 +1481,15 @@ class TopAggregator(AsyncTopAgg):
 
         `buffered=True` (P0-1 deferred-merge, simulate_fwdllm.md FT
         cohort_sequence deep-dive, 07-21): a contribution captured in
-        `_pending_cohort_contribs` can't be lost by an early re-dispatch, so
-        the R1 concern no longer requires holding the slot to the whole
-        cohort's commit -- release it now, restoring flat (not sawtoothing)
-        concurrency to match true async fedbuff. `buffered=False` (default)
-        keeps the old hold-to-commit behavior.
+        `_pending_cohort_contribs` can't be LOST by an early re-dispatch, so
+        the R1 concern no longer requires holding the CHANNEL slot to the
+        whole cohort's commit -- release it now, restoring flat (not
+        sawtoothing) concurrency to match true async fedbuff. `buffered=False`
+        (default) keeps the old hold-to-commit behavior.
+
+        This alone doesn't stop the freed trainer being RE-PICKED before it
+        commits (wasted, not lost). `_process_single_trainer_message` closes
+        that gap by binding the selector's `_agg_pending_commit_ref`.
         """
         if getattr(self, "_inflight_residence", False) and not buffered:
             return  # guard/slot held to COMMIT (see channel.cleanup_recvd_ends())
@@ -1633,6 +1649,11 @@ class TopAggregator(AsyncTopAgg):
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
+        # Real-only: exclude this trainer from re-selection until its buffered
+        # contribution commits (sim already has this via `_sim_hold_busy_slots`/
+        # `_sim_pending_commit` -- left untouched here, don't clobber it).
+        if not getattr(self, "simulated", False):
+            channel._selector._agg_pending_commit_ref = self._per_agg_trainer_list
 
         # Canonical commit-order key: the trainer's pure modeled delay D
         # (deterministic from the registry) + str(end) as tie-break. Lets
@@ -1925,7 +1946,8 @@ class TopAggregator(AsyncTopAgg):
         perm = sorted(range(n), key=lambda i: keys[i])
         if perm == list(range(n)):
             return  # already canonical (the common, non-tie path)
-        self._per_agg_trainer_list = [ends[i] for i in perm]
+        # In-place, not rebind: `_agg_pending_commit_ref` holds a live reference.
+        self._per_agg_trainer_list[:] = [ends[i] for i in perm]
         self._pending_cohort_contribs = [self._pending_cohort_contribs[i] for i in perm]
         logger.info(
             f"[COMMIT_CANON] equal-D tie → reordered {n}-cohort to (D,id) order "
@@ -2527,7 +2549,8 @@ class TopAggregator(AsyncTopAgg):
                 logger.debug(f"agg_round telemetry emit failed: {e}")
 
         self._updates_in_queue -= self._agg_goal
-        self._per_agg_trainer_list = []
+        # In-place clear: `_agg_pending_commit_ref` holds a live reference.
+        self._per_agg_trainer_list.clear()
         self._cycle_grad_norms = []
         self._commit_key_by_end = {}  # cohort-scoped
         self._pending_cohort_contribs = []  # already drained above; defensive

@@ -1602,12 +1602,10 @@ class AsyncOortSelector(AbstractSelector):
                     if end in self.all_selected.keys():
                         del self.all_selected[end]
                     selected_ends.discard(end)
-                    # R1: also drop it from the aggregator's virtual in-flight set
-                    # (bound via _agg_pending_commit_ref, sim fwdllm only). Since
-                    # _sim_hold_busy_slots now folds this set into its own
-                    # "outstanding" reconciliation (see fwdllm_aggregator.py), a
-                    # trainer abandoned here but never discarded there would stay
-                    # permanently un-re-pickable despite the timeout reclaim above.
+                    # R1: also drop it from the pending-commit set (bound via
+                    # _agg_pending_commit_ref -- sim's `_sim_pending_commit` or
+                    # real's `_per_agg_trainer_list`), or it stays un-re-pickable
+                    # forever despite the timeout reclaim above.
                     _pending_ref = getattr(self, "_agg_pending_commit_ref", None)
                     if _pending_ref is not None:
                         _pending_ref.discard(end)
@@ -1704,14 +1702,13 @@ class AsyncOortSelector(AbstractSelector):
         count_avl_eval = 0
         count_ineligible = 0
 
-        # SIM R1 guard: async_oort releases `all_selected` on physical events
-        # (recv-fifo re-select loop, RECVD/NONE cleanup). In a slow sim a grad
-        # stays returned-but-uncommitted for a long virtual window while the
-        # aggregator still models the trainer as in flight; a physical prune then
-        # frees a still-outstanding trainer -> select() re-dispatches it -> R1
-        # violation. Also exclude the aggregator's virtual in-flight set (bound
-        # via `_agg_pending_commit_ref`) so a trainer is un-re-pickable until its
-        # grad COMMITS. Empty (default) in real -> unchanged.
+        # R1 guard: exclude the aggregator's pending-commit set (bound via
+        # `_agg_pending_commit_ref`) so a trainer stays un-re-pickable until its
+        # grad COMMITS -- `all_selected`/channel state alone isn't enough once
+        # `_release_end_on_return`'s buffered=True releases the channel slot
+        # early. Real binds `_per_agg_trainer_list`; sim binds the richer
+        # `_sim_pending_commit` (also covers dispatched-but-not-returned, which
+        # real doesn't need -- an in-flight real message hasn't arrived yet).
         _pending = getattr(self, "_agg_pending_commit_ref", None) or set()
 
         # Check the eligible set first. Out of the ends, how many are
