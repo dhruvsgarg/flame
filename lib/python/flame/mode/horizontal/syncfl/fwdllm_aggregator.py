@@ -1649,11 +1649,17 @@ class TopAggregator(AsyncTopAgg):
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
-        # Real-only: exclude this trainer from re-selection until its buffered
-        # contribution commits (sim already has this via `_sim_hold_busy_slots`/
-        # `_sim_pending_commit` -- left untouched here, don't clobber it).
+        # Exclude this trainer from re-selection until its buffered
+        # contribution commits. Real: live-rebind to `_per_agg_trainer_list`.
+        # Sim: `_sim_pending_commit` is normally reconciled only on OTHER
+        # commit/boundary events (`_sim_hold_busy_slots`) -- add synchronously
+        # here too, or it stays wrongly re-pickable until then (cohort_sequence
+        # root cause, simulate_fwdllm.md 07-21). Additive; commit still
+        # discards it (`_sim_recv_min_grad`).
         if not getattr(self, "simulated", False):
             channel._selector._agg_pending_commit_ref = self._per_agg_trainer_list
+        else:
+            self._sim_pending_commit.add(end)
 
         # Canonical commit-order key: the trainer's pure modeled delay D
         # (deterministic from the registry) + str(end) as tie-break. Lets

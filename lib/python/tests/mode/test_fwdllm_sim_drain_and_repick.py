@@ -161,6 +161,7 @@ class _RepickAgg:
         self._updates_received = {}
         self._trainer_last_model_version = {}
         self.grad_pool = []
+        self._sim_pending_commit = set()
 
     def aggregate_grads_from_trainers(self, *a, **k):
         pass  # stub: the stamp executes before this call

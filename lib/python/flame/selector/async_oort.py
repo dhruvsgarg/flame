@@ -21,6 +21,9 @@ import random
 import time
 from datetime import timedelta
 from collections import deque
+# Explicit class import: bare `random.Random` risks resolving to this
+# package's own selector/random.py submodule (see flame/selector/__init__.py).
+from random import Random as _StdRandom
 
 from flame.config import TrainerAvailState
 import numpy as np
@@ -596,14 +599,35 @@ class AsyncOortSelector(AbstractSelector):
             "pref_binds": penalized > 0,
         }
 
-    def sample_by_speed(
-        self, unexplored_end_ids: list[str], num_of_ends: int
-    ) -> list[str]:
-        """Sample num_of_ends clients by speed."""
+    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list[str]:
+        """Order-sample top-k: each id's rank key depends only on its own
+        (seed, salt, agg_version_key, id), never on pool membership/size/call
+        order. Replaces index-based random.sample()/np.random.choice(), where
+        one trainer's incidental presence/absence (async timing) shifts
+        every other candidate's draw and permanently desyncs later calls
+        (simulate_fwdllm.md cohort_sequence root cause, 2026-07-21).
 
-        # Oort paper prioritizes unexplored ends with faster system
-        # speed We initially implement to perform random here
-        return self._rng.choice(unexplored_end_ids, size=num_of_ends, replace=False)
+        Seed material is a str, not a raw tuple -- Random() hashes non-str/
+        int/bytes seeds, and str hash() is PYTHONHASHSEED-randomized per
+        process, which would silently break real/sim parity.
+        """
+        def _key(c: str) -> float:
+            material = f"{self._seed}|{salt}|{agg_version_key}|{c}"
+            return _StdRandom(material).random()
+
+        ranked = sorted(candidate_ids, key=_key, reverse=True)
+        return ranked[:k]
+
+    def sample_by_speed(
+        self, unexplored_end_ids: list[str], num_of_ends: int, agg_version_key=None
+    ) -> list[str]:
+        """Sample num_of_ends clients by speed.
+
+        Oort paper prioritizes unexplored ends with faster system speed; we
+        implement uniform order-sampling here (_keyed_topk).
+        """
+        return self._keyed_topk(unexplored_end_ids, num_of_ends, agg_version_key,
+                                "sample_by_speed")
 
     def pacer(self, current_round: int) -> None:
         """Adapt `round_threshold` from the exploited-utility trend — faithful to
@@ -878,28 +902,19 @@ class AsyncOortSelector(AbstractSelector):
                     ends[end_id].get_property(PROP_SELECTED_COUNT) + 1,
                 )
 
-    def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
-        """Randomly select num_of_ends ends."""
-        # TODO: (DG) Check. Changed from self.selected_ends to local
-        # selected_ends.
-
-        # dict.fromkeys (not set()) -- preserves _pyrng.sample's deterministic
-        # order. A bare set() here iterates in str-hash order, which is
-        # randomized per-process (PYTHONHASHSEED) independent of the seeded
-        # RNG, so two same-seed runs pick the identical trainers but dispatch
-        # them in a different order every launch.
+    def select_random(self, ends: dict[str, End], num_of_ends: int,
+                       agg_version_key=None) -> dict[str, None]:
+        """Select num_of_ends ends via _keyed_topk -- population-size-
+        independent, unlike random.sample() (see _keyed_topk docstring)."""
         sorted_ends = sorted(ends)
-        # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- fp before/after
-        # separates an already-desynced RNG stream from a differing candidate set.
         _seq = getattr(self, "_select_trace_seq", -1)
-        rng_fp_before = self.rng_fingerprint()
-        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted_ends, num_of_ends))
-        rng_fp_after = self.rng_fingerprint()
+        chosen = self._keyed_topk(sorted_ends, num_of_ends, agg_version_key,
+                                  "select_random")
+        selected_random_ends = dict.fromkeys(chosen)
         logger.info(
             f"[SELECT_TRACE seq={_seq}] SELECT_RANDOM "
             f"candidates_sorted={sorted_ends} n_candidates={len(sorted_ends)} "
-            f"num_of_ends={num_of_ends} rng_fp_before={rng_fp_before} "
-            f"rng_fp_after={rng_fp_after} chosen={list(selected_random_ends.keys())}"
+            f"num_of_ends={num_of_ends} chosen={list(selected_random_ends.keys())}"
         )
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
@@ -1259,6 +1274,7 @@ class AsyncOortSelector(AbstractSelector):
         exploitation_len,
         exploration_len,
         unexplored_end_ids,
+        agg_version_key=None,
     ):
         logger.debug("Asyncoort selection using default (tradeoff)")
         logger.debug(
@@ -1278,7 +1294,9 @@ class AsyncOortSelector(AbstractSelector):
                 f"Invoking sample_by_speed(): with unexplored_end_ids: "
                 f"{unexplored_end_ids}, exploration_len: {exploration_len}"
             )
-            explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
+            explore_end_ids = self.sample_by_speed(
+                unexplored_end_ids, exploration_len, agg_version_key=agg_version_key
+            )
         logger.debug(f"explore_end_ids: {explore_end_ids}")
 
         candidates = [*explore_end_ids, *exploit_end_ids]
@@ -1912,7 +1930,8 @@ class AsyncOortSelector(AbstractSelector):
                     f"{len(filtered_ends)}"
                 )
                 candidates_dict = self.select_random(
-                    filtered_ends, num_of_ends=feasible_extra
+                    filtered_ends, num_of_ends=feasible_extra,
+                    agg_version_key=agg_version_key,
                 )
                 # Invoke process_chosen_candidate_dict(). It will
                 # appropriately add candidates to selected_ends and
@@ -1985,7 +2004,8 @@ class AsyncOortSelector(AbstractSelector):
                     f"len(utility_list)=0 feasible_extra={feasible_extra}"
                 )
                 candidates_dict = self.select_random(
-                    filtered_ends, num_of_ends=feasible_extra
+                    filtered_ends, num_of_ends=feasible_extra,
+                    agg_version_key=agg_version_key,
                 )
                 # Invoke process_chosen_candidate_dict(). It will
                 # appropriately add candidates to selected_ends and
@@ -2011,6 +2031,7 @@ class AsyncOortSelector(AbstractSelector):
                     exploitation_len=exploitation_len,
                     exploration_len=exploration_len,
                     unexplored_end_ids=unexplored_end_ids,
+                    agg_version_key=agg_version_key,
                 )
             elif self.select_type == "fastest":
                 candidates, exploit_end_ids = self._select_candidates_fastest(

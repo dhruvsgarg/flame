@@ -55,7 +55,9 @@ commit. Real had none, so it wasted ~9% of its dispatch capacity on duplicate re
 (`grep -c "Duplicate contribution from"`: real 1058, sim 0), widening the cohort-composition gap that cascades
 into throughput/commits/utility/convergence. **Fix landed same session** (§B) — binds real's selector to the
 same `_per_agg_trainer_list` already used for the dedup guard, no new data structure. 617/617 `tests/mode`
-pass. **Not yet validated live.**
+pass. A follow-up 900s smoke pair (`run_20260721_100808`/`_103232`) already shows 19→12 fails with this fix
+alone. Remaining `cohort_sequence` divergence root-caused + a second fix landed same session (§B) —
+**not yet validated live.**
 
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
@@ -122,6 +124,23 @@ not just experiencing timing jitter. **Sim's flat concurrency is correct** (true
 dispatch from the batch boundary) — real's batched release was the bug, since P0-1 already buffers each
 contribution safely on receipt (nothing is lost by releasing early). `_set_tie` was separately audited and
 confirmed correctly calibrated (not miscalibrated) — no fix needed there.
+
+**`cohort_sequence`'s residual divergence, root-caused via SELECT_TRACE forensics (07-21).** On the 900s
+smoke pair above, real/sim's `select_random` candidate pools first diverge by exactly one trainer (an
+ordinary async timing difference), then the gap grows monotonically all round (1→15 trainers by call #41) —
+never self-healing. Two stacked causes: (1) `select_random`/`sample_by_speed` drew via `self._pyrng.sample()`/
+`self._rng.choice()`, a single persistent RNG stream whose consumption is population-size-dependent — one
+incidental pool-size difference desyncs every later draw, permanently, instead of affecting only that one pick;
+(2) sim's `_sim_pending_commit` guard was only reconciled by `_sim_hold_busy_slots` on OTHER commit/boundary
+events, not on a trainer's own receipt, so it stayed wrongly eligible for many calls after buffering its own
+grad (real's guard is a live reference, always current — no such gap). **[LANDED, unvalidated live] Fix.**
+(1) new `_keyed_topk` (`async_oort.py`): each candidate's rank key = a fresh `Random(f"{seed}|{salt}|
+{agg_version_key}|{id}")` draw — depends only on its own identity, never on pool membership/size/call order —
+replacing `.sample()`/`.choice()` in both call sites; `agg_version_key` threaded through as the round-scoping
+key. (2) sim now also does `self._sim_pending_commit.add(end)` synchronously on receipt (mirroring real's
+live-reference guard), additive only — commit still discards it. 14 new tests (`test_selection_determinism.py`,
+`test_fwdllm_real_pending_commit.py`), full `tests/` suite green. **Needs the next live pair** to confirm
+`cohort_sequence` (and its downstream-gated `v2_var_trajectory`/`utility`/`v1b_iters_moving_avg`) clear.
 
 **Contributing factor, still open.** Every trainer's first-ever GPU/JVP pass takes ~8-11x longer than its
 later, steady-state passes (real median 4.11s vs 0.40s; sim 3.75s vs 0.48s) — a CUDA-context/kernel-compile

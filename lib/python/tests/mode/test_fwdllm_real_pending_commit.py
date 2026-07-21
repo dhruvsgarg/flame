@@ -9,6 +9,11 @@ its contribution committed, wasting dispatches. Fix binds
 `_agg_pending_commit_ref` to `_per_agg_trainer_list` (real-only; sim's own
 binding is untouched) -- reuses the existing dedup-guard list, no new
 structure.
+
+Companion fix (same session): sim's own `_sim_pending_commit` guard was only
+reconciled by `_sim_hold_busy_slots` on OTHER commit/boundary events, not on
+this trainer's own receipt -- `TestSimPendingCommitSyncOnReceipt` covers the
+synchronous `.add(end)` closing that gap (cohort_sequence root cause).
 """
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
@@ -91,6 +96,7 @@ class _FakeAggregator:
         self.grad_pool = []
         self._trainer_last_model_version = {}
         self._inflight_residence = False
+        self._sim_pending_commit = set()
 
 
 def _grad_msg(model_version=0):
@@ -174,3 +180,27 @@ class TestBoundRefSurvivesInPlaceMutation:
         assert agg._pending_cohort_contribs == ["contrib_t2", "contrib_t1"]
         # Same object throughout -- the selector's reference is still valid.
         assert bound_ref is agg._per_agg_trainer_list
+
+
+class TestSimPendingCommitSyncOnReceipt:
+    """Sim's `_sim_pending_commit` must exclude a trainer the INSTANT its
+    grad is buffered, not only after `_sim_hold_busy_slots` next runs (which
+    fires on OTHER commit/boundary events) -- else it stays wrongly
+    re-pickable for however many calls until that next event, which is what
+    grew cohort_sequence's real/sim pool divergence unbounded."""
+
+    def test_end_added_to_sim_pending_commit_immediately(self):
+        agg = _FakeAggregator(simulated=True)
+        channel = _FakeChannel()
+
+        agg.process(channel, _grad_msg(), "t1", timestamp=0)
+
+        assert "t1" in agg._sim_pending_commit
+
+    def test_real_mode_does_not_touch_sim_pending_commit(self):
+        agg = _FakeAggregator(simulated=False)
+        channel = _FakeChannel()
+
+        agg.process(channel, _grad_msg(), "t1", timestamp=0)
+
+        assert agg._sim_pending_commit == set()
