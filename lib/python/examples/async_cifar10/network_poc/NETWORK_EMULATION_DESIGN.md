@@ -6,6 +6,11 @@ reusable capability for shaping the **network characteristics of each aggregator
 (latency, jitter, bandwidth — loss later) on a **single physical node**, configurable per
 experiment/baseline, independent of which FLAME example is running.
 
+**Standalone PoC plan (hello-world before any integration):** see
+[`network_poc/PLAN.md`](network_poc/PLAN.md) — a client/server MQTT pair,
+shaped by Toxiproxy, with zero trainer/aggregator/channel_manager code
+changes. Planned but not yet built as of 2026-07-21.
+
 **Starter target: async_cifar10.** Same rationale as `UNAVAILABILITY_DESIGN.md` (also a
 cross-cutting substrate first built here, later inherited by fwdllm): async_cifar10 is simpler,
 isolated from the active fwdllm parity work, and a clean place to prove the mechanism before
