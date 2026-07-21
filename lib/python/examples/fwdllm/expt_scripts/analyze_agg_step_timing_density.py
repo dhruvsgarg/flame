@@ -68,6 +68,8 @@ def _load_events(run_dir: Path, funcs: set):
         rec = {"ts": float(e["ts"]), "duration_s": float(e["duration_s"])}
         if e.get("cpu_duration_s") is not None:
             rec["cpu_duration_s"] = float(e["cpu_duration_s"])
+        if e.get("gc_pause_s") is not None:
+            rec["gc_pause_s"] = float(e["gc_pause_s"])
         events_by_func[func].append(rec)
 
     gpu_windows: dict = {}
@@ -156,6 +158,13 @@ def main():
             print(f"    cpu_duration: n={len(cpu_ms)} mean={cpu_mean:.4f}ms cpu/wall={ratio}")
         else:
             print("    cpu_duration: no data (run predates cpu_duration_s telemetry, re-run to get it)")
+        gc_ms = [e["gc_pause_s"] * 1e3 for e in events if "gc_pause_s" in e]
+        if gc_ms:
+            n_hit = sum(1 for x in gc_ms if x > 0)
+            print(f"    gc_pause: n={len(gc_ms)} mean={_mean(gc_ms):.4f}ms "
+                  f"calls_with_gc_pause={n_hit} ({100*n_hit/len(gc_ms):.1f}%)")
+        else:
+            print("    gc_pause: no data (run predates gc_pause_s telemetry, re-run to get it)")
         _bucket_print(events)
 
     print(

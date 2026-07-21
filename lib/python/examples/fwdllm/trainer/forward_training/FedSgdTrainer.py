@@ -551,8 +551,13 @@ class FedSGDTrainer(Trainer):
         (divisor >1 shortens the delay, <1 lengthens it); our GPU forward pass
         takes `gpu_time_s`, which should be << the device time.
 
-          - REAL sleeps only the remainder max(0, _delay_s - gpu_time_s) → wall
-            this round ≈ _delay_s, with GPU compute hidden inside it.
+          - REAL sleeps max(0, _delay_s - elapsed_since_dispatch_s), elapsed
+            since `_wall_recv_ts` (stamped on `channel.recv()` return) — not
+            just `gpu_time_s`, which misses comm lag/availability checks/GC/
+            scheduling and let real's completion time carry uncompensated
+            noise on top of the target (simulate_fwdllm.md §F-20: fix real's
+            determinism, never inject noise into sim). Falls back to
+            `gpu_time_s` if `_wall_recv_ts` is unset.
           - SIM skips the sleep (charged to the vclock); the round duration is
             max(gpu, _delay_s) (see train_with_data_id), NOT gpu + _delay_s. The
             per-trainer registry delays give the completion spread, so update
@@ -560,11 +565,11 @@ class FedSGDTrainer(Trainer):
             cohort_sequence parity).
 
         Overrun: if gpu_time_s > _delay_s the GPU is slower than the modeled
-        device (GPU contention, or the divisor too big so the delay is too
-        short) — emulation unfaithful and update order can flip, so we log
-        [TIMING_OVERRUN] and flag it in telemetry. Fix by lengthening the delay
-        (LOWER training_delay_factor) or reducing trainers/GPU.
-        Returns (modeled_delay_s, remaining_s, overran).
+        device — emulation unfaithful, update order can flip; logged as
+        [TIMING_OVERRUN]. Keyed on gpu_time_s alone (not elapsed_since_
+        dispatch_s) so it stays a compute signal, not a comm-overhead one.
+        Fix by lengthening the delay (LOWER training_delay_factor) or
+        reducing trainers/GPU. Returns (modeled_delay_s, remaining_s, overran).
         """
         # config schema types training_delay_enabled as bool (default False)
         # but historical launcher yamls pass the string "True"; accept both so
@@ -573,7 +578,13 @@ class FedSGDTrainer(Trainer):
         if not _enabled:
             return 0.0, 0.0, False
         _delay_s = (self.training_delay_s / self.training_delay_divisor) / self.speedup_factor
-        _remaining_s = max(0.0, _delay_s - gpu_time_s)
+        _wrt = getattr(self, "_wall_recv_ts", None)
+        # max(..., gpu_time_s): wall-clock isn't monotonic, so never let
+        # elapsed read below the compute window it should contain.
+        _elapsed_since_dispatch_s = (
+            max(time.time() - _wrt, gpu_time_s) if _wrt is not None else gpu_time_s
+        )
+        _remaining_s = max(0.0, _delay_s - _elapsed_since_dispatch_s)
         _overran = gpu_time_s > _delay_s
         if _overran:
             logger.warning(
@@ -592,7 +603,8 @@ class FedSGDTrainer(Trainer):
             time.sleep(_remaining_s)
             logger.info(
                 f"Trainer {self.trainer_id} slept remainder {_remaining_s:.3f}s "
-                f"(budget {_delay_s:.3f}s - gpu {gpu_time_s:.3f}s)."
+                f"(budget {_delay_s:.3f}s - elapsed_since_dispatch "
+                f"{_elapsed_since_dispatch_s:.3f}s [gpu {gpu_time_s:.3f}s])."
             )
         return _delay_s, _remaining_s, _overran
 

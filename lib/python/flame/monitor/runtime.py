@@ -15,10 +15,29 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runtime for Metric Collector."""
 
+import gc
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+# Wall-seconds spent inside cyclic-GC collections, accumulated process-wide
+# via gc.callbacks. Lets timer_decorator attribute a call's wall time to a
+# GC pause landing inside its window (simulate_fwdllm.md §B).
+_gc_pause_accum_s = 0.0
+_gc_pause_start = None
+
+
+def _gc_pause_callback(phase, info):
+    global _gc_pause_accum_s, _gc_pause_start
+    if phase == "start":
+        _gc_pause_start = time.time()
+    elif phase == "stop" and _gc_pause_start is not None:
+        _gc_pause_accum_s += time.time() - _gc_pause_start
+        _gc_pause_start = None
+
+
+gc.callbacks.append(_gc_pause_callback)
 
 
 def timer_decorator(func):
@@ -37,9 +56,11 @@ def timer_decorator(func):
         vclock_start = getattr(self, "vclock_now", None)
         start = time.time()
         cpu_start = time.thread_time()
+        gc_pause_before = _gc_pause_accum_s
         result = func(*args, **kwargs)
         end = time.time()
         cpu_end = time.thread_time()
+        gc_pause_s = _gc_pause_accum_s - gc_pause_before
         vclock_end = getattr(self, "vclock_now", None)
         duration = end - start
         # Thread-local CPU vs wall time, for agg_step_timing_breakdown's
@@ -78,7 +99,7 @@ def timer_decorator(func):
                         round_num=stage.round_id, data_id=stage.data_id,
                         iteration=stage.iteration, trainer_id=stage.trainer_id,
                         vclock_s=vclock_delta, vclock_now_s=vclock_end,
-                        cpu_duration_s=cpu_duration,
+                        cpu_duration_s=cpu_duration, gc_pause_s=gc_pause_s,
                     )
                     telemetry.emit(ev, **fields)
             except Exception:  # pragma: no cover - telemetry must never fault training

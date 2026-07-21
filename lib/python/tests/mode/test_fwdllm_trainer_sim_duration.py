@@ -115,6 +115,60 @@ class TestSleepOnlyTheRemainderInRealMode:
         assert slept == []
 
 
+class TestElapsedSinceDispatchAbsorbsNonGpuOverhead:
+    """REAL should converge to _delay_s regardless of WHERE the extra wall
+    time went (comm lag, availability checks, GC, scheduling) -- not just
+    compensate for gpu_time_s, which only covers the compute window."""
+
+    def test_uses_elapsed_since_dispatch_not_just_gpu_time(self, monkeypatch):
+        # delay = 4.0; dispatched at t=100.0, now is t=103.0 (3.0s elapsed
+        # since recv), but the GPU compute itself only took 0.5s -- 2.5s went
+        # to unmodeled overhead. Old (gpu-only) formula would sleep 3.5s
+        # (4.0-0.5), overshooting the budget by the overhead amount; the fix
+        # should sleep only 1.0s (4.0-3.0), converging real's total round
+        # duration on the modeled 4.0s.
+        monkeypatch.setattr(_fst_module.time, "time", lambda: 103.0)
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        t._wall_recv_ts = 100.0
+        modeled, remaining, overran = t._emulate_training_delay(0.5)
+        assert modeled == 4.0
+        assert remaining == 1.0        # NOT 3.5 (the old gpu-only answer)
+        assert overran is False        # overrun stays keyed on gpu_time_s alone
+        assert slept == [1.0]
+
+    def test_elapsed_never_undercounts_below_gpu_time(self, monkeypatch):
+        # Pathological/clock-skew case: elapsed-since-dispatch reads SMALLER
+        # than gpu_time_s (shouldn't happen with a monotonic clock, but
+        # time.time() isn't one) -- must not under-compensate vs. the
+        # gpu-only baseline.
+        monkeypatch.setattr(_fst_module.time, "time", lambda: 100.1)
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        t._wall_recv_ts = 100.0   # elapsed would read 0.1s, below gpu_time_s
+        modeled, remaining, _ = t._emulate_training_delay(0.5)
+        assert modeled == 4.0
+        assert remaining == 3.5    # clamped to the gpu-only answer, not 3.9
+        assert slept == [3.5]
+
+    def test_falls_back_to_gpu_time_without_wall_recv_ts(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        assert not hasattr(t, "_wall_recv_ts")
+        modeled, remaining, _ = t._emulate_training_delay(0.5)
+        assert modeled == 4.0 and remaining == 3.5   # unchanged gpu-only math
+        assert slept == [3.5]
+
+
 class _FakeTime:
     """Scripted time source so the sct arithmetic is deterministic. Rebound only
     onto FedSgdTrainer's `time` name (not the shared module)."""

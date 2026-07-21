@@ -128,6 +128,24 @@ genuine shared compute.
 > `cohort-fork downstream` is the standing hypothesis again. `channel.properties["vclock_now"]` fix (pm-6)
 > also means sim-side selection diagnostics are no longer blind — not yet re-validated live.
 
+> **pm-9**: methodical telemetry-only pass (no new run) over the two remaining P1 open items, per baseline.
+> **FT `cohort_sequence`**: `cohort-fork downstream`'s MECHANISM is now named, closing the open thread — see §G.
+> Reconstructed `sorted_round_duration` directly from banked `selection` telemetry (`per_trainer.speed_s` is the
+> exact `PROP_CLIENT_TASK_TRAIN_DURATION` SESSION_HANDOFF asked to dump): `round_preferred_duration` is 12.529s
+> real vs 12.500s sim at cycle_index=2 — 0.2% apart, REFUTING the duration-percentile-sensitivity hypothesis
+> outright. This window is still `model_version==0` (before the first weight update), which takes `select_random`,
+> NOT the explore/exploit branch first suspected — traced the single-trainer selector calls in order: picks 1-8
+> are bit-identical real/sim, pick 9 is the first mismatch. `select_random` makes ONE seeded draw
+> (`self._pyrng.sample(sorted(filtered_ends), 1)`) per call, same code/seed/cadence both sides, so pick 9 can
+> only differ if `filtered_ends` (who's currently free) already differs — 8 prior events' worth of accumulated
+> real-vs-sim completion-order jitter. **FW/FW+ `_compute_var`**: the "consistent 4-7x gap" framing is REFUTED —
+> real telemetry shows a bimodal split (~85-87% of calls at parity, sim 6.7-6.8ms vs real 4.3-5.6ms; ~13-14%
+> spike to 120-300ms, nearly 100% CPU-bound). GPU-pass overlap, aggregator message density, and active-trainer
+> count were all tested as contention proxies and refuted (zero/negative correlation) — leading hypothesis is now
+> a stop-the-world Python GC pause landing inside sim's compressed-wall-clock window (real shows zero such
+> outliers across 179-344 calls/run). New `gc_pause_s` telemetry lands this session (`timer_decorator`, all
+> `@timer_decorator`-wrapped functions) to confirm/refute directly on the next run — see §B.
+
 **Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
 
 | baseline | run pair | duration | pass | fail | skip |
@@ -168,28 +186,41 @@ See §B for what's actively being worked per baseline; see §G for what's alread
 > qualifiers and framing. If a cell needs more than 20 words, it's not tracker material; shorten it or move the
 > extra detail to the code comment/commit.
 
-### Failing-rung tracker — refreshed 2026-07-20 pm-5 (rows combined across baselines when issue + hypothesis match)
+### Failing-rung tracker — refreshed 2026-07-20 pm-9 (telemetry-only pass, no new run; FT row closed to §G)
 
-**pm-5 source data**: pm-4's 30min debug triple (FT `run_20260720_123708`/`_130848`, FW
-`run_20260720_123738`/`_130905`, FW+ `run_20260720_123721`/`_130859`) for first-signal, PLUS a direct
-`scripts.parity.cli` recheck of §A's own canonical 7200s pairs with the updated code (no new run launched —
-same banked telemetry, matched-window gating extended to 3 more rungs). All rows below reflect the 7200s
-recheck unless marked 30min-only.
+**pm-9 source data**: same banked pairs as pm-8 (FT `run_20260720_153946`/`_161139`, FW `run_20260720_154001`/
+`_161128`, FW+ `run_20260720_153954`/`_161134`) plus the 7200s scoreboard pairs (§A) for FW/FW+'s cross-baseline
+reproduction check — no new experiment launched, per PREAMBLE rule (d).
 
-| Baseline | Rung(s) | Evidence | Read | Hypothesis / root cause | Next step |
-|---|---|---|---|---|---|
-| FW, FW+, FT | `agg_step_timing_breakdown`; `drain_wall_budget` (`drain_tail_s`) | 2 unconditional sync points isolated with their own `step_timing` sub-event: `agg_var_item_sync`, `agg_apply_update_cpu_sync` (`FedSgdAggregator.py`) | Not GIL/thread-scheduling (no such call found) — real CUDA/CPU sync points, unconditional, can't be DEBUG-gated (feed the live commit gate) | Sync cost scales with ambient GPU queue depth — sim's trainer pool never sleeps (denser queue) than real's | Needs a live pair: tax IN sync → queue-depth theory holds; tax OUTSIDE it → wrong |
-| FT | `cohort_sequence` (SET); `v1b_iters_moving_avg`; `convergence` (C1) | `selection_train`'s `vclock_now` was ALWAYS None on the sim side (0/19205 events) — every sim-side margin query was silently blind | FIXED (§G): `_distribute_weights_async` never stamped `channel.properties["vclock_now"]`. Real-side margin evidence (0.2x-200x scale) stands on its own, unaffected | Cycle 2's moderate real-side gap compounds via the algorithm's OWN feedback loop (temporal_uncertainty/round_threshold depend on past selections), not coin-flips | Re-run with the vclock fix live: sim-side gate1/gate2 will finally be non-blind, giving the full (not half) picture |
-| FT | `v2_var_trajectory` | pm-7 (matched VIRTUAL BUDGET, not index count): mean-rel-diff only 12.3%→10.6% — barely moves, unlike the misleading 1.35% index-truncation gave | `cohort-fork downstream` stands (§G pm-3/pm-5 correction) — population-length was NOT the dominant effect here after all | Mechanism now correctly implemented (receive-side commit timestamp, same as `total_commits`/`terminal_state`) — just not yet gating for async | Gating still blocked on `cohort_sequence` resolving first (agreed) — `utility` (pooled) already passes either way, no action needed |
+| Baseline | Rung(s) | Evidence | Hypothesis / root cause | Next step |
+|---|---|---|---|---|
+| FW, FW+ | `agg_step_timing_breakdown`; `drain_wall_budget` | `_compute_var` duration is BIMODAL, not uniformly slow: ~85-87% of calls at parity (sim 6.7-6.8ms vs real 4.3-5.6ms), ~13-14% spike to 120-300ms, ~100% CPU-bound. GPU-pass overlap/msg density/trainer count all refuted as correlates | Leading: stop-the-world GC pause landing inside sim's compressed-wall-clock window — same alloc rate, less real time to hide GC in; real shows 0 such outliers in 179-344 calls/run | `gc_pause_s` telemetry landed this session (§G) — re-run, check if it accounts for the outlier calls' excess duration |
+
+**FT `cohort_sequence`'s SET cascade at cycle_index=2 is now root-caused and CLOSED, see §G** — its downstream
+consequences (`v1b_iters_moving_avg`; `throughput`/`terminal_state`/`total_commits`; `convergence`, marginal
+5.78% vs 5% tol) are expected propagation of that same confirmed-legitimate mechanism (async self-paced feedback
+off a forked cohort), not independent bugs — no separate tracking needed per the existing SET-cap design (§G 07-17d).
 
 **Other open items (not a failing rung):**
-- FT: `trainer_speed_identity`'s `utility` sub-check reopened on the 7200s run (23/100 >10% dev) but did NOT
-  reproduce on pm-4's independent 30min pair (0/100 outside tol, `max_rel_dev=0.08`) — 2nd non-reproduction vs
-  1 reopen. Leaning flaky/noise, but don't re-close until a 3rd (longer) run adjudicates.
+- FT: `trainer_speed_identity`'s `utility` sub-check reopened on the 7200s run (23/100 >10% dev) but has now
+  failed to reproduce on 2 INDEPENDENT 30min pairs (pm-4: 0/100; pm-8 fresh pair: 0/100, `max_rel_dev=0.065`) —
+  strengthens the flaky/noise lean but stays open until a 3rd, LONGER (≥2h) run adjudicates per the standing bar.
 - FT: `sim_sct_ordered_drain` A/B unblocked — run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
 - FT: accuracy drop after reaching 81% — known, deferred by operator (07-15), not yet triaged.
+- FT/FW/FW+: the `_wall_recv_ts`-based remainder-wait fix (§F-20, §G 07-20 pm-10) needs a live real/sim pair to
+  confirm real's per-trainer completion variance actually tightens and `cohort_sequence`'s free-pool-drift rate
+  drops — not yet validated against real telemetry, don't treat the underlying noise as reduced until it is.
 
 **P3 — infra robustness, not parity-blocking:**
+- **GC pause mitigation (potential future step, gated on `gc_pause_s` confirming the hypothesis first)**: if the
+  next run's `gc_pause_s` telemetry confirms stop-the-world GC as `_compute_var`'s outlier driver (§B above),
+  two standard, low-risk CPython levers to try, in this order: (1) `gc.freeze()` once at aggregator startup,
+  after the model/registry state finishes loading — the aggregator holds a large, mostly-permanent object graph
+  (model params, 100-trainer registry) that a full sweep currently re-scans every time; freezing it out of the
+  collector's view should cut full-sweep cost directly, no periodic calls needed. (2) scheduled small
+  `gc.collect(0)` (young-gen only, cheap) at a natural breather point (e.g. after each aggregation cycle
+  completes) to prevent garbage from ever accumulating enough to trigger an expensive full sweep — many small
+  controlled pauses instead of occasional large uncontrolled ones. Not implemented — confirm root cause first.
 - Dynamic GPU health filtering — `CUDA_DEVICE_ORDER=PCI_BUS_ID` only fixes *which* physical card a given
   ordinal maps to; it does not detect or skip a genuinely broken card. Not attempted, lower priority.
 
@@ -311,6 +342,16 @@ the actual parity bugs above.
     trainer PID, client data hash/samples) + telemetry `emit()`; everything else is DEBUG or deleted. This holds
     for ALL baselines and BOTH roles — grep `logger.(info|debug).*_calculate_hash|format_hash|\.item\(\)` before
     a perf run. Never change a value inside a gated log (reads are inert; gating must stay correctness-neutral).
+20. **When real and sim disagree on timing, optimize REAL toward determinism — never inject noise into sim to
+    match real.** Sim's per-speed-class modeled duration must stay a clean, reproducible number (that's what
+    makes `cohort_sequence`/update-order parity checkable at all, §12). Real's measured completion time carries
+    unmodeled overhead on top of the target (comm lag, availability checks, GC, OS scheduling) that a gpu-time-
+    only remainder-wait can't compensate for. Fix: measure real's ACTUAL elapsed wall time since dispatch
+    (`_wall_recv_ts`, stamped when this round's `channel.recv()` returned) and sleep the remainder against THAT,
+    not against `gpu_time_s` alone — converges real's total round duration on the modeled target regardless of
+    where the extra time went, closing the noise gap at its source instead of manufacturing matching noise in
+    sim. Landed for fwdllm (07-20 pm-10, `_emulate_training_delay`); async_cifar10 has the same gpu-only pattern
+    (`main.py:833`) and would benefit identically — not yet ported there, out of this session's scope.
 
 ---
 
@@ -320,6 +361,69 @@ the actual parity bugs above.
 > confirmed/refuted, write ONE terse line below (mechanism + outcome, no narrative) and delete it from §A/§B in
 > the same edit. Full reasoning lives in the commit/code comment, not this doc.
 
+- **fwdllm trainer's remainder-wait sleep only compensated `gpu_time_s`, not real's total elapsed overhead**
+  (07-20 pm-10) — root cause of the `cohort_sequence`/`select_random` free-pool drift (pm-9 above): real's sleep
+  target was `max(0, delay_s - gpu_time_s)`, leaving comm lag/availability checks/GC/scheduling uncompensated on
+  top of the modeled budget — real's WALL completion time (and thus dispatch/free-pool ordering) carried
+  avoidable noise sim structurally can't have (§F-20, new principle: fix real's determinism, never inject noise
+  into sim). Fixed: `_emulate_training_delay` now sleeps `max(0, delay_s - elapsed_since_dispatch_s)`, where
+  elapsed is measured from the ALREADY-EXISTING `_wall_recv_ts` (stamped by the shared `fwdllm_trainer.py` base
+  right after this round's `channel.recv()`) — required no new plumbing, just reusing an existing timestamp;
+  `gpu_time_s` is still the sole [TIMING_OVERRUN] signal (unchanged, stays a genuine compute-vs-budget check,
+  not a comm-overhead one). Falls back to the old gpu-only formula when `_wall_recv_ts` is unset. 18/18
+  `test_fwdllm_trainer_sim_duration.py` (3 new) + 456/456 `tests/mode -k "parity or fwdllm"` pass. async_cifar10
+  has the identical gpu-only gap (`main.py:833`) — not ported there this session. Needs a live real/sim pair to
+  confirm it tightens `cohort_sequence`'s divergence rate; framing this as "closed" would be premature.
+- **FT `cohort_sequence` SET cascade at cycle_index=2 ROOT-CAUSED** (07-20 pm-9, corrected pm-9b) — pm-8's
+  duration-percentile-sensitivity hypothesis REFUTED: reconstructed `sorted_round_duration` from banked
+  `selection` telemetry (`per_trainer.speed_s`), `round_preferred_duration` is 12.529s real vs 12.500s sim (0.2%
+  apart) at the divergence point. **Correction**: the fork is NOT `fetch_statistical_utility`'s explore/exploit
+  RNG (that branch doesn't run yet here) — this whole window is still `model_version==0`, which takes the
+  `select_random` branch instead. Traced the single-trainer selector calls in canonical order: picks 1-8 are
+  BIT-IDENTICAL real/sim (same trainer, same order); pick 9 is the first mismatch. `select_random` does ONE
+  seeded draw (`self._pyrng.sample(sorted(filtered_ends), 1)`) per call — same code, same seed, same call
+  cadence (confirmed 10 single-trainer calls each side in the window) — so the only way pick 9 differs is if
+  `filtered_ends` (who's currently free, not mid-dispatch) already differs in composition by then, from 8 prior
+  events' worth of accumulated real-vs-sim completion-order jitter (real: noisy measured durations; sim: clean
+  modeled ones, occasionally producing exact ties real never does). Confirms the existing SET-cap design
+  (§G 07-17d) as correct — no fix warranted, downstream fails (`v1b_iters_moving_avg`/`throughput`/
+  `terminal_state`/`convergence`) are expected propagation, not new bugs.
+- **FW/FW+ `_compute_var`'s "consistent 4-7x gap" framing REFUTED — distribution is BIMODAL** (07-20 pm-9) —
+  ~85-87% of calls sit at real≈sim parity (sim 6.7-6.8ms vs real 4.3-5.6ms); the mean is dragged up entirely by
+  ~13-14% of calls spiking to 120-300ms (77.6% of total `_compute_var` time on 12.7% of calls), nearly 100%
+  CPU-bound (cpu/wall≈1.0, not scheduling-blocked). GPU-pass-window overlap (max concurrency=0 — wrong lens,
+  `_compute_var` never overlaps a trainer's GPU pass by construction), aggregator message density (r=-0.46,
+  wrong sign), and active-trainer count (constant=10, no variance to correlate) all tested and REFUTED as the
+  driver. Real shows ZERO calls >50ms across 179 (FW) / 344 (FW+) calls — leading hypothesis is a stop-the-world
+  Python GC pause landing inside sim's compressed-wall-clock measurement window (same logical allocation rate,
+  far less real wall-time for GC to hide in between calls). Not yet directly confirmed — see `gc_pause_s` below.
+- **New `gc_pause_s` telemetry on every `@timer_decorator`-wrapped call** (07-20 pm-9) — `gc.callbacks`-based
+  process-wide accumulator (`flame/monitor/runtime.py`) reports how much of a call's wall time overlapped a
+  cyclic-GC collection; added to `build_step_timing` alongside the existing `cpu_duration_s`, surfaced in
+  `analyze_agg_step_timing_density.py`. Shared code (`top_aggregator.py` also `@timer_decorator`s one function) —
+  453/453 `tests/mode -k "parity or fwdllm"` + 136/136 async_cifar10-parity/telemetry pass. Needs a live run to
+  populate; will directly confirm/refute the GC-pause hypothesis above on `_compute_var`'s outlier calls.
+- **fwdllm_plus's settled state (only `drain_wall_budget`/`agg_step_timing_breakdown` failing) VALIDATED at
+  30min scale** (07-20 pm-8, fresh independent triple) — 61/2/21, exact match to the documented 2h settled
+  state. First short-scale confirmation the pm-5/pm-7 matched-window fixes hold outside the scale they were
+  proven at.
+- **fwdllm's 30min-only `step_timing_breakdown`/`phase_weights_to_ram`/`terminal_state`/`total_commits` fails
+  are small-N noise, not regressions** (07-20 pm-8) — diffed against the banked 7200s pair: the real-transport
+  functions inside `step_timing_breakdown` (`_emulate_training_delay`, `pause_execution`, `_fetch_weights`)
+  fail identically at BOTH scales without driving `ok` at either; the one function that flips is
+  `tb_deepcopy_best_v` (13.6ms vs 9.5ms, ks 0.296 vs 0.25 tol at 30min, 0.132 at 2h) — pure KS sampling noise
+  on a few-ms function, same class as `phase_weights_to_ram` (6ms vs 4ms). `terminal_state`/`total_commits`
+  are the already-documented 1-round discretization artifact (§G 07-20am). No fix needed.
+- **`agg_step_timing_breakdown`'s queue-depth-scales-sync-cost hypothesis REFUTED, narrowed to `_compute_var`**
+  (07-20 pm-8, fresh live pair) — the isolated sync sub-events `agg_var_item_sync`/`agg_apply_update_cpu_sync`
+  (§G pm-5) are both `ok=True`, real≈sim (≤1ms) on BOTH fwdllm and fwdllm_plus — the tax is OUTSIDE them.
+  `_compute_var`'s own compute (excl. its sync sub-event) is the real residual: real 4-7ms vs sim 29-31ms, a
+  consistent 4-7x gap reproduced independently on both baselines. See §B for the narrowed next step.
+- **fluxtune's `selection_train.vclock_now` fix VALIDATED live — but does NOT explain `cohort_sequence`**
+  (07-20 pm-8) — fresh sim telemetry shows `vclock_now` correctly populated (0.0, 8.3, 10.4, 12.5s...), not
+  None. `cohort_sequence` still diverges at the same cycle_index=2 with the fix live, and `round_threshold`
+  reads IDENTICAL (=10.0) real/sim at that point — confirms the vclock fix resolved diagnostic blindness only,
+  never the divergence mechanism itself. Root-cause hypothesis narrowed (not closed), see §B.
 - **fluxtune's `selection_train.vclock_now` was ALWAYS None in sim, FIXED** (07-20 pm-6) —
   `_distribute_weights_async` never stamped `channel.properties["vclock_now"]` before dispatching, unlike
   `asyncfl/top_aggregator.py`'s own pattern. `AsyncOortSelector` reads it for its abandon-timeout clock
@@ -327,7 +431,7 @@ the actual parity bugs above.
   `selection_train` event — silently blinding the sim side of exploration-drift diagnostics (this session's
   `_cohort_margin_detail`, the existing `_trainer_first_explored_marker`) without affecting the real side.
   Fixed: `channel.properties["vclock_now"] = self.vclock_now` before `channel.ends()`. 2 new unit tests,
-  571/571 `tests/mode -k "parity or fwdllm"` pass. Not yet validated against a live run.
+  571/571 `tests/mode -k "parity or fwdllm"` pass. **VALIDATED live 07-20 pm-8** (see above).
 - **`v2_var_trajectory`/`utility`'s matched-window switched from index-count to matched VIRTUAL BUDGET**
   (07-20 pm-7) — new `_matched_virtual_budget` (each event's own commit timestamp: real intrinsic-clock-or-
   `ts`, sim `vclock_now`, filtered to `<= V`) replaces `events[:matched_n]`, reusing the mechanism
@@ -352,7 +456,7 @@ the actual parity bugs above.
   (`agg_var_item_sync`/`agg_apply_update_cpu_sync`), so `agg_step_timing_breakdown_parity` picks them up with
   zero `checks.py` changes. New `agg_step_timing_plots` (CDF + mean-bar, `analyze_run.py`) fills a plot gap
   `agg_step_timing_breakdown` had had since it landed. 4/4 new unit tests, 569/569 `tests/mode -k "parity or
-  fwdllm"` pass. Not yet validated against a live run (needs the next operator-launched pair to read the split).
+  fwdllm"` pass. **VALIDATED live 07-20 pm-8** — the split is what let pm-8 refute the queue-depth hypothesis.
 - **FT `cohort_sequence`'s divergence has VALUE-level gaps, not just timing** (07-20 pm-5) — new
   `_cohort_margin_detail` reports each excluded candidate's utility vs. the chosen cohort's cutoff. On the
   banked 7200s pair: cycles 2-9 sit 0.2x-7x the noise-floor scale away (moderate, not a coin-flip tie); cycles

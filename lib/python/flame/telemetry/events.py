@@ -207,6 +207,7 @@ def build_step_timing(
     vclock_s: Optional[float] = None,
     vclock_now_s: Optional[float] = None,
     cpu_duration_s: Optional[float] = None,
+    gc_pause_s: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Per-function wall duration of one timed compute step (`timer_decorator`).
 
@@ -227,6 +228,12 @@ def build_step_timing(
     `duration_s`'s wall time. A function whose wall time diverges real<->sim but
     whose CPU time doesn't is waiting on contention (scheduler/GPU/memory-bus),
     not doing more work; if CPU time itself diverges, the extra cost is real.
+
+    `gc_pause_s` (simulate_fwdllm.md §B, 07-20) is the portion of `duration_s`
+    that overlapped a cyclic-GC stop-the-world collection (`gc.callbacks`,
+    process-wide accumulator in `flame.monitor.runtime`), 0.0 when no
+    collection ran during the call. Isolates "this call was slow because GC
+    landed inside its window" from a genuine per-call compute regression.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -237,6 +244,7 @@ def build_step_timing(
         ("vclock_s", vclock_s),
         ("vclock_now_s", vclock_now_s),
         ("cpu_duration_s", cpu_duration_s),
+        ("gc_pause_s", gc_pause_s),
     ):
         if v is not None:
             fields[k] = v
