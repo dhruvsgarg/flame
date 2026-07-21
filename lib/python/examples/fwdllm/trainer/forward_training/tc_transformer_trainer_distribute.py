@@ -282,14 +282,14 @@ class ForwardTextClassificationTrainer:
         self.databin_best_v_params = None
         self.last_model_version_jvp_updated = -1
 
-        self._warmup_gpu_kernels()
-
     def _warmup_gpu_kernels(self):
         """Throwaway forward pass before round 1, to absorb CUDA/cudnn kernel-
         compile cost outside the timed window (simulate_fwdllm.md FT
-        cohort_sequence deep-dive). Same on real and sim -> symmetric, no
-        injected noise. Plain forward, not the JVP pipeline -- doesn't touch
-        RNG state or model weights. Best-effort: never blocks startup."""
+        cohort_sequence deep-dive). Plain forward, not the JVP pipeline --
+        doesn't touch RNG state or model weights, never blocks startup.
+        Call only from trainer/main.py -- calling this on the aggregator's
+        own ForwardTextClassificationTrainer instance moves its model to GPU
+        too early and crashes `_apply_weighted_update` (device mismatch)."""
         if self.device.type != "cuda":
             return
         try:

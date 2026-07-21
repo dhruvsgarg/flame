@@ -231,6 +231,9 @@ if __name__ == "__main__":
         None,
         config.task_id,
     )
+    # Trainer-only warmup (simulate_fwdllm.md FT deep-dive) -- must not run in
+    # the aggregator's own ForwardTextClassificationTrainer, see docstring.
+    client_trainer._warmup_gpu_kernels()
     fed_trainer = FedTransformerTrainer(client_trainer, client_model)
 
     # client manager in their code also passes client index which is the list of clients that need to do training

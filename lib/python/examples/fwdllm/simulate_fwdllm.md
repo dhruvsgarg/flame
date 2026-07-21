@@ -258,21 +258,20 @@ are about different stages of the run; neither refutes the other.
 change), #3/#4 deferred:**
 1. **[LANDED, UNVALIDATED] Pre-warm GPU kernels at trainer startup, before joining the channel** (both real and
    sim identically — same construction path, no `self.simulated` branch). `ForwardTextClassificationTrainer.
-   _warmup_gpu_kernels` (`tc_transformer_trainer_distribute.py`, called from `__init__`): one throwaway
-   `self.model(dummy_x)` forward pass on a random-token LongTensor (shape from `get_input_embeddings().
-   num_embeddings` / `args.max_seq_length`), inside `torch.no_grad()`, before `trainer.compose()`/`run()` ever
-   starts — so it's outside the timed/compared window by construction. Deliberately a PLAIN forward call, not
-   the full functorch/JVP pipeline (`_make_model_functional`/`train_model`) — round 2+ already re-run
-   `make_functional_with_buffers` every round at steady-state speed, so the functorch wrapper itself isn't
-   the round-1-only cost; the cudnn/cuBLAS kernel-compile+autotune cache (keyed on op/shape/dtype, not on which
-   Python wrapper called it) should be primed by a plain pass at the same shape. Doesn't touch `self.torch_rng`/
-   `self.torch_cuda_rng` (perturbation RNG streams) or `self.grad`/JVP state at all, doesn't mutate model
-   weights (no optimizer step exists in this forward-grad pipeline), best-effort (`try/except`, never blocks
-   startup). 6 new unit tests (`test_fwdllm_gpu_warmup.py`, CPU no-op / never-raises / RNG-untouched / call-shape
-   / fallback-seq-len) — all import-skip-guarded on `transformers`, which isn't in the `dg_flame` pytest env
-   (pre-existing gap, not introduced by this change — no existing test touched this file before either).
-   **Not yet validated live** — needs the next real/sim pair to confirm round-1's `gpu_pass` spike actually
-   shrinks and the pick-9 free-pool flip rate drops.
+   _warmup_gpu_kernels` (`tc_transformer_trainer_distribute.py`): one throwaway `self.model(dummy_x)` forward
+   pass on a random-token LongTensor (shape from `get_input_embeddings().num_embeddings` / `args.max_seq_length`),
+   inside `torch.no_grad()`, before `trainer.compose()`/`run()` ever starts. Deliberately a PLAIN forward call,
+   not the full functorch/JVP pipeline — round 2+ already re-run `make_functional_with_buffers` every round at
+   steady-state speed, so that wrapper isn't the round-1-only cost; the cudnn/cuBLAS kernel-compile+autotune
+   cache (keyed on op/shape/dtype) should be primed by a plain pass at the same shape. Doesn't touch RNG state
+   or mutate model weights, best-effort (never blocks startup). 6 new unit tests, import-skip-guarded on
+   `transformers` (not in the `dg_flame` pytest env — pre-existing gap).
+   **Crashed the first live attempt, FIXED**: `main_fedfwd_agg.py` builds its OWN
+   `ForwardTextClassificationTrainer` for the aggregator's internal eval/var-check model (same `__init__`) — the
+   unconditional warmup also force-moved THAT model to GPU before the aggregator's `old_param`/`model_dict`/
+   `cached_v` bookkeeping expected it there, crashing `_apply_weighted_update` (cuda/cpu mismatch) on both real
+   and sim. Fix: moved the call out of `__init__` into an explicit `client_trainer._warmup_gpu_kernels()` in
+   `trainer/main.py` only — `main_fedfwd_agg.py` never calls it. **Still not validated live.**
 2. **[CLOSED, no fix]** `_set_tie` audited — it's correctly refusing this tie, not miscalibrated. See the audit
    result above.
 3. **[DEFERRED]** Formally narrow `cohort_sequence`'s SET hard-match window to exclude round 1, falling back to
