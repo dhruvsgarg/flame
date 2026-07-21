@@ -14,7 +14,7 @@
 #
 # Usage (from anywhere):
 #   run_sequential.sh [--mode sim|real|both] [--delays on|off]
-#       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N]
+#       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...]
 #       [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N]
 #       [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
 #       [--only name1,name2] [--stop-on-fail] [--dry-run] [--yes] [--force]
@@ -25,6 +25,10 @@
 #   --max-runtime-s  wall/vclock cap per run (default 600).
 #   --max-data-id    stop when data_id reaches this (default 9999 = unbounded).
 #   --num-trainers / --num-gpus  override trainer.num_trainers / execution.num_gpus.
+#   --gpu-ids        explicit CUDA-ordinal allowlist (e.g. 1,2,3,4,5,6,7 to skip a
+#                    known-bad GPU 0); overrides range(num_gpus) for both trainer
+#                    round-robin and the aggregator's pinned GPU. Implies
+#                    num_gpus=len(list) unless --num-gpus is also given.
 #   --c              selector.kwargs.c (+ minInitialTrainers + agg_goal unless overridden).
 #   --c-async        selector.kwargs.c for the async baseline (fluxtune) only.
 #   --k / --agg-goal selector k / aggregator.agg_goal directly.
@@ -67,6 +71,8 @@ MODE_SET=0; DELAYS_SET=0; MAX_RUNTIME_S_SET=0; MAX_DATA_ID_SET=0
 STOP_ON_FAIL=0
 NUM_TRAINERS=""
 NUM_GPUS=""
+GPU_IDS=""      # comma-separated CUDA ordinal allowlist (skip a known-bad GPU); sets
+                # execution.gpu_ids and, unless --num-gpus is also given, num_gpus=len(ids)
 SEL_C=""
 SEL_C_ASYNC=""
 SEL_K=""
@@ -101,7 +107,7 @@ CLEAN=0           # --clean: auto-kill stray workers from a prior run (default: 
 
 usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
-  echo "          [--num-trainers N] [--num-gpus N] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
+  echo "          [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
   echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
@@ -124,6 +130,7 @@ while [[ $# -gt 0 ]]; do
     --max-data-id)          MAX_DATA_ID="$2"; MAX_DATA_ID_SET=1; shift 2 ;;
     --num-trainers)         NUM_TRAINERS="$2"; shift 2 ;;
     --num-gpus)             NUM_GPUS="$2"; shift 2 ;;
+    --gpu-ids)              GPU_IDS="$2"; shift 2 ;;
     --c)                    SEL_C="$2"; shift 2 ;;
     --c-async)              SEL_C_ASYNC="$2"; shift 2 ;;
     --k)                    SEL_K="$2"; shift 2 ;;
@@ -281,7 +288,7 @@ done
 
 EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
-NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
+NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
@@ -303,6 +310,7 @@ MODE = env("MODE"); DELAYS = env("DELAYS")
 MAX_RUNTIME_S = int(env("MAX_RUNTIME_S")); MAX_DATA_ID = int(env("MAX_DATA_ID"))
 NUM_TRAINERS = env("NUM_TRAINERS") or ""
 NUM_GPUS = env("NUM_GPUS") or ""
+GPU_IDS = env("GPU_IDS") or ""
 SEL_C = env("SEL_C") or ""; SEL_C_ASYNC = env("SEL_C_ASYNC") or ""; SEL_K = env("SEL_K") or ""
 AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 MIN_INIT_FRAC = env("MIN_INIT_FRAC") or ""
@@ -439,6 +447,11 @@ def patch(exp, run_key, variant, trace):
         exp["trainer"]["num_trainers"] = int(NUM_TRAINERS)
     if NUM_GPUS:
         exp["execution"]["num_gpus"] = int(NUM_GPUS)
+    if GPU_IDS:
+        _ids = [int(x) for x in GPU_IDS.split(",") if x.strip() != ""]
+        exp["execution"]["gpu_ids"] = _ids
+        if not NUM_GPUS:  # keep the displayed n_gpus honest with the actual pool size
+            exp["execution"]["num_gpus"] = len(_ids)
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
     is_async = (run_key == "fluxtune")
     if SEL_C:
@@ -510,6 +523,7 @@ for trace in traces:
                 "min_init": kw0.get("minInitialTrainers"),
                 "n_trainers": e0["trainer"].get("num_trainers"),
                 "n_gpus": e0.get("execution", {}).get("num_gpus"),
+                "gpu_ids": e0.get("execution", {}).get("gpu_ids"),
                 "partition": h0.get("partition_method"),
                 "delays": e0["trainer"].get("enable_training_delays"),
                 "delay_factor": e0["trainer"].get("hyperparameters", {}).get("training_delay_factor"),
@@ -671,6 +685,8 @@ tier2_cols = [
     ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
     ("delays", "delays (factor/floor)"),
 ]
+if GPU_IDS:
+    tier2_cols.append(("gpu_ids", "gpu_ids"))
 overridden2 = []
 if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
 if bool(AGG_GOAL) or bool(SEL_C):    overridden2.append("agg_goal")
@@ -678,6 +694,7 @@ if bool(SEL_K):        overridden2.append("k")
 if bool(MIN_INIT):     overridden2.append("min_init")
 if bool(NUM_TRAINERS): overridden2.append("n_trainers")
 if bool(NUM_GPUS):     overridden2.append("n_gpus")
+if bool(GPU_IDS):      overridden2.append("gpu_ids")
 if bool(PART):         overridden2.append("partition")
 if trace_set:          overridden2.append("avail")
 if _delays_overridden: overridden2.append("delays")
@@ -685,6 +702,7 @@ rows2 = []
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
     _don = b.get("delays")
+    _gpu_ids_val = b.get("gpu_ids")
     rows2.append({"name": rk, "cells": {
         "sync_async": b.get("sync_async"), "selector": b.get("selector"),
         "optimizer": b.get("optimizer"),
@@ -694,6 +712,7 @@ for rk in (r[0] for r in runs):
         "avail": b.get("avail"),
         "delays": (f"{'on' if _don else 'off'} ({b.get('delay_factor')}/{b.get('delay_floor')})"
                    if _don else "off"),
+        "gpu_ids": ",".join(str(g) for g in _gpu_ids_val) if _gpu_ids_val else "-",
     }})
 tiers.append({"name": "② PER-BASELINE (moderate)",
               "table": {"columns": tier2_cols, "rows": rows2,
@@ -760,6 +779,21 @@ for rk in (r[0] for r in runs):
     if isinstance(g, int) and GPUS_VISIBLE and g > GPUS_VISIBLE:
         checks.append({"name": f"num_gpus <= gpus_visible ({rk})", "level": "error",
                        "detail": f"num_gpus={g} > visible={GPUS_VISIBLE}"})
+# gpu_ids sanity: in-range (vs nvidia-smi count) and no duplicates. This is a
+# coarse sanity check only -- an ordinal can be within range but still faulted
+# (dropped from CUDA's own enumeration); runner.py's health preflight is the
+# real gate, this just catches a mistyped list before launch.
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    ids = b.get("gpu_ids")
+    if not ids:
+        continue
+    if len(set(ids)) != len(ids):
+        checks.append({"name": f"gpu_ids duplicates ({rk})", "level": "error",
+                       "detail": f"gpu_ids={ids} has duplicate ordinal(s)"})
+    if GPUS_VISIBLE and any((i < 0 or i >= GPUS_VISIBLE) for i in ids):
+        checks.append({"name": f"gpu_ids in range ({rk})", "level": "error",
+                       "detail": f"gpu_ids={ids} has an ordinal outside [0, {GPUS_VISIBLE})"})
 # num_trainers >= minInitialTrainers.
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})

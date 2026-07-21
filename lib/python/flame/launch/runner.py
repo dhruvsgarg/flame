@@ -271,6 +271,7 @@ class ExperimentRunner:
             self.trainer_spawner = TrainerSpawner(
                 config_gen,
                 num_gpus=exp.execution.num_gpus,
+                gpu_ids=exp.execution.gpu_ids,
                 sleep_between_spawns=exp.execution.sleep_between_spawns,
                 log_file=trainers_log,
                 # CLI-only knobs passed on the trainer command line.
@@ -292,26 +293,28 @@ class ExperimentRunner:
                     },
                 )
 
-            # Dedicated aggregator GPU: prefer a physical GPU the trainer pool
-            # does NOT use (visible > num_gpus → the first idle one); else the
-            # least-loaded trainer GPU (highest index under (tid-1)%num_gpus).
+            # Dedicated aggregator GPU: prefer a visible ordinal outside gpu_ids
+            # (fully idle); else the pool's last entry. gpu_ids overrides
+            # range(num_gpus) -- skips a known-bad ordinal (simulate_fwdllm.md §B).
             _num_gpus = exp.execution.num_gpus
+            _gpu_ids = list(exp.execution.gpu_ids) if exp.execution.gpu_ids else list(range(_num_gpus))
             try:
                 import torch as _torch
                 _visible = _torch.cuda.device_count()
             except Exception:
                 _visible = 0
-            if _visible > _num_gpus:
-                _agg_gpu = _num_gpus            # a fully idle physical GPU
-            elif _num_gpus > 0:
-                _agg_gpu = _num_gpus - 1        # least-loaded trainer GPU
+            _idle_gpus = [g for g in range(_visible) if g not in _gpu_ids]
+            if _idle_gpus:
+                _agg_gpu = _idle_gpus[0]        # a fully idle physical GPU
+            elif _gpu_ids:
+                _agg_gpu = _gpu_ids[-1]         # least-loaded trainer GPU
             else:
                 _agg_gpu = None
 
             # Fail fast on a faulted GPU before spawning anything -- otherwise
             # it surfaces as an obscure crash deep in whichever process lands
             # on it (simulate_fwdllm.md §B, 07-21).
-            _gpu_pool = set(range(_num_gpus))
+            _gpu_pool = set(_gpu_ids)
             if _agg_gpu is not None:
                 _gpu_pool.add(_agg_gpu)
             if _gpu_pool:

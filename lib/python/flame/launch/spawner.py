@@ -210,6 +210,7 @@ class TrainerSpawner:
         self,
         config_generator: ConfigGenerator,
         num_gpus: int = 8,
+        gpu_ids: Optional[list] = None,
         sleep_between_spawns: float = 1.0,
         log_file: Optional[Path] = None,
         time_mode: str = "simulated",
@@ -220,6 +221,10 @@ class TrainerSpawner:
     ):
         self.config_gen = config_generator
         self.num_gpus = num_gpus
+        # Explicit CUDA ordinals to round-robin over (skips broken GPUs);
+        # defaults to the full range when not given.
+        self.gpu_ids = list(gpu_ids) if gpu_ids else list(range(num_gpus))
+        self._explicit_gpu_ids = bool(gpu_ids)
         self.reserved_cores = {int(c) for c in reserved_cores} if reserved_cores else set()
         self.sleep_between_spawns = sleep_between_spawns
         self.log_file = log_file
@@ -312,7 +317,7 @@ class TrainerSpawner:
         config_json = json.dumps(config)
 
         # Determine GPU
-        gpu_id = (trainer_id - 1) % self.num_gpus
+        gpu_id = self.gpu_ids[(trainer_id - 1) % len(self.gpu_ids)]
 
         # Determine CPU core (round-robin across usable cores when pinning is on)
         cpu_core: Optional[int] = None
@@ -460,18 +465,21 @@ class TrainerSpawner:
         except Exception:
             visible_gpus = 0
 
+        pool_size = len(self.gpu_ids)
         issues = []
         # 1. Even GPU spread: round-robin guarantees max-min <= 1; flag otherwise.
         if gpu_counts:
             spread = max(gpu_counts.values()) - min(gpu_counts.values())
             if spread > 1:
                 issues.append(f"GPU imbalance: per-GPU trainer counts {dict(sorted(gpu_counts.items()))} (spread={spread}>1)")
-        # 2. Under-provisioning: physical GPUs left completely idle.
-        if visible_gpus and self.num_gpus < visible_gpus:
-            issues.append(f"under-provisioned: num_gpus={self.num_gpus} < visible={visible_gpus} "
-                          f"→ {visible_gpus - self.num_gpus} GPU(s) idle; raise execution.num_gpus")
-        if visible_gpus and self.num_gpus > visible_gpus:
-            issues.append(f"over-subscribed: num_gpus={self.num_gpus} > visible={visible_gpus}")
+        # 2. Under-provisioning: physical GPUs left completely idle. Skipped when
+        # gpu_ids was explicitly set -- excluding a GPU is deliberate then, not a
+        # sizing mistake.
+        if not self._explicit_gpu_ids and visible_gpus and pool_size < visible_gpus:
+            issues.append(f"under-provisioned: num_gpus={pool_size} < visible={visible_gpus} "
+                          f"→ {visible_gpus - pool_size} GPU(s) idle; raise execution.num_gpus")
+        if not self._explicit_gpu_ids and visible_gpus and pool_size > visible_gpus:
+            issues.append(f"over-subscribed: num_gpus={pool_size} > visible={visible_gpus}")
         # 3. Even CPU-core spread among pinned trainers.
         if core_counts:
             cspread = max(core_counts.values()) - min(core_counts.values())
@@ -480,12 +488,12 @@ class TrainerSpawner:
 
         per_gpu = ", ".join(f"gpu{g}={n}" for g, n in sorted(gpu_counts.items()))
         if issues:
-            print(f"  ⚠ [LOAD_BALANCE] WARN ({len(procs)} trainers, num_gpus={self.num_gpus}, "
+            print(f"  ⚠ [LOAD_BALANCE] WARN ({len(procs)} trainers, num_gpus={pool_size}, "
                   f"visible={visible_gpus}): {per_gpu}")
             for it in issues:
                 print(f"      - {it}")
         else:
-            print(f"  ✓ [LOAD_BALANCE] balanced: {len(procs)} trainers over {self.num_gpus} GPU(s) "
+            print(f"  ✓ [LOAD_BALANCE] balanced: {len(procs)} trainers over {pool_size} GPU(s) "
                   f"(visible={visible_gpus}): {per_gpu}; CPU cores 1/trainer")
 
     def wait_all(self, timeout_per_trainer: float = 30.0):
