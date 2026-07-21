@@ -1,11 +1,9 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""`ForwardTextClassificationTrainer._warmup_gpu_kernels` (simulate_fwdllm.md
-FT cohort_sequence deep-dive, 2026-07-21 fix #1): one throwaway forward pass
-before round 1 is ever dispatched, to absorb CUDA-context/kernel-compile cost
-outside the timed/compared window. Must no-op on CPU, must never raise
-regardless of what the model/device do (best-effort, non-fatal), and must not
-touch the trainer's perturbation RNG state.
+"""`_warmup_gpu_kernels` runs one throwaway forward pass before round 1 is
+dispatched, to absorb CUDA-context/kernel-compile cost outside the timed
+window. Must no-op on CPU, never raise (best-effort), and never touch the
+trainer's perturbation RNG state.
 """
 
 import pytest

@@ -113,9 +113,8 @@ class _FakeGradAgg:
         self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
         self._curr_agg_version = (1, 0)
-        # §4 (simulate_fwdllm.md §G): progress axis _sim_recv_min_grad
-        # now stamps ingested grads with, and carried-surplus classification
-        # reads back at pop time.
+        # data_id is the progress axis _sim_recv_min_grad stamps ingested
+        # grads with; carried-surplus classification reads it back at pop time.
         self.data_id = 0
         self._sim_enqueue_data_id = {}
 
@@ -170,9 +169,8 @@ class TestSctOrderedCommit:
 
 
 class TestVisibilityLagTelemetry:
-    """§6 Part 4 (simulate_fwdllm.md §G): _sim_recv_min_grad now also
-    calls the shared _update_visibility_lag alongside the pre-existing ad hoc
-    _commit_gap computation. Pure refactor/addition -- must not change the
+    """_sim_recv_min_grad now also calls the shared _update_visibility_lag
+    alongside the existing _commit_gap computation. Must not change the
     committed number, only add the standardized field triplet."""
 
     def test_visibility_lag_matches_commit_gap_bit_for_bit(self):
@@ -290,25 +288,18 @@ class TestProbeCeilingReadyGating:
 
 
 class TestSafeFastPathTiming:
-    """§6 Part 3 (simulate_fwdllm.md §G), option 2: when the gate is
-    ALREADY provably safe from in-memory state alone (bmin known, no in-flight
-    end's known delay puts it earlier than bmin - slack), the probe call this
-    pass must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead of the
-    full per-trainer `_sim_recv_timeout_s` bound -- this is the actual fix for
-    Bug A's measured multi-second blocking waits (mean 2.09s, p90 4.1s, max
-    12.4s, §3.1). The eager-probe behavior itself (this straggler still gets
-    handed to recv_fifo/drain_ready) is unchanged and covered by
-    TestProbeCeilingReadyGating above; this class asserts the TIMEOUT VALUE
-    used, which those tests don't check."""
+    """When the gate is already provably safe from in-memory state alone
+    (bmin known, no in-flight end's known delay beats bmin - slack), the
+    probe must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead of
+    the full `_sim_recv_timeout_s` bound -- the fix for multi-second blocking
+    waits. Asserts the timeout VALUE, unlike TestProbeCeilingReadyGating
+    above which covers eager-probe behavior."""
 
     def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
         agg = _FakeGradAgg()
-        # READY's delay is already cached (as if a prior message from it was
-        # already observed this run) and its exp (1000) is nowhere near bmin
-        # (10) -> not stuck -> the gate is provably safe pre-ingest. It is
-        # still probed because its message has physically arrived (readiness
-        # overrides exp, per TestProbeCeilingReadyGating), but since nothing
-        # need be waited on, the call must use the tiny fast-path timeout.
+        # READY's delay is cached and its exp (1000) is nowhere near bmin(10)
+        # -> gate is provably safe. Still probed (readiness overrides exp),
+        # but the call must use the tiny fast-path timeout.
         agg._sim_known_delay_s["READY"] = 3.0
         agg._sim_inflight_expected = {"READY": 1000.0}
         ch = _RecordingChannel([], ready={"READY"})
@@ -325,9 +316,8 @@ class TestSafeFastPathTiming:
         assert ch.probe_timeouts[0] < agg._sim_recv_timeout_s(["READY"])
 
     def test_unknown_delay_end_in_mix_forces_full_bound_not_fast_path(self):
-        """Even with an otherwise-safe gate, ANY end in the probe set whose
-        delay isn't cached yet must keep today's fully-conservative behavior
-        (`_sim_recv_timeout_s` returns None -> genuinely block) -- the fast
+        """Even with an otherwise-safe gate, any end whose delay isn't cached
+        yet must keep the fully-conservative behavior (block) -- the fast
         path must never fire on an uncertain end."""
         agg = _FakeGradAgg()
         # UNKNOWN has never been observed before (no _sim_known_delay_s entry)
@@ -706,11 +696,11 @@ class TestComputeTruthfulGate:
 
 
 class TestColdStartUnknownDelayGate:
-    """#16: a trainer's first-ever contact has no _sim_known_delay_s entry
-    (reactive cache, no fallback), so earlier_stuck is blind to it and a cold
-    run used to commit whatever arrived first. Unconditional -- independent of
-    sim_compute_truthful_gate (the separate #15 phantom-skip flag) -- reusing
-    the same sim_gate_compute_cap_s bound."""
+    """A trainer's first-ever contact has no _sim_known_delay_s entry
+    (reactive cache, no fallback), so earlier_stuck was blind to it and a
+    cold run committed whatever arrived first. Unconditional -- independent
+    of sim_compute_truthful_gate -- reuses the same sim_gate_compute_cap_s
+    bound."""
 
     def test_holds_for_a_still_unknown_faster_trainer(self):
         """Neither A nor B has a known delay. A arrives first physically but

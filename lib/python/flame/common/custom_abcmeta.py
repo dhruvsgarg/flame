@@ -48,13 +48,9 @@ def abstract_attribute(obj: Callable[[Any], R] = None) -> R:
 def _is_unfilled_abstract_attribute(instance: Any, name: str) -> bool:
     """True only for a still-unfilled abstract_attribute placeholder.
 
-    The check must evaluate the instance attribute (a subclass may override an
-    abstract_attribute with a real value), which for a @property invokes its
-    getter. A getter that RAISES cannot be an unfilled placeholder -- those are
-    always plain DummyAttribute instances whose access never raises -- so treat
-    the raise as "implemented" and skip it, rather than letting an unrelated
-    subclass property (e.g. one backed by state set up after __init__) abort
-    instantiation.
+    Reads the instance attribute (a @property getter runs). A getter that
+    raises can't be an unfilled placeholder -- those never raise -- so treat
+    raises as implemented rather than aborting instantiation.
     """
     try:
         value = getattr(instance, name)

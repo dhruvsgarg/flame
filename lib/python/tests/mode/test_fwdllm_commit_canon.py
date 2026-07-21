@@ -8,13 +8,9 @@ physical arrival and sim by sct-sort, so the receive ORDER can swap even though
 flags it. `_canonicalize_cohort_commit_order` reorders THIS cycle's cohort by
 (D, str(end)) so equal-D ties break by trainer_id IDENTICALLY in real and sim.
 
-`_pending_cohort_contribs` (buffered per-contribution material, not yet merged
-into self.grad) is 1:1 with `_per_agg_trainer_list` -- both share one append
-site in `_process_single_trainer_message` -- so canon() must permute them in
-lockstep: the eventual self.grad summation (in `_process_aggregation_goal_met`)
-replays `_pending_cohort_contribs` in whatever order canon() leaves it, so an
-un-permuted contrib list would merge in the wrong order even though the
-trainer-id bookkeeping looked canonical (simulate_fwdllm.md P0-1).
+`_pending_cohort_contribs` is 1:1 with `_per_agg_trainer_list` -- canon() must
+permute both in lockstep, or self.grad's later summation replays contribs out
+of order even though trainer-id bookkeeping looks canonical.
 
 These tests pin: (1) two different input orders (real-physical vs sim-sct)
 canonicalize to the SAME sequence, contribs included; (2) the tie-break is by
@@ -37,10 +33,8 @@ class _CanonAgg:
             e: ((float(d), str(e)) if d is not None else None)
             for e, d in zip(ends, delays)
         }
-        # Buffered per-contribution material (see fwdllm_aggregator.py's
-        # _pending_cohort_contribs) -- 1:1 with _per_agg_trainer_list at the
-        # same index; defaults to the end tokens themselves so a permutation
-        # is directly comparable to the reordered trainer-id list.
+        # Buffered per-contribution material, 1:1 with _per_agg_trainer_list;
+        # defaults to end tokens so a permutation is directly comparable.
         self._pending_cohort_contribs = list(contribs if contribs is not None else ends)
 
     canon = TopAggregator._canonicalize_cohort_commit_order
@@ -70,9 +64,8 @@ class TestCanonicalizesToOneOrder:
         assert ra._per_agg_trainer_list == _CANON_ORDER
         assert sa._per_agg_trainer_list == _CANON_ORDER
         assert ra._per_agg_trainer_list == sa._per_agg_trainer_list
-        # contribs (the actual to-be-merged material) converge too, not just
-        # the trainer-id bookkeeping -- this is what makes self.grad's later
-        # replay order real/sim-identical.
+        # contribs converge too, not just trainer-id bookkeeping -- this is
+        # what makes self.grad's replay order real/sim-identical.
         assert ra._pending_cohort_contribs == _CANON_ORDER
         assert sa._pending_cohort_contribs == _CANON_ORDER
 

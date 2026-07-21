@@ -1,21 +1,19 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""P0-2 (simulate_fwdllm.md §B): `_sim_sync_recv_incremental` replaces the old
-one-shot `_sync_sim_recv_first_k` call site in `sync_collect_and_accumulate_
-grads` so sim can be called with `num_min_req=1` repeatedly, like real, without
+"""`_sim_sync_recv_incremental` replaces the old one-shot
+`_sync_sim_recv_first_k` call site in `sync_collect_and_accumulate_grads` so
+sim can be called with `num_min_req=1` repeatedly, like real, without
 stranding (discarding) whatever didn't make this call's cut.
 
-The old `_sync_sim_recv_first_k` drains the WHOLE selected set into a LOCAL
-buffer every call and drops anything past `first_k` (`top_aggregator.py`
-`SYNC_SIM_RECV` commit loop's `break` + implicit discard of `all_popped`'s
-remainder) -- calling it with `first_k=1` repeatedly would silently lose every
-candidate past the first. `_sim_sync_recv_incremental` keeps a PERSISTENT,
-instance-level sct-ordered buffer across calls instead: a candidate is added
-once (on first sight) and only ever popped, never wholesale discarded.
+The old `_sync_sim_recv_first_k` drained the WHOLE selected set into a local
+buffer every call and dropped anything past `first_k` -- calling it with
+`first_k=1` repeatedly would silently lose every candidate past the first.
+`_sim_sync_recv_incremental` keeps a PERSISTENT, instance-level sct-ordered
+buffer across calls instead: a candidate is added once and only ever popped,
+never wholesale discarded.
 
-These tests pin exactly that property (never-strand, never-double-commit,
-sct-order preserved across separate calls) plus backward-compat with the old
-single-call-for-the-whole-cohort shape.
+These tests pin: never-strand, never-double-commit, sct-order preserved
+across separate calls, plus backward-compat with the old single-call shape.
 """
 
 from datetime import datetime, timedelta
@@ -30,12 +28,10 @@ from flame.selector.properties import (
 
 
 class _FakeIncrementalChannel:
-    """Like `test_fwdllm_sim_sync_barrier.py`'s `_FakeBarrierChannel`, but
-    distinguishes "selected/dispatched" (`has()`/`ends()`) from "message ready"
-    (`recv_fifo` only yields for an end with a message already added) -- so a
-    test can dispatch a cohort, commit against a PARTIAL set of ready messages,
-    then add more messages and drive a second call, mirroring real's
-    continuous refill-per-commit cadence."""
+    """Like `_FakeBarrierChannel`, but distinguishes "selected/dispatched"
+    (`has()`/`ends()`) from "message ready" (`recv_fifo` yields only for an
+    end with a message already added) -- so a test can commit against a
+    partial set of ready messages, then add more and drive a second call."""
 
     def __init__(self):
         self._selected = set()
@@ -93,8 +89,8 @@ class _FakeIncrementalAgg:
 
 class TestIncrementalNeverStrandNeverDoubleCommit:
     def test_never_strands_a_candidate_past_num_min_req(self):
-        """The defining P0-2 fix: with num_min_req=1, candidates that don't win
-        THIS call must survive for a later call, not be discarded."""
+        """With num_min_req=1, candidates that don't win this call must
+        survive for a later call, not be discarded."""
         agg = _FakeIncrementalAgg()
         ch = _FakeIncrementalChannel()
         ch.add_msg("A", sct=40.0)

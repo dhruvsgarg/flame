@@ -78,8 +78,8 @@ class AsyncOortSelector(AbstractSelector):
             )
 
         self.round = 0
-        # §S.pacer guard: last round pacer() actually ran for, so a same-round
-        # dispatch burst can't re-fire it (simulate_fwdllm.md §G 07-20).
+        # Last round pacer() actually ran for, so a same-round dispatch
+        # burst can't re-fire it.
         self._last_pacer_round = None
 
         # CONFIG CHANGES FOR ASYNCFL WITH OORT
@@ -174,12 +174,11 @@ class AsyncOortSelector(AbstractSelector):
         # a trainer
         self.track_trainer_timeouts = dict()
 
-        # In-flight abandon timeout (§R, 2026-07-11): a bare 90s evicted a
-        # genuinely-busy (not dead) fwdllm trainer, since forward-grad rounds
-        # can legitimately run longer than the CNN/speech rounds this was
-        # tuned for. Now a workload knob: aggregator hyperparameters.
-        # send_timeout_wait_s (threaded in by channel_manager.py); defaults to
-        # the original constant so other baselines are unaffected.
+        # In-flight abandon timeout: a bare 90s evicted a genuinely-busy (not
+        # dead) fwdllm trainer, since forward-grad rounds run longer than the
+        # CNN/speech rounds this was tuned for. Now a workload knob
+        # (hyperparameters.send_timeout_wait_s, threaded in by
+        # channel_manager.py); defaults to the original constant.
         self.send_timeout_wait_s = kwargs.get(
             "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S
         )
@@ -304,10 +303,9 @@ class AsyncOortSelector(AbstractSelector):
         )
         logger.debug(f"Trainer version states: {trainer_version_keys}")
 
-        # TEMP EXHAUSTIVE DEBUG (simulate_fwdllm.md FT cohort_sequence deep-dive,
-        # 2026-07-21): full-input snapshot per select() call, tagged with a
-        # monotonic seq so real/sim logs diff call-for-call (`grep SELECT_TRACE`)
-        # without timestamp reconciliation. Flag-gate or delete once localized.
+        # TEMP DEBUG: full-input snapshot per select() call, tagged with a
+        # monotonic seq so real/sim logs diff call-for-call (`grep
+        # SELECT_TRACE`). Delete once localized.
         self._select_trace_seq = getattr(self, "_select_trace_seq", 0) + 1
         logger.info(
             f"[SELECT_TRACE seq={self._select_trace_seq}] ENTRY "
@@ -603,9 +601,8 @@ class AsyncOortSelector(AbstractSelector):
         """Order-sample top-k: each id's rank key depends only on its own
         (seed, salt, agg_version_key, id), never on pool membership/size/call
         order. Replaces index-based random.sample()/np.random.choice(), where
-        one trainer's incidental presence/absence (async timing) shifts
-        every other candidate's draw and permanently desyncs later calls
-        (simulate_fwdllm.md cohort_sequence root cause, 2026-07-21).
+        one trainer's incidental presence/absence shifts every other
+        candidate's draw and permanently desyncs later calls.
 
         Seed material is a str, not a raw tuple -- Random() hashes non-str/
         int/bytes seeds, and str hash() is PYTHONHASHSEED-randomized per
@@ -636,8 +633,8 @@ class AsyncOortSelector(AbstractSelector):
         bands over the last two `pacer_step` windows: a FLAT plateau
         (`|Δ| <= 0.1·last`) RELAXES (`round_threshold += pacer_delta`); a SHARP
         change (`|Δ| >= 5·last`) TIGHTENS (floored at `pacer_delta`). Keyed on
-        `current_round` (= reference `training_round`); caller train-gates it and
-        must only invoke this once per genuine round change (§G 07-20) — takes an
+        `current_round` (= reference `training_round`); caller train-gates it
+        and must only invoke this once per genuine round change -- takes an
         explicit param since `self.round` lags until the caller sets it after
         this returns.
 
@@ -997,15 +994,15 @@ class AsyncOortSelector(AbstractSelector):
             )
 
             # Per-candidate, fires up to `c` times/call -- was left at INFO
-            # despite its own TODO (§G 07-20 pm-2), same class as §G 07-14.
+            # despite its own TODO.
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
                 )
 
-        # Explicit end_id tie-break (§G 07-20 pm-2): pre-sort order is already
-        # canonical (sorted(ends.keys())), so this just makes the existing
-        # stable-sort tie-break explicit instead of incidental.
+        # Explicit end_id tie-break: pre-sort order is already canonical
+        # (sorted(ends.keys())), making the existing stable-sort tie-break
+        # explicit instead of incidental.
         return sorted(utility_list, key=lambda x: (x[PROP_UTILITY], x[PROP_END_ID]))
 
     def _cleanup_provided_ends(
@@ -1697,13 +1694,13 @@ class AsyncOortSelector(AbstractSelector):
 
         # NOTE: (DG) Assuming that shuffled_end_ids is not needed
 
-        # Run pacer that controls round_threshold. TRAIN-ONLY (§S.pacer): felix's
-        # eval hand leaves self.round/exploitation_util_history unchanged, so
-        # firing on eval would re-adjust off a stale round. ONCE-PER-ROUND (§G
-        # 07-20): unlike Oort's reference (pacer() only ever called once/round,
-        # by construction), this select() fires many times per model_version
-        # (once per freed slot) -- without the guard each call re-fires the
-        # pacer, ratcheting round_threshold to 100 in one dispatch burst.
+        # Run pacer that controls round_threshold. TRAIN-ONLY: felix's eval
+        # hand leaves self.round/exploitation_util_history unchanged, so
+        # firing on eval would re-adjust off a stale round. ONCE-PER-ROUND:
+        # unlike Oort's reference (called once/round by construction), this
+        # select() fires many times per model_version (once per freed slot)
+        # -- without the guard each call re-fires the pacer, ratcheting
+        # round_threshold to 100 in one dispatch burst.
         if task_to_perform == "train" and model_version != self._last_pacer_round:
             self.pacer(model_version)
             self._last_pacer_round = model_version
@@ -1838,9 +1835,8 @@ class AsyncOortSelector(AbstractSelector):
         logger.info(
             f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}"
         )
-        # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- filtered_ends is
-        # the free pool select_random draws from; a composition diff here at
-        # the first diverging seq is direct proof of where the race starts.
+        # TEMP DEBUG (see [SELECT_TRACE] above): filtered_ends is the free
+        # pool select_random draws from; diff here to localize composition drift.
         logger.info(
             f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
             f"FILTERED_ENDS sorted={sorted(filtered_ends.keys())} "
@@ -1953,24 +1949,14 @@ class AsyncOortSelector(AbstractSelector):
                 f"Invoking calculate_total_utility() with utility_list: "
                 f"{utility_list}, filtered_ends: {filtered_ends}, round: {model_version}"
             )
-            # calculate_round_preferred_duration (inside calculate_total_utility)
-            # must see the FULL registered client population, not this call's
-            # transient filtered_ends -- reference Oort computes the percentile
-            # from client_list = ALL tracked arms (third_party/Oort/oort/oort.py
-            # getTopK:267-273), independent of which clients are feasible for
-            # THIS dispatch. Async's filtered_ends is almost always a SINGLETON
-            # (fluxtune telemetry: 236/244 SEND calls had len(filtered_ends)==1,
-            # since async dispatches one freed trainer at a time, unlike sync's
-            # per-round batch of the whole pool) -- on a singleton the percentile
-            # trivially returns that one candidate's own duration, so the speed
-            # penalty can never bind (confirmed: sim system_util pinned ~1.0 all
-            # run even though real per-trainer durations vary 8-72s; real's
-            # SEND calls happen to batch ~3 at a time via MQTT polling jitter,
-            # which is itself incidental, not the reference's intended
-            # population). Passing the full `connected_ends` here is safe: it's
-            # only used for ends[id] lookups on ids already in utility_list (a
-            # subset) plus this percentile calc, restoring the reference's
-            # population-level scope regardless of per-call batch size.
+            # The percentile must see the FULL registered client population,
+            # not this call's transient filtered_ends -- reference Oort
+            # computes it from ALL tracked arms, not just this dispatch's
+            # feasible set. Async's filtered_ends is almost always a
+            # singleton, so the percentile would trivially return that one
+            # candidate's own duration and the speed penalty could never
+            # bind. `connected_ends` is safe here: only used for lookups on
+            # ids already in utility_list, plus this percentile calc.
             _duration_pool = connected_ends if connected_ends is not None else ends
             utility_list = self.calculate_total_utility(
                 utility_list, _duration_pool, model_version
@@ -1996,8 +1982,7 @@ class AsyncOortSelector(AbstractSelector):
                     f"select_random() with filtered_ends: {filtered_ends} and "
                     f"feasible_extra: {feasible_extra}"
                 )
-                # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- branch
-                # taken (no utility obs yet) and which model_version window.
+                # TEMP DEBUG (see [SELECT_TRACE] above): branch taken, model_version window.
                 logger.info(
                     f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
                     f"BRANCH=select_random model_version={model_version} "
@@ -2054,8 +2039,8 @@ class AsyncOortSelector(AbstractSelector):
             # it can be passed to a function to process it
             candidates_dict = {key: None for key in candidates}
 
-            # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- explore/
-            # exploit branch outcome + cutoff_utility, its ranking input.
+            # TEMP DEBUG (see [SELECT_TRACE] above): explore/exploit branch
+            # outcome + cutoff_utility, its ranking input.
             logger.info(
                 f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
                 f"BRANCH=explore_exploit model_version={model_version} "
@@ -2152,19 +2137,11 @@ class AsyncOortSelector(AbstractSelector):
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
-        """Read-only over `selected_ends`: report who Clerk A (send-state) has
-        outstanding, minus anyone who has already replied. NEVER writes a new
-        name into `selected_ends`/`all_selected` -- that's `_handle_send_state`'s
-        job alone. A prior version resampled fresh candidates here when
-        `selected_ends` was empty, racing `_handle_send_state`'s own dispatch
-        and (via a `curr_end_state != VAL_END_STATE_NONE` bug comparing a
-        never-touched end's Python `None` against the string `"none"`) sweeping
-        untouched ends into `all_selected` before they were ever sent anything
-        -- permanent deadlock (simulate_fwdllm.md §G 07-17). Removed; if
-        `selected_ends` is empty this simply returns {} and the next
-        send-state tick dispatches normally (matches this function's own
-        long-standing docstring: "get() will proceed and wait on
-        distribute_weights before running again").
+        """Read-only over `selected_ends`: reports who is outstanding, minus
+        replies received. Never assigns new selections -- that's
+        `_handle_send_state`'s job; a prior version that resampled here raced
+        send-state dispatch and could deadlock. Returns {} if empty; the next
+        send-state tick dispatches normally.
         """
         selected_ends = self.selected_ends[self.requester]
 

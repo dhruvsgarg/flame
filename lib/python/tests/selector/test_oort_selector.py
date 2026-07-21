@@ -82,9 +82,9 @@ class TestOortIdempotentWithinRound:
 
 
 class TestVersionKeySymmetry:
-    """§M Step 1(b): oort mirrors async_oort's optional no-repeat-this-tuple
-    filter, for interface symmetry. Inert unless a caller passes both kwargs --
-    no current caller does (sync's round-scoped `selected_ends` guard already
+    """oort mirrors async_oort's optional no-repeat-this-tuple filter, for
+    interface symmetry. Inert unless a caller passes both kwargs -- no
+    current caller does (sync's round-scoped `selected_ends` guard already
     prevents a within-round re-pick)."""
 
     def test_absent_kwargs_are_noop(self, oort, make_ends, channel_props):
@@ -236,11 +236,9 @@ class TestAsyncRoundPreferredDuration:
 
 class TestAsyncOortSystemUtilTelemetry:
     """AsyncOortSelector never emitted round_preferred_duration_s/round_threshold/
-    sys_util_mean/pref_binds -- sync oort.py had it, async didn't, so a real vs
-    sim divergence in the Oort speed-penalty (fluxtune: sim system_util pinned
-    at 1.0, real varies 0.05-1.0 and binds ~75% of rounds) couldn't be directly
-    observed, only inferred. Guards the ported telemetry (simulate_fwdllm.md
-    open issues, "fluxtune sim Oort speed-penalty never binds")."""
+    sys_util_mean/pref_binds -- sync oort.py had it, async didn't, so a real
+    vs sim divergence in the Oort speed-penalty couldn't be directly observed,
+    only inferred. Guards the ported telemetry."""
 
     def test_selection_emits_pref_and_system_util_fields(
         self, tmp_path, async_oort, make_ends
@@ -259,12 +257,10 @@ class TestAsyncOortSystemUtilTelemetry:
                 e.set_property(
                     PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d)
                 )
-                # PROP_STAT_UTILITY is None -> fetch_statistical_utility routes
-                # the end to unexplored_end_ids instead of utility_list, and
-                # calculate_total_utility short-circuits on an empty
-                # utility_list BEFORE it ever recomputes round_preferred_duration
-                # -- must be set so this round takes the scored (exploitation)
-                # path at all.
+                # PROP_STAT_UTILITY None routes the end to unexplored_end_ids,
+                # and calculate_total_utility short-circuits before
+                # recomputing round_preferred_duration -- must be set for the
+                # scored (exploitation) path.
                 e.set_property(PROP_STAT_UTILITY, 1.0)
 
             channel_props = {
@@ -288,21 +284,19 @@ class TestAsyncOortSystemUtilTelemetry:
             assert len(sels) == 1
             s = sels[0]
 
-            # round_preferred_duration_s must be the SAME sorted-percentile
-            # value TestAsyncRoundPreferredDuration already proves the pure
-            # function computes -- confirms the live select() path actually
-            # wires the computed pref into telemetry, not just leaves it None.
+            # round_preferred_duration_s must match the sorted-percentile
+            # value TestAsyncRoundPreferredDuration proves the pure function
+            # computes -- confirms select() wires it into telemetry, not
+            # leaves it None.
             expected_pref = async_oort.calculate_round_preferred_duration(
                 ends
             ).total_seconds()
             assert s["round_preferred_duration_s"] == expected_pref
             assert s["round_threshold"] == 30
 
-            # With pref well below the max duration (30th percentile of
-            # [8..36] ~= 20s) at least one selected end should be penalized --
-            # if this is ever None/0 again in a live run, sys_util_mean/
-            # pref_binds will catch a "penalty never binds" regression exactly
-            # like fluxtune's currently-open bug.
+            # pref is well below max duration, so at least one end should be
+            # penalized -- sys_util_mean/pref_binds catches a "penalty never
+            # binds" regression.
             assert s["sys_util_mean"] is not None
             assert s["pref_binds"] is True
             assert 0.0 < s["frac_penalized"] <= 1.0
@@ -312,23 +306,18 @@ class TestAsyncOortSystemUtilTelemetry:
     def test_singleton_filtered_ends_still_uses_full_pool_for_pref(
         self, tmp_path, async_oort, make_ends
     ):
-        """Root cause of the fluxtune bug: async dispatches one freed trainer
-        per SEND call (fluxtune telemetry: 236/244 calls had
-        len(filtered_ends)==1), so calculate_round_preferred_duration used to
-        see a POPULATION OF ONE -- the percentile trivially returns that one
-        candidate's own duration, so it can never exceed pref (system_util
-        pinned at 1.0 all run, confirmed in banked telemetry). Reference Oort
-        computes the percentile from ALL tracked clients
-        (third_party/Oort/oort/oort.py getTopK:267-273), not just this
-        round's feasible subset. Fix: calculate_total_utility's duration
-        population is now the full `connected_ends`, not `filtered_ends`.
+        """Async dispatches one freed trainer per SEND call, so
+        calculate_round_preferred_duration used to see a population of one --
+        the percentile trivially returns that candidate's own duration, so it
+        can never exceed pref. Reference Oort computes the percentile from
+        ALL tracked clients, not just this round's feasible subset. Fix:
+        calculate_total_utility's duration population is now the full
+        `connected_ends`, not `filtered_ends`.
 
-        Here only ONE of ten registered ends is eligible this round (the rest
-        are in `trainer_unavail_list`) -- the slowest one (36s). Pre-fix this
-        singleton would trivially set its own pref, never binding. Post-fix,
-        pref must reflect the full 10-trainer spread (8-36s), so the 36s
-        straggler -- the only one actually up for selection -- gets
-        penalized.
+        Here only one of ten registered ends is eligible (the rest unavail)
+        -- the slowest one (36s). Pre-fix this singleton would trivially set
+        its own pref, never binding. Post-fix, pref reflects the full
+        10-trainer spread, so the straggler gets penalized.
         """
         from flame import telemetry
         from flame.channel import (
@@ -538,9 +527,8 @@ class TestPacerFidelity:
         assert async_oort.round_threshold == 30.0
 
     def test_async_oort_pacer_once_per_round(self, async_oort):
-        # §S.pacer once-per-round guard (simulate_fwdllm.md §G 07-20): a burst
-        # of same-model_version select() calls must fire the pacer's state
-        # transition at most once, not once per call.
+        # Once-per-round guard: a burst of same-model_version select() calls
+        # must fire the pacer's state transition at most once, not per call.
         async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
         async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
         async_oort.round_threshold = 10.0
@@ -610,16 +598,12 @@ class TestChallenge13SendStateCleanup:
 
 class TestRecvStateNeverWritesNewSelections:
     """`_handle_recv_state` must be read-only over `selected_ends`: it reports
-    who send-state already dispatched, minus anyone who has replied, and NEVER
-    picks new candidates itself -- that's `_handle_send_state`'s job alone. A
-    prior version resampled fresh candidates here when `selected_ends` was
-    empty (racing send-state's own dispatch, and via a
-    `curr_end_state != VAL_END_STATE_NONE` bug comparing a never-touched end's
-    Python `None` against the string `"none"`) letting it claim ends into
-    `all_selected` before they were ever sent anything -> permanent deadlock
-    (simulate_fwdllm.md §G 07-17, all-100-join-at-once fluxtune smoke stall).
-    The fallback is removed; empty `selected_ends` in -> empty result out,
-    regardless of what state the connected ends are in.
+    who send-state already dispatched, minus anyone who has replied, and
+    never picks new candidates itself -- that's `_handle_send_state`'s job.
+    A prior version resampled fresh candidates here when `selected_ends` was
+    empty (a `None` vs `"none"` comparison bug), claiming ends into
+    `all_selected` before they were ever sent anything -> permanent deadlock.
+    The fallback is removed; empty `selected_ends` in -> empty result out.
     """
 
     def test_empty_selected_ends_returns_empty_never_touched(

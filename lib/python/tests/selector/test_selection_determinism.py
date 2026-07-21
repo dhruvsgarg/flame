@@ -193,19 +193,13 @@ class TestDedicatedRngContract:
 
 
 class TestSelectRandomOrderDeterminism:
-    """select_random's *dispatch order*, not just its chosen set, must be a pure
+    """select_random's dispatch order, not just its chosen set, must be a pure
     function of (state, seed): it feeds `_pyrng.sample(...)` (deterministic)
-    into `dict.fromkeys(...)` to build the returned candidates dict. A bare
-    `set()` there would silently reorder by string hash, which Python
-    randomizes PER-PROCESS (PYTHONHASHSEED) independent of the seed -- same
-    trainers chosen, different dispatch order every launch. That only shows up
-    ACROSS process launches (hash seed is fixed for the lifetime of one
-    process), which is also why a same-process frozenset-comparison test
-    (as used elsewhere in this file) cannot catch it -- these spawn real
-    subprocesses under different PYTHONHASHSEED values, exactly reproducing
-    how the bug first showed up (two separate `run_experiment` launches with
-    identical `hyperparameters.seed` picking the same 30 trainers in a
-    different order each time)."""
+    into `dict.fromkeys(...)`. A bare `set()` there would silently reorder by
+    string hash, which Python randomizes per-process (PYTHONHASHSEED)
+    independent of the seed -- same trainers, different dispatch order every
+    launch. Only shows up ACROSS process launches, so these spawn real
+    subprocesses under different PYTHONHASHSEED values to catch it."""
 
     _SNIPPET = """
 import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
@@ -263,8 +257,8 @@ class TestCandidateOrderInsulatedFromEndsInsertionOrder:
     """The oort-family candidate list must not depend on `ends` insertion order
     (= trainer JOIN order, differs real vs sim). Pre-fix, `unexplored_end_ids`
     came from raw `ends.keys()`, so the seeded `_rng.choice` drew a different
-    cohort per leg at cycle 0 under an identical seed (simulate_fwdllm.md §B
-    fluxtune #1). Feed the same ids in two orders; require identical output."""
+    cohort per leg under an identical seed. Feed the same ids in two orders;
+    require identical output."""
 
     _IDS = [f"t{i:03d}" for i in range(40)]
 
@@ -306,10 +300,9 @@ class TestCandidateOrderInsulatedFromEndsInsertionOrder:
 class TestKeyedTopkPopulationInvariance:
     """`_keyed_topk` (select_random/sample_by_speed's shared mechanism) must
     stay population-size-independent: real and sim can momentarily see a
-    candidate pool that differs by one trainer (async arrival timing), and
-    that must never perturb any OTHER candidate's pick or desync later draws
-    -- the cohort_sequence root cause `random.sample()`/`np.random.choice()`
-    had (simulate_fwdllm.md, 2026-07-21)."""
+    candidate pool differing by one trainer (async arrival timing), and that
+    must never perturb any other candidate's pick or desync later draws --
+    the failure mode `random.sample()`/`np.random.choice()` had."""
 
     def _sel(self, seed=1234):
         from flame.selector.async_oort import AsyncOortSelector

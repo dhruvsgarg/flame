@@ -6,11 +6,10 @@ frozen `_sim_now()` and so can never catch its `avail_change` telemetry up to
 later trace transitions on its own. `inform_end_of_training`'s existing
 `channel.broadcast(...)` already reaches every connected end regardless of
 dispatch state, so it now piggybacks the aggregator's final `_avail_now()`
-(gated on sim mode alone) -- one last wake-up letting `_refresh_avl_state()`
-flush any queued transitions before the trainer exits. Previously also gated
-on `trainer_event_dict is not None` (the availability feature), which left
-every non-avail-trace sim run's final `task_recv` with a null `sim_send_ts`
-for no reason -- `_avail_now()` is equally cheap either way (§G 07-20 pm-2).
+(gated on sim mode alone, not also `trainer_event_dict is not None`) -- one
+last wake-up letting `_refresh_avl_state()` flush any queued transitions
+before the trainer exits. Gating on both left non-avail-trace sim runs with
+a null final `sim_send_ts` for no reason.
 
 Two halves, mirroring test_agg_start_ts_broadcast.py's structure:
   * aggregator side: inform_end_of_training's broadcast payload.

@@ -56,11 +56,8 @@ class _FakeHyperparameters:
 
 class _FakeConfig:
     def __init__(self):
-        # A fresh instance per _FakeConfig -- a shared class-level singleton
-        # here let a test's `agg.config.hyperparameters.some_flag = True`
-        # (e.g. TestEvalNoLongerFoldsVclock in test_fwdllm_sct_model.py) leak
-        # into every other test's _FakeAggregator that runs later in the same
-        # pytest session, since they'd all reference the SAME object.
+        # Fresh instance per _FakeConfig -- a shared class-level singleton let
+        # one test's hyperparameter mutation leak into later tests' aggregators.
         self.hyperparameters = _FakeHyperparameters()
 
 
@@ -75,8 +72,8 @@ class _FakeAggregator:
 
     _process_aggregation_goal_met = TopAggregator._process_aggregation_goal_met
     _replay_buffered_cohort_contribs = TopAggregator._replay_buffered_cohort_contribs
-    # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now snapshotted
-    # + backgrounded via the shared _eval_snapshot_model, not called inline.
+    # eval_model() is snapshotted + backgrounded via the shared
+    # _eval_snapshot_model, not called inline.
     _eval_snapshot_model = TopAggregator._eval_snapshot_model
 
     def __init__(self, contributors, var_good_enough, staleness_map=None,
@@ -134,12 +131,10 @@ class _FakeAggregator:
 
 
 def _wait_eval_done(agg, timeout=2.0):
-    """§6 Part 6 (simulate_fwdllm.md §G): eval_model() now runs on a
-    daemon thread launched by _process_aggregation_goal_met, which returns
-    without waiting for it. Tests asserting on the resulting agg_eval event's
-    CONTENT must wait for that thread to finish (via the same _eval_inflight
-    flag _eval_snapshot_model/the eval job's finally clear) before reading the
-    telemetry file, or they race the background thread."""
+    """eval_model() runs on a daemon thread launched by
+    _process_aggregation_goal_met, which returns without waiting. Tests
+    asserting on agg_eval content must wait for _eval_inflight to clear
+    before reading telemetry, or they race the thread."""
     deadline = time.time() + timeout
     while getattr(agg, "_eval_inflight", False) and time.time() < deadline:
         time.sleep(0.005)
@@ -226,10 +221,8 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
     def test_grad_norm_emitted_and_resets_next_cycle(self, tmp_path):
-        """G1: per-cycle grad norms accumulated by aggregate_grads_from_trainers
-        (simulated here directly, since this fake doesn't exercise the message-
-        processing path) land on agg_round as `grad_norm`, and the accumulator
-        is empty again for the next cycle."""
+        """Per-cycle grad norms accumulated by aggregate_grads_from_trainers land
+        on agg_round as `grad_norm`, then the accumulator resets."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
@@ -281,15 +274,10 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
     def test_sync_barrier_lags_surfaced_as_visibility_lag(self, tmp_path):
-        """§6 Part 4 (simulate_fwdllm.md §G), point 2: the barrier-
-        anchored lag list computed in sync_collect_and_accumulate_grads
-        (_sync_barrier_lags_s, sim mode) previously reached only a text log
-        line, never the structured agg_round event -- the same "computed but
-        never surfaced" gap commit_gap_s/buf_depth had for fluxtune before
-        this plan's Part 2. is_async=False (the sync path's own call) must
-        read it into update_visibility_lag_s as a list; the per-item
-        update_ready_ts/update_committed_ts pair has no meaning for a batched
-        barrier commit and must stay None."""
+        """The sync path's barrier-anchored lag list (_sync_barrier_lags_s) must
+        land in agg_round's update_visibility_lag_s, not just a text log. The
+        per-item update_ready_ts/update_committed_ts stay None -- meaningless
+        for a batched barrier commit."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
@@ -431,11 +419,9 @@ class TestAggRoundTelemetry:
             telemetry.shutdown()
 
     def test_cycle_model_version_is_pre_advance_on_commit(self, tmp_path):
-        """Aggregation/model-version stage instrumentation: `cycle_model_version`
-        is the SAME pre-mutation snapshot pattern as cycle_data_id -- the
-        version this cycle worked on, not the post-commit bump, so a checker
-        can correlate "this cycle committed" with "next cycle's
-        cycle_model_version == this one + 1" directly off agg_round."""
+        """`cycle_model_version` is a pre-mutation snapshot (like cycle_data_id)
+        -- the version this cycle worked on, not the post-commit bump, so a
+        checker can correlate commits across cycles directly off agg_round."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)
@@ -555,12 +541,10 @@ class TestContributorIntervalsEmission:
             telemetry.shutdown()
 
     def test_processing_wall_ts_flows_through_when_captured(self, tmp_path):
-        """New commit-stage instrumentation: `processing_wall_ts` (the wall
-        moment the aggregator's own drain loop accepted a grad, distinct from
-        the trainer's dispatch/commit schedule) rides through to
-        contributor_intervals whenever _process_single_trainer_message
-        populated it -- lets a checker see a ready-but-unprocessed grad at
-        per-contributor granularity (the #15 phantom-drain-gate bug class)."""
+        """`processing_wall_ts` (when the aggregator's drain loop accepted a
+        grad, distinct from dispatch/commit) rides through to
+        contributor_intervals -- lets a checker see a ready-but-unprocessed
+        grad per contributor."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1", "t2"], var_good_enough=False)
@@ -613,11 +597,9 @@ class TestPerRoundWallDecomposition:
     """agg_round carries the per-round wall breakdown feeding #6 --
     aggregate_fedavg_s always; barrier_wait_s/drain_tail_s when the
     dispatch/last-grad wall stamps were captured (else null, rung SKIPs).
-    eval_s is permanently null as of §6 Part 6
-    (simulate_fwdllm.md §G): eval_model() is backgrounded on a daemon
-    thread, so there is no more synchronous eval duration on this critical
-    path to measure here in either mode (see TestEvalNoLongerFoldsVclock in
-    test_fwdllm_sct_model.py for the fold-removal regression guard)."""
+    eval_s is now always null -- eval_model() runs on a background daemon
+    thread, so there's no synchronous eval duration to measure here (see
+    TestEvalNoLongerFoldsVclock in test_fwdllm_sct_model.py)."""
 
     def test_fedavg_present_eval_s_always_null(self, tmp_path):
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
@@ -635,16 +617,15 @@ class TestPerRoundWallDecomposition:
             # fedavg wall is measured around aggregate() and is non-negative
             assert r["aggregate_fedavg_s"] is not None
             assert r["aggregate_fedavg_s"] >= 0.0
-            # eval is backgrounded (§6 Part 6) -> never measured synchronously
-            # here, even on a variance pass.
+            # eval is backgrounded -> never measured synchronously here, even
+            # on a variance pass.
             assert r["eval_s"] is None
         finally:
             telemetry.shutdown()
 
     def test_agg_compute_window_matches_fedavg_span(self, tmp_path):
-        """§J step-1 telemetry: agg_compute_start_wall/end_wall bracket the
-        aggregate() call exactly, so an overlap-measurement script can trust
-        the window (end - start == aggregate_fedavg_s)."""
+        """agg_compute_start_wall/end_wall bracket the aggregate() call
+        exactly, so an overlap script can trust window == aggregate_fedavg_s."""
         telemetry.configure(role="aggregator", run_dir=str(tmp_path))
         try:
             agg = _FakeAggregator(contributors=["t1"], var_good_enough=True)

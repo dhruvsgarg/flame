@@ -79,10 +79,9 @@ class AbstractSelector(ABC):
     def rng_fingerprint(self) -> str:
         """Short hex digest of both dedicated RNGs' internal state.
 
-        For determinism audits: two same-seed runs whose fingerprint differs
-        at the same call site proves something consumed extra draws between
-        construction and that point (simulate_fwdllm.md, RNG-selection
-        investigation) -- diff the fingerprint sequence to localize where.
+        For determinism audits: two same-seed runs with differing
+        fingerprints at the same call site prove extra draws happened
+        between construction and that point.
         """
         py_state = repr(self._pyrng.getstate()).encode()
         np_state = repr(self._rng.get_state()).encode()

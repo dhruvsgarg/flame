@@ -26,17 +26,9 @@ def _calculate_hash(tensor):
 
 @contextlib.contextmanager
 def _agg_sync_timer(owner, name: str):
-    """Isolate the wall time of a single CPU/GPU sync point (`.item()`,
-    `.to("cpu")`) from the rest of its enclosing `@timer_decorator`-wrapped
-    function (simulate_fwdllm.md §B, 2026-07-20 pm-5, row 1). Emits its OWN
-    named `step_timing` event -- `agg_step_timing_breakdown_parity` reads ANY
-    `step_timing` func name generically, so this gets a KS+mean rung for free,
-    no `checks.py` change needed. If sim's fixed per-call tax on `_compute_var`/
-    `_prepare_round_state`/`_apply_weighted_update` is concentrated in these
-    isolated sync windows, that supports the GPU-queue-depth-under-a-denser-
-    sim-trainer-pool hypothesis; if the sync itself is fast and the REST of the
-    function accounts for the tax, that hypothesis is wrong -- look elsewhere.
-    """
+    """Times a single sync point (`.item()`, `.to("cpu")`) separately from
+    its enclosing `@timer_decorator`-wrapped function, as its own named
+    `step_timing` event."""
     t0 = time.time()
     try:
         yield
@@ -163,9 +155,7 @@ class FedSGDAggregator(TopAggregator):
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
-        # Server-side momentum damping (S1, fluxtune_contributions.md §8.2), applied
-        # at the undamped direct-SGD step (F8). 0.0 (default) = byte-identical.
-        # Shared across all 3 baselines; gated per baseline via this config key.
+        # Server-side momentum on the raw SGD update; 0.0 (default) is byte-identical.
         self.server_momentum = float(
             getattr(self.config.hyperparameters, "server_momentum", 0.0) or 0.0
         )
@@ -210,8 +200,7 @@ class FedSGDAggregator(TopAggregator):
 
     @timer_decorator
     def get_global_model_params(self):
-        """Timed: `get_model_params()` does `.cpu().state_dict()`, a real device
-        transfer, not a free accessor (simulate_fwdllm.md §B)."""
+        """Timed: `.cpu().state_dict()` is a real device transfer, not a free accessor."""
         return self.trainer.get_model_params()
 
     def get_global_model(self):
@@ -235,9 +224,8 @@ class FedSGDAggregator(TopAggregator):
         return True
 
     def _server_update_step(self, param_idx: int, raw_update: "torch.Tensor") -> "torch.Tensor":
-        """Heavy-ball momentum on one parameter's raw update (S1). momentum=0.0
-        returns `raw_update` unchanged (byte-identical); else `buf <- momentum*buf
-        + raw_update`, one buffer per `param_idx`, lazily created."""
+        """Heavy-ball momentum on one parameter's update; momentum=0.0 is a no-op
+        (byte-identical)."""
         if not self.server_momentum:
             return raw_update
         buf = self._server_momentum_buf.get(param_idx)
@@ -252,9 +240,7 @@ class FedSGDAggregator(TopAggregator):
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
         result = calculate_var(self.grad_for_var_check_list)
-        # v2_var_trajectory audit: input grad norms + output var, diffable
-        # real vs sim. Back to DEBUG (§G 07-20 pm-2) -- was mistakenly left at
-        # INFO, silently taxing every prod run's _compute_var timing (§F-19).
+        # Diagnostic telemetry (grad norms + var); DEBUG-gated to avoid taxing every prod run.
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 from flame import telemetry
@@ -281,8 +267,7 @@ class FedSGDAggregator(TopAggregator):
 
     @timer_decorator
     def _snapshot_last_round_update(self, weighted_gradient_sum):
-        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
-        Shared by both commit branches -- was duplicated verbatim."""
+        """Timed separately; shared by both commit branches (was duplicated verbatim)."""
         return [p.clone().detach() for p in weighted_gradient_sum]
 
     @timer_decorator
@@ -309,8 +294,8 @@ class FedSGDAggregator(TopAggregator):
     @timer_decorator
     def _apply_weighted_update(self, model_list, weighted_gradient_sum, old_param,
                                 learning_rate, training_num):
-        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B).
-        Shared by both commit branches (natural / force-commit) -- was duplicated verbatim."""
+        """Timed separately; shared by both commit branches (natural / force-commit),
+        was duplicated verbatim."""
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -319,9 +304,8 @@ class FedSGDAggregator(TopAggregator):
                     weighted_gradient_sum[id] = local_model_params[id]
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
-            # `.to("cpu")` is a GPU->CPU sync point -- isolated separately
-            # (simulate_fwdllm.md §B row 1) since it's summed over every
-            # param, not just once per call.
+            # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
+            # per param, not once per call.
             with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
                 next(old_param).detach().to("cpu").sub_(
                     self._server_update_step(
@@ -331,15 +315,13 @@ class FedSGDAggregator(TopAggregator):
 
     @timer_decorator
     def _prepare_round_state(self, current_round):
-        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B):
-        shared preamble (var bookkeeping, plateau check, model_list/training_num accumulation)
-        that runs identically before the commit/rollback branch split."""
+        """Timed separately; shared preamble (var bookkeeping, plateau check, accumulation)
+        that runs before the commit/rollback branch split."""
         # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
         # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
         self.var = self._compute_var()
-        # Cached scalar so downstream logs don't re-sync the GPU tensor just
-        # to print it (§F-19, §G 07-20 pm-2); self.var itself stays a tensor.
-        # `.item()` is the sync point -- isolated separately (simulate_fwdllm.md §B row 1).
+        # Cached scalar avoids re-syncing the GPU tensor on every log print;
+        # `.item()` is timed separately as the sync point.
         with _agg_sync_timer(self, "agg_var_item_sync"):
             self._var_scalar = self.var.item()
         self.var_prev_iter_list.append(self._var_scalar)
@@ -409,10 +391,7 @@ class FedSGDAggregator(TopAggregator):
 
         # logger.info(f"len(model_list): {len(model_list)}")
 
-        # Cache a deepcopy of model_dict (mutated below) for cache_v reuse at ~L421.
-        # Was written 3x identically (redundant full-model deepcopy/commit); collapsed
-        # to one -- byte-identical. Dropped the paired deepcopy of the global model
-        # params too: its only reader was a commented-out, unreachable call.
+        # Snapshot model_dict (mutated below) for cache_v reuse.
         if self.args.var_control:
             model_dict_cached = self._snapshot_retry_cache()
 
@@ -456,7 +435,7 @@ class FedSGDAggregator(TopAggregator):
                         f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
                 self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
-                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                logger.info(  # cached float, avoids extra GPU sync
                     f"[Variance=GOOD] var={self._var_scalar} <= thr={self.var_threshold}; "
                     f"keeping weight update, clearing cached_v."
                 )
@@ -495,7 +474,7 @@ class FedSGDAggregator(TopAggregator):
                     "plateau" if getattr(self, "_plateau_fired_this_cycle", False)
                     else "cap"
                 )
-                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                logger.info(  # cached float, avoids extra GPU sync
                     f"[MaxIterBypass] Variance FAILED (var={self._var_scalar} > "
                     f"thr={self.var_threshold}) but force-commit is set "
                     f"(reason={self._force_commit_reason}); "
@@ -505,7 +484,7 @@ class FedSGDAggregator(TopAggregator):
                 self.cached_v = []
             else:
                 self.var_good_enough = False
-                logger.info(  # self._var_scalar: cached float, no extra GPU sync (§F-19)
+                logger.info(  # cached float, avoids extra GPU sync
                     f"[Variance=BAD] var={self._var_scalar} > thr={self.var_threshold}; "
                     f"rolling back weights, caching grads for next iteration."
                 )

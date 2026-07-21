@@ -121,12 +121,10 @@ class TestElapsedSinceDispatchAbsorbsNonGpuOverhead:
     compensate for gpu_time_s, which only covers the compute window."""
 
     def test_uses_elapsed_since_dispatch_not_just_gpu_time(self, monkeypatch):
-        # delay = 4.0; dispatched at t=100.0, now is t=103.0 (3.0s elapsed
-        # since recv), but the GPU compute itself only took 0.5s -- 2.5s went
-        # to unmodeled overhead. Old (gpu-only) formula would sleep 3.5s
-        # (4.0-0.5), overshooting the budget by the overhead amount; the fix
-        # should sleep only 1.0s (4.0-3.0), converging real's total round
-        # duration on the modeled 4.0s.
+        # delay=4.0; dispatched at t=100.0, now t=103.0 (3.0s elapsed), but
+        # GPU compute took only 0.5s. Old gpu-only formula would sleep 3.5s,
+        # overshooting by the unmodeled overhead; fix sleeps 1.0s, converging
+        # on the modeled 4.0s total.
         monkeypatch.setattr(_fst_module.time, "time", lambda: 103.0)
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
@@ -141,10 +139,9 @@ class TestElapsedSinceDispatchAbsorbsNonGpuOverhead:
         assert slept == [1.0]
 
     def test_elapsed_never_undercounts_below_gpu_time(self, monkeypatch):
-        # Pathological/clock-skew case: elapsed-since-dispatch reads SMALLER
-        # than gpu_time_s (shouldn't happen with a monotonic clock, but
-        # time.time() isn't one) -- must not under-compensate vs. the
-        # gpu-only baseline.
+        # Clock-skew case: elapsed-since-dispatch reads smaller than
+        # gpu_time_s (time.time() isn't monotonic) -- must not
+        # under-compensate vs. the gpu-only baseline.
         monkeypatch.setattr(_fst_module.time, "time", lambda: 100.1)
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
@@ -251,8 +248,8 @@ class TestSimCompletionStampIsMaxGpuDelay:
 
 
 class TestResolveTrainingDelayS:
-    """FWDLLM_DESIGN.md §O: floor the RAW registry delay before it's divided
-    by training_delay_factor, so a trainer at/near the registry's class floor
+    """Floors the raw registry delay before it's divided by
+    training_delay_factor, so a trainer near the registry's class floor
     doesn't get a razor-thin (or negative-margin) budget once divided."""
 
     def test_no_floor_is_byte_identical(self):
@@ -260,8 +257,8 @@ class TestResolveTrainingDelayS:
         assert resolve_training_delay_s(2.0, None) == 2.0
 
     def test_floor_raises_a_trainer_below_it(self):
-        # fluxtune's floor (FWDLLM_DESIGN.md §O): a delay=2.0 (class floor)
-        # trainer gets bumped to 7.0, not left at 2.0.
+        # fluxtune's floor: a delay=2.0 (class floor) trainer gets bumped to
+        # 7.0, not left at 2.0.
         assert resolve_training_delay_s(2.0, 7.0) == 7.0
 
     def test_floor_never_lowers_a_trainer_above_it(self):

@@ -176,7 +176,7 @@ long-term; flag-gate behind DEBUG or delete now that the divergence is localized
 **Other open items (not a failing rung):**
 - `trainer_speed_identity`'s `utility` sub-check reopened at 7200s scale (23/100 >10% dev) but failed to
   reproduce on 3 independent 30min pairs — leans flaky/noise, stays open until a ≥2h run adjudicates.
-- `sim_sct_ordered_drain` A/B unblocked — run `fluxtune_n10_smoke_sim_no_sct_drain.yaml` against next pair.
+- `sim_sct_ordered_drain` A/B unblocked — run fluxtune sim smoke with the flag toggled against next pair.
 - Accuracy drop after reaching 81% — known, deferred by operator, not yet triaged (see
   `fluxtune_contributions.md` §8).
 

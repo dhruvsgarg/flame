@@ -2,14 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage B -- sct-model folds (K-D20 #6), all config-gated OFF => byte-identical.
 
-B1  (REMOVED, §6 Part 6, simulate_fwdllm.md §G) used to advance the
-    vclock by the measured eval wall when simModelEvalTime was set, after a
+B1  (REMOVED) used to advance the vclock by the measured eval wall after a
     committed data_id's synchronous eval. Removed once eval_model() was
-    backgrounded on a daemon thread (mirroring async_cifar10's evaluate()) --
-    the asymmetry the fold corrected for (real paid the synchronous eval wall,
-    sim didn't) no longer exists once neither mode pays it on the critical
-    path. TestEvalNoLongerFoldsVclock below is the regression guard: eval must
-    never advance the vclock again, regardless of any legacy config.
+    backgrounded on a daemon thread -- the real/sim asymmetry it corrected
+    for no longer exists. TestEvalNoLongerFoldsVclock is the regression
+    guard: eval must never advance the vclock again.
 B2  per-trainer straggler spread (trainer): a stable offset in [0, spread) added
     to the modeled delay in SIM only.
 B3  WAN transfer knob: documented, default 0 (verified inert here).
@@ -70,13 +67,10 @@ class TestStragglerSpreadB2:
 
 
 class TestEvalNoLongerFoldsVclock:
-    """§6 Part 6 (simulate_fwdllm.md §G) regression guard: eval_model()
-    is now backgrounded on a daemon thread (mirroring async_cifar10's
-    evaluate()), so it must NEVER advance the vclock, regardless of how slow the
-    (backgrounded) eval actually is or what any legacy config says -- the
-    sim_model_eval_time fold this class used to test was removed because the
-    asymmetry it corrected for (real paid the synchronous eval wall, sim didn't)
-    no longer exists once neither mode pays it on the critical path."""
+    """Regression guard: eval_model() is backgrounded on a daemon thread, so
+    it must never advance the vclock, no matter how slow eval is or what any
+    legacy config says. The sim_model_eval_time fold this class used to test
+    was removed once neither mode pays the eval wall on the critical path."""
 
     def _run(self, legacy_flag_value=None):
         from flame import telemetry

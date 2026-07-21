@@ -144,9 +144,8 @@ class TestTrainWithDataIdEmitsPhases:
             telemetry.shutdown()
 
     def test_gpu_pass_window_matches_gpu_compute_s(self, tmp_path):
-        """§J step-1 telemetry: gpu_pass_start_wall/end_wall bracket the GPU
-        pass exactly (end - start == gpu_compute_s), so an overlap-measurement
-        script can trust the window against the aggregator's compute span."""
+        """gpu_pass_start_wall/end_wall bracket the GPU pass exactly (end -
+        start == gpu_compute_s), so an overlap script can trust the window."""
         telemetry.configure(role="trainer", run_dir=str(tmp_path))
         try:
             t = _FakeFedSgd()

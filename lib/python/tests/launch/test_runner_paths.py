@@ -71,16 +71,11 @@ class TestTrainingDelayFan:
 
 
 class TestAvailabilityTraceFan:
-    """exp.trainer.availability.mode is a single source of truth fanned into
-    hyperparameters.client_notify.trace (trainer side, _build_trainer_baseline_
-    overrides) and hyperparameters.trackTrainerAvail.trace (aggregator side,
-    _build_aggregator_config) -- otherwise a baseline's own hardcoded trace
-    (e.g. fluxtune's mobiperf_3st_50 in baselines.yaml) silently wins over an
-    experiment's intended mode, even though the mode still correctly selects
-    which avl_events_* DATA gets loaded. Root-caused 2026-07-13 (simulate_
-    fwdllm.md §A): a nominal syn_0 (100%-availability) run had every trainer
-    replaying a full mobiperf trace because nothing synced client_notify.trace
-    to availability.mode."""
+    """exp.trainer.availability.mode must fan into both hyperparameters.
+    client_notify.trace (trainer, _build_trainer_baseline_overrides) and
+    hyperparameters.trackTrainerAvail.trace (aggregator, _build_aggregator_
+    config) -- otherwise a baseline's own hardcoded trace silently wins over
+    the experiment's intended mode."""
 
     def _trainer_hp(self, fake_example_dir, mode, baseline_entry=None):
         runner = ExperimentRunner(fake_example_dir)

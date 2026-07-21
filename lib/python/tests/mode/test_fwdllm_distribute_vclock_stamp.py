@@ -1,14 +1,11 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 """`_distribute_weights_async` never stamped `channel.properties["vclock_now"]`
-before dispatching, unlike asyncfl/top_aggregator.py's own dispatch path
-(simulate_fwdllm.md §B, 2026-07-20). AsyncOortSelector reads this field to
-stamp its in-flight abandon-timeout clock (`_sim_now_s`/`_abandon_clock_now`)
-and to tag `selection_train` telemetry -- fluxtune's sim runs silently read
-`None` always, so the abandon-timeout fell back to wall-clock `time.time()`
-instead of virtual time, and every selection event's `vclock_now` was absent.
-Covers the fix: the property is now set from `self.vclock_now` before
-`channel.ends()` is called.
+before dispatching, unlike the asyncfl dispatch path. AsyncOortSelector reads
+this field for its abandon-timeout clock and `selection_train` telemetry --
+without it, sim runs fell back to wall-clock `time.time()` and every
+selection event's `vclock_now` was absent. Fix: the property is now set from
+`self.vclock_now` before `channel.ends()` is called.
 """
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 

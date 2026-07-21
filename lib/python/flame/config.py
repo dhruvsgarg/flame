@@ -164,10 +164,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # Deterministic RNG seed: seeds the global RNGs (torch model init, syncfl
     # internal_init) and each selector's dedicated RNG, making selection
-    # reproducible across real/sim. Defaults to 1234, NOT None: unseeded, every
-    # launch draws a different selection order and model init, which makes
-    # real<->sim cohort/variance parity unachievable rather than merely hard.
-    # Set None only to deliberately opt OUT of determinism.
+    # reproducible across real/sim. Defaults to 1234, not None, so real<->sim
+    # parity is on by default; set None to opt out of determinism.
     seed: t.Optional[int] = Field(alias="seed", default=1234)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
@@ -203,18 +201,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds", default=None
     )
-    # DIVISOR on the modeled delay (effective = training_delay_s / factor): >1
-    # shortens, <1 lengthens. Read at runtime as `training_delay_divisor`; wire
-    # key kept as *factor* for back-compat.
+    # Divisor on the modeled delay (effective = training_delay_s / factor):
+    # >1 shortens, <1 lengthens. Wire key kept as *factor* for back-compat.
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
     )
-    # Floor on the RAW registry training_delay_s (applied BEFORE dividing by
-    # training_delay_factor), so trainers whose registry delay sits at/near
-    # the fast-class floor don't get a razor-thin (or negative-margin) budget
-    # once divided. 0.0 = no-op (byte-identical). Derived per baseline from
-    # observed real GPU-compute tail, not the class mean -- see
-    # examples/fwdllm/FWDLLM_DESIGN.md §O.
+    # Floor on the raw registry training_delay_s, applied before dividing by
+    # training_delay_factor, so fast-class trainers don't get a razor-thin
+    # budget once divided. 0.0 = no-op.
     training_delay_floor_s: t.Optional[float] = Field(
         alias="trainingDelayFloorSeconds", default=0.0
     )
@@ -261,12 +255,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
-    # Hold a dispatched trainer's slot/re-pick guard until its update commits,
-    # instead of releasing at RETURN (a carried, not-yet-aggregated update
-    # can't be re-dispatched — R1, PARITY.md §3.resid). oort (sync, sim): adds
-    # the still-computing set to the unavailable list (§4.5). asyncfl (felix,
-    # sim): widens `_sim_hold_busy_slots`. fwdllm (real+sim, sync+async, §R):
-    # holds `_release_end_on_return` uniformly. Default off = legacy release.
+    # Hold a dispatched trainer's slot until its update commits, instead of
+    # releasing at RETURN (a carried, not-yet-aggregated update can't be
+    # re-dispatched). oort: adds it to the unavailable list. asyncfl: widens
+    # `_sim_hold_busy_slots`. fwdllm: holds `_release_end_on_return`. Default
+    # off = legacy release.
     inflight_residence: t.Optional[bool] = Field(
         alias="inflightResidence", default=False
     )
@@ -288,33 +281,19 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="simUnavailability", default=False
     )
     # sct-model folds (fwdllm Stage B / K-D20 #6). Default OFF ⇒ byte-identical.
-    # simModelAggComputeTime (#15): charge the measured aggregate()-call wall to
-    # the vclock on EVERY agg-goal cycle (pass or fail) -- aggregate() runs real
-    # GPU-side gradient-merge/server-step math every cycle, mode-invariant cost
-    # (~1.4s/cycle), synchronously (it produces the model trainers need
-    # immediately and is never backgrounded). simStragglerSpreadS (B2):
-    # per-trainer straggler dispersion (s) added to the modeled delay so the
-    # sync barrier's k-th sct reflects real trainer_speed_s spread (~2.3
-    # s/round). simWanTransferS (B3): WAN payload-transfer term -- NOT
-    # measurable on localhost, documented knob, leave 0.
+    # simModelAggComputeTime: charge aggregate()'s measured wall time to the
+    # vclock every cycle -- real GPU merge/step math, mode-invariant cost
+    # (~1.4s/cycle), always synchronous. simStragglerSpreadS (B2): per-trainer
+    # straggler dispersion (s) added to the modeled delay so the sync barrier's
+    # k-th sct reflects real trainer_speed_s spread (~2.3s/round).
+    # simWanTransferS (B3): WAN transfer term, not measurable on localhost --
+    # documented knob, leave 0.
     #
-    # simModelEvalTime (B1, REMOVED §6 Part 6, simulate_fwdllm.md §G):
-    # used to charge the measured server-eval wall to the vclock the same way,
-    # because fwdllm's eval_model() ran SYNCHRONOUSLY, inline, on the critical
-    # path in both modes. Removed once eval_model() was backgrounded on a daemon
-    # thread (mirroring async_cifar10/main_asyncfl_agg.py's evaluate()) -- the
-    # asymmetry the fold corrected for (real paid the wall, sim skipped it "for
-    # free") no longer exists once both modes background it symmetrically.
-    #
-    # Cross-reference: this backgrounded-vs-synchronous distinction is WHY
-    # main_asyncfl_agg.py's evaluate() never needed an equivalent fold -- it's a
-    # property of it being backgrounded, not a structural guarantee. If
-    # aggregate() above (or any future aggregator's eval/aggregate step) ever
-    # becomes synchronous and non-trivial in cost without being backgrounded, it
-    # needs a sim_model_*_compute_time-style fold or sim mode will silently
-    # under-count that wall time, the same way fwdllm's pre-Part-6 eval did. The
-    # axis that matters is synchronous/blocking vs. backgrounded -- not
-    # centralized vs. decentralized eval.
+    # simModelEvalTime (B1) was removed: it charged eval_model()'s wall the
+    # same way while eval ran synchronously on the critical path; no longer
+    # needed once eval_model() moved to a background daemon thread. Any future
+    # synchronous, non-backgrounded eval/aggregate step needs an equivalent
+    # fold or sim will silently under-count its wall time.
     sim_model_agg_compute_time: t.Optional[bool] = Field(
         alias="simModelAggComputeTime", default=False
     )

@@ -216,24 +216,19 @@ def build_step_timing(
     perturbation selection, per-batch JVP, delay emulation) for GPU-cost
     decomposition. Keyed by (data_id, iteration) to track cost across the cadence.
 
-    `vclock_s`/`vclock_now_s` are sim-mode-only (simulate_fwdllm.md §N) --
-    absent (not a mislabeled 0.0) in real mode, since real mode has no virtual
-    clock. `vclock_s` is this step's vclock delta (meaningful on the
-    aggregator, where the clock ticks live; usually 0 on a trainer, which only
-    has a last-known snapshot -- see Trainer.vclock_now). `vclock_now_s` is
-    the cumulative pointer as of this step's end, for cross-step alignment.
+    `vclock_s`/`vclock_now_s` are sim-mode-only, absent (not 0.0) in real mode.
+    `vclock_s` is this step's vclock delta (meaningful on the aggregator,
+    where the clock ticks live; usually 0 on a trainer, which only has a
+    last-known snapshot). `vclock_now_s` is the cumulative pointer as of this
+    step's end, for cross-step alignment.
 
-    `cpu_duration_s` (simulate_fwdllm.md §B, 07-19 pm) is `time.process_time()`
-    delta -- CPU time actually consumed by THIS process, as opposed to
-    `duration_s`'s wall time. A function whose wall time diverges real<->sim but
-    whose CPU time doesn't is waiting on contention (scheduler/GPU/memory-bus),
-    not doing more work; if CPU time itself diverges, the extra cost is real.
+    `cpu_duration_s` is thread CPU time consumed, vs `duration_s`'s wall time.
+    Wall time diverging real<->sim while CPU time doesn't means the function
+    is waiting on contention, not doing more work.
 
-    `gc_pause_s` (simulate_fwdllm.md §B, 07-20) is the portion of `duration_s`
-    that overlapped a cyclic-GC stop-the-world collection (`gc.callbacks`,
-    process-wide accumulator in `flame.monitor.runtime`), 0.0 when no
-    collection ran during the call. Isolates "this call was slow because GC
-    landed inside its window" from a genuine per-call compute regression.
+    `gc_pause_s` is the portion of `duration_s` that overlapped a cyclic-GC
+    collection, 0.0 if none ran. Isolates a GC pause from a genuine per-call
+    compute regression.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -259,11 +254,11 @@ def build_var_calc(
     input_grad_norms: list[float],
     output_var: float,
 ) -> tuple[str, dict[str, Any]]:
-    """DEBUG-only audit: per-tensor L2 norm of the INPUT `grad_for_var_check_
-    list` feeding `calculate_var`, plus its scalar OUTPUT, one record per
+    """DEBUG-only audit: per-tensor L2 norm of the input `grad_for_var_check_
+    list` feeding `calculate_var`, plus its scalar output, one record per
     `_compute_var` call. Diffable real vs sim to localize a `v2_var_trajectory`
     divergence to a specific input tensor vs the reduction itself. Gated at
-    the call site (§F-19) -- the norm computation is a GPU->CPU sync.
+    the call site -- the norm computation is a GPU->CPU sync.
     """
     return EVENT_VAR_CALC, {
         "round": round_num,
@@ -299,7 +294,7 @@ def build_comm(
     "var_bad" / "gradients", to split dispatch vs update and full-weight vs
     var-signal. size_bytes: serialized message size. model_version: the
     version this message carries (dispatch: what's being sent out; update:
-    what the sender computed against) -- #S1 staleness diagnostic.
+    what the sender computed against), for staleness diagnostics.
     """
     fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
     for k, v in (
@@ -325,18 +320,14 @@ def build_version_bump_census(
     inflight: dict[str, tuple[int, int]],
     vclock_now: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
-    """#S1 diagnostic: pool-wide snapshot at the instant model_version bumps.
+    """Diagnostic: pool-wide snapshot at the instant model_version bumps.
 
     inflight: {end_id: dispatch_version_key} for every trainer with an
     outstanding (dispatched, not-yet-returned) send at this instant --
-    version_key is the shared (model_version, iteration_per_data_id) 2-tuple
-    (§M/K-D39), not a reduction to the bare model_version int, so a
-    real/sim comparison can't be fooled by a matching model_version that
-    hides a differing iteration. These are the trainers about to return
-    grads computed against a now-stale version. Compare real vs sim: how
-    many of the pool are stale at the bump, and at what version_key, tells
-    you whether the two modes enter a new data_id with the same
-    population-level staleness mix.
+    version_key is the full (model_version, iteration_per_data_id) tuple, not
+    just model_version, so a real/sim comparison isn't fooled by a matching
+    model_version that hides a differing iteration. Compares how many
+    trainers are stale at the bump, and at what version, between real and sim.
     """
     fields: dict[str, Any] = {
         "old_model_version": old_model_version,

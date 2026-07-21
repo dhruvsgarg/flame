@@ -1,23 +1,18 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""P0-1 (simulate_fwdllm.md): self.grad's per-cycle FedAvg accumulation is not
-associative, and for grad_aware it's not even commutative -- each
-contribution's rate is `cos(trainer_grad, self.grad)` against whatever partial
-sum was already merged, so a different accumulation ORDER produces a
-genuinely different result, not just float dust.
+"""self.grad's per-cycle FedAvg accumulation is not associative, and for
+grad_aware not even commutative (each contribution's rate is
+`cos(trainer_grad, self.grad)` against whatever partial sum is already
+merged) -- so accumulation ORDER changes the result.
 
-`aggregate_grads_from_trainers` used to be called eagerly per-message, in
-receipt order (real: physical arrival; sim: modeled-sct order) --
 `_process_single_trainer_message` now only buffers into
-`_pending_cohort_contribs`; the actual merge happens in
-`_process_aggregation_goal_met`, replaying the buffer in the SAME canonical
-(D, trainer_id) order `_canonicalize_cohort_commit_order` already uses for
-the trainer-id bookkeeping.
+`_pending_cohort_contribs`; `_process_aggregation_goal_met` merges by
+replaying the buffer in `_canonicalize_cohort_commit_order`'s canonical
+(D, trainer_id) order, not receipt order.
 
-These tests pin the actual fix, not just its scaffolding: two different
-arrival orders that canonicalize to the same sequence must merge to a
-bit-identical `self.grad`, for both fedavg (rate=1.0, pure float-associativity
-case) and grad_aware (rate reads the running self.grad, the harder case).
+These tests pin the fix: two arrival orders that canonicalize to the same
+sequence must merge to a bit-identical `self.grad`, for fedavg (rate=1.0)
+and grad_aware (rate reads running self.grad, the harder case).
 """
 
 import torch
@@ -87,9 +82,9 @@ def _model():
 
 
 def _contribs(model, seed_offset=0):
-    """4 distinct per-trainer gradient dicts, keyed by the model's only
-    param name, each a different fixed tensor (not random per replay -- the
-    whole point is to check byte-identical merge across orderings)."""
+    """4 distinct per-trainer gradient dicts, keyed by the model's only param
+    name; fixed (not re-randomized per replay) so merges across orderings
+    are directly comparable."""
     (name, _param) = next(model.named_parameters())
     torch.manual_seed(100 + seed_offset)
     grads = [torch.randn(1, 4) for _ in range(4)]
@@ -128,11 +123,9 @@ class TestFedAvgOrderIndependence:
 
 
 class TestGradAwareOrderDependence:
-    """grad_aware (fluxtune's default, baselines.yaml) reads self.grad's
-    running partial sum for each contribution's cosine-gated rate -- the
-    harder case P0-1 is actually about. Canonical-order replay must still
-    converge; UNCANONICALIZED replay (the pre-fix behavior) is shown to
-    diverge, to prove this test would have caught the bug."""
+    """grad_aware reads self.grad's running partial sum per contribution's
+    rate -- order-sensitive. Canonical replay must converge; uncanonicalized
+    replay must diverge, proving the test catches regressions."""
 
     _conf = {"type": "grad_aware", "base": "neutral", "align_gate": True,
              "align_floor": 0.0, "inverse_var": False}
@@ -160,10 +153,9 @@ class TestGradAwareOrderDependence:
             assert torch.equal(r, s)
 
     def test_uncanonicalized_replay_actually_diverges(self):
-        """Negative control: merging the SAME two orderings WITHOUT
-        canonicalizing first (the pre-fix behavior) gives a different
-        self.grad -- confirms grad_aware's rate is genuinely order-sensitive,
-        so the canon-then-replay fix above is doing real work, not a no-op."""
+        """Negative control: merging the same two orderings without
+        canonicalizing first gives a different self.grad -- confirms the
+        canon-then-replay fix above does real work."""
         model = _model()
         contribs = _contribs(model)
         real_order = [0, 1, 2, 3]

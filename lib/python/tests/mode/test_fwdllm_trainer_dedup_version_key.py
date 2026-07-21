@@ -1,11 +1,10 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""§M Step 1(c)/2: _fetch_weights' dedup guard keys on version_key
-(model_version, iteration), not the old (data_id, iteration) -- data_id wraps
-at total_data_bins, so a bare (data_id, iteration) match false-positives
-across model_versions that recycle the same data_id, silently dropping a
-genuine new dispatch (no grad sent, no abort_training log reason). Since
-model_version bumps once per data-bin (§M Step 2), data_id is redundant in
+"""`_fetch_weights`' dedup guard keys on version_key (model_version,
+iteration), not the old (data_id, iteration) -- data_id wraps at
+total_data_bins, so (data_id, iteration) alone false-positives across
+model_versions recycling the same data_id, silently dropping a genuine new
+dispatch. model_version bumps once per data-bin, so data_id is redundant in
 the key and no longer compared.
 """
 

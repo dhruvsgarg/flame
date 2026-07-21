@@ -220,8 +220,7 @@ Naming is finalized (this doc); none of it is propagated to code/tests/yaml file
    `fluxtune_contributions.md`, `MIGRATION_TO_LAUNCHER_FWDLLM.md`, `expt_scripts/compare_baselines.py`,
    `expt_scripts/plotlib/baselines.py` (this feeds figure-legend text — apply the `(P)`/`+IT`/`+O`
    display names here so legends actually render them), `expt_scripts/logical_parity.py`,
-   `expt_scripts/profile_eligibility_gap.py`, `expt_scripts/run_parity.py`, `experiments.yaml`,
-   `telemetry_manifest.yaml`, `figs.yaml`.
+   `expt_scripts/run_parity.py`, `experiments.yaml`, `telemetry_manifest.yaml`, `figs.yaml`.
 5. **Retune** `felix_round`/`felix_it`'s placeholder `learning_rate: 0.075` (ported from fluxtune,
    marked `TODO(verify)` in `baselines.yaml`) against a smoke run.
 6. **Verification pass**: repo-wide grep for every old key name (zero non-historical hits expected),

@@ -624,11 +624,7 @@ def test_eval_commits_partitioned_at_load():
 
 
 def test_load_agg_jsonl_captures_step_timing():
-    """Regression for simulate_fwdllm.md §A session-6: the aggregator's own
-    `step_timing` (`timer_decorator` on TopAggregator/fwdllm_aggregator
-    methods) was emitted to `aggregator_*.jsonl` but `load_agg_jsonl` had no
-    branch for it, so it was silently dropped -- the ~10s/cycle
-    `sync_collect_and_accumulate_grads` gap was invisible to every check."""
+    """`load_agg_jsonl` must not silently drop aggregator-side `step_timing` events."""
     import json
     import tempfile
     from parity.checks import load_agg_jsonl
@@ -651,15 +647,9 @@ def test_load_agg_jsonl_captures_step_timing():
 
 
 def test_agg_step_timing_breakdown_parity():
-    """Aggregator-side analog of `step_timing_breakdown_parity`: matched
-    per-function distributions PASS. `sync_collect_and_accumulate_grads`
-    (and its wrapper `_aggregate_grads_sync`) are real-only-wait exemptions
-    (simulate_fwdllm.md §B/§G, 07-19): real blocks in `channel.recv_fifo`
-    under the `num_min_req=1` clamp while sim's branch is a non-blocking
-    vclock computation over an already-buffered pool, so their gap is that
-    wait by construction -- reported but excluded from `ok`, same class as
-    `_distribute_weights_async`. A genuine ON-path divergence in a
-    non-exempted function must still FAIL and be pinpointed as `worst_func`."""
+    """Aggregator-side analog of `step_timing_breakdown_parity`. Real-only blocking-recv
+    functions (e.g. `sync_collect_and_accumulate_grads`) are exempted from `ok`; other
+    divergences must still FAIL and be pinpointed as `worst_func`."""
     from parity.checks import agg_step_timing_breakdown_parity
 
     def _agg(func_durations: dict) -> dict:
@@ -673,17 +663,14 @@ def test_agg_step_timing_breakdown_parity():
     res = agg_step_timing_breakdown_parity(_agg(matched), _agg(matched))
     assert res["ok"], res
 
-    # Real-only wait exemption: real pays 10x per-message blocking-recv calls
-    # at ~1.69s each, sim bulk-drains once per cycle at ~3.48s (non-blocking)
-    # -- reported but must NOT gate `ok` since nothing else diverges.
+    # Real-only blocking-recv wait: reported but must not gate `ok`.
     real = {"sync_collect_and_accumulate_grads": [1.69] * 3350}
     sim = {"sync_collect_and_accumulate_grads": [3.48] * 620}
     res_exempt = agg_step_timing_breakdown_parity(_agg(real), _agg(sim))
     assert res_exempt["ok"], res_exempt
     assert res_exempt["by_func"]["sync_collect_and_accumulate_grads"]["gates_ok"] is False
 
-    # A genuine divergence in a NON-exempted function must still FAIL and be
-    # named as worst_func, even alongside the exempted wait above.
+    # Non-exempted divergence must still FAIL, alongside the exempted wait above.
     real_bad = {**real, "_compute_var": [0.005] * 100}
     sim_bad = {**sim, "_compute_var": [0.03] * 100}
     res_bad = agg_step_timing_breakdown_parity(_agg(real_bad), _agg(sim_bad))

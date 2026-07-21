@@ -139,26 +139,23 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # Per-round phase timing accumulator; reset at each round boundary in _fetch_weights.
         self._phase_times: dict = {}
-        # Companion: vclock reading (sim only) as of each phase's END. Not a
-        # duration -- trainers don't own a live clock (see vclock_now below),
-        # so this is a snapshot for cross-phase/cross-process alignment, not
-        # an in-phase delta.
+        # vclock reading (sim only) as of each phase's END, not a duration --
+        # trainers have no live clock (see vclock_now); this is a snapshot for
+        # cross-phase/cross-process alignment, not an in-phase delta.
         self._phase_vclock_s: dict = {}
-        # Set by concrete subclasses (fwdllm's FedSgdTrainer, async_cifar10's
-        # main.py) whenever a fresh aggregator message carries SIM_SEND_TS /
-        # SIM_COMPLETION_TS. Absent here in the shared base -- vclock_now
-        # reads it via getattr so a subclass that hasn't set it yet, or a
-        # real-mode run where it's never set, both cleanly read None.
+        # Set by concrete subclasses (fwdllm's FedSgdTrainer, async_cifar10)
+        # when a fresh aggregator message carries SIM_SEND_TS/SIM_COMPLETION_TS.
+        # Absent in the shared base; vclock_now reads it via getattr so unset
+        # -> None.
 
     @property
     def vclock_now(self) -> float | None:
         """Last known virtual-clock reading, sim mode only -- `None` in real
-        mode. NOT a live tick: trainers are a separate process from the
-        aggregator with no access to its clock, so this is the most recent
-        SIM_SEND_TS/SIM_COMPLETION_TS the aggregator stamped on a message,
-        held until the next one arrives. Fine for cross-phase/cross-process
-        alignment; do not use it to measure elapsed time within one phase
-        (simulate_fwdllm.md §N).
+        mode. NOT a live tick: trainers have no access to the aggregator's
+        clock, so this is the most recent SIM_SEND_TS/SIM_COMPLETION_TS the
+        aggregator stamped, held until the next message arrives. Fine for
+        cross-phase alignment; do not use to measure elapsed time within one
+        phase.
         """
         if not getattr(self, "simulated", False):
             return None
@@ -213,10 +210,9 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        # vclock BEFORE this wait -- self._sim_send_ts isn't updated until the
-        # new message arrives (below), so the delta captured there genuinely
-        # measures "how much vclock moved while this trainer waited" (§N
-        # follow-up), not a same-instant snapshot like most other phases.
+        # vclock BEFORE this wait -- _sim_send_ts isn't updated until the new
+        # message arrives, so the delta below measures vclock moved while
+        # waiting, not a same-instant snapshot like other phases.
         _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_wall_start = time.time()
         msg, _ = channel.recv(end)
@@ -500,8 +496,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 msg.pop(MessageType.WEIGHTS)
             )
 
-        # §M: MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays
-        # are off, distinct from a legitimate zero delay.
+        # MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays are
+        # off, distinct from a legitimate zero delay.
         _budget = getattr(self, "_training_budget_s", None)
         if _budget is not None:
             msg[MessageType.MODELED_DELAY_S] = (

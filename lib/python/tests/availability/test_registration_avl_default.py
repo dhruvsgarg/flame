@@ -1,18 +1,14 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""A trainer is initialized to AVL_TRAIN at registration, then its availability
-state is driven dynamically by the trace/tracker.
-
-Registration (`Channel.add`) stamps PROP_AVL_STATE=AVL_TRAIN so a just-joined end
-is never read as UNKNOWN (None) in the window before the first selection stamps
-it -- that pre-stamp window is what produced the startup UNKNOWN transient in
-avail_composition (a join-timing-dependent count that diverged real vs sim,
-simulate_fwdllm.md §B fluxtune #5). The initial value is only a DEFAULT:
+"""Registration (`Channel.add`) stamps PROP_AVL_STATE=AVL_TRAIN so a just-joined
+end is never read as UNKNOWN before the first selection stamps it -- avoids a
+join-timing-dependent avail_composition count that diverged real vs sim. It's
+only a default:
 
   * availability-AWARE (client_notify / oracular): `_avail_stamp_end_states`
-    overwrites it every selection from the dynamic trace at the current time.
-  * availability-UNAWARE (no trace): the stamp is a no-op, so the end simply
-    stays AVL_TRAIN -- the correct "always available" default (e.g. syn_0).
+    overwrites it every selection from the dynamic trace.
+  * availability-UNAWARE (no trace): the stamp is a no-op, so the end stays
+    AVL_TRAIN (e.g. syn_0).
 """
 
 import asyncio

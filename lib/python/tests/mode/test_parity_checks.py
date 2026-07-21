@@ -260,20 +260,18 @@ class TestIntrinsicSpanAnchor:
 
 
 class TestIntrinsicSpanAsyncOverlap:
-    """§Next-roots (simulate_fwdllm.md): fluxtune's async cycles OVERLAP in
-    real wall-time (multiple cohorts commit concurrently, unlike sync's one
-    round in flight), so cumulative-summing each cycle's own intrinsic_span_s
-    as if sequential races far ahead of raw wall -- confirmed ~3.8-4x on live
-    fluxtune logs (20764.7s cumulative vs 5372s raw at a 5400s run's end).
-    `is_async` must force the raw-wall fallback (same as async_cifar10, which
-    never emits intrinsic_span_s), not the sync cumulative-sum anchor."""
+    """fluxtune's async cycles OVERLAP in real wall-time (multiple cohorts
+    commit concurrently, unlike sync's one round in flight), so
+    cumulative-summing each cycle's own intrinsic_span_s as if sequential
+    races far ahead of raw wall. `is_async` must force the raw-wall fallback
+    (same as async_cifar10, which never emits intrinsic_span_s), not the
+    sync cumulative-sum anchor."""
 
     def _pair(self, is_async):
-        # 100 commits, each a genuine 80s barrier+eval span, but real cycles
-        # OVERLAP ~4x in wall time (dispatched to ~4 concurrent trainers) so
-        # raw wall only advances 20s/commit -- matching sim's vclock 1:1.
-        # (100, not 10: keeps a matched-V boundary rounding edge to <=1%,
-        # well under the 5% tol, instead of dominating a 10-commit sample.)
+        # 100 commits, each an 80s barrier+eval span, but real cycles OVERLAP
+        # ~4x in wall time (4 concurrent trainers) so raw wall only advances
+        # 20s/commit -- matching sim's vclock 1:1. (100 not 10: keeps the
+        # boundary rounding edge <=1%, well under the 5% tol.)
         real_rounds, sim_rounds = [], []
         for d in range(1, 101):
             real_rounds.append({
@@ -587,16 +585,14 @@ class TestProgressAxisRekey:
         assert r["sim_mean_advance_s"] == 4.0, r
 
     def test_axis_and_lap_disambiguation_when_only_sim_completes_a_lap(self):
-        """Regression, 2026-07-14 7200s fwdllm/fwdllm_plus runs: on a long enough
-        run the fast side (sim) can complete a full total_data_bins-length lap
-        (`round` ticks 1->2, `cycle_data_id` wraps back to 0) while the slow side
-        (real) never leaves round=1. The old axis heuristic picked per-side
-        ("round" if >1 distinct value seen on THAT side), so sim got keyed on
-        `round` (one giant "advance" bundling ~10 commits) while real stayed on
-        `data_id` (9 small ones) -- incommensurate units, both a spurious FAIL
-        and a fabricated overhead_residual. Both sides must key on `data_id`
-        whenever it's present at all, and the (round, data_id) composite key
-        must keep sim's two laps distinct instead of colliding on raw value."""
+        """On a long enough run the fast side (sim) can complete a full
+        total_data_bins-length lap (`round` ticks 1->2, `cycle_data_id` wraps
+        back to 0) while the slow side (real) never leaves round=1. The old
+        axis heuristic picked per-side, so sim got keyed on `round` (one
+        giant advance) while real stayed on `data_id` (many small ones) --
+        incommensurate units, a spurious FAIL. Both sides must key on
+        `data_id` whenever present, and the (round, data_id) composite key
+        must keep sim's two laps distinct."""
         real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d * 10))
                                 for d in range(10)])
         sim_events = (
@@ -617,14 +613,13 @@ class TestProgressAxisRekey:
 
 class TestConvergenceLapDisambiguation:
     """convergence_parity (C1/C2) has the same raw-data_id-collision exposure as
-    the advance rungs (TestProgressAxisRekey): 2026-07-14 fwdllm/fwdllm_plus 7200s
-    runs showed sim eval events spanning round={1,2} while real stayed at
-    round=1. Keying the eval curve on raw `data_id` alone lets a sim lap-2
-    (more-trained) checkpoint silently overwrite lap-1's entry at the same
-    nominal data_id, so the real<->sim comparison at that key mismatches training
-    amount. The (round, data_id) composite key excludes sim's lap-2 evals from
-    the real/sim key intersection (real has no `(2, *)` key), comparing only
-    genuinely matched progress."""
+    the advance rungs (TestProgressAxisRekey): sim eval events can span
+    round={1,2} while real stays at round=1. Keying the eval curve on raw
+    `data_id` alone lets a sim lap-2 (more-trained) checkpoint silently
+    overwrite lap-1's entry at the same nominal data_id, mismatching training
+    amount. The (round, data_id) composite key excludes sim's lap-2 evals
+    from the real/sim key intersection, comparing only genuinely matched
+    progress."""
 
     def test_sim_lap2_eval_does_not_leak_into_lap1_comparison(self):
         real = _agg(agg_evals=[
@@ -1232,11 +1227,10 @@ def _agg_comm(dispatches, resolves=None):
     its own `version_key` = (model_version, iteration_per_data_id) (defaults
     to (0, 0) if omitted). `resolves` = list of (peer, ts) or
     (peer, ts, version_key) -> agg_rounds entries whose contributor_intervals
-    name that peer via `dispatch_version_key` (see `_dispatch_resolve_overlap`,
-    2026-07-15: R1 is scoped to version_key, not "any unresolved dispatch" --
+    name that peer via `dispatch_version_key` (R1 is scoped to version_key --
     a resolve only clears the SAME version_key it names). Always tags
-    is_async=True (R1 is async-only, see inflight_overlap_parity) even with no
-    resolves, via a marker round with no contributor."""
+    is_async=True (R1 is async-only) even with no resolves, via a marker
+    round with no contributor."""
     d = _agg()
     d["comm_dispatch"] = [_dispatch(*args) for args in dispatches]
     resolve_rounds = []
@@ -1252,22 +1246,16 @@ def _agg_comm(dispatches, resolves=None):
 
 
 class TestR1InflightOverlap:
-    """R1 [INV]: no trainer may have the SAME version_key
-    (model_version, iteration_per_data_id) outstanding twice -- a DISPATCH
-    for a version_key while an EARLIER dispatch for that EXACT version_key
-    hasn't yet been RESOLVED by a variance-gate evaluation naming it via
-    `dispatch_version_key`. Redefined 2026-07-15 from an earlier "any
-    unresolved dispatch" definition (dispatch->ANY resolve, ignoring
-    version_key) which wrongly flagged fluxtune's FedBuff carried-surplus
-    pattern: a trainer's stale grad (staleness_policy=fedbuff) is legitimately
-    consumed -- down-weighted, principle #17 -- by a LATER cycle's evaluation
-    while the trainer is handed genuinely NEW work (a different version_key)
-    in parallel. Confirmed live: 0/882 violating instances under the old
-    definition were same-version_key; real and sim carry near-identical
-    staleness distributions (~62% >=1 each). The version_key-scoped
-    definition subsumes the still-earlier REPLY-based rejection too:
-    `var_bad` resampling naturally gets a fresh `iteration_per_data_id`, so
-    it's correctly never flagged without needing a special-case exemption."""
+    """R1: no trainer may have the SAME version_key (model_version,
+    iteration_per_data_id) outstanding twice -- a DISPATCH for a version_key
+    while an EARLIER dispatch for that EXACT version_key hasn't yet been
+    RESOLVED by a variance-gate evaluation naming it via
+    `dispatch_version_key`. Scoped to version_key (not "any unresolved
+    dispatch") because a trainer's stale grad is legitimately consumed
+    (down-weighted) by a LATER cycle's evaluation while the trainer is
+    handed genuinely NEW work in parallel -- that's not a violation. Also
+    subsumes the earlier REPLY-based rejection: `var_bad` resampling
+    naturally gets a fresh `iteration_per_data_id`, so it's never flagged."""
 
     def test_dispatch_after_resolve_passes(self):
         # A and B are each re-dispatched a 2nd time (a NEW version_key), but
@@ -1304,10 +1292,9 @@ class TestR1InflightOverlap:
         assert r.get("status") == "SKIP" and r["ok"]
 
     def test_var_bad_same_version_key_is_a_real_violation(self):
-        # var_bad IS new work ("keep training, submit a new round of
-        # perturbations against the current model"), not a passive ping --
-        # two of them for the SAME version_key with no intervening resolve
-        # is a genuine violation (duplicate work on the same iteration).
+        # var_bad IS new work, not a passive ping -- two of them for the
+        # SAME version_key with no intervening resolve is a genuine
+        # violation (duplicate work on the same iteration).
         agg = _agg_comm(dispatches=[("A", 0.0, "var_bad", (0, 0)),
                                      ("A", 2.0, "var_bad", (0, 0))])
         r = pc.inflight_overlap_parity(agg, agg)
@@ -1315,12 +1302,10 @@ class TestR1InflightOverlap:
         assert r["sim_overlap_frac"] > 0.0
 
     def test_fedbuff_carried_surplus_new_version_key_is_not_a_violation(self):
-        # The 2026-07-15 root cause this rung was redefined for: a trainer's
-        # stale grad (dispatched at version_key (56, 12)) hasn't been
-        # resolved yet when the trainer is handed genuinely NEW work for the
-        # CURRENT cycle (57, 10) -- FedBuff legitimately consumes the stale
-        # grad later (down-weighted by staleness), it is NOT duplicate work,
-        # so this must NOT be flagged even with zero intervening resolves.
+        # A trainer's stale grad (dispatched at version_key (56, 12)) hasn't
+        # resolved yet when handed genuinely NEW work for CURRENT cycle
+        # (57, 10) -- FedBuff legitimately consumes the stale grad later
+        # (down-weighted), so this must NOT be flagged.
         agg = _agg_comm(
             dispatches=[("A", 0.0, "weights", (56, 12)),
                         ("A", 41.7, "weights", (57, 10))],
@@ -1398,16 +1383,14 @@ class TestParticipationParityFwdllmWindowing:
     """S2 (participation_parity) normally keys its matched-window on `round`
     (increments per cohort for felix/oort/fedbuff); fwdllm's round is coarse
     (advances only once every data_id finishes), so it keys on cycle position
-    instead there (simulate_fwdllm.md §SCRATCH, 2026-07-17) -- otherwise every
-    cohort landed in the same round-bucket and the window degenerated to n=1,
-    comparing full-run totals unmatched instead of a real window."""
+    instead -- otherwise every cohort landed in the same round-bucket and the
+    window degenerated to n=1, comparing full-run totals unmatched."""
 
     def test_fwdllm_matched_window_ignores_pure_throughput_gap(self):
         # Real completes 3 cohorts, sim completes 6 -- same shape, pure
         # throughput gap. Round-keying would compare real's 3-cohort total
-        # against sim's full 6-cohort total unmatched (a false failure, the
-        # throughput-gap-as-shape-divergence bug the DIST tier's "History"
-        # note warns about); cycle-keying matches on the first 3 of each.
+        # against sim's full 6-cohort total unmatched (a false failure);
+        # cycle-keying matches on the first 3 of each.
         real = _agg(agg_rounds=[_lcyc(i, 1, ["a", "b"], 0.5) for i in range(3)])
         sim = _agg(agg_rounds=[_lcyc(i, 1, ["a", "b"], 0.5) for i in range(6)])
         r = pc.participation_parity(real, sim)
@@ -1453,8 +1436,8 @@ class TestCohortSequence:
         assert r["order_match_frac"] == 1.0 and r["var_match_frac"] == 1.0
 
     def test_reordered_cohort_same_set_is_benign_for_sync(self):
-        # #N: SYNC receive-ORDER is SOFT (fedavg order-invariant, K-D31
-        # canonicalizes ties) -- a same-set/same-var reorder no longer fails,
+        # SYNC receive-ORDER is SOFT (fedavg order-invariant, ties
+        # canonicalize) -- a same-set/same-var reorder no longer fails,
         # though order_match_frac still surfaces it for diagnosis.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9, is_async=False)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9, is_async=False)])
@@ -1522,9 +1505,9 @@ class TestCohortSequence:
         assert not pc.cohort_sequence_parity(real, sim)["ok"]
 
     def test_cadence_divergence_beyond_bin1_not_enforced_by_default(self):
-        # #N: cadence/var EXACT is HARD only through bin 1 (float-
-        # nondeterminism wall starts ~bin 7) -- a divergence beyond it does
-        # NOT fail cohort_sequence; that's v1/v2/v4/v5's (DISTRIBUTIONAL) job.
+        # cadence/var EXACT is HARD only through bin 1 (float-nondeterminism
+        # wall starts ~bin 7) -- a divergence beyond it does NOT fail
+        # cohort_sequence; that's v1/v2/v4/v5's (DISTRIBUTIONAL) job.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                 _lcyc(7, 2, ["a", "b"], 0.26, var_good=False)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
@@ -1534,15 +1517,13 @@ class TestCohortSequence:
         assert r["cadence_var_order_max_bin"] == 1
 
     def test_set_divergence_beyond_bin1_not_enforced_by_default(self):
-        # REVISED 2026-07-17 (simulate_fwdllm.md §SCRATCH): SET used to be HARD
-        # over the entire run, uncapped. A genuine admission tie was proven to
-        # legitimately CASCADE into neighboring cycles once it occurs (a
-        # trainer that misses a boundary by a hair becomes the front of the
-        # next cohort, displacing whoever the other mode picked there, ad
-        # infinitum) -- chasing exact SET match past the achievable-
-        # determinism window chases an artifact of that cascade, not a bug,
-        # same wall as CADENCE/VAR. Population-level correctness over the full
-        # run is participation_parity's (S2) job now, not this rung's.
+        # SET used to be HARD over the entire run, uncapped, but a genuine
+        # admission tie legitimately CASCADEs into neighboring cycles (a
+        # trainer that misses a boundary becomes the front of the next
+        # cohort, displacing whoever the other mode picked) -- chasing exact
+        # SET match past the achievable-determinism window chases that
+        # cascade artifact, not a bug. Full-run correctness is
+        # participation_parity's (S2) job now.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                 _lcyc(7, 2, ["a", "b"], 0.5)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
@@ -1586,11 +1567,11 @@ def _with_delay_cfg(agg: dict, divisor: float = 1.0, floor_s: float = 0.0) -> di
 
 
 class TestCohortSequenceTieWindow:
-    """simulate_fwdllm.md §B item 2: a committed-cohort divergence at a
-    near-degenerate fast class is an arrival race, not a bug, when every
-    differing trainer's EXPECTED delay (registry, divisor-scaled) is within
-    `tie_window_s` of the others' -- granted a TIE instead of a hard fail.
-    Ungrantable (no delay model, or an unknown trainer) stays strict."""
+    """A committed-cohort divergence at a near-degenerate fast class is an
+    arrival race, not a bug, when every differing trainer's EXPECTED delay
+    (registry, divisor-scaled) is within `tie_window_s` of the others' --
+    granted a TIE instead of a hard fail. Ungrantable (no delay model, or an
+    unknown trainer) stays strict."""
 
     def test_set_swap_within_tie_window_is_granted(self):
         # 370 (4.0s) <-> 375 (5.0s): 1.0s apart, exactly at the default window.
@@ -1672,18 +1653,16 @@ def _cyc_with_boundary(data_id, iteration, cohort, var, commit_ts_by_end):
 
 
 class TestCohortFirstCommitRaceDiagnostic:
-    """simulate_fwdllm.md §G 2026-07-20 pm-3: `first_commit_race_diagnostic`
-    reports whether a SET divergence is explained by a trainer's first-ever
-    exploring transition racing the cohort boundary (real=raw FIFO jitter,
-    sim=clean sct-order, proven inherent via real<->real fingerprint pairing).
-    Must NEVER affect `ok`/`set_ok`, and must NOT explain away a divergence
-    that isn't actually a near-tie."""
+    """`first_commit_race_diagnostic` reports whether a SET divergence is
+    explained by a trainer's first-ever exploring transition racing the
+    cohort boundary (real=raw FIFO jitter, sim=clean sct-order). Must NEVER
+    affect `ok`/`set_ok`, and must NOT explain away a divergence that isn't
+    actually a near-tie."""
 
-    # A single-cycle cohort list on each side means the differing member
-    # (458 / 405) can't appear "nearby" in the other mode's list at all, so
-    # the EXISTING _cohort_set_tie_ok (_cohort_member_nearby) correctly does
-    # NOT grant a tie here -- set_divergence is populated and this
-    # diagnostic actually runs, same as it would on a genuine multi-cycle run.
+    # A single-cycle cohort list means the differing member (458/405) can't
+    # appear "nearby" in the other mode's list, so _cohort_set_tie_ok
+    # correctly doesn't grant a tie here -- set_divergence is populated and
+    # this diagnostic actually runs.
 
     def _scale_event(self):
         # LATE event (scanned last by _run_utility_rank_gap_scale) with a
@@ -1934,12 +1913,10 @@ class TestStepTimingBreakdown:
         assert "step_timing_breakdown" in pc.CHECK_META
 
     def test_degenerate_bulk_with_one_outlier_is_skipped_not_scored(self):
-        # simulate_fwdllm.md §B item 3: a multi-thousand-sample near-zero
-        # function has an occasional GC/cache-miss outlier that pushes the MAX
-        # a hair over the degenerate threshold while the bulk (p99) is still
-        # quantization noise -- must SKIP, not score the dither as a KS
-        # "divergence" (real tb_batch_to_device: p99 9.3e-5s, one 1.2e-3s tail
-        # sample among 5504).
+        # A near-zero function can have an occasional GC/cache-miss outlier
+        # that pushes the MAX a hair over the degenerate threshold while the
+        # bulk (p99) is still quantization noise -- must SKIP, not score the
+        # dither as a KS "divergence".
         real_durs = [5e-5] * 999 + [9e-4]       # p99 ~5e-5, max 9e-4
         sim_durs = [5e-5] * 999 + [1.2e-3]      # p99 ~5e-5, max 1.2e-3 (over old threshold)
         real, sim = self._st("tb_batch_to_device", real_durs, sim_durs)
@@ -1998,8 +1975,8 @@ class TestAggStepTimingEvalModelExempt:
 
     def test_eval_model_gap_reported_but_does_not_gate(self):
         # eval_model 30s sim vs 11s real (gap > the aggregator rung's widened
-        # mean_tol_rel, simulate_fwdllm.md §B fluxtune #1), everything else
-        # matched -> rung PASSES (eval_model exempt) but still reports diverged.
+        # mean_tol_rel), everything else matched -> rung PASSES (eval_model
+        # exempt) but still reports diverged.
         real = self._agg({"eval_model": [10.8] * 20, "aggregate": [0.1] * 20})
         sim = self._agg({"eval_model": [30.0] * 20, "aggregate": [0.1] * 20})
         r = pc.agg_step_timing_breakdown_parity(real, sim)
@@ -2216,7 +2193,7 @@ def _agg_wall_round(agg_s, eval_s, wall_elapsed_s):
 
 
 class TestVclockFoldDiagnostic:
-    """K-D41: `aggregation_compute_wall_parity` reports the CUMULATIVE
+    """`aggregation_compute_wall_parity` reports the CUMULATIVE
     `aggregate_fedavg_s` as a fraction of total wall, both modes -- the direct
     measurement of how much real compute this rung's per-cycle check covers,
     at a glance instead of only per-cycle means. DIAG tier (never gates the

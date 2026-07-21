@@ -17,12 +17,7 @@ from parity.cli import _find_run_dirs  # noqa: E402
 
 
 def test_prefix_sharing_baseline_does_not_collide(tmp_path):
-    """Regression, 2026-07-14: `fwdllm` is a strict prefix of `fwdllm_plus`'s run
-    dir names. The old glob (`*{tag}*real*`) matched both, and `sorted()[-1]`
-    silently picked the fwdllm_plus pair for the `fwdllm` tag whenever both
-    baselines' run dirs coexisted -- double-reporting fwdllm_plus's numbers
-    under the fwdllm label with no error. Anchoring on `_{tag}_n<digits>_` (the
-    exact shape run_sequential.sh emits) must resolve each tag to its own dirs."""
+    """`fwdllm` is a prefix of `fwdllm_plus`; glob must not conflate their run dirs."""
     for name in [
         "run_20260714_003007_fwdllm_n10_smoke_syn_0_real",
         "run_20260714_023125_fwdllm_n10_smoke_syn_0_sim",

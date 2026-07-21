@@ -136,16 +136,16 @@ class TestRandomSelectorEmitsSelectionTelemetry:
 class TestRandomSelectorAggVersionStatePassthrough:
     """fwdllm_aggregator.py threads version_key=(model_version,
     iteration_per_data_id) through channel.ends(agg_version_key=...), plus
-    data_id as its own kwarg (data_id is deliberately NOT part of version_key,
-    §M) -> select()'s **kwargs (see ../../examples/MIGRATING_TO_LAUNCHER.md
-    §9). Attaching both to the emitted selection event lets analyze_run.py's
-    progress_key() place it on the same fine-grained axis as trainer_round/
-    agg_round/agg_eval, instead of collapsing onto fwdllm's coarse `round`.
+    data_id as its own kwarg (data_id is deliberately not part of
+    version_key) -> select()'s **kwargs (see
+    ../../examples/MIGRATING_TO_LAUNCHER.md §9). Attaching both to the
+    emitted selection event lets analyze_run.py's progress_key() place it on
+    the same fine-grained axis as trainer_round/agg_round/agg_eval, instead
+    of collapsing onto fwdllm's coarse `round`.
 
-    Was previously smuggling (model_version, data_id, iteration_id) as a
-    3-tuple inside agg_version_key -- dead code post-K-D39, which unified
-    version_key to the 2-tuple (model_version, iteration) everywhere, so the
-    `len == 3` sniff never fired for any real caller.
+    Previously smuggled (model_version, data_id, iteration_id) as a 3-tuple
+    inside agg_version_key -- dead code once version_key unified to the
+    2-tuple (model_version, iteration) everywhere.
     """
 
     def test_agg_version_key_attaches_data_id_and_iteration(self, tmp_path, make_ends):

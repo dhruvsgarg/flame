@@ -179,11 +179,9 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         if self._round != 1 and (self._round % eval_every != 0):
             return
         # Off the critical path: snapshot weights now, run the test-set forward
-        # pass in a daemon thread so the aggregator keeps progressing. Cross-
-        # reference (§11/§6 Parts 5-6, fwdllm's simulate_fwdllm.md §G):
-        # this backgrounding is why this example needs no sim_model_*_compute_time
-        # -style vclock fold (flame/config.py) — see main_asyncfl_agg.py's
-        # evaluate() for the full reasoning.
+        # pass in a daemon thread so the aggregator keeps progressing. Backgrounding
+        # is why this needs no sim_model_*_compute_time vclock fold — see
+        # main_asyncfl_agg.py's evaluate().
         eval_model = self._eval_snapshot_model()
         if eval_model is None:
             return  # prior async eval still running

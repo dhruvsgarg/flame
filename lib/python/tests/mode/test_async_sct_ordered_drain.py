@@ -158,8 +158,8 @@ class TestRealChannelDrainReady:
             ch._backend.stop()
 
     def test_timeout_none_returns_immediately_does_not_block(self):
-        # §M pin: drain_ready(timeout=None) returns EMPTY immediately (the
-        # poll guard is falsy), unlike recv_fifo which genuinely blocks.
+        # drain_ready(timeout=None) returns immediately (poll guard falsy),
+        # unlike recv_fifo, which genuinely blocks.
         ch = _make_channel(["a"])
         try:
             t0 = time.time()

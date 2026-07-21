@@ -50,12 +50,8 @@ sys.excepthook = custom_excepthook
 
 
 def _build_selector_kwargs(hyperparameters, selector_kwargs: dict) -> dict:
-    """Thread aggregator hyperparameters a selector needs into its kwargs
-    (§R, 2026-07-11), same pattern as `_seed`. `send_timeout_wait_s` (async_oort's
-    in-flight abandon timeout) is a workload/comm-latency property, so it
-    belongs on the aggregator, not the selection algorithm. `selector_kwargs`
-    wins on conflict. Pulled out of `ChannelManager.join` to be unit-testable
-    without a live backend.
+    """Fold aggregator hyperparameters (e.g. send_timeout_wait_s) into selector
+    kwargs, same pattern as `_seed`; explicit selector_kwargs wins on conflict.
     """
     merged = dict(selector_kwargs)
     _send_timeout_wait_s = getattr(hyperparameters, "send_timeout_wait_s", None)

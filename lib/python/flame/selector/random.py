@@ -61,12 +61,9 @@ class RandomSelector(AbstractSelector):
         except KeyError:
             raise KeyError("c is not specified in config")
 
-        # NOTE: no `k` here -- `c` (concurrency) alone drives selection AND
-        # cleanup sizing, matching oort/async_oort/fedbuff/async_random, none
-        # of which have a `k` concept. A legacy `k` kwarg cap on
-        # _cleanup_recvd_ends caused a starve-to-livelock bug (simulate_fwdllm.md
-        # §A); `k`, if still present in a config, is now an inert leftover
-        # (accepted by AbstractSelector's generic setattr, read by nothing).
+        # `c` (concurrency) alone drives selection, matching other selectors --
+        # none have a `k` concept. A legacy `k` cap on cleanup caused a
+        # starve-to-livelock bug; a leftover `k` in config is now inert (unused).
 
         self.round = 0
 
@@ -253,15 +250,11 @@ class RandomSelector(AbstractSelector):
                 f"[RNG_FINGERPRINT] before sample: {self.rng_fingerprint()} "
                 f"candidates={sorted(avl_candidates)} required_trainers={required_trainers}"
             )
-            # NOTE: sampled (the .sample() return) is the deterministic,
-            # seed-reproducible draw -- log it explicitly, ordered, before the
-            # set() conversion below. `set`/`dict` iteration order for str
-            # keys is per-process randomized (PYTHONHASHSEED, default random
-            # since Python 3.3): comparing `selected_candidates`'/the emitted
-            # dict's printed ORDER across two separate process launches will
-            # look nondeterministic even when `sampled` (and therefore the
-            # actual selection decision) is byte-identical. Diff `sampled`,
-            # not the post-set-conversion log line, when auditing determinism.
+            # `sampled` is the deterministic draw; log it before set()
+            # conversion, since set/dict order is PYTHONHASHSEED-randomized
+            # per process and would look nondeterministic even though the
+            # actual selection is identical. Diff `sampled`, not the log line
+            # after set conversion, when auditing determinism.
             sampled = self._pyrng.sample(sorted(avl_candidates), required_trainers)
             logger.info(
                 f"[RNG_FINGERPRINT] after sample: {self.rng_fingerprint()} "
@@ -289,16 +282,11 @@ class RandomSelector(AbstractSelector):
                 "concurrency": self.c,
                 "requester": channel_props.get(KEY_CH_SELECT_REQUESTER),
             }
-            # fwdllm-family aggregators thread version_key=(model_version,
-            # iteration_per_data_id) through channel.ends(agg_version_key=...)
-            # plus data_id as its own kwarg (data_id is deliberately NOT part
-            # of version_key, §M -- see fwdllm_aggregator.py). Attaching both
-            # to the emitted selection event lets analyze_run.py's
-            # progress_key() place this event on the same fine-grained axis as
-            # trainer_round/agg_round/agg_eval, instead of collapsing onto
-            # fwdllm's coarse `round` (which can stay at 1 for an entire run).
-            # No-op (absent from extra) for callers that don't pass these --
-            # e.g. async_cifar10's fedavg baseline also uses this selector.
+            # fwdllm threads version_key=(model_version, iteration_per_data_id)
+            # plus data_id (kept separate from version_key, see
+            # fwdllm_aggregator.py) so analyze_run.py can place this event on
+            # the fine-grained progress axis instead of fwdllm's coarse
+            # `round`. No-op for callers that don't pass these.
             _avs = kwargs.get("agg_version_key")
             if isinstance(_avs, (tuple, list)) and len(_avs) == 2:
                 _extra["iteration_per_data_id"] = _avs[1]
@@ -348,11 +336,9 @@ class RandomSelector(AbstractSelector):
 
         selected_ends = self.selected_ends
 
-        # Drain all received ends (no k-capped batch size, matching
-        # async_oort's _cleanup_recvd_ends -- "min(N, agg_goal) deadlocks
-        # when K changes dynamically"). A cap here permanently orphans the
-        # excess per cycle (committed but never freed), starving the pool
-        # every round until it deadlocks (simulate_fwdllm.md §A).
+        # Drain all received ends, no k-cap (matches async_oort): a capped
+        # batch permanently orphans the excess each cycle, starving the pool
+        # until deadlock.
         num_ends_to_remove = len(self.ordered_updates_recv_ends)
         logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
         if num_ends_to_remove != 0:

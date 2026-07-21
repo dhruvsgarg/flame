@@ -1,12 +1,9 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""`_agg_sync_timer` (simulate_fwdllm.md §B row 1, 2026-07-20 pm-5): isolates
-the wall time of a single CPU/GPU sync point (`.item()`, `.to("cpu")`) from
-the rest of its enclosing `@timer_decorator`-wrapped aggregator function, so
-`agg_step_timing_breakdown_parity`'s still-open fixed per-call tax can be
-localized to the sync call itself vs the rest of the function. Same shape as
-the trainer-side `_stage_timer` (already covered by test_tb_prepare_
-perturbation.py's family) -- this covers the aggregator-side analog.
+"""`_agg_sync_timer` isolates the wall time of a single CPU/GPU sync point
+(`.item()`, `.to("cpu")`) from the rest of its enclosing `@timer_decorator`
+aggregator function, so per-call timing tax can be localized to the sync
+itself vs the rest of the function. Aggregator-side analog of `_stage_timer`.
 """
 import time
 
@@ -23,9 +20,8 @@ class _FakeOwner:
 
 @pytest.fixture
 def captured_events(monkeypatch):
-    # `_agg_sync_timer` does `from flame import telemetry` INSIDE the function
-    # body (deferred import, same pattern as `_stage_timer`) -- patch the
-    # actual `flame.telemetry` module, not a (nonexistent) module-level name
+    # _agg_sync_timer imports telemetry inside the function body (deferred,
+    # like _stage_timer) -- patch flame.telemetry directly, not an attribute
     # on FedSgdAggregator.
     from flame import telemetry as telemetry_mod
 

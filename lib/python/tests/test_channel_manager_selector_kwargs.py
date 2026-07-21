@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""§R, 2026-07-11: `send_timeout_wait_s` (async_oort's in-flight abandon
-timeout) is a workload/comm-latency property that belongs on the aggregator's
+"""`send_timeout_wait_s` (async_oort's in-flight abandon timeout) is a
+workload/comm-latency property that belongs on the aggregator's
 hyperparameters, not buried in `selector.kwargs` -- threaded into the
 selector's kwargs the same way `_seed` already is."""
 

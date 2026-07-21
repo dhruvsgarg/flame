@@ -195,10 +195,9 @@ class OortSelector(AbstractSelector):
 
         self.pacer(round)
 
-        # version_key symmetry (§M): same no-repeat-this-tuple filter as
-        # async_oort's triplet guard, kept inert here -- no caller currently
-        # passes both kwargs, since sync's round-scoped `selected_ends` guard
-        # above already prevents a within-round re-pick.
+        # Same no-repeat filter as async_oort's guard, kept inert here -- no
+        # caller passes both kwargs yet, since the round-scoped `selected_ends`
+        # guard above already prevents a within-round re-pick.
         agg_version_key = kwargs.get("agg_version_key")
         trainer_version_keys = kwargs.get("trainer_version_keys")
         eligible_ends = {
@@ -628,10 +627,9 @@ class OortSelector(AbstractSelector):
 
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
-        # dict.fromkeys (not set()) -- preserves _pyrng.sample's deterministic
-        # order; set() iterates in str-hash order, randomized per-process
-        # (PYTHONHASHSEED) independent of the seeded RNG (see async_oort.py's
-        # twin of this method for the full explanation).
+        # dict.fromkeys, not set(): set() order is PYTHONHASHSEED-randomized
+        # per process, breaking real/sim parity despite the seeded sample
+        # being deterministic (see async_oort.py's twin of this method).
         newly_selected = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
         self.selected_ends = self.selected_ends | set(newly_selected)
         return {key: None for key in newly_selected}

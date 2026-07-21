@@ -177,8 +177,8 @@ def test_sim_recv_timeout_s_exact_bound_when_all_known():
 
 
 def test_sync_barrier_zero_progress_when_all_delays_known_upfront():
-    # §A regression target: 829.6s/1237s burned on zero-progress barrier
-    # calls (EMA-lock undershoot). All delays known -> one sufficient call.
+    # Regression target: EMA-lock undershoot burned many zero-progress
+    # barrier calls. All delays known -> one sufficient call.
     agg = _bare(SyncAgg)
     agg._sim_known_delay_s = {e: d for e, d in SCTS.items()}
     ch = RecordingChannel(SCTS, SCRAMBLED)

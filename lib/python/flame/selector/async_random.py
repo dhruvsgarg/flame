@@ -223,10 +223,9 @@ class AsyncRandomSelector(AbstractSelector):
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends."""
 
-        # dict.fromkeys (not set()) -- preserves _pyrng.sample's deterministic
-        # order; set() iterates in str-hash order, randomized per-process
-        # (PYTHONHASHSEED) independent of the seeded RNG (see async_oort.py's
-        # twin of this method for the full explanation).
+        # dict.fromkeys, not set(): set() order is PYTHONHASHSEED-randomized
+        # per process, breaking real/sim parity despite the seeded sample
+        # being deterministic (see async_oort.py's twin of this method).
         selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
@@ -735,16 +734,10 @@ class AsyncRandomSelector(AbstractSelector):
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
-        """Read-only over `selected_ends`: report who Clerk A (send-state) has
-        outstanding, minus anyone who has already replied. NEVER writes a new
-        name into `selected_ends`/`all_selected` -- that's `_handle_send_state`'s
-        job alone. A prior version resampled fresh candidates here when
-        `selected_ends` was empty, racing `_handle_send_state`'s own dispatch
-        and (via a `curr_end_state != VAL_END_STATE_NONE` bug comparing a
-        never-touched end's Python `None` against the string `"none"`) sweeping
-        untouched ends into `all_selected` before they were ever sent anything
-        -- permanent deadlock (simulate_fwdllm.md §G 07-17). Removed; if
-        `selected_ends` is empty this simply returns {} and the next
+        """Read-only over `selected_ends`: reports who is outstanding, minus
+        replies received. Never assigns new selections -- that's
+        `_handle_send_state`'s job; a prior version that resampled here raced
+        send-state dispatch and could deadlock. Returns {} if empty; the next
         send-state tick dispatches normally.
         """
         selected_ends = self.selected_ends[self.requester]

@@ -166,20 +166,18 @@ class Trainer(Role, metaclass=ABCMeta):
         # fetch; drained into the trainer_round telemetry `extra`. Mirrors the
         # base syncfl trainer's _phase/_phase_times.
         self._phase_times: dict = {}
-        # Companion: vclock reading (sim only) as of each phase's END -- see
-        # vclock_now's docstring. Not a duration (trainers don't own a live
-        # clock), a snapshot for cross-phase/cross-process alignment.
+        # vclock reading (sim only) as of each phase's END -- see vclock_now's
+        # docstring. Not a duration; a snapshot for cross-phase alignment.
         self._phase_vclock_s: dict = {}
 
     @property
     def vclock_now(self) -> float | None:
         """Last known virtual-clock reading, sim mode only -- `None` in real
-        mode. NOT a live tick: trainers are a separate process from the
-        aggregator with no access to its clock, so this is the most recent
-        SIM_SEND_TS/SIM_COMPLETION_TS the aggregator stamped on a message,
-        held until the next one arrives. Fine for cross-phase/cross-process
-        alignment; do not use it to measure elapsed time within one phase
-        (simulate_fwdllm.md §N).
+        mode. NOT a live tick: trainers have no access to the aggregator's
+        clock, so this is the most recent SIM_SEND_TS/SIM_COMPLETION_TS the
+        aggregator stamped, held until the next message arrives. Fine for
+        cross-phase alignment; do not use to measure elapsed time within one
+        phase.
         """
         if not getattr(self, "simulated", False):
             return None
@@ -236,11 +234,9 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
-        # vclock BEFORE this wait -- the trainer's last known stamp going in
-        # (self._sim_send_ts isn't updated until the new message arrives,
-        # below), so the delta below genuinely measures "how much vclock
-        # moved while this trainer waited" (§N follow-up), not a same-instant
-        # snapshot like most other phases.
+        # vclock BEFORE this wait -- _sim_send_ts isn't updated until the new
+        # message arrives, so the delta below measures vclock moved while
+        # waiting, not a same-instant snapshot like other phases.
         _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
@@ -626,13 +622,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.JVP_FOR_SNR_CHECK: self.jvp_for_snr_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
-                # Echoes the (data_id, iteration) this update answers, so the
-                # aggregator's staleness_policy="exact" mode (see flame/config.py)
-                # can reject a since-superseded iteration, and the re-pick guard can
-                # record the exact version_key (model_version, iteration) this
-                # trainer contributed to (so it is excluded from re-selection for
-                # that same version_key). data_id itself stays a reporting/
-                # progress field, not part of the key.
+                # Echoes (data_id, iteration) so staleness_policy="exact" can
+                # reject a superseded iteration, and the re-pick guard can
+                # record this trainer's version_key (model_version, iteration)
+                # to exclude it from re-selection. data_id isn't part of the key.
                 MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
@@ -698,12 +691,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel._selector._cleanup_send_ends()
 
-        # No gc.collect()/torch.cuda.empty_cache() here: moving them "into the
-        # idle time between rounds" only moved the cost off this trainer's own
-        # stopwatch, and empty_cache() hands every cached block back to the
-        # driver so the next round re-cudaMallocs it. Measured: ~14% wall AND
-        # peak allocated 817MB -> 1090MB -- it made memory pressure worse, not
-        # better; without it a 300-cycle soak drifts 0.00MB.
+        # No gc.collect()/torch.cuda.empty_cache() here: it only moved the cost
+        # off this trainer's stopwatch, and empty_cache() forces a re-cudaMalloc
+        # next round. Measured: ~14% slower wall, peak alloc 817MB->1090MB;
+        # without it, a 300-cycle soak drifts 0.00MB.
 
     def _perform_channel_leave(self, tag: str) -> None:
         logger.debug(

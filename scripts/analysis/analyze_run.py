@@ -1878,10 +1878,9 @@ def sim_speedup_plots(records, out, stamp, tdir):
     return saved
 
 
-# Warm-up window excluded from the flag check below: trainers/aggregator are
-# still coming online in the first few seconds of wall time, so vclock
-# legitimately lags wall there even in a healthy sim (simulate_fwdllm.md §N /
-# principle #13's "initially vclock is behind wall as trainers come online").
+# Excluded from the flag check below: trainers/aggregator are still coming
+# online in the first few seconds, so vclock legitimately lags wall there
+# even in a healthy sim.
 _PHASE_VCLOCK_WARMUP_S = 5.0
 
 
@@ -1938,11 +1937,9 @@ def train_batch_phase_plots(records, out, stamp, tdir):
             "tb_prepare_perturbation", "tb_deepcopy_best_v", "tb_forward_jvp",
             "tb_accumulate_grads")
 
-    # Pair phases to their batch by EMISSION ORDER per trainer, not by
-    # (data_id, iteration): a variance retry revisits the same cadence key, and
-    # each collision would fold N batches' phases onto one total and manufacture
-    # a hugely negative "unaccounted". Order is reliable: each inner phase emits
-    # on exit, always before the enclosing _train_one_batch's own emit.
+    # Pair phases to their batch by emission order per trainer, not by
+    # (data_id, iteration): a variance retry revisits the same cadence key and
+    # would collide, folding N batches' phases onto one total.
     per_trainer = defaultdict(list)
     for r in st:
         if r.get("func") and r.get("duration_s") is not None:
@@ -1988,17 +1985,12 @@ def train_batch_phase_plots(records, out, stamp, tdir):
 
 
 def agg_step_timing_plots(records, out, stamp, tdir):
-    """CDF + mean-bar of the AGGREGATOR's own `step_timing` events (simulate_
-    fwdllm.md §B row 1, 2026-07-20 pm-5) -- `_compute_var`/`_prepare_round_
-    state`/`_apply_weighted_update`/etc, plus the new isolated-sync-point
-    sub-events `agg_var_item_sync`/`agg_apply_update_cpu_sync`. This is the
-    aggregator-side analog of `train_batch_phase_plots` (trainer `tb_*`
-    phases); distinguished from it by func name NOT starting with `tb_` (the
-    established prefix convention, see `_stage_timer`'s docstring) since both
-    aggregator and trainer `step_timing` events are merged into one `records`
-    list upstream. Fills the gap `agg_step_timing_breakdown_parity` has had
-    since it landed (§A session-6): the rung existed with no visual.
-    """
+    """CDF + mean-bar of the aggregator's own `step_timing` events
+    (`_compute_var`/`_prepare_round_state`/`_apply_weighted_update`/etc, plus
+    the isolated sync-point sub-events). Aggregator-side analog of
+    `train_batch_phase_plots`; distinguished by func name not starting with
+    `tb_`, since both roles' `step_timing` events merge into one `records`
+    list upstream."""
     d = _sub(out, "aggregation")
     st = by_event(records, EVENT_STEP_TIMING)
     if not st:
@@ -2039,16 +2031,13 @@ def agg_step_timing_plots(records, out, stamp, tdir):
 
 
 def phase_vclock_plots(records, out, stamp, tdir):
-    """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained,
-    every-example/every-mode companion to sim_speedup_plots' round-level view
-    (simulate_fwdllm.md §N). `vclock_s`/`vclock_now_s` are sim-only (absent,
-    not 0.0, in real mode -- see build_step_timing's docstring), so this is a
-    no-op plot on a real run, same convention as sim_speedup_plots.
+    """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained
+    companion to sim_speedup_plots' round-level view. `vclock_s`/`vclock_now_s`
+    are sim-only (absent, not 0.0, in real mode), so this is a no-op plot on a
+    real run, same convention as sim_speedup_plots.
 
     Flags (printed, not just plotted) any function whose mean vclock delta is
-    LESS than its mean wall duration post-warmup -- the sim is not skipping a
-    real wait there, i.e. a candidate bottleneck. This generalizes the by-hand
-    VCLOCK_PROGRESS delta check done manually before this telemetry existed.
+    less than its mean wall duration post-warmup -- a candidate bottleneck.
     """
     d = _sub(out, "system")
     st = by_event(records, EVENT_STEP_TIMING)
@@ -2126,28 +2115,16 @@ _AGG_ROUND_PHASE_KEYS = (
 
 
 def phase_wall_vclock_plots(records, out, stamp, tdir):
-    """Round-level wall-clock phase decomposition for BOTH roles -- the
+    """Round-level wall-clock phase decomposition for both roles -- the
     general-cycle companion to phase_vclock_plots' forward-grad-step view
-    above (which only covers step_timing/FedSgdTrainer's inner JVP loop).
-    Reads trainer_round's _phase_times (mqtt_fetch_s, weights_to_{ram,gpu}_s,
-    weights_from_gpu_s, post_cpu_s, mqtt_send_s, send_gate_wait_s) and
-    agg_round's per-cycle wall decomposition (barrier_wait_s, drain_tail_s,
-    aggregate_fedavg_s, eval_s, intrinsic_span_s, wall_elapsed_s, sim_rate).
-    Both have existed in telemetry with no plot reading them (2026-07
-    telemetry/plots audit) -- this is the direct answer to "is the phase-wise
-    vclock-vs-wall telemetry actually rendered anywhere".
+    above. Reads trainer_round's _phase_times and agg_round's per-cycle wall
+    decomposition.
 
-    Deliberately does NOT derive a vclock/wall "ratio" from either role's
-    `phase_vclock_s` field, unlike phase_vclock_plots' step_timing-based bar:
-    step_timing.vclock_s is stamped as a true per-step DELTA, but
-    trainer_round/agg_round's phase_vclock_s is a vclock_now SNAPSHOT taken
-    at phase-END with no matching phase-START stamp -- there is no clean,
-    correct way to turn a snapshot into a per-phase rate without inventing an
-    assumption about phase ordering. Plotting a fabricated ratio here would
-    be exactly the kind of "hack that moves a number without a correct
-    mechanism" this project's principles rule out, so this only plots the
-    wall side plus the aggregator's own already-correct sim_rate/
-    intrinsic_span_s fields (computed once, correctly, at the emit site).
+    Does NOT derive a vclock/wall ratio from `phase_vclock_s`: unlike
+    step_timing's per-step vclock_s delta, trainer_round/agg_round's
+    phase_vclock_s is a snapshot at phase-end with no matching phase-start
+    stamp, so there's no correct way to turn it into a per-phase rate. Plots
+    only the wall side plus the aggregator's own sim_rate/intrinsic_span_s.
     """
     d = _sub(out, "system"); saved = []
 
@@ -3083,8 +3060,7 @@ def aggregation_plots(records, out, stamp, tdir):
         if p: saved.append(p)
 
     # 1b) iterations-per-data_id (realized dynamic-K) = agg_rounds per
-    # cycle_data_id, smoothed with a P10-P90 band. Visual behind the
-    # v1_iter_per_data_id / v1b_iters_moving_avg rungs (simulate_fwdllm.md §F).
+    # cycle_data_id, smoothed with a P10-P90 band.
     iters_by_data = defaultdict(int)
     for r in ar:
         did = r.get("cycle_data_id")
@@ -3153,25 +3129,13 @@ def aggregation_plots(records, out, stamp, tdir):
                         "commit_gap_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # 3b) past-dating occurrence + degree over time (run-cumulative counters,
-    # sim only): a healthy sim's commits land at/near their sct, so these
-    # should stay flat near zero. A rising pastdated_commits count = the sim
-    # is chronically committing after the fact, not just occasionally; a
-    # rising pastdated_gap_max = the worst-case lateness is still growing.
-    # carried_surplus_commits (§4.4/§10, simulate_fwdllm.md §G): a
-    # separate, run-cumulative counter for surplus grads deliberately carried
-    # across a data_id boundary (`_release_sim_slots_at_agg_goal`, c >>
-    # agg_goal fedbuff designs) and popped under the new boundary's already-
-    # advanced vclock. Expected to step up once per data_id boundary for the
-    # entire life of the run -- this is healthy async carry, NOT a pacing
-    # anomaly. Plotted alongside pastdated_commits (same file) so a healthy
-    # run reads as pastdated_commits flat-at-0 + carried_surplus_commits
-    # stepping up on its own expected cadence, not conflated into one alarm.
-    # pc_*/pgm_* are the pastdated counters this plot is named for; their
-    # collection loop was missing, so the whole group died on a NameError at
-    # `if pc_x:` and took the carried-surplus series with it. Field is
-    # `pastdated_gap_max` (the series label below says _s; the emitted key
-    # does not carry the suffix).
+    # 3b) past-dating occurrence + degree over time (run-cumulative, sim only):
+    # a healthy sim's commits land at/near their sct, so these stay flat near
+    # zero. carried_surplus_commits is a separate counter for surplus grads
+    # deliberately carried across a data_id boundary -- expected to step up
+    # once per boundary, not a pacing anomaly; plotted alongside so it isn't
+    # conflated with the pastdated alarm. Field is `pastdated_gap_max` (no _s
+    # suffix despite the series label below).
     pc_x, pc_y, pgm_y = [], [], []
     for r in ar:
         rd = int(r.get("round", 0))
@@ -3207,12 +3171,8 @@ def aggregation_plots(records, out, stamp, tdir):
 
     # 4) update residence time: rounds an update stayed in-flight (selected but
     # not yet cleaned) before commit -- ties staleness to the in-flight
-    # mechanic. FIXED 2026-07 (telemetry/plots audit): this used to read
-    # `residence_rounds` off EVENT_AGG_ROUND, a key that event never carries
-    # (it only exists on EVENT_INFLIGHT_RESIDENCE / build_inflight_residence,
-    # oort sync's per-round in-flight drain accounting) -- so this silently
-    # produced nothing every run, defeating the event's own stated purpose of
-    # localizing the real~15.6-vs-sim~13 in-flight residence gap.
+    # mechanic. Reads EVENT_INFLIGHT_RESIDENCE; EVENT_AGG_ROUND never carries
+    # `residence_rounds`.
     ir = by_event(records, EVENT_INFLIGHT_RESIDENCE)
     resid, carried = [], []
     resid_fresh, resid_stale = [], []
@@ -3323,13 +3283,10 @@ def analyze(telemetry_dir, out_dir=None):
         return []
     stamp = ph.config_stamp(run_dir)
     saved = []
-    # Every group in _PLOT_GROUPS is a pure function over the same already-
-    # materialized `records` list, writing to its own disjoint plots/<subdir>/
-    # path -- naturally parallelizable (PLOTTING.md §0.5's deferred item).
-    # matplotlib's Agg backend (set at plot_helpers import time, inherited by
-    # fork) is fork-safe. resource_plots (log/CSV-based, not `records`-based)
-    # and write_summary (aggregates `saved` from every group) have real
-    # ordering dependencies and stay outside the pool.
+    # Each _PLOT_GROUPS entry is a pure function over the same `records` list,
+    # writing to its own disjoint plots/<subdir>/ path -- parallelizable.
+    # matplotlib's Agg backend is fork-safe. resource_plots and write_summary
+    # have real ordering dependencies and stay outside the pool.
     max_workers = min(len(_PLOT_GROUPS), os.cpu_count() or 4)
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
         futures = [

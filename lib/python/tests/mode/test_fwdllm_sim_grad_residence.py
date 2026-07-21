@@ -108,11 +108,9 @@ class TestCommitThenCarryResidenceOn:
 class TestReturnPathGuardHeldToCommit:
     """The guard release on grad RETURN (`_release_end_on_return`, called from
     `_process_single_trainer_message`). With `_inflight_residence` on, RETURN
-    must not release `all_selected` -- that tears a trainer out of the guard
-    while its contribution hasn't committed -> re-selectable -> re-dispatch-
-    while-in-flight. One check, no `is_async` branch: a no-op for sync
-    (agg_goal == c, so every return already belongs to that cycle's commit)
-    and for real (which needs the hold too, unlike sim -- §R 2026-07-11).
+    must not release `all_selected` -- that would make an uncommitted trainer
+    re-selectable -> re-dispatch-while-in-flight. One check, no `is_async`
+    branch: holds for sync and real too, not just sim.
     """
 
     def test_guard_held_on_return_in_sim_residence(self):
@@ -136,10 +134,8 @@ class TestReturnPathGuardHeldToCommit:
         assert "A" not in ch._selector.all_selected
 
     def test_guard_held_on_return_in_sync_residence(self):
-        """§R (2026-07-11): sync + residence on ALSO holds now -- one invariant,
-        no is_async special case. Harmless in practice (agg_goal == c for sync,
-        so this return already belongs to the cycle that's about to commit),
-        but must not silently diverge from async's behavior."""
+        """sync + residence on also holds now -- one invariant, no is_async
+        special case. Must not silently diverge from async's behavior."""
         agg = _residence_agg(residence=True)
         agg.is_async = False
         ch = _FakeSelChannel(["A", "B", "C"])
@@ -156,9 +152,9 @@ class TestReturnPathGuardHeldToCommit:
         assert "A" not in ch._selector.all_selected
 
     def test_guard_held_on_return_in_real_residence(self):
-        """§R (2026-07-11): async + REAL + residence on must ALSO hold to
-        commit -- previously gated on `simulated`, so real always fell
-        through to immediate release regardless of the flag."""
+        """async + real + residence on must also hold to commit -- previously
+        gated on `simulated`, so real always fell through to immediate
+        release."""
         agg = _residence_agg(residence=True)
         agg.is_async = True
         agg.simulated = False
@@ -178,13 +174,12 @@ class TestReturnPathGuardHeldToCommit:
 
 
 class TestReturnPathBufferedReleasesImmediately:
-    """07-21 fix (simulate_fwdllm.md FT cohort_sequence deep-dive): once a
-    contribution is captured in `_pending_cohort_contribs` (P0-1 deferred-
+    """Once a contribution is captured in `_pending_cohort_contribs` (deferred
     merge), re-dispatch can't lose/overwrite it -- `buffered=True` releases
     the slot immediately even with `_inflight_residence` on, instead of
-    deferring to the whole cohort's commit. Restores true fedbuff continuous
-    concurrency (flat, not a sawtooth) without reopening the R1 gap
-    `_inflight_residence` was built to close for un-buffered returns."""
+    deferring to the cohort's commit. Restores flat fedbuff concurrency
+    without reopening the gap `_inflight_residence` closes for un-buffered
+    returns."""
 
     def test_buffered_true_releases_immediately_despite_residence(self):
         agg = _residence_agg(residence=True)
@@ -262,11 +257,10 @@ class TestVirtualInflightSlotHold:
         assert "A" not in ch._selector.all_selected
 
     def test_triplet_guard_kept_until_tuple_advances_not_on_commit(self):
-        # RC3 fix: a trainer's contributed version_key stamp survives its COMMIT
-        # and is dropped only when the agg advances PAST that version_key.
-        # Dropping it on commit (the old behavior) let a fast committer be
-        # re-picked for the SAME version_key -> abort_training -> phantom
-        # starvation.
+        # A trainer's contributed version_key stamp survives its commit and is
+        # dropped only when the agg advances PAST that version_key. Dropping
+        # it on commit let a fast committer be re-picked for the same
+        # version_key -> abort_training -> phantom starvation.
         agg = _residence_agg(residence=True)
         agg._curr_agg_version = (1, 0)
         ch = _FakeSelChannel(["A", "B", "C", "D"])
@@ -378,12 +372,10 @@ class TestPendingCommitBridge:
         agg._sim_hold_busy_slots(ch)
         assert agg._sim_pending_commit == {"A", "B"}
 
-        # A commits -> leaves in-flight, marked committed. `outstanding` now also
-        # reads `_sim_pending_commit` (first-dispatch fix, see the `outstanding`
-        # comment in _sim_hold_busy_slots), so a faithful simulation of "A
-        # committed" must include the same discard the real commit path
-        # (`_sim_recv_min_grad`) always performs before this function is next
-        # reached -- not just mutating `_sim_inflight_expected`.
+        # A commits -> leaves in-flight, marked committed. `outstanding` now
+        # also reads `_sim_pending_commit`, so a faithful "A committed" must
+        # include the same discard the real commit path always performs, not
+        # just mutating `_sim_inflight_expected`.
         agg._sim_inflight_expected = {"B": 20.0}
         agg._sim_committed = {"A"}
         agg._sim_pending_commit.discard("A")
@@ -393,17 +385,14 @@ class TestPendingCommitBridge:
         assert agg._sim_pending_commit == {"B"}
 
     def test_unseen_delay_trainer_stays_held_until_commit(self):
-        """R1 regression (07-15 fluxtune telemetry, trainer ...0449): a trainer's
-        FIRST-EVER dispatch in a run has no `_sim_known_delay_s` entry yet (it's
-        only learned from a trainer's OWN prior message), so `_sim_inflight_
-        expected` never gets one either -- deliberately, see test_train_staggered_
-        unseen_trainer_gets_no_gate_entry. Before this fix, `outstanding` read
-        only `_sim_inflight_expected | buffered`, so such a trainer was invisible
-        to it and got wiped from `all_selected` the moment ANY OTHER trainer's
-        commit triggered this reconcile -- selectable again seconds before its
-        own grad could possibly return (measured as `r1_inflight_overlap`'s
-        19.4%). `_sim_pending_commit` (added unconditionally at dispatch,
-        regardless of whether the delay is known) must keep it held instead.
+        """A trainer's first-ever dispatch has no `_sim_known_delay_s` entry
+        yet, so `_sim_inflight_expected` never gets one either (deliberate,
+        see test_train_staggered_unseen_trainer_gets_no_gate_entry). Before
+        this fix, `outstanding` only read `_sim_inflight_expected | buffered`,
+        so such a trainer was invisible to it and got wiped from
+        `all_selected` the moment any other trainer's commit triggered this
+        reconcile. `_sim_pending_commit` (added unconditionally at dispatch)
+        must keep it held instead.
         """
         agg = _residence_agg(residence=True)
         ch = _FakeSelChannel(["NEW", "B"])

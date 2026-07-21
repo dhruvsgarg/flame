@@ -21,13 +21,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Without this, CUDA's device enumeration order is driver-dependent and can
-# diverge from nvidia-smi's PCI-bus-ID order -- the aggregator's "spare Nth
-# GPU" pin (below) and the trainer pool's round-robin pin (spawner.py) both
-# select by raw CUDA ordinal, so a mismatch can silently land either role on
-# a different physical card than its index suggests (e.g. a card nvidia-smi
-# reports as unhealthy). Set before any torch.cuda call in this process; env
-# is inherited by every spawned aggregator/trainer subprocess.
+# Without this, CUDA's enumeration order can diverge from nvidia-smi's
+# PCI-bus-ID order, so a GPU pin by raw ordinal could silently land on the
+# wrong physical card. Must be set before any torch.cuda call; inherited by
+# spawned subprocesses.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 from flame.launch.aggregator_spawner import AggregatorSpawner
@@ -223,18 +220,14 @@ class ExperimentRunner:
             # to stderr (merged into _aggregator.log) before the process dies.
             os.environ.setdefault("PYTHONFAULTHANDLER", "1")
 
-            # CPU partition: pin the message-processing-bound aggregator away from
-            # trainers so they don't time-slice it. Core-ID pinning alone doesn't
-            # stop trainer memory traffic from saturating the aggregator's own
-            # NUMA node -- confirmed a real driver of the fwdllm sim/real gap via
-            # an n=15-vs-n=40 A/B (simulate_fwdllm.md §B). On >=2 NUMA nodes,
-            # trainers PREFER the other node(s) (full isolation up to their
-            # combined core count) and only SPILL onto the aggregator's node's
-            # remaining cores as overflow -- excluding the whole node outright
-            # would force >1 trainer/core once the trainer count exceeds one
-            # node's size (e.g. 100 trainers on a 64-core node), reintroducing
-            # the exact core-level contention this pinning exists to prevent.
-            # Single-node hosts fall back to the prior arbitrary-core-ID split.
+            # CPU partition: pin the message-processing-bound aggregator away
+            # from trainers so they don't time-slice it. Core-ID pinning alone
+            # isn't enough on >=2 NUMA nodes -- trainer memory traffic can still
+            # saturate the aggregator's own node -- so trainers prefer other
+            # node(s) first and only spill onto the aggregator's remaining
+            # cores as overflow, rather than excluding that node outright
+            # (which would force >1 trainer/core once the pool outgrows one
+            # node). Single-node hosts fall back to the prior core-ID split.
             reserved_cores: set = set()      # cores excluded from the trainer pool
             agg_pin_cores: set = set()       # cores the aggregator itself is pinned to
             trainer_core_order: list = []    # NUMA-preferred core order for trainers
@@ -295,7 +288,7 @@ class ExperimentRunner:
 
             # Dedicated aggregator GPU: prefer a visible ordinal outside gpu_ids
             # (fully idle); else the pool's last entry. gpu_ids overrides
-            # range(num_gpus) -- skips a known-bad ordinal (simulate_fwdllm.md §B).
+            # range(num_gpus) so a known-bad ordinal can be skipped.
             _num_gpus = exp.execution.num_gpus
             _gpu_ids = list(exp.execution.gpu_ids) if exp.execution.gpu_ids else list(range(_num_gpus))
             try:
@@ -311,9 +304,8 @@ class ExperimentRunner:
             else:
                 _agg_gpu = None
 
-            # Fail fast on a faulted GPU before spawning anything -- otherwise
-            # it surfaces as an obscure crash deep in whichever process lands
-            # on it (simulate_fwdllm.md §B, 07-21).
+            # Fail fast on a faulted GPU before spawning anything, rather than
+            # an obscure crash deep in whichever process lands on it.
             _gpu_pool = set(_gpu_ids)
             if _agg_gpu is not None:
                 _gpu_pool.add(_agg_gpu)
@@ -614,18 +606,13 @@ class ExperimentRunner:
         fan exp.trainer.availability.mode into hyperparameters.client_notify.trace
         as the final (highest-precedence) layer.
 
-        Single source of truth: exp.trainer.availability.mode only selects
-        which avl_events_* DATA a trainer loads -- it does NOT by itself decide
-        which trace check_and_update_state_avl() actually replays (that's
-        hyperparameters.client_notify.trace, a separate field a baseline can
-        hardcode, e.g. fluxtune's 3-tier mobiperf_3st_50 in baselines.yaml).
-        Left alone, a baseline default silently wins over an experiment's
-        syn_0 intent even though the data loaded IS clean syn_0 -- a real run
-        traced this to a trainer replaying a full mobiperf trace under a
-        nominal "syn_0, 100% availability" config (simulate_fwdllm.md §A,
-        2026-07-13). Same pattern as the training-delay fan in
-        _build_aggregator_config (#12); the aggregator-side analog
-        (trackTrainerAvail.trace) is fanned there.
+        exp.trainer.availability.mode only selects which avl_events_* data a
+        trainer loads; it does NOT decide which trace
+        check_and_update_state_avl() replays (hyperparameters.client_notify.trace,
+        a separate field a baseline can hardcode). Left unfanned, a baseline
+        default can silently override the experiment's intended availability
+        mode even though the right data loaded. Aggregator-side analog
+        (trackTrainerAvail.trace) is fanned in _build_aggregator_config.
 
         Returns (merged_dict, provenance) -- provenance maps each leaf path to
         the layer name that contributed it.
@@ -718,12 +705,9 @@ class ExperimentRunner:
             {"hyperparameters": _delay_fan},
         ))
 
-        # Same single-source-of-truth fan as the trainer-side client_notify.trace
-        # fix above (run_experiment(), "experiment.trainer.availability (fanned
-        # to client_notify)") -- trackTrainerAvail.trace is the aggregator-side
-        # analog (used by ORACULAR/HEARTBEAT tracking, e.g. fwdllm_plus) and is
-        # equally prone to a baseline default winning over the experiment's
-        # intended availability.mode.
+        # Aggregator-side analog of the client_notify.trace fan above:
+        # trackTrainerAvail.trace is equally prone to a baseline default
+        # winning over the experiment's intended availability.mode.
         layers.append((
             "experiment.trainer.availability (fanned to trackTrainerAvail)",
             {"hyperparameters": {"trackTrainerAvail": {"trace": exp.trainer.availability.mode}}},

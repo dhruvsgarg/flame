@@ -241,9 +241,8 @@ class TrainerSpawner:
             try:
                 _affinity = set(os.sched_getaffinity(0))
                 if core_order:
-                    # Caller-supplied preference order (e.g. NUMA-aware: other
-                    # node(s) first, aggregator's node as overflow) -- keep only
-                    # cores this process actually has, preserve the given order.
+                    # Caller-supplied preference order (e.g. NUMA-aware);
+                    # keep only cores this process has, preserve the order.
                     self._usable_cores = [c for c in core_order
                                           if c in _affinity and c not in self.reserved_cores]
                 else:

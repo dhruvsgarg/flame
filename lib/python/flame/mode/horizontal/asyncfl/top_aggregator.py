@@ -73,14 +73,12 @@ RECV_TIMEOUT_WAIT_S = 30
 # RECV_TIMEOUT_WAIT_S deadline and this pass cap so it never spins.
 _SIM_GATE_MAX_PASSES = 64
 # Gate slack: don't hold the commit for an in-flight trainer expected to complete
-# only marginally earlier (absorbs budget-estimate noise). Shared home is now
-# syncfl/top_aggregator.py (§6 Part 3, simulate_fwdllm.md §G) -- kept
-# as a re-export here since asyncfl/fwdllm_aggregator.py both import it as
-# `_SIM_ORDER_SLACK_S` from this module.
+# only marginally earlier (absorbs budget-estimate noise). Defined in
+# syncfl/top_aggregator.py; re-exported here since fwdllm_aggregator.py
+# imports it from this module too.
 
-# §M: poll cadence for a probe set with an unknown-delay end (drain_ready
-# can't block on timeout=None like recv_fifo can) -- the outer per-pass loop,
-# not this constant, is what actually waits until the delay is observed.
+# Poll cadence when an end's delay is unknown (drain_ready can't block on
+# timeout=None); the outer per-pass loop, not this constant, does the waiting.
 _SIM_GATE_POLL_TICK_S = 0.25
 
 
@@ -131,12 +129,11 @@ class TopAggregator(SyncTopAgg):
         # past-dating bucket and emits the withheld_delivery rung with the true delay.
         self._sim_withheld_delivering: dict = {}
         self._sim_enqueue_round = {}  # end -> round it entered the reorder buffer
-        # Virtual-completion gate: EXPECTED completion = dispatch vclock + the
-        # trainer's MODELED delay. Lets _sim_recv_min hold the clock at the
-        # earliest expected completion so it can't race past an update that
-        # virtually completed but isn't drained yet. §M: delay comes from the
-        # shared self._sim_known_delay_s cache -- no fallback; an unseen
-        # trainer has no gate entry (see _distribute_weights).
+        # Virtual-completion gate: expected completion = dispatch vclock +
+        # trainer's MODELED delay, so _sim_recv_min can't race past an update
+        # that virtually completed but hasn't drained. Delay comes from
+        # self._sim_known_delay_s; unseen trainers get no gate entry (see
+        # _distribute_weights).
         self._sim_inflight_expected: dict = {}   # end -> expected sim_completion_ts
 
         # Past-dating source attribution: which seed produced each past-dated commit
@@ -371,14 +368,10 @@ class TopAggregator(SyncTopAgg):
             # ends still pending ingestion this pass — drives the "nothing left to
             # commit and nothing in flight" loop-exit below (per ingestion path).
             _pending_ends = live_inflight
-            # §6 Part 3 (simulate_fwdllm.md §G), option 2: derive gate
-            # safety from CURRENT in-memory state, before this pass's ingest call.
-            # `_sim_gate_is_safe` mirrors the `earlier_stuck` check below exactly,
-            # just computed early. Still probing (rather than skipping outright)
-            # preserves the "eager-drain a physically-ready / near-ceiling
-            # straggler" behavior the ceiling-extension below exists for
-            # (TestGateProbesLiveInflight, test_async_sim_ordering.py) — only the
-            # BLOCKING wait shrinks, from the full per-trainer delay bound down to
+            # Derive gate safety from current in-memory state, before this
+            # pass's ingest call (mirrors `earlier_stuck` below, computed
+            # early). Still probes rather than skipping outright, so only the
+            # BLOCKING wait shrinks -- full per-trainer delay bound down to
             # one scheduling window.
             _pre_bmin = self._sim_buffer.peek_min_ts()
             _pre_inflight = [
@@ -395,7 +388,7 @@ class TopAggregator(SyncTopAgg):
                 # only on the genuinely-not-yet-arrived earlier-sct straggler.
                 if live_inflight:
                     probed = max(probed, len(live_inflight))
-                    # §M: exact bound when known; else a poll tick (drain_ready
+                    # Exact bound when known; else a poll tick (drain_ready
                     # can't block on timeout=None) -- the outer pass loop retries.
                     _timeout = self._sim_recv_timeout_s(live_inflight)
                     _fast_safe = _timeout is not None and self._sim_gate_is_safe(
@@ -438,7 +431,7 @@ class TopAggregator(SyncTopAgg):
                 _pending_ends = to_probe
                 if to_probe:
                     probed = max(probed, len(to_probe))
-                    # §M: exact bound when known; None to genuinely block.
+                    # Exact bound when known; None to genuinely block.
                     _timeout = self._sim_recv_timeout_s(to_probe)
                     _fast_safe = _timeout is not None and self._sim_gate_is_safe(
                         _pre_bmin, _pre_inflight
@@ -551,7 +544,7 @@ class TopAggregator(SyncTopAgg):
                 if not hasattr(self, "_sim_free_slot_ts"):
                     self._sim_free_slot_ts = deque(maxlen=128)
                 self._sim_free_slot_ts.append(self._vclock.now)
-        # Gate bookkeeping: trainer no longer in flight. §M: its MODELED_DELAY_S
+        # Gate bookkeeping: trainer no longer in flight; its MODELED_DELAY_S
         # was already learned into _sim_known_delay_s by _ingest above.
         self._sim_inflight_expected.pop(_end, None)
         _commit_gap = self._vclock.now - sct
@@ -942,7 +935,7 @@ class TopAggregator(SyncTopAgg):
                     f"process_s={_process}"
                 )
 
-                # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+                # MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
                 _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
                 if _budget_s > 0:
                     if self.simulated:
@@ -1613,10 +1606,9 @@ class TopAggregator(SyncTopAgg):
         # before selection. No-op unless oracle_utility_injection is enabled.
         self._inject_oracle_utilities(channel, task_to_perform)
 
-        # §M Step 3: route through the shared version_key vocabulary (base
-        # TopAggregator property, (round, 0) -- cifar10 has no intra-round
-        # iteration axis). No trainer_version_keys passed -> the selector's
-        # no-repeat guard stays inert here, same as before this rename.
+        # Route through the shared version_key vocabulary ((round, 0) --
+        # cifar10 has no intra-round iteration axis). No trainer_version_keys
+        # passed, so the selector's no-repeat guard stays inert, as before.
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                             agg_version_key=self.version_key)
         if not ends:
@@ -1691,7 +1683,7 @@ class TopAggregator(SyncTopAgg):
             if self.simulated:
                 _sst = _end_send_ts[end]
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
-                # §M: expected completion = dispatch vclock + this end's own
+                # Expected completion = dispatch vclock + this end's own
                 # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
                 _delay = self._sim_known_delay_s.get(end)
                 if _delay is not None:

@@ -1,19 +1,17 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Real's `_agg_pending_commit_ref` binding (simulate_fwdllm.md §B, 07-21).
+"""Real's `_agg_pending_commit_ref` binding.
 
 `_release_end_on_return`'s buffered=True path frees a trainer's channel slot
-as soon as its grad is buffered, but real had no selector-level guard to
-match sim's `_sim_pending_commit` -- the freed trainer was re-pickable before
-its contribution committed, wasting dispatches. Fix binds
-`_agg_pending_commit_ref` to `_per_agg_trainer_list` (real-only; sim's own
-binding is untouched) -- reuses the existing dedup-guard list, no new
-structure.
+as soon as its grad is buffered, but real had no selector-level guard
+matching sim's `_sim_pending_commit` -- the freed trainer was re-pickable
+before its contribution committed, wasting dispatches. Fix binds
+`_agg_pending_commit_ref` to `_per_agg_trainer_list` (real-only).
 
-Companion fix (same session): sim's own `_sim_pending_commit` guard was only
-reconciled by `_sim_hold_busy_slots` on OTHER commit/boundary events, not on
-this trainer's own receipt -- `TestSimPendingCommitSyncOnReceipt` covers the
-synchronous `.add(end)` closing that gap (cohort_sequence root cause).
+Companion fix: sim's `_sim_pending_commit` guard was only reconciled by
+`_sim_hold_busy_slots` on other commit/boundary events, not this trainer's
+own receipt -- `TestSimPendingCommitSyncOnReceipt` covers the synchronous
+`.add(end)` fix that closes that gap.
 """
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
@@ -123,10 +121,9 @@ class TestRealBindsPendingCommitRef:
 
     def test_sim_mode_does_not_touch_the_ref_here(self):
         """Sim's eligibility gate is bound separately (`_sim_hold_busy_slots`
-        -> `_sim_pending_commit`, a strict superset that also covers trainers
-        still computing, not just buffered). This code path must leave it
-        alone for sim, or it would clobber that richer set with the
-        narrower `_per_agg_trainer_list`."""
+        -> `_sim_pending_commit`, a superset also covering still-computing
+        trainers). This path must leave it alone for sim, or it would clobber
+        that richer set with the narrower `_per_agg_trainer_list`."""
         agg = _FakeAggregator(simulated=True)
         channel = _FakeChannel()
 
@@ -183,11 +180,9 @@ class TestBoundRefSurvivesInPlaceMutation:
 
 
 class TestSimPendingCommitSyncOnReceipt:
-    """Sim's `_sim_pending_commit` must exclude a trainer the INSTANT its
-    grad is buffered, not only after `_sim_hold_busy_slots` next runs (which
-    fires on OTHER commit/boundary events) -- else it stays wrongly
-    re-pickable for however many calls until that next event, which is what
-    grew cohort_sequence's real/sim pool divergence unbounded."""
+    """Sim's `_sim_pending_commit` must exclude a trainer the instant its grad
+    is buffered, not only after `_sim_hold_busy_slots` next runs on some other
+    event -- else it stays wrongly re-pickable until that event fires."""
 
     def test_end_added_to_sim_pending_commit_immediately(self):
         agg = _FakeAggregator(simulated=True)

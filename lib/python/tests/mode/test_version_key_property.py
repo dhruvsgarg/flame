@@ -1,11 +1,10 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""§M Step 1(a)/2/3: `version_key` is the shared step-identity property on the
-syncfl TopAggregator base (plain sync FL: no intra-round iteration axis).
+"""`version_key` is the shared step-identity property on the syncfl
+TopAggregator base (plain sync FL: no intra-round iteration axis).
 fwdllm_aggregator overrides it with (model_version, iteration_per_data_id) --
-data_id is NOT in the key since model_version bumps once per data-bin.
-asyncfl (async_cifar10's fedbuff/felix/oort baselines) does NOT override it --
-same 2-tuple vocabulary, iteration always 0 (Step 3).
+data_id is not in the key since model_version bumps once per data-bin.
+asyncfl does not override it -- same 2-tuple vocabulary, iteration always 0.
 """
 
 from flame.mode.horizontal.asyncfl.top_aggregator import (
@@ -52,6 +51,6 @@ def test_fwdllm_version_key_ignores_data_id_changes():
 
 
 def test_asyncfl_inherits_the_base_version_key_unoverridden():
-    # §M Step 3: async_cifar10's fedbuff/felix/oort baselines share the base
-    # (round, 0) vocabulary verbatim -- no asyncfl-specific override.
+    # async_cifar10's fedbuff/felix/oort baselines share the base (round, 0)
+    # vocabulary verbatim -- no asyncfl-specific override.
     assert AsyncTopAggregator.version_key is SyncTopAggregator.version_key

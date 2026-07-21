@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the `reselect_each_iteration` selection-granularity gate:
 per-round (False) selects once and reuses the same trainer set for the
-whole round; per-iteration (True, default) caches per version_key (§M),
-re-invoking the selector once per GENUINE (model_version, iteration)."""
+whole round; per-iteration (True, default) caches per version_key, re-invoking the
+selector once per GENUINE (model_version, iteration)."""
 
 import time
 
@@ -81,10 +81,9 @@ class _FakeAggregator:
 
 
 def _drive_two_databins_two_iterations(agg, channel):
-    """2 databins x 2 iterations each, within one round -- each inner
-    iteration bumps `iteration_per_data_id` and each databin bumps
-    `_model_version`, so every call carries a genuinely distinct
-    version_key (mirrors real fwdllm's (model_version, iteration) cadence)."""
+    """2 databins x 2 iterations each, within one round -- each iteration
+    bumps `iteration_per_data_id`, each databin bumps `_model_version`, so
+    every call carries a distinct version_key."""
     for _databin in range(2):
         for _iteration in range(2):
             agg.select(channel, "train")
@@ -187,9 +186,9 @@ class TestReselectGate:
 
 
 class TestPerIterationVersionKeyCache:
-    """§M: reselect_each_iteration=True caches per version_key -- repeated
-    calls within the SAME (model_version, iteration) reuse one
-    channel.ends() result instead of re-invoking the selector every tick."""
+    """reselect_each_iteration=True caches per version_key -- repeated calls
+    within the same (model_version, iteration) reuse one channel.ends()
+    result instead of re-invoking the selector every tick."""
 
     def test_repeat_calls_within_same_version_key_are_cached(self):
         agg = _FakeAggregator(reselect_each_iteration=True)

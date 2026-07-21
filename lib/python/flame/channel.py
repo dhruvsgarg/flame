@@ -190,7 +190,7 @@ class Channel(object):
         self,
         state: Union[None, str] = None,
         task_to_perform: str = "train",
-        agg_version_key: tuple = None,  # (model_version, iteration) -- shared vocabulary (§M)
+        agg_version_key: tuple = None,  # (model_version, iteration)
         trainer_version_keys: dict[str, tuple] = None,
         data_id: int = None,
     ) -> list[str]:
@@ -199,11 +199,9 @@ class Channel(object):
         Args:
             agg_version_key: Aggregator version_key
             trainer_version_keys: Map of trainer_id to their version_key
-            data_id: fwdllm's committed-data-bin progress axis. Deliberately NOT
-                part of version_key (§M) -- version_key's model_version already
-                identifies it 1:1, but callers that want it on selection
-                telemetry (progress_key() plotting, logical_parity.py's cohort-
-                size axis) must pass it explicitly.
+            data_id: Progress axis for selection telemetry. Not part of
+                version_key (model_version already implies it); pass
+                explicitly when a caller needs it.
         """
         logger.debug(
             f"ends() for channel name: {self._name}, "
@@ -678,9 +676,8 @@ class Channel(object):
                         f"[RECV_FIFO] Cannot receive message from end_id {end_id} - end not in channel"
                     )
                     return
-                # Downgraded INFO->DEBUG (simulate_fwdllm.md §G, 07-14): fired per
-                # end per lap under fwdllm's real-only num_min_req=1 clamp, ~10x/
-                # cycle, unread by any check/plot (425k lines/112MB in one run).
+                # DEBUG not INFO: fires ~10x/cycle per end, bloats logs (425k
+                # lines/112MB in one run).
                 logger.debug(
                     f"[RECV_FIFO] channel {self._name} awaiting get() on end_id {end_id} in self.ends"
                 )
@@ -904,10 +901,8 @@ class Channel(object):
         current_ts = datetime.now()
         self.set_end_property(end_id=end_id, key=END_LAST_AVAIL_TS, value=current_ts)
 
-        # Initial availability = AVL_TRAIN so a just-joined end is never read as
-        # UNKNOWN before the first selection stamps it (kills the startup transient
-        # in avail_composition). Only a default: _avail_stamp_end_states overwrites
-        # it per selection from the trace (aware); unaware runs keep AVL_TRAIN.
+        # Default AVL_TRAIN so a new end isn't read as UNKNOWN before its first
+        # selection; aware runs then overwrite it from the trace.
         self.set_end_property(
             end_id=end_id, key=PROP_AVL_STATE, value=TrainerAvailState.AVL_TRAIN
         )

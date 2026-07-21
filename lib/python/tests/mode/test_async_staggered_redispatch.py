@@ -160,8 +160,8 @@ class TestDistributeStagger:
         ends = ["e1", "e2", "e3"]
         ch = _DistChannel(ends)
         agg = _make_dist_agg(ch, staggered=True, free_slots=[91.0, 95.0, 98.0])
-        # §M: gate-expected completion is dispatch stamp + that end's OWN
-        # cached MODELED_DELAY_S (distinct per end, no cross-trainer fallback).
+        # gate-expected completion = dispatch stamp + that end's own cached
+        # MODELED_DELAY_S (no cross-trainer fallback).
         agg._sim_known_delay_s = {"e1": 12.0, "e2": 6.0, "e3": 20.0}
         agg._distribute_weights("tag", "train")
         assert _sent_ts(ch) == [91.0, 95.0, 98.0]          # distinct, spread
@@ -172,9 +172,8 @@ class TestDistributeStagger:
         assert ch.sent["e2"][MessageType.SIM_SEND_TS] == 95.0
 
     def test_train_staggered_unseen_trainer_gets_no_gate_entry(self):
-        # §M: no hardcoded seed, no cross-trainer fallback -- a trainer whose
-        # MODELED_DELAY_S has never been observed gets NO _sim_inflight_expected
-        # entry at all (the barrier waits on it genuinely instead of guessing).
+        # An unobserved MODELED_DELAY_S gets no _sim_inflight_expected entry
+        # (no hardcoded seed, no cross-trainer fallback).
         ends = ["e1", "e2", "e3"]
         ch = _DistChannel(ends)
         agg = _make_dist_agg(ch, staggered=True, free_slots=[91.0, 95.0, 98.0])

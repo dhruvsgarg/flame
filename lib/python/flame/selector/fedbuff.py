@@ -694,9 +694,8 @@ class FedBuffSelector(AbstractSelector):
                 f"Will pick cc: {cc} as min(candidates,concurrency) "
                 f"from candidates: {candidates}"
             )
-            # dict.fromkeys (not a bare set()): this function's RETURN is
-            # dispatch order, and set() iterates in str-hash order, randomized
-            # per-process by PYTHONHASHSEED independent of the seeded RNG.
+            # dict.fromkeys, not set(): this function's RETURN is dispatch
+            # order, and set() order is PYTHONHASHSEED-randomized per process.
             # self.selected_ends stays a set -- callers .remove()/.union() it.
             _dispatch_order = dict.fromkeys(self._pyrng.sample(sorted(candidates), cc))
             selected_ends = set(_dispatch_order)

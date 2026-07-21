@@ -75,12 +75,11 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
 
 
 class TestAsyncOortSendTimeoutDropsPendingCommitRef:
-    """R1 regression: once `_sim_hold_busy_slots` (fwdllm_aggregator.py) folds
-    `_agg_pending_commit_ref` into its own reconciliation, a trainer abandoned
-    here but left in that set would stay permanently un-re-pickable -- the
-    290s+ SEND_TIMEOUT_WAIT_S reclaim would appear to work (all_selected/
-    selected_ends clear) while the aggregator's virtual in-flight set quietly
-    keeps the slot occupied forever."""
+    """Once `_sim_hold_busy_slots` folds `_agg_pending_commit_ref` into its own
+    reconciliation, a trainer abandoned here but left in that set would stay
+    permanently un-re-pickable -- the SEND_TIMEOUT_WAIT_S reclaim would
+    appear to work (all_selected/selected_ends clear) while the aggregator's
+    virtual in-flight set quietly keeps the slot occupied forever."""
 
     @staticmethod
     def _stub_selector():
@@ -137,9 +136,9 @@ class TestAsyncOortSendTimeoutDropsPendingCommitRef:
 
 
 class TestAsyncOortSendTimeoutIsConfigurable:
-    """§R, 2026-07-11: the bare 90s constant evicted a genuinely-busy fwdllm
-    trainer as abandoned. `send_timeout_wait_s` is now configurable (getattr
-    fallback to the original constant, so existing baselines are unaffected)."""
+    """The bare 90s constant evicted a genuinely-busy fwdllm trainer as
+    abandoned. `send_timeout_wait_s` is now configurable (getattr fallback to
+    the original constant, so existing baselines are unaffected)."""
 
     @staticmethod
     def _stub_selector(send_timeout_wait_s):

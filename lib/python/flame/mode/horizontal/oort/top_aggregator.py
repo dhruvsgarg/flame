@@ -88,7 +88,7 @@ class TopAggregator(BaseTopAggregator):
         barrier_t0 = time.time()
         drained_all = True
         if to_probe:
-            # §M: exact per-end bound, or None to genuinely block.
+            # Exact per-end bound, or None to genuinely block.
             timeout = self._sim_recv_timeout_s(to_probe)
             for msg, md in channel.recv_fifo(
                 to_probe, first_k=len(to_probe), timeout=timeout
@@ -1000,7 +1000,7 @@ class TopAggregator(BaseTopAggregator):
                 f"queue_wait_s={_queue_wait} "
                 f"process_s={_process}"
             )
-            # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+            # MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
             _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
             if _budget_s > 0:
                 if self.simulated:

@@ -8,11 +8,9 @@ it to the same trainers every iteration because the WEIGHTS-vs-VAR=bad guard
 keyed off the return-driven `_trainer_last_model_version` map, which never marks
 an actively-training trainer current -> `is_stale` stays True -> full re-send.
 
-Landed as a config flag (simulate_fwdllm.md §G, 07-19), then validated 0%
-redundant weight-sends on a live pair and promoted to unconditional aggregator
-behavior (§G, 07-19 pm) -- a trainer that already has the current
-version_key/model_version's weights is never re-sent them, full stop, as an
-invariant of the version-tracking logic, not an opt-in.
+Promoted from a config flag to unconditional aggregator behavior: a trainer
+that already has the current version_key/model_version's weights is never
+re-sent them, full stop, as an invariant, not an opt-in.
 
 `_should_send_full_weights` is the SHARED decision used by both the sync and the
 async distribute loops (their parity is the regression guard). These tests pin:

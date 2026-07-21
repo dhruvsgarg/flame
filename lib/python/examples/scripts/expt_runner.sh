@@ -209,17 +209,11 @@ expt_launch() {
     EXPT_LAST_CONVERGE_JSON="$cj"; export EXPT_LAST_CONVERGE_JSON
   fi
 
-  # Unconditional wall-clock BACKSTOP watchdog. budget_s (--max-runtime-s) is
-  # ALSO enforced INSIDE the aggregator (self-stop via _check_early_stop_conditions),
-  # but that self-stop has DOCUMENTED failure modes (fwdllm real-mode MQTT hangs,
-  # simulate_fwdllm.md §A -- a hang stuck at MQTT join or gone silent post-dispatch
-  # never reaches the training loop where the self-stop check would fire at all).
-  # Without an EXTERNAL timeout, a hung run blocks `wait "$run_pid"` below FOREVER,
-  # which blocks every subsequent run in a run_sequential.sh sequence -- exactly
-  # what this backstop exists to prevent. Fires only when budget_s>0; waits
-  # EXPT_BUDGET_GRACE_S past budget_s so a clean self-stop (or the convergence
-  # watcher above, if active) wins the race under normal operation -- this is a
-  # backstop for "never self-stopped", not a replacement for the aggregator's cap.
+  # Wall-clock backstop watchdog: the aggregator's own self-stop (budget_s) can
+  # fail to fire on a hang that never reaches the training loop, which would
+  # block `wait "$run_pid"` forever and stall the whole run sequence. Fires
+  # only when budget_s>0, after EXPT_BUDGET_GRACE_S grace so a clean self-stop
+  # wins the race under normal operation.
   local watchdog_pid="" timeout_marker="$logdir/.timeout_${label}"
   rm -f "$timeout_marker"
   if [ "$budget_s" -gt 0 ]; then
@@ -361,11 +355,8 @@ expt_assert_run() {
     elif [ "${EXPT_LAST_STALLED:-0}" = "1" ]; then status="STALLED"
     else status="DID_NOT_CONVERGE"; fi
   fi
-  # Backstop watchdog fired (expt_launch): the run never self-stopped at its
-  # budget (a hang, e.g. the documented fwdllm real-mode MQTT hangs) and had to
-  # be force-killed so the sequence could continue. Takes priority -- "we had to
-  # force-kill this" is the operationally load-bearing fact; agg/crash counts
-  # above still print for diagnosis.
+  # Backstop watchdog fired (expt_launch): run never self-stopped and had to be
+  # force-killed. Takes priority over other verdicts below.
   [ "${EXPT_LAST_TIMED_OUT:-0}" = "1" ] && status="TIMEOUT_KILLED"
   EXPT_LAST_HEALTH="$status"; export EXPT_LAST_HEALTH
   printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s (%s agg log(s))\n" \

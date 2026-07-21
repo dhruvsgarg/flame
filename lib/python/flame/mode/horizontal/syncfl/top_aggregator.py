@@ -93,12 +93,10 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
 _NETWORK_SLACK_S = 2.0
 
-# Gate slack: don't hold a commit for an in-flight trainer expected to complete
-# only marginally earlier than the buffered minimum (absorbs budget-estimate
-# noise). Shared home for `_sim_gate_is_safe` below (§6 Part 3,
-# simulate_fwdllm.md §G) and asyncfl's/fwdllm's own `earlier_stuck`
-# gates, which import this constant (asyncfl/top_aggregator.py re-exports it
-# for that reason -- keep this the single source of truth, not a duplicate).
+# Gate slack: don't hold a commit for an in-flight trainer expected to
+# complete only marginally earlier than the buffered minimum (absorbs
+# budget-estimate noise). Shared by `_sim_gate_is_safe` below and asyncfl's/
+# fwdllm's `earlier_stuck` gates; keep this the single source of truth.
 _SIM_ORDER_SLACK_S = 2.0
 
 # Startup join barrier: how long to wait for the trainer cohort to join before
@@ -235,7 +233,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
 
-        # §M: shared per-trainer delay cache (end -> MODELED_DELAY_S). No
+        # Shared per-trainer delay cache (end -> MODELED_DELAY_S). No
         # cross-trainer fallback -- an unseen end has no entry.
         self._sim_known_delay_s: dict = {}
 
@@ -265,12 +263,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     def vclock_now(self) -> float | None:
         """Virtual-clock reading, sim mode only -- `None` in real mode.
 
-        There is no virtual clock in real mode (nothing is virtualized;
-        wall-clock IS the clock), so this stays `None` there rather than
-        aliasing wall-clock under the `vclock` name -- that would make any
-        vclock-vs-wall-clock speedup comparison vacuous (simulate_fwdllm.md
-        §N). Centralizes the `self.simulated` check so callers (telemetry,
-        phase timers, log lines) never need to write it themselves.
+        Real mode has no virtual clock (wall-clock IS the clock), so this
+        stays `None` rather than aliasing wall-clock, which would make any
+        vclock-vs-wall-clock comparison vacuous. Centralizes the
+        `self.simulated` check so callers don't repeat it.
         """
         return self._vclock.now if self.simulated else None
 
@@ -374,22 +370,16 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_overhead_cum = getattr(self, "_sim_overhead_cum", 0.0) + max(0.0, overhead)
         self._sim_sct_adv_cum = getattr(self, "_sim_sct_adv_cum", 0.0) + max(0.0, from_sct)
 
-    # §M: replaces the old reactive-EMA grace ceiling with exact per-trainer
-    # knowledge. `_note_sim_known_delay` is the write site; `_sim_recv_timeout_s`
-    # is the read side used by the recv/barrier call sites below.
+    # Replaces the old reactive-EMA grace ceiling with exact per-trainer
+    # knowledge; `_note_sim_known_delay` writes it, `_sim_recv_timeout_s` reads it.
     _SIM_RECV_MARGIN_S = 0.5
 
-    # §6 Part 3 (simulate_fwdllm.md §G), option 2: when
-    # `_sim_gate_is_safe` has already proven the buffered minimum is committable
-    # from in-memory state alone, the ingest call this pass only needs to catch
-    # anything that is ALREADY sitting in a queue (or lands within a couple of
-    # asyncio scheduling ticks) -- not wait out the full per-trainer delay bound.
-    # Non-zero (not 0) because `channel.recv_fifo`'s real-mode timeout races an
-    # asyncio future across threads (`concurrent.futures.Future.result(0)` can
-    # spuriously time out before the background loop even runs the coroutine);
-    # this gives it one scheduling window while staying orders of magnitude
-    # below the multi-second blocking waits it replaces (measured mean 2.09s,
-    # p90 4.1s, max 12.4s -- §3.1 of the plan doc).
+    # When `_sim_gate_is_safe` proves the buffered minimum is committable from
+    # in-memory state alone, this pass only needs to catch what's already
+    # queued -- not wait the full per-trainer delay bound. Non-zero (not 0)
+    # because recv_fifo's real-mode timeout races an asyncio future across
+    # threads and can spuriously time out at exactly 0; one scheduling window
+    # is enough, and stays orders of magnitude below the waits it replaces.
     _SIM_GATE_FAST_PROBE_TIMEOUT_S = 0.01
 
     def _note_sim_known_delay(self, end, msg) -> None:
@@ -413,27 +403,20 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
 
     def _sim_gate_is_safe(self, bmin, inflight_items) -> bool:
-        """True iff the buffered minimum `bmin` is provably safe to commit
-        right now, using only already-known state (the deterministic delay
-        cache) -- zero real-time wait needed (§6 Part 3,
-        simulate_fwdllm.md §G).
+        """True iff buffered minimum `bmin` is safe to commit now, using only
+        already-known state (no real-time wait needed).
 
-        `inflight_items` is an iterable of (end, exp) for not-yet-buffered,
-        not-yet-committed in-flight ends the caller has already filtered
-        (baseline-specific: phantom-skip for fwdllm, none for felix). `exp`
-        must be `None` for an end whose delay isn't cached yet (mirrors
-        `_sim_recv_timeout_s`'s None-if-unseen convention) -- such an end
-        forces the conservative False, since its true completion can't be
-        reasoned about without ingesting it.
+        `inflight_items` is (end, exp) pairs for in-flight ends not yet
+        buffered/committed, pre-filtered by the caller. `exp` is `None` for
+        an end whose delay isn't cached yet, which forces the conservative
+        `False` (mirrors `_sim_recv_timeout_s`'s None-if-unseen convention).
 
-        Returns False (conservative -- caller must fall through to the
-        unchanged blocking ingest-then-recheck path) if `bmin` is None, or
-        any item's `exp` is None. Otherwise True iff no known in-flight end
-        is expected to complete before `bmin` (mirrors the `earlier_stuck`
-        check both `_sim_recv_min` and `_sim_recv_min_grad` already compute
-        AFTER their blocking ingest call -- this is the identical computation,
-        just made available BEFORE it so a provably-safe pass can skip the
-        real-time wait entirely)."""
+        Returns False if `bmin` is None or any item's `exp` is None --
+        caller falls through to the normal blocking ingest-then-recheck path.
+        Otherwise True iff no known in-flight end is expected to complete
+        before `bmin` (same check `_sim_recv_min`/`_sim_recv_min_grad`
+        already do after ingest; this makes it available before, so a
+        provably-safe pass can skip the wait)."""
         if bmin is None:
             return False
         min_stuck = None
@@ -473,7 +456,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
-            # §M: exact per-end bound, or None to genuinely block.
+            # Exact per-end bound, or None to genuinely block.
             timeout = self._sim_recv_timeout_s(ends)
             for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
                 if not msg:  # no more ready (bound expired or set drained)
@@ -729,7 +712,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     f"queue_wait_s={_queue_wait} "
                     f"process_s={_process}"
                 )
-                # §M: MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+                # MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
                 _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
                 if _budget_s > 0:
                     if self.simulated:
@@ -1183,8 +1166,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # 2). Piggyback the final vclock on this broadcast (reaches every
         # connected end regardless of dispatch state) as a last wake-up for
         # _refresh_avl_state() to flush queued transitions before exit.
-        # Unconditional on `simulated` (§G 07-20): the old `trainer_event_dict`
-        # gate left non-avail-trace runs' final task_recv null for no reason.
+        # Unconditional on `simulated`: the old `trainer_event_dict` gate left
+        # non-avail-trace runs' final task_recv null for no reason.
         if self.simulated:
             payload[MessageType.SIM_SEND_TS] = self._avail_now()
         channel.broadcast(payload)

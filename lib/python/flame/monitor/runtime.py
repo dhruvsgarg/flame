@@ -21,9 +21,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Wall-seconds spent inside cyclic-GC collections, accumulated process-wide
-# via gc.callbacks. Lets timer_decorator attribute a call's wall time to a
-# GC pause landing inside its window (simulate_fwdllm.md §B).
+# Wall-seconds spent in cyclic-GC collections, accumulated process-wide via
+# gc.callbacks, so timer_decorator can attribute a GC pause to the call it
+# landed in.
 _gc_pause_accum_s = 0.0
 _gc_pause_start = None
 
@@ -48,11 +48,8 @@ def timer_decorator(func):
         logger.debug("Inside timer_decorator wrapper")
         self = args[0]  # TopAggregator or Trainer -- both expose vclock_now
 
-        # vclock_now is a property on both base classes (simulate_fwdllm.md §N):
-        # None in real mode (there is no virtual clock there), a float in sim
-        # mode. getattr is defensive only for a `self` that's neither (e.g. a
-        # free function wrapped by mistake) -- not a mode branch, there is
-        # exactly one such branch and it lives inside the property itself.
+        # vclock_now: None in real mode, a float in sim mode. getattr is only
+        # defensive against a `self` with no such property, not a mode branch.
         vclock_start = getattr(self, "vclock_now", None)
         start = time.time()
         cpu_start = time.thread_time()
@@ -63,15 +60,12 @@ def timer_decorator(func):
         gc_pause_s = _gc_pause_accum_s - gc_pause_before
         vclock_end = getattr(self, "vclock_now", None)
         duration = end - start
-        # Thread-local CPU vs wall time, for agg_step_timing_breakdown's
-        # contention-vs-compute diagnostic (simulate_fwdllm.md §G 07-20). MUST
-        # be `thread_time()`, not `process_time()` -- the latter sums ALL
-        # threads and silently picks up the aggregator's backgrounded eval
-        # thread (confirmed: ~7-8x inflation on both real and sim alike).
+        # Thread-local CPU time, for contention-vs-compute diagnostics. Must
+        # be thread_time(), not process_time() -- the latter sums all threads
+        # and picks up the backgrounded eval thread (~7-8x inflation).
         cpu_duration = cpu_end - cpu_start
-        # Meaningful delta on the aggregator (vclock ticks live there);
-        # usually 0 on a trainer (vclock_now is a snapshot between messages,
-        # see Trainer.vclock_now) -- both are correct, not a bug.
+        # Meaningful on the aggregator (vclock ticks live there); usually 0 on
+        # a trainer (vclock_now is a snapshot between messages) -- both correct.
         vclock_delta = (
             vclock_end - vclock_start
             if vclock_start is not None and vclock_end is not None

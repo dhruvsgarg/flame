@@ -1,15 +1,12 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""S1 (fluxtune_contributions.md §8.2): server-side momentum damping on the raw
-per-parameter SGD update direction, gating the undamped direct-SGD step (F8)
-implicated in the random-walk/position-locked-collapse instability there.
-`_server_update_step` is the PURE transform (reads/writes only
-`server_momentum`/`_server_momentum_buf`) driven from FedSGDAggregator.
-aggregate()'s two update sites (natural commit + force-commit/MaxIterBypass --
-both call it identically). These tests pin:
+"""Server-side momentum damping on the raw per-parameter SGD update
+direction, gating the undamped direct-SGD step implicated in training
+instability. `_server_update_step` is the PURE transform (reads/writes only
+`server_momentum`/`_server_momentum_buf`), called identically from both of
+FedSGDAggregator.aggregate()'s update sites. These tests pin:
 (1) momentum=0.0 (default) is byte-identical: returns `raw_update` unchanged,
-    no buffer created -- the shared-code path all 3 baselines run stays
-    unmodified unless `hyperparameters.server_momentum` is set;
+    no buffer created;
 (2) momentum>0 applies heavy-ball recursion across successive commits;
 (3) buffers are independent per parameter index;
 (4) the returned buffer is a clone, not an alias of the caller's tensor.

@@ -86,11 +86,10 @@ class _FakeAggregator:
 
     process = TopAggregator._process_aggregation_goal_met
     _replay_buffered_cohort_contribs = TopAggregator._replay_buffered_cohort_contribs
-    # §6 Part 6 (simulate_fwdllm.md §G): eval_model() is now
-    # snapshotted + backgrounded via the shared _eval_snapshot_model. With
-    # self.model = None here, the snapshot gracefully fails (caught inside
-    # _eval_snapshot_model) and returns None, so no eval thread launches --
-    # fine, this fixture only exercises the round-rollover/work_done logic.
+    # eval_model() is snapshotted + backgrounded via _eval_snapshot_model.
+    # With self.model = None here, the snapshot fails gracefully and returns
+    # None, so no eval thread launches -- fine, this fixture only exercises
+    # round-rollover/work_done logic.
     _eval_snapshot_model = TopAggregator._eval_snapshot_model
 
 

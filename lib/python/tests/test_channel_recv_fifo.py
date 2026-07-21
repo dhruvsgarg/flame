@@ -233,14 +233,12 @@ class TestRecvFifoSimPattern:
             self._stop_loop(loop, thread)
 
     def test_fast_path_probe_timeout_bounds_real_wall_time(self):
-        """§6 Part 3 (simulate_fwdllm.md §G), option 2: the sim gate's
-        safe-fast-path uses a near-zero timeout (`_SIM_GATE_FAST_PROBE_TIMEOUT_S`
-        = 0.01s) instead of the full per-trainer bound when it has already
-        proven the buffered minimum is committable. This is the channel-level
-        confirmation that a quiet end probed at that tiny timeout actually
-        returns near-instantly (not stalling for anywhere near Bug A's measured
-        multi-second waits, mean 2.09s / p90 4.1s / max 12.4s, §3.1) and does
-        not leak the active-task bookkeeping."""
+        """The sim gate's safe-fast-path uses a near-zero timeout
+        (`_SIM_GATE_FAST_PROBE_TIMEOUT_S` = 0.01s) instead of the full
+        per-trainer bound once it has proven the buffered minimum is
+        committable. Channel-level confirmation that a quiet end probed at
+        that tiny timeout returns near-instantly and doesn't leak the
+        active-task bookkeeping."""
         loop, thread = self._start_loop()
         try:
             ch = self._make_channel(loop, ["quiet"])

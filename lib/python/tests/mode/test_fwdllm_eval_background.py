@@ -1,34 +1,26 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""§6 Part 6 (simulate_fwdllm.md §G): fwdllm's eval_model() used to run
-synchronously, inline, on the aggregator's critical path -- stalling both
-aggregation dispatch and trainer idle time on every data_id boundary. It is now
+"""eval_model() used to run synchronously on the aggregator's critical path,
+stalling dispatch and trainer idle time on every data_id boundary. It's now
 backgrounded on a daemon thread (mirroring async_cifar10's evaluate()), which
-first required fixing a real race: eval_model() used to reassign
-self.fmodel/self.params/self.buffers via fc.make_functional_with_buffers(
-self.model) -- the SAME three attributes the main training path assigns right
-before self.aggregate() on every cycle. Two threads racing on those would be a
-silent wrong-gradient-corruption risk, not just a crash risk.
+required fixing a real race: eval_model() used to reassign
+self.fmodel/self.params/self.buffers via fc.make_functional_with_buffers() --
+the SAME three attributes the main training path reassigns right before
+self.aggregate() every cycle. Two threads racing on those risked silent
+gradient corruption, not just a crash.
 
-This file drives the REAL eval_model()/`_eval_snapshot_model` (not stubs) end
-to end with a tiny real nn.Module, to prove:
+Drives the real eval_model()/`_eval_snapshot_model` (not stubs) to prove:
 
 1. eval_model() no longer touches self.fmodel/self.params/self.buffers at all
-   (the fix was to delete that dead assignment, not relocate it to locals --
-   its own (fmodel, params, buffers) output was never read anywhere in
-   eval_model()'s body, confirmed by reading
-   torch._functorch.make_functional.FunctionalModuleWithBuffers._create_from,
-   which deep-copies internally and never mutates the model passed in).
-2. A background eval genuinely running concurrently with the main thread
-   reassigning those same three attributes (the actual training-path pattern)
-   does not corrupt the main thread's assignment.
-3. The snapshot _eval_snapshot_model() hands to the background thread reflects
-   the model AS OF the snapshot call, even if self.model mutates further while
-   the eval thread is still running.
+   (that assignment was dead code -- its output was never read).
+2. A background eval running concurrently with the main thread's reassignment
+   of those same attributes does not corrupt it.
+3. The snapshot `_eval_snapshot_model()` hands to the background thread
+   reflects the model as of the snapshot call, even if self.model mutates
+   further while eval is still running.
 
-Only the CUDA-memory-logging plumbing (log_memory/_force_cuda_memory_cleanup)
-is stubbed -- irrelevant to the race under test and not portable to a
-GPU-less CI runner.
+Only CUDA-memory-logging plumbing (log_memory/_force_cuda_memory_cleanup) is
+stubbed -- not portable to a GPU-less CI runner.
 """
 
 import threading
@@ -84,12 +76,10 @@ class _FakeEvalAggregator:
         tensors = [filler, input_ids, filler, filler, labels]
 
         class _TestGlobal:
-            """eval_model() passes self.test_global itself (not .dataset) to
-            compute_metrics_with_logging, which iterates it as a DataLoader-
-            like batch source purely for a debug log line. Empty iteration is
-            enough to make that debug helper a no-op without needing a real
-            DataLoader here -- irrelevant to the race/snapshot behavior under
-            test in this file."""
+            """eval_model() passes self.test_global (not .dataset) to
+            compute_metrics_with_logging, which iterates it for a debug log
+            line -- empty iteration is enough to no-op that, unrelated to
+            this file's race/snapshot behavior."""
 
             dataset = _FakeEvalDataset(tensors, n)
             examples = None
@@ -137,10 +127,8 @@ class TestEvalModelNoLongerTouchesSharedState:
 
 
 class TestBackgroundedEvalRaceSafety:
-    """The race-safety test: a backgrounded eval must never corrupt the main
-    thread's concurrent self.fmodel/self.params/self.buffers assignment --
-    this is the test that would have caught the race before it ever reached a
-    real run."""
+    """A backgrounded eval must never corrupt the main thread's concurrent
+    self.fmodel/self.params/self.buffers assignment."""
 
     def test_concurrent_main_thread_assignment_survives_background_eval(self):
         agg = _FakeEvalAggregator(n=64)  # a few batches, so the thread runs a beat

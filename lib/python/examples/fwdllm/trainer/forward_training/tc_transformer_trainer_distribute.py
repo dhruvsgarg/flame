@@ -49,18 +49,10 @@ def _calculate_hash(tensor):
 def _stage_timer(owner, name: str, extra: dict = None):
     """Emit a `step_timing` record for a named wall phase of the training step.
 
-    timer_decorator can't do this: it does `self = args[0]` and only emits when
-    that carries `fwd_llm_stage`, but every helper inside `_train_one_batch` is
-    a nested function whose first arg is `device` -- so the batch interior was
-    invisible in telemetry. Same event shape as timer_decorator, so the
-    `step_timing_breakdown` rung and the phase-CDF plots read these for free.
-    `tb_` prefix keeps the family greppable and collision-free.
-
-    `extra` (simulate_fwdllm.md §B P2-6): optional dict of additional fields
-    merged into the emitted record -- e.g. `tb_prepare_perturbation`'s
-    branch-taken, so the KS-gap investigation can correlate duration against
-    it directly from this one event instead of joining two streams.
-    """
+    timer_decorator can't be used here: it needs `self = args[0]` to carry
+    `fwd_llm_stage`, but the helpers inside `_train_one_batch` are nested
+    functions whose first arg is `device`. `extra` merges additional fields
+    into the emitted record (e.g. which branch was taken)."""
     t0 = time.time()
     try:
         yield
@@ -85,13 +77,10 @@ def _stage_timer(owner, name: str, extra: dict = None):
 
 
 def _perturb_audit_enabled() -> bool:
-    """Is the perturbation determinism audit ([RNG_FINGERPRINT] + the rolling
-    candidate_v hash) wanted this run?
-
-    These sha256 every 10x perturbation tensor and the whole 67M-param model --
-    together ~10x the cost of the JVP they audit -- so they can't ride along
-    unconditionally. Opt in with FWDLLM_PERTURB_AUDIT=1, or by enabling DEBUG.
-    """
+    """Whether the perturbation determinism audit ([RNG_FINGERPRINT] + rolling
+    candidate_v hash) is wanted this run. Opt-in only: it sha256s every 10x
+    perturbation tensor and the whole model, ~10x the cost of the JVP it audits.
+    Enable with FWDLLM_PERTURB_AUDIT=1, or DEBUG logging."""
     if os.environ.get("FWDLLM_PERTURB_AUDIT", "").strip().lower() in ("1", "true", "yes"):
         return True
     return logging.getLogger().isEnabledFor(logging.DEBUG)
@@ -143,10 +132,8 @@ def _randn_wrapper(
     else:
         gen = generator
 
-    # f-string args evaluate BEFORE logging.debug() checks the level, so both
-    # hashes ran on every call with DEBUG off: 12.3us of hashing to guard a
-    # disabled log line vs 5.7us of actual RNG work, once per model parameter
-    # per perturbation pass.
+    # f-string args evaluate before logging.debug() checks the level, so gate
+    # explicitly: both hashes otherwise run on every call even with DEBUG off.
     _dbg = logging.getLogger().isEnabledFor(logging.DEBUG)
     pre_state = _rng_state_hash(gen) if _dbg else None
 
@@ -286,12 +273,11 @@ class ForwardTextClassificationTrainer:
 
     def _warmup_gpu_kernels(self):
         """Throwaway forward pass before round 1, to absorb CUDA/cudnn kernel-
-        compile cost outside the timed window (simulate_fwdllm.md FT
-        cohort_sequence deep-dive). Plain forward, not the JVP pipeline --
-        doesn't touch RNG state or model weights, never blocks startup.
-        Call only from trainer/main.py -- calling this on the aggregator's
-        own ForwardTextClassificationTrainer instance moves its model to GPU
-        too early and crashes `_apply_weighted_update` (device mismatch)."""
+        compile cost outside the timed window. Plain forward, not the JVP
+        pipeline -- doesn't touch RNG state or model weights. Call only from
+        trainer/main.py: calling this on the aggregator's own trainer instance
+        moves its model to GPU too early and crashes `_apply_weighted_update`
+        (device mismatch)."""
         if self.device.type != "cuda":
             return
         try:
@@ -361,19 +347,9 @@ class ForwardTextClassificationTrainer:
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
 
-    @timer_decorator
-    # Removed 2026-07-15: the unreachable `_select_optimal_perturbations` and
-    # `_setup_training_state` METHODS lived here (103 lines). Nothing ever called
-    # them -- `_train_one_batch` defines and calls its own nested copies, which
-    # are the live ones. They were stale forks that had drifted from the live
-    # code (e.g. they still gated on `self.grad is not None`), so every read of
-    # this file had to first work out which of three near-identical copies
-    # actually runs. Deleted rather than left to rot further.
-
-
-
-    @timer_decorator
-
+    # Removed dead code: `_select_optimal_perturbations`/`_setup_training_state`
+    # were unreachable, stale forks -- `_train_one_batch` uses its own live
+    # nested copies.
     @timer_decorator
     def _train_one_batch(self, device, batch, epoch, batch_idx, logging_state):
         @timer_decorator
@@ -387,10 +363,8 @@ class ForwardTextClassificationTrainer:
                     logging.info(f"data_id_iteration {logging_state.get('iteration')} - resetting")
                 
                 if self.args.var_control:
-                    # 126 CPU-tensor clones of the full 67M-param grad shape
-                    # (old_grad arrives from the aggregator on CPU); ~51ms in
-                    # the offline profile, and only on odd data_ids (old_grad is
-                    # None on even ones -- fwdllm_trainer.py `data_id % 2`).
+                    # Full grad-shape clone (old_grad arrives from the aggregator
+                    # on CPU); only on odd data_ids (old_grad is None on even ones).
                     with _stage_timer(self, "tb_grad_clone"):
                         self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
 
@@ -398,34 +372,28 @@ class ForwardTextClassificationTrainer:
                 v_buffer = {}
                 all_perturbations_hash = ""
                 index = 0
-                # [RNG_FINGERPRINT] is a determinism tool, not run telemetry:
-                # it costs a full sha256 walk of every 10x candidate_v, so it is
-                # opt-in. Off, the fingerprints report "off" rather than lying.
+                # [RNG_FINGERPRINT] is opt-in: sha256s every 10x candidate_v,
+                # too costly to run unconditionally.
                 _perturb_audit = _perturb_audit_enabled()
                 rng_before = _torch_rng_fingerprint(self.torch_rng) if _perturb_audit else "off"
                 for k, v in self.model.named_parameters():
                     if v.requires_grad:
                         self.total_rng_iter += 1
                         shape = v.shape
-                        # perturbation_count(10) x this param, drawn on CPU then
-                        # moved to device downstream. ~40ms/batch offline across
-                        # the 26 trainable tensors.
+                        # perturbation_count(10) candidates for this param, drawn
+                        # on CPU then moved to device downstream.
                         with _stage_timer(self, "tb_perturb_draw_cpu"):
                             candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
                             candidate_v = torch.flatten(candidate_v, start_dim=1)
-                        # Dropped a per-trainable-tensor INFO of the constant
-                        # perturbation_count (26 x 4902 = 127k lines/run, the bulk
-                        # of the 184-219MB trainer logs). Both hashes below walk
-                        # the full 10x tensor and are audit-only.
+                        # Both hashes below walk the full 10x tensor; audit-only,
+                        # gated to avoid the log volume.
                         if _perturb_audit:
                             logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                             all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
                         if not self.select_perturbation_using_jvp and self.grad is not None:
-                            # cosine-sim rank of the 10 candidates against the
-                            # carried grad -- runs on CPU (calculate_cos_sim's
-                            # `.to(device)` is commented out and old_grad arrives
-                            # on CPU), ~54ms/batch offline.
+                            # Cosine-sim rank of the 10 candidates against the
+                            # carried grad; runs on CPU (old_grad arrives on CPU).
                             with _stage_timer(self, "tb_cos_sim_select"):
                                 target_grad = self.grad[index]
                                 target_grad = torch.flatten(target_grad)
@@ -478,11 +446,8 @@ class ForwardTextClassificationTrainer:
                     best_idx = -1
                     logging.info(f"Databin best jvp so far: {self.databin_best_jvp_val} - best this iteration: {abs(sorted_jvps[-1])}")
                 else:
-                    # Draw from the client's dedicated, client_idx-seeded
-                    # torch_rng -- NOT np.random.choice (process-global,
-                    # unseeded on the trainer side; would silently break
-                    # real<->real / real<->sim reproducibility the moment
-                    # select_perturbation_using_jvp=True is exercised).
+                    # Use the client-seeded torch_rng, not np.random.choice
+                    # (process-global, unseeded here) -- would break reproducibility.
                     pair = [sorted_indices[-1], sorted_indices[-2]]
                     pick = int(torch.randint(0, 2, (1,), generator=self.torch_rng).item())
                     best_idx = pair[pick]
@@ -663,14 +628,9 @@ class ForwardTextClassificationTrainer:
             v_params = self.databin_best_v_params
             logging.debug("Using global best, not using a new perturbation.")
         else:
-            # P2-6 (simulate_fwdllm.md §B): same branch condition
-            # _prepare_perturbation_tensors itself gates on -- computed here
-            # (not returned from the function, which has a second, differently
-            # -attributed call site at _select_optimal_perturbations) so the
-            # KS-gap investigation can split real-vs-sim duration by branch.
-            # Concurrent-trainer density is derived post-hoc from the existing
-            # trainer_round gpu_pass_start_wall/end_wall windows (same method
-            # as measure_agg_overlap.py) -- no new field needed for that.
+            # Mirrors _prepare_perturbation_tensors' own gate; computed here (not
+            # returned) since that function has a second call site with a
+            # different attribution, at _select_optimal_perturbations.
             _tb_branch = (
                 "cached" if (self.args.perturbation_sampling and v_buffer != {})
                 else "fresh"
@@ -683,9 +643,8 @@ class ForwardTextClassificationTrainer:
             with _stage_timer(self, "tb_deepcopy_best_v"):
                 self.databin_best_v_params = copy.deepcopy(v_params)
         # Determinism-audit only: _calculate_hash pulls each tensor GPU->CPU and
-        # sha256s it, so ungated these hashed the whole 67M-param model twice per
-        # batch (~1050ms) against a ~10ms JVP. Reading a tensor can't perturb it,
-        # so gating is numerically inert.
+        # sha256s the whole model, too costly to run unconditionally. Reading a
+        # tensor can't perturb it, so gating is numerically inert.
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
             logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
@@ -699,9 +658,8 @@ class ForwardTextClassificationTrainer:
                 and best_idx in getattr(self, "_sel_jvp_cache", {})):
             loss, jvp = self._sel_jvp_cache[best_idx]
         else:
-            # THE MATH: calculate_jvp = 2 autocast forward passes (finite
-            # difference), ~10ms offline. Everything else in this batch is
-            # scaffolding around it.
+            # calculate_jvp = 2 autocast forward passes (finite difference);
+            # everything else in this batch is scaffolding around it.
             with _stage_timer(self, "tb_forward_jvp"):
                 loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
         # 3 diagnostic-only passes: their losses ONLY feed the log below (never
@@ -813,10 +771,8 @@ class ForwardTextClassificationTrainer:
         Even though this seems to not affect training, this is commented as we're not sure how the model trains in eval mode. Any relative impact on accuracy without it isn't measured.
         self.model.eval()
         """
-        # No _force_cuda_memory_cleanup() here (same reasoning that already
-        # retired the two in-loop calls below): empty_cache() issues cudaFree, a
-        # device-wide sync, ~13x/GPU per run, and had nothing to reclaim --
-        # allocated is flat at 817MB on a 46GB card across the whole run.
+        # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
+        # and had nothing to reclaim (allocated stays flat across the run).
         self.log_memory("before_train_model", device)
         self._make_model_functional(device)
         

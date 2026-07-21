@@ -182,9 +182,8 @@ def _valid_grad_msg(mv=5, data_id=2, iteration=1):
 class TestRepickTripletStampedOnReturn:
     def test_returning_trainer_is_stamped_from_the_message_tuple(self):
         # The stamp is the EXACT version_key (model_version, iteration) the
-        # message answered -- NOT _curr_agg_version, which a staleness-accepted
-        # late grad would mis-stamp. Prove it by making curr_ver differ from the
-        # msg's key. data_id is NOT part of the key (§M Step 2).
+        # message answered, not _curr_agg_version (a staleness-accepted late
+        # grad would mis-stamp). data_id is not part of the key.
         agg = _RepickAgg(residence=True, curr_ver=(9, 9))
         ch = _RepickChannel()
 

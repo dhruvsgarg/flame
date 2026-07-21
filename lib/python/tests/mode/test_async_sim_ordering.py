@@ -514,14 +514,11 @@ class TestGateProbesLiveInflight:
 
 
 class TestSafeFastPathTiming:
-    """§6 Part 3 (simulate_fwdllm.md §G), option 2: when the gate is
-    ALREADY provably safe from in-memory state alone (buffered min known, no
-    in-flight end's KNOWN delay puts it earlier than bmin - slack), the probe
-    call this pass must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound
-    instead of the full per-trainer `_sim_recv_timeout_s` bound. The eager-probe
-    behavior itself (a ready/near-ceiling straggler still gets handed to
-    recv_fifo) is unchanged -- covered by TestGateProbesLiveInflight above; this
-    class asserts the TIMEOUT VALUE used, which those tests don't check."""
+    """When the gate is already provably safe from in-memory state alone
+    (buffered min known, no in-flight end's known delay beats bmin - slack),
+    the probe must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead
+    of the full `_sim_recv_timeout_s` bound. Asserts the timeout VALUE, unlike
+    TestGateProbesLiveInflight above which covers eager-probe behavior."""
 
     def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
         # Mirrors test_drains_ready_inflight_above_ceiling, plus a pre-cached
@@ -556,9 +553,8 @@ class TestSafeFastPathTiming:
         assert channel.probe_timeouts[0] is None  # genuinely blocking, unchanged
 
     def test_earlier_stuck_end_forces_full_bound_not_fast_path(self):
-        """T is expected to complete BEFORE the already-buffered minimum ->
-        earlier_stuck -> the gate is NOT safe, must keep using the full
-        computed bound."""
+        """T's expected completion is before the buffered minimum (earlier_stuck)
+        -> gate is not safe -> must use the full computed bound."""
         agg = _make_agg()
         agg._sim_known_delay_s["T"] = 1.0
         agg._sim_inflight_expected = {"T": 1.0}
@@ -633,9 +629,9 @@ class TestClockJumpClamp:
 
 
 class TestExpectedCompletionLowerBound:
-    """§M: expected completion comes from the shared per-trainer delay cache
-    (self._sim_known_delay_s) -- an exact per-trainer value, no cross-trainer
-    estimate. An unseen trainer gets NO cache entry, no guessed lower bound."""
+    """Expected completion comes from the shared per-trainer delay cache
+    (self._sim_known_delay_s) -- exact per-trainer, no cross-trainer estimate
+    or guessed lower bound for unseen trainers."""
 
     def test_known_delay_cache_holds_each_trainers_own_exact_value(self):
         agg = _make_agg()
