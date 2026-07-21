@@ -4197,6 +4197,9 @@ _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
 # real-only `time.sleep(0.1)` ("Real-transport pad ... No sim analog"), so its
 # real<->sim gap IS that sleep by construction -- same class as
 # `_emulate_training_delay`. Reported, excluded from `ok`.
+# `_distribute_weights_sync` (fwdllm/fwdllm_plus) holds the same real-only
+# `time.sleep(0.1)` pad as its async twin (fwdllm_aggregator.py:3420-3423) --
+# same real-transport-artifact class, just missing from this set until now.
 # `sync_collect_and_accumulate_grads` blocks on `channel.recv_fifo` (real-only,
 # num_min_req clamp) in real; sim's `_sim_sync_recv_incremental` is
 # non-blocking -- same real-transport-wait class as `_distribute_weights_async`
@@ -4205,6 +4208,7 @@ _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
 # wait bubbling up -- same pattern as `train_with_data_id` on the trainer side.
 _AGG_STEP_TIMING_REAL_ONLY_FUNCS = frozenset({
     "_distribute_weights_async",
+    "_distribute_weights_sync",
     "sync_collect_and_accumulate_grads",
     "_aggregate_grads_sync",
 })

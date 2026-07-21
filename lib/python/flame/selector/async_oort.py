@@ -301,6 +301,23 @@ class AsyncOortSelector(AbstractSelector):
         )
         logger.debug(f"Trainer version states: {trainer_version_keys}")
 
+        # TEMP EXHAUSTIVE DEBUG (simulate_fwdllm.md FT cohort_sequence deep-dive,
+        # 2026-07-21): full-input snapshot per select() call, tagged with a
+        # monotonic seq so real/sim logs diff call-for-call (`grep SELECT_TRACE`)
+        # without timestamp reconciliation. Flag-gate or delete once localized.
+        self._select_trace_seq = getattr(self, "_select_trace_seq", 0) + 1
+        logger.info(
+            f"[SELECT_TRACE seq={self._select_trace_seq}] ENTRY "
+            f"ends={sorted(ends.keys())} n_ends={len(ends)} "
+            f"task_to_perform={task_to_perform} "
+            f"channel_props={channel_props} "
+            f"trainer_unavail_list={trainer_unavail_list} "
+            f"agg_version_key={agg_version_key} "
+            f"trainer_version_keys={trainer_version_keys} "
+            f"selected_ends={self.selected_ends} all_selected={sorted(self.all_selected.keys())} "
+            f"rng_fp={self.rng_fingerprint()}"
+        )
+
         if self.enforce_min_start(len(ends)):
             return {}
 
@@ -871,7 +888,19 @@ class AsyncOortSelector(AbstractSelector):
         # randomized per-process (PYTHONHASHSEED) independent of the seeded
         # RNG, so two same-seed runs pick the identical trainers but dispatch
         # them in a different order every launch.
-        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
+        sorted_ends = sorted(ends)
+        # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- fp before/after
+        # separates an already-desynced RNG stream from a differing candidate set.
+        _seq = getattr(self, "_select_trace_seq", -1)
+        rng_fp_before = self.rng_fingerprint()
+        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted_ends, num_of_ends))
+        rng_fp_after = self.rng_fingerprint()
+        logger.info(
+            f"[SELECT_TRACE seq={_seq}] SELECT_RANDOM "
+            f"candidates_sorted={sorted_ends} n_candidates={len(sorted_ends)} "
+            f"num_of_ends={num_of_ends} rng_fp_before={rng_fp_before} "
+            f"rng_fp_after={rng_fp_after} chosen={list(selected_random_ends.keys())}"
+        )
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
         return {key: None for key in selected_random_ends}
@@ -1794,6 +1823,16 @@ class AsyncOortSelector(AbstractSelector):
         logger.info(
             f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}"
         )
+        # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- filtered_ends is
+        # the free pool select_random draws from; a composition diff here at
+        # the first diverging seq is direct proof of where the race starts.
+        logger.info(
+            f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
+            f"FILTERED_ENDS sorted={sorted(filtered_ends.keys())} "
+            f"n_filtered={len(filtered_ends)} extra={extra} "
+            f"feasible_extra={feasible_extra} concurrency={concurrency} "
+            f"cooling_count={cooling_count}"
+        )
 
         # Early exit if filtered_ends is none (can happen when all
         # ends available are less than concurrency requirement)
@@ -1941,6 +1980,13 @@ class AsyncOortSelector(AbstractSelector):
                     f"select_random() with filtered_ends: {filtered_ends} and "
                     f"feasible_extra: {feasible_extra}"
                 )
+                # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- branch
+                # taken (no utility obs yet) and which model_version window.
+                logger.info(
+                    f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
+                    f"BRANCH=select_random model_version={model_version} "
+                    f"len(utility_list)=0 feasible_extra={feasible_extra}"
+                )
                 candidates_dict = self.select_random(
                     filtered_ends, num_of_ends=feasible_extra
                 )
@@ -1989,6 +2035,16 @@ class AsyncOortSelector(AbstractSelector):
             # Converting list of candidates to candidate_dict so that
             # it can be passed to a function to process it
             candidates_dict = {key: None for key in candidates}
+
+            # TEMP EXHAUSTIVE DEBUG (see [SELECT_TRACE] above) -- explore/
+            # exploit branch outcome + cutoff_utility, its ranking input.
+            logger.info(
+                f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
+                f"BRANCH=explore_exploit model_version={model_version} "
+                f"select_type={self.select_type} cutoff_utility={cutoff_utility} "
+                f"feasible_extra={feasible_extra} candidates={candidates} "
+                f"exploit_end_ids={exploit_end_ids} rng_fp={self.rng_fingerprint()}"
+            )
 
             # Invoke process_chosen_candidate_dict(). It will
             # appropriately add candidates to selected_ends and

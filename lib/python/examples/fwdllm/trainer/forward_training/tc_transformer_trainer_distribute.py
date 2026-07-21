@@ -282,6 +282,33 @@ class ForwardTextClassificationTrainer:
         self.databin_best_v_params = None
         self.last_model_version_jvp_updated = -1
 
+        self._warmup_gpu_kernels()
+
+    def _warmup_gpu_kernels(self):
+        """Throwaway forward pass before round 1, to absorb CUDA/cudnn kernel-
+        compile cost outside the timed window (simulate_fwdllm.md FT
+        cohort_sequence deep-dive). Same on real and sim -> symmetric, no
+        injected noise. Plain forward, not the JVP pipeline -- doesn't touch
+        RNG state or model weights. Best-effort: never blocks startup."""
+        if self.device.type != "cuda":
+            return
+        try:
+            self.model.to(self.device)
+            was_training = self.model.training
+            emb = self.model.get_input_embeddings()
+            vocab_size = emb.num_embeddings if emb is not None else 1000
+            seq_len = getattr(self.args, "max_seq_length", 128)
+            dummy_x = torch.randint(0, vocab_size, (1, seq_len), device=self.device)
+            with torch.no_grad():
+                self.model(dummy_x)
+            self.model.train(was_training)
+            logging.info(
+                f"[GPU_WARMUP] trainer_id={self.trainer_id} device={self.device} "
+                f"vocab_size={vocab_size} seq_len={seq_len} -- kernel warmup pass complete"
+            )
+        except Exception as e:
+            logging.warning(f"[GPU_WARMUP] skipped (non-fatal): {e}")
+
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
     #     torch.device("cuda" if torch.cuda.is_available() else "cpu")

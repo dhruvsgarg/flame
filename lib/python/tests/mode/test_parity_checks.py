@@ -2019,6 +2019,17 @@ class TestAggStepTimingEvalModelExempt:
     def test_eval_model_in_exemption_set(self):
         assert "eval_model" in pc._AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
 
+    def test_distribute_weights_sync_real_only_gap_reported_but_does_not_gate(self):
+        # _distribute_weights_sync holds the same real-only time.sleep(0.1)
+        # pad as its async twin -- a large real<->sim gap here must not fail
+        # the rung, same mechanism as _distribute_weights_async.
+        real = self._agg({"_distribute_weights_sync": [0.15] * 20, "aggregate": [0.1] * 20})
+        sim = self._agg({"_distribute_weights_sync": [0.05] * 20, "aggregate": [0.1] * 20})
+        r = pc.agg_step_timing_breakdown_parity(real, sim)
+        assert r["ok"], r
+        assert r["by_func"]["_distribute_weights_sync"]["gates_ok"] is False
+        assert r["by_func"]["_distribute_weights_sync"]["ok"] is False
+
 
 class TestAggregationComputeWall:
     """Aggregation-stage wall-clock EQUALITY (DIAG, two-sided): unlike
