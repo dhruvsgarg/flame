@@ -1460,17 +1460,22 @@ class TopAggregator(AsyncTopAgg):
             self._process_aggregation_goal_met(tag, channel, is_async=True)
 
     @timer_decorator
-    def _release_end_on_return(self, channel, end) -> None:
+    def _release_end_on_return(self, channel, end, buffered: bool = False) -> None:
         """Release a returned trainer's slot + re-pick guard on RETURN --
-        except when `_inflight_residence` is on, where the commit-boundary
-        release (`channel.cleanup_recvd_ends()`) owns the guard instead.
-        Releasing before commit is an R1 violation (PARITY.md §3.resid)
-        whenever return != commit -- true for fluxtune's pooled fedbuff
-        (c >> agg_goal); a no-op for sync (agg_goal == c) and real (no
-        built-in exclusion like async_cifar10's, so it needs the hold too).
-        One flag, both sync/async, both real/sim; default off = byte-identical.
+        except when `_inflight_residence` is on AND this message wasn't just
+        buffered, where commit-boundary release (`channel.cleanup_recvd_ends()`)
+        owns the guard instead (R1, PARITY.md §3.resid: return != commit for
+        fluxtune's pooled fedbuff, c >> agg_goal).
+
+        `buffered=True` (P0-1 deferred-merge, simulate_fwdllm.md FT
+        cohort_sequence deep-dive, 07-21): a contribution captured in
+        `_pending_cohort_contribs` can't be lost by an early re-dispatch, so
+        the R1 concern no longer requires holding the slot to the whole
+        cohort's commit -- release it now, restoring flat (not sawtoothing)
+        concurrency to match true async fedbuff. `buffered=False` (default)
+        keeps the old hold-to-commit behavior.
         """
-        if getattr(self, "_inflight_residence", False):
+        if getattr(self, "_inflight_residence", False) and not buffered:
             return  # guard/slot held to COMMIT (see channel.cleanup_recvd_ends())
         if self.is_async:
             channel.cleanup_provided_ends(end)
@@ -1771,11 +1776,12 @@ class TopAggregator(AsyncTopAgg):
         logger.info(
             f"Received grads from {end}. It was trained on model version {version}, with {count} samples"
         )
-        # Release the slot/guard on return -- but the async sim residence path
-        # defers that release to COMMIT; see _release_end_on_return.
-        # (cleanup_recvd_end() is sync-only, random selector; async selectors only
-        # implement the batch _cleanup_provided_ends path.)
-        self._release_end_on_return(channel, end)
+        # Release the slot/guard on return -- immediately if this message's
+        # gradients were just buffered (safe to release, see
+        # _release_end_on_return); otherwise the async residence path defers
+        # to COMMIT. (cleanup_recvd_end() is sync-only, random selector;
+        # async selectors only implement the batch _cleanup_provided_ends path.)
+        self._release_end_on_return(channel, end, buffered=MessageType.GRADIENTS in msg)
         return True
 
     def _log_and_reset_model_version_stats(self):

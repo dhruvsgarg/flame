@@ -237,6 +237,58 @@ narrow miss the tie window could ever be widened to catch. **Conclusion: option 
 `_set_tie` is doing its job correctly; the phenomenon it looks for (a boundary-adjacent race) and the phenomenon
 we found (cumulative pre-commit order drift) are genuinely different things at different timescales.
 
+**PRIMARY root cause, confirmed 07-21 pm-15 with the `[SELECT_TRACE]` exhaustive pair
+(`run_20260721_004746`/`_004743`, 2-node parallel launch) — this SUPERSEDES the "cumulative drift" framing above
+as the dominant, RECURRING driver; that framing correctly describes the FIRST occurrence but not why it repeats
+every cycle.** Diffed `FILTERED_ENDS` (the exact free-pool `select_random`/exploit-explore draw from) call-for-
+call by re-indexed position (not raw `seq`, which includes no-op calls at different rates each side): first
+diff at call #9 (real_seq=1400, sim_seq=2034) — real's pool jumps 63→72 (+9 new candidates) while sim's drops
+63→62 (one consumed, nothing new). Tracing wall-clock timestamps around real's jump shows `_process_
+aggregation_goal_met` completing (0.224s) 100ms before it; grepping receive-events in that window: **12 grad
+messages landed in real's ~0.7s inter-call gap vs 1 in sim's equivalent gap** — real's cohort-commit release is
+a genuine ATOMIC BURST, sim's is not. This is not a one-off: real's `n_filtered` sequence is a clean, regular
+sawtooth (70→63 stepping down by 1/pick, jump to 72, repeat) recurring identically ~20 times across the run;
+sim's, after one initial 62→71 burst, goes **completely flat at 71 for all remaining 906 logged calls** — sim's
+free-pool size becomes a fixed point almost immediately and never fluctuates again for the rest of the 6min run.
+
+Traced this to the CODE, not just telemetry: real's slot release runs through `_cleanup_recvd_ends`
+(`async_oort.py:1031`, invoked via `channel.cleanup_recvd_ends()`, `fwdllm_aggregator.py:2564`) — a simple
+single-pass drain of `ordered_updates_recv_ends` that frees exactly the members whose messages arrived, in one
+batch, on the aggregator's MainThread (a separate thread from `select()`'s `Thread-3`). Sim runs the SAME shared
+call, but then ADDITIONALLY runs `_release_sim_slots_at_agg_goal` → `_sim_hold_busy_slots`
+(`fwdllm_aggregator.py:1251/1291`, inert in real, `if self.simulated`) — a fundamentally different mechanism
+that recomputes the ENTIRE held/free state from `outstanding = _sim_inflight_expected ∪ buffered ∪
+_sim_pending_commit` (a virtual-clock model of who's STILL busy), not "who committed this cycle." This is by
+design (§M, landed to fix `r1_inflight_overlap`'s 19.4% violation where a naive real-like release let an
+actually-still-outstanding trainer get re-picked) — but its side effect is that sim's free pool converges to a
+smooth STEADY-STATE constant instead of reproducing real's bursty, per-cycle release shape. **Real and sim are
+running genuinely different algorithms to answer "who is free right now," not just experiencing timing jitter
+around the same one** — whenever that answer differs, `select_random`'s candidate pool differs, and any
+downstream pick can differ even with byte-identical RNG state.
+
+**Correction (operator, 07-21): sim's flat concurrency is CORRECT, real's sawtooth is the bug.** True async
+fedbuff holds concurrency steady — dispatch is decoupled from the aggregation batch boundary by design; sim's
+flat free-pool is the intended behavior, not an artifact to explain away. Real's batching traces to
+`_inflight_residence` (§3.resid, `PARITY.md`): real's channel naturally holds a trainer's slot until its update
+is "committed" — a real invariant (don't let a trainer get re-dispatched before its previous contribution is
+safely captured, or the second dispatch can clobber the first). But that invariant no longer requires waiting
+for the WHOLE cohort: the Jul18 P0-1 fix already buffers each trainer's contribution into
+`_pending_cohort_contribs` immediately on receipt (only the *merge* into `self.grad` is deferred to cohort-
+commit, for canonical ordering). The contribution is safe the instant it's buffered — `_release_end_on_return`
+(`fwdllm_aggregator.py:1463`) just didn't know that, and deferred every release to the full cohort's commit
+regardless.
+
+**[LANDED] Fix**: `_release_end_on_return` takes a new `buffered: bool` param — when the just-processed message
+was buffered into `_pending_cohort_contribs` (`MessageType.GRADIENTS in msg`), release the slot via
+`channel.cleanup_provided_ends(end)` IMMEDIATELY, not deferred to `channel.cleanup_recvd_ends()` at cohort-
+commit. `buffered=False` (default, e.g. a non-gradient message) preserves the old hold-to-commit behavior
+unchanged. Scoped to fwdllm-family only by construction — `_release_end_on_return`/`_pending_cohort_contribs`
+don't exist in felix's code path (`asyncfl/top_aggregator.py` has its own separate `_sim_hold_busy_slots`,
+whose OWN docstring confirms it already releases "the instant a trainer's message arrives" once buffered —
+this fix brings fluxtune's real-side behavior into line with felix's already-validated pattern, not something
+novel). 4 new tests (`test_fwdllm_sim_grad_residence.py`), 609/609 `tests/mode` pass. **Not yet validated
+live** — needs the next real/sim pair to confirm real's concurrency goes flat and `cohort_sequence` improves.
+
 **New contributing mechanism, found this session.** Both real AND sim show every trainer's FIRST-EVER GPU/JVP
 pass taking ~8-11x longer than that same trainer's later, steady-state passes (real median 4.11s vs 0.40s later;
 sim 3.75s vs 0.48s later) — a CUDA-context/kernel-compile warmup cost, symmetric on both sides (sim also runs

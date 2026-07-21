@@ -177,6 +177,50 @@ class TestReturnPathGuardHeldToCommit:
         assert "A" not in ch._selector.all_selected
 
 
+class TestReturnPathBufferedReleasesImmediately:
+    """07-21 fix (simulate_fwdllm.md FT cohort_sequence deep-dive): once a
+    contribution is captured in `_pending_cohort_contribs` (P0-1 deferred-
+    merge), re-dispatch can't lose/overwrite it -- `buffered=True` releases
+    the slot immediately even with `_inflight_residence` on, instead of
+    deferring to the whole cohort's commit. Restores true fedbuff continuous
+    concurrency (flat, not a sawtooth) without reopening the R1 gap
+    `_inflight_residence` was built to close for un-buffered returns."""
+
+    def test_buffered_true_releases_immediately_despite_residence(self):
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
+        assert "A" not in ch._selector.all_selected
+        assert "A" not in ch._selector.selected_ends["agg"]
+
+    def test_buffered_false_still_holds_to_commit(self):
+        """Explicit buffered=False (e.g. a non-gradient message) preserves
+        the pre-fix hold-to-commit behavior -- same as the default."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=False)
+        assert "A" in ch._selector.all_selected
+
+    def test_buffered_true_in_real_releases_immediately(self):
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
+        assert "A" not in ch._selector.all_selected
+
+    def test_buffered_true_with_residence_off_still_releases(self):
+        """residence off already released immediately -- buffered=True must
+        not change that (no double-release / no-op path)."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
+        assert "A" not in ch._selector.all_selected
+
+
 class TestVirtualInflightSlotHold:
     """A returned-but-uncommitted trainer is still in flight in VIRTUAL time (its
     grad commits when the vclock reaches its sct), so it KEEPS its compute slot
