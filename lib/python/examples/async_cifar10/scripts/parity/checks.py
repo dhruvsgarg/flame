@@ -4901,7 +4901,8 @@ def _cohort_first_commit_race_diagnostic(
 
 def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
                            var_rel_tol: float = 1e-3,
-                           tie_window_s: float = 1.0) -> dict:
+                           tie_window_s: float = 1.0,
+                           set_overlap_tol: float = 0.8) -> dict:
     """L1 [EXACT, scoped]: the ordered per-aggregation logical sequence, HARD
     where achievable and SOFT/scoped where it provably is not:
 
@@ -4915,7 +4916,12 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         landed within `tie_window_s` of a cohort boundary in the mode that
         includes it (preferred; falls back to the bare registry-delay
         comparison when observed data is unavailable) is an arrival race, not
-        a bug, granted a TIE. A cycle resolved only via a TIE (not an exact
+        a bug, granted a TIE. Because a boundary race CASCADEs (shifting the
+        whole downstream sequence by one) past what pairwise ties can absorb,
+        async additionally grades SET DISTRIBUTIONALLY: a cycle whose per-cycle
+        overlap |r∩s|/|cohort| >= `set_overlap_tol` passes even without an exact
+        or tie match. A genuine selection-mix bug still fails population-level
+        participation_parity (S2). A cycle resolved only via a TIE (not an exact
         SET match) exempts VAR/var-derived CADENCE fields for that cycle too
         -- differing trainers legitimately produce differing gradients, so
         exact var equality is not an expectable target there. Population-level
@@ -4971,17 +4977,32 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     n = min(len(rc), len(sc))
     is_async = any(e.get("is_async") for e in rc_full[:1] + sc_full[:1])
 
-    set_m = tie_m = 0
+    # Distributional SET tolerance (async only): a boundary arrival race
+    # (fast-late vs slow-early trainer straddling a cohort boundary) CASCADEs --
+    # the displaced member shifts the whole downstream sequence by one, so exact
+    # SET + pairwise-tie can't absorb it even though each cohort still shares
+    # ~all members with the other mode. Grade the SET on per-cycle overlap
+    # (|r∩s|/|cohort|) >= set_overlap_tol instead. A genuine selection-mix bug
+    # still fails population-level participation_parity (S2). Sync stays exact.
+    def _overlap(r_ids, s_ids):
+        return len(set(r_ids) & set(s_ids)) / max(len(r_ids), len(s_ids), 1)
+
+    set_m = tie_m = dist_m = 0
+    _overlaps = []
     _divergent_idxs = []
     for i in range(n):
         r_ids, s_ids = cohort(rc[i]), cohort(sc[i])
+        _overlaps.append(_overlap(r_ids, s_ids))
         if sorted(r_ids) == sorted(s_ids):
             set_m += 1
         elif _set_tie(rc[i], sc[i]):
             tie_m += 1
+        elif is_async and _overlaps[-1] >= set_overlap_tol:
+            dist_m += 1
         else:
             _divergent_idxs.append(i)
-    set_ok = (len(rc) == len(sc) and (set_m + tie_m) == n)
+    set_ok = (len(rc) == len(sc) and (set_m + tie_m + dist_m) == n)
+    set_overlap_frac = round(sum(_overlaps) / n, 3) if n else None
     set_divergence = None
     race_diagnostic = None
     # DIAGNOSTIC ONLY -- does not affect set_ok/ok. Runs the race diagnostic
@@ -5015,7 +5036,8 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         r, s = rc[i], sc[i]
         rc_ord, sc_ord = cohort(r), cohort(s)
         set_exact_i = sorted(rc_ord) == sorted(sc_ord)
-        set_ok_i = set_exact_i or _set_tie(r, s)
+        set_ok_i = (set_exact_i or _set_tie(r, s)
+                    or (is_async and _overlap(rc_ord, sc_ord) >= set_overlap_tol))
         rv, sv = r.get("var"), s.get("var")
         if set_exact_i:
             # Only an EXACT membership match makes bit-level var/order/derived
@@ -5061,6 +5083,12 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "n_sim_cycles": len(sc_full),
         "set_match_frac": round(set_m / n, 3) if n else None,
         "set_tie_frac": round(tie_m / n, 3) if n else None,
+        # Distributional SET (async): fraction of cycles tolerated by overlap
+        # alone (not exact/tie), and the mean per-cycle overlap. set_dist_frac>0
+        # means boundary-race cascades were absorbed distributionally.
+        "set_dist_frac": round(dist_m / n, 3) if n else None,
+        "set_overlap_frac": set_overlap_frac,
+        "set_overlap_tol": set_overlap_tol,
         "set_divergence": set_divergence,
         # DIAGNOSTIC ONLY -- does NOT gate `ok`/`set_ok`. None unless
         # set_divergence is present.

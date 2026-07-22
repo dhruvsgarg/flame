@@ -1462,6 +1462,33 @@ class TestCohortSequence:
         r = pc.cohort_sequence_parity(real, sim)
         assert not r["ok"] and r["set_match_frac"] == 0.0
 
+    def test_async_boundary_cascade_tolerated_distributionally(self):
+        # A boundary arrival race shifts one trainer across each cohort boundary
+        # (fast-late vs slow-early), so each cycle overlaps 9/10 with the other
+        # mode but is never exact -- must pass DISTRIBUTIONALLY (set_overlap_frac
+        # >= tol), not fail as a mix bug (which S2/participation_parity owns).
+        base = [f"t{i}" for i in range(11)]         # cohorts of 10 from 11 ids
+        real = _agg(agg_rounds=[
+            _lcyc(0, 1, base[0:10], 0.5, is_async=True, goal=10),
+            _lcyc(0, 2, base[1:11], 0.4, is_async=True, goal=10)])
+        sim = _agg(agg_rounds=[
+            _lcyc(0, 1, base[1:11], 0.5, is_async=True, goal=10),   # shifted by one
+            _lcyc(0, 2, base[0:10], 0.4, is_async=True, goal=10)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["ok"], r
+        assert r["set_match_frac"] == 0.0 and r["set_dist_frac"] == 1.0
+        assert r["set_overlap_frac"] >= 0.8
+
+    def test_async_low_overlap_still_FAILS(self):
+        # A genuine selection divergence (overlap < tol) is NOT absorbed --
+        # distributional grading tolerates boundary races, not real mix bugs.
+        real = _agg(agg_rounds=[_lcyc(0, 1, [f"t{i}" for i in range(10)], 0.5,
+                                      is_async=True, goal=10)])
+        sim = _agg(agg_rounds=[_lcyc(0, 1, [f"t{i}" for i in range(5, 15)], 0.5,
+                                     is_async=True, goal=10)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["ok"] and r["set_overlap_frac"] < 0.8
+
     def test_var_divergence_FAILS_even_with_matched_order(self):
         # Identical cohort+order, var off by >0.1% -> the RNG-desync tell.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.371605)])

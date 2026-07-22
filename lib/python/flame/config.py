@@ -294,8 +294,30 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # needed once eval_model() moved to a background daemon thread. Any future
     # synchronous, non-backgrounded eval/aggregate step needs an equivalent
     # fold or sim will silently under-count its wall time.
+    # Sim: charge the aggregator's MEASURED critical-path wall (FedAvg merge +
+    # drain-tail + dispatch transport) to the vclock, dynamically per commit --
+    # these happen for real on the sim host but were never credited, so the
+    # vclock under-counts real's per-round wall (#6). Uses the live measured
+    # span, never a pre-profiled constant. Default OFF (byte-identical) -- an A/B
+    # lever until validated against a real pair.
     sim_model_agg_compute_time: t.Optional[bool] = Field(
         alias="simModelAggComputeTime", default=False
+    )
+    # Sim: warn when any single charged overhead span exceeds this many seconds
+    # (excess sim-host overhead being folded into the vclock -- a signal that the
+    # sim box is slower/contended than the modeled deployment). 0/None disables.
+    sim_overhead_warn_s: t.Optional[float] = Field(
+        alias="simOverheadWarnS", default=5.0
+    )
+    # Sim: model the aggregator's SERIAL dispatch cost (#6). The agg sends each
+    # cohort's payloads one at a time (pickle + publish), so the k-th trainer's
+    # weights land after the first k-1 sends -- a real serial-server delay the
+    # sim omits by stamping the whole burst at one frontier. When on, each
+    # trainer's sim_send_ts is offset by the MEASURED cumulative send wall of the
+    # prior sends in its burst (dynamic, not pre-profiled), staggering starts as
+    # real does. Sim-only, default OFF (byte-identical), an A/B lever.
+    sim_model_dispatch_queue: t.Optional[bool] = Field(
+        alias="simModelDispatchQueue", default=False
     )
     sim_straggler_spread_s: t.Optional[float] = Field(
         alias="simStragglerSpreadS", default=0.0

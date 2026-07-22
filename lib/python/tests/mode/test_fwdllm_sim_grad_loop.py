@@ -792,6 +792,57 @@ class TestCommitThenProcessFreesTheSlot:
         assert ch._selector.selected_ends["agg"] == set()
 
 
+class TestChargeSimVclockOverhead:
+    """#6: the agg commit-side wall (drain-tail + FedAvg) is charged to the
+    vclock DYNAMICALLY (the measured span, never a pre-profiled constant),
+    sim-only + gated, with an over-threshold warning."""
+
+    @staticmethod
+    def _cfg(flag=True, warn_s=5.0):
+        import types
+        return types.SimpleNamespace(hyperparameters=types.SimpleNamespace(
+            sim_model_agg_compute_time=flag, sim_overhead_warn_s=warn_s))
+
+    def test_charges_measured_span_when_flag_on(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc, cfg = VirtualClock(), self._cfg()
+        assert chg(vc, True, cfg, 0.8, "fedavg") == 0.8 and vc.now == 0.8
+        # cumulative: a second charge advances further (drain-tail then fedavg).
+        assert chg(vc, True, cfg, 0.2, "drain_tail") == 0.2
+        assert abs(vc.now - 1.0) < 1e-9
+
+    def test_no_charge_when_flag_off(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, True, self._cfg(flag=False), 0.8, "fedavg") == 0.0
+        assert vc.now == 0.0
+
+    def test_no_charge_in_real_mode(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, False, self._cfg(), 0.8, "fedavg") == 0.0
+        assert vc.now == 0.0
+
+    def test_zero_or_none_span_is_noop(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, True, self._cfg(), 0.0, "x") == 0.0
+        assert chg(vc, True, self._cfg(), None, "x") == 0.0
+        assert vc.now == 0.0
+
+    def test_warns_over_threshold(self, caplog):
+        import logging
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        with caplog.at_level(logging.WARNING):
+            chg(VirtualClock(), True, self._cfg(warn_s=1.0), 2.5, "drain_tail")
+        assert any("SIM_OVERHEAD" in r.getMessage() for r in caplog.records)
+
+
 class TestColdStartUnknownDelayGate:
     """A trainer's first-ever contact has no _sim_known_delay_s entry
     (reactive cache, no fallback), so earlier_stuck was blind to it and a

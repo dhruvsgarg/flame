@@ -186,6 +186,35 @@ crashed the first attempt). Needs a live pair to confirm it reduces round-1 jitt
 localization above (every `select()` call logs full inputs at INFO) — deliberately verbose, not meant to ship
 long-term; flag-gate behind DEBUG or delete now that the divergence is localized.
 
+**Post-deadlock-fix parity (validated on the 30min pair `run_20260721_222706`/`_225838`).** The §F.1-23
+fix took fluxtune from 19 fails → **4**, then the `cohort_sequence` distributional fix → **3**. Remaining:
+`preferred_duration`, `terminal_state`, `total_commits` — all downstream of ONE root: the sim vclock
+under-charges real's per-round wall (#6), so sim runs ~8% more rounds at the matched budget and the
+fast-trainer re-dispatch cadence drifts (a fast-late/slow-early boundary race that cascades). Two changes
+landed for this:
+- **`cohort_sequence` → distributional (async).** Exact-set + pairwise-tie can't absorb a boundary-race
+  CASCADE (verified: cohort-3 `…461`(fast 8.3s)/`…382`(slow 20.8s) swap; real arrives 0.3s apart = tie, sim
+  10.4s apart — a legit model output given the dispatch-cadence gap, no anomaly). Now grades SET on mean
+  per-cycle overlap `|r∩s|/|cohort| >= set_overlap_tol` (0.8); S2 still catches real mix bugs. Cleared it
+  (`set_overlap_frac` 0.889).
+- **vclock now charges the MEASURED agg commit-side wall** (drain-tail + FedAvg merge) dynamically via
+  `charge_sim_vclock_overhead` (gate `sim_model_agg_compute_time`, default OFF, warns > `sim_overhead_warn_s`).
+  Grounded in live spans, not pre-profiled. Covers ~0.8s/commit of the ~3.1s residual.
+- **transport leg — OFFLINE-PROFILED + wired** (`expt_scripts/profile_transport_leg.py`). `channel.send`
+  publishes async so wire time isn't runtime-measurable, but a REAL run logs send (agg comm `ts`) AND receive
+  (trainer `task_recv.ts` / agg grad-recv log) wall stamps on one host clock, so send→receive Δ IS the MQTT
+  leg. On `run_20260721_222706`: agg→trainer **weights 0.030s** (3.6 MB) vs **var_bad 0.003s** (retry) —
+  size-dependent as expected; trainer→agg **grads 0.093s**. So `sim_completion_leg_s ≈ 0.12s`, now set in the
+  fluxtune sim yaml (sim-only; real uses physical arrival). **But transport is SMALL, not the residual driver.**
+  The real residual is the within-size mean-median gap (weights median 0.030s vs **mean 1.38s** — same 3.6 MB):
+  agg **serial-dispatch queueing** (30 payloads sent serially, later trainers start late). That's a serial-server
+  delay, not a flat leg.
+- **serial-dispatch queue — modeled** (`sim_model_dispatch_queue`, default OFF). Each trainer's `sim_send_ts`
+  is offset by the MEASURED cumulative send wall of the prior sends in its burst, so the k-th trainer starts
+  after the agg finished sending to the first k-1 (dynamic, not pre-profiled; §F-20-clean). Plus the commit-side
+  fold (drain+FedAvg, `sim_model_agg_compute_time`). Both A/B levers for `terminal_state`/`total_commits`;
+  validate on the next sim pair with the flags on.
+
 **Other open items (not a failing rung):**
 - `trainer_speed_identity`'s `utility` sub-check reopened at 7200s scale (23/100 >10% dev) but failed to
   reproduce on 3 independent 30min pairs — leans flaky/noise, stays open until a ≥2h run adjudicates.

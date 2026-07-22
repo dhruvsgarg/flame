@@ -70,6 +70,13 @@ experiments:
           # real-compute-std·√12). Active with --delays on; calibrate to
           # wall_disparity→~0 at the sign-off run.
           sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
+          # #6 MQTT transport leg added to the trainer sct (sct = sim_send_ts +
+          # compute + leg): agg->trainer weight delivery + trainer->agg grad
+          # delivery. OFFLINE-PROFILED from a real run's send/receive wall stamps
+          # (expt_scripts/profile_transport_leg.py on run_20260721_222706: weights
+          # 0.030s + grad 0.093s ≈ 0.12s median). Sim-only (real uses physical
+          # arrival). Re-profile if the payload size or host/broker changes.
+          sim_completion_leg_s: 0.12
 
     aggregator:
       config_template: configs/aggregator_base.json
@@ -119,6 +126,16 @@ experiments:
           # SIM-only; must not move cohort/var/staleness parity (PARITY_LOGICAL_TASKS.md #15).
           sim_compute_truthful_gate: true
           sim_gate_compute_cap_s: 11.0  # re-derived 07-16 (was 16.0/07-15, stale pre-overhead-removal): max(real,sim) _perform_training=7.274s/5.241s x 1.5 -- run_20260716_202633/_212850
+          # #6 sct-model overhead levers -- charge the aggregator's MEASURED wall
+          # to the vclock so sim stops under-counting real's per-round time:
+          # serial dispatch queue (per-trainer sim_send_ts stagger) + commit-side
+          # (drain+FedAvg). Dynamic (live spans, not pre-profiled). Enabled here to
+          # A/B at 2h vs real; code default stays OFF (agg-compute is shared with
+          # the sync baselines, which currently PASS without it -- don't globally
+          # enable until validated). Flip the code default only if parity improves
+          # without over-charging (sim_rate must stay >= 1).
+          sim_model_dispatch_queue: true
+          sim_model_agg_compute_time: true
           # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
           # not reject (K-D13). Set identically in the real sibling; never a
           # parity lever. camelCase MUST match the base key to override it —

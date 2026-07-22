@@ -242,6 +242,29 @@ def recv_fifo_wrapper(channel, ends):
     logger.debug("Exiting recv_fifo_wrapper")
 
 
+def charge_sim_vclock_overhead(vclock, simulated, config, span_s, label: str) -> float:
+    """Fold a MEASURED aggregator-side wall span (`span_s`, seconds) into the
+    vclock -- dynamically, using the live number, never a pre-profiled constant
+    (#6). Sim-only and gated on `sim_model_agg_compute_time` (OFF -> no-op,
+    byte-identical). Warns when the span exceeds `sim_overhead_warn_s` (excess
+    sim-host overhead, not modeled deployment cost). Returns seconds charged."""
+    if not span_s or span_s <= 0.0:
+        return 0.0
+    hp = getattr(config, "hyperparameters", None)
+    _warn = getattr(hp, "sim_overhead_warn_s", None)
+    if _warn and span_s > float(_warn):
+        _now = f"{vclock.now:.1f}s" if vclock is not None else "n/a"
+        logger.warning(
+            f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
+            f"(vclock={_now}) -- excess sim-host overhead"
+        )
+    if simulated and vclock is not None and getattr(
+            hp, "sim_model_agg_compute_time", False):
+        vclock.advance(vclock.now + span_s)
+        return span_s
+    return 0.0
+
+
 class _OrderedContributorList(list):
     """Ordered list + `.discard()`, so `_per_agg_trainer_list` can bind straight
     to the selector's `_agg_pending_commit_ref` (duck-typed against sim's
@@ -2055,30 +2078,33 @@ class TopAggregator(AsyncTopAgg):
         # charge to the vclock in either mode -- the asymmetry
         # sim_model_eval_time corrected for no longer exists.
         _agg_vclock_start = getattr(self, "vclock_now", None)
+        _disp = getattr(self, "_round_dispatch_wall_ts", None)
+        _lastg = getattr(self, "_last_grad_wall_ts", None)
         _agg_start_wall = time.time()
+        # drain-tail: last-grad-received -> aggregate() start (agg-side serial
+        # wall: canonicalize + replay + residual). Computed here so it can be
+        # charged alongside the FedAvg merge below.
+        _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
+        _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
-        # aggregate() is genuine real GPU-side gradient-merge/server-step
-        # compute, run for real in sim, on EVERY cycle -- pass or fail. Only
-        # eval_s (below, committed cycles only) was ever folded into the
-        # vclock; this cycle's aggregate() cost was not, so it was pure
-        # uncredited real wall time (compounds over retries). Fold it the
-        # same way eval_s already is: config-gated OFF (byte-identical),
-        # sim-only.
-        if self.simulated and getattr(
-            self.config.hyperparameters, "sim_model_agg_compute_time", False
-        ):
-            self._vclock.advance(self._vclock.now + _aggregate_fedavg_s)
+        # #6: charge the MEASURED agg commit-side critical-path wall to the vclock
+        # -- drain-tail + FedAvg merge are genuine server-step compute that runs
+        # for real in sim on EVERY cycle but was never credited, so the vclock
+        # under-counted real's per-round wall (compounds over retries). Dynamic
+        # (live spans, not pre-profiled), gated OFF (byte-identical), sim-only,
+        # warns on excess. See `charge_sim_vclock_overhead`.
+        _vc = getattr(self, "_vclock", None)
+        charge_sim_vclock_overhead(
+            _vc, self.simulated, self.config, _drain_tail_s, "drain_tail")
+        charge_sim_vclock_overhead(
+            _vc, self.simulated, self.config, _aggregate_fedavg_s, "fedavg")
         _agg_vclock_end = getattr(self, "vclock_now", None)
         _aggregate_fedavg_vclock_s = (
             _agg_vclock_end - _agg_vclock_start
             if _agg_vclock_start is not None and _agg_vclock_end is not None
             else None
         )
-        _disp = getattr(self, "_round_dispatch_wall_ts", None)
-        _lastg = getattr(self, "_last_grad_wall_ts", None)
-        _barrier_wait_s = (_lastg - _disp) if (_disp and _lastg) else None
-        _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         # drain_tail_s sub-phases: canonicalize + replay are the two known
         # occupants; residual is everything else in the window.
         _drain_tail_residual_s = (
@@ -3674,7 +3700,14 @@ class TopAggregator(AsyncTopAgg):
         # _round_now injected into the two payload variants.
         _round_now = getattr(self, "vclock_now", None)
         _staggered = self.simulated and getattr(self, "_sim_staggered_redispatch", False)
-        if self.simulated and not _staggered:
+        # #6 serial-dispatch queue: offset each trainer's sim_send_ts by the
+        # MEASURED cumulative send wall of the prior sends in this burst, so the
+        # k-th trainer starts after the agg finished sending to the first k-1 (a
+        # real serial-server delay). Forces the per-trainer payload rebuild below.
+        _dq = self.simulated and getattr(
+            self.config.hyperparameters, "sim_model_dispatch_queue", False)
+        _cum_dispatch_s = 0.0
+        if self.simulated and not _staggered and not _dq:
             for _p in (payload_weights, payload_var_bad):
                 if _p is not None:
                     _p[MessageType.SIM_SEND_TS] = _round_now
@@ -3731,15 +3764,20 @@ class TopAggregator(AsyncTopAgg):
                 # shared round frontier. _pop_free_slot_ts is FIFO + clamped <= now;
                 # an empty queue falls back to _round_now.
                 _sst = self._pop_free_slot_ts(_round_now) if _staggered else _round_now
+                # Serial-dispatch queue: add the cumulative prior-send wall so
+                # later trainers in the burst start later (measured, dynamic).
+                if _dq and _sst is not None:
+                    _sst = _sst + _cum_dispatch_s
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
                 # Expected completion = SEND vclock + this end's own
                 # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
                 _delay = self._sim_known_delay_s.get(end)
                 if _delay is not None:
                     self._sim_inflight_expected[end] = _sst + _delay
-                # Staggered: this end's payload must carry its OWN SIM_SEND_TS, so
-                # rebuild a shallow copy (weights shared by ref; small vs GPU cost).
-                if _staggered and isinstance(payload, dict):
+                # Staggered/dispatch-queue: this end's payload must carry its OWN
+                # SIM_SEND_TS, so rebuild a shallow copy (weights shared by ref;
+                # small vs GPU cost).
+                if (_staggered or _dq) and isinstance(payload, dict):
                     payload = dict(payload)
                     payload[MessageType.SIM_SEND_TS] = _sst
                 # Once dispatched a trainer is in flight in virtual time -> add to
@@ -3769,12 +3807,24 @@ class TopAggregator(AsyncTopAgg):
             # _process_single_trainer_message).
             if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
                 self._trainer_inflight_dispatch_version[end] = self.version_key
+            _send_t0 = time.time()
             channel.send(end, payload)
+            _send_wall = time.time()
+            # Serial-dispatch queue: accumulate this send's MEASURED wall (pickle +
+            # publish) so the next trainer's sim_send_ts reflects waiting behind it.
+            if _dq:
+                _cum_dispatch_s += _send_wall - _send_t0
             # #15 compute-truthful gate: stamp the wall time this end was dispatched
             # so the drain can tell a live straggler from an idle-in-recv phantom.
             # Sim-only; inert unless the gate flag is on.
             if self.simulated:
-                self._sim_dispatch_wall[end] = time.time()
+                self._sim_dispatch_wall[end] = _send_wall
+        _dq_warn = getattr(self.config.hyperparameters, "sim_overhead_warn_s", None)
+        if _dq and _dq_warn and _cum_dispatch_s > float(_dq_warn):
+            logger.warning(
+                f"[SIM_OVERHEAD] dispatch_queue={_cum_dispatch_s:.3f}s across "
+                f"{len(ends)} sends (vclock={_round_now}) -- excess serial-dispatch wall"
+            )
         logger.info(
             f"[Distribute] Done. Sent {_n_weights_sent} WEIGHTS + "
             f"{_n_var_bad_sent} VAR=bad payloads to {len(ends)} trainers "
