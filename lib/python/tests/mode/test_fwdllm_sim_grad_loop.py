@@ -695,6 +695,103 @@ class TestComputeTruthfulGate:
         assert agg._sim_gate_failsafe == 1
 
 
+def _full_grad_msg(sct, model_version=0, iteration=0):
+    """A buffered grad message as _sim_recv_min_grad returns it -- carries the
+    sct for the drain AND the grad fields _process_single_trainer_message needs."""
+    return {
+        MessageType.SIM_COMPLETION_TS: sct,
+        MessageType.MODEL_VERSION: model_version,
+        MessageType.ITERATION_PER_DATA_ID: iteration,
+        MessageType.GRADIENTS: {},
+        MessageType.GRADIENTS_FOR_VAR_CHECK: None,
+        MessageType.STAT_UTILITY: 1.0,
+    }
+
+
+class _LoopChannel(_FakeSelChannel):
+    """_FakeSelChannel + the bits _process_single_trainer_message reads."""
+
+    def __init__(self, ends):
+        super().__init__(ends)
+        self._selector.ordered_updates_recv_ends = []
+
+    def set_end_property(self, *_a, **_k):
+        pass
+
+    def get_end_property(self, *_a, **_k):
+        return None
+
+
+class _LoopAgg(_FakeGradAgg):
+    """_FakeGradAgg (drain + slot-hold) + the real
+    _process_single_trainer_message, so a test can drive the exact
+    _aggregate_grads_async seam: commit (discard) THEN process."""
+
+    from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+        _OrderedContributorList as _OCL,
+    )
+    _process = TopAggregator._process_single_trainer_message
+
+    def __init__(self):
+        super().__init__()
+        self.is_async = True
+        self._model_version = 0
+        self.iteration_per_data_id = 0
+        self._agg_goal_cnt = 0
+        self._updates_in_queue = 0
+        self._updates_received = {}
+        self._per_agg_trainer_list = _LoopAgg._OCL()
+        self.grad_pool = []
+        self._trainer_last_model_version = {}
+        self._round_cache_activity_ts = {}
+        self._commit_key_by_end = {}
+
+
+class TestCommitThenProcessFreesTheSlot:
+    """Regression (simulate_fwdllm.md §F.1-23). In sim, _aggregate_grads_async
+    calls _sim_recv_min_grad (COMMIT: discards the end from _sim_pending_commit
+    at its sct) and THEN _process_single_trainer_message on that same grad. The
+    latter must NOT re-add to _sim_pending_commit -- doing so re-pins every
+    committed trainer, `selected_ends` never shrinks, distribute finds no free
+    slot, and re-dispatch across variance-retry iterations deadlocks. The unit
+    test checks _process in isolation; this drives the full seam and asserts the
+    slot actually frees."""
+
+    def _dispatched(self, ends, scts):
+        agg = _LoopAgg()
+        agg._inflight_residence = True
+        ch = _LoopChannel(ends)
+        agg._sim_pending_commit = set(ends)            # dispatch pinned them
+        agg._sim_inflight_expected = dict(zip(ends, scts))
+        for e, s in zip(ends, scts):
+            ch._msgs[e] = _full_grad_msg(sct=s)         # grads arrived, buffered
+        return agg, ch
+
+    def test_committed_trainer_freed_not_repinned(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])   # commit X (min sct)
+        assert msg[MessageType.SIM_COMPLETION_TS] == 10.0
+        agg._process(ch, msg, md[0], md[1])                 # process the SAME grad
+
+        # X committed -> unpinned + slot freed; Y still in flight.
+        assert agg._sim_pending_commit == {"Y"}
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+
+    def test_all_commits_drain_the_pool(self):
+        """The deadlock signature: once every dispatched grad commits+processes,
+        `_sim_pending_commit` must be EMPTY so distribute can re-dispatch. The
+        bug left all of them pinned -> `selected_ends` stuck full -> None."""
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        for _ in range(2):
+            msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+            agg._process(ch, msg, md[0], md[1])
+
+        assert agg._sim_pending_commit == set()
+        assert ch._selector.selected_ends["agg"] == set()
+
+
 class TestColdStartUnknownDelayGate:
     """A trainer's first-ever contact has no _sim_known_delay_s entry
     (reactive cache, no fallback), so earlier_stuck was blind to it and a

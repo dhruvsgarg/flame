@@ -179,18 +179,24 @@ class TestBoundRefSurvivesInPlaceMutation:
         assert bound_ref is agg._per_agg_trainer_list
 
 
-class TestSimPendingCommitSyncOnReceipt:
-    """Sim's `_sim_pending_commit` must exclude a trainer the instant its grad
-    is buffered, not only after `_sim_hold_busy_slots` next runs on some other
-    event -- else it stays wrongly re-pickable until that event fires."""
+class TestSimCommitDoesNotRepinPendingCommit:
+    """In sim, `_process_single_trainer_message` runs at COMMIT, not receipt:
+    `_aggregate_grads_async` calls `_sim_recv_min_grad` (which already discarded
+    the end from `_sim_pending_commit` once the vclock reached its sct) and THEN
+    this. It must NOT re-add the end -- doing so re-pins every just-committed
+    trainer forever, so `_sim_pending_commit` never drains, `selected_ends`
+    stays full, and the sim deadlocks (simulate_fwdllm.md §F.1-23). The
+    dispatch-time add is the pin; commit is the release."""
 
-    def test_end_added_to_sim_pending_commit_immediately(self):
+    def test_commit_does_not_readd_to_sim_pending_commit(self):
         agg = _FakeAggregator(simulated=True)
         channel = _FakeChannel()
+        # State at commit: `_sim_recv_min_grad` has already discarded t1.
+        agg._sim_pending_commit = set()
 
         agg.process(channel, _grad_msg(), "t1", timestamp=0)
 
-        assert "t1" in agg._sim_pending_commit
+        assert "t1" not in agg._sim_pending_commit
 
     def test_real_mode_does_not_touch_sim_pending_commit(self):
         agg = _FakeAggregator(simulated=False)

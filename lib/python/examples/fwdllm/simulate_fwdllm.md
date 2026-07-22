@@ -139,9 +139,22 @@ grad (real's guard is a live reference, always current — no such gap). **[LAND
 {agg_version_key}|{id}")` draw — depends only on its own identity, never on pool membership/size/call order —
 replacing `.sample()`/`.choice()` in both call sites; `agg_version_key` threaded through as the round-scoping
 key. (2) sim now also does `self._sim_pending_commit.add(end)` synchronously on receipt (mirroring real's
-live-reference guard), additive only — commit still discards it. 14 new tests (`test_selection_determinism.py`,
-`test_fwdllm_real_pending_commit.py`), full `tests/` suite green. **Needs the next live pair** to confirm
-`cohort_sequence` (and its downstream-gated `v2_var_trajectory`/`utility`/`v1b_iters_moving_avg`) clear.
+live-reference guard). 14 new tests (`test_selection_determinism.py`, `test_fwdllm_real_pending_commit.py`),
+full `tests/` suite green.
+
+**[REGRESSION — part (2) deadlocks sim, root-caused 2026-07-21 pm; validated on
+`run_20260721_161827`(real)/`_165043`(sim).]** In sim, `_process_single_trainer_message` runs at COMMIT, not
+receipt: `_aggregate_grads_async` calls `_sim_recv_min_grad` (drains a grad only when the vclock reaches its
+`sct` — line 1200 discards it from `_sim_pending_commit`) and THEN `_process_single_trainer_message`, whose new
+`else: _sim_pending_commit.add(end)` (line 1632) re-pins the just-committed trainer. Nothing discards it again,
+so `_sim_pending_commit` accumulates every committed trainer → `_sim_hold_busy_slots` holds `selected_ends`
+full (last commit: `inflight_exp=0`, buffer=0, `sel_ends=30`) → distribute finds no free slot → no re-dispatch
+across variance-retry iterations → sim stuck at `version_key=(0,0)` while real marches to `(9,·)`; every round
+blocks on the 75.5s recv-timeout, `sim_rate` 0.07 (was >2×), never reaches the 1800s (virtual) budget (§F-22/23).
+Fix: drop the sim `else` add at line 1632 — dispatch-time add (line 3750) + `_trainer_state_dict` version_key
+guard already cover re-pick; part (1) `_keyed_topk` unaffected. Part (2)'s real intent (close the
+buffered-but-uncommitted eligibility gap) belongs at the buffer-INGEST point in `_sim_recv_min_grad`, not at
+commit-drain.
 
 **Both live-validation pairs crashed at startup (07-21 pm), unrelated to the fixes above.** Physical GPU 0 went
 unhealthy on the run node between the `_100808`/`_103232` pair (10:08-10:46, all 8 GPUs fine) and the next pair
@@ -194,6 +207,17 @@ fluxtune's regression. `cohort_sequence`/`step_timing_breakdown`/`throughput`/`p
 - Momentum (S1-S3) / fluxtune server-optimizer retry — roadmap item, not parity; see
   `fluxtune_contributions.md` §8.2 / FWDLLM_DESIGN.md. Resume only after Phase-1 parity closes.
 
+**Tech debt — sim/real in-flight bookkeeping is over-complex; simplify AFTER this fix validates.**
+The §F.1-23 deadlock was a "too many sources of truth" bug: sim tracks the same virtual in-flight set across
+`_sim_pending_commit`, `_sim_inflight_expected`, `_sim_buffer`, `_sim_committed`, `selected_ends`,
+`all_selected`, reconciled by `_sim_hold_busy_slots` — and one add at the wrong seam desynced them. Two smells:
+(a) those sets should be ONE authoritative per-end state (`dispatched → returned/buffered → committed`) with
+the slot/guard sets DERIVED, not maintained in parallel; (b) `_process_single_trainer_message` means RECEIPT in
+real but COMMIT in sim — the exact ambiguity that bit here — so the receipt vs commit responsibilities should
+split. If we keep hitting deep bugs here, that refactor becomes the priority. Do it as its own scoped step
+behind the new loop-level characterization tests (`test_fwdllm_sim_grad_loop.py::TestCommitThenProcessFreesTheSlot`),
+never bundled with a correctness fix (would muddy live parity validation).
+
 **P3 — infra robustness, not parity-blocking:** Dynamic GPU health filtering — `CUDA_DEVICE_ORDER=PCI_BUS_ID`
 fixes *which* card an ordinal maps to, but doesn't detect/skip a genuinely broken one. No health check exists
 in `flame/launch/` yet. Not attempted, lower priority.
@@ -244,6 +268,26 @@ in `flame/launch/` yet. Not attempted, lower priority.
 20. **When real and sim disagree on timing, optimize REAL toward determinism — never inject noise into sim.**
     Sim's per-speed-class modeled duration must stay clean/reproducible (that's what makes `cohort_sequence`
     checkable at all). Fix real's measured completion time at its source instead.
+
+### §F.1 Version & commit invariants (confirmed real+sim in code + real logs, 2026-07-21)
+
+21. **`model_version` bumps once per COMPLETED data-bin** (variance PASS → global model update, `+= 1` at the
+    data_id advance) — constant across all iterations of one data-bin. `iteration_per_data_id` bumps on every
+    variance-FAIL retry, resets to 0 on data-bin advance. `version_key = (model_version, iteration_per_data_id)`
+    therefore changes EVERY iteration and is the sole step identity (§F-14).
+22. **Commit == the update being used for aggregation, and it happens at that instant — no lag.** Real: on
+    ordered arrival (trainer already waited). Sim: when the vclock reaches the update's `sct` (buffer-unlock IS
+    the commit). An update drained for aggregation must be committed in the same step, never on a later
+    event/aggregation.
+23. **Commit partially unlocks the trainer: it frees the compute slot immediately, but a version_key re-pick
+    guard (`_trainer_state_dict`) keeps it un-pickable for the SAME `(model_version, iteration)`.** It re-enters
+    the pool once the version_key advances (next iteration or next data-bin). Sim's slot-hold
+    (`_sim_pending_commit`) must be cleared at commit — never re-added after — or the slot never frees and
+    re-dispatch across variance-retry iterations starves.
+24. **Within a data-bin the global weights are constant; a re-picked trainer gets a RETRY, not a re-send.** The
+    aggregator sends full WEIGHTS to a trainer only for a `model_version` it has not yet received this data-bin
+    (`_weights_sent_this_cycle`, cleared on the `model_version` bump). A re-pick at the same `model_version`
+    (still on this data-bin) is told VAR=bad — recompute new perturbations — never a redundant weight re-send.
 
 ---
 

@@ -1621,15 +1621,13 @@ class TopAggregator(AsyncTopAgg):
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
-        # Exclude this trainer from re-selection until its buffered
-        # contribution commits. Real: live-rebind to `_per_agg_trainer_list`.
-        # Sim: `_sim_pending_commit` is normally reconciled only on OTHER
-        # commit/boundary events -- add synchronously here too, or it stays
-        # wrongly re-pickable until then. Additive; commit still discards it.
+        # Exclude this trainer from re-selection until its grad commits.
+        # Real: live-rebind to `_per_agg_trainer_list`. Sim: NO add -- here runs
+        # at COMMIT (`_sim_recv_min_grad` already discarded `end`), so re-adding
+        # re-pins the committed trainer forever (§F.1-23). Dispatch add +
+        # `_trainer_state_dict` version_key guard already cover it.
         if not getattr(self, "simulated", False):
             channel._selector._agg_pending_commit_ref = self._per_agg_trainer_list
-        else:
-            self._sim_pending_commit.add(end)
 
         # Canonical commit-order key: the trainer's pure modeled delay D
         # (deterministic from the registry) + str(end) as tie-break. Lets
