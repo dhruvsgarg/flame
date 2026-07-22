@@ -892,12 +892,14 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        # Per-round MQTT throttle chained at the tail of the trainer loop. A
-        # real-transport artifact with no sim analog (#8): the sim's inter-round
-        # barrier is the blocking recv in _fetch_weights + the sct reorder buffer,
-        # so charging 1 wall-s/round to the sim is pure slowdown. Gate off in sim.
-        if not getattr(self, "simulated", False):
-            time.sleep(1)
+        # No-op (§H). Formerly a per-loop time.sleep(1) MQTT throttle (real only,
+        # #8). Removed: channel.recv already blocks until the next instruction,
+        # and the one-instruction-per-version_key aggregator dedup leaves no
+        # VAR=bad backlog to pace-drain -- so this only added ~1s/round of
+        # real-only latency that sim never paid (it gated the sleep off), widening
+        # the real<->sim gap and, for a busy straggler, stacking one sleep per
+        # queued stale message. The no-message path in _fetch_weights keeps its
+        # own sleep(1) busy-spin guard, so removing this cannot hot-spin the loop.
         return
 
     def compose(self) -> None:

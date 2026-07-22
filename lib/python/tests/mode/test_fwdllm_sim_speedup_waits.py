@@ -11,14 +11,19 @@ _fetch_weights (which MUST stay -- it delivers the real weights the forward-grad
 pass needs for grad mode-invariance; async_cifar10 keeps real MQTT recv in sim
 too). The only additive, fidelity-free per-round wall the sim can skip is:
 
-  (1) the trainer's `pause_execution` throttle -- a `time.sleep(1)` chained at
-      the tail of EVERY trainer loop iteration ("don't overwhelm mqtt", a
-      real-transport artifact, principle #8); and
+  (1) the trainer's `pause_execution` throttle -- formerly a `time.sleep(1)`
+      chained at the tail of EVERY trainer loop iteration ("don't overwhelm
+      mqtt", a real-transport artifact, principle #8). Now REMOVED entirely
+      (§H): the blocking recv already paces the loop, and with the aggregator's
+      one-instruction-per-version_key dedup there is no VAR=bad backlog to drain,
+      so the sleep only added real-only latency (stacking one sleep per queued
+      stale message for a busy straggler). pause_execution is now a no-op; and
   (2) the `_check_availability` avail-spin -- a `while UN_AVL: time.sleep(1)`
       that, in sim, would freeze the virtual clock (sim time can't advance while
       a trainer blocks on time.sleep); sim availability is enforced agg-side.
 
-Both are gated so REAL mode is byte-identical and SIM mode never wall-sleeps.
+(2) is gated so REAL is byte-identical and SIM never wall-sleeps; (1) no longer
+wall-sleeps in either mode.
 """
 
 import os
@@ -49,12 +54,15 @@ class _PauseTrainer:
         self.simulated = simulated
 
 
-class TestPauseExecutionGatedInSim:
-    def test_real_mode_pauses_one_second(self, monkeypatch):
+class TestPauseExecutionIsNoOp:
+    """pause_execution is a no-op in BOTH modes now (§H): the post-put 1s throttle
+    was removed, so neither real nor sim wall-sleeps in it."""
+
+    def test_real_mode_does_not_pause(self, monkeypatch):
         slept = []
         monkeypatch.setattr(_tr_module.time, "sleep", lambda s: slept.append(s))
         _PauseTrainer(simulated=False).pause_execution()
-        assert slept == [1]  # real byte-identical: the MQTT throttle stays
+        assert slept == []  # throttle removed: no real-only per-round wall
 
     def test_sim_mode_does_not_pause(self, monkeypatch):
         slept = []
@@ -62,15 +70,15 @@ class TestPauseExecutionGatedInSim:
         _PauseTrainer(simulated=True).pause_execution()
         assert slept == []  # root #13: no per-round wall charged to the sim
 
-    def test_sim_default_missing_attr_is_treated_real(self, monkeypatch):
-        """A stand-in with no `simulated` attr (getattr default False) must keep
-        the real throttle -- the gate must never silently skip in real mode."""
+    def test_missing_attr_still_no_pause(self, monkeypatch):
+        """No-op regardless of the `simulated` attr -- the removed throttle can
+        never re-appear on any code path."""
         slept = []
         monkeypatch.setattr(_tr_module.time, "sleep", lambda s: slept.append(s))
         t = _PauseTrainer(simulated=False)
         del t.simulated
         t.pause_execution()
-        assert slept == [1]
+        assert slept == []
 
 
 class _AvailTrainer:

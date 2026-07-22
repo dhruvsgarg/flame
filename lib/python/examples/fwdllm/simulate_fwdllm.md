@@ -126,11 +126,11 @@ promote all three to code-level default-on and delete the gates.
 
 ### fwdllm / fwdllm_plus (`run_20260722_010124`/`_030320`, `_031706`/`_051919`, agg_goal=10)
 
-Checker PASSES cohort/throughput/v1/v2 (only shared `drain_wall_budget`/`agg_step_timing_breakdown` fail). The
-matched-virtual-budget normalization had HIDDEN a real 1.6× throughput gap (68 vs 110 databins/7200s) from 89 ×
-30s `sync_collect_and_accumulate_grads` stalls — **ROOT-CAUSED (§H): `recv_fifo`'s fire-and-forget streamer
-strands the slow trainer's already-arrived grad; fix `_real_sync_recv_incremental` via `drain_ready` landed
-behind `real_drain_ready_ingest` (default OFF). NEXT: operator runs the validation leg (§H).**
+The matched-virtual-budget normalization had HIDDEN a real 1.57× throughput gap (68 vs 110 databins/7200s) from
+TWO stacked real-side artifacts (§H): (1) `recv_fifo` streamer stalls (89 × 30s) — **fixed via `drain_ready`,
+VALIDATED 1.57× → 1.31×**; (2) sync `var_bad` flood (~10 instr/trainer/iteration) drained at the trainer's 1s
+poll — **fixed via per-version_key dedup + `pause_execution` removal, LANDED + unit-tested, pending validation.**
+NEXT: operator runs the fwdllm(+plus) validation leg (§H).
 
 ### Cross-baseline / shared
 
@@ -271,51 +271,63 @@ broken card — the operator must pass `--gpu-ids`. Lower priority.
 
 ---
 
-## §H  fwdllm real↔sim throughput gap — ROOT-CAUSED + FIX LANDED (flag), pending validation (2026-07-22)
+## §H  fwdllm real↔sim throughput gap — TWO fixes (recv_fifo VALIDATED; var_bad flood LANDED, pending validation) (2026-07-22)
 
-> **Root cause confirmed from telemetry AND code; fix implemented behind an A/B flag, default OFF.** Pick up at
-> "NEXT STEPS" (run the validation leg).
+> The sync-path throughput gap (real slower than sim at matched wall/vclock budget) had TWO stacked real-side
+> transport artifacts. Fix 1 (recv_fifo stall) is validated; Fix 2 (var_bad flood) is implemented + unit-tested,
+> pending a run. Both are correctness fixes: real MUST match sim's `decision + max(D)` per round (§F-20). Pick up
+> at "NEXT STEPS".
 
-### The gap = one real-transport artifact (the whole 1.6×)
-Real 68 databins in 7200s WALL vs sim 110 in 7200s VCLOCK. **The entire gap is 89 × 30s aggregator stalls** and
-the arithmetic closes exactly: 89 × 30s = 2670s = **15.00s/round** over 178 rounds = the real 37.4 − sim 22.8 =
-14.6s/cyc gap. Zero logical divergence: every one of the 178 rounds commits exactly 10 contributors (no partial
-commits, no dropped grads) — pure wall delay, so sim rightly collapses it (§F-1/§F-6); the fix is real-side (§F-20).
+### The gap (matched budget: real WALL vs sim VCLOCK)
+Real 68 databins/7200s wall vs sim 110/7200s vclock (1.57×). Zero logical divergence throughout — every round
+commits exactly 10 distinct contributors; pure wall, so sim rightly collapses it, and both fixes are real-side.
 
-### Mechanism (verified both sides + in code)
-Real collected via `channel.recv_fifo(ends, num_min_req=1, timeout=30)` (clamped to 1 by `ends_not_selected_yet`
-whenever 10 ends ≥ agg_goal 10 → runs every cohort). `recv_fifo` spawns a **fire-and-forget** streamer with one
-`_get_inner` task per end, consumes 1, returns — the other 9 tasks linger, holding their ends in
-`_active_recv_fifo_tasks` with their own 30s grace. The next collect **skips every lingering end** as "already
-active" (`channel.py:733`; 16,020 skip logs + 89 "No data from" in the real agg log). The slow trainer's grad is
-thereby stranded: trainer `…0469` (D=22.09, returns in D correctly — observed/modeled = 1.00, NOT a late/slow
-trainer) sent its grad at t=967.36, but the aggregator didn't process it until t=990.26 — a 23s stall while the
-collect burned its 30s. **This is a documented hazard:** the `drain_ready` docstring (`channel.py:594-601`)
-describes exactly this stranding; `drain_ready` is the streamer-free fix — and the **sim path already uses it**
-(`_sim_recv_min_grad`) / a `recv_fifo(new_ends, first_k=len(new_ends))` variant (`_sim_sync_recv_incremental`).
-Real was never migrated.
+### Fix 1 — recv_fifo streamer stall → `drain_ready` (VALIDATED, run `_145824`/`_153008`)
+Real collected via `channel.recv_fifo(ends, num_min_req=1, timeout=30)`. `recv_fifo`'s **fire-and-forget** per-end
+streamer tasks (each with a 30s grace) outlive their caller, so under the incremental (clamped-to-1) loop the next
+collect skips every lingering end as "already active" (`channel.py:733`) and a slow trainer's already-arrived grad
+strands until a full 30s timeout fires — **89 × 30s = 40% of collect wall**, the whole gap. Documented hazard
+(`drain_ready` docstring, `channel.py:594-601`); sim already uses the streamer-free `drain_ready`. Fix:
+`_real_sync_recv_incremental` (real twin of `_sim_sync_recv_incremental`) — arrival-ordered buffer refilled by
+`drain_ready`, popping `num_min_req`/call. Flag `real_drain_ready_ingest` (ON in `fwdllm_n100_smoke.yaml`).
+**Validated:** 89 → **0** timeouts; grad send→arrival 8ms, arrival→dequeue 23s → **0.015s**; gap **1.57× → 1.31×**.
 
-### Fix (landed, `flag real_drain_ready_ingest`, code-default OFF)
-`fwdllm_aggregator._real_sync_recv_incremental` — the real twin of `_sim_sync_recv_incremental`: a persistent
-**arrival-ordered** pending buffer refilled by streamer-free `drain_ready` (pulls straight from each End rxq,
-delivered there by the backend `_rx_task` independent of any recv path), popping `num_min_req` per call — same
-collect cadence as `recv_fifo`, minus the lingering-task stall. Rejection of duplicate/stale/no-grad messages
-stays in `_process_single_trainer_message` (only GRADIENTS+GRADIENTS_FOR_VAR_CHECK increments `agg_goal_cnt`), so
-sweeping extra no-op messages is safe; P0-1 merges grads in canonical order at commit, so aggregation is
-order-independent. Buffer cleared at the agg-goal boundary (variance-rollback safety), mirroring the sim clear.
-Pytest: `tests/mode/test_fwdllm_real_drain_ready.py` (prompt commit, arrival order, num_min_req cap + cross-call
-buffering, deadline-empty). All 325 fwdllm mode tests pass; the `test_parity_checks.py` fails are pre-existing
-(PARKED checker work below), unrelated.
+### Fix 2 — var_bad flood + 1s trainer poll (LANDED, pending validation)
+Residual after Fix 1: real 32.1s/round vs sim's 22.1s (= `max(D)`), a fixed ~10s/round. Root cause (telemetry +
+code): the sync `distribute→collect(1)` loop calls `_distribute_weights_sync` ~agg_goal times/iteration, and each
+pass re-sends VAR=bad to the WHOLE cohort — **~10 instructions/trainer/iteration** (weights were deduped via
+`_weights_sent_this_cycle`, VAR=bad was not). Async is already ~1×. The trainer loop is `get(1 msg, blocking) →
+train → put → sleep(1s)`; while a trainer is busy the ~10 VAR=bads queue, and it drains them **FIFO at 1/sec**
+(`pause_execution`) — aborting each stale one — before reaching the live instruction. The slowest trainer
+accumulates the most backlog, so its next compute starts late ∝ its D (measured: D=21.7 → +9.8s, D=18 → +2.4s,
+D~4 → +0.4s). Sim gates `pause_execution` off and the flood is harmless there, so sim = `decision + max(D)` exactly
+— the entire residual. Upstream (trainer→agg) is already clean (`_send_grads` returns on abort — one grad/version_key).
+
+**Fix (correctness, default-on, no flag):**
+1. **Aggregator one-instruction-per-version_key dedup** (`_distribute_weights_sync`): `_end_served_version_key` +
+   `_already_served_current_instruction`/`_mark_instruction_served` skip an end already dispatched the current
+   `version_key`; re-serves on a version_key bump. Collapses sync 10 → 1/iteration (matching async). Sync-only
+   (async verified already ~1×, left untouched); real+sim (shared code).
+2. **Removed the trainer `pause_execution` `sleep(1)`** (now a no-op): blocking recv already paces the loop; the
+   no-message path keeps its own `sleep(1)` busy-spin guard. Real-only artifact sim already skipped — removing it
+   improves real↔sim parity.
+3. **drain-to-latest NOT implemented — deliberately.** Under the sync barrier + dedup a trainer holds at most ONE
+   pending instruction (the barrier can't advance the version_key until the slow trainer commits), so a backlog is
+   structurally impossible; the safeguard would be unreachable dead code.
+
+Pytest: `test_fwdllm_instruction_dedup.py` (predicate/mark + loop-level once-per-version_key), updated
+`test_fwdllm_sim_speedup_waits.py` (pause_execution no-op). Full fwdllm suite passes (`test_parity_checks.py`
+fails are pre-existing PARKED work).
 
 ### NEXT STEPS
-1. **Run the validation leg** (operator; `real_drain_ready_ingest: true` is set in `fwdllm_n100_smoke.yaml`):
-   generate a fresh 7200s real run and confirm databins-in-7200s converges real→sim (~68 → ~110) and the 89
-   30s collect stalls vanish (`sync_collect_and_accumulate_grads` p99 ≪ 30s). Then re-run `run_parity.py`.
-2. **Promote per [[flag-gate-ab-lifecycle]]:** if validated inert-or-better, flip the code-level default ON and
-   delete the gate (it's a correctness/parity fix, not a tunable). fwdllm_plus uses the same real path — enable
-   there too.
-3. **Then** decompose `sync_collect_and_accumulate_grads` for **fluxtune** (async, ~8.9% gap, §A/§B) — likely a
-   different, smaller root (the residual vclock under-charge, not this recv_fifo stall); don't assume same cause.
+1. **Run the validation leg** (`./run_sequential.sh --mode both --only fwdllm --max-runtime-s 1800`). Expect:
+   sends/trainer/iteration **10 → 1**; real per-round wall **32.1 → ~22s** (= sim `max(D)`); databin gap
+   **1.31× → ~1.0×**; slow-trainer restart-lag **~10s → ~0**. Then `run_parity.py --baselines fwdllm`.
+2. **fwdllm_plus** shares the sync path — run it too (both fixes apply unchanged).
+3. **Promote Fix 1's flag** per [[flag-gate-ab-lifecycle]]: if the run confirms, flip `real_drain_ready_ingest`
+   code-default ON and delete the gate.
+4. **Then** fluxtune (async, ~8.9% gap, §A/§B) — different root (residual vclock under-charge; async has neither
+   artifact). Don't assume same cause.
 
 ### PARKED — mid-flight checker work (`async_cifar10/scripts/parity/checks.py`), DO NOT SHIP AS-IS
 Uncommitted edits from this session, correct in spirit but **one is broken**:

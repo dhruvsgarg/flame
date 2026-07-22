@@ -421,6 +421,15 @@ class TopAggregator(AsyncTopAgg):
         # _trainer_last_model_version so staleness accounting stays return-driven.
         self._weights_sent_this_cycle: set = set()
         self._redundant_weights_suppressed_total = 0
+        # One-instruction-per-version_key (§H): end_id -> the version_key last
+        # DISPATCHED to it. The sync distribute-per-collect loop re-runs ~agg_goal
+        # times per iteration; without this every pass re-sends VAR=bad to the
+        # whole cohort (~10x/iteration), and a busy trainer drains that backlog
+        # FIFO before it sees the live instruction. Skipping an end already served
+        # the current version_key collapses the cohort to one instruction each,
+        # matching the async path (which is already ~1x). Naturally re-serves on a
+        # version_key advance (stored value != current); no explicit clear needed.
+        self._end_served_version_key: dict = {}
         self.grad_pool = []
         self.cached_shared_grad_pool_trainable = None
         self.var = None
@@ -3358,6 +3367,19 @@ class TopAggregator(AsyncTopAgg):
             time.sleep(poll_s)
             self._check_early_stop_conditions()  # self-terminate at max_runtime_s
 
+    def _already_served_current_instruction(self, end) -> bool:
+        """§H one-instruction-per-version_key: True iff `end` was already
+        dispatched the CURRENT `version_key`, so re-sending this distribute pass
+        would only queue a stale VAR=bad it will abort. Re-serves automatically
+        on a version_key advance (the stored value stops matching), and a never-
+        served end (not in the map) always returns False."""
+        return self._end_served_version_key.get(end) == self.version_key
+
+    def _mark_instruction_served(self, end) -> None:
+        """Record that the CURRENT version_key's instruction was dispatched to
+        `end` (paired with `_already_served_current_instruction`)."""
+        self._end_served_version_key[end] = self.version_key
+
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
 
@@ -3563,6 +3585,11 @@ class TopAggregator(AsyncTopAgg):
         _n_weights_sent = 0
         _n_var_bad_sent = 0
         for end in ends:
+            # §H: one instruction per version_key -- skip an end already served
+            # this version_key so the distribute-per-collect loop stops flooding
+            # VAR=bad the trainer would only abort. Re-serves on a version_key bump.
+            if self._already_served_current_instruction(end):
+                continue
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
 
@@ -3652,6 +3679,7 @@ class TopAggregator(AsyncTopAgg):
                 self._trainer_inflight_dispatch_version[end] = self.version_key
 
             channel.send(end, payload)
+            self._mark_instruction_served(end)
             logger.info(f"Sent weights to {end}")
             # self.invoke_gc()
 
@@ -3665,10 +3693,12 @@ class TopAggregator(AsyncTopAgg):
             f"redundant_weights_suppressed_total={self._redundant_weights_suppressed_total})."
         )
 
-        # Cohort-dispatch wall -> barrier_wait_s anchor. Sync barrier: all `ends`
-        # dispatch in this one pass, marking the start of the dispatch->last-grad
-        # window.
-        self._round_dispatch_wall_ts = time.time()
+        # Cohort-dispatch wall -> barrier_wait_s anchor. Anchor on the FIRST
+        # pass that actually dispatched this version_key (later per-collect passes
+        # skip the whole cohort under the version_key dedup), so the anchor stays
+        # the true cohort-dispatch instant, not a no-op re-visit near the collect.
+        if _n_weights_sent + _n_var_bad_sent > 0:
+            self._round_dispatch_wall_ts = time.time()
 
     @timer_decorator
     def _distribute_weights_async(
