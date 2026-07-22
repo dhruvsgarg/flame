@@ -100,6 +100,10 @@ experiments:
           # not just committed ones) -- was the dominant uncredited real-wall
           # driver of sim_rate<1, not a trainer-side compute floor.
           sim_model_agg_compute_time: true
+          # Sim-only transport/ordering models, validated on fluxtune; enabled here
+          # to confirm inert-or-better on the sync baselines before making default.
+          sim_model_dispatch_queue: true   # MQTT serial-send stagger (#6)
+          sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: uniform
