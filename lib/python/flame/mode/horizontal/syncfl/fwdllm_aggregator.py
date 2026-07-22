@@ -434,6 +434,15 @@ class TopAggregator(AsyncTopAgg):
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
 
+        # Real-side collect via streamer-free `drain_ready` (see
+        # _real_sync_recv_incremental for the recv_fifo stall it fixes, §H).
+        # A/B flag, default OFF; buffer/seq are its per-call state.
+        self._real_drain_ready_ingest = bool(getattr(
+            self.config.hyperparameters, "real_drain_ready_ingest", False))
+        self._real_sync_pending: list = []
+        self._real_recv_seq = 0
+        logger.info(f"real_drain_ready_ingest = {self._real_drain_ready_ingest}")
+
         # #15 compute-truthful commit gate (flag-gated; default off). The
         # earlier_stuck gate in _sim_recv_min_grad blocks on _sim_inflight_expected
         # entries stamped at DISPATCH. A trainer whose payload was sent long ago
@@ -2585,6 +2594,15 @@ class TopAggregator(AsyncTopAgg):
         # Reached by both the variance-PASS and -FAIL branches. Inert in real.
         if self.simulated:
             self._release_sim_slots_at_agg_goal(channel, is_async)
+        elif getattr(self, "_real_drain_ready_ingest", False) and self._real_sync_pending:
+            # Real drain_ready twin of the sim clear: with agg_goal == cohort
+            # this is normally empty, but a variance-FAIL rollback must never
+            # strand a buffered-but-uncommitted grad into the next cycle.
+            logger.info(
+                f"Clearing {len(self._real_sync_pending)} uncommitted "
+                f"drain_ready-buffered grads at agg-goal boundary."
+            )
+            self._real_sync_pending.clear()
 
         # Centralized cleanup
         # self._force_cuda_memory_cleanup()
@@ -2680,6 +2698,53 @@ class TopAggregator(AsyncTopAgg):
 
         return committed
 
+    def _real_sync_recv_incremental(self, channel, num_min_req):
+        """Real twin of `_sim_sync_recv_incremental`: refill a persistent,
+        arrival-ordered buffer via streamer-free `drain_ready`, pop the
+        earliest-arrival `num_min_req` for the caller to commit -- same cadence
+        as the `recv_fifo` path it replaces, minus that streamer's stall (§H).
+
+        recv_fifo's fire-and-forget per-end tasks (each with a
+        RECV_TIMEOUT_WAIT_S grace) outlive their caller, so under the
+        num_min_req=1 loop the next collect skips every end as "already active"
+        and a slow trainer's already-arrived grad strands for a full 30s (once
+        per cohort, ~40% of real collect wall -- the whole throughput gap).
+        drain_ready pulls straight from each End rxq with no background task.
+        Buffer is arrival-ordered (datetime, then a seq tiebreak) to keep
+        recv_fifo's commit order; duplicate/stale/no-grad rejection stays in the
+        caller's `_process_single_trainer_message`."""
+        pending = self._real_sync_pending
+        committed = []
+        deadline = time.time() + RECV_TIMEOUT_WAIT_S
+
+        def _buffer(drained):
+            for msg, md in drained:
+                if not msg:
+                    continue
+                self._real_recv_seq += 1
+                pending.append((md[1], self._real_recv_seq, (msg, md)))
+
+        while len(committed) < num_min_req:
+            # Non-blocking sweep of everything already delivered to the End rxqs.
+            _buffer(channel.drain_ready(channel.ends(), timeout=0))
+            if not pending:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    logger.info(
+                        f"No data within {RECV_TIMEOUT_WAIT_S}s (drain_ready); "
+                        f"returning {len(committed)} of {num_min_req}"
+                    )
+                    break
+                # Block-poll for the next arrival: drain_ready polls the End rxqs
+                # at a few-ms tick and returns on the first message or `remaining`.
+                _buffer(channel.drain_ready(channel.ends(), timeout=remaining))
+                if not pending:
+                    continue  # timed out empty -> next loop's remaining<=0 breaks
+            pending.sort(key=lambda x: (x[0], x[1]))
+            _ts, _seq, item = pending.pop(0)
+            committed.append(item)
+        return committed
+
     @timer_decorator
     def sync_collect_and_accumulate_grads(self, tag, channel):
         """Aggregate trainer gradients synchronously, with timing and stage metadata."""
@@ -2749,6 +2814,19 @@ class TopAggregator(AsyncTopAgg):
                 f"[SYNC_SIM_BARRIER] round={self._round} committed={len(committed)} "
                 f"T_v={self._vclock.now:.1f} barrier_lags_s={self._sync_barrier_lags_s}"
             )
+        elif getattr(self, "_real_drain_ready_ingest", False):
+            # Streamer-free ingest (§H): drain_ready avoids recv_fifo's
+            # lingering-task stall. Same per-call num_min_req commit contract.
+            for msg, metadata in self._real_sync_recv_incremental(channel, num_min_req):
+                end, timestamp = metadata
+                if not msg:
+                    continue
+                self._process_single_trainer_message(channel, msg, end, timestamp)
+                if self._agg_goal_cnt >= self._agg_goal:
+                    logger.info(
+                        f"Reached agg_goal of {self._agg_goal} since agg_goal_count is {self._agg_goal_cnt}. Breaking from for loop, proceeding to aggregate."
+                    )
+                    break
         else:
             for msg, metadata in channel.recv_fifo(channel.ends(), num_min_req,
                                                    timeout=RECV_TIMEOUT_WAIT_S):

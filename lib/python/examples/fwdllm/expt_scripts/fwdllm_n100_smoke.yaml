@@ -70,6 +70,10 @@ experiments:
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
           # but keeps the invariant/config identical across all baselines.
           inflight_residence: true
+          # §H fix: collect grads via streamer-free drain_ready, not recv_fifo
+          # (whose lingering per-end tasks stall a cohort ~30s). Code-default
+          # OFF; ON here for the validation leg.
+          real_drain_ready_ingest: true
           # Smoke-test stop bar: whichever of these fires first ends the run
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).

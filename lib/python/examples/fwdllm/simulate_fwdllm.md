@@ -126,10 +126,11 @@ promote all three to code-level default-on and delete the gates.
 
 ### fwdllm / fwdllm_plus (`run_20260722_010124`/`_030320`, `_031706`/`_051919`, agg_goal=10)
 
-Checker PASSES cohort/throughput/v1/v2 (only shared `drain_wall_budget`/`agg_step_timing_breakdown` fail), **but
-this is not truly settled** — the checker's matched-virtual-budget normalization HIDES a real throughput gap:
-real completes 68 databins in 7200s wall vs sim 110 in 7200s vclock (~1.6×), from 89 30s straggler timeouts in
-`sync_collect_and_accumulate_grads`. **Active root-cause handoff in §H** — resolve before calling fwdllm settled.
+Checker PASSES cohort/throughput/v1/v2 (only shared `drain_wall_budget`/`agg_step_timing_breakdown` fail). The
+matched-virtual-budget normalization had HIDDEN a real 1.6× throughput gap (68 vs 110 databins/7200s) from 89 ×
+30s `sync_collect_and_accumulate_grads` stalls — **ROOT-CAUSED (§H): `recv_fifo`'s fire-and-forget streamer
+strands the slow trainer's already-arrived grad; fix `_real_sync_recv_incremental` via `drain_ready` landed
+behind `real_drain_ready_ingest` (default OFF). NEXT: operator runs the validation leg (§H).**
 
 ### Cross-baseline / shared
 
@@ -270,59 +271,51 @@ broken card — the operator must pass `--gpu-ids`. Lower priority.
 
 ---
 
-## §H  HANDOFF — fwdllm real↔sim throughput gap (root-cause in progress, 2026-07-22)
+## §H  fwdllm real↔sim throughput gap — ROOT-CAUSED + FIX LANDED (flag), pending validation (2026-07-22)
 
-> **Context handoff for a fresh chat.** Self-contained: the core question, what's established from telemetry,
-> the current lead, the exact next steps + sanity checks, and the parked checker work. Pick up at "NEXT STEPS".
+> **Root cause confirmed from telemetry AND code; fix implemented behind an A/B flag, default OFF.** Pick up at
+> "NEXT STEPS" (run the validation leg).
 
-### The core question (principled framing)
-In the same clock budget, **real completes 68 databins in 7200s WALL; sim completes 110 databins in 7200s
-VCLOCK.** The vclock is *defined* to reconstruct real wall, so true throughput parity means **equal databins in
-equal wall(real)/vclock(sim)**. It's off by ~1.6×. Find the principled gap. (This is NOT closed by the
-checker's matched-virtual-budget normalization — that HIDES it; it's a real defect.)
+### The gap = one real-transport artifact (the whole 1.6×)
+Real 68 databins in 7200s WALL vs sim 110 in 7200s VCLOCK. **The entire gap is 89 × 30s aggregator stalls** and
+the arithmetic closes exactly: 89 × 30s = 2670s = **15.00s/round** over 178 rounds = the real 37.4 − sim 22.8 =
+14.6s/cyc gap. Zero logical divergence: every one of the 178 rounds commits exactly 10 contributors (no partial
+commits, no dropped grads) — pure wall delay, so sim rightly collapses it (§F-1/§F-6); the fix is real-side (§F-20).
 
-### Established from telemetry (`run_20260722_010124` real / `_030320` sim)
-1. **Gap is one aggregator function:** `sync_collect_and_accumulate_grads` (blocking grad-collection),
-   **37.4s/cyc real vs 0.47s/cyc sim** — ≈ the whole 39s real cycle. (agg step_timing sums.)
-2. **Median is fine:** median collect-call 1.93s; median collection ≈ 20s/cyc ≈ modeled slowest-delay 22.1s ≈
-   sim vclock 22.8s. The *typical* cycle already matches.
-3. **The gap is a tail of timeouts:** **89 collect-calls (4.8%) block exactly 30.00s** = 2670s = **40% of all
-   collect wall**. Cap calls at 5s ⇒ real 22.2s/cyc, matching sim. So the entire 1.6× is these 89 events.
-4. **Trainers DO return in ~their stipulated `D`:** in a sampled timeout window the straggler was slow trainer
-   `…0469` (D=22.09) running `_emulate_training_delay`=21.88s — correct duration, **but it STARTED ~7s late**
-   (began its delay at t+7.2 of the collect window, finishing ~t+29, right at the 30s cap). Fast trainers had
-   already returned at t+0. So the trainer isn't slow — **its delay STARTED LATE** (dispatch/scheduling stagger),
-   pushing the slowest member's arrival toward the 30s timeout.
-5. **Corrected earlier missteps (do not repeat):** (a) a per-"round-trip" decomposition used the wrong unit —
-   `task_recv` fires on every `var_bad` broadcast, not once per compute; ignore that table. (b) I briefly
-   concluded "vclock fine, real just slow, accept it" — REJECTED by operator: trainers are expected back exactly
-   in `D`, so the 89 timeouts are a **bug to root-cause**, not an artifact to normalize away.
+### Mechanism (verified both sides + in code)
+Real collected via `channel.recv_fifo(ends, num_min_req=1, timeout=30)` (clamped to 1 by `ends_not_selected_yet`
+whenever 10 ends ≥ agg_goal 10 → runs every cohort). `recv_fifo` spawns a **fire-and-forget** streamer with one
+`_get_inner` task per end, consumes 1, returns — the other 9 tasks linger, holding their ends in
+`_active_recv_fifo_tasks` with their own 30s grace. The next collect **skips every lingering end** as "already
+active" (`channel.py:733`; 16,020 skip logs + 89 "No data from" in the real agg log). The slow trainer's grad is
+thereby stranded: trainer `…0469` (D=22.09, returns in D correctly — observed/modeled = 1.00, NOT a late/slow
+trainer) sent its grad at t=967.36, but the aggregator didn't process it until t=990.26 — a 23s stall while the
+collect burned its 30s. **This is a documented hazard:** the `drain_ready` docstring (`channel.py:594-601`)
+describes exactly this stranding; `drain_ready` is the streamer-free fix — and the **sim path already uses it**
+(`_sim_recv_min_grad`) / a `recv_fifo(new_ends, first_k=len(new_ends))` variant (`_sim_sync_recv_incremental`).
+Real was never migrated.
 
-### Current lead
-The slowest cohort member's `_emulate_training_delay` **starts late** relative to cohort dispatch; when
-`start_stagger + D` approaches/exceeds a **30s cap**, `sync_collect_and_accumulate_grads` blocks the full 30s.
-Two unknowns to resolve: (a) WHY the slow trainer starts its delay late (serial dispatch? GPU scheduling on the
-single host? a wait before `_emulate_training_delay`?); (b) whether the 30s cap is a real recv-timeout constant,
-and whether hitting it changes the LOGICAL path (commit 9-of-10, re-dispatch, extra cycle) — which would make it
-a correctness parity bug, not just timing.
+### Fix (landed, `flag real_drain_ready_ingest`, code-default OFF)
+`fwdllm_aggregator._real_sync_recv_incremental` — the real twin of `_sim_sync_recv_incremental`: a persistent
+**arrival-ordered** pending buffer refilled by streamer-free `drain_ready` (pulls straight from each End rxq,
+delivered there by the backend `_rx_task` independent of any recv path), popping `num_min_req` per call — same
+collect cadence as `recv_fifo`, minus the lingering-task stall. Rejection of duplicate/stale/no-grad messages
+stays in `_process_single_trainer_message` (only GRADIENTS+GRADIENTS_FOR_VAR_CHECK increments `agg_goal_cnt`), so
+sweeping extra no-op messages is safe; P0-1 merges grads in canonical order at commit, so aggregation is
+order-independent. Buffer cleared at the agg-goal boundary (variance-rollback safety), mirroring the sim clear.
+Pytest: `tests/mode/test_fwdllm_real_drain_ready.py` (prompt commit, arrival order, num_min_req cap + cross-call
+buffering, deadline-empty). All 325 fwdllm mode tests pass; the `test_parity_checks.py` fails are pre-existing
+(PARKED checker work below), unrelated.
 
-### NEXT STEPS (start here in the new chat)
-1. **Check the REAL TRAINER LOG for the timeout root cause (operator's directive).** For trainer `…0469` (and
-   1-2 other frequent stragglers), measure the gap between `task_recv.ts` (got dispatch) and the start of
-   `_emulate_training_delay` (its `ts` − `duration_s`). If that gap is large, the delay starts late → find what
-   the trainer does in between (`_fetch_weights`, `recv_wrapper`, GPU queue wait). Trainers must start `D`
-   immediately on dispatch.
-2. **Locate the 30.00s constant** in `fwdllm_aggregator.py` / channel recv path (grep `30`, `timeout`,
-   `recv`-timeout). Confirm it's the cap; check what the agg does when it fires (proceed without the grad?
-   re-dispatch? — trace whether real then commits a different cohort/cadence than sim → §F-12 logical-parity).
-3. **Characterize the 89 events:** are they the same few trainers (consistent starvation) or the slowest-D
-   members each cycle? Correlate timeout incidence with trainer `D` and dispatch position.
-4. **Sanity checks to confirm the fix target:** (a) Σ`_emulate_training_delay` per cohort ≈ max(D) if parallel,
-   or ≈ Σ(D) if serialized — distinguishes GPU serialization from stagger. (b) Verify observed_max/modeled=1.00
-   still holds (it did) so per-trainer `D` emulation is correct. (c) After any real-side fix, re-check
-   databins-in-7200s converges real→sim.
-5. **Then** repeat the `sync_collect_and_accumulate_grads` decomposition for **fluxtune** (async, ~8.9% gap in
-   §A/§B) — likely a different, smaller root; don't assume same cause.
+### NEXT STEPS
+1. **Run the validation leg** (operator; `real_drain_ready_ingest: true` is set in `fwdllm_n100_smoke.yaml`):
+   generate a fresh 7200s real run and confirm databins-in-7200s converges real→sim (~68 → ~110) and the 89
+   30s collect stalls vanish (`sync_collect_and_accumulate_grads` p99 ≪ 30s). Then re-run `run_parity.py`.
+2. **Promote per [[flag-gate-ab-lifecycle]]:** if validated inert-or-better, flip the code-level default ON and
+   delete the gate (it's a correctness/parity fix, not a tunable). fwdllm_plus uses the same real path — enable
+   there too.
+3. **Then** decompose `sync_collect_and_accumulate_grads` for **fluxtune** (async, ~8.9% gap, §A/§B) — likely a
+   different, smaller root (the residual vclock under-charge, not this recv_fifo stall); don't assume same cause.
 
 ### PARKED — mid-flight checker work (`async_cifar10/scripts/parity/checks.py`), DO NOT SHIP AS-IS
 Uncommitted edits from this session, correct in spirit but **one is broken**:
