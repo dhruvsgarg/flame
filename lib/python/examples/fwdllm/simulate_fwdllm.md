@@ -41,7 +41,8 @@ python run_parity.py --validate             # + live-run checks (staleness/vcloc
 Rung catalog: PARITY.md §F. **Not redefined there:** per-stage wall-budget instrumentation
 (`drain_wall_budget`, `trainer_phase_wall_budget`, `step_timing_breakdown`, `aggregation_compute_wall`) is
 ONE-SIDED (`sim<=real`) where sim should collapse a real-transport phase to ~0, DISTRIBUTIONAL where it's
-genuine shared compute.
+genuine shared compute. Implementation-level reference (tiers, the `pctl_band_ok` band-escape primitive
+and its `min_abs` calibration rule, full wall-budget/timing rung table): `async_cifar10/scripts/parity/README.md`.
 
 ---
 
@@ -226,6 +227,15 @@ broken card — the operator must pass `--gpu-ids`. Lower priority.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **Checker: `matched_virtual_budget` deleted → grade on the LOGICAL budget N** (07-23) — `V=min(sim
+  vclock, real wall)` conflated the two clocks (the axis `sim_rate` tests). New `_matched_logical_budget`
+  (progress ≤ N); U2/K8 reshaped count→**time-to-N**, v2/utility/`cohort_sequence.count` swapped to
+  N-truncation, `cohort_sequence` deps V1. 666 tests pass. Design: PARITY.md §1.5.
+- **Checker: `pctl_band_ok` DIST-band escape landed + tested** (07-23) — `_step_timing_compare`,
+  `drain_tail_s`, `per_round_advance` central-tendency escape. 24 new tests; README added (`parity/README.md`).
+- **Checker: `_step_timing_compare`'s `band_min_abs_s` (0.5s) silently passed 5x step-timing regressions**
+  (07-23) — 10-100ms-scale functions vs a 500ms floor copied from drain's ~1s scale; anchored to the
+  metric's own noise constant (`_STEP_TIMING_NEAR_ZERO_ABS_DIFF_S`=3e-4s) instead.
 - **fluxtune 19→5 validated at 7200s** (07-22) — selector rebind + `_keyed_topk` + sim-deadlock fix (§F.1-23)
   + dispatch-queue/commit-fold vclock charging all held; `preferred_duration`/`terminal_state`/`total_commits`
   now PASS. Remaining fails all downstream of a residual ~9% vclock under-charge (§B).
@@ -299,9 +309,11 @@ Real `_163914`/`_163929`/`_163949`, sim `_172551`/`_172624`/`_172708` (fwdllm / 
 | fluxtune | 67 / 3 / 16 | ✓* 0.2% | ✗ *REAL drift* | ✗ mw 6.1% | trainer_speed_identity.utility |
 
 Reading the fails into three buckets:
-- **Checker false-fail (FW/FW+ `cohort_sequence`):** `composition` is PERFECT (match_frac 1.0, mean_overlap 1.0);
-  only `count` fails on RAW unfiltered totals (109 vs 118 / 137 vs 148, ~7.5%). This is the PARKED bug below —
-  not a parity gap. Filtering count to the matched virtual budget flips both green.
+- **FW/FW+ `cohort_sequence.count` — a comparison-AXIS artifact, not a parity gap:** `composition` is
+  PERFECT (match_frac 1.0, mean_overlap 1.0); `count` differed on raw fixed-wall totals (109 vs 118 / 137
+  vs 148, ~7.5%) because a faithful sim (`sim_rate ≥ 1`) makes more cohorts in equal WALL. FIXED 07-23 —
+  `count` now grades at the matched LOGICAL budget N (`_matched_logical_budget`, PARITY.md §1.5); should
+  flip green next run.
 - **Marginal / small-N (FW+ throughput mw 5.6%, FW+ v2 mw 2.55%):** full-run numbers are ~perfect (v2 full-run
   0.05%); only the matched-window sub-check nudges over tol at 2700s. Re-check on a longer pair before treating
   as a mechanism.
@@ -370,31 +382,21 @@ in the per-cohort delta (grow-leg hypothesis REFUTED).
 the existing `real_distribute_settle_s` knob (code-default 0.1 = byte-identical). `fluxtune_n10_smoke.yaml` sets it
 to **0.0** for the A/B.
 
+### `matched_virtual_budget` deleted — grade on the logical axis (LANDED 07-23; design PARITY.md §1.5)
+This section IS the evidence. The sync leg above proves V **masks**: FW/FW+ read at-parity under V while a
+real **1.57× throughput gap** hid, found only via raw databins/wall and fixed on the real side. The fluxtune
+skew proves V **fails to grade**: sim still runs 1795 vs 1648 cycles *inside* the matched V. So V is neither
+necessary nor sufficient for parity — it conflates sim vclock with real wall, the very thing `sim_rate` tests.
+**Landed:** `_matched_virtual_budget` deleted, `_matched_logical_budget`/`_time_to_progress` added; U2/K8
+reshaped count→time-to-N, v2/utility/`cohort_sequence.count` swapped to progress-≤-N, `cohort_sequence`
+deps V1; report.py + README updated; 666 tests pass. **Still open:** launcher still ends on a wall budget
+(checker truncates to N post-hoc — correct, but a fixed-N termination would drop the wasted tail).
+
 ### OTHER OPEN (independent of the fluxtune skew above)
-- **PARKED checker fix (below):** filter `cohort_sequence.count` to the matched virtual budget → flips FW/FW+ green.
 - **Re-check the FW+ marginal fails** (throughput mw 5.6%, v2 mw 2.55%) on a >3600s pair; refresh §A when run.
+  v2 now grades at logical-N; throughput mw is K2's min-count window (unchanged, already logical).
 - **Settle sleep:** real ran clean at `real_distribute_settle_s: 0.0` (droppable dead weight), but it's NOT the
   parity cause — don't expect it to move fluxtune. Verify selection determinism before dropping code-wide.
 
-### PARKED — mid-flight checker work (`async_cifar10/scripts/parity/checks.py`), DO NOT SHIP AS-IS
-Uncommitted edits from this session, correct in spirit but **one is broken**:
-- ✅ `pctl_band_ok()` helper added; applied to `_step_timing_compare` (band escape) + `drain_wall_budget`
-  `drain_tail_s` reclassified one-sided→DIST band + `per_round_advance` central-tendency escape. These made
-  fluxtune `drain_wall_budget` and fwdllm `per_round_advance` pass; keep.
-- ❌ **`cohort_sequence` split into `composition` + `count` uses RAW full-run counts** (2700s run: fwdllm 109 vs
-  118, fwdllm_plus 137 vs 148, ~7.5%) → false-fails fwdllm/fwdllm_plus (composition is perfect 1.0; count fails
-  on the raw gap). **Must filter both to the matched virtual budget** (`_matched_virtual_budget`, as
-  `total_commits` does) before counting — raw totals are the known false-fail (§G 07-20). Fix or revert the count
-  sub-check before committing.
-- Flags `sim_model_dispatch_queue` + `sim_sct_ordered_drain` were ADDED to `fwdllm_n100_smoke_sim.yaml` and
-  `fwdllm_plus_n100_smoke_sim.yaml` (not yet run). If validated inert-or-better next run, remove the config gates
-  and make sim-default (§B flag-promotion).
-- TODO deferred (both REQUIRED before committing the checker changes, per §F-8 "ship telemetry + plot + pytest
-  in the same change"):
-  1. **Pytest coverage** for the new/changed `checks.py` logic — `pctl_band_ok()` (band pass/fail, `min_abs`
-     floor, tail-ignore), the `_step_timing_compare` band escape, `drain_tail_s` DIST reclassification,
-     `per_round_advance` central-tendency escape, and the fixed `cohort_sequence` composition+count split. Add to
-     `tests/mode/test_parity_checks.py`.
-  2. **Parity checker README** (tiers EXACT/DIST/DIAG, rung catalog, what each grades) in the `parity/` dir —
-     shared across examples, so NOT in this doc. Checker invariants I1-I6 were drafted in chat; re-derive AFTER
-     the vclock/throughput root-cause lands (they hinge on it).
+**Checker invariants I1-I6** (drafted in chat, not yet written up) — re-derive AFTER the
+vclock/throughput root-cause lands (they hinge on it).

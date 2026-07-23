@@ -509,40 +509,46 @@ def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     return coord
 
 
-def _matched_virtual_budget(real_agg_rounds: list, sim_agg_rounds: list):
-    """Matched virtual budget V = min(final_sim_vclock, final_real_wall), plus a
-    real-side time function -- generalizes the mechanism `total_commits_parity`/
-    `terminal_state_parity` already use.
+def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
+    """Matched LOGICAL budget N = min(final_real_progress, final_sim_progress) on
+    the run's progress axis (fwdllm committed `data_id`, else FL `round`).
 
-    Unlike index-count truncation (`events[:matched_n]`), this reads each
-    event's own commit timestamp rather than assuming "the i-th event" means
-    the same thing on both sides -- safe for sync but not async, where cohorts
-    can commit out of arrival order.
+    Parity is "same work, differing only in wall-clock" (F-12): fix the WORK
+    (progress <= N, the common prefix) and let TIME be the measured output --
+    never fix a clock value and count work, which conflates sim's vclock with
+    real's wall on the axis `sim_rate` tests. See PARITY.md §1.5.
 
-    Returns (V, real_time_fn) or (None, None) if either side has no usable
-    clock. `real_time_fn(event) -> Optional[float]`, 0-based from real's own
-    run start.
+    Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or None`
+    -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts across
+    laps; compare with N via `<=`.
     """
-    sim_vclock_vals = [e.get("vclock_now") for e in sim_agg_rounds
-                       if e.get("vclock_now") is not None]
-    if not sim_vclock_vals:
-        return None, None
-    real_ts = [e["ts"] for e in real_agg_rounds if e.get("ts") is not None]
-    if not real_ts:
-        return None, None
-    final_sim_vclock = max(sim_vclock_vals)
-    real_coord = _real_intrinsic_clock(real_agg_rounds)
-    real_t0 = min(real_ts)
-    if real_coord is not None:
-        real_time_fn = lambda e: real_coord.get(id(e))
-        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+    axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
+                                      _progress_axis(sim_agg_rounds)) else "round"
+    if axis == "round":
+        prog_fn = lambda e: e.get("round")
     else:
-        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
-        final_real_wall = max(real_ts) - real_t0
-    V = min(final_sim_vclock, final_real_wall)
-    if V <= 0:
+        prog_fn = lambda e: ((e.get("round") or 0, e.get("cycle_data_id"))
+                             if e.get("cycle_data_id") is not None else None)
+    real_p = [p for e in real_agg_rounds if (p := prog_fn(e)) is not None]
+    sim_p = [p for e in sim_agg_rounds if (p := prog_fn(e)) is not None]
+    if not real_p or not sim_p:
         return None, None
-    return V, real_time_fn
+    return min(max(real_p), max(sim_p)), prog_fn
+
+
+def _time_to_progress(agg_rounds: list, prog_fn, N, time_fn) -> Optional[float]:
+    """Time coordinate at which a side reaches logical progress N: the max
+    `time_fn(e)` over events with `prog_fn(e) <= N`. `time_fn` is real's intrinsic/
+    wall clock or sim's vclock. None if no such event carries a time."""
+    times = [time_fn(e) for e in agg_rounds
+             if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
+    return max(times) if times else None
+
+
+def _prog_json(N):
+    """JSON-safe rendering of a progress key (the `data_id` axis key is a
+    `(round, cycle_data_id)` tuple, which JSON can't use as a scalar)."""
+    return f"{N[0]}:{N[1]}" if isinstance(N, tuple) else N
 
 
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
@@ -1943,25 +1949,23 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
         "min_samples": min_samples,
         "max_ks_tol": max_ks,
     }
-    # Same population-mismatch rationale as throughput_parity's matched_window_*:
-    # utility evolves over training, so sim's extra unmatched rounds in the same
-    # wall window shift the pooled distribution even with zero per-round
-    # divergence. Filter both sides to the matched virtual budget V instead of
-    # index-count truncation. Diagnostic-only for async pending cohort_sequence.
+    # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
+    # window: utility evolves, so pooling unequal prefixes shifts the dist even at
+    # zero divergence (PARITY.md §1.5). Gated for sync; async diagnostic.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     r_events = utility_events(real["agg_rounds"])
     s_events = utility_events(sim["agg_rounds"])
-    V, real_time_fn = _matched_virtual_budget(real["agg_rounds"], sim["agg_rounds"])
-    if V is not None:
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
         matched_r_pool = [u for e in r_events
-                          if real_time_fn(e) is not None and real_time_fn(e) <= V + 1e-9
+                          if (p := prog_fn(e)) is not None and p <= N
                           for u in (e.get("stat_utility") or []) if u is not None]
         matched_s_pool = [u for e in s_events
-                          if (e.get("vclock_now") or 0) <= V + 1e-9
+                          if (p := prog_fn(e)) is not None and p <= N
                           for u in (e.get("stat_utility") or []) if u is not None]
         if matched_r_pool and matched_s_pool:
             matched_pooled_ks = ks_stat(matched_r_pool, matched_s_pool)
-            result["matched_virtual_budget_s"] = round(V, 1)
+            result["matched_logical_budget_n"] = _prog_json(N)
             result["matched_window_n_real"] = len(matched_r_pool)
             result["matched_window_n_sim"] = len(matched_s_pool)
             result["matched_window_pooled_ks_stat"] = round(matched_pooled_ks, 3)
@@ -2503,70 +2507,49 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3) -> dict:
 
 
 def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
-    """U2 [EXACT]: total commits at matched virtual budget V = min(final_vclock, final_wall).
+    """U2 [EXACT]: virtual TIME to reach the matched LOGICAL budget N.
 
-    abs diff ≤ 5% of commits — the shared throughput-family tolerance (= K2, K8).
-
-    Rationale: U4 (agg_goal_count cycles 1..K, INV) separately guarantees a fixed
-    agg_goal commits per round, so at matched V the commit count is the round count × agg_goal —
-    i.e. U2 carries no signal beyond K8's matched-V round rollup (and the K2 throughput mechanism).
-    Verified: U2.rel_diff == K8.rounds_rel_diff to 3 decimals on all four
-    baselines (commits/round identical across modes). The old 2% bar required matched-V commits to
-    match 5× tighter than matched-V rounds / throughput itself, with no separate mechanism behind
-    it: a stochastic 2-rounds-in-85 difference (feddance) or a residual throughput delta that K2/K8
-    already judge failed U2 alone. The throughput family now shares ONE deliberate 5% bar; U2 stays
-    as a commit-level cross-check of the same rollup (append-only guard), not a stricter one.
+    At a fixed logical budget N (min committed data_ids / FL rounds both sides
+    reached, §F-2), the commit COUNT is N by construction on both sides -- so the
+    signal is TIME, not count: real's algorithmic-time-to-N vs sim's vclock-to-N,
+    rel_diff ≤ 5% (the shared throughput-family bar, = K2/K8). This states the
+    clock-parity deliverable ("does sim's vclock predict real's time for the same
+    work") directly, instead of counting work at a clock window V that conflates
+    the two clocks on the axis under test (PARITY.md §1.5). Kept as the
+    commit-level cross-check of the K2 rate mechanism (append-only guard).
     """
-    sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
-                       if e.get("vclock_now") is not None]
-    if not sim_vclock_vals:
+    if not any(e.get("vclock_now") is not None for e in sim["agg_rounds"]):
         return {"ok": False, "tier": "EXACT",
                 "note": "K10: no vclock_now in sim events"}
-    final_sim_vclock = max(sim_vclock_vals)
     real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
-    # REAL: matched-budget window on real's genuine algorithmic clock (cumulative
-    # intrinsic span) when emitted, else raw wall ts (async byte-identical).
-    # _real_time(e) is 0-based cumulative-intrinsic OR ts-real_t0.
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no matched logical budget — run too short to measure"}
+    # REAL time = genuine algorithmic clock (cumulative intrinsic span) when
+    # emitted, else raw 0-based wall ts (async byte-identical). SIM time = vclock.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts)
     if real_coord is not None:
-        _real_time = lambda e: real_coord.get(id(e))
-        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+        real_time_fn = lambda e: real_coord.get(id(e))
     else:
-        _real_time = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
-        final_real_wall = max(real_ts) - real_t0
-    V = min(final_sim_vclock, final_real_wall)
-    if V <= 0:
+        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
+    real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
+    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N,
+                              lambda e: e.get("vclock_now"))
+    if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
-                "note": "matched virtual budget V ≤ 0 — run too short to measure"}
-    # Progress-axis re-key: count commits on the axis the run advances. Normal FL
-    # commits once per agg_round; fwdllm's committed unit is the `data_id` (a
-    # variance-FAIL cycle rolls back, so raw cycle events overcount), so count
-    # DISTINCT committed data_ids within V.
-    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
-                                      _progress_axis(real["agg_rounds"])) else "round"
-    if axis == "round":
-        n_sim = sum(1 for e in sim["agg_rounds"] if (e.get("vclock_now") or 0) <= V + 1e-9)
-        n_real = sum(1 for e in real["agg_rounds"]
-                     if _real_time(e) is not None and _real_time(e) <= V + 1e-9)
-    else:
-        sim_units = _per_progress_last_event(sim["agg_rounds"], axis)
-        real_units = _per_progress_last_event(real["agg_rounds"], axis)
-        n_sim = sum(1 for e in sim_units.values() if (e.get("vclock_now") or 0) <= V + 1e-9)
-        n_real = sum(1 for e in real_units.values()
-                     if _real_time(e) is not None and _real_time(e) <= V + 1e-9)
-    if max(n_sim, n_real, 1) == 0:
-        return {"ok": True, "tier": "EXACT", "note": "no commits in V window"}
-    rel_diff = abs(n_sim - n_real) / max(n_sim, n_real)
+                "note": "zero time-to-N in one mode — run too short to measure"}
+    rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
     ok = rel_diff <= tol_rel
     return {
         "ok": ok,
         "tier": "EXACT",
-        "matched_virtual_budget_s": round(V, 1),
-        "n_sim_commits": n_sim,
-        "n_real_commits": n_real,
+        "matched_logical_budget_n": _prog_json(N),
+        "sim_vclock_to_n_s": round(sim_t, 1),
+        "real_time_to_n_s": round(real_t, 1),
         "rel_diff": round(rel_diff, 4),
         "tol": tol_rel,
     }
@@ -2575,74 +2558,65 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
 def terminal_state_parity(real: dict, sim: dict,
                            rounds_tol: float = 0.05,
                            trainers_tol: float = 0.05) -> dict:
-    """K8 [EXACT]: at matched virtual budget V, both modes have comparable FL-round count.
+    """K8 [EXACT]: at the matched LOGICAL budget N, do the modes agree on the
+    virtual TIME to reach N and on the set of unique contributing trainers?
 
-    rounds within 5% (the shared throughput-family bar, = K2/U2), unique trainers within 5%.
+    At fixed N (min committed data_ids / FL rounds both sides reached, §F-2) the
+    progress-unit count is N by construction, so the time dimension measures real's
+    algorithmic-time-to-N vs sim's vclock-to-N (rel_diff ≤ 5%, = K2/U2). The
+    trainer dimension stays a genuine count -- the unique trainers contributing
+    across the first N units can diverge even at matched N. Graded on the progress
+    axis, never a clock window V (PARITY.md §1.5). `rounds_tol` bounds the time.
     """
-    sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
-                       if e.get("vclock_now") is not None]
-    if not sim_vclock_vals:
+    if not any(e.get("vclock_now") is not None for e in sim["agg_rounds"]):
         return {"ok": False, "tier": "EXACT",
                 "note": "K10: no vclock_now in sim events — cannot compute terminal state parity"}
-    final_sim_vclock = max(sim_vclock_vals)
     real_ts_all = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
     if not real_ts_all:
         return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
-    # REAL: matched-budget window on real's genuine algorithmic clock (see
-    # total_commits_parity); falls back to wall ts for async (byte-identical).
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no matched logical budget — run too short to measure"}
+    # REAL time = genuine algorithmic clock (cumulative intrinsic span) when
+    # emitted, else raw 0-based wall ts. SIM time = vclock.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
     real_t0 = min(real_ts_all)
     if real_coord is not None:
-        _real_time = lambda e: real_coord.get(id(e))
-        final_real_wall = max(real_coord.values()) if real_coord else 0.0
+        real_time_fn = lambda e: real_coord.get(id(e))
     else:
-        _real_time = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
-        final_real_wall = max(real_ts_all) - real_t0
-    V = min(final_sim_vclock, final_real_wall)
-    if V <= 0:
-        return {"ok": True, "tier": "EXACT", "status": "SKIP",
-                "note": "matched virtual budget V ≤ 0 — run too short to measure"}
+        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
+    real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
+    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N,
+                              lambda e: e.get("vclock_now"))
 
-    # Progress-axis re-key: "rounds at V" is really "progress units at V" -- FL
-    # rounds for normal FL, committed data_ids for fwdllm (round static).
-    axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
-                                      _progress_axis(real["agg_rounds"])) else "round"
-    # data_id axis keys on (round, cycle_data_id) tuples -- per-event unit must
-    # match that shape to test membership below.
-    _unit = ((lambda e: e.get("round")) if axis == "round"
-             else (lambda e: (e.get("round") or 0, e.get("cycle_data_id"))))
-    sim_by_round = _per_progress_last_event(sim["agg_rounds"], axis)
-    real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
-
-    sim_rounds_at_V = {r for r, e in sim_by_round.items()
-                       if (e.get("vclock_now") or 0) <= V + 1e-9}
-    real_rounds_at_V = {r for r, e in real_by_round.items()
-                        if _real_time(e) is not None and _real_time(e) <= V + 1e-9}
-
-    def _trainers(agg_rounds, unit_set):
+    def _trainers(agg_rounds):
         ts = set()
         for e in agg_rounds:
-            if _unit(e) in unit_set:
+            p = prog_fn(e)
+            if p is not None and p <= N:
                 ts.update(e.get("contributing_trainers", []))
         return ts
 
-    sim_trainers = _trainers(sim["agg_rounds"], sim_rounds_at_V)
-    real_trainers = _trainers(real["agg_rounds"], real_rounds_at_V)
-    n_sr, n_rr = len(sim_rounds_at_V), len(real_rounds_at_V)
+    sim_trainers = _trainers(sim["agg_rounds"])
+    real_trainers = _trainers(real["agg_rounds"])
     n_st, n_rt = len(sim_trainers), len(real_trainers)
-    rounds_rel_diff = abs(n_sr - n_rr) / max(n_sr, n_rr, 1)
     trainers_rel_diff = abs(n_st - n_rt) / max(n_st, n_rt, 1)
-    ok = rounds_rel_diff <= rounds_tol and trainers_rel_diff <= trainers_tol
+    if not real_t or not sim_t or max(real_t, sim_t) <= 0:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "zero time-to-N in one mode — run too short to measure"}
+    time_rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
+    ok = time_rel_diff <= rounds_tol and trainers_rel_diff <= trainers_tol
     return {
         "ok": ok,
         "tier": "EXACT",
-        "matched_virtual_budget_s": round(V, 1),
-        "sim_rounds_at_V": n_sr,
-        "real_rounds_at_V": n_rr,
-        "rounds_rel_diff": round(rounds_rel_diff, 3),
-        "rounds_tol": rounds_tol,
-        "sim_trainers_at_V": n_st,
-        "real_trainers_at_V": n_rt,
+        "matched_logical_budget_n": _prog_json(N),
+        "sim_vclock_to_n_s": round(sim_t, 1),
+        "real_time_to_n_s": round(real_t, 1),
+        "time_rel_diff": round(time_rel_diff, 3),
+        "time_tol": rounds_tol,
+        "sim_trainers_at_n": n_st,
+        "real_trainers_at_n": n_rt,
         "trainers_rel_diff": round(trainers_rel_diff, 3),
         "trainers_tol": trainers_tol,
     }
@@ -4201,7 +4175,7 @@ _STEP_TIMING_DEGENERATE_PCTL = 99
 def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
                           real_only_funcs: frozenset = frozenset(),
                           mean_tol_rel: float = 0.05,
-                          band_min_abs_s: float = 0.5) -> dict:
+                          band_min_abs_s: float = _STEP_TIMING_NEAR_ZERO_ABS_DIFF_S) -> dict:
     """Shared DIST (KS + mean + percentile-band) per-function comparator behind
     both `step_timing_breakdown_parity` (trainer-side) and
     `agg_step_timing_breakdown_parity` (aggregator-side) -- same tier/shape,
@@ -4596,20 +4570,18 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
         "n_real_cycles": len(r_var),
         "n_sim_cycles": len(s_var),
     }
-    # Same population-mismatch rationale as throughput_parity's matched_window_*:
-    # sim commits more cycles than real in the same wall window, and its extra
-    # cycles average a higher `var`, pulling the pooled mean/KS. Filter both
-    # sides to the matched virtual budget V instead of index-count truncation.
-    # Diagnostic-only for async pending cohort_sequence.
+    # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
+    # window: sim's cycles beyond the shared prefix average a higher `var` and pull
+    # the pooled mean/KS (PARITY.md §1.5). Gated for sync; async diagnostic.
     real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    V, real_time_fn = _matched_virtual_budget(real["agg_rounds"], sim["agg_rounds"])
-    if V is not None:
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
         matched_r = [e["var"] for e in rc
                      if e.get("var") is not None
-                     and real_time_fn(e) is not None and real_time_fn(e) <= V + 1e-9]
+                     and (p := prog_fn(e)) is not None and p <= N]
         matched_s = [e["var"] for e in sc
                      if e.get("var") is not None
-                     and (e.get("vclock_now") or 0) <= V + 1e-9]
+                     and (p := prog_fn(e)) is not None and p <= N]
         if len(matched_r) >= 2 and len(matched_s) >= 2:
             matched_ks = ks_stat(matched_s, matched_r)
             matched_r_mean, _ = mean_std(matched_r)
@@ -4617,7 +4589,7 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
             matched_mean_rel = (
                 abs(matched_r_mean - matched_s_mean) / max(abs(matched_r_mean), abs(matched_s_mean))
                 if max(abs(matched_r_mean), abs(matched_s_mean)) > 0 else 0.0)
-            result["matched_virtual_budget_s"] = round(V, 1)
+            result["matched_logical_budget_n"] = _prog_json(N)
             result["matched_window_n_real"] = len(matched_r)
             result["matched_window_n_sim"] = len(matched_s)
             result["matched_window_real_mean_var"] = round(matched_r_mean, 6)
@@ -5090,17 +5062,25 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         "set_overlap_tol": set_overlap_tol,
     }
 
-    # ---- COUNT: does the number of cohorts made match? Fails only when the
-    # commit throughput genuinely diverges (sim packs more/fewer aggregations
-    # into the matched budget). Tolerant of transient variation; once throughput
-    # matches, cohort counts match too.
-    n_real_c, n_sim_c = len(rc_full), len(sc_full)
+    # ---- COUNT: do the aggregation-cycle counts match over the matched LOGICAL
+    # budget N (cohorts with progress <= N)? This is rolled-up V1 -- it catches an
+    # accumulated same-sign drift V1's per-unit distributional tolerance absorbs,
+    # so `deps: V1`. Progress axis, never a clock window V (PARITY.md §1.5).
+    budget_n, prog_fn = _matched_logical_budget(
+        real.get("agg_rounds", []), sim.get("agg_rounds", []))
+    if budget_n is not None:
+        rc_n = [e for e in rc_full if (p := prog_fn(e)) is not None and p <= budget_n]
+        sc_n = [e for e in sc_full if (p := prog_fn(e)) is not None and p <= budget_n]
+    else:
+        rc_n, sc_n = rc_full, sc_full
+    n_real_c, n_sim_c = len(rc_n), len(sc_n)
     count_rel = abs(n_real_c - n_sim_c) / max(n_real_c, n_sim_c, 1)
     count_ok = count_rel <= count_tol
     count = {
         "ok": count_ok, "tier": "DIST",
         "n_real_cohorts": n_real_c, "n_sim_cohorts": n_sim_c,
         "rel_diff": round(count_rel, 3), "count_tol": count_tol,
+        "matched_logical_budget_n": _prog_json(budget_n) if budget_n is not None else None,
     }
     set_divergence = None
     race_diagnostic = None
@@ -6213,7 +6193,7 @@ CHECK_META: dict = {
     "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
     "agg_step_timing_breakdown": {"stage": 6, "role": "DIAG",    "deps": ("aggregation_compute_wall",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
-    "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap")},
+    "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap", "v1_iter_per_data_id")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
     # ── Stage 3' FwdLLM async residence (R1/W1, simulate_fwdllm.md §L.3) ──
     # R1 is the residence INV; W1 the compute-conservation DIAG that first flags a

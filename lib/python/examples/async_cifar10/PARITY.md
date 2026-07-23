@@ -412,6 +412,42 @@ check SKIP, not FAIL).
 have localized it, at its stage with deps. Checks are **append-only** (a redundant check is a
 future regression guard). Split a coarse check into one assertion per mechanism.
 
+### §1.5  Comparison axis — grade on the LOGICAL budget (`matched_virtual_budget` deleted 2026-07-23)
+**Parity is graded to a fixed LOGICAL budget N (min committed `data_id`s / FL rounds both sides
+reached, §F-2), never to a matched virtual-time window.** `_matched_virtual_budget` is deleted;
+`_matched_logical_budget(real, sim) → (N, prog_fn)` replaces it (checks.py).
+
+*Why V violated parity.* The old `V = min(final_sim_vclock, final_real_wall)` truncated both streams
+to commit-time ≤ V — treating **sim's virtual vclock and real's wall as one interchangeable axis**, but
+whether `vclock ≈ wall` (`sim_rate`, §F-10) is *the parity question itself*. Normalizing along the axis
+under test is circular. V existed only because pairs launch on a **fixed wall-clock budget** (7200s
+each) → different logical endpoints → mismatched counts. Both fixed-wall comparisons are wrong in
+opposite directions:
+- **Matched-window (V) MASKS throughput divergence.** The fwdllm/fwdllm_plus sync leg read ~at-parity
+  under V while HIDING a real **1.57× throughput gap** (68 vs 110 databins/7200s), found only by
+  reading raw databins/wall and fixed on the real side (`drain_ready`, `var_bad` dedup). See §H.
+- **Raw full-run counts PENALIZE sim's legitimate speedup** (`sim_rate ≥ 1` → more cohorts in equal
+  wall, fluxtune 109 vs 118). And V doesn't even remove a real divergence: fluxtune ran 1795 vs 1648
+  cycles *inside* the matched V.
+
+*The fix (§F-2/§F-12).* Fix the WORK (progress ≤ N, the common prefix) and let TIME be the measured
+output. `_matched_logical_budget` returns N on the progress axis (`data_id` tuple for fwdllm, `round`
+for async); checks truncate to `prog(e) ≤ N`. The clock/throughput signal becomes **real's
+algorithmic-time-to-N vs sim's vclock-to-N** (`_time_to_progress`), a clean ratio — prove-on-first-bin
+(§F-12) is its N=1 case.
+
+*What migrated (landed 07-23; the 5 checks that used V):*
+- `total_commits` (U2), `terminal_state` (K8): count is trivially N at fixed N → **reshaped to
+  time-to-N** (rel_diff ≤ 5%). K8 keeps its live **trainer-set-over-N** count dimension.
+- `v2_var_trajectory`, `utility`, `cohort_sequence.count`: distributional/count truncation swapped
+  clock-≤-V → progress-≤-N. `cohort_sequence` now deps on `v1_iter_per_data_id` (its `count` is
+  rolled-up V1).
+- **Untouched (already logical):** `throughput` (K2, full-run rate = units/time) and `per_round_advance`
+  (K3) use a min-*count* matched window, not V.
+- **Still open:** pairs are still launched to a wall budget; the checker truncates to N post-hoc, which
+  is correct, but a fixed-N *launcher* termination would remove the wasted tail — verify how
+  `run_parity.py` ends a run before changing it.
+
 ## §2  The ladder — check catalog
 `[NEW]` = to implement; else exists in checks.py. "Isolates" = what a FAIL means when its
 upstreams pass. "Dep" = upstream prerequisites.

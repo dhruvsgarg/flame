@@ -26,6 +26,9 @@ from parity.checks import (  # noqa: F401, E402
     mean_std,
     ks_stat,
     spearman_rho,
+    percentile,
+    pctl_band_ok,
+    _matched_logical_budget,
     # loaders
     load_agg_jsonl,
     load_trainer_jsonl_dir,

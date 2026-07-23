@@ -148,16 +148,16 @@ def _fmt_metric(name: str, res: dict) -> list:
             lines.append(f"         abs_diff={abs_diff}  tol={tol}")
     elif name == "terminal_state":
         lines += [
-            f"         matched budget V={res.get('matched_virtual_budget_s')}s",
-            f"         rounds: sim={res.get('sim_rounds_at_V')} real={res.get('real_rounds_at_V')} "
-            f"rel_diff={res.get('rounds_rel_diff')} (<={res.get('rounds_tol')})",
-            f"         trainers: sim={res.get('sim_trainers_at_V')} real={res.get('real_trainers_at_V')} "
+            f"         matched logical budget N={res.get('matched_logical_budget_n')}",
+            f"         time-to-N: sim_vclock={res.get('sim_vclock_to_n_s')}s real={res.get('real_time_to_n_s')}s "
+            f"rel_diff={res.get('time_rel_diff')} (<={res.get('time_tol')})",
+            f"         trainers: sim={res.get('sim_trainers_at_n')} real={res.get('real_trainers_at_n')} "
             f"rel_diff={res.get('trainers_rel_diff')} (<={res.get('trainers_tol')})",
         ]
     elif name == "total_commits":
         lines += [
-            f"         V={res.get('matched_virtual_budget_s')}s  "
-            f"sim={res.get('n_sim_commits')} real={res.get('n_real_commits')}  "
+            f"         N={res.get('matched_logical_budget_n')}  "
+            f"time-to-N: sim_vclock={res.get('sim_vclock_to_n_s')}s real={res.get('real_time_to_n_s')}s  "
             f"rel_diff={res.get('rel_diff')} (<={res.get('tol')})",
         ]
     elif name == "vclock_telemetry":
@@ -690,15 +690,15 @@ def write_plot(results: dict, path: str,
     # ── panel 3: terminal state ──
     ax3 = axes[2]
     ts = results.get("terminal_state", {})
-    sim_r = ts.get("sim_rounds_at_V")
-    real_r = ts.get("real_rounds_at_V")
-    V = ts.get("matched_virtual_budget_s")
-    if sim_r is not None and real_r is not None:
-        ax3.bar(["real", "sim"], [real_r, sim_r], color=[c_real, c_sim], alpha=0.8)
-        ax3.set_ylabel("FL rounds")
+    sim_t = ts.get("sim_vclock_to_n_s")
+    real_t = ts.get("real_time_to_n_s")
+    N = ts.get("matched_logical_budget_n")
+    if sim_t is not None and real_t is not None:
+        ax3.bar(["real", "sim"], [real_t, sim_t], color=[c_real, c_sim], alpha=0.8)
+        ax3.set_ylabel("time to reach N (s)")
         ax3.set_title(
-            f"K8: FL rounds at matched V={V}s\n"
-            f"real={real_r}  sim={sim_r}  rel_diff={ts.get('rounds_rel_diff')}",
+            f"K8: virtual time to logical budget N={N}\n"
+            f"real={real_t}s  sim={sim_t}s  rel_diff={ts.get('time_rel_diff')}",
             fontsize=10,
         )
     else:

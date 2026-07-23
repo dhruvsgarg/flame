@@ -383,6 +383,55 @@ class TestPerRoundAdvanceParity:
         assert not r["ok"], r
 
 
+class TestPerRoundAdvanceCentralEscape:
+    """The matched-window central-tendency escape (real_coord branch only,
+    i.e. sync + `intrinsic_span_s`): sim's Δvclock is whole-second quantized
+    while real's Δwall spreads continuously, so a thin shape-only tail (e.g.
+    a cold round-1 GPU warmup) can trip grid-KS even when the mean AND the
+    per-round ratio MEDIAN both match -- must still pass. A genuine advance
+    divergence moves the median/mean too and must still fail."""
+
+    def _pair(self, n_spiked):
+        # 20 advances, all real=10.0; sim=10.0 except `n_spiked` of them at
+        # 11.4 (a 14% tail on those rounds only) -- large enough a FRACTION
+        # to trip grid-KS but small enough in magnitude to keep mean+median
+        # within band.
+        real_rounds, sim_rounds = [], []
+        for r in range(1, 22):
+            real_rounds.append({"event": "agg_round", "round": r,
+                                "ts": float(r * 10), "intrinsic_span_s": 10.0,
+                                "contributing_trainers": ["a"], "staleness": [0],
+                                "agg_goal_count": 1})
+            spiked = r > (21 - n_spiked)
+            step = 11.4 if spiked else 10.0
+            sim_rounds.append({"event": "agg_round", "round": r, "ts": float(r),
+                               "vclock_now": None,  # filled below
+                               "contributing_trainers": ["a"], "staleness": [0],
+                               "agg_goal_count": 1})
+        # cumulative sim vclock from the per-round steps above
+        run = 0.0
+        for i, e in enumerate(sim_rounds):
+            spiked = (i + 1) > (21 - n_spiked)
+            run += 11.4 if spiked else 10.0
+            e["vclock_now"] = run
+        return _agg(agg_rounds=real_rounds), _agg(agg_rounds=sim_rounds)
+
+    def test_thin_tail_fails_grid_ks_but_escapes_on_median_and_mean(self):
+        real, sim = self._pair(n_spiked=5)   # 5/20 = 25% of rounds spiked
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.15)
+        assert r["matched_window_ks_stat"] > 0.2           # grid-KS alone fails
+        assert r["central_escape_ok"] is True
+        assert r["ok"], r
+
+    def test_systemic_shift_fails_even_with_escape_available(self):
+        # ALL rounds spiked -> the median itself moves, so the escape's own
+        # gate (ratio_med within band) correctly refuses to fire.
+        real, sim = self._pair(n_spiked=21)
+        r = pc.per_round_advance_parity(real, sim, ks_tol=0.2, mean_tol_rel=0.05)
+        assert r["central_escape_ok"] is False
+        assert not r["ok"], r
+
+
 class TestOverlapFactor:
     def test_matched_passes(self):
         # Both: speed=20s, advance=15s → overlap ≈ 1.33 for both
@@ -462,6 +511,67 @@ class TestTerminalStateParity:
         assert not r["ok"], r
 
 
+class TestMatchedLogicalBudget:
+    """The logical-budget primitive + the U2/K8 reshape from count-at-clock-V to
+    TIME-to-N. N = min(final progress each side) on the progress axis; the
+    throughput/clock signal is real's algorithmic-time-to-N vs sim's vclock-to-N
+    (PARITY.md §1.5). Extra units a faster side ran PAST the shared prefix must be
+    absorbed; a genuine clock or trainer-set divergence within N must still fail."""
+
+    def test_primitive_round_axis_is_min_final_round(self):
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r)) for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r), ts=float(r))
+                               for r in range(1, 9)])
+        N, prog_fn = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        assert N == 5  # min(5, 8)
+        assert prog_fn(real["agg_rounds"][0]) == 1
+
+    def test_primitive_data_id_axis_is_min_final_tuple(self):
+        real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d)) for d in range(5)])
+        sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d), ts=float(d))
+                               for d in range(8)])
+        N, _ = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        assert N == (1, 4)  # min over (round, cycle_data_id) keys
+
+    def test_primitive_none_when_a_side_has_no_progress(self):
+        real = _agg(agg_rounds=[])
+        sim = _agg(agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])
+        N, prog_fn = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        assert N is None and prog_fn is None
+
+    def test_extra_units_past_shared_prefix_are_absorbed(self):
+        # sim ran to 10 rounds, real to 5, at a MATCHED per-round rate. N=5, and
+        # time-to-N matches on the prefix -- sim's extra rounds 6..10 must not fail.
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
+                                for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float((r - 1) * 10),
+                                      ts=float(r)) for r in range(1, 11)])
+        r = pc.total_commits_parity(real, sim, tol_rel=0.05)
+        assert r["ok"], r
+        assert r["matched_logical_budget_n"] == 5
+
+    def test_time_to_n_gap_within_prefix_fails(self):
+        # sim reaches the same N=5 rounds at HALF the virtual time real's clock
+        # says the work takes -- a genuine clock divergence on the shared prefix.
+        real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
+                                for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float((r - 1) * 5),
+                                      ts=float(r)) for r in range(1, 6)])
+        assert not pc.total_commits_parity(real, sim, tol_rel=0.05)["ok"]
+
+    def test_terminal_state_trainer_set_divergence_fails_with_time_matched(self):
+        # Time-to-N matches, but sim's contributing-trainer SET over the first N
+        # units (5 distinct) diverges from real's (2) -- K8's live count dimension.
+        real = _agg(agg_rounds=[_round(r, ["a", "b"], [0, 0], ts=float(r * 10))
+                                for r in range(1, 6)])
+        sim = _agg(agg_rounds=[_round(r, [f"t{r}"], [0], vclock=float((r - 1) * 10),
+                                      ts=float(r)) for r in range(1, 6)])
+        res = pc.terminal_state_parity(real, sim)
+        assert not res["ok"], res
+        assert res["time_rel_diff"] <= 0.05, res      # time matched
+        assert res["trainers_rel_diff"] > 0.05, res   # trainer set is what fails
+
+
 def _fwd_round(data_id, contributing, vclock=None, ts=0.0, round_=1):
     """fwdllm-style agg_round: `round` static (by default), progress on the
     committed `data_id` axis (cycle_data_id). `round_` lets a caller simulate a
@@ -503,20 +613,22 @@ class TestProgressAxisRekey:
         r = pc.throughput_parity(real, sim, tol_rel=0.10)
         assert not r["ok"], r
 
-    def test_terminal_state_data_ids_at_V_nonzero(self):
+    def test_terminal_state_time_to_n_measured_on_data_id_axis(self):
         real = _agg(agg_rounds=[_fwd_round(d, ["a", "b"], ts=float((d + 1) * 10))
                                 for d in range(10)])
         sim = _agg(agg_rounds=[_fwd_round(d, ["a", "b"], vclock=float(d * 10),
                                           ts=float(d + 1))
                                for d in range(10)])
         r = pc.terminal_state_parity(real, sim)
-        # Previously real_rounds_at_V==0 (round static); now counts data_ids.
-        assert r["real_rounds_at_V"] > 0 and r["sim_rounds_at_V"] > 0, r
+        # Previously round-keyed & degenerate (round static); now the data_id axis
+        # yields a real time-to-N on both sides.
+        assert r["real_time_to_n_s"] > 0 and r["sim_vclock_to_n_s"] > 0, r
         assert r["ok"], r
 
-    def test_total_commits_counts_distinct_data_ids(self):
-        # A variance-FAIL retry emits 2 cycles on the SAME data_id; the commit
-        # count must be distinct data_ids (2), not raw cycles (3).
+    def test_total_commits_time_to_n_ignores_variance_retry(self):
+        # A variance-FAIL retry emits 2 cycles on the SAME data_id; it must not
+        # advance the logical budget N -- N stays data_id 1 and time-to-N is the
+        # time to reach it (10s both sides), unaffected by the retry.
         real = _agg(agg_rounds=[
             _fwd_round(0, ["a"], ts=0.0),
             _fwd_round(0, ["a"], ts=5.0),   # retry, same data_id
@@ -528,7 +640,8 @@ class TestProgressAxisRekey:
             _fwd_round(1, ["a"], vclock=10.0, ts=3.0),
         ])
         r = pc.total_commits_parity(real, sim, tol_rel=0.05)
-        assert r["n_sim_commits"] == 2 and r["n_real_commits"] == 2, r
+        assert r["matched_logical_budget_n"] == "1:1", r
+        assert r["real_time_to_n_s"] == 10.0 and r["sim_vclock_to_n_s"] == 10.0, r
         assert r["ok"], r
 
     def test_normal_fl_still_keyed_on_round(self):
@@ -1549,14 +1662,20 @@ class TestCohortSequence:
         # trainer that misses a boundary becomes the front of the next
         # cohort, displacing whoever the other mode picked) -- chasing exact
         # SET match past the achievable-determinism window chases that
-        # cascade artifact, not a bug. Full-run correctness is
-        # participation_parity's (S2) job now.
+        # cascade artifact, not a bug. `first_bin_logical_ok` (the bin-1-
+        # capped exact rung this test targets) stays unenforced past the
+        # wall. `composition` is a SEPARATE, deliberately full-run mechanism
+        # (added later, task-3 split) that DOES grade the whole sequence
+        # distributionally -- so overall `ok` correctly still fails here
+        # (a real SET mismatch spanning half this 2-cycle toy fixture sits
+        # far under composition_tol); that's composition doing its own job,
+        # not a regression of the bin-1 cap this test exercises.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                 _lcyc(7, 2, ["a", "b"], 0.5)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                _lcyc(7, 2, ["a", "c"], 0.5)])  # different SET
         r = pc.cohort_sequence_parity(real, sim)
-        assert r["ok"], r
+        assert r["first_bin_logical_ok"], r
         assert r["cadence_var_order_max_bin"] == 1
 
     def test_set_divergence_within_bin1_still_enforced(self):
@@ -1576,6 +1695,48 @@ class TestCohortSequence:
     def test_present_in_run_all_and_meta(self):
         assert "cohort_sequence" in pc.CHECK_META
         assert pc.CHECK_META["cohort_sequence"]["deps"]
+
+
+class TestCohortSequenceCountLogicalBudget:
+    """`count` filters to the matched LOGICAL budget N (cohorts whose progress <= N,
+    the common data_id prefix), not raw full-run totals -- a run still going in one
+    mode must not false-fail count. On this axis `count` is rolled-up V1: it fires
+    only when a side does MORE aggregation cycles to reach the SAME data_ids."""
+
+    def _cyc(self, data_id, ts=None, vclock=None, iteration=1):
+        e = _lcyc(data_id, iteration, ["a"], 0.5)
+        if ts is not None:
+            e["ts"] = ts
+        if vclock is not None:
+            e["vclock_now"] = vclock
+        return e
+
+    def test_pure_throughput_gap_absorbed_by_logical_budget(self):
+        # real: 10 cohorts over data_id 0..9. sim: 15 cohorts over data_id 0..14
+        # -- same 1-cohort-per-data_id shape, sim just kept running past the shared
+        # prefix. Raw counts (10 vs 15) would false-fail; filtered to N=data_id 9,
+        # both hold exactly 10 (1 cohort/data_id each).
+        real = _agg(agg_rounds=[self._cyc(i, ts=float(i)) for i in range(10)])
+        sim = _agg(agg_rounds=[self._cyc(i, vclock=float(i)) for i in range(15)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["count"]["ok"], r["count"]
+        assert r["count"]["n_real_cohorts"] == 10
+        assert r["count"]["n_sim_cohorts"] == 10
+        assert r["count"]["matched_logical_budget_n"] == "1:9"
+
+    def test_extra_cycles_to_reach_same_data_ids_fails(self):
+        # Genuine cohort-count divergence on the logical axis: sim does 2
+        # aggregation cycles per data_id (variance retries) to reach the SAME
+        # data_ids 0..9 real reaches in 1 each -- 20 vs 10 cohorts at N=data_id 9.
+        real = _agg(agg_rounds=[self._cyc(d, ts=float(d)) for d in range(10)])
+        sim_rounds = []
+        for d in range(10):
+            sim_rounds.append(self._cyc(d, vclock=float(2 * d), iteration=1))
+            sim_rounds.append(self._cyc(d, vclock=float(2 * d + 1), iteration=2))
+        sim = _agg(agg_rounds=sim_rounds)
+        r = pc.cohort_sequence_parity(real, sim)
+        assert not r["count"]["ok"], r["count"]
+        assert r["count"]["n_real_cohorts"] == 10 and r["count"]["n_sim_cohorts"] == 20
 
 
 # Real trainer_registry.yaml task_ids (lib/python/examples/_metadata) with known
@@ -1788,8 +1949,13 @@ class TestDrainWallBudget:
     """New commit-stage invariant: sim must NEVER cost more wall-clock than
     real at the drain/commit stage -- generalizes the #15 diagnostic (a
     phantom drain-gate stall, previously only visible via debug counters)
-    into a standing rung. One-sided (sim <= real*(1+tol)), not a two-sided
-    distribution match -- sim being FASTER than real is always healthy."""
+    into a standing rung. `barrier_wait_s`/`drain_spread` are ONE-SIDED
+    (sim <= real*(1+tol)) -- sim being FASTER than real is always healthy.
+    `drain_tail_s` is the exception: reclassified DIST (matched percentile
+    band, see TestDrainTailBand below) because it's SHARED cohort-merge
+    compute both modes genuinely perform, not a real-only transport wait
+    sim should collapse -- sim being suspiciously FASTER there can fail
+    (see test_drain_tail_dist_band_* below)."""
 
     def _cyc(self, barrier=None, drain=None, proc_ts=None):
         e = {"event": "agg_round", "round": 1}
@@ -1829,12 +1995,49 @@ class TestDrainWallBudget:
         assert not r["components"]["drain_spread"]["ok"]
 
     def test_sim_faster_than_real_passes(self):
-        # The whole point of this rung: sim being FASTER than real is
-        # healthy, never a fail.
-        real = _agg(agg_rounds=[self._cyc(barrier=5.0, drain=2.0, proc_ts=[0.0, 4.0])])
-        sim = _agg(agg_rounds=[self._cyc(barrier=0.01, drain=0.0, proc_ts=[0.0, 0.0])])
+        # barrier_wait_s/drain_spread: sim being FASTER than real is always
+        # healthy. drain_tail_s stays matched here (0.5 vs 0.45, within
+        # band) -- it is NOT exempted by "sim is faster" (see
+        # TestDrainTailBand below for what happens when it drops to ~0).
+        real = _agg(agg_rounds=[self._cyc(barrier=5.0, drain=0.5, proc_ts=[0.0, 4.0])])
+        sim = _agg(agg_rounds=[self._cyc(barrier=0.01, drain=0.45, proc_ts=[0.0, 0.0])])
         r = pc.drain_wall_budget_parity(real, sim)
         assert r["ok"], r
+
+    def test_drain_tail_dist_band_not_exempted_by_sim_being_faster(self):
+        # In contrast to barrier_wait_s/drain_spread above: sim dropping
+        # drain_tail_s to ~0 while real measures 2.0s is NOT "sim is
+        # healthily faster" -- it's sim skipping shared compute it should
+        # be charging, and the DIST band correctly fails it.
+        real = _agg(agg_rounds=[self._cyc(drain=2.0)])
+        sim = _agg(agg_rounds=[self._cyc(drain=0.0)])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["drain_tail_s"]["ok"]
+
+    def test_drain_tail_dist_band_absorbs_contention_blip(self):
+        # drain_tail_s is SHARED cohort-merge compute (not transport), graded
+        # DISTRIBUTIONALLY on a percentile band -- a single sim-host GPU/
+        # memory-contention blip (1 of 40 cycles) pushes the MEAN well past a
+        # one-sided sim<=real*(1+tol) budget (0.1*1.25=0.125, floored to 0.5;
+        # sim mean lands ~0.6) but must still pass because P50/P90/P95 match.
+        real = _agg(agg_rounds=[self._cyc(drain=0.1) for _ in range(40)])
+        sim = _agg(agg_rounds=[self._cyc(drain=0.1) for _ in range(39)]
+                              + [self._cyc(drain=20.0)])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert r["ok"], r
+        dt = r["components"]["drain_tail_s"]
+        assert dt["sim_mean_s"] > 0.5           # a one-sided budget would fail this
+        assert dt["pctl_band"]["bands"]["p95"]["rel"] == 0.0
+
+    def test_drain_tail_dist_band_still_catches_systemic_shift(self):
+        # Contrast with the blip above: a shift affecting the BULK of the
+        # distribution (not one outlier) must still fail.
+        real = _agg(agg_rounds=[self._cyc(drain=0.1) for _ in range(40)])
+        sim = _agg(agg_rounds=[self._cyc(drain=2.0) for _ in range(40)])
+        r = pc.drain_wall_budget_parity(real, sim)
+        assert not r["ok"]
+        assert not r["components"]["drain_tail_s"]["ok"]
 
     def test_skips_without_telemetry(self):
         real = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
@@ -1903,6 +2106,49 @@ class TestTrainerPhaseWallBudget:
 
     def test_present_in_run_all_and_meta(self):
         assert "trainer_phase_wall_budget" in pc.CHECK_META
+
+
+class TestPctlBandOk:
+    """`pctl_band_ok`: central+P90/P95 band agreement for a WALL/timing
+    distribution, deliberately blind to the tail beyond `qs` (P99/max) --
+    the escape that lets a genuinely-matched distribution survive a
+    sim-host GPU/memory-contention blip (§F-10)."""
+
+    def test_matched_distributions_pass(self):
+        r = pc.pctl_band_ok([1.0] * 50, [1.0] * 50)
+        assert r["ok"], r
+        assert all(b["ok"] for b in r["bands"].values())
+
+    def test_upper_tail_outlier_ignored(self):
+        # A handful of extreme values beyond P95 (contention blip) must not
+        # move the graded quantiles -- p99 is reported but never gates.
+        real = [1.0] * 100
+        sim = [1.0] * 96 + [50.0] * 4          # 4% tail, below the P95 cut
+        r = pc.pctl_band_ok(real, sim, qs=(50, 90, 95), tol_rel=0.1)
+        assert r["ok"], r
+        assert r["bands"]["p95"]["rel"] == 0.0
+        assert r["p99_diag"]["sim"] == 50.0    # surfaced, not gating
+
+    def test_genuine_central_shift_fails(self):
+        # A shift affecting the BULK of the distribution (not a thin tail)
+        # must still fail -- the band ignores the tail, not the shape.
+        r = pc.pctl_band_ok([1.0] * 100, [2.0] * 100, tol_rel=0.3)
+        assert not r["ok"]
+        assert not r["bands"]["p50"]["ok"]
+
+    def test_min_abs_floor_absorbs_small_absolute_gap(self):
+        # A large RELATIVE gap on a sub-noise absolute magnitude (3ms vs
+        # 6ms) is irrelevant -- min_abs floors it to a pass.
+        r = pc.pctl_band_ok([0.003] * 20, [0.006] * 20, tol_rel=0.1, min_abs=0.01)
+        assert r["ok"], r
+
+    def test_min_abs_does_not_mask_a_large_gap(self):
+        r = pc.pctl_band_ok([0.003] * 20, [5.0] * 20, tol_rel=0.1, min_abs=0.01)
+        assert not r["ok"]
+
+    def test_empty_distribution_skips(self):
+        r = pc.pctl_band_ok([], [1.0])
+        assert r["ok"] and r.get("status") == "SKIP"
 
 
 class TestStepTimingBreakdown:
@@ -1974,6 +2220,21 @@ class TestStepTimingBreakdown:
             assert r["ok"], (func, r)
             assert r["by_func"][func]["gates_ok"] is False
             assert r["by_func"][func]["ok"] is False
+
+    def test_band_escape_absorbs_contention_tail_ks_and_mean_both_fail(self):
+        # A thin (3%) upper-tail contention blip on the sim host inflates
+        # both KS and the mean far past their tolerances, but the
+        # CENTRAL+P90/P95 band (pctl_band_ok) still matches -- must pass via
+        # the band escape, not KS or mean alone.
+        real_durs = [1.0] * 200
+        sim_durs = [1.0] * 194 + [50.0] * 6   # 3% tail
+        real, sim = self._st("aggregate_grads", real_durs, sim_durs)
+        r = pc.step_timing_breakdown_parity(real, sim, ks_tol=0.02)
+        entry = r["by_func"]["aggregate_grads"]
+        assert entry["ok"], entry
+        assert entry["ks_stat"] > 0.02          # KS alone would fail
+        assert entry["mean_rel_diff"] > 0.05    # mean alone would fail
+        assert entry["pctl_band"]["ok"]         # band is what carries it
 
     def test_real_only_func_does_not_mask_a_genuine_divergence(self):
         real = {"t1": {"step_timing": (
