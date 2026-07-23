@@ -81,6 +81,9 @@ experiments:
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.
           inflight_residence: true
+          # §H fix: streamer-free async grad collect (drain_ready), dropping
+          # recv_fifo's ~0.4s/cohort post-fill stall. Code-default OFF; ON here.
+          real_drain_ready_ingest: true
           # 90s default evicted a genuinely-busy trainer (rounds incl.
           # warmup up to ~108s). Workload knob, not a parity lever; must
           # match sim yaml (§R, 2026-07-11).

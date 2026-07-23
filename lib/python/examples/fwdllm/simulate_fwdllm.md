@@ -95,21 +95,18 @@ fluxtune's 5 fails: `cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajector
 | ALL | `drain_wall_budget` (`drain_tail_s`) | sim modeled drain tail overshoots real (sim 0.55-0.73 vs real 0.11-0.47s, budget 0.5-0.59) | Trim sim drain-tail model; 2h pair now available |
 | FW, FW+ | `agg_step_timing_breakdown` | `_aggregate_grads_sync`/`_distribute_weights_sync` are real-transport (sim rightly collapses); real outlier is `_compute_var` sim **6x** real (0.031 vs 0.005s) | Isolate `_compute_var` sim path |
 
-### fluxtune — residual vclock under-charge (sim ~8.9% ahead)
+### fluxtune — async recv_fifo commit stall (ROOT-CAUSED, fix landed, PENDING VALIDATION)
 
-**Root, validated at 7200s.** The 19→5 fixes held (→ §G). The 4 remaining non-shared fails
-(`cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajectory`, `trainer_speed_identity.utility`) are ONE
-cascade: sim commits 1795 cycles to real's 1648 in the same ~7200s virtual budget, so sim's per-cycle vclock
-advance runs ~8.9% short of real's measured wall. Both transport-correction flags are already ON, so the
-residual is whatever wall they don't yet model. **Next: instrument per-cycle vclock advance (sim modeled vs
-real measured wall), localize the missing ~9% leg — don't tune knobs (§F-3/13).**
+**Root found + fix landed (§H).** The 4 fails (`cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajectory`,
+`trainer_speed_identity.utility`) are ONE cascade off a **real-side recv_fifo post-fill commit stall** in
+`_aggregate_grads_async` (~0.4s/cohort; real commits at T+D+stall, sim cleanly at T+D). Being a constant
+per-cohort dwell it compresses real's fast/slow cycle ratio, so sim over-weights fast trainers (D=8.33 share
+48%→55%). Fix: `drain_ready`-based `_real_async_recv_min_grad` behind `real_drain_ready_ingest` (async twin of
+the validated sync Fix 1). NOT a vclock under-charge — `leg` cancels in the per-cohort delta; sim over-charges
+`drain_tail`/`fedavg` (do not "correct" pre-validation — §H). **Next: operator runs the fluxtune validation pair.**
 
-- **`cohort_sequence` is a SYMPTOM, not a grading bug:** the distributional grade (set-overlap ≥0.8) is correct;
-  it fails only because sim/real are on different `data_id` at the same cycle index (real 0 / sim 1 by cycle 9).
-  Closing the under-charge closes this.
-- **`trainer_speed_identity.utility` adjudicated at 2h:** 28/100 >10% dev — NOT noise (earlier 30min pairs
-  couldn't reproduce; the 7200s pair does). Downstream of which trainers land in which cohort, i.e. the same
-  drift. `speed` sub-check is exact (0.05%).
+- **`cohort_sequence`/`utility` are SYMPTOMS:** both downstream of the fast-skewed committed cohort mix; the
+  distributional grades are correct. Closing the stall closes them.
 
 **Flag-promotion decision (next step, operator call per [[flag-gate-ab-lifecycle]]).**
 `sim_model_agg_compute_time` is effectively default (ON all three baselines). `sim_sct_ordered_drain` +
@@ -271,73 +268,108 @@ broken card — the operator must pass `--gpu-ids`. Lower priority.
 
 ---
 
-## §H  fwdllm real↔sim throughput gap — TWO fixes (recv_fifo VALIDATED; var_bad flood LANDED, pending validation) (2026-07-22)
+## §H  Throughput parity — sync fixes VALIDATED (fwdllm/fwdllm_plus); fluxtune gap now the open one (2026-07-22)
 
-> The sync-path throughput gap (real slower than sim at matched wall/vclock budget) had TWO stacked real-side
-> transport artifacts. Fix 1 (recv_fifo stall) is validated; Fix 2 (var_bad flood) is implemented + unit-tested,
-> pending a run. Both are correctness fixes: real MUST match sim's `decision + max(D)` per round (§F-20). Pick up
-> at "NEXT STEPS".
+> The sync-path throughput gap is CLOSED and validated on a fresh 2700s pair per baseline. Both sync fixes held.
+> The open work moves to **fluxtune's async ~9% gap**, which the per-round throughput check MASKS. This section
+> is the handoff: what's validated, what's still failing, what's already checked, and what to verify next.
 
-### The gap (matched budget: real WALL vs sim VCLOCK)
-Real 68 databins/7200s wall vs sim 110/7200s vclock (1.57×). Zero logical divergence throughout — every round
-commits exactly 10 distinct contributors; pure wall, so sim rightly collapses it, and both fixes are real-side.
+### Validated sync fixes (fwdllm / fwdllm_plus) — both held on the 2700s pair
+Both were real-side transport artifacts on the sync `distribute→collect(1)` loop; real must match sim's
+`decision + max(D)` per round (§F-20). Mechanism detail is in `git log`; summary + current-run numbers:
+- **Fix 1 — recv_fifo streamer stall → `drain_ready`.** `recv_fifo`'s fire-and-forget per-end streamers stranded
+  already-arrived grads to a 30s timeout (89×30s = 40% of collect wall). Real twin `_real_sync_recv_incremental`
+  (flag `real_drain_ready_ingest`, ON in `fwdllm_n100_smoke.yaml`). Gap 1.57× → 1.31×.
+- **Fix 2 — var_bad flood + 1s trainer poll.** `_distribute_weights_sync` re-sent VAR=bad to the whole cohort
+  ~agg_goal×/iteration; the trainer drained them FIFO at 1/sec, delaying its next compute ∝ D (~10s/round).
+  Aggregator one-instruction-per-version_key dedup (`_end_served_version_key`) + removed the `pause_execution`
+  `sleep(1)`. Default-on, no flag. Pytest: `test_fwdllm_instruction_dedup.py`, `test_fwdllm_sim_speedup_waits.py`.
 
-### Fix 1 — recv_fifo streamer stall → `drain_ready` (VALIDATED, run `_145824`/`_153008`)
-Real collected via `channel.recv_fifo(ends, num_min_req=1, timeout=30)`. `recv_fifo`'s **fire-and-forget** per-end
-streamer tasks (each with a 30s grace) outlive their caller, so under the incremental (clamped-to-1) loop the next
-collect skips every lingering end as "already active" (`channel.py:733`) and a slow trainer's already-arrived grad
-strands until a full 30s timeout fires — **89 × 30s = 40% of collect wall**, the whole gap. Documented hazard
-(`drain_ready` docstring, `channel.py:594-601`); sim already uses the streamer-free `drain_ready`. Fix:
-`_real_sync_recv_incremental` (real twin of `_sim_sync_recv_incremental`) — arrival-ordered buffer refilled by
-`drain_ready`, popping `num_min_req`/call. Flag `real_drain_ready_ingest` (ON in `fwdllm_n100_smoke.yaml`).
-**Validated:** 89 → **0** timeouts; grad send→arrival 8ms, arrival→dequeue 23s → **0.015s**; gap **1.57× → 1.31×**.
+**Result on the 2700s pair — the ~10s/round residual is GONE:** real per-round wall now sits at/below sim's
+`max(D)`. fwdllm real 57.33s/round vs sim 58.3 (**1.7%**, throughput PASS). fwdllm_plus real 39.3 vs sim 40.91
+(**3.9%** full-run PASS; matched-window 5.6% > 5% tol → the check trips on that sub-check alone — small-N at
+2700s, re-check on a longer pair). Both fixes ready to migrate to §G once §A refreshes on a >3600s pair.
 
-### Fix 2 — var_bad flood + 1s trainer poll (LANDED, pending validation)
-Residual after Fix 1: real 32.1s/round vs sim's 22.1s (= `max(D)`), a fixed ~10s/round. Root cause (telemetry +
-code): the sync `distribute→collect(1)` loop calls `_distribute_weights_sync` ~agg_goal times/iteration, and each
-pass re-sends VAR=bad to the WHOLE cohort — **~10 instructions/trainer/iteration** (weights were deduped via
-`_weights_sent_this_cycle`, VAR=bad was not). Async is already ~1×. The trainer loop is `get(1 msg, blocking) →
-train → put → sleep(1s)`; while a trainer is busy the ~10 VAR=bads queue, and it drains them **FIFO at 1/sec**
-(`pause_execution`) — aborting each stale one — before reaching the live instruction. The slowest trainer
-accumulates the most backlog, so its next compute starts late ∝ its D (measured: D=21.7 → +9.8s, D=18 → +2.4s,
-D~4 → +0.4s). Sim gates `pause_execution` off and the flood is harmless there, so sim = `decision + max(D)` exactly
-— the entire residual. Upstream (trainer→agg) is already clean (`_send_grads` returns on abort — one grad/version_key).
+### Latest run — 2700s pair per baseline (`run_parity.py`, agg_goal=10)
+Real `_163914`/`_163929`/`_163949`, sim `_172551`/`_172624`/`_172708` (fwdllm / fwdllm_plus / fluxtune).
 
-**Fix (correctness, default-on, no flag):**
-1. **Aggregator one-instruction-per-version_key dedup** (`_distribute_weights_sync`): `_end_served_version_key` +
-   `_already_served_current_instruction`/`_mark_instruction_served` skip an end already dispatched the current
-   `version_key`; re-serves on a version_key bump. Collapses sync 10 → 1/iteration (matching async). Sync-only
-   (async verified already ~1×, left untouched); real+sim (shared code).
-2. **Removed the trainer `pause_execution` `sleep(1)`** (now a no-op): blocking recv already paces the loop; the
-   no-message path keeps its own `sleep(1)` busy-spin guard. Real-only artifact sim already skipped — removing it
-   improves real↔sim parity.
-3. **drain-to-latest NOT implemented — deliberately.** Under the sync barrier + dedup a trainer holds at most ONE
-   pending instruction (the barrier can't advance the version_key until the slow trainer commits), so a backlog is
-   structurally impossible; the safeguard would be unreachable dead code.
+| baseline | pass/fail/skip | throughput | cohort_seq | v2 | other fails |
+|---|---|---|---|---|---|
+| fwdllm | 59 / 3 / 22 | ✓ 1.7% | ✗ *checker* | ✓ | drain_wall_budget, agg_step_timing |
+| fwdllm_plus | 58 / 5 / 21 | ✗ mw 5.6% | ✗ *checker* | ✗ mw 2.55% | drain_wall_budget, agg_step_timing |
+| fluxtune | 67 / 3 / 16 | ✓* 0.2% | ✗ *REAL drift* | ✗ mw 6.1% | trainer_speed_identity.utility |
 
-Pytest: `test_fwdllm_instruction_dedup.py` (predicate/mark + loop-level once-per-version_key), updated
-`test_fwdllm_sim_speedup_waits.py` (pause_execution no-op). Full fwdllm suite passes (`test_parity_checks.py`
-fails are pre-existing PARKED work).
+Reading the fails into three buckets:
+- **Checker false-fail (FW/FW+ `cohort_sequence`):** `composition` is PERFECT (match_frac 1.0, mean_overlap 1.0);
+  only `count` fails on RAW unfiltered totals (109 vs 118 / 137 vs 148, ~7.5%). This is the PARKED bug below —
+  not a parity gap. Filtering count to the matched virtual budget flips both green.
+- **Marginal / small-N (FW+ throughput mw 5.6%, FW+ v2 mw 2.55%):** full-run numbers are ~perfect (v2 full-run
+  0.05%); only the matched-window sub-check nudges over tol at 2700s. Re-check on a longer pair before treating
+  as a mechanism.
+- **fluxtune real drift (the open work — see below):** `cohort_sequence.composition` genuinely fails
+  (mean_overlap 0.279), `v2` mw 6.1%, `trainer_speed_identity.utility` 1/100 trainer at 10.78% (>10% tol).
+  `trainer_speed_identity.speed_s` is now PERFECT (0/100 outside tol) and utility improved 28→1 vs the 7200s run.
+- **Shared, pre-existing (§B), untouched here:** `drain_wall_budget` drain_tail p90/p95 (FW/FW+; fluxtune now
+  PASSES it); `agg_step_timing_breakdown` (FW/FW+) — failing funcs `_aggregate_grads_sync`,
+  `sync_collect_and_accumulate_grads`, `_process_aggregation_goal_met`, `_replay_buffered_cohort_contribs` are
+  real-transport/sim-collapse that need adding to the real-only timing-exemption set.
 
-### NEXT STEPS
-1. **Run the validation leg** (`./run_sequential.sh --mode both --only fwdllm --max-runtime-s 1800`). Expect:
-   sends/trainer/iteration **10 → 1**; real per-round wall **32.1 → ~22s** (= sim `max(D)`); databin gap
-   **1.31× → ~1.0×**; slow-trainer restart-lag **~10s → ~0**. Then `run_parity.py --baselines fwdllm`.
-2. **fwdllm_plus** shares the sync path — run it too (both fixes apply unchanged).
-3. **Promote Fix 1's flag** per [[flag-gate-ab-lifecycle]]: if the run confirms, flip `real_drain_ready_ingest`
-   code-default ON and delete the gate.
-4. **Then** fluxtune (async, ~8.9% gap, §A/§B) — different root (residual vclock under-charge; async has neither
-   artifact). Don't assume same cause.
+### THE OPEN GAP — fluxtune async throughput — ROOT-CAUSED + FIX LANDED (pending validation)
+Root cause found (telemetry: real `_163949` / sim `_172708`). The ~9% is a **real-side recv_fifo commit stall on
+the async path** — the async twin of the sync Fix 1 above — NOT a sim vclock under-charge.
+
+**The verification (operator's hypothesis: "agg sends at T, update commits at T+D"):**
+- **SIM commits at ≈ T+D** — `commit_gap_s = vclock−sct` mean 0.19s, **median 0.0**, and NOT speed-correlated
+  (fast 0.20 / slow 0.14). Sim is clean.
+- **REAL commits at T+D + ~2.5s read-wait.** Splitting per cohort: `cohort-fill span` (max−min arrival) = 3.61s is
+  the *genuine* completion spread (sim's per-cohort vclock advance 3.72s ≈ this, correctly charged); `post-fill
+  stall` (commit − last-arrival) = **0.75s mean / 0.36s median** is the artifact — the aggregator dwelling AFTER
+  all 10 grads physically arrived. Median 0.36s ÷ ~3.9s per-cohort ≈ **9%**.
+- **Why it skews the mix:** the stall is a roughly *constant* per-cohort dwell, so it compresses real's fast/slow
+  cycle ratio (fast 8.3+2.5 vs slow 25+2.5 → 2.56×) vs sim's wider ratio (8.45 vs 25.12 → 2.97×). So sim
+  over-weights fast trainers: committed D=8.33 share **48.2%(real)→55.4%(sim)**, slow(≥25) **3.4%→2.1%**,
+  persisting at matched virtual budget (sim 665 vs real 607 commits, 1.096×). This one skew drives ALL four
+  fluxtune fails (`cohort_sequence`, `v1b_iters`, `v2_var`, `trainer_speed_identity.utility`).
+
+**Ruled out:** selection LOGIC (Jaccard 1.0 given same state), delivery (selection→recv median 0.038s), trainer
+per-round phases (near-identical), sim gate eviction (0 failsafes). And `leg` is a uniform additive constant → it
+**cancels in the per-cohort vclock delta**, so bumping it is inert (the doc's earlier "vclock under-charge / grow
+leg" hypothesis is REFUTED). Sim actually OVER-charges `drain_tail`/`fedavg` (0.86 vs real 0.63) — see below.
+
+**Root:** `_aggregate_grads_async`'s real branch still committed via `next(channel.recv_fifo(RECV, 1))`; its
+fire-and-forget per-end streamer tasks skip a still-active end ("already has active task" — 181,703 log lines) and
+strand an already-arrived grad until the grace, = the post-fill stall. The sync path already fixed this via
+`drain_ready` (Fix 1); the async path never got it.
+
+**FIX LANDED:** `_real_async_recv_min_grad` — streamer-free arrival-ordered `drain_ready` collect, one grad/call,
+committing at T+D like sim. Behind existing flag `real_drain_ready_ingest` (now ON in `fluxtune_n10_smoke.yaml`
+agg config). Buffer carries across calls (recv_fifo rxq semantics; stale rejection stays in
+`_process_single_trainer_message`), so no agg-goal-boundary clear (unlike the sync twin). Pytest:
+`test_fwdllm_real_async_drain_ready.py` (5, green); full `-k "fwdllm or async"` 407 green.
+
+### VALIDATE NEXT (operator run — start here)
+1. **Run the fluxtune pair with the fix** (command below), then `run_parity.py --baselines fluxtune`. Expect: real
+   commits/cohort rise toward sim (post-fill stall → ~0), the D=8.33 skew close (48%→~48%), and
+   `cohort_sequence`/`v1b`/`v2`/`trainer_speed_identity.utility` flip green. Refresh §A on the >3600s pair.
+2. **RE-MEASURE the per-cohort decomposition on the NEW pair BEFORE touching `drain_tail`/`fedavg`.** Sim currently
+   over-charges them (0.86 vs real 0.63); that over-charge is a partial COUNTERWEIGHT to the stall (it slows sim).
+   Removing real's stall makes real faster — if sim then OVERSHOOTS real, only then revisit the `drain_tail`
+   over-charge (likely sim-host wall on the sct-buffer canonicalize/replay, sim-only bookkeeping that arguably
+   shouldn't hit the vclock). Do NOT correct it now — it would confound this validation and could re-open the gap.
+3. **PARKED checker fix (below):** filter `cohort_sequence.count` to the matched virtual budget → flips FW/FW+
+   green; independent of the fluxtune fix.
+4. **Re-check the FW+ marginal fails** (throughput mw 5.6%, v2 mw 2.55%) on a >3600s pair; refresh §A when run.
 
 ### PARKED — mid-flight checker work (`async_cifar10/scripts/parity/checks.py`), DO NOT SHIP AS-IS
 Uncommitted edits from this session, correct in spirit but **one is broken**:
 - ✅ `pctl_band_ok()` helper added; applied to `_step_timing_compare` (band escape) + `drain_wall_budget`
   `drain_tail_s` reclassified one-sided→DIST band + `per_round_advance` central-tendency escape. These made
   fluxtune `drain_wall_budget` and fwdllm `per_round_advance` pass; keep.
-- ❌ **`cohort_sequence` split into `composition` + `count` uses RAW full-run counts** (178 vs 316) → false-fails
-  fwdllm/fwdllm_plus (composition is perfect 1.0; count fails on the raw gap). **Must filter both to the matched
-  virtual budget** (`_matched_virtual_budget`, as `total_commits` does) before counting — raw totals are the
-  known false-fail (§G 07-20). Fix or revert the count sub-check before committing.
+- ❌ **`cohort_sequence` split into `composition` + `count` uses RAW full-run counts** (2700s run: fwdllm 109 vs
+  118, fwdllm_plus 137 vs 148, ~7.5%) → false-fails fwdllm/fwdllm_plus (composition is perfect 1.0; count fails
+  on the raw gap). **Must filter both to the matched virtual budget** (`_matched_virtual_budget`, as
+  `total_commits` does) before counting — raw totals are the known false-fail (§G 07-20). Fix or revert the count
+  sub-check before committing.
 - Flags `sim_model_dispatch_queue` + `sim_sct_ordered_drain` were ADDED to `fwdllm_n100_smoke_sim.yaml` and
   `fwdllm_plus_n100_smoke_sim.yaml` (not yet run). If validated inert-or-better next run, remove the config gates
   and make sim-default (§B flag-promotion).

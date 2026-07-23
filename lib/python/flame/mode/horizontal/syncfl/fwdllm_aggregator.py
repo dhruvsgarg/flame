@@ -449,6 +449,9 @@ class TopAggregator(AsyncTopAgg):
         self._real_drain_ready_ingest = bool(getattr(
             self.config.hyperparameters, "real_drain_ready_ingest", False))
         self._real_sync_pending: list = []
+        # Async twin's persistent arrival-ordered buffer. Separate from the sync
+        # one so the two collect paths never alias; a run is only ever one mode.
+        self._real_async_pending: list = []
         self._real_recv_seq = 0
         logger.info(f"real_drain_ready_ingest = {self._real_drain_ready_ingest}")
 
@@ -1437,7 +1440,14 @@ class TopAggregator(AsyncTopAgg):
         sim_has_pending = self.simulated and (
             len(self._sim_buffer) > 0 or bool(self._sim_inflight_expected)
         )
-        if recv_ends is None and not sim_has_pending:
+        # Real drain_ready twin: a grad already pulled into the buffer keeps the
+        # loop alive even when the channel shows no RECV-state ends this instant.
+        real_has_pending = (
+            not self.simulated
+            and getattr(self, "_real_drain_ready_ingest", False)
+            and bool(self._real_async_pending)
+        )
+        if recv_ends is None and not sim_has_pending and not real_has_pending:
             logger.info("no ends yet")
             return
         # time.sleep(0.1)  # Slight delay to allow messages to arrive
@@ -1459,6 +1469,11 @@ class TopAggregator(AsyncTopAgg):
         # this loop expects. Real branch byte-identical to before.
         if self.simulated:
             msg, metadata = self._sim_recv_min_grad(channel, recv_ends or [])
+        elif getattr(self, "_real_drain_ready_ingest", False):
+            # Streamer-free async collect: commit the earliest-arrival buffered
+            # grad, minus recv_fifo's streamer stall (§H). Same one-grad-per-call
+            # contract as the recv_fifo path below.
+            msg, metadata = self._real_async_recv_min_grad(channel)
         else:
             msg, metadata = next(
                 channel.recv_fifo(channel.ends(VAL_CH_STATE_RECV), 1,
@@ -2753,6 +2768,39 @@ class TopAggregator(AsyncTopAgg):
             _ts, _seq, item = pending.pop(0)
             committed.append(item)
         return committed
+
+    def _real_async_recv_min_grad(self, channel):
+        """Real async twin of `next(channel.recv_fifo(RECV, 1))`: refill a
+        persistent arrival-ordered buffer via streamer-free `drain_ready`, pop the
+        earliest-arrival `(msg, metadata)`.
+
+        recv_fifo's fire-and-forget per-end tasks outlive their caller, so the next
+        one-grad collect skips a still-active end and strands its already-arrived
+        grad until the grace -- a ~0.4s/cohort post-fill commit dwell sim never has
+        (§H). drain_ready sweeps each End rxq directly, so a grad commits at T+D
+        like sim. The buffer carries across calls like recv_fifo's rxq (stale
+        rejection stays in `_process_single_trainer_message`), so no boundary clear.
+        Returns (None, ("", now)) on grace timeout, matching recv_fifo's contract."""
+        pending = self._real_async_pending
+        deadline = time.time() + RECV_TIMEOUT_WAIT_S
+
+        def _buffer(drained):
+            for msg, md in drained:
+                if not msg:
+                    continue
+                self._real_recv_seq += 1
+                pending.append((md[1], self._real_recv_seq, (msg, md)))
+
+        # Non-blocking sweep first so a just-arrived earlier grad can win the sort.
+        _buffer(channel.drain_ready(channel.ends(), timeout=0))
+        while not pending:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None, ("", datetime.now())
+            _buffer(channel.drain_ready(channel.ends(), timeout=remaining))
+        pending.sort(key=lambda x: (x[0], x[1]))
+        _ts, _seq, (msg, md) = pending.pop(0)
+        return msg, md
 
     @timer_decorator
     def sync_collect_and_accumulate_grads(self, tag, channel):
