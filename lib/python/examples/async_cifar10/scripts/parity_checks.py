@@ -51,6 +51,7 @@ from parity.checks import (  # noqa: F401, E402
     # §3.E processing
     participation_parity,
     trainer_speed_parity,
+    trainer_speed_identity_parity,
     # §3.F utility
     utility_parity,
     # §3.G convergence

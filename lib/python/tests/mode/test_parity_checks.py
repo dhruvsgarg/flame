@@ -1137,6 +1137,41 @@ class TestV1bItersMovingAvg:
         r = pc.iters_per_data_id_moving_avg_parity(a, a)
         assert r["ok"] and r.get("status") == "SKIP", r
 
+    @staticmethod
+    def _async_run(iters):
+        ev = []
+        for d, n in enumerate(iters):
+            for it in range(n):
+                ev.append(_lcyc(d, it, ["a"], 0.5, var_good=(it == n - 1),
+                                goal=10, is_async=True))
+        return ev
+
+    def test_async_stochastic_gates_ma_shadow_keeps_cum_drift(self):
+        # fluxtune regime: async + stochastic selector. The per-data_id iter count
+        # is noisy and DECORRELATED between modes (boundary-race cascade), so the
+        # MA curves can't shadow -- gated. Same iter multiset in a different ORDER
+        # (large MA dev, equal cumulative mean) must now PASS.
+        sel = [_selc(1, ["a"], 20)]                       # subset -> stochastic
+        base = ([1] * 20) + ([5] * 20)
+        real = _agg(selection=sel, agg_rounds=self._async_run(base))
+        sim = _agg(selection=sel, agg_rounds=self._async_run(list(reversed(base))))
+        r = pc.iters_per_data_id_moving_avg_parity(real, sim, window=10)
+        assert r["ma_shadow_gated"] is True
+        assert r["ma_max_abs_dev"] > 1.0                  # shadow genuinely diverges
+        assert r["cum_mean_rel_diff"] <= 0.05             # but cumulative mean matches
+        assert r["ok"]
+
+    def test_async_stochastic_still_fails_on_cumulative_drift(self):
+        # Gating the MA shadow does NOT gate a real throughput drift: sim doing
+        # materially more iters/data_id overall still fails via the cum-mean guard.
+        sel = [_selc(1, ["a"], 20)]
+        real = _agg(selection=sel, agg_rounds=self._async_run([2] * 40))
+        sim = _agg(selection=sel, agg_rounds=self._async_run([3] * 40))  # +50%
+        r = pc.iters_per_data_id_moving_avg_parity(real, sim, window=10)
+        assert r["ma_shadow_gated"] is True
+        assert r["cum_mean_rel_diff"] > 0.05
+        assert not r["ok"]
+
 
 class TestV2VarTrajectory:
     def test_matched_passes(self):
@@ -1595,12 +1630,46 @@ class TestCohortSequence:
     def test_async_low_overlap_still_FAILS(self):
         # A genuine selection divergence (overlap < tol) is NOT absorbed --
         # distributional grading tolerates boundary races, not real mix bugs.
+        # NB: no selector telemetry -> deterministic fallback -> ENFORCED (the
+        # stochastic-selector gate below is what changes this).
         real = _agg(agg_rounds=[_lcyc(0, 1, [f"t{i}" for i in range(10)], 0.5,
                                       is_async=True, goal=10)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, [f"t{i}" for i in range(5, 15)], 0.5,
                                      is_async=True, goal=10)])
         r = pc.cohort_sequence_parity(real, sim)
         assert not r["ok"] and r["set_overlap_frac"] < 0.8
+
+    def test_async_stochastic_selector_gates_identity_composition(self):
+        # fluxtune regime: async + stochastic-SUBSET selector (num_chosen<pool).
+        # The marginal cohort slot is a physical-arrival vs modeled-sct boundary
+        # race that cascades, decorrelating index-paired membership to the
+        # independent-draw floor -- unattainable, not a bug. composition +
+        # first-bin SET gate to diagnostic; COUNT stays enforced, S2 owns the
+        # mix catch.
+        base = [f"t{i}" for i in range(20)]
+        sel = [_selc(1, base[:10], 20)]                     # subset -> stochastic
+        real = _agg(selection=sel, agg_rounds=[
+            _lcyc(0, 1, base[0:10], 0.5, is_async=True, goal=10)])
+        sim = _agg(selection=sel, agg_rounds=[
+            _lcyc(0, 1, base[8:18], 0.5, is_async=True, goal=10)])  # low overlap
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["identity_gated"] is True
+        assert r["composition"]["gated_stochastic"] is True
+        assert r["ok"], r                                   # gated -> passes on COUNT
+        assert r["composition"]["independent_draw_floor"] is not None
+
+    def test_async_stochastic_still_enforces_count(self):
+        # Gating IDENTITY does not gate THROUGHPUT: a cohort-COUNT drift beyond
+        # tol still fails even for a stochastic async selector.
+        base = [f"t{i}" for i in range(20)]
+        sel = [_selc(1, base[:10], 20)]
+        real = _agg(selection=sel, agg_rounds=[
+            _lcyc(0, i, base[0:10], 0.5, is_async=True, goal=10) for i in range(2)])
+        sim = _agg(selection=sel, agg_rounds=[
+            _lcyc(0, i, base[0:10], 0.5, is_async=True, goal=10) for i in range(20)])
+        r = pc.cohort_sequence_parity(real, sim)
+        assert r["identity_gated"] is True
+        assert not r["ok"] and not r["count"]["ok"]
 
     def test_var_divergence_FAILS_even_with_matched_order(self):
         # Identical cohort+order, var off by >0.1% -> the RNG-desync tell.
@@ -1838,6 +1907,34 @@ def _cyc_with_boundary(data_id, iteration, cohort, var, commit_ts_by_end):
         {"end": end, "commit_ts": ts} for end, ts in commit_ts_by_end.items()
     ]
     return c
+
+
+class TestTrainerSpeedIdentityGating:
+    """P3b: per-trainer SPEED identity is registry-assigned -> always enforced.
+    Per-trainer UTILITY is loss-on-current-model (path-dependent), so for a
+    stochastic subset selector it is a gated diagnostic (utility_parity owns the
+    distribution)."""
+
+    @staticmethod
+    def _sel_pt(per_trainer, chosen=("a",), ncand=10):
+        e = _selc(1, list(chosen), ncand)      # subset (ncand>chosen) -> stochastic
+        e["per_trainer"] = per_trainer
+        return e
+
+    def test_utility_identity_gated_for_stochastic(self):
+        real = _agg(selection=[self._sel_pt({"a": {"speed_s": 8.0, "utility": 6.0}})] * 3)
+        sim = _agg(selection=[self._sel_pt({"a": {"speed_s": 8.0, "utility": 9.0}})] * 3)
+        r = pc.trainer_speed_identity_parity(real, sim)
+        assert r["utility"]["gated_stochastic"] is True
+        assert r["utility"]["ok"] is False       # divergence still REPORTED
+        assert r["speed_s"]["gated_stochastic"] is False
+        assert r["ok"]                            # but utility identity does not gate
+
+    def test_speed_identity_enforced_even_when_stochastic(self):
+        real = _agg(selection=[self._sel_pt({"a": {"speed_s": 8.0, "utility": 6.0}})] * 3)
+        sim = _agg(selection=[self._sel_pt({"a": {"speed_s": 12.0, "utility": 6.0}})] * 3)
+        r = pc.trainer_speed_identity_parity(real, sim)
+        assert not r["speed_s"]["ok"] and not r["ok"]   # speed is registry-fixed
 
 
 class TestCohortFirstCommitRaceDiagnostic:

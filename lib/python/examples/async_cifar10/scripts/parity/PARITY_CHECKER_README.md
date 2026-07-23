@@ -94,6 +94,25 @@ data_ids): it fires only when a side does MORE cycles to reach the SAME data_ids
 V1's per-unit distributional tolerance absorbs — so it deps on `v1_iter_per_data_id` (a fail with V1
 failing is downstream). See `TestCohortSequenceCountMatchedBudget` in `tests/mode/test_parity_checks.py`.
 
+**Index-paired IDENTITY gating for stochastic-async selectors (2026-07-23).** For an async,
+stochastic-subset, path-dependent selector (fluxtune's `AsyncOortSelector`), the marginal cohort
+slot is a physical-FIFO-arrival (real) vs modeled-sct (sim) BOUNDARY RACE that cascades: index-paired
+membership decorrelates to the **independent-draw floor** (matched marginals, zero index-correlation;
+`_independent_draw_overlap_floor`) while `participation_parity` (S2) still enforces the marginal
+invariant. Observed overlap AT the floor ⇒ two independent samples of the same process, not a bias
+(observed << floor would be a real anti-correlation). Index-paired identity is then unattainable
+(0.8 target vs a ~0.24 floor at 100-trainer scale), so the identity checks GATE to diagnostic when
+`is_async and not _selection_is_deterministic` — mirroring `selection_parity`/S1's stochastic gating:
+- `cohort_sequence` (`identity_gated`): composition + first-bin SET → diagnostic; **COUNT stays
+  enforced** (throughput), reporting `composition.independent_draw_floor` + `at_independent_draw_floor`.
+- `trainer_speed_identity` (`utility.gated_stochastic`): per-trainer UTILITY (loss-on-current-model,
+  path-dependent) → diagnostic; **`speed_s` (registry-assigned) stays enforced**; the utility
+  DISTRIBUTION (`utility_parity`) is the criterion.
+- `iters_per_data_id_moving_avg` / V1b (`ma_shadow_gated`): the MA-shadow bounds → diagnostic (the
+  per-data_id retry sequence is decorrelated by the same cascade); the **cumulative-mean guard stays
+  enforced** (catches a real systematic drift). Sync fwdllm (is_async=False) is never gated. Tests:
+  `TestCohortSequence`, `TestTrainerSpeedIdentityGating`, `TestV1bItersMovingAvg` (stochastic cases).
+
 ## Adding a new rung
 1. Implement in `checks.py`, register in `CHECK_META` (stage/role/deps) and wire into
    `run_all_parity`.

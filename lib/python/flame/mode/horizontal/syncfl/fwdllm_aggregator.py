@@ -3533,12 +3533,21 @@ class TopAggregator(AsyncTopAgg):
     def _flat_grad_norm(grad_named, named_params):
         """L2 norm of a trainer's gradient (dict name→tensor), flattened over
         all trainable params. Mode-invariance target: given identical input +
-        perturbation seed, this should match real vs sim to float-noise."""
-        sq = 0.0
-        for name, _p in named_params:
-            if name in grad_named:
-                t = grad_named[name]
-                sq += float((t * t).sum())
+        perturbation seed, this should match real vs sim to float-noise.
+
+        Per-tensor squared sums stay on-device and are reduced in ONE host sync
+        (was a `float(...)` sync per parameter -- L blocking GPU syncs/call that,
+        under sim's co-located trainer load, stalled behind the JVP queue and
+        fattened the drain-tail p90). float64 accumulation matches the prior
+        python-float sum."""
+        parts = [
+            (grad_named[name] * grad_named[name]).sum()
+            for name, _p in named_params
+            if name in grad_named
+        ]
+        if not parts:
+            return 0.0
+        sq = float(torch.stack(parts).double().sum())
         return math.sqrt(sq) if sq > 0.0 else 0.0
 
     @timer_decorator
