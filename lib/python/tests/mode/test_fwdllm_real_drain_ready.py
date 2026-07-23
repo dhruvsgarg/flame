@@ -2,17 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real-side streamer-free collect (`_real_sync_recv_incremental`), simulate_fwdllm.md §H.
 
-In real mode fwdllm's `sync_collect_and_accumulate_grads` collected via
-`channel.recv_fifo`, whose fire-and-forget per-end streamer tasks (one per end,
-each with a RECV_TIMEOUT_WAIT_S grace) outlive their caller under the
-num_min_req=1 incremental loop: the next collect skips an end as "already
-active" and a slow trainer's already-arrived grad strands until a 30s timeout
-fires -- once per cohort, ~40% of real collect wall, the whole real<->sim
-throughput gap. `_real_sync_recv_incremental` refills a persistent
-arrival-ordered buffer from the streamer-free `drain_ready` instead, so an
-arrived grad commits on the next sweep. These tests drive it directly with a
-fake channel; they assert prompt commit, arrival-time ordering, and the
-per-call num_min_req cap with cross-call buffering.
+fwdllm's `sync_collect_and_accumulate_grads` collected via `channel.recv_fifo`,
+whose fire-and-forget per-end streamer tasks outlive their caller under the
+num_min_req=1 loop: a slow trainer's already-arrived grad strands until the
+RECV_TIMEOUT_WAIT_S grace fires (~40% of real collect wall). `_real_sync_recv_
+incremental` refills a persistent arrival-ordered buffer from streamer-free
+`drain_ready` instead. These tests drive it directly with a fake channel;
+they assert prompt commit, arrival-time ordering, and the per-call
+num_min_req cap with cross-call buffering.
 """
 
 from collections import deque

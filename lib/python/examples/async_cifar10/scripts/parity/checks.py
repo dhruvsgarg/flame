@@ -162,15 +162,12 @@ def pctl_band_ok(real: list, sim: list, qs=(50, 90, 95),
                  tol_rel: float = 0.5, min_abs: float = 0.0) -> dict:
     """Central + upper-percentile band agreement for a WALL/timing distribution.
 
-    Passes iff EVERY quantile in `qs` agrees within `tol_rel` (relative) OR
-    `min_abs` (absolute floor). Deliberately ignores the extreme tail beyond
-    `qs` (P99/max): on the sim host a GPU/GC/memory-contention blip inflates the
-    far tail of a genuinely-matched distribution, so tail-sensitive stats (raw
-    KS, mean) false-fail timing rungs -- sim charges MODELED time and its raw
-    physical wall legitimately differs (PARITY.md §F-1/§F-10). For WALL/compute
-    spans ONLY, never logical-determinism rungs. P99 is always reported as a
-    diagnostic but never gates. `min_abs` absorbs sub-noise magnitudes where a
-    large relative gap is still an irrelevant absolute one (e.g. 3ms vs 6ms)."""
+    Passes iff EVERY quantile in `qs` agrees within `tol_rel` or `min_abs`.
+    Ignores the tail beyond `qs` (P99/max, reported as diagnostic only): a
+    sim-host GPU/GC/contention blip inflates the far tail of an otherwise
+    matched distribution, false-failing tail-sensitive stats like raw KS/mean
+    (PARITY.md §F-1/§F-10). WALL/compute spans only, never logical-determinism
+    rungs. `min_abs` absorbs sub-noise gaps (e.g. 3ms vs 6ms)."""
     if not real or not sim:
         return {"ok": True, "status": "SKIP", "note": "empty distribution"}
     bands: dict = {}
@@ -514,13 +511,13 @@ def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
     the run's progress axis (fwdllm committed `data_id`, else FL `round`).
 
     Parity is "same work, differing only in wall-clock" (F-12): fix the WORK
-    (progress <= N, the common prefix) and let TIME be the measured output --
-    never fix a clock value and count work, which conflates sim's vclock with
-    real's wall on the axis `sim_rate` tests. See PARITY.md §1.5.
+    (progress <= N) and let TIME be the measured output, never fix a clock
+    value and count work -- that conflates sim's vclock with real's wall on
+    the axis `sim_rate` tests. See PARITY.md §1.5.
 
-    Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or None`
-    -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts across
-    laps; compare with N via `<=`.
+    Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or
+    None` -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts
+    across laps; compare with N via `<=`.
     """
     axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
                                       _progress_axis(sim_agg_rounds)) else "round"
@@ -2519,13 +2516,12 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     """U2 [EXACT]: virtual TIME to reach the matched LOGICAL budget N.
 
     At a fixed logical budget N (min committed data_ids / FL rounds both sides
-    reached, §F-2), the commit COUNT is N by construction on both sides -- so the
-    signal is TIME, not count: real's algorithmic-time-to-N vs sim's vclock-to-N,
-    rel_diff ≤ 5% (the shared throughput-family bar, = K2/K8). This states the
-    clock-parity deliverable ("does sim's vclock predict real's time for the same
-    work") directly, instead of counting work at a clock window V that conflates
-    the two clocks on the axis under test (PARITY.md §1.5). Kept as the
-    commit-level cross-check of the K2 rate mechanism (append-only guard).
+    reached, §F-2) the commit COUNT is N by construction on both sides, so the
+    signal is TIME: real's algorithmic-time-to-N vs sim's vclock-to-N,
+    rel_diff ≤ 5% (shared throughput-family bar, = K2/K8). States the
+    clock-parity deliverable directly instead of counting work at a clock
+    window V that conflates the two clocks (PARITY.md §1.5). Kept as the
+    commit-level cross-check of the K2 rate mechanism.
     """
     if not any(e.get("vclock_now") is not None for e in sim["agg_rounds"]):
         return {"ok": False, "tier": "EXACT",
@@ -4193,14 +4189,13 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
 
     A function passes on `ks <= ks_tol` OR `mean_rel_diff <= mean_tol_rel` OR a
     central+P90/P95 percentile band (`pctl_band_ok`, tol=`mean_tol_rel`,
-    `min_abs=band_min_abs_s`). The band escape exists because the SAME batched
-    compute (verified: fwdllm's cohort merge/var runs at commit in BOTH modes)
-    develops a fat UPPER tail on the sim host -- densely-packed concurrent
-    trainer JVP compute contends for GPU/memory, inflating mean and raw KS while
-    the median/P90 stay close in absolute terms. Per §F-10 sim's physical wall
-    legitimately exceeds real's; the modeled cost that matters is charged to the
-    vclock separately. The band still catches a genuine multi-x, many-second
-    regression (fails both `min_abs` and `tol_rel` at every quantile).
+    `min_abs=band_min_abs_s`). The band escape exists because the same batched
+    compute develops a fat upper tail on the sim host -- concurrent trainer JVP
+    compute contends for GPU/memory, inflating mean and raw KS while
+    median/P90 stay close (§F-10: sim's physical wall legitimately exceeds
+    real's; the modeled cost is charged to the vclock separately). Still
+    catches a genuine multi-x, many-second regression (fails both `min_abs`
+    and `tol_rel` at every quantile).
     """
     funcs = sorted(set(r_by_func) | set(s_by_func))
     if not funcs:
@@ -4522,13 +4517,11 @@ def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
     cum_mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
                     if max(r_mean, s_mean) > 0 else 0.0)
     _wi = max(range(len(devs)), key=lambda i: devs[i])
-    # For an async stochastic-subset selector the per-data_id iteration count is a
-    # NOISY realization whose variance-retry spikes land at DIFFERENT data_ids in
-    # each mode (the boundary-race cascade decorrelates cohort membership -> var
-    # -> retry count), so the index-paired MA curves can't shadow even when the
-    # DISTRIBUTION matches (v1 passes). Gate the MA-shadowing bounds in that
-    # regime; the cumulative-mean guard (v1b's design target -- a real systematic
-    # drift that pooled stats miss) stays enforced.
+    # Async stochastic-subset selectors: the per-data_id iteration count is
+    # noisy, with variance-retry spikes landing at different data_ids each
+    # mode (boundary-race cascade decorrelates cohort membership), so
+    # index-paired MA curves can't shadow even when the distribution matches.
+    # Gate MA-shadowing there; the cumulative-mean guard (v1b) stays enforced.
     is_async = any(e.get("is_async") for e in rc[:1] + sc[:1])
     ma_shadow_gated = is_async and not _selection_is_deterministic(real, sim)
     _shadow_ok = ma_mean_abs <= ma_mean_abs_tol and ma_max_abs <= ma_max_abs_tol
@@ -4951,11 +4944,10 @@ def _cohort_first_commit_race_diagnostic(
 def _independent_draw_overlap_floor(rc_full: list, sc_full: list):
     """Expected index-paired cohort overlap for two INDEPENDENT sequences that
     share the observed marginal participation but have zero index-correlation
-    (E[|A∩B|]/cohort_size from per-cohort inclusion probs). When the observed
-    mean_overlap sits at this floor, real and sim are two independent samples of
-    the SAME process -- benign boundary-race decorrelation, not a selection bias;
-    observed well BELOW the floor would signal a real anti-correlation. None if
-    empty."""
+    (E[|A∩B|]/cohort_size from per-cohort inclusion probs). Observed
+    mean_overlap at this floor means real/sim are independent samples of the
+    same process (benign decorrelation, not selection bias); well below the
+    floor would signal a real anti-correlation. None if empty."""
     if not rc_full or not sc_full:
         return None
 
@@ -4993,12 +4985,12 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         landed within `tie_window_s` of a cohort boundary in the mode that
         includes it (preferred; falls back to the bare registry-delay
         comparison when observed data is unavailable) is an arrival race, not
-        a bug, granted a TIE. Because a boundary race CASCADEs (shifting the
-        whole downstream sequence by one) past what pairwise ties can absorb,
-        async additionally grades SET DISTRIBUTIONALLY: a cycle whose per-cycle
-        overlap |r∩s|/|cohort| >= `set_overlap_tol` passes even without an exact
-        or tie match. A genuine selection-mix bug still fails population-level
-        participation_parity (S2). A cycle resolved only via a TIE (not an exact
+        a bug, granted a TIE. Because a boundary race can cascade past what
+        pairwise ties absorb, async additionally grades SET DISTRIBUTIONALLY: a
+        cycle with per-cycle overlap |r∩s|/|cohort| >= `set_overlap_tol` passes
+        without an exact or tie match (a genuine selection-mix bug still fails
+        population-level participation_parity, S2). A cycle resolved only via a
+        TIE (not an exact
         SET match) exempts VAR/var-derived CADENCE fields for that cycle too
         -- differing trainers legitimately produce differing gradients, so
         exact var equality is not an expectable target there. Population-level
@@ -5055,12 +5047,11 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     is_async = any(e.get("is_async") for e in rc_full[:1] + sc_full[:1])
 
     # Distributional SET tolerance (async only): a boundary arrival race
-    # (fast-late vs slow-early trainer straddling a cohort boundary) CASCADEs --
-    # the displaced member shifts the whole downstream sequence by one, so exact
-    # SET + pairwise-tie can't absorb it even though each cohort still shares
-    # ~all members with the other mode. Grade the SET on per-cycle overlap
-    # (|r∩s|/|cohort|) >= set_overlap_tol instead. A genuine selection-mix bug
-    # still fails population-level participation_parity (S2). Sync stays exact.
+    # cascades the displaced member through the whole downstream sequence, so
+    # exact SET + pairwise-tie can't absorb it even though each cohort still
+    # shares ~all members with the other mode. Grade on per-cycle overlap
+    # (|r∩s|/|cohort|) >= set_overlap_tol instead; a genuine selection-mix bug
+    # still fails participation_parity (S2). Sync stays exact.
     def _overlap(r_ids, s_ids):
         return len(set(r_ids) & set(s_ids)) / max(len(r_ids), len(s_ids), 1)
 
@@ -5080,13 +5071,12 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
             _divergent_idxs.append(i)
     set_overlap_frac = round(sum(_overlaps) / n, 3) if n else None
 
-    # ---- COMPOSITION over the FULL cohort sequence (task-3 split): compare the
-    # raw cohorts made, paired by AGG-GOAL INDEX -- not by data_id and not by
-    # wall clock. As long as the i-th cohort's membership is broadly the same
-    # (exact / tie / overlap >= set_overlap_tol) in both modes, composition
-    # passes; a FRACTION >= composition_tol is required (tolerant of transient
-    # boundary-race swaps). Decoupled from data-bin so a throughput/data_id drift
-    # does NOT collapse it -- that is caught by the separate COUNT check below.
+    # ---- COMPOSITION over the FULL cohort sequence: compare raw cohorts,
+    # paired by agg-goal index (not data_id, not wall clock). Passes when a
+    # FRACTION >= composition_tol of cohorts broadly match (exact / tie /
+    # overlap >= set_overlap_tol), tolerant of transient boundary-race swaps.
+    # Decoupled from data-bin so a throughput/data_id drift alone doesn't
+    # collapse it -- that's the separate COUNT check below.
     m = min(len(rc_full), len(sc_full))
     comp_m = 0
     comp_overlaps = []
@@ -5207,18 +5197,17 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
     first_bin_logical_ok = (set_ok and cadence_ok and var_ok_all
                             and (order_ok_all if is_async else True))
 
-    # Overall: the task-3 split -- COMPOSITION (raw cohort sequence broadly
-    # matches, index-paired, tolerant) AND COUNT (throughput-driven cohort count
-    # matches, tolerant) AND first-bin logical determinism.
+    # Overall: COMPOSITION (cohort sequence broadly matches, index-paired) AND
+    # COUNT (throughput-driven cohort count matches) AND first-bin logical
+    # determinism.
     #
-    # For an async, stochastic-subset, path-dependent selector (fluxtune's
-    # AsyncOortSelector) the marginal cohort slot is a physical-arrival vs
-    # modeled-sct BOUNDARY RACE that cascades: index-paired membership
-    # decorrelates to the independent-draw floor (matched marginals, zero index
-    # -correlation) while participation_parity (S2) still enforces the marginal
-    # invariant. Index-paired IDENTITY (composition + first-bin SET) is then
-    # unattainable, not a bug -- gate it to diagnostic (mirrors selection_parity/
-    # S1); COUNT (throughput) stays enforced and S2 owns the mix-bias catch.
+    # For an async, stochastic-subset selector (fluxtune's AsyncOortSelector),
+    # the marginal cohort slot is a physical-arrival vs modeled-sct boundary
+    # race that cascades: index-paired membership decorrelates to the
+    # independent-draw floor even while participation_parity (S2) still holds
+    # the marginal invariant. Index-paired identity is then unattainable, not a
+    # bug -- gate it to diagnostic (mirrors selection_parity/S1); COUNT stays
+    # enforced and S2 owns the mix-bias catch.
     identity_gated = is_async and not _selection_is_deterministic(real, sim)
     _draw_floor = _independent_draw_overlap_floor(rc_full, sc_full)
     composition["independent_draw_floor"] = _draw_floor
@@ -5720,11 +5709,10 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
       - DRAIN SPREAD one-sided: `processing_wall_ts` range across a commit's
         cohort -- how long the drain loop took through an already-ready
         cohort. Sim spreading wider than real is the #15 shape.
-      - `drain_tail_s` DISTRIBUTIONAL (percentile band): reclassified from
-        one-sided transport -- it is the batched cohort-merge replay (SHARED
-        compute, deferred-to-commit in both modes), whose modeled cost is
-        charged to the vclock; its raw sim-host wall legitimately differs
-        (§F-10). See the inline note below.
+      - `drain_tail_s` DISTRIBUTIONAL (percentile band): the batched
+        cohort-merge replay, shared compute deferred-to-commit in both modes,
+        whose modeled cost is charged to the vclock separately; its raw
+        sim-host wall legitimately differs (§F-10). See inline note below.
     SKIPs cleanly when fields are absent (non-fwdllm runs, single-contributor
     cohorts, or pre-instrumentation logs).
 
@@ -5764,15 +5752,12 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
     components["barrier_wait_s"] = (
         _budget_component(rm, sm) if (rm is not None and sm is not None)
         else {"ok": True, "status": "SKIP", "note": "no barrier_wait_s in telemetry"})
-    # drain_tail_s is NOT transport: it is the batched cohort-merge replay
+    # drain_tail_s is NOT transport: it's the batched cohort-merge replay
     # (`_replay_buffered_cohort_contribs` -> `aggregate_grads_from_trainers`),
-    # verified deferred-to-commit in BOTH modes -- genuine SHARED compute whose
-    # sim wall runs heavier from sim-host GPU/memory contention (same math,
-    # denser concurrent load). Its modeled cost IS charged to the vclock
-    # (`charge_sim_vclock_overhead`, gated on sim_model_agg_compute_time), so
-    # clock-progress-per-agg is checked by per_round_advance/throughput, not
-    # here. Grade it DISTRIBUTIONALLY on a central+P90/P95 band, not a one-sided
-    # sim<=real budget (§F-10). min_abs floors sub-second contention blips.
+    # genuine shared compute that runs heavier on the sim host from GPU/memory
+    # contention. Its modeled cost is charged to the vclock separately
+    # (`charge_sim_vclock_overhead`), so grade this DISTRIBUTIONALLY on a
+    # central+P90/P95 band rather than a one-sided sim<=real budget (§F-10).
     r_dt, s_dt = _phase_vals(real, "drain_tail_s"), _phase_vals(sim, "drain_tail_s")
     if r_dt and s_dt:
         band = pctl_band_ok(r_dt, s_dt, qs=(50, 90, 95),

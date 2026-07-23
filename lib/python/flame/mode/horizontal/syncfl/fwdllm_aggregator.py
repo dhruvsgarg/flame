@@ -421,14 +421,11 @@ class TopAggregator(AsyncTopAgg):
         # _trainer_last_model_version so staleness accounting stays return-driven.
         self._weights_sent_this_cycle: set = set()
         self._redundant_weights_suppressed_total = 0
-        # One-instruction-per-version_key (§H): end_id -> the version_key last
-        # DISPATCHED to it. The sync distribute-per-collect loop re-runs ~agg_goal
-        # times per iteration; without this every pass re-sends VAR=bad to the
-        # whole cohort (~10x/iteration), and a busy trainer drains that backlog
-        # FIFO before it sees the live instruction. Skipping an end already served
-        # the current version_key collapses the cohort to one instruction each,
-        # matching the async path (which is already ~1x). Naturally re-serves on a
-        # version_key advance (stored value != current); no explicit clear needed.
+        # One-instruction-per-version_key (§H): end_id -> version_key last
+        # dispatched to it. Without this the sync per-collect loop (~agg_goal
+        # passes/iteration) re-floods VAR=bad to the whole cohort each pass;
+        # skipping an already-served end matches async's ~1x. Re-serves
+        # automatically on a version_key advance.
         self._end_served_version_key: dict = {}
         self.grad_pool = []
         self.cached_shared_grad_pool_trainable = None
@@ -443,14 +440,12 @@ class TopAggregator(AsyncTopAgg):
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
 
-        # Real-side collect via streamer-free `drain_ready` (see
-        # _real_sync_recv_incremental for the recv_fifo stall it fixes, §H).
-        # A/B flag, default OFF; buffer/seq are its per-call state.
+        # Real-side collect via streamer-free `drain_ready`, replacing recv_fifo
+        # (§H, see _real_sync_recv_incremental). A/B flag, default OFF.
         self._real_drain_ready_ingest = bool(getattr(
             self.config.hyperparameters, "real_drain_ready_ingest", False))
         self._real_sync_pending: list = []
-        # Async twin's persistent arrival-ordered buffer. Separate from the sync
-        # one so the two collect paths never alias; a run is only ever one mode.
+        # Async twin's buffer; kept separate so the two paths never alias.
         self._real_async_pending: list = []
         self._real_recv_seq = 0
         logger.info(f"real_drain_ready_ingest = {self._real_drain_ready_ingest}")
@@ -2121,12 +2116,9 @@ class TopAggregator(AsyncTopAgg):
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
-        # #6: charge the MEASURED agg commit-side critical-path wall to the vclock
-        # -- drain-tail + FedAvg merge are genuine server-step compute that runs
-        # for real in sim on EVERY cycle but was never credited, so the vclock
-        # under-counted real's per-round wall (compounds over retries). Dynamic
-        # (live spans, not pre-profiled), gated OFF (byte-identical), sim-only,
-        # warns on excess. See `charge_sim_vclock_overhead`.
+        # #6: charge the measured drain-tail + FedAvg merge wall to the vclock --
+        # genuine server-step compute that runs every cycle but was never
+        # credited. See `charge_sim_vclock_overhead`.
         _vc = getattr(self, "_vclock", None)
         charge_sim_vclock_overhead(
             _vc, self.simulated, self.config, _drain_tail_s, "drain_tail")
@@ -2723,19 +2715,16 @@ class TopAggregator(AsyncTopAgg):
         return committed
 
     def _real_sync_recv_incremental(self, channel, num_min_req):
-        """Real twin of `_sim_sync_recv_incremental`: refill a persistent,
-        arrival-ordered buffer via streamer-free `drain_ready`, pop the
-        earliest-arrival `num_min_req` for the caller to commit -- same cadence
-        as the `recv_fifo` path it replaces, minus that streamer's stall (§H).
+        """Real twin of `_sim_sync_recv_incremental` via streamer-free
+        `drain_ready` (§H): refill a persistent arrival-ordered buffer, pop the
+        earliest `num_min_req` for the caller to commit.
 
-        recv_fifo's fire-and-forget per-end tasks (each with a
-        RECV_TIMEOUT_WAIT_S grace) outlive their caller, so under the
-        num_min_req=1 loop the next collect skips every end as "already active"
-        and a slow trainer's already-arrived grad strands for a full 30s (once
-        per cohort, ~40% of real collect wall -- the whole throughput gap).
+        recv_fifo's fire-and-forget per-end tasks outlive their caller, so
+        under num_min_req=1 a slow trainer's already-arrived grad strands for a
+        full RECV_TIMEOUT_WAIT_S once per cohort (~40% of real collect wall).
         drain_ready pulls straight from each End rxq with no background task.
-        Buffer is arrival-ordered (datetime, then a seq tiebreak) to keep
-        recv_fifo's commit order; duplicate/stale/no-grad rejection stays in the
+        Buffer is arrival-ordered (datetime + seq tiebreak) to preserve
+        recv_fifo's commit order; stale/duplicate rejection stays in the
         caller's `_process_single_trainer_message`."""
         pending = self._real_sync_pending
         committed = []
@@ -2770,17 +2759,16 @@ class TopAggregator(AsyncTopAgg):
         return committed
 
     def _real_async_recv_min_grad(self, channel):
-        """Real async twin of `next(channel.recv_fifo(RECV, 1))`: refill a
-        persistent arrival-ordered buffer via streamer-free `drain_ready`, pop the
-        earliest-arrival `(msg, metadata)`.
+        """Real async twin of `next(channel.recv_fifo(RECV, 1))` via
+        streamer-free `drain_ready` (§H): refill a persistent arrival-ordered
+        buffer, pop the earliest `(msg, metadata)`.
 
-        recv_fifo's fire-and-forget per-end tasks outlive their caller, so the next
-        one-grad collect skips a still-active end and strands its already-arrived
-        grad until the grace -- a ~0.4s/cohort post-fill commit dwell sim never has
-        (§H). drain_ready sweeps each End rxq directly, so a grad commits at T+D
-        like sim. The buffer carries across calls like recv_fifo's rxq (stale
-        rejection stays in `_process_single_trainer_message`), so no boundary clear.
-        Returns (None, ("", now)) on grace timeout, matching recv_fifo's contract."""
+        recv_fifo's fire-and-forget per-end tasks strand an already-arrived
+        grad until the grace expires (~0.4s/cohort real never needs);
+        drain_ready sweeps each End rxq directly so a grad commits at T+D like
+        sim. Buffer persists across calls like recv_fifo's rxq (stale
+        rejection stays in `_process_single_trainer_message`). Returns
+        (None, ("", now)) on timeout, matching recv_fifo's contract."""
         pending = self._real_async_pending
         deadline = time.time() + RECV_TIMEOUT_WAIT_S
 
@@ -3535,11 +3523,10 @@ class TopAggregator(AsyncTopAgg):
         all trainable params. Mode-invariance target: given identical input +
         perturbation seed, this should match real vs sim to float-noise.
 
-        Per-tensor squared sums stay on-device and are reduced in ONE host sync
-        (was a `float(...)` sync per parameter -- L blocking GPU syncs/call that,
-        under sim's co-located trainer load, stalled behind the JVP queue and
-        fattened the drain-tail p90). float64 accumulation matches the prior
-        python-float sum."""
+        Per-tensor squared sums stay on-device, reduced in ONE host sync (was a
+        blocking `float(...)` sync per parameter, which stalled behind sim's JVP
+        queue and fattened the drain-tail p90). float64 accumulation matches
+        the prior python-float sum."""
         parts = [
             (grad_named[name] * grad_named[name]).sum()
             for name, _p in named_params

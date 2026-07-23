@@ -2,15 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """One-instruction-per-version_key dedup for the sync distribute loop (§H).
 
-The sync `distribute -> collect(1)` loop re-runs ~agg_goal times per iteration,
-and each `_distribute_weights_sync` pass used to send VAR=bad to the WHOLE cohort
--- ~10 messages/trainer/iteration. A busy straggler then drained that backlog
-FIFO before it saw the live instruction, restarting its next compute up to ~10s
-late (the whole residual real<->sim throughput gap). `_distribute_weights_sync`
+The sync `distribute -> collect(1)` loop re-runs ~agg_goal times per
+iteration; each pass used to re-flood VAR=bad to the whole cohort, stranding
+a busy straggler's next compute behind that backlog. `_distribute_weights_sync`
 now skips an end already dispatched the current `version_key`, collapsing the
-cohort to one instruction each (matching the async path, already ~1x). These
-tests pin the dedup predicate + mark, and the loop-level "exactly once per
-version_key, re-served on advance" invariant.
+cohort to one instruction each. These tests pin the dedup predicate + mark,
+and the "exactly once per version_key, re-served on advance" invariant.
 """
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator

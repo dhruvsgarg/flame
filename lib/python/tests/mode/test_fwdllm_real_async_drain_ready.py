@@ -2,17 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real ASYNC streamer-free collect (`_real_async_recv_min_grad`), simulate_fwdllm.md §H.
 
-fluxtune's async grad loop (`_aggregate_grads_async`) collected one grad per call
-via `next(channel.recv_fifo(RECV, 1))`. recv_fifo's fire-and-forget per-end
-streamer tasks outlive their caller, so the next call skips a still-active end
-("already has active task") and its already-arrived grad strands in the End rxq
-until the grace lapses -- a ~0.4s/cohort post-fill commit dwell that sim (which
-commits at its sct) never has, shifting real's committed cohort mix slower and
-masking a ~9% throughput gap. `_real_async_recv_min_grad` refills a persistent
-arrival-ordered buffer from the streamer-free `drain_ready` and pops the single
-earliest-arrival grad, so an arrived grad commits on the next sweep (commit at
-T+D, matching sim). These tests drive it directly with a fake channel: prompt
-commit, arrival-time order, cross-call buffering, and the bounded empty return.
+fwdllm's async grad loop collected one grad per call via
+`next(channel.recv_fifo(RECV, 1))`, whose fire-and-forget per-end streamer
+tasks outlive their caller: the next call skips a still-active end and its
+already-arrived grad strands until the grace lapses (~0.4s/cohort real never
+needs, masking a ~9% throughput gap). `_real_async_recv_min_grad` refills a
+persistent arrival-ordered buffer from streamer-free `drain_ready` instead, so
+a grad commits at T+D like sim. These tests drive it directly with a fake
+channel: prompt commit, arrival-time order, cross-call buffering, and the
+bounded empty return.
 """
 
 from collections import deque

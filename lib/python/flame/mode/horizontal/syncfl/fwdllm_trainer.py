@@ -892,14 +892,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        # No-op (§H). Formerly a per-loop time.sleep(1) MQTT throttle (real only,
-        # #8). Removed: channel.recv already blocks until the next instruction,
-        # and the one-instruction-per-version_key aggregator dedup leaves no
-        # VAR=bad backlog to pace-drain -- so this only added ~1s/round of
-        # real-only latency that sim never paid (it gated the sleep off), widening
-        # the real<->sim gap and, for a busy straggler, stacking one sleep per
-        # queued stale message. The no-message path in _fetch_weights keeps its
-        # own sleep(1) busy-spin guard, so removing this cannot hot-spin the loop.
+        # No-op (§H). Formerly a per-loop time.sleep(1) MQTT throttle (real
+        # only, #8), removed: channel.recv already blocks until the next
+        # instruction, and the version_key dedup leaves no VAR=bad backlog to
+        # pace-drain, so this only added real-only latency widening the
+        # real<->sim gap. _fetch_weights' own sleep(1) guard still prevents
+        # hot-spinning the no-message path.
         return
 
     def compose(self) -> None:

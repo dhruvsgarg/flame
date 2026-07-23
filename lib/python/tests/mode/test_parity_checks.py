@@ -1726,19 +1726,11 @@ class TestCohortSequence:
         assert r["cadence_var_order_max_bin"] == 1
 
     def test_set_divergence_beyond_bin1_not_enforced_by_default(self):
-        # SET used to be HARD over the entire run, uncapped, but a genuine
-        # admission tie legitimately CASCADEs into neighboring cycles (a
-        # trainer that misses a boundary becomes the front of the next
-        # cohort, displacing whoever the other mode picked) -- chasing exact
-        # SET match past the achievable-determinism window chases that
-        # cascade artifact, not a bug. `first_bin_logical_ok` (the bin-1-
-        # capped exact rung this test targets) stays unenforced past the
-        # wall. `composition` is a SEPARATE, deliberately full-run mechanism
-        # (added later, task-3 split) that DOES grade the whole sequence
-        # distributionally -- so overall `ok` correctly still fails here
-        # (a real SET mismatch spanning half this 2-cycle toy fixture sits
-        # far under composition_tol); that's composition doing its own job,
-        # not a regression of the bin-1 cap this test exercises.
+        # A boundary-race SET mismatch past bin-1 is a cascade artifact, not a
+        # bug, so `first_bin_logical_ok` stays unenforced past the wall.
+        # `composition` (separate, full-run) still grades it distributionally,
+        # so overall `ok` correctly fails here -- that's composition's job,
+        # not a regression of the bin-1 cap this test targets.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
                                 _lcyc(7, 2, ["a", "b"], 0.5)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b"], 0.5),
