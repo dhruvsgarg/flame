@@ -62,11 +62,11 @@ Phase-2 unavailability). Details §H.
 (§G).** Only `drain_wall_budget` GATES (MECHANISM); `step_timing_breakdown` + `agg_step_timing_breakdown` are DIAG
 (non-gating). Input sizes byte-identical (agg_goal 10, grad_pool 2.07, cached_v 25.92); sim's per-commit drain
 floor (p10 35ms) equals real's typical (37ms) in EVERY decile with ~19% of commits real-matched throughout —
-bursty contention from 100 co-located trainer threads, not more work. **Fix LANDED (this session):**
-`_flat_grad_norm` did a GPU→host sync PER PARAMETER (L syncs/call, contention-amplified) → single on-device
-reduce (bit-identical, 55 tests). **Open — re-measure after the re-run (§B):** `sim_model_agg_compute_time`
-charges the RAW contention-inflated drain wall onto the vclock (675ms/commit vs real 163ms), which is why
-`per_round_advance` needs the KS-0.345 central escape; check whether fix-1 makes the sim-charged wall track real.
+bursty contention from 100 co-located trainer threads, not more work. **Fix-1 `_flat_grad_norm`** (per-param
+GPU→host sync → single on-device reduce, bit-identical, 55 tests) **re-measured at the 3600s re-run (07-23):
+`drain_tail_s` p90 rel UNCHANGED** (fwdllm 0.935→0.942, fwdllm_plus 0.912→0.919) — fix-1 alone does not close the
+vclock-charge gap; `sim_model_agg_compute_time` still charges the full contention-inflated drain wall onto the
+vclock. Decision needed next: charge-the-floor vs relax (§B).
 
 **Flag inventory (promotion call in §B):** `sim_model_agg_compute_time` is ON for all three;
 `sim_sct_ordered_drain` + `sim_model_dispatch_queue` are fluxtune-yaml-only.
@@ -76,11 +76,11 @@ charges the RAW contention-inflated drain wall onto the vclock (675ms/commit vs 
 | baseline | run pair | duration | pass | fail | skip |
 |---|---|---|---|---|---|
 | fluxtune/syn_0 | `run_20260723_044359`/`_064615` (agg_goal=10) | ~7200s | 69 | 0 | 16 |
-| fwdllm/syn_0 | `run_20260723_001159`/`_021350` (agg_goal=10) | ~7200s | 59 | 3 | 22 |
-| fwdllm_plus/syn_0 | `run_20260723_022604`/`_042757` (agg_goal=10) | ~7200s | 61 | 2 | 21 |
+| fwdllm/syn_0 | `run_20260723_161459`/`_171648` (agg_goal=10) | ~3600s | 59 | 3 | 22 |
+| fwdllm_plus/syn_0 | `run_20260723_161647`/`_171829` (agg_goal=10) | ~3600s | 61 | 2 | 21 |
 
-(fwdllm/fwdllm_plus counts are pre-`_flat_grad_norm`-fix; the timing family persists on these STORED runs
-until a re-run. fluxtune re-graded on stored dirs with this session's checker change.)
+(fwdllm/fwdllm_plus: post-`_flat_grad_norm`-fix re-run, 3600s. Same pass/fail/skip counts as the pre-fix 7200s
+pair — the timing family persists (§B). fluxtune re-graded on stored dirs with this session's checker change.)
 
 **Key-rung status** (✓ pass · ✗ fail · – skip; catalog: `async_cifar10/PARITY.md` §F):
 
@@ -112,16 +112,16 @@ thread-local `cpu_duration_s` tracks wall (on-CPU burn, not deschedule).
 
 | Baseline | Rung | State | Next |
 |---|---|---|---|
-| FW, FW+ | `drain_wall_budget` (GATING) | contention tail reaches p90; fix-1 `_flat_grad_norm` single-sync LANDED (shrinks physical wall both modes) | RE-RUN pair, then re-measure |
+| FW, FW+ | `drain_wall_budget` (GATING) | fix-1 `_flat_grad_norm` LANDED + RE-RUN done (3600s, 07-23): p90 rel unchanged (0.94/0.92) | fix-1 insufficient alone — decide charge-floor vs relax |
 | FW, FW+ | `agg_step_timing_breakdown` (DIAG) | same contention; does NOT gate verdict | informational |
 | FW | `step_timing_breakdown` (DIAG) | same; does NOT gate | informational |
 
-**vclock-charge re-measure (after the re-run).** `sim_model_agg_compute_time: true` charges the RAW measured
-drain+fedavg wall onto the sim vclock (`vclock.advance(now+span)`) — 675ms/commit vs real 163ms, injecting the
-contention tail into virtual time (why `per_round_advance` needs the KS-0.345 central escape). Fix-1 removes the
-per-parameter-sync amplifier. Re-run the FW/FW+ pair, then read: (a) sim `drain_tail_s` p50/p90 vs real, (b)
-`per_round_advance` KS, (c) `drain_wall_budget` pass. Tracks real → operator's "charge the real cost" validated;
-large residual → decide charge-the-floor vs relax (§F-20, don't inject sim-host noise into the clock).
+**vclock-charge re-measure — DONE (3600s re-run, 07-23).** `sim_model_agg_compute_time: true` still charges the
+RAW measured drain+fedavg wall onto the sim vclock; fix-1 did not shrink it — `drain_tail_s` p90 real/sim rel
+unchanged (fwdllm 0.935→0.942, fwdllm_plus 0.912→0.919), `per_round_advance` central-escape still needed (KS
+0.371/0.108), `drain_wall_budget` still fails. Fix-1 (`_flat_grad_norm`) was NOT the dominant contention source.
+Next: decide charge-the-floor vs relax (§F-20, don't inject sim-host noise into the clock), or keep digging for
+the actual amplifier first.
 
 **Flag-promotion decision (next step, operator call per [[flag-gate-ab-lifecycle]]).**
 `sim_model_agg_compute_time` is effectively default (ON all three baselines). `sim_sct_ordered_drain` +
@@ -133,11 +133,12 @@ promote all three to code-level default-on and delete the gates.
 **Other open (not the cascade):**
 - Accuracy drop after reaching 81% — known, deferred by operator (`fluxtune_contributions.md` §8).
 
-### fwdllm / fwdllm_plus (`run_20260723_001159`/`_021350`, `_022604`/`_042757`, agg_goal=10)
+### fwdllm / fwdllm_plus (`run_20260723_161459`/`_171648`, `_161647`/`_171829`, agg_goal=10, 3600s)
 
 Throughput parity CLOSED, validated 7200s (→ §G). The remaining timing family is root-caused above (co-location
-contention, `drain_wall_budget` gating; DIAG step-timing checks non-gating), fix-1 `_flat_grad_norm` landed; the
-re-run + vclock-charge re-measure is the only open item. No open sync/throughput gap.
+contention, `drain_wall_budget` gating; DIAG step-timing checks non-gating); fix-1 `_flat_grad_norm` landed and
+re-measured — gap unchanged, fix-1 alone insufficient (charge-floor-vs-relax decision open above). No open
+sync/throughput gap.
 
 ### Cross-baseline / shared
 
