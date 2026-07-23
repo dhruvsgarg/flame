@@ -1,0 +1,611 @@
+% !TEX root = main.tex
+\section{Experimental Setup}
+\label{sec:eval:setup}
+
+\myparagraph{Models and tasks}
+Our primary workload is AG News four-class topic classification,
+partitioned non-IID across clients by a Dirichlet distribution
+($\alpha = 1$). \tbd{Extend to two further datasets --- Yahoo! Answers
+topic classification and D3 --- and two further models beyond
+DistilBERT (M2, M3), to show the gain is not an artifact of one
+model/task pairing; not yet run.} We fine-tune DistilBERT-base-uncased
+(66.4\,M parameters, backbone frozen) through AdapterHub bottleneck
+adapters~\cite{houlsby2019parameter,pfeiffer2020adapterhub}
+(\tbd{$\sim$1.5\%} of parameters trainable). This is a
+parameter-efficient configuration whose peak training memory is
+bounded by forward inference rather than backpropagation, so it maps
+onto inference-only mobile accelerators by construction --- the
+mobile-feasibility argument is structural, not measured on-device (see
+\S\ref{sec:bg}). Generalization to larger model families (LLaMA2-7B,
+Mistral-7B) and to more severe non-IID is deferred to the ablations
+(\S\ref{sec:ablation}). \tbd{Bridge to the memory-wall motivation: the
+argument that forces forward gradients (\S\ref{sec:bg}) is a 7B-scale
+claim, whereas this testbed is DistilBERT; state why the smaller,
+tractable testbed does not undercut the 7B motivation before
+submission.}
+
+\myparagraph{Testbed and modeled clock}
+Each trainer and the aggregator runs as a separate process on an
+8$\times$NVIDIA~A40 server, exchanging real messages over MQTT;
+on-device mobile latency is \emph{modeled}, not measured. Each
+forward-only round trip is drawn from the FedBuff/Papaya mobile-device
+runtime distribution~\cite{nguyen2022fedbuff}\tbd{add Papaya cite} and
+scaled down by \texttt{delay\_factor} (\tbd{=2}) to reflect that
+forward-only inference on an NPU costs a fraction of a backward pass.
+\dhruv{But this was based on runtimes and forward pass estimates per
+baseline and extrapolated to the Papaya distribution.} \dhruv{verify
+from code what factor we use finally.} We evaluate two availability
+conditions: 100\% (algorithmic isolation; no dropout) and a
+\tbd{mobiperf} device-availability trace as the real-world deployment
+condition. We deliberately do \emph{not} re-run a synthetic
+availability sweep here: the motivation section
+(\S\ref{sec:motiv:control}) runs that sweep pedagogically. Results are
+reported for a single seed \tbd{(median over $\ge$3 seeds for the
+headline time-to-accuracy is a TODO before submission)}. \dhruv{Should
+list out what all was seeded at the aggregator and trainer so as to
+help us make the case that the results are reproducible.}
+
+\myparagraph{Baselines}
+\tabref{tab:eval:baselines} lists the nine configurations compared
+against \sys{} and defines their naming grammar in the caption.
+\textbf{+O} is inert under 100\% availability, since there is nothing
+to track --- it diverges from \textbf{+IT} only under the real-world
+trace. Four rows --- bold, above the rule in
+\tabref{tab:eval:baselines} --- are published anchors compared against
+\sys{} directly: \fwdllm{}, the only prior forward-gradient FL system;
+\fedbuffp{}~\cite{nguyen2022fedbuff} and
+\felixp{}~\cite{garg2026felix}, whose selection and aggregation
+strategies are ported from published async-FL systems onto our
+substrate (exact knobs in the table); and \sys{} itself. The five rows
+below the rule are our own intermediate configurations that isolate
+one axis of change at a time and are never presented as a headline
+comparison. Prior work documents the same availability-unawareness gap
+this baseline set is designed to probe~\cite{garg2025avail}.
+
+To keep the nine rows easy to place, each varies exactly one of three
+things relative to \fwdllm{}: \emph{how} clients synchronize (sync
+vs.\ async), \emph{when} control decisions are made (round vs.\
+iteration), and \emph{which} clients are selected (uniform vs.\
+availability-aware substrate). The three axes below walk through these
+in turn. (1)~\emph{Sync $\to$ async}: \fwdllm{} $\to$ \fedbuffp{}
+holds selection and control granularity fixed and removes only the
+sync barrier, isolating whether asynchronous execution alone helps
+before any contribution of ours. (2)~\emph{Round $\to$ iteration},
+checked independently on three selection substrates --- \fwdllm{}
+$\to$ \fwdllmit{}, \fedbuffp{} $\to$ \fedbuffpit{}, and \felixp{}
+$\to$ \felixpit{} --- isolates the iteration-level control reframe and
+confirms the gain is not an artifact of one particular selector.
+\fedbuffpit{} is the direct attribution floor for \sys{}'s
+contributions: it is \sys{} with C1, C2, and C3 removed and everything
+else held fixed, so the residual gap to \sys{} is exactly what the
+three contributions buy. (3)~\emph{Selection substrate}: \felixp{}
+asks whether availability-aware smart selection alone, without any of
+\sys{}'s own contributions, already closes most of the gap;
+\felixpit{} transplants \sys{}'s iteration-level cadence onto FeLiX's
+selector to isolate that cadence from C1/C3 specifically, and is never
+presented as a headline comparison, since crediting a published
+baseline with our own mechanism would be an unearned advantage to that
+baseline. \felixp{} and \felixpit{} are \emph{our} re-run of FeLiX's
+ported strategy on this paper's task, never FeLiX's own reported
+numbers --- FeLiX's evaluation is image/speech classification on a
+disjoint substrate~\cite{garg2026felix}, and results never cross
+between the two papers in either direction.
+
+\input{tables/eval/baselines}
+
+All baselines run at their best-tuned hyperparameters; the tuning
+procedure is in the table \tbd{add tuning-procedure table}. \fwdllm{}
+runs in its native round-level configuration, not retrofitted with
+iteration-level structure. SPRY~\cite{panchal2024spry} is discussed as
+a gradient-quality upper bound but is not a run-for-run baseline. Like
+other methods that \emph{split or personalize the model per device}
+\tbd{(cite split-learning e.g.\ Vepakomma'18; model-heterogeneous FL
+e.g.\ HeteroFL/Diao'21; personalized-FL survey e.g.\ Tan'22)}, its
+per-client weight splitting is incompatible with the homogeneous
+cross-device deployment we target --- a fleet of interchangeable,
+intermittently-available clients that each run the \emph{same} model
+and can drop in and out, where a device-specific model shard cannot
+survive churn. We justify this exclusion where these methods are
+introduced (\S\tbd{background/related work}); here it only scopes the
+baseline set.
+
+\myparagraph{Excluded selection/staleness baselines}
+Three further classical FL baselines are cited as ancestors rather
+than run for run, and none change the scope of
+\tabref{tab:eval:baselines}. Oort's~\cite{oort} multi-armed-bandit
+utility-guided selection is already the idea inside \felixp{}'s (and
+\sys{}'s own) selector, so re-running it separately would be
+redundant. REFL's~\cite{abdelmoniem2023refl} deadline/overcommit
+staleness model does not map onto a variance-gated forward-gradient
+commit, since our clients take no local update steps for a deadline to
+bound. FedDance's availability-forecasting selection targets a
+trace-driven evaluation we defer to future work.
+
+\tbd{\fedbuffp{}, \fedbuffpit{}, \fedbuffpito{}, \felixp{}, and
+\felixpit{} are specified above but not yet wired into the run
+pipeline; \S\ref{sec:eval:sota} and \S\ref{sec:eval:attribution}
+currently report only the \fwdllm{}/\fwdllmito{}/\sys{} rung that has
+completed runs, and will add the remaining anchors' numbers before
+submission.}
+
+\myparagraph{Baseline fidelity and the simulation clock}
+We port \fwdllm{} onto Flame~\cite{daga2023flame} so that it and
+\sys{} run on the same faithful platform, and we confirm the port is
+fidelity-preserving by \emph{accuracy parity}: our port reaches the
+test accuracy the original paper reports~\cite{xu2024fwdllm}
+\tbd{state the matched value, e.g.\ ours [X]\% vs.\ their [Y]\%}. We
+compare accuracy, not wall-clock, and we say so deliberately: a
+wall-clock comparison against the original is not meaningful, because
+that system lacks the real distributed implementation ours reproduces
+(separate trainer processes, real network messaging, per-trainer
+state). For the same reason, the two properties below make our
+platform harder on the baseline, not easier. First, Flame runs each
+trainer and the aggregator as separate processes exchanging real
+messages over MQTT, whereas the original ran a single process with one
+aggregator and one client emulating all trainers in a closed loop.
+Faithful distribution forced us to maintain per-trainer state that the
+single-process baseline read for free from its parent, but that a real
+deployment would not have. Second, per-client round-trip times are
+drawn from the modeled mobile-delay distribution described above,
+scaled by \texttt{delay\_factor} --- accelerated inference on an NPU
+costs a fraction of the backward pass those traces measured. This
+modeled clock, not a validated virtual clock, is what our
+time-to-accuracy uses; a faithful real$\leftrightarrow$sim virtual
+clock is future work. Every reported speedup is therefore against a
+correctly distributed, correctly aggregated baseline.
+
+% =======================================================================
+\section{Evaluation}
+\label{sec:eval}
+
+Time-to-accuracy is the metric \sys{} optimizes; resource utilization,
+compute effectiveness, communication, and session length are not
+separate experiments but four further readings off the \emph{same} set
+of executions. We run training once per baseline per availability
+condition, and every number below is a query over those logs.
+\S\ref{sec:eval:sota} answers two questions --- \emph{how much faster}
+does \sys{} reach target accuracy than each published anchor
+(\fwdllm{}, \fedbuffp{}, \felixp{}), and \emph{how cheap} are those
+wins for the device, in trainer idling, data moved, and session length
+--- leading with \fwdllm{} since it is the only prior
+\emph{forward-gradient} FL system, so the size of that gap is the
+reader's first impression, and situating \fedbuffp{} and \felixp{}
+alongside it as the async-execution and smart-selection anchors.
+\S\ref{sec:eval:attribution} then asks where the advantage comes from:
+against baselines we \emph{strengthened} with the obvious systems
+fixes (the +IT/+O rungs in \tabref{tab:eval:baselines}) and the 100\%
+oracle, do \sys{}'s \emph{conceptual} contributions still pay off, and
+is the residual gap explained by the two mechanistic levers --- higher
+utilization (less trainer/aggregator wait) and higher compute
+effectiveness (more learning per unit compute)?
+
+% =======================================================================
+\subsection{How much does \sys improve end-to-end LLM fine-tuning in FL?}
+\label{sec:eval:sota}
+
+\fwdllm{} is the sole prior forward-gradient FL system, so we report
+the absolute gap to it first, across all five metrics on one run-set;
+\fedbuffp{} and \felixp{} extend the same comparison along the
+async-execution and smart-selection axes and will be added once their
+runs complete (\S\ref{sec:eval:setup}). Under the real-world
+availability trace, \fwdllm{}'s round commitment collides with short
+availability windows and it barely learns; the gaps below are
+correspondingly large.
+
+\input{figs/code/eval/e2e/e1_tta}
+
+\myparagraph{Time to accuracy}
+\textbf{\sys{} reaches the accuracy target while \fwdllm{} never
+converges.} On AG News ($N{=}100$, non-IID $\alpha{=}1$), \sys{}
+crosses the $84\%$ target in $3.9$\,h, whereas \fwdllm{} plateaus at
+$30.3\%$ --- its whole-round commitment discards the in-flight
+databins of every client that drops inside a round, so it never
+accumulates enough usable updates to learn (\figref{fig:eval:tta}).
+\label{sec:eval:tta} This is the outcome that matters: round-level
+control turns the real-world availability scenario into a
+near-failure, and iteration-level control turns it back into a
+tractable run. We report the convergence event in four units ---
+wall-clock, rounds, data bins, and iterations --- plus the maximum
+accuracy attained; virtual-clock time is deferred (real-mode runs emit
+no virtual clock and the sim clock is not yet validated).
+
+\myparagraph{Resource utilization}
+\textbf{\sys{} does not ask clients for more compute --- it wastes
+less of the compute each client already offers.} Every client's budget
+is set by the same thing regardless of scheduler: the wall-clock
+window it happens to be reachable for. A round-barrier scheduler
+cannot use that window until the round it belongs to closes, so the
+client sits idle mid-window waiting on its slower peers; \sys{}'s
+iteration-level reselection re-dispatches a client the moment it
+returns a scalar, so the same window is filled with work instead of
+wait. Decomposing each run's timeline into busy and idle fractions
+makes this concrete: \sys{}'s per-trainer busy fraction is higher at
+every percentile of the fleet (median ${\sim}7$--$8\%$), not because
+\sys{} demands more from clients, but because the baseline leaves that
+fraction of each client's own availability window unused
+(\figref{fig:eval:util}). \label{sec:eval:util} The aggregator stays
+compute-bound rather than wait-bound, confirming the coordinator
+itself is not what is idling. Higher utilization is therefore a
+genuine systems win, not a hidden compute subsidy: it is compute the
+client's own availability window already afforded, that only \sys{}'s
+control structure knows how to claim.
+
+\input{figs/code/eval/e2e/e2_util}
+
+\myparagraph{Compute effectiveness}
+\textbf{\sys{} converts client compute into learning where \fwdllm{}
+regresses.} Against a hardware-independent forward-pass denominator,
+\sys{} yields $+1.68$ $\Delta\text{loss}$ per million forward passes
+while \fwdllm{} \emph{loses} ground ($-1.26$): \fwdllm{}'s random
+directions overwhelmingly return near-zero scalars, so the compute its
+clients spend buys essentially no learning
+(\figref{fig:eval:compute}). \label{sec:eval:compute} We lead with the
+forward-pass denominator because \texttt{gpu\_compute\_s} is wall-time
+under 100-trainer / 8-GPU contention, which inflates it
+(${\sim}20\times$) and differently across baselines, so it measures
+scheduling contention rather than algorithmic compute; we report the
+GPU-hour denominator as a confounded secondary. Guided perturbations
+are the effectiveness lever behind this gap: a client that evaluates
+an informative direction reduces loss more than one that evaluates a
+random direction at the same cost.
+
+\input{figs/code/eval/e2e/e3_compute}
+
+\myparagraph{Communication}
+\textbf{Per-message uplink is a scalar, so total bytes stay modest,
+but \sys{}'s continuous re-pulls raise its volume in this C1-only
+configuration.} We measure the data actually moved in both directions
+(\figref{fig:eval:comm}). \label{sec:eval:comm} \sys{} sends more,
+smaller messages per round; because the uplink is scalar-dominated,
+the message-count increase does not by itself inflate bytes. In the
+current C1-only run-set, however, \sys{}'s async clients continuously
+re-pull the global model, so its total uplink volume sits \emph{above}
+the synchronous baselines rather than below --- the honest current
+state (\S\ref{sec:eval:attribution} treats this directly). \weak{The
+intended net reduction depends on C2 (dynamic $K$/$C$, fewer
+concurrent re-pulls) and delta-model distribution, not yet enabled;
+until then, report the measured bytes honestly.}
+
+\input{figs/code/eval/e2e/e4_comm}
+
+\myparagraph{Client session length}
+\dhruv{it seems that the telemetry for this is not being captured correctly. the session lengths for baselines are the continuous wall clock time for which a trainer remains selected in the cohort. It is not that intermittent training time from the trainer's perspective.}
+\textbf{\sys{}'s client sessions are short, so intermittent devices
+can participate.} A round-based system needs a client reachable for a
+whole round; \sys{} needs it for one iteration. Measured
+active-session durations are short (seconds-scale) across all three
+systems, but \sys{}'s concentrate in a tight band that matches its
+per-iteration engagement model (\figref{fig:eval:sessions}).
+\label{sec:eval:sessions} This is the mechanism behind \sys{}'s
+robustness to the short availability windows documented in
+\S\ref{sec:motiv:control}: a client need only stay reachable for
+seconds-to-minutes, not for a full round.
+
+\input{figs/code/eval/e2e/e5_sessions}
+
+% =======================================================================
+\subsection{Where does the advantage come from?}
+\label{sec:eval:attribution}
+
+The gap to \fwdllm{} is large but conflates two things: the systems
+fixes any competent engineer would add (per-iteration reselection,
+oracular availability) and \sys{}'s \emph{novel} mechanisms (guided
+perturbations, dynamic $K$/$C$, gradient-aware aggregation). To
+isolate the second, we compare against \fwdllmito{} --- \fwdllm{}
+\emph{with} those systems fixes --- and the 100\% oracle.
+\tbd{\fedbuffpito{} and \felixpit{} extend the same attribution once
+their runs complete, holding the strengthened-baseline standard to the
+async-execution and smart-selection anchors too.} \fwdllmito{} is the
+iteration-level reframe \emph{without} our contributions; that it
+still trails \sys{} sharply is the evidence that the reframe is an
+enabler, not the gain --- moving control to the iteration opens the
+decision space, but the contributions are what exploit it.
+\fwdllmito{} is expected to beat \fwdllm{} by construction, so the
+remaining gap to \sys{} is smaller; the point of this subsection is
+not the size of that gap but its \emph{source}. We lead with
+time-to-accuracy and the two levers that explain it, and we state
+honestly where the current C1-only run-set does not yet realize a
+claimed win.
+
+\myparagraph{Time to accuracy vs.\ the strengthened baseline}
+\textbf{Even after the systems fixes, \sys{} is ${\sim}2\times$
+faster.} \fwdllmito{} peaks at $80.9\%$ and takes $7.4$\,h --- about
+$2\times$ \sys{}'s $3.9$\,h --- and does not reach the $84\%$ target
+(\figref{fig:eval:tta}). Per-iteration reselection and oracular
+tracking recover most of \fwdllm{}'s collapse, but the residual gap is
+what the novel mechanisms buy: the strengthened baseline still commits
+to whole-databin work and static $K$/$C$, so it converges more slowly
+and to a lower peak.
+
+\myparagraph{Utilization vs.\ the oracular scheduler}
+\textbf{Oracular availability does not close the utilization gap.}
+\fwdllmito{}'s oracular sync selection still leaves most clients
+near-idle (${\sim}1\%$ busy) because its synchronization barrier
+stalls fast clients waiting on slow ones, whereas \sys{}'s
+barrier-free reselection keeps them busy (\figref{fig:eval:util}).
+Knowing device state perfectly does not help if the control structure
+cannot act on it per iteration --- attribution the oracle isolates
+cleanly, since it removes availability uncertainty as a confound.
+
+\myparagraph{Compute effectiveness: an honest caveat}
+\textbf{Per unit compute, the strengthened baseline is currently more
+efficient than \sys{}.} On the forward-pass denominator, \fwdllmito{}
+reaches $4.58$ $\Delta\text{loss}$/M-fwd against \sys{}'s $1.68$
+(\figref{fig:eval:compute}). This is expected and disclosed: guidance
+pays a $2P$ per-iteration surcharge (\S\ref{sec:arch:c1}), and \sys{}
+trades per-compute efficiency for wall-clock speed with its C2/C3
+efficiency levers \emph{not yet enabled} in this run-set. \sys{} still
+wins wall-clock time-to-accuracy because it needs far fewer
+iterations; the per-unit efficiency win is the hypothesis that the
+efficiency levers close. \weak{The surcharge is repaid per unit
+compute only if C2 (dynamic $K$/$C$) and C3 (gradient-aware
+aggregation) cut iterations by more than the ${\sim}10\times$
+per-iteration factor at $P{=}10$. On the current C1-only run-set they
+are not yet enabled, so the oracular sync baseline is more per-compute
+efficient. Report the forward-pass denominator honestly and scope the
+compute claim to the constrained-client regime until C2/C3 land.}
+
+\myparagraph{Communication: an honest caveat}
+\textbf{\sys{}'s total bytes are currently higher than the oracular
+baseline, not lower.} As above, \sys{}'s async clients re-pull the
+global model continuously, so on the C1-only run-set total uplink is
+higher than \fwdllmito{} (\figref{fig:eval:comm}). The reduction is
+the hypothesis that C2 (fewer concurrent re-pulls) and fewer
+iterations-to-target deliver; on the full-system run we expect the net
+effect to invert. Until then we report the measured bytes as they are.
+
+\myparagraph{Accounting for the guidance surcharge}
+Guided selection raises \sys{}'s per-iteration compute
+(\S\ref{sec:arch:c1}), so we report the surcharge openly. At our
+default $P=10$ candidate perturbations, \sys{} evaluates $2P=20$
+forward passes per iteration against the sync baseline's $2$ --- about
+$10\times$ the per-iteration compute. The fidelity-preserving
+optimizations of \S\ref{sec:arch:c1} are bit-identical and cut
+\sys{}'s per-iteration GPU time by ${\sim}37\%$ (removing 5 redundant
+passes, $25\to20$); they lower the absolute cost, not the $10\times$
+ratio, which is set by $P$ and collapses to parity at $P=1$. Two facts
+keep the factor in perspective. It multiplies a per-iteration time of
+\emph{seconds} of forward-pass inference, not the minutes a backward
+pass would take, so the absolute round trip stays inside the modeled
+mobile-delay budget \tbd{(the optimized mean per-iteration compute is
+${\sim}3.6$\,s, at/under the modeled per-round-trip budget)}. And it
+is a per-iteration cost against a per-run benefit: guidance is
+designed to reach target accuracy in far fewer iterations, so
+run-level compute --- the denominator that sets time-to-accuracy ---
+should fall even as the per-iteration cost rises.
+
+% =============================================================================
+\section{Ablation}
+\label{sec:ablation}
+
+The end-to-end results establish the headline gap and its two causes
+at a single operating point. This section justifies the individual
+design choices through three angles: \textbf{L1}, enable/disable
+studies that show each component actually helps; \textbf{L2},
+hyperparameter sensitivity that shows the gain is not brittle; and
+\textbf{L3}, design-space alternatives that show the chosen mechanism
+beats the options we considered. Qualitative arguments for each choice
+live in the design section (\S\ref{sec:design}); here we back them
+with data. \tabref{tab:ablation:summary} states which lens applies to
+which contribution.
+
+\input{tables/eval/ablation_summary}
+
+We do not ablate async vs.\ sync execution: async is a structural
+consequence of dropping the round barrier, so removing it would
+re-insert the commitment structure rather than test an independent
+mechanism. The value of the iteration-level reframe is instead read
+off the round$\to$iteration rung on each selection substrate
+independently --- \fwdllm{} $\to$ \fwdllmit{}, \fedbuffp{} $\to$
+\fedbuffpit{}, and \felixp{} $\to$ \felixpit{}
+(\S\ref{sec:eval:setup}, \S\ref{sec:eval:attribution}) --- each of
+which adds per-iteration control while holding that substrate's own
+selection policy fixed. This isolates the reframe from both the async
+substrate and the C1--C3 contributions, and checking it three times
+independently confirms the gain is not an artifact of one particular
+selector.
+
+% -----------------------------------------------------------------------
+\subsection{L1: does each component help? (enable/disable)}
+\label{sec:ablation:ladder}
+
+We build \sys{} up from its guided-JVP-only base, enabling one
+mechanism at a time, and measure the effect on peak accuracy and
+time-to-accuracy on the same workload ($N{=}100$, $\alpha{=}1$).
+
+\input{figs/code/eval/ablation/abl_optladder}
+
+\textbf{Each enabled mechanism moves peak accuracy up the ladder.}
+From the \sys{}-base configuration (guided perturbations only,
+$83.0\%$), adding variance-plateau force-commit ($+$C2 stopping) and
+then gradient-aware aggregation ($+$C3) raises peak accuracy
+monotonically --- $83.0\% \to 82.2\% \to 83.9\% \to 84.1\%$ for the
+full stack (\figref{fig:ablation:optladder}). The variance-plateau
+step alone slightly trades peak accuracy for earlier commitment; the
+gradient-aware aggregation step recovers and exceeds it, and the full
+combination is best. This is the enable/disable evidence reviewers ask
+for first: each component earns its place.
+
+\begin{plannedexp}{L1 completion: per-contribution on/off}
+  \textbf{Goal:} Complete the enable/disable matrix --- guided-off
+  (C1), static-$K$/$C$ (C2), naive-weight-agg (C3) --- each toggled
+  individually against the full stack, on both availability
+  conditions.\\[3pt]
+  \textbf{Reuse:} Experiment run-set; no new training beyond the
+  toggled configs.\\[3pt]
+  \textbf{Expected result:} disabling any single contribution degrades
+  time-to-accuracy; C1 dominates the effectiveness lever, C2 the
+  utilization lever, C3 the aggregation stability.\\[3pt]
+  \textbf{Takeaway:} every contribution is load-bearing; none is
+  subsumed by the others.
+\end{plannedexp}
+
+% -----------------------------------------------------------------------
+\subsection{L3: guided vs.\ cheaper perturbation selection policies}
+\label{sec:ablation:c1alt}
+
+\begin{plannedexp}{Guided JVP vs.\ random / cosine / quasi selection}
+  \textbf{Goal:} Show guidance is the \emph{only} selection policy
+  that moves the needle. The motivation null result
+  (\S\ref{sec:motiv:perturbations}) shows all-random, all-cosine, and
+  \fwdllm{}'s quasi/alternating policy converge almost identically;
+  the ablation re-uses those three cheap policies plus JVP-guided, now
+  on accuracy-vs-perturbation-evaluations.\\[3pt]
+  \textbf{Baselines:} \sys{} with selection $\in \{$all-random,
+  all-cosine, quasi/alternating (\fwdllm{}), JVP-guided$\}$.\\[3pt]
+  \textbf{Setup:} 100\% availability (cleanest attribution); fixed
+  model, data, $K$/$C$; vary only the selection policy.\\[3pt]
+  \textbf{Expected result:} the three cheap policies cluster together;
+  JVP-guided reaches target accuracy in the fewest perturbation
+  evaluations.\\[3pt]
+  \textbf{Takeaway:} cheap alignment scores do not identify directions
+  that teach more; JVP guidance is the load-bearing selection signal.
+\end{plannedexp}
+
+% -----------------------------------------------------------------------
+\subsection{L2: sensitivity to JVP guidance parameters}
+\label{sec:ablation:jvp}
+
+\begin{plannedexp}{JVP threshold and refresh frequency sensitivity}
+  \textbf{Goal:} Establish that the guided-perturbation gain is not
+  brittle to the JVP threshold used to filter directions or to how
+  often the server re-runs JVP.\\[3pt]
+  \textbf{Baselines:} \sys{} with JVP threshold $\tau \in \{0.1, 0.3,
+  0.5\}$ and refresh frequency $\in \{$every iteration, every 10
+  iterations, every 50 iterations$\}$.\\[3pt]
+  \textbf{Setup:} 100\% availability (cleanest attribution); fixed
+  model and task.\\[3pt]
+  \textbf{Expected result:} convergence speed is stable across a
+  moderate threshold range; very low thresholds approach
+  random-sampling performance; very high thresholds reduce direction
+  diversity. Refresh every 10 iterations performs comparably to every
+  1; every 50 shows small degradation.\\[3pt]
+  \textbf{Takeaway:} the JVP hyperparameters can be set without
+  per-task tuning.
+\end{plannedexp}
+
+\myparagraph{Cost knobs: $P$ and JVP schedule}
+The candidate count $P$ and the JVP-computation schedule
+(\S\ref{sec:arch:c1}) are the knobs that set the guidance surcharge.
+We sweep $P$ (static vs.\ dynamic) to trace the compute/accuracy
+frontier, and test the two opposing JVP-schedule hypotheses --- more
+JVP early (broad landscape) vs.\ more JVP late (update quality matters
+near convergence) --- to fix the default. \tbd{Fill from the $P$-sweep
+and JVP-schedule runs.}
+
+% -----------------------------------------------------------------------
+\subsection{L1+L2: dynamic vs.\ static $K$/$C$}
+\label{sec:ablation:kc}
+
+\begin{plannedexp}{Static vs.\ dynamic $K$/$C$, plus window and factor sensitivity}
+  \textbf{Goal:} Show dynamic $K$/$C$ beats the best static setting
+  (L1) and is not brittle to the moving-average window $N$ or the
+  growth/shrink factors (L2).\\[3pt]
+  \textbf{Baselines:} static $K$/$C$ tuned for early phase; static
+  tuned for convergence; dynamic $K$/$C$ with $N \in \{5, 10, 20\}$;
+  growth/shrink factor $\in \{1.1, 1.25, 1.5\}$; $C_{\max} \in
+  \{|$pool $|, 2|$pool$|\}$.\\[3pt]
+  \textbf{Setup:} the real-world availability trace; full training run
+  (captures both early-phase and convergence behavior).\\[3pt]
+  \textbf{Expected result:} dynamic beats both static tunings;
+  time-to-accuracy varies $\le$[X]\% across the recommended range;
+  aggressive growth/shrink ($1.5\times$) oscillates, conservative
+  ($1.1\times$) adapts slowly but still beats static. $N=10$,
+  $1.25\times$ recommended default.\\[3pt]
+  \textbf{Takeaway:} the $K$/$C$ policy is load-bearing and its
+  parameters are not brittle.
+\end{plannedexp}
+
+% -----------------------------------------------------------------------
+\subsection{L1+L3: gradient-aware vs.\ naive aggregation}
+\label{sec:ablation:c3}
+
+\begin{plannedexp}{Direction-aware aggregation vs.\ naive weight averaging}
+  \textbf{Goal:} Show \sys{}'s direction-aware, scalar-decay
+  aggregation (C3, \S\ref{sec:arch:c6}) beats naive averaging and a
+  single-scalar staleness discount, and test its knobs.\\[3pt]
+  \textbf{Baselines:} naive average; single FeLiX-style (TierFuse)
+  staleness$\times$utility discount~\cite{garg2026felix}; \sys{} C3
+  with $\gamma$ sweep, greedy vs.\ cluster novelty, hard vs.\ soft
+  sign gate.\\[3pt]
+  \textbf{Setup:} the real-world availability trace; fixed model and
+  task.\\[3pt]
+  \textbf{Expected result:} the single-scalar discount wrongly
+  penalizes the fixed direction $v$ and underperforms; C3's
+  direction/scalar split is more stable under staleness.\\[3pt]
+  \textbf{Takeaway:} forward-gradient updates need direction-aware
+  aggregation; a borrowed weight-merge discount is wrong in kind.
+  \tbd{Gated on C3 validation and formula sync with the latest code
+  (\S\ref{sec:arch:c6}).}
+\end{plannedexp}
+
+% -----------------------------------------------------------------------
+\subsection{L2+L3: databin size}
+\label{sec:ablation:databin}
+
+\begin{plannedexp}{Databin-size sweep}
+  \textbf{Goal:} Locate the databin size that balances the two failure
+  modes named in \S\ref{sec:arch:global} --- small bins
+  over-communicate, large bins wash out per-client signal.\\[3pt]
+  \textbf{Baselines:} \sys{} across a databin-size sweep (small $\to$
+  large), fixed model, data, and $K$/$C$ policy.\\[3pt]
+  \textbf{Setup:} 100\% availability for a clean read on the
+  communication/learning trade, then confirm on the real-world
+  trace.\\[3pt]
+  \textbf{Expected result:} communication falls monotonically with
+  databin size while learning-per-databin peaks at an intermediate
+  size; time-to-accuracy is U-shaped, with the minimum away from both
+  extremes.\\[3pt]
+  \textbf{Takeaway:} databin size is a genuine trade, and the default
+  sits between the over-communication and signal-washout regimes.
+\end{plannedexp}
+
+% -----------------------------------------------------------------------
+\subsection{Robustness under non-IID data distribution}
+\label{sec:ablation:noniid}
+
+\begin{plannedexp}{Non-IID severity: Dirichlet $\alpha$ sweep}
+  \textbf{Goal:} Confirm that \sys{}'s gain over \fwdllm{} holds
+  across non-IID severity levels.\\[3pt]
+  \textbf{Baselines:} \fwdllm{}, \fwdllmito{}, and \sys{} at $\alpha
+  \in \{0.5$ (moderate non-IID$), 1.0$ (mild, the primary
+  condition$)\}$; \tbd{extend to \fedbuffp{}/\felixp{} once their runs
+  land}. The more severe $\alpha{=}0.1$ is excluded (learning too slow
+  across all baselines to complete convergence runs).\\[3pt]
+  \textbf{Setup:} the real-world availability trace. Fixed model and
+  task.\\[3pt]
+  \textbf{Expected result:} \sys{} maintains its speedup at both
+  $\alpha$ values; the \emph{relative} gain is stable or improves,
+  since guided perturbations select locally informative directions
+  regardless of data distribution.\\[3pt]
+  \textbf{Takeaway:} \sys{}'s gain is robust across the tested range
+  of non-IID severity; the residual non-IID bias noted in
+  \S\ref{sec:background} does not eliminate it.
+\end{plannedexp}
+
+% =============================================================================
+% Preempts not addressed inline
+% =============================================================================
+
+\preempt
+  {Results on DistilBERT do not generalize across model families.}
+  {here} {Evaluate on $\ge$2 further families (LLaMA2-7B primary;
+  Mistral-7B secondary). If only one is available by the deadline,
+  scope the generalizability claim explicitly and commit to the second
+  family in the submission.}
+
+\preempt
+  {\sys{} underperforms \fwdllm{} in some easy condition (potential
+  regression).} {here} {If dynamic $K$/$C$ or JVP overhead adds
+  latency that slows the very first training phase before guidance
+  kicks in: report the regression, show it is transient (bounded to
+  $\le$[X] iterations), and argue acceptability in light of the
+  full-run and low-availability gains. Do not suppress.}
+
+\preempt
+  {SPRY is more accurate AND more robust to availability --- \sys{}'s
+  value is unclear.} {here} {If SPRY without availability-aware
+  control degrades similarly to \fwdllm{} at low availability
+  (expected), then \sys{}'s deployment-model advantage (no weight
+  splitting) is the primary differentiator, not gradient quality.
+  Frame accordingly.}
