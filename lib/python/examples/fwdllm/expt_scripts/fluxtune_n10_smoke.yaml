@@ -81,9 +81,14 @@ experiments:
           # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
           # 2026-07-11 -- real used to release early). Must match sim yaml.
           inflight_residence: true
-          # §H fix: streamer-free async grad collect (drain_ready), dropping
-          # recv_fifo's ~0.4s/cohort post-fill stall. Code-default OFF; ON here.
+          # Streamer-free async grad collect (drain_ready). Cleaner collect path
+          # (drops recv_fifo's streamer churn) but INERT on the parity gap — the
+          # ~9% is the distribute settle below, not recv (§H). Code-default OFF.
           real_drain_ready_ingest: true
+          # §H A/B: real-only 0.1s post-distribute settle sleep sim skips +
+          # doesn't charge (~1.08s/cohort real distribute vs sim 0.34). 0.0 tests
+          # whether removing it closes the gap. Code-default 0.1 (old behavior).
+          real_distribute_settle_s: 0.0
           # 90s default evicted a genuinely-busy trainer (rounds incl.
           # warmup up to ~108s). Workload knob, not a parity lever; must
           # match sim yaml (§R, 2026-07-11).

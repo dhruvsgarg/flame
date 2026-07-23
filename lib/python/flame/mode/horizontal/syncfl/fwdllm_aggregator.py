@@ -3574,12 +3574,11 @@ class TopAggregator(AsyncTopAgg):
 
         # Real-transport pad to let just-distributed messages settle before the
         # selection read (real-mode MQTT artifact, #8). No sim analog: the sim
-        # orders by sct, not physical arrival, so this is pure wall overhead there
-        # -- skip it. Real unchanged.
-        if not self.simulated:
-            logger.debug(f"Starting busy wait at time {time.time()}")
-            time.sleep(0.1)
-            logger.debug(f"Ended busy wait at time {time.time()}")
+        # orders by sct, not physical arrival, so skip it there. Real path gated
+        # on real_distribute_settle_s (§H A/B: 0 = drop it).
+        _settle = getattr(self, "_real_distribute_settle_s", 0.1)
+        if not self.simulated and _settle > 0.0:
+            time.sleep(_settle)
 
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
@@ -3764,12 +3763,11 @@ class TopAggregator(AsyncTopAgg):
         self.weights = global_model_params
         # Real-transport pad to let just-distributed messages settle before the
         # selection read (real-mode MQTT artifact, #8). No sim analog: the sim
-        # orders by sct, not physical arrival, so this is pure wall overhead there
-        # -- skip it. Real unchanged.
-        if not self.simulated:
-            logger.debug(f"Starting busy wait at time {time.time()}")
-            time.sleep(0.1)
-            logger.debug(f"Ended busy wait at time {time.time()}")
+        # orders by sct, not physical arrival, so skip it there. Real path gated
+        # on real_distribute_settle_s (§H A/B: 0 = drop it).
+        _settle = getattr(self, "_real_distribute_settle_s", 0.1)
+        if not self.simulated and _settle > 0.0:
+            time.sleep(_settle)
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_unavail_trainers()
             channel.set_curr_unavailable_trainers(
